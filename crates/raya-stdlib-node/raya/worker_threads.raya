@@ -1,0 +1,31 @@
+// Worker Threads - Node-compatible node:worker_threads shim
+
+class Worker {
+    _path: string;
+
+    constructor(path: string) {
+        this._path = path;
+    }
+
+    postMessage(_message: string): void {
+        // Message channels are not wired yet in runtime; no-op for now.
+    }
+
+    terminate(): number {
+        return 0;
+    }
+}
+
+class WorkerThreads {
+    isMainThread(): boolean {
+        return true;
+    }
+
+    Worker(path: string): Worker {
+        return new Worker(path);
+    }
+}
+
+const workerThreads = new WorkerThreads();
+export { Worker };
+export default workerThreads;

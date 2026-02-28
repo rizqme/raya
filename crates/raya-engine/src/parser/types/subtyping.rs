@@ -94,8 +94,16 @@ impl<'a> SubtypingContext<'a> {
 
             // JSObject is a structural object-ish top/bottom for dynamic object values.
             (Type::JSObject, t) | (t, Type::JSObject) if is_object_like(t) => true,
-            (Type::Generic(g), t) if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) => true,
-            (t, Type::Generic(g)) if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) => true,
+            (Type::Generic(g), t)
+                if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) =>
+            {
+                true
+            }
+            (t, Type::Generic(g))
+                if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) =>
+            {
+                true
+            }
 
             // json is a dynamic duck-typed value from JSON.parse()/decode.
             // Allow bidirectional compatibility with other types to support
@@ -144,8 +152,7 @@ impl<'a> SubtypingContext<'a> {
             // (P1, P2, ..., Pn) => R <: (Q1, Q2, ..., Qm) => S
             // if m = n, Qi <: Pi for all i (contravariant), and R <: S (covariant)
             (Type::Function(f1), Type::Function(f2)) => {
-                let expand_params = |f: &FunctionType, this: &TypeContext|
-                 -> Option<Vec<TypeId>> {
+                let expand_params = |f: &FunctionType, this: &TypeContext| -> Option<Vec<TypeId>> {
                     let mut out = f.params.clone();
                     if let Some(rest_ty) = f.rest_param {
                         match this.get(rest_ty) {
@@ -169,10 +176,7 @@ impl<'a> SubtypingContext<'a> {
                 }
 
                 // Parameters are contravariant: sup params <: sub params
-                let params_match = p1
-                    .iter()
-                    .zip(&p2)
-                    .all(|(&p1, &p2)| self.is_subtype(p2, p1)); // Note: reversed!
+                let params_match = p1.iter().zip(&p2).all(|(&p1, &p2)| self.is_subtype(p2, p1)); // Note: reversed!
 
                 // Return type is covariant, comparing effective returns:
                 // - async fn (...): T is treated as (... ) => Promise<T>

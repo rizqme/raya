@@ -1,0 +1,10 @@
+// Dgram - Node-compatible node:dgram shim
+
+class Dgram {
+    createSocket(_kind: string): void {
+        throw new Error("node:dgram#createSocket is not implemented");
+    }
+}
+
+const dgram = new Dgram();
+export default dgram;

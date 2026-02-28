@@ -39,6 +39,7 @@ mod math;
 mod module_vars;
 mod narrowing;
 mod net;
+mod node_stdlib;
 mod operators;
 mod os;
 mod path;

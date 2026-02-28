@@ -1,0 +1,18 @@
+// Inspector - Node-compatible node:inspector shim
+
+class Inspector {
+    open(): void {
+        throw new Error("node:inspector#open is not implemented");
+    }
+
+    close(): void {
+        // No-op
+    }
+
+    url(): string {
+        return "";
+    }
+}
+
+const inspector = new Inspector();
+export default inspector;

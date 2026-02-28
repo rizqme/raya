@@ -1,0 +1,10 @@
+// REPL - Node-compatible node:repl shim
+
+class Repl {
+    start(): void {
+        throw new Error("node:repl#start is not implemented");
+    }
+}
+
+const repl = new Repl();
+export default repl;

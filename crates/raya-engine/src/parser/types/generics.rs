@@ -246,10 +246,7 @@ impl<'a> GenericContext<'a> {
                     Some(self.type_ctx.union_type(out))
                 }
             }
-            (
-                Some(Type::Object(obj)),
-                Some(Type::Primitive(super::ty::PrimitiveType::String)),
-            ) => {
+            (Some(Type::Object(obj)), Some(Type::Primitive(super::ty::PrimitiveType::String))) => {
                 let mut out = Vec::new();
                 for p in &obj.properties {
                     out.push(p.ty);

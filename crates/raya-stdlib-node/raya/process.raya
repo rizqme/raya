@@ -1,0 +1,54 @@
+// node:process - Node.js-compatible process module
+// Usage: import process from "node:process";
+// Native-backed implementation (no std import indirection).
+
+class NodeProcess {
+    pid(): number { return __NATIVE_CALL<number>("process.pid"); }
+    ppid(): number { return __NATIVE_CALL<number>("process.ppid"); }
+    argv(): string[] { return __NATIVE_CALL<string[]>("process.argv"); }
+    execPath(): string { return __NATIVE_CALL<string>("process.execPath"); }
+    version(): string { return __NATIVE_CALL<string>("process.version"); }
+    uptime(): number { return __NATIVE_CALL<number>("process.uptime"); }
+
+    exit(code: number): void { __NATIVE_CALL("process.exit", code); }
+    abort(): void { __NATIVE_CALL("process.exit", 134); }
+
+    cwd(): string { return __NATIVE_CALL<string>("env.cwd"); }
+    chdir(dir: string): void { __NATIVE_CALL("process.chdir", dir); }
+
+    title(): string { return __NATIVE_CALL<string>("process.title"); }
+    setTitle(t: string): void { __NATIVE_CALL("process.setTitle", t); }
+
+    memoryUsage(): number[] {
+        const heapUsed = __NATIVE_CALL<number>("process.heapUsed");
+        const heapTotal = __NATIVE_CALL<number>("process.heapTotal");
+        return [heapUsed, heapTotal];
+    }
+
+    cpuUsage(): number[] { return __NATIVE_CALL<number[]>("process.cpuUsage"); }
+    hrtime(): number[] { return __NATIVE_CALL<number[]>("process.cpuUsage"); }
+
+    uid(): number { return __NATIVE_CALL<number>("process.uid"); }
+    gid(): number { return __NATIVE_CALL<number>("process.gid"); }
+    euid(): number { return __NATIVE_CALL<number>("process.euid"); }
+    egid(): number { return __NATIVE_CALL<number>("process.egid"); }
+    groups(): number[] { return __NATIVE_CALL<number[]>("process.groups"); }
+
+    umask(mask?: number): number {
+        if (mask != null) { return __NATIVE_CALL<number>("process.umaskSet", mask); }
+        return __NATIVE_CALL<number>("process.umaskGet");
+    }
+
+    kill(_pid: number, _signal?: string): void {
+        throw new Error("process.kill() is not implemented — use std:process.spawn().signal() for child signals");
+    }
+
+    on(event: string, _handler: () => void): void {
+        if (event == "SIGINT" || event == "SIGTERM" || event == "SIGHUP") {
+            __NATIVE_CALL("process.trapSignal", event);
+        }
+    }
+}
+
+const process = new NodeProcess();
+export default process;

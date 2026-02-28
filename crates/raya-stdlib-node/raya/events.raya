@@ -1,0 +1,4 @@
+// Events - Node-compatible events module shim
+// Usage: import EventEmitter from "node:events";
+
+export default EventEmitter;

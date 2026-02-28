@@ -50,7 +50,10 @@ pub(crate) const BUILTIN_PRIMITIVE_SOURCES: &[(&str, &str)] = &[
     ("number", include_str!("../../builtins/strict/number.raya")),
     ("Array", include_str!("../../builtins/strict/array.raya")),
     ("RegExp", include_str!("../../builtins/strict/regexp.raya")),
-    ("Promise", include_str!("../../builtins/strict/promise.raya")),
+    (
+        "Promise",
+        include_str!("../../builtins/strict/promise.raya"),
+    ),
 ];
 
 // ============================================================================

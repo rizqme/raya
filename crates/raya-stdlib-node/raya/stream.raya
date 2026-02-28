@@ -1,0 +1,69 @@
+// node:stream - Node.js-compatible stream module
+// Usage: import { Readable, Writable, Transform } from "node:stream";
+// Re-exports std:stream types with Node.js-compatible class aliases.
+
+import {
+    ReadableStream,
+    WritableStream,
+    TransformStream,
+    ReadableController,
+    WritableController,
+    TransformController
+} from "std:stream";
+
+// Node-compatible aliases
+class Readable {
+    _inner: ReadableStream<string>;
+
+    constructor(producer: (ctrl: ReadableController<string>) => void, capacity?: number) {
+        const cap = capacity != null ? capacity : 16;
+        this._inner = new ReadableStream<string>(producer, cap);
+    }
+
+    read(): string | null { return this._inner.read(); }
+    isClosed(): boolean { return this._inner.isClosed(); }
+
+    pipe(writable: Writable): void {
+        this._inner.pipe(writable._inner);
+    }
+
+    toArray(): string[] { return this._inner.collect(); }
+}
+
+class Writable {
+    _inner: WritableStream<string>;
+
+    constructor(consumer: (ctrl: WritableController<string>) => void, capacity?: number) {
+        const cap = capacity != null ? capacity : 16;
+        this._inner = new WritableStream<string>(consumer, cap);
+    }
+
+    write(value: string): void { this._inner.write(value); }
+    end(): void { this._inner.close(); }
+    isClosed(): boolean { return this._inner.isClosed(); }
+}
+
+class Transform {
+    _inner: TransformStream<string, string>;
+
+    constructor(transformer: (input: string, ctrl: TransformController<string>) => void, capacity?: number) {
+        const cap = capacity != null ? capacity : 16;
+        this._inner = new TransformStream<string, string>(transformer, cap);
+    }
+
+    getReadable(): Readable {
+        const r = new Readable((ctrl: ReadableController<string>): void => {}, 1);
+        r._inner = this._inner.getReadable();
+        return r;
+    }
+
+    getWritable(): Writable {
+        const w = new Writable((ctrl: WritableController<string>): void => {}, 1);
+        w._inner = this._inner.getWritable();
+        return w;
+    }
+}
+
+export { Readable, Writable, Transform };
+export { ReadableStream, WritableStream, TransformStream };
+export default Readable;

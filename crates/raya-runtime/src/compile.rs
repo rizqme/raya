@@ -2,8 +2,8 @@
 //!
 //! Parse → Bind → TypeCheck → Compile to bytecode.
 
-use raya_engine::compiler::{Compiler, Module};
 use raya_engine::compiler::module::StdModuleRegistry;
+use raya_engine::compiler::{Compiler, Module};
 use raya_engine::parser::ast::ImportSpecifier;
 use raya_engine::parser::ast::Statement;
 use raya_engine::parser::checker::{
@@ -82,7 +82,11 @@ pub fn compile_source_with_mode(
     source: &str,
     builtin_mode: BuiltinMode,
 ) -> Result<(Module, Interner), RuntimeError> {
-    compile_source_with_modes(source, builtin_mode, default_type_mode_for_builtin(builtin_mode))
+    compile_source_with_modes(
+        source,
+        builtin_mode,
+        default_type_mode_for_builtin(builtin_mode),
+    )
 }
 
 /// Compile Raya source code to a bytecode module with explicit builtin + type modes.
@@ -289,7 +293,11 @@ pub fn check_source_with_mode(
     source: &str,
     builtin_mode: BuiltinMode,
 ) -> Result<CheckDiagnostics, RuntimeError> {
-    check_source_with_modes(source, builtin_mode, default_type_mode_for_builtin(builtin_mode))
+    check_source_with_modes(
+        source,
+        builtin_mode,
+        default_type_mode_for_builtin(builtin_mode),
+    )
 }
 
 /// Type-check source using explicit builtin compatibility + type mode.
@@ -443,7 +451,8 @@ fn format_parse_errors(errors: &[ParseError], prefix_lines: usize) -> String {
 }
 
 fn build_std_import_prelude(source: &str) -> Result<String, RuntimeError> {
-    let parser = Parser::new(source).map_err(|errors| RuntimeError::Lex(format_lex_errors(&errors, 0)))?;
+    let parser =
+        Parser::new(source).map_err(|errors| RuntimeError::Lex(format_lex_errors(&errors, 0)))?;
     let (ast, interner) = parser
         .parse()
         .map_err(|errors| RuntimeError::Parse(format_parse_errors(&errors, 0)))?;
@@ -456,61 +465,100 @@ fn build_std_import_prelude(source: &str) -> Result<String, RuntimeError> {
     let mut default_expr_by_module: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     let mut seen_bindings: HashSet<String> = HashSet::new();
+    let mut declared_symbols: HashSet<String> = HashSet::new();
 
     for stmt in &ast.statements {
         let Statement::ImportDecl(import) = stmt else {
             continue;
         };
         let specifier = interner.resolve(import.source.value).to_string();
-        if !specifier.starts_with("std:") {
+        if !StdModuleRegistry::is_std_import(&specifier) {
             continue;
         }
 
-        if seen_modules.insert(specifier.clone()) {
-            let module_name = StdModuleRegistry::module_name(&specifier).ok_or_else(|| {
-                RuntimeError::Dependency(format!("Unknown std module import '{}'", specifier))
+        let (canonical_module_name, module_src) =
+            registry.resolve_specifier(&specifier).ok_or_else(|| {
+                if StdModuleRegistry::is_node_import(&specifier) {
+                    unsupported_node_import_error(&specifier)
+                } else {
+                    RuntimeError::Dependency(format!("Unknown std module import '{}'", specifier))
+                }
             })?;
-            let module_src = registry.get(module_name).ok_or_else(|| {
-                RuntimeError::Dependency(format!("Unknown std module import '{}'", specifier))
-            })?;
+
+        if seen_modules.insert(canonical_module_name.clone()) {
             let (module_body, default_expr) = strip_default_export(module_src);
             prelude.push_str(&module_body);
             prelude.push('\n');
+            collect_declared_symbols(&module_body, &mut declared_symbols);
 
             if let Some(expr) = default_expr {
-                let alias = format!("__std_default_{}", sanitize_std_specifier(&specifier));
+                let alias = format!(
+                    "__std_default_{}",
+                    sanitize_module_specifier(&canonical_module_name)
+                );
                 prelude.push_str(&format!("const {} = {};\n", alias, expr));
-                default_alias_by_module.insert(specifier.clone(), alias);
-                default_expr_by_module.insert(specifier.clone(), expr);
+                default_alias_by_module.insert(canonical_module_name.clone(), alias);
+                default_expr_by_module.insert(canonical_module_name.clone(), expr);
+                declared_symbols.insert(format!(
+                    "__std_default_{}",
+                    sanitize_module_specifier(&canonical_module_name)
+                ));
             }
         }
 
         for spec in &import.specifiers {
             if let ImportSpecifier::Default(local) = spec {
                 let local_name = interner.resolve(local.name).to_string();
-                let binding_key = format!("{}::{}", specifier, local_name);
+                let binding_key = format!("{}::{}", canonical_module_name, local_name);
                 if !seen_bindings.insert(binding_key) {
                     continue;
                 }
 
-                if let Some(expr) = default_expr_by_module.get(&specifier) {
+                if let Some(expr) = default_expr_by_module.get(&canonical_module_name) {
                     if expr == &local_name {
                         continue;
                     }
                 }
 
-                let alias = default_alias_by_module.get(&specifier).ok_or_else(|| {
-                    RuntimeError::Dependency(format!(
-                        "std module '{}' has no default export for import '{}'",
-                        specifier, local_name
-                    ))
-                })?;
-                prelude.push_str(&format!("const {} = {};\n", local_name, alias));
+                let alias = default_alias_by_module
+                    .get(&canonical_module_name)
+                    .ok_or_else(|| {
+                        RuntimeError::Dependency(format!(
+                            "std module '{}' has no default export for import '{}'",
+                            specifier, local_name
+                        ))
+                    })?;
+                if declared_symbols.contains(&local_name) {
+                    // Avoid duplicate declaration errors when shim internals
+                    // already declare this identifier (e.g. node:test).
+                    prelude.push_str(&format!("{} = {};\n", local_name, alias));
+                } else {
+                    prelude.push_str(&format!("const {} = {};\n", local_name, alias));
+                    declared_symbols.insert(local_name);
+                }
             }
         }
     }
 
     Ok(prelude)
+}
+
+fn collect_declared_symbols(source: &str, out: &mut HashSet<String>) {
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        for prefix in ["class ", "function ", "const ", "let ", "var "] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                let ident: String = rest
+                    .chars()
+                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                    .collect();
+                if !ident.is_empty() {
+                    out.insert(ident);
+                }
+                break;
+            }
+        }
+    }
 }
 
 fn strip_default_export(module_src: &str) -> (String, Option<String>) {
@@ -533,7 +581,7 @@ fn strip_default_export(module_src: &str) -> (String, Option<String>) {
     (out, default_expr)
 }
 
-fn sanitize_std_specifier(specifier: &str) -> String {
+fn sanitize_module_specifier(specifier: &str) -> String {
     let mut out = String::new();
     for ch in specifier.chars() {
         if ch.is_ascii_alphanumeric() {
@@ -543,6 +591,17 @@ fn sanitize_std_specifier(specifier: &str) -> String {
         }
     }
     out
+}
+
+fn unsupported_node_import_error(specifier: &str) -> RuntimeError {
+    let supported = StdModuleRegistry::supported_node_module_names()
+        .map(|name| format!("node:{}", name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    RuntimeError::Dependency(format!(
+        "Unsupported node module import '{}'. Supported node modules: {}",
+        specifier, supported
+    ))
 }
 
 /// Detect duplicate top-level declarations within user source before builtin/std
@@ -773,6 +832,103 @@ mod tests {
         // Ensure compile_source is unaffected
         let result = compile_source("return 42;");
         assert!(result.is_ok(), "compile_source should still work");
+    }
+
+    #[test]
+    fn test_node_path_import_is_supported() {
+        let result = compile_source(
+            r#"
+            import path from "node:path";
+            return path.join("a", "b");
+            "#,
+        );
+        assert!(result.is_ok(), "node:path should map to std:path");
+    }
+
+    #[test]
+    fn test_node_events_import_is_supported() {
+        let result = compile_source(
+            r#"
+            import EventEmitter from "node:events";
+            let e = new EventEmitter<{ tick: [number] }>();
+            e.on("tick", (n: number): void => {});
+            e.emit("tick", 1);
+            return e.listenerCount("tick");
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "node:events should provide EventEmitter shim"
+        );
+    }
+
+    #[test]
+    fn test_unsupported_node_import_has_explicit_error() {
+        let result = compile_source(
+            r#"
+            import nope from "node:not_a_core_module";
+            return 1;
+            "#,
+        );
+        assert!(result.is_err(), "unsupported node module should fail");
+        let msg = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            msg.contains("Unsupported node module import 'node:not_a_core_module'"),
+            "expected explicit unsupported-node error, got: {msg}"
+        );
+        assert!(
+            msg.contains("node:fs"),
+            "error should include supported node module guidance, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_supported_node_module_import_smoke_suite() {
+        let cases = [
+            r#"import fs from "node:fs"; return fs != null;"#,
+            r#"import fsp from "node:fs/promises"; return fsp != null;"#,
+            r#"import path from "node:path"; return path != null;"#,
+            r#"import os from "node:os"; return os != null;"#,
+            r#"import process from "node:process"; return process != null;"#,
+            r#"import dns from "node:dns"; return dns != null;"#,
+            r#"import net from "node:net"; return net != null;"#,
+            r#"import { HttpServer, HttpRequest } from "node:http"; return HttpServer != null && HttpRequest != null;"#,
+            r#"import https from "node:https"; return https != null;"#,
+            r#"import crypto from "node:crypto"; return crypto != null;"#,
+            r#"import url from "node:url"; return url != null;"#,
+            r#"import { ReadableStream, WritableStream, TransformStream } from "node:stream"; return ReadableStream != null && WritableStream != null && TransformStream != null;"#,
+            r#"import EventEmitter from "node:events"; return EventEmitter != null;"#,
+            r#"import assert from "node:assert"; return assert != null;"#,
+            r#"import util from "node:util"; return util != null;"#,
+            r#"import moduleShim from "node:module"; return moduleShim != null;"#,
+            r#"import childProcess from "node:child_process"; return childProcess != null;"#,
+            r#"import test from "node:test"; return test != null;"#,
+            r#"import reporters from "node:test/reporters"; return reporters != null;"#,
+            r#"import timers from "node:timers"; return timers != null;"#,
+            r#"import timersPromises from "node:timers/promises"; return timersPromises != null;"#,
+            r#"import BufferCtor from "node:buffer"; return BufferCtor != null;"#,
+            r#"import stringDecoder from "node:string_decoder"; return stringDecoder != null;"#,
+            r#"import streamPromises from "node:stream/promises"; return streamPromises != null;"#,
+            r#"import streamWeb from "node:stream/web"; return streamWeb != null;"#,
+            r#"import workerThreads from "node:worker_threads"; return workerThreads != null;"#,
+            r#"import vm from "node:vm"; return vm != null;"#,
+            r#"import http2 from "node:http2"; return http2 != null;"#,
+            r#"import inspector from "node:inspector"; return inspector != null;"#,
+            r#"import inspectorPromises from "node:inspector/promises"; return inspectorPromises != null;"#,
+            r#"import asyncHooks from "node:async_hooks"; return asyncHooks != null;"#,
+            r#"import diagnosticsChannel from "node:diagnostics_channel"; return diagnosticsChannel != null;"#,
+            r#"import v8 from "node:v8"; return v8 != null;"#,
+            r#"import dgram from "node:dgram"; return dgram != null;"#,
+            r#"import cluster from "node:cluster"; return cluster != null;"#,
+            r#"import repl from "node:repl"; return repl != null;"#,
+            r#"import perfHooks from "node:perf_hooks"; return perfHooks != null;"#,
+            r#"import sqlite from "node:sqlite"; return sqlite != null;"#,
+        ];
+
+        for source in cases {
+            let result = compile_source(source);
+            assert!(result.is_ok(), "node import smoke case failed: {source}");
+        }
     }
 
     #[test]
@@ -1164,7 +1320,10 @@ mod tests {
             return inst.toString() != "" && d.toString() != "";
             "#,
         );
-        assert!(result.is_ok(), "Temporal should be available in strict mode");
+        assert!(
+            result.is_ok(),
+            "Temporal should be available in strict mode"
+        );
     }
 
     #[test]
@@ -1191,7 +1350,10 @@ mod tests {
             return d;
             "#,
         );
-        assert!(result.is_err(), "Temporal.PlainDate arity should be enforced");
+        assert!(
+            result.is_err(),
+            "Temporal.PlainDate arity should be enforced"
+        );
     }
 
     #[test]
@@ -1203,7 +1365,10 @@ mod tests {
             return !r.done;
             "#,
         );
-        assert!(result.is_ok(), "Iterator should be available in strict mode");
+        assert!(
+            result.is_ok(),
+            "Iterator should be available in strict mode"
+        );
     }
 
     #[test]
@@ -1762,7 +1927,10 @@ mod tests {
             "#,
             BuiltinMode::NodeCompat,
         );
-        assert!(result.is_ok(), "`any` should be allowed in node-compat mode");
+        assert!(
+            result.is_ok(),
+            "`any` should be allowed in node-compat mode"
+        );
     }
 
     #[test]
@@ -1774,7 +1942,10 @@ mod tests {
             return x;
             "#,
         );
-        assert!(result.is_err(), "bare let should be forbidden in strict mode");
+        assert!(
+            result.is_err(),
+            "bare let should be forbidden in strict mode"
+        );
         let msg = result.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(
             msg.contains("E_STRICT_BARE_LET_FORBIDDEN"),
@@ -1792,7 +1963,10 @@ mod tests {
             "#,
             BuiltinMode::NodeCompat,
         );
-        assert!(result.is_ok(), "bare let should be allowed in node-compat mode");
+        assert!(
+            result.is_ok(),
+            "bare let should be allowed in node-compat mode"
+        );
     }
 
     #[test]
@@ -1805,7 +1979,10 @@ mod tests {
             return f();
             "#,
         );
-        assert!(result.is_err(), "implicit this should be forbidden in strict mode");
+        assert!(
+            result.is_err(),
+            "implicit this should be forbidden in strict mode"
+        );
         let msg = result.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(
             msg.contains("E_STRICT_NO_IMPLICIT_THIS"),
@@ -1821,7 +1998,10 @@ mod tests {
             return id(1);
             "#,
         );
-        assert!(result.is_err(), "implicit any parameter should be forbidden in strict mode");
+        assert!(
+            result.is_err(),
+            "implicit any parameter should be forbidden in strict mode"
+        );
     }
 
     #[test]
@@ -1923,7 +2103,10 @@ mod tests {
             return add.call(null, "x", 2);
             "#,
         );
-        assert!(result.is_err(), "strict call should reject wrong argument type");
+        assert!(
+            result.is_err(),
+            "strict call should reject wrong argument type"
+        );
     }
 
     #[test]
@@ -1934,7 +2117,10 @@ mod tests {
             return add.apply(null, 1);
             "#,
         );
-        assert!(result.is_err(), "strict apply should require tuple/array args list");
+        assert!(
+            result.is_err(),
+            "strict apply should require tuple/array args list"
+        );
     }
 
     #[test]
@@ -2161,7 +2347,10 @@ mod tests {
             BuiltinMode::NodeCompat,
             TypeMode::Strict,
         );
-        assert!(any_result.is_err(), "strict type mode should forbid explicit any");
+        assert!(
+            any_result.is_err(),
+            "strict type mode should forbid explicit any"
+        );
 
         let bare_let_result = compile_source_with_modes(
             r#"
@@ -2189,7 +2378,10 @@ mod tests {
             BuiltinMode::NodeCompat,
             TypeMode::AllowAny,
         );
-        assert!(any_result.is_ok(), "allowAny mode should allow explicit any");
+        assert!(
+            any_result.is_ok(),
+            "allowAny mode should allow explicit any"
+        );
 
         let bare_let_result = compile_source_with_modes(
             r#"

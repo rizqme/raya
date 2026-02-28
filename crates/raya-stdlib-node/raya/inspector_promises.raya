@@ -1,0 +1,10 @@
+// Inspector Promises - Node-compatible node:inspector/promises shim
+
+class InspectorPromises {
+    async open(): Promise<void> {
+        throw new Error("node:inspector/promises#open is not implemented");
+    }
+}
+
+const inspectorPromises = new InspectorPromises();
+export default inspectorPromises;

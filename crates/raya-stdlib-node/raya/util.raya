@@ -1,0 +1,42 @@
+// node:util - Node.js-compatible utility module
+// Usage: import util from "node:util";
+
+class Util {
+    inspect(value: unknown): string {
+        return JSON.stringify(value);
+    }
+
+    format(fmt: string, args: string[]): string {
+        let out = fmt;
+        let i = 0;
+        while (i < args.length) {
+            if (out.includes("%s")) {
+                out = out.replace("%s", args[i]);
+            } else if (out.includes("%d")) {
+                out = out.replace("%d", args[i]);
+            } else if (out.includes("%j")) {
+                out = out.replace("%j", args[i]);
+            } else if (out.includes("%o")) {
+                out = out.replace("%o", args[i]);
+            }
+            i = i + 1;
+        }
+        out = out.replace("%%", "%");
+        return out;
+    }
+
+    deprecate(fn: () => void, _msg: string): () => void {
+        return fn;
+    }
+
+    isDeepStrictEqual(a: unknown, b: unknown): boolean {
+        return JSON.stringify(a) == JSON.stringify(b);
+    }
+
+    inherits(_ctor: unknown, _superCtor: unknown): void {
+        // No-op in Raya — use class extends instead
+    }
+}
+
+const util = new Util();
+export default util;

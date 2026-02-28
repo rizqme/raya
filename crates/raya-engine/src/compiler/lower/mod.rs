@@ -2469,7 +2469,8 @@ impl<'a> Lowerer<'a> {
             let this_reg = self.alloc_register(this_ty);
             self.this_register = Some(this_reg.clone());
             let params = vec![this_reg];
-            let mut ir_func = IrFunction::new(&format!("{}::constructor", name), params, TypeId::new(0));
+            let mut ir_func =
+                IrFunction::new(&format!("{}::constructor", name), params, TypeId::new(0));
             if self.emit_sourcemap {
                 ir_func.source_span = class.span;
             }

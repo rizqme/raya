@@ -1,0 +1,14 @@
+// Cluster - Node-compatible node:cluster shim
+
+class Cluster {
+    isPrimary(): boolean {
+        return true;
+    }
+
+    fork() {
+        throw new Error("node:cluster#fork is not implemented");
+    }
+}
+
+const cluster = new Cluster();
+export default cluster;

@@ -1,0 +1,31 @@
+// node:test - Node.js-compatible test runner
+// Usage: import test from "node:test";
+// Usage: import { describe, it } from "node:test";
+
+function describe(name: string, fn: () => void): void {
+    const _name = name;
+    fn();
+}
+
+function it(name: string, fn: () => void): void {
+    try {
+        fn();
+        const _ok = name;
+    } catch (e) {
+        throw e;
+    }
+}
+
+function testCase(name: string, fn: () => void): void {
+    it(name, fn);
+}
+
+class Test {
+    describe(name: string, fn: () => void): void { describe(name, fn); }
+    it(name: string, fn: () => void): void { it(name, fn); }
+    test(name: string, fn: () => void): void { testCase(name, fn); }
+}
+
+const testRunner = new Test();
+export { describe, it, testCase as test };
+export default testRunner;

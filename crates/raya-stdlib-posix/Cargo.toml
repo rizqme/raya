@@ -31,3 +31,4 @@ glob = { workspace = true }
 
 # File watching
 notify = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }

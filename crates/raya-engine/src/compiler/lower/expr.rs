@@ -509,25 +509,26 @@ impl<'a> Lowerer<'a> {
                 if bind_name == "bind" {
                     if let Expression::Member(target_member) = &*bind_member.object {
                         if let Some(class_id) = self.infer_class_id(&target_member.object) {
-                            if let Some(&slot) =
-                                self.method_slot_map.get(&(class_id, target_member.property.name))
+                            if let Some(&slot) = self
+                                .method_slot_map
+                                .get(&(class_id, target_member.property.name))
                             {
                                 // Only handle receiver binding here.
                                 // Partial argument binding still follows existing generic path.
                                 if args.len() > 1 {
                                     // Fall through to normal lowering.
                                 } else {
-                                let receiver = if let Some(first) = args.first() {
-                                    first.clone()
-                                } else {
-                                    self.lower_expr(&target_member.object)
-                                };
-                                self.emit(IrInstr::BindMethod {
-                                    dest: dest.clone(),
-                                    object: receiver,
-                                    method: slot,
-                                });
-                                return dest;
+                                    let receiver = if let Some(first) = args.first() {
+                                        first.clone()
+                                    } else {
+                                        self.lower_expr(&target_member.object)
+                                    };
+                                    self.emit(IrInstr::BindMethod {
+                                        dest: dest.clone(),
+                                        object: receiver,
+                                        method: slot,
+                                    });
+                                    return dest;
                                 }
                             }
                         }
@@ -1775,38 +1776,38 @@ impl<'a> Lowerer<'a> {
             // Get all fields including parent fields
             let all_fields = self.get_all_fields(class_id);
             // Use .rev() so child fields shadow parent fields with the same name
-                if let Some(field) = all_fields
-                    .iter()
-                    .rev()
-                    .find(|f| self.interner.resolve(f.name) == prop_name)
-                {
-                    (field.index, field.ty)
-                } else {
-                    // Field not found — check if it's a method (bound method extraction)
-                    if let Some(&slot) = self.method_slot_map.get(&(class_id, member.property.name)) {
-                        if self.js_this_binding_compat {
-                            if let Some(func_id) = self.find_method(class_id, member.property.name) {
-                                let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                                self.emit(IrInstr::MakeClosure {
-                                    dest: dest.clone(),
-                                    func: func_id,
-                                    captures: vec![],
-                                });
-                                return dest;
-                            }
-                        }
-                        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                        self.emit(IrInstr::BindMethod {
-                            dest: dest.clone(),
-                            object,
-                            method: slot,
-                        });
-                        return dest;
-                    }
-                    // Not a field or method — fall through to the non-class path below.
-                    (0, UNRESOLVED)
-                }
+            if let Some(field) = all_fields
+                .iter()
+                .rev()
+                .find(|f| self.interner.resolve(f.name) == prop_name)
+            {
+                (field.index, field.ty)
             } else {
+                // Field not found — check if it's a method (bound method extraction)
+                if let Some(&slot) = self.method_slot_map.get(&(class_id, member.property.name)) {
+                    if self.js_this_binding_compat {
+                        if let Some(func_id) = self.find_method(class_id, member.property.name) {
+                            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                            self.emit(IrInstr::MakeClosure {
+                                dest: dest.clone(),
+                                func: func_id,
+                                captures: vec![],
+                            });
+                            return dest;
+                        }
+                    }
+                    let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::BindMethod {
+                        dest: dest.clone(),
+                        object,
+                        method: slot,
+                    });
+                    return dest;
+                }
+                // Not a field or method — fall through to the non-class path below.
+                (0, UNRESOLVED)
+            }
+        } else {
             // Check variable_object_fields for decoded object field layout
             let obj_field_idx = match &*member.object {
                 Expression::Identifier(ident) => self
@@ -3599,7 +3600,9 @@ impl<'a> Lowerer<'a> {
                 object,
                 class_id,
             });
-        } else if let Some(tuple_len_encoded) = self.resolve_runtime_tuple_len_cast_target(&cast.target_type) {
+        } else if let Some(tuple_len_encoded) =
+            self.resolve_runtime_tuple_len_cast_target(&cast.target_type)
+        {
             self.emit(IrInstr::Cast {
                 dest: dest.clone(),
                 object,
@@ -3684,7 +3687,11 @@ impl<'a> Lowerer<'a> {
                     let mask = self.resolve_runtime_cast_kind_mask(ty)?;
                     combined |= mask;
                 }
-                if combined == 0 { None } else { Some(combined) }
+                if combined == 0 {
+                    None
+                } else {
+                    Some(combined)
+                }
             }
             // For class references/intersections/indexed access/keyof/typeof we currently
             // use either class-id casts or compile-time-only casts.

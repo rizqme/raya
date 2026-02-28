@@ -1,0 +1,15 @@
+// HTTP2 - Node-compatible node:http2 shim
+import stdHttp2 from "std:http2";
+
+class Http2 {
+    createServer(host: string, port: number) {
+        return stdHttp2.createServer(host, port);
+    }
+
+    connect(host: string, port: number) {
+        return stdHttp2.connect(host, port);
+    }
+}
+
+const http2 = new Http2();
+export default http2;

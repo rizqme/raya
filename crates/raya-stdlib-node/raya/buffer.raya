@@ -1,0 +1,4 @@
+// Buffer - Node-compatible node:buffer shim
+// Usage: import BufferCtor from "node:buffer";
+
+export default Buffer;

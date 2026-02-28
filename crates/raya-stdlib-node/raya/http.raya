@@ -1,0 +1,108 @@
+// node:http - Node.js-compatible HTTP module
+// Usage: import http from "node:http";
+// Wraps std:http with Node.js createServer + IncomingMessage/ServerResponse pattern.
+
+import { HttpServer as StdHttpServer, HttpRequest as StdHttpRequest } from "std:http";
+
+class IncomingMessage {
+    _req: StdHttpRequest;
+    url: string;
+    method: string;
+
+    constructor(req: StdHttpRequest) {
+        this._req = req;
+        this.url = req.url();
+        this.method = req.method();
+    }
+
+    headers(): string[] { return this._req.headers(); }
+    header(name: string): string { return this._req.header(name); }
+    body(): string { return this._req.body(); }
+    remoteAddr(): string { return this._req.remoteAddr(); }
+}
+
+class ServerResponse {
+    _server: StdHttpServer;
+    _reqHandle: number;
+    statusCode: number;
+    _headers: string[];
+    _sent: boolean;
+
+    constructor(server: StdHttpServer, reqHandle: number) {
+        this._server = server;
+        this._reqHandle = reqHandle;
+        this.statusCode = 200;
+        this._headers = [];
+        this._sent = false;
+    }
+
+    setHeader(name: string, value: string): void {
+        this._headers.push(name);
+        this._headers.push(value);
+    }
+
+    writeHead(statusCode: number): void {
+        this.statusCode = statusCode;
+    }
+
+    end(body?: string): void {
+        if (this._sent) { return; }
+        this._sent = true;
+        const b = body != null ? body : "";
+        if (this._headers.length > 0) {
+            this._server.respondWithHeaders(this._reqHandle, this.statusCode, this._headers, b);
+        } else {
+            this._server.respond(this._reqHandle, this.statusCode, b);
+        }
+    }
+
+    write(chunk: string): void {
+        this.end(chunk);
+    }
+}
+
+class Server {
+    _server: StdHttpServer;
+    _handler: ((req: IncomingMessage, res: ServerResponse) => void) | null;
+    _port: number;
+    _host: string;
+
+    constructor(handler?: (req: IncomingMessage, res: ServerResponse) => void) {
+        this._handler = handler != null ? handler : null;
+        this._port = 0;
+        this._host = "127.0.0.1";
+    }
+
+    listen(port: number, host?: string): Server {
+        const h = host != null ? host : "127.0.0.1";
+        this._port = port;
+        this._host = h;
+        this._server = new StdHttpServer(h, port);
+
+        if (this._handler != null) {
+            const handler = this._handler;
+            const server = this._server;
+            async {
+                await server.serve(async (req: StdHttpRequest, srv: StdHttpServer): Promise<void> => {
+                    const incoming = new IncomingMessage(req);
+                    const response = new ServerResponse(srv, req._handle);
+                    handler(incoming, response);
+                });
+            };
+        }
+        return this;
+    }
+
+    close(): void { this._server.close(); }
+    address(): string { return this._server.localAddr(); }
+}
+
+class NodeHttp {
+    createServer(handler?: (req: IncomingMessage, res: ServerResponse) => void): Server {
+        return new Server(handler);
+    }
+}
+
+const http = new NodeHttp();
+export { Server, IncomingMessage, ServerResponse };
+export default http;

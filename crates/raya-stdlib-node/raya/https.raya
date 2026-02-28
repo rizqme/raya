@@ -1,0 +1,20 @@
+// node:https - Node.js-compatible HTTPS module
+// Usage: import https from "node:https";
+// HTTPS server requires TLS configuration — use std:http.HttpServer.withTls() for full control.
+
+class NodeHttps {
+    createServer(): void {
+        throw new Error("node:https.createServer() requires TLS cert/key — use std:http.HttpServer.withTls() directly");
+    }
+
+    request(_url: string): void {
+        throw new Error("node:https.request() is not yet implemented — use std:fetch for HTTPS requests");
+    }
+
+    get(_url: string): void {
+        throw new Error("node:https.get() is not yet implemented — use std:fetch for HTTPS requests");
+    }
+}
+
+const https = new NodeHttps();
+export default https;

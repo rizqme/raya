@@ -1,0 +1,23 @@
+// node:dns - Node.js-compatible DNS module
+// Usage: import dns from "node:dns";
+// Wraps std:dns with Node.js resolve* naming conventions.
+
+import stdDns from "std:dns";
+
+class NodeDns {
+    lookup(hostname: string): string[] { return stdDns.lookup(hostname); }
+    lookup4(hostname: string): string[] { return stdDns.lookup4(hostname); }
+    lookup6(hostname: string): string[] { return stdDns.lookup6(hostname); }
+    resolve(hostname: string): string[] { return stdDns.lookup(hostname); }
+    resolve4(hostname: string): string[] { return stdDns.lookup4(hostname); }
+    resolve6(hostname: string): string[] { return stdDns.lookup6(hostname); }
+    resolveMx(hostname: string): string[] { return stdDns.lookupMx(hostname); }
+    resolveTxt(hostname: string): string[] { return stdDns.lookupTxt(hostname); }
+    resolveSrv(hostname: string): string[] { return stdDns.lookupSrv(hostname); }
+    resolveCname(hostname: string): string[] { return stdDns.lookupCname(hostname); }
+    resolveNs(hostname: string): string[] { return stdDns.lookupNs(hostname); }
+    reverse(ip: string): string[] { return stdDns.reverse(ip); }
+}
+
+const dns = new NodeDns();
+export default dns;

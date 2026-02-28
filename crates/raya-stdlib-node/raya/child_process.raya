@@ -1,0 +1,85 @@
+// node:child_process - Node.js-compatible child process module
+// Usage: import childProcess from "node:child_process";
+
+class ChildProcess {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    wait(): number {
+        return __NATIVE_CALL<number>("process.childWait", this._handle);
+    }
+
+    kill(): void {
+        __NATIVE_CALL("process.childKill", this._handle);
+    }
+
+    pid(): number {
+        return __NATIVE_CALL<number>("process.childPid", this._handle);
+    }
+
+    stdout(): string {
+        return __NATIVE_CALL<string>("process.childReadStdout", this._handle);
+    }
+
+    stderr(): string {
+        return __NATIVE_CALL<string>("process.childReadStderr", this._handle);
+    }
+
+    stdin(data: string): void {
+        __NATIVE_CALL("process.childWriteStdin", this._handle, data);
+    }
+
+    isAlive(): boolean {
+        return __NATIVE_CALL<boolean>("process.childIsAlive", this._handle);
+    }
+
+    signal(sig: string): void {
+        __NATIVE_CALL("process.childSignal", this._handle, sig);
+    }
+}
+
+class ChildProcessModule {
+    execSync(command: string): string {
+        const handle: number = __NATIVE_CALL<number>("process.exec", command);
+        const code: number = __NATIVE_CALL<number>("process.execGetCode", handle);
+        const out: string = __NATIVE_CALL<string>("process.execGetStdout", handle);
+        const err: string = __NATIVE_CALL<string>("process.execGetStderr", handle);
+        __NATIVE_CALL("process.execRelease", handle);
+        if (code != 0) {
+            throw new Error("Command failed: " + command + "\n" + err);
+        }
+        return out;
+    }
+
+    execFileSync(file: string, args: string[]): string {
+        const child = this.spawnSync(file, args);
+        return child.stdout();
+    }
+
+    spawn(command: string, args?: string[]): ChildProcess {
+        let h: number;
+        if (args != null) {
+            h = __NATIVE_CALL<number>("process.spawnWithArgs", command, args);
+        } else {
+            h = __NATIVE_CALL<number>("process.spawn", command);
+        }
+        return new ChildProcess(h);
+    }
+
+    spawnSync(command: string, args?: string[]): ChildProcess {
+        const child = this.spawn(command, args);
+        child.wait();
+        return child;
+    }
+
+    fork(_modulePath: string): ChildProcess {
+        throw new Error("node:child_process#fork is not implemented — use std:runtime Vm.spawn()");
+    }
+}
+
+const childProcess = new ChildProcessModule();
+export { ChildProcess };
+export default childProcess;

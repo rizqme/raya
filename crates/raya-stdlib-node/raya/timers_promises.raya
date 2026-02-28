@@ -1,0 +1,21 @@
+// node:timers/promises - Node.js-compatible promise-based timers
+// Usage: import timersPromises from "node:timers/promises";
+
+import time from "std:time";
+
+class TimersPromises {
+    async setTimeout(delayMs: number): Promise<void> {
+        time.sleep(delayMs);
+    }
+
+    async setImmediate(): Promise<void> {
+        time.sleep(0);
+    }
+
+    async setInterval(delayMs: number): Promise<void> {
+        time.sleep(delayMs);
+    }
+}
+
+const timersPromises = new TimersPromises();
+export default timersPromises;

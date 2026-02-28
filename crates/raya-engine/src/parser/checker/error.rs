@@ -323,7 +323,9 @@ pub enum CheckError {
     },
 
     /// Calling an extracted method without explicit binding.
-    #[error("E_METHOD_BIND_REQUIRED: method value '{name}' must be explicitly bound before calling")]
+    #[error(
+        "E_METHOD_BIND_REQUIRED: method value '{name}' must be explicitly bound before calling"
+    )]
     UnboundMethodCall {
         /// Variable name holding unbound method reference
         name: String,

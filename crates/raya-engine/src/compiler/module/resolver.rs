@@ -5,6 +5,8 @@
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+use super::StdModuleRegistry;
+
 /// Errors that can occur during module resolution
 #[derive(Debug, Error, Clone)]
 pub enum ResolveError {
@@ -316,8 +318,9 @@ impl ModuleResolver {
         specifier: &str,
         from_file: &Path,
     ) -> Result<ResolvedModule, ResolveError> {
-        // Check for std: namespace imports (handled by StdModuleRegistry, not file resolution)
-        if specifier.starts_with(super::STD_MODULE_PREFIX) {
+        // Check for std:/node: namespace imports (handled by StdModuleRegistry,
+        // not file resolution).
+        if StdModuleRegistry::is_std_import(specifier) {
             return Err(ResolveError::StdModule(specifier.to_string()));
         }
 
@@ -845,6 +848,22 @@ mod tests {
 
         // Without lockfile, URL imports fail with UrlNotLocked
         assert!(matches!(result, Err(ResolveError::UrlNotLocked(_))));
+    }
+
+    #[test]
+    fn test_resolve_std_namespace_short_circuit() {
+        let (temp_dir, resolver) = create_test_project();
+        let main_file = temp_dir.path().join("main.raya");
+        let result = resolver.resolve("std:fs", &main_file);
+        assert!(matches!(result, Err(ResolveError::StdModule(_))));
+    }
+
+    #[test]
+    fn test_resolve_node_namespace_short_circuit() {
+        let (temp_dir, resolver) = create_test_project();
+        let main_file = temp_dir.path().join("main.raya");
+        let result = resolver.resolve("node:fs", &main_file);
+        assert!(matches!(result, Err(ResolveError::StdModule(_))));
     }
 
     #[test]

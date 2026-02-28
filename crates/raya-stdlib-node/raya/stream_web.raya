@@ -1,0 +1,24 @@
+// Stream Web - Node-compatible node:stream/web shim
+// Usage: import streamWeb from "node:stream/web";
+
+class WebReadableStream {}
+class WebWritableStream {}
+class WebTransformStream {}
+
+class StreamWeb {
+    ReadableStream(): string {
+        return "ReadableStream";
+    }
+
+    WritableStream(): string {
+        return "WritableStream";
+    }
+
+    TransformStream(): string {
+        return "TransformStream";
+    }
+}
+
+const streamWeb = new StreamWeb();
+export { WebReadableStream, WebWritableStream, WebTransformStream };
+export default streamWeb;

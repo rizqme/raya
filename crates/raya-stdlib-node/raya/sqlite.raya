@@ -1,0 +1,15 @@
+// SQLite - Node-compatible node:sqlite shim
+import stdSqlite from "std:sqlite";
+
+class Sqlite {
+    Database(path: string) {
+        return stdSqlite.open(path);
+    }
+
+    open(path: string) {
+        return stdSqlite.open(path);
+    }
+}
+
+const sqlite = new Sqlite();
+export default sqlite;

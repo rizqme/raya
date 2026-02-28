@@ -10,8 +10,8 @@
 //! are added to the VM. The tests verify compilation succeeds.
 
 use super::harness::{
-    expect_bool, expect_bool_runtime, expect_bool_runtime_node_compat, expect_bool_with_builtins, expect_i32,
-    expect_i32_runtime_node_compat, expect_i32_with_builtins, expect_string,
+    expect_bool, expect_bool_runtime, expect_bool_runtime_node_compat, expect_bool_with_builtins,
+    expect_i32, expect_i32_runtime_node_compat, expect_i32_with_builtins, expect_string,
     expect_string_runtime_node_compat, expect_string_with_builtins,
 };
 

@@ -1,0 +1,96 @@
+// node:assert - Node.js-compatible assertion module
+// Usage: import assert from "node:assert";
+
+class AssertionError extends Error {
+    actual: string;
+    expected: string;
+    operator: string;
+
+    constructor(message: string, actual: string, expected: string, operator: string) {
+        super(message);
+        this.actual = actual;
+        this.expected = expected;
+        this.operator = operator;
+    }
+}
+
+class Assert {
+    fail(message?: string): void {
+        const msg = message != null ? message : "assertion failed";
+        throw new AssertionError(msg, "", "", "fail");
+    }
+
+    ok(value: unknown, message?: string): void {
+        if (!value) {
+            const msg = message != null ? message : "expected truthy value";
+            throw new AssertionError(msg, String(value), "truthy", "ok");
+        }
+    }
+
+    equal(actual: unknown, expected: unknown, message?: string): void {
+        if (actual != expected) {
+            const msg = message != null ? message : "expected " + String(actual) + " == " + String(expected);
+            throw new AssertionError(msg, String(actual), String(expected), "==");
+        }
+    }
+
+    strictEqual(actual: unknown, expected: unknown, message?: string): void {
+        if (actual != expected) {
+            const msg = message != null ? message : "expected " + String(actual) + " === " + String(expected);
+            throw new AssertionError(msg, String(actual), String(expected), "===");
+        }
+    }
+
+    notEqual(actual: unknown, expected: unknown, message?: string): void {
+        if (actual == expected) {
+            const msg = message != null ? message : "expected " + String(actual) + " != " + String(expected);
+            throw new AssertionError(msg, String(actual), String(expected), "!=");
+        }
+    }
+
+    notStrictEqual(actual: unknown, expected: unknown, message?: string): void {
+        if (actual == expected) {
+            const msg = message != null ? message : "expected " + String(actual) + " !== " + String(expected);
+            throw new AssertionError(msg, String(actual), String(expected), "!==");
+        }
+    }
+
+    deepStrictEqual(actual: unknown, expected: unknown, message?: string): void {
+        const actualStr = JSON.stringify(actual);
+        const expectedStr = JSON.stringify(expected);
+        if (actualStr != expectedStr) {
+            const msg = message != null ? message : "deep strict equal failed";
+            throw new AssertionError(msg, actualStr, expectedStr, "deepStrictEqual");
+        }
+    }
+
+    deepEqual(actual: unknown, expected: unknown, message?: string): void {
+        this.deepStrictEqual(actual, expected, message);
+    }
+
+    throws(fn: () => void, message?: string): void {
+        let threw = false;
+        try { fn(); } catch (_e) { threw = true; }
+        if (!threw) {
+            const msg = message != null ? message : "expected function to throw";
+            this.fail(msg);
+        }
+    }
+
+    doesNotThrow(fn: () => void, message?: string): void {
+        try { fn(); } catch (e) {
+            const msg = message != null ? message : "expected function not to throw, but threw: " + String(e);
+            this.fail(msg);
+        }
+    }
+
+    ifError(value: unknown): void {
+        if (value != null && value != false && value != 0 && value != "") {
+            throw new AssertionError("ifError: " + String(value), String(value), "falsy", "ifError");
+        }
+    }
+}
+
+const assert = new Assert();
+export { AssertionError };
+export default assert;

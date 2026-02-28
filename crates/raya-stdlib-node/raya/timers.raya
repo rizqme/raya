@@ -1,0 +1,55 @@
+// node:timers - Node.js-compatible timers module
+// Usage: import timers from "node:timers";
+// Implements setTimeout/setInterval/setImmediate via async + std:time.
+
+import time from "std:time";
+
+let _nextId: number = 1;
+
+class Timers {
+    setTimeout(callback: () => void, delayMs: number): number {
+        const id = _nextId;
+        _nextId = _nextId + 1;
+        async {
+            time.sleep(delayMs);
+            callback();
+        };
+        return id;
+    }
+
+    clearTimeout(_id: number): void {
+        // Cancellation not yet supported
+    }
+
+    setInterval(callback: () => void, delayMs: number): number {
+        const id = _nextId;
+        _nextId = _nextId + 1;
+        async {
+            while (true) {
+                time.sleep(delayMs);
+                callback();
+            }
+        };
+        return id;
+    }
+
+    clearInterval(_id: number): void {
+        // Cancellation not yet supported
+    }
+
+    setImmediate(callback: () => void): number {
+        const id = _nextId;
+        _nextId = _nextId + 1;
+        async {
+            callback();
+        };
+        return id;
+    }
+
+    clearImmediate(_id: number): void {
+        // No-op
+    }
+}
+
+const timers = new Timers();
+export default timers;

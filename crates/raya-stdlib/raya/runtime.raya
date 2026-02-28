@@ -586,3 +586,4 @@ const TypeChecker = new TypeCheckerClass();
 const Vm = new VmClass();
 
 export { Compiler, Bytecode, Parser, TypeChecker, Vm, VmInstance, BytecodeBuilder, ClassBuilder, DynamicModule };
+export default Vm;

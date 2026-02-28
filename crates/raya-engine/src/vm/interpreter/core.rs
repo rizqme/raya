@@ -767,7 +767,9 @@ impl<'a> Interpreter<'a> {
                 drop(stack_guard);
                 // Cancellation is observable to awaiters as a rejected task.
                 // Unhandled rejection reporting already suppresses cancelled tasks.
-                return ExecutionResult::Failed(VmError::RuntimeError("Task cancelled".to_string()));
+                return ExecutionResult::Failed(VmError::RuntimeError(
+                    "Task cancelled".to_string(),
+                ));
             }
 
             // Bounds check - implicit return at end of function

@@ -57,6 +57,41 @@ This document formalizes which JavaScript/Node-style builtin behaviors are inten
 
 When adding future builtin APIs, default to `RayaStrict` only if semantics are explicit and non-reflective. If API requires descriptor/meta-object behavior, gate it behind `NodeCompat`.
 
+## `node:` stdlib shim modules (v1)
+
+`node:` module imports are supported as a compatibility shim over existing Raya stdlib modules and builtins. This is additive to `std:` imports (both remain valid).
+
+Supported `node:` imports:
+
+1. `node:fs` -> `std:fs`
+2. `node:fs/promises` -> `raya-stdlib-node` fs promises shim
+3. `node:path` -> `std:path`
+4. `node:os` -> `std:os`
+5. `node:process` -> `std:process`
+6. `node:dns` -> `std:dns`
+7. `node:net` -> `std:net`
+8. `node:http` -> `std:http`
+9. `node:https` -> `raya-stdlib-node` https shim
+10. `node:crypto` -> `std:crypto`
+11. `node:url` -> `std:url`
+12. `node:stream` -> `std:stream`
+13. `node:events` -> shim module exposing `EventEmitter` via builtins
+14. `node:assert` -> `raya-stdlib-node` assert shim
+15. `node:assert/strict` -> `raya-stdlib-node` assert shim
+16. `node:util` -> `raya-stdlib-node` util shim
+17. `node:module` -> `raya-stdlib-node` module shim
+18. `node:child_process` -> `raya-stdlib-node` child process shim
+19. `node:test` -> `raya-stdlib-node` test shim
+20. `node:test/reporters` -> `raya-stdlib-node` test reporters shim
+21. `node:timers` -> `raya-stdlib-node` timers shim
+22. `node:timers/promises` -> `raya-stdlib-node` timers promises shim
+23. `node:buffer` -> `raya-stdlib-node` buffer shim
+24. `node:string_decoder` -> `raya-stdlib-node` string decoder shim
+25. `node:stream/promises` -> `raya-stdlib-node` stream promises shim
+26. `node:stream/web` -> `raya-stdlib-node` stream web shim
+
+Unsupported `node:*` imports fail with an explicit diagnostic that lists supported modules.
+
 ## Unimplemented behavior signaling
 
 Known edge behaviors that are intentionally not complete yet should throw with code `E_UNIMPLEMENTED_BUILTIN_BEHAVIOR` (for example, node-compat `eval`, DataView big-endian operations).

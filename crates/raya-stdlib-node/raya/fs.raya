@@ -1,0 +1,105 @@
+// node:fs - Node.js-compatible filesystem module
+// Usage: import fs from "node:fs";
+// Native-backed implementation (no std import indirection).
+
+class Stats {
+    _path: string;
+
+    constructor(path: string) {
+        this._path = path;
+    }
+
+    isFile(): boolean { return __NATIVE_CALL<boolean>("fs.isFile", this._path); }
+    isDirectory(): boolean { return __NATIVE_CALL<boolean>("fs.isDir", this._path); }
+    isSymbolicLink(): boolean { return __NATIVE_CALL<boolean>("fs.isSymlink", this._path); }
+    size(): number { return __NATIVE_CALL<number>("fs.fileSize", this._path); }
+    mtimeMs(): number { return __NATIVE_CALL<number>("fs.lastModified", this._path); }
+}
+
+class NodeFs {
+    readFileSync(path: string): string {
+        return __NATIVE_CALL<string>("fs.readTextFile", path);
+    }
+
+    writeFileSync(path: string, data: string): void {
+        __NATIVE_CALL("fs.writeTextFile", path, data);
+    }
+
+    appendFileSync(path: string, data: string): void {
+        __NATIVE_CALL("fs.appendFile", path, data);
+    }
+
+    existsSync(path: string): boolean {
+        return __NATIVE_CALL<boolean>("fs.exists", path);
+    }
+
+    statSync(path: string): Stats {
+        return new Stats(path);
+    }
+
+    mkdirSync(path: string, recursive?: boolean): void {
+        if (recursive == true) {
+            __NATIVE_CALL("fs.mkdirRecursive", path);
+        } else {
+            __NATIVE_CALL("fs.mkdir", path);
+        }
+    }
+
+    readdirSync(path: string): string[] {
+        return __NATIVE_CALL<string[]>("fs.readDir", path);
+    }
+
+    unlinkSync(path: string): void {
+        __NATIVE_CALL("fs.remove", path);
+    }
+
+    rmdirSync(path: string): void {
+        __NATIVE_CALL("fs.rmdir", path);
+    }
+
+    rmSync(path: string): void {
+        __NATIVE_CALL("fs.remove", path);
+    }
+
+    renameSync(oldPath: string, newPath: string): void {
+        __NATIVE_CALL("fs.rename", oldPath, newPath);
+    }
+
+    copyFileSync(src: string, dest: string): void {
+        __NATIVE_CALL("fs.copy", src, dest);
+    }
+
+    chmodSync(path: string, mode: number): void {
+        __NATIVE_CALL("fs.chmod", path, mode);
+    }
+
+    symlinkSync(target: string, path: string): void {
+        __NATIVE_CALL("fs.symlink", target, path);
+    }
+
+    readlinkSync(path: string): string {
+        return __NATIVE_CALL<string>("fs.readlink", path);
+    }
+
+    realpathSync(path: string): string {
+        return __NATIVE_CALL<string>("fs.realpath", path);
+    }
+
+    mkdtempSync(prefix: string): string {
+        return __NATIVE_CALL<string>("fs.tempFile", prefix);
+    }
+
+    // Raya-native API pass-through for convenience
+    readFile(path: string): Buffer { return __NATIVE_CALL<Buffer>("fs.readFile", path); }
+    writeFile(path: string, data: Buffer): void { __NATIVE_CALL("fs.writeFile", path, data); }
+    readTextFile(path: string): string { return __NATIVE_CALL<string>("fs.readTextFile", path); }
+    writeTextFile(path: string, data: string): void { __NATIVE_CALL("fs.writeTextFile", path, data); }
+    exists(path: string): boolean { return __NATIVE_CALL<boolean>("fs.exists", path); }
+    remove(path: string): void { __NATIVE_CALL("fs.remove", path); }
+    tempFile(prefix: string): string { return __NATIVE_CALL<string>("fs.tempFile", prefix); }
+    tempDir(): string { return __NATIVE_CALL<string>("fs.tempDir"); }
+}
+
+const fs = new NodeFs();
+export { Stats };
+export default fs;

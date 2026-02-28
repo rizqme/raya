@@ -278,10 +278,8 @@ impl SharedVmState {
 
             // Populate reflection metadata for runtime field/method lookups.
             // Reflection data is always emitted by codegen for bytecode modules.
-            if let Some(class_reflection) = module
-                .reflection
-                .as_ref()
-                .and_then(|r| r.classes.get(i))
+            if let Some(class_reflection) =
+                module.reflection.as_ref().and_then(|r| r.classes.get(i))
             {
                 let mut class_meta = ClassMetadata::new();
 

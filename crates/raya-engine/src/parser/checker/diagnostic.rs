@@ -298,26 +298,26 @@ impl Diagnostic {
                     .with_primary_label(file_id, *span, "not a class")
                     .with_help("'new' can only be used with class types")
             }
-            StrictAnyForbidden { span } => Diagnostic::error(
-                "`any` is not allowed in Raya strict mode",
-            )
-            .with_code(error_code(error))
-            .with_primary_label(file_id, *span, "forbidden `any`"),
-            StrictBareLetForbidden { span } => Diagnostic::error(
-                "Bare `let` declarations are not allowed in strict mode",
-            )
-            .with_code(error_code(error))
-            .with_primary_label(file_id, *span, "missing type annotation or initializer"),
-            ImplicitThisForbidden { span } => Diagnostic::error(
-                "`this` is not allowed here in strict mode",
-            )
-            .with_code(error_code(error))
-            .with_primary_label(file_id, *span, "implicit `this`"),
-            ImplicitAnyForbidden { span } => Diagnostic::error(
-                "Implicit `any` is not allowed in strict mode",
-            )
-            .with_code(error_code(error))
-            .with_primary_label(file_id, *span, "add a type annotation"),
+            StrictAnyForbidden { span } => {
+                Diagnostic::error("`any` is not allowed in Raya strict mode")
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "forbidden `any`")
+            }
+            StrictBareLetForbidden { span } => {
+                Diagnostic::error("Bare `let` declarations are not allowed in strict mode")
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "missing type annotation or initializer")
+            }
+            ImplicitThisForbidden { span } => {
+                Diagnostic::error("`this` is not allowed here in strict mode")
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "implicit `this`")
+            }
+            ImplicitAnyForbidden { span } => {
+                Diagnostic::error("Implicit `any` is not allowed in strict mode")
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "add a type annotation")
+            }
             UnknownNotActionable { operation, span } => Diagnostic::error(format!(
                 "Cannot use `unknown` in '{}' without narrowing or explicit cast",
                 operation

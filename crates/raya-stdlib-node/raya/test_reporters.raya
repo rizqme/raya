@@ -1,0 +1,19 @@
+// Test Reporters - Node-compatible node:test/reporters shim
+// Usage: import reporters from "node:test/reporters";
+
+class TestReporters {
+    spec(): string {
+        return "spec";
+    }
+
+    tap(): string {
+        return "tap";
+    }
+
+    dot(): string {
+        return "dot";
+    }
+}
+
+const reporters = new TestReporters();
+export default reporters;

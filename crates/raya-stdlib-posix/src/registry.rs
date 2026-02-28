@@ -14,8 +14,10 @@ pub fn register_posix(registry: &mut NativeFunctionRegistry) {
     register_process(registry);
     register_net(registry);
     register_http(registry);
+    register_http2(registry);
     register_fetch(registry);
     register_dns(registry);
+    register_sqlite(registry);
     register_terminal(registry);
     register_ws(registry);
     register_readline(registry);
@@ -369,6 +371,30 @@ fn register_http(registry: &mut NativeFunctionRegistry) {
     });
 }
 
+fn register_http2(registry: &mut NativeFunctionRegistry) {
+    registry.register("http2.serverCreate", |ctx, args| {
+        crate::http2::server_create(ctx, args)
+    });
+    registry.register("http2.serverClose", |ctx, args| {
+        crate::http2::server_close(ctx, args)
+    });
+    registry.register("http2.serverAddr", |ctx, args| {
+        crate::http2::server_addr(ctx, args)
+    });
+    registry.register("http2.serverPort", |ctx, args| {
+        crate::http2::server_port(ctx, args)
+    });
+    registry.register("http2.clientConnect", |ctx, args| {
+        crate::http2::client_connect(ctx, args)
+    });
+    registry.register("http2.clientClose", |ctx, args| {
+        crate::http2::client_close(ctx, args)
+    });
+    registry.register("http2.clientAddr", |ctx, args| {
+        crate::http2::client_addr(ctx, args)
+    });
+}
+
 fn register_fetch(registry: &mut NativeFunctionRegistry) {
     registry.register("fetch.request", |ctx, args| {
         crate::fetch::request(ctx, args)
@@ -426,6 +452,13 @@ fn register_dns(registry: &mut NativeFunctionRegistry) {
     registry.register("dns.reverse", |ctx, args| {
         crate::dns::dns_reverse(ctx, args)
     });
+}
+
+fn register_sqlite(registry: &mut NativeFunctionRegistry) {
+    registry.register("sqlite.open", |ctx, args| crate::sqlite::open(ctx, args));
+    registry.register("sqlite.close", |ctx, args| crate::sqlite::close(ctx, args));
+    registry.register("sqlite.exec", |ctx, args| crate::sqlite::exec(ctx, args));
+    registry.register("sqlite.query", |ctx, args| crate::sqlite::query(ctx, args));
 }
 
 fn register_terminal(registry: &mut NativeFunctionRegistry) {

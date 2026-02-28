@@ -18,7 +18,10 @@ fn main() {
 
     // Rerun if any builtin source changes
     println!("cargo:rerun-if-changed={}", builtins_strict_dir.display());
-    println!("cargo:rerun-if-changed={}", builtins_node_compat_dir.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        builtins_node_compat_dir.display()
+    );
 
     // For now, generate an empty BUILTINS array since we need the compiler
     // to be built first. In a future iteration, we can add a separate

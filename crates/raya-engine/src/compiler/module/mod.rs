@@ -19,6 +19,9 @@ mod typedef;
 
 /// The import specifier prefix for standard library modules (e.g., `"std:io"`).
 pub const STD_MODULE_PREFIX: &str = "std:";
+/// The import specifier prefix for Node-compat standard library modules
+/// (e.g., `"node:fs"`).
+pub const NODE_MODULE_PREFIX: &str = "node:";
 
 pub use cache::ModuleCache;
 pub use compiler::{CompiledModule, ModuleCompileError, ModuleCompiler};

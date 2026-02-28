@@ -1,0 +1,95 @@
+// node:crypto - Node.js-compatible crypto module
+// Usage: import crypto from "node:crypto";
+// Wraps std:crypto with Node.js createHash/createHmac chain pattern.
+
+class Hash {
+    _algorithm: string;
+    _data: string;
+
+    constructor(algorithm: string) {
+        this._algorithm = algorithm;
+        this._data = "";
+    }
+
+    update(data: string): Hash {
+        this._data = this._data + data;
+        return this;
+    }
+
+    digest(encoding?: string): string {
+        return __NATIVE_CALL<string>("crypto.hash", this._algorithm, this._data);
+    }
+}
+
+class Hmac {
+    _algorithm: string;
+    _key: string;
+    _data: string;
+
+    constructor(algorithm: string, key: string) {
+        this._algorithm = algorithm;
+        this._key = key;
+        this._data = "";
+    }
+
+    update(data: string): Hmac {
+        this._data = this._data + data;
+        return this;
+    }
+
+    digest(encoding?: string): string {
+        return __NATIVE_CALL<string>("crypto.hmac", this._algorithm, this._key, this._data);
+    }
+}
+
+class NodeCrypto {
+    createHash(algorithm: string): Hash {
+        return new Hash(algorithm);
+    }
+
+    createHmac(algorithm: string, key: string): Hmac {
+        return new Hmac(algorithm, key);
+    }
+
+    randomBytes(size: number): Buffer {
+        return __NATIVE_CALL<Buffer>("crypto.randomBytes", size);
+    }
+
+    randomUUID(): string {
+        return __NATIVE_CALL<string>("crypto.randomUUID");
+    }
+
+    randomInt(min: number, max: number): number {
+        return __NATIVE_CALL<number>("crypto.randomInt", min, max);
+    }
+
+    timingSafeEqual(a: Buffer, b: Buffer): boolean {
+        return __NATIVE_CALL<boolean>("crypto.timingSafeEqual", a, b);
+    }
+
+    pbkdf2Sync(password: string, salt: Buffer, iterations: number, keylen: number, digest: string): Buffer {
+        return __NATIVE_CALL<Buffer>("crypto.pbkdf2", password, salt, iterations, keylen, digest);
+    }
+
+    generateKeyPairSync(algorithm: string): string[] {
+        return __NATIVE_CALL<string[]>("crypto.generateKeyPair", algorithm);
+    }
+
+    // Direct access to underlying std:crypto methods
+    hash(algorithm: string, data: string): string { return __NATIVE_CALL<string>("crypto.hash", algorithm, data); }
+    hmac(algorithm: string, key: string, data: string): string { return __NATIVE_CALL<string>("crypto.hmac", algorithm, key, data); }
+    encrypt(key: Buffer, plaintext: Buffer): Buffer { return __NATIVE_CALL<Buffer>("crypto.encrypt", key, plaintext); }
+    decrypt(key: Buffer, ciphertext: Buffer): Buffer { return __NATIVE_CALL<Buffer>("crypto.decrypt", key, ciphertext); }
+    sign(algorithm: string, privateKey: Buffer, data: Buffer): Buffer { return __NATIVE_CALL<Buffer>("crypto.sign", algorithm, privateKey, data); }
+    verify(algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer): boolean { return __NATIVE_CALL<boolean>("crypto.verify", algorithm, publicKey, data, signature); }
+    toHex(data: Buffer): string { return __NATIVE_CALL<string>("crypto.toHex", data); }
+    fromHex(hex: string): Buffer { return __NATIVE_CALL<Buffer>("crypto.fromHex", hex); }
+    toBase64(data: Buffer): string { return __NATIVE_CALL<string>("crypto.toBase64", data); }
+    fromBase64(b64: string): Buffer { return __NATIVE_CALL<Buffer>("crypto.fromBase64", b64); }
+    hkdf(hash: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer { return __NATIVE_CALL<Buffer>("crypto.hkdf", hash, ikm, salt, info, length); }
+    generateKey(bits: number): Buffer { return __NATIVE_CALL<Buffer>("crypto.generateKey", bits); }
+}
+
+const crypto = new NodeCrypto();
+export { Hash, Hmac };
+export default crypto;

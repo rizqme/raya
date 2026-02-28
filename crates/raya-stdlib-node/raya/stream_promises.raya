@@ -1,0 +1,15 @@
+// Stream Promises - Node-compatible node:stream/promises shim
+// Usage: import streamPromises from "node:stream/promises";
+
+class StreamPromises {
+    async finished(_stream: unknown): Promise<void> {
+        return;
+    }
+
+    async pipeline(_source: unknown, _dest: unknown): Promise<void> {
+        throw new Error("node:stream/promises#pipeline is not implemented in this shim");
+    }
+}
+
+const streamPromises = new StreamPromises();
+export default streamPromises;

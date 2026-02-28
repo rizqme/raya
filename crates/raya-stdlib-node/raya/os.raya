@@ -1,0 +1,29 @@
+// node:os - Node.js-compatible OS module
+// Usage: import os from "node:os";
+// Native-backed implementation (no std import indirection).
+
+class NodeOs {
+    platform(): string { return __NATIVE_CALL<string>("os.platform"); }
+    arch(): string { return __NATIVE_CALL<string>("os.arch"); }
+    hostname(): string { return __NATIVE_CALL<string>("os.hostname"); }
+    type(): string { return __NATIVE_CALL<string>("os.osType"); }
+    release(): string { return __NATIVE_CALL<string>("os.release"); }
+    machine(): string { return __NATIVE_CALL<string>("os.machine"); }
+    uptime(): number { return __NATIVE_CALL<number>("os.uptime"); }
+    totalmem(): number { return __NATIVE_CALL<number>("os.totalMemory"); }
+    freemem(): number { return __NATIVE_CALL<number>("os.freeMemory"); }
+    cpus(): number { return __NATIVE_CALL<number>("os.cpus"); }
+    tmpdir(): string { return __NATIVE_CALL<string>("os.tmpdir"); }
+    homedir(): string { return __NATIVE_CALL<string>("env.home"); }
+    endianness(): string { return __NATIVE_CALL<string>("os.endianness"); }
+    eol(): string { return __NATIVE_CALL<string>("os.eol"); }
+    loadavg(): number[] { return __NATIVE_CALL<number[]>("os.loadavg"); }
+    networkInterfaces(): string[] { return __NATIVE_CALL<string[]>("os.networkInterfaces"); }
+    userInfo(): string[] { return __NATIVE_CALL<string[]>("os.userInfo"); }
+    username(): string { return __NATIVE_CALL<string>("os.username"); }
+    shell(): string { return __NATIVE_CALL<string>("os.shell"); }
+    pageSize(): number { return __NATIVE_CALL<number>("os.pageSize"); }
+}
+
+const os = new NodeOs();
+export default os;

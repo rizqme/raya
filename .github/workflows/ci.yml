@@ -49,3 +49,35 @@ jobs:
 
       - name: Run doc tests
         run: cargo test --workspace --doc --verbose
+
+  node-compat-translation:
+    name: Node Compat Translation
+    runs-on: ubuntu-latest
+    env:
+      RAYA_NODE_TEST_ROOT: ${{ github.workspace }}/crates/raya-runtime/tests/fixtures/node_translation
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run node compat translation harness
+        run: cargo test -p raya-runtime --test node_compat_translation -- --nocapture

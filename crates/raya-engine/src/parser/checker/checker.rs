@@ -302,11 +302,11 @@ impl<'a> TypeChecker<'a> {
     fn is_dynamic_seed_type(&mut self, ty: TypeId) -> bool {
         self.type_ctx.jsobject_inner(ty).is_some()
             || matches!(
-            self.type_ctx.get(ty),
-            Some(crate::parser::types::Type::Unknown)
-                | Some(crate::parser::types::Type::Any)
-                | Some(crate::parser::types::Type::JSObject)
-        )
+                self.type_ctx.get(ty),
+                Some(crate::parser::types::Type::Unknown)
+                    | Some(crate::parser::types::Type::Any)
+                    | Some(crate::parser::types::Type::JSObject)
+            )
     }
 
     fn join_inferred_types(&mut self, left: TypeId, right: TypeId) -> TypeId {
@@ -382,11 +382,13 @@ impl<'a> TypeChecker<'a> {
             .type_env
             .get(&name)
             .or_else(|| {
-                self.symbols.resolve_from_scope(&name, self.current_scope).and_then(|symbol| {
-                    self.inferred_var_types
-                        .get(&(symbol.scope_id.0, name.clone()))
-                        .copied()
-                })
+                self.symbols
+                    .resolve_from_scope(&name, self.current_scope)
+                    .and_then(|symbol| {
+                        self.inferred_var_types
+                            .get(&(symbol.scope_id.0, name.clone()))
+                            .copied()
+                    })
             })
             .or_else(|| self.get_var_declared_type(&name))
             .or_else(|| {
@@ -420,11 +422,13 @@ impl<'a> TypeChecker<'a> {
             .type_env
             .get(&name)
             .or_else(|| {
-                self.symbols.resolve_from_scope(&name, self.current_scope).and_then(|symbol| {
-                    self.inferred_var_types
-                        .get(&(symbol.scope_id.0, name.clone()))
-                        .copied()
-                })
+                self.symbols
+                    .resolve_from_scope(&name, self.current_scope)
+                    .and_then(|symbol| {
+                        self.inferred_var_types
+                            .get(&(symbol.scope_id.0, name.clone()))
+                            .copied()
+                    })
             })
             .or_else(|| self.get_var_declared_type(&name))
             .or_else(|| {
@@ -529,10 +533,8 @@ impl<'a> TypeChecker<'a> {
                 return;
             }
             self.unbound_method_vars.insert(key);
-            self.unbound_method_receiver_types.insert(
-                (scope_id, name.to_string()),
-                receiver_ty,
-            );
+            self.unbound_method_receiver_types
+                .insert((scope_id, name.to_string()), receiver_ty);
         } else {
             self.unbound_method_vars.remove(&key);
             self.unbound_method_receiver_types.remove(&key);
@@ -736,7 +738,8 @@ impl<'a> TypeChecker<'a> {
             && decl.type_annotation.is_none()
             && decl.initializer.is_none()
         {
-            self.errors.push(CheckError::StrictBareLetForbidden { span: decl.span });
+            self.errors
+                .push(CheckError::StrictBareLetForbidden { span: decl.span });
             return;
         }
 
@@ -1206,7 +1209,10 @@ impl<'a> TypeChecker<'a> {
                     self.type_env = TypeEnv::new();
 
                     for param in &ctor.params {
-                        if self.is_strict_mode() && !self.allows_any() && param.type_annotation.is_none() {
+                        if self.is_strict_mode()
+                            && !self.allows_any()
+                            && param.type_annotation.is_none()
+                        {
                             self.errors
                                 .push(CheckError::ImplicitAnyForbidden { span: param.span });
                         }
@@ -1247,7 +1253,8 @@ impl<'a> TypeChecker<'a> {
                         && field.type_annotation.is_none()
                         && field.initializer.is_none()
                     {
-                        self.errors.push(CheckError::ImplicitAnyForbidden { span: field.span });
+                        self.errors
+                            .push(CheckError::ImplicitAnyForbidden { span: field.span });
                     }
 
                     if let Some(ref init) = field.initializer {
@@ -1326,7 +1333,11 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn collect_this_assignments_stmt(&self, stmt: &crate::parser::ast::Statement, assigned: &mut FxHashSet<String>) {
+    fn collect_this_assignments_stmt(
+        &self,
+        stmt: &crate::parser::ast::Statement,
+        assigned: &mut FxHashSet<String>,
+    ) {
         use crate::parser::ast::Statement;
         match stmt {
             Statement::Expression(expr_stmt) => {
@@ -1450,7 +1461,9 @@ impl<'a> TypeChecker<'a> {
                 self.collect_this_assignments_expr(&c.consequent, assigned);
                 self.collect_this_assignments_expr(&c.alternate, assigned);
             }
-            Expression::Parenthesized(p) => self.collect_this_assignments_expr(&p.expression, assigned),
+            Expression::Parenthesized(p) => {
+                self.collect_this_assignments_expr(&p.expression, assigned)
+            }
             Expression::TypeCast(c) => self.collect_this_assignments_expr(&c.object, assigned),
             Expression::InstanceOf(i) => self.collect_this_assignments_expr(&i.object, assigned),
             Expression::Await(a) => self.collect_this_assignments_expr(&a.argument, assigned),
@@ -2317,7 +2330,9 @@ impl<'a> TypeChecker<'a> {
                     if let Some(guard) = extract_type_guard(&log.left, self.interner) {
                         let var = get_guard_var(&guard);
                         if let Some(var_ty) = self.type_env.get(var) {
-                            if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, &guard) {
+                            if let Some(narrowed_ty) =
+                                apply_type_guard(self.type_ctx, var_ty, &guard)
+                            {
                                 self.type_env.set(var.clone(), narrowed_ty);
                             }
                         }
@@ -2525,31 +2540,35 @@ impl<'a> TypeChecker<'a> {
                         // Apply explicit type arguments first (e.g., fn<int, string>(...)).
                         let explicit_substitutions: Vec<(String, TypeId)> =
                             if let Some(type_args) = &call.type_args {
-                            let mut type_param_names = Vec::new();
-                            let mut seen = std::collections::HashSet::new();
-                            for &param_ty in &func.params {
+                                let mut type_param_names = Vec::new();
+                                let mut seen = std::collections::HashSet::new();
+                                for &param_ty in &func.params {
+                                    self.collect_type_var_names(
+                                        param_ty,
+                                        &mut type_param_names,
+                                        &mut seen,
+                                    );
+                                }
+                                if let Some(rest_ty) = func.rest_param {
+                                    self.collect_type_var_names(
+                                        rest_ty,
+                                        &mut type_param_names,
+                                        &mut seen,
+                                    );
+                                }
                                 self.collect_type_var_names(
-                                    param_ty,
+                                    func.return_type,
                                     &mut type_param_names,
                                     &mut seen,
                                 );
-                            }
-                            if let Some(rest_ty) = func.rest_param {
-                                self.collect_type_var_names(rest_ty, &mut type_param_names, &mut seen);
-                            }
-                            self.collect_type_var_names(
-                                func.return_type,
-                                &mut type_param_names,
-                                &mut seen,
-                            );
-                            type_param_names
-                                .into_iter()
-                                .zip(type_args.iter())
-                                .map(|(name, arg)| (name, self.resolve_type_annotation(arg)))
-                                .collect()
-                        } else {
-                            Vec::new()
-                        };
+                                type_param_names
+                                    .into_iter()
+                                    .zip(type_args.iter())
+                                    .map(|(name, arg)| (name, self.resolve_type_annotation(arg)))
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            };
 
                         let mut gen_ctx = GenericContext::new(self.type_ctx);
                         for (name, resolved) in explicit_substitutions {
@@ -2698,9 +2717,10 @@ impl<'a> TypeChecker<'a> {
             .and_then(|rest| self.type_ctx.get(rest))
             .cloned()
         {
-            Some(crate::parser::types::Type::Tuple(t)) => {
-                (func.min_params + t.elements.len(), fixed_len + t.elements.len())
-            }
+            Some(crate::parser::types::Type::Tuple(t)) => (
+                func.min_params + t.elements.len(),
+                fixed_len + t.elements.len(),
+            ),
             Some(crate::parser::types::Type::Array(_)) => (func.min_params, usize::MAX),
             Some(_) => (func.min_params, usize::MAX),
             None => (func.min_params, fixed_len),
@@ -2800,8 +2820,12 @@ impl<'a> TypeChecker<'a> {
         let (args_ty, args_span) = helper_args[1];
         match self.type_ctx.get(args_ty).cloned() {
             Some(crate::parser::types::Type::Tuple(t)) => {
-                let tuple_args: Vec<(TypeId, crate::parser::Span)> =
-                    t.elements.iter().copied().map(|ty| (ty, args_span)).collect();
+                let tuple_args: Vec<(TypeId, crate::parser::Span)> = t
+                    .elements
+                    .iter()
+                    .copied()
+                    .map(|ty| (ty, args_span))
+                    .collect();
                 self.check_function_args_for_helper(func, &tuple_args, 0, span);
             }
             Some(crate::parser::types::Type::Array(arr)) => {
@@ -3443,8 +3467,7 @@ impl<'a> TypeChecker<'a> {
         if self.type_ctx.jsobject_inner(object_ty).is_some()
             || matches!(
                 self.type_ctx.get(object_ty),
-                Some(crate::parser::types::Type::JSObject)
-                    | Some(crate::parser::types::Type::Any)
+                Some(crate::parser::types::Type::JSObject) | Some(crate::parser::types::Type::Any)
             )
         {
             return if self.allows_any() {
@@ -4130,8 +4153,7 @@ impl<'a> TypeChecker<'a> {
         if jsobject_inner.is_some()
             || matches!(
                 self.type_ctx.get(object_ty),
-                Some(crate::parser::types::Type::JSObject)
-                    | Some(crate::parser::types::Type::Any)
+                Some(crate::parser::types::Type::JSObject) | Some(crate::parser::types::Type::Any)
             )
         {
             return if self.allows_any() {
@@ -5198,11 +5220,7 @@ impl<'a> TypeChecker<'a> {
                 || self.is_explicit_any_cast_expr(&member.object)
                 || self.is_js_mode()
             {
-                self.widen_identifier_with_monkeypatch_field(
-                    &member.object,
-                    &field_name,
-                    right_ty,
-                );
+                self.widen_identifier_with_monkeypatch_field(&member.object, &field_name, right_ty);
             }
         }
 
@@ -5610,11 +5628,10 @@ impl<'a> TypeChecker<'a> {
                 let object_ty = self.resolve_type_annotation(&indexed.object);
                 let index_ty = self.resolve_type_annotation(&indexed.index);
 
-                let prop_for_key = |obj: &crate::parser::types::ty::ObjectType,
-                                    key: &str|
-                 -> Option<TypeId> {
-                    obj.properties.iter().find(|p| p.name == key).map(|p| p.ty)
-                };
+                let prop_for_key =
+                    |obj: &crate::parser::types::ty::ObjectType, key: &str| -> Option<TypeId> {
+                        obj.properties.iter().find(|p| p.name == key).map(|p| p.ty)
+                    };
 
                 let object_data = self.type_ctx.get(object_ty).cloned();
                 let index_data = self.type_ctx.get(index_ty).cloned();
@@ -6622,7 +6639,6 @@ mod tests {
         );
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
-
 
     #[test]
     fn test_decorator_factory_with_generic() {

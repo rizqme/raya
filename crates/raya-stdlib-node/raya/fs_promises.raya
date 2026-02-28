@@ -1,0 +1,64 @@
+// node:fs/promises - Node.js-compatible async filesystem module
+// Usage: import fsp from "node:fs/promises";
+// Async wrappers with Node.js naming conventions.
+
+import stdFs from "std:fs";
+
+class FsPromises {
+    async readFile(path: string): Promise<string> {
+        return stdFs.readTextFile(path);
+    }
+
+    async writeFile(path: string, data: string): Promise<void> {
+        stdFs.writeTextFile(path, data);
+    }
+
+    async appendFile(path: string, data: string): Promise<void> {
+        stdFs.appendFile(path, data);
+    }
+
+    async readdir(path: string): Promise<string[]> {
+        return stdFs.readDir(path);
+    }
+
+    async stat(path: string): Promise<number[]> {
+        return stdFs.stat(path);
+    }
+
+    async mkdir(path: string, recursive?: boolean): Promise<void> {
+        if (recursive == true) {
+            stdFs.mkdirRecursive(path);
+        } else {
+            stdFs.mkdir(path);
+        }
+    }
+
+    async rm(path: string): Promise<void> {
+        stdFs.remove(path);
+    }
+
+    async unlink(path: string): Promise<void> {
+        stdFs.remove(path);
+    }
+
+    async rename(oldPath: string, newPath: string): Promise<void> {
+        stdFs.rename(oldPath, newPath);
+    }
+
+    async copyFile(src: string, dest: string): Promise<void> {
+        stdFs.copy(src, dest);
+    }
+
+    async realpath(path: string): Promise<string> {
+        return stdFs.realpath(path);
+    }
+
+    async access(path: string): Promise<void> {
+        if (!stdFs.exists(path)) {
+            throw new Error("ENOENT: no such file or directory: " + path);
+        }
+    }
+}
+
+const fsp = new FsPromises();
+export default fsp;

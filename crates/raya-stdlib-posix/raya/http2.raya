@@ -1,0 +1,57 @@
+// Http2 - Standard HTTP/2 module (native-backed pragmatic subset)
+// Usage: import http2 from "std:http2";
+
+class Http2Server {
+    _handle: number;
+
+    constructor(host: string, port: number) {
+        this._handle = __NATIVE_CALL<number>("http2.serverCreate", host, port);
+    }
+
+    close(): void {
+        __NATIVE_CALL("http2.serverClose", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("http2.serverAddr", this._handle);
+    }
+
+    localPort(): number {
+        return __NATIVE_CALL<number>("http2.serverPort", this._handle);
+    }
+}
+
+class Http2Client {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    static connect(host: string, port: number): Http2Client {
+        const h = __NATIVE_CALL<number>("http2.clientConnect", host, port);
+        return new Http2Client(h);
+    }
+
+    close(): void {
+        __NATIVE_CALL("http2.clientClose", this._handle);
+    }
+
+    remoteAddr(): string {
+        return __NATIVE_CALL<string>("http2.clientAddr", this._handle);
+    }
+}
+
+class Http2Module {
+    createServer(host: string, port: number): Http2Server {
+        return new Http2Server(host, port);
+    }
+
+    connect(host: string, port: number): Http2Client {
+        return Http2Client.connect(host, port);
+    }
+}
+
+const http2 = new Http2Module();
+export { Http2Server, Http2Client };
+export default http2;

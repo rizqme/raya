@@ -1,0 +1,24 @@
+// String Decoder - Node-compatible node:string_decoder shim
+// Usage: import stringDecoder from "node:string_decoder";
+
+class StringDecoder {
+    constructor(_encoding: string) {}
+
+    write(buf: Buffer): string {
+        return String(buf);
+    }
+
+    end(buf: Buffer): string {
+        return String(buf);
+    }
+}
+
+class StringDecoderModule {
+    create(encoding: string): StringDecoder {
+        return new StringDecoder(encoding);
+    }
+}
+
+const stringDecoder = new StringDecoderModule();
+export { StringDecoder };
+export default stringDecoder;

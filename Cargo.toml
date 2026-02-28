@@ -5,6 +5,7 @@ members = [
     "crates/raya-sdk",
     "crates/raya-stdlib",
     "crates/raya-stdlib-posix",
+    "crates/raya-stdlib-node",
     "crates/raya-runtime",
     "crates/raya-cli",
     "crates/raya-lsp",

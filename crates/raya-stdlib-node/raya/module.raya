@@ -1,0 +1,17 @@
+// Module - Node-compatible module helpers
+// Usage: import mod from "node:module";
+
+class ModuleShim {
+    createRequire(fromPath: string): (id: string) => unknown {
+        return (id: string): unknown => {
+            throw new Error("node:module#createRequire is not fully implemented for '" + id + "' from '" + fromPath + "'");
+        };
+    }
+
+    register(_specifier: string): void {
+        throw new Error("node:module#register is not implemented");
+    }
+}
+
+const moduleShim = new ModuleShim();
+export default moduleShim;

@@ -1,0 +1,77 @@
+// node:url - Node.js-compatible URL module
+// Usage: import { URL, URLSearchParams } from "node:url";
+// Native-backed implementation (no std import indirection).
+
+class URL {
+    _handle: number;
+
+    constructor(input: string, base?: string) {
+        const b = base != null ? base : "";
+        if (b == "") {
+            this._handle = __NATIVE_CALL<number>("url.parse", input);
+        } else {
+            this._handle = __NATIVE_CALL<number>("url.parseWithBase", input, b);
+        }
+    }
+
+    protocol(): string { return __NATIVE_CALL<string>("url.protocol", this._handle); }
+    hostname(): string { return __NATIVE_CALL<string>("url.hostname", this._handle); }
+    port(): string { return __NATIVE_CALL<string>("url.port", this._handle); }
+    host(): string { return __NATIVE_CALL<string>("url.host", this._handle); }
+    pathname(): string { return __NATIVE_CALL<string>("url.pathname", this._handle); }
+    search(): string { return __NATIVE_CALL<string>("url.search", this._handle); }
+    hash(): string { return __NATIVE_CALL<string>("url.hash", this._handle); }
+    origin(): string { return __NATIVE_CALL<string>("url.origin", this._handle); }
+    href(): string { return __NATIVE_CALL<string>("url.href", this._handle); }
+    username(): string { return __NATIVE_CALL<string>("url.username", this._handle); }
+    password(): string { return __NATIVE_CALL<string>("url.password", this._handle); }
+    toString(): string { return __NATIVE_CALL<string>("url.toString", this._handle); }
+}
+
+class URLSearchParams {
+    _handle: number;
+
+    constructor(init?: string) {
+        const i = init != null ? init : "";
+        if (i == "") {
+            this._handle = __NATIVE_CALL<number>("url.paramsNew");
+        } else {
+            this._handle = __NATIVE_CALL<number>("url.paramsFromString", i);
+        }
+    }
+
+    get(name: string): string { return __NATIVE_CALL<string>("url.paramsGet", this._handle, name); }
+    getAll(name: string): string[] { return __NATIVE_CALL<string[]>("url.paramsGetAll", this._handle, name); }
+    has(name: string): boolean { return __NATIVE_CALL<boolean>("url.paramsHas", this._handle, name); }
+    set(name: string, value: string): void { __NATIVE_CALL("url.paramsSet", this._handle, name, value); }
+    append(name: string, value: string): void { __NATIVE_CALL("url.paramsAppend", this._handle, name, value); }
+    delete(name: string): void { __NATIVE_CALL("url.paramsDelete", this._handle, name); }
+    keys(): string[] { return __NATIVE_CALL<string[]>("url.paramsKeys", this._handle); }
+    values(): string[] { return __NATIVE_CALL<string[]>("url.paramsValues", this._handle); }
+    entries(): string[] { return __NATIVE_CALL<string[]>("url.paramsEntries", this._handle); }
+    sort(): void { __NATIVE_CALL("url.paramsSort", this._handle); }
+    toString(): string { return __NATIVE_CALL<string>("url.paramsToString", this._handle); }
+    size(): number { return __NATIVE_CALL<number>("url.paramsSize", this._handle); }
+}
+
+class NodeUrl {
+    parse(urlString: string): URL {
+        return new URL(urlString);
+    }
+
+    format(urlObject: URL): string {
+        return urlObject.toString();
+    }
+
+    resolve(from: string, to: string): string {
+        const resolved = new URL(to, from);
+        return resolved.toString();
+    }
+
+    encode(component: string): string { return __NATIVE_CALL<string>("url.encode", component); }
+    decode(component: string): string { return __NATIVE_CALL<string>("url.decode", component); }
+}
+
+const url = new NodeUrl();
+export { URL, URLSearchParams };
+export default url;

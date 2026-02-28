@@ -126,6 +126,8 @@ fn get_std_sources() -> &'static str {
         "\n",
         include_str!("../../../raya-stdlib-posix/raya/http.raya"),
         "\n",
+        include_str!("../../../raya-stdlib-posix/raya/http2.raya"),
+        "\n",
         include_str!("../../../raya-stdlib-posix/raya/fetch.raya"),
         "\n",
         include_str!("../../../raya-stdlib-posix/raya/env.raya"),
@@ -137,6 +139,8 @@ fn get_std_sources() -> &'static str {
         include_str!("../../../raya-stdlib-posix/raya/io.raya"),
         "\n",
         include_str!("../../../raya-stdlib-posix/raya/dns.raya"),
+        "\n",
+        include_str!("../../../raya-stdlib-posix/raya/sqlite.raya"),
         "\n",
         include_str!("../../../raya-stdlib-posix/raya/glob.raya"),
         "\n",
@@ -1398,7 +1402,8 @@ pub fn debug_compile(source: &str) -> String {
         Err(e) => return format!("Binding error: {:?}", e),
     };
 
-    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(TypeSystemMode::Strict);
+    let checker =
+        TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(TypeSystemMode::Strict);
     let check_result = match checker.check_module(&ast) {
         Ok(r) => r,
         Err(e) => return format!("Type check error: {:?}", e),

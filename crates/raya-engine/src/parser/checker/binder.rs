@@ -604,7 +604,8 @@ impl<'a> Binder<'a> {
             referenced: false,
         };
         let _ = self.symbols.define(class_symbol);
-        self.type_ctx.register_named_type("Class".to_string(), class_ty);
+        self.type_ctx
+            .register_named_type("Class".to_string(), class_ty);
 
         // Ctor<T> = Class<T> (strict approximation without `any`)
         let ctor_symbol = Symbol {
@@ -628,7 +629,8 @@ impl<'a> Binder<'a> {
             referenced: false,
         };
         let _ = self.symbols.define(ctor_symbol);
-        self.type_ctx.register_named_type("Ctor".to_string(), class_ty);
+        self.type_ctx
+            .register_named_type("Ctor".to_string(), class_ty);
 
         // ClassDecoratorContext
         let class_decorator_context_ty = self.type_ctx.intern(Type::Class(ClassType {
@@ -2172,16 +2174,16 @@ impl<'a> Binder<'a> {
                         if let Some(ref method_type_params_ast) = method.type_params {
                             for type_param in method_type_params_ast {
                                 let type_param_name = self.resolve(type_param.name.name);
-                                let constraint_ty = if let Some(ref constraint) =
-                                    type_param.constraint
-                                {
-                                    self.resolve_type_annotation(constraint).ok()
-                                } else {
-                                    None
-                                };
-                                let type_var = self
-                                    .type_ctx
-                                    .type_variable_with_constraint(type_param_name.clone(), constraint_ty);
+                                let constraint_ty =
+                                    if let Some(ref constraint) = type_param.constraint {
+                                        self.resolve_type_annotation(constraint).ok()
+                                    } else {
+                                        None
+                                    };
+                                let type_var = self.type_ctx.type_variable_with_constraint(
+                                    type_param_name.clone(),
+                                    constraint_ty,
+                                );
                                 let symbol = Symbol {
                                     name: type_param_name,
                                     kind: SymbolKind::TypeAlias,
@@ -2424,9 +2426,10 @@ impl<'a> Binder<'a> {
                                 } else {
                                     None
                                 };
-                                let type_var = self
-                                    .type_ctx
-                                    .type_variable_with_constraint(type_param_name.clone(), constraint_ty);
+                                let type_var = self.type_ctx.type_variable_with_constraint(
+                                    type_param_name.clone(),
+                                    constraint_ty,
+                                );
                                 let symbol = Symbol {
                                     name: type_param_name,
                                     kind: SymbolKind::TypeAlias,
@@ -2701,8 +2704,12 @@ impl<'a> Binder<'a> {
 
     fn is_valid_rest_param_type(&self, ty: TypeId) -> bool {
         match self.type_ctx.get(ty) {
-            Some(Type::Array(_)) | Some(Type::Tuple(_)) | Some(Type::TypeVar(_))
-            | Some(Type::IndexedAccess(_)) | Some(Type::Keyof(_)) | Some(Type::Unknown) => true,
+            Some(Type::Array(_))
+            | Some(Type::Tuple(_))
+            | Some(Type::TypeVar(_))
+            | Some(Type::IndexedAccess(_))
+            | Some(Type::Keyof(_))
+            | Some(Type::Unknown) => true,
             Some(Type::Union(u)) => u.members.iter().all(|m| self.is_valid_rest_param_type(*m)),
             _ => false,
         }
@@ -2818,7 +2825,9 @@ impl<'a> Binder<'a> {
                         Ok(self.type_ctx.any_type())
                     } else {
                         Err(BindError::InvalidTypeExpr {
-                            message: "E_STRICT_ANY_FORBIDDEN: `any` is not allowed in Raya strict mode".to_string(),
+                            message:
+                                "E_STRICT_ANY_FORBIDDEN: `any` is not allowed in Raya strict mode"
+                                    .to_string(),
                             span,
                         })
                     };
@@ -3141,11 +3150,10 @@ impl<'a> Binder<'a> {
                 let object_ty = self.resolve_type_annotation(&indexed.object)?;
                 let index_ty = self.resolve_type_annotation(&indexed.index)?;
 
-                let prop_for_key = |obj: &crate::parser::types::ty::ObjectType,
-                                    key: &str|
-                 -> Option<TypeId> {
-                    obj.properties.iter().find(|p| p.name == key).map(|p| p.ty)
-                };
+                let prop_for_key =
+                    |obj: &crate::parser::types::ty::ObjectType, key: &str| -> Option<TypeId> {
+                        obj.properties.iter().find(|p| p.name == key).map(|p| p.ty)
+                    };
 
                 let object_data = self.type_ctx.get(object_ty).cloned();
                 let index_data = self.type_ctx.get(index_ty).cloned();
@@ -3181,7 +3189,8 @@ impl<'a> Binder<'a> {
                     (Some(Type::Object(obj)), Some(Type::Union(u))) => {
                         let mut out = Vec::new();
                         for member in &u.members {
-                            if let Some(Type::StringLiteral(s)) = self.type_ctx.get(*member).cloned()
+                            if let Some(Type::StringLiteral(s)) =
+                                self.type_ctx.get(*member).cloned()
                             {
                                 if let Some(ty) = prop_for_key(&obj, &s) {
                                     out.push(ty);

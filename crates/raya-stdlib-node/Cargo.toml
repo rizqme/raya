@@ -1,0 +1,14 @@
+[package]
+name = "raya-stdlib-node"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Node compatibility stdlib sources for Raya"
+
+[lib]
+doctest = false
+
+[dependencies]

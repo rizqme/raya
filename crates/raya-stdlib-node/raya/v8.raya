@@ -1,0 +1,10 @@
+// V8 - Node-compatible node:v8 shim
+
+class V8 {
+    getHeapStatistics(): string {
+        return "{}";
+    }
+}
+
+const v8 = new V8();
+export default v8;

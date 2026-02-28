@@ -1,0 +1,23 @@
+// Diagnostics Channel - Node-compatible node:diagnostics_channel shim
+
+class DiagnosticsNodeChannel {
+    _name: string;
+
+    constructor(name: string) {
+        this._name = name;
+    }
+
+    publish(_message: string): void {
+        // No-op shim
+    }
+}
+
+class DiagnosticsChannel {
+    channel(name: string): DiagnosticsNodeChannel {
+        return new DiagnosticsNodeChannel(name);
+    }
+}
+
+const diagnosticsChannel = new DiagnosticsChannel();
+export { DiagnosticsNodeChannel };
+export default diagnosticsChannel;

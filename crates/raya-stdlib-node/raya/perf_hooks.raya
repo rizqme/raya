@@ -1,0 +1,10 @@
+// Perf Hooks - Node-compatible node:perf_hooks shim
+
+class PerfHooks {
+    now(): number {
+        return __NATIVE_CALL<number>("runtime.now");
+    }
+}
+
+const perfHooks = new PerfHooks();
+export default perfHooks;

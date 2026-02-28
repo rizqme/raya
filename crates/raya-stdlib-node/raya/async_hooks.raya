@@ -1,0 +1,10 @@
+// Async Hooks - Node-compatible node:async_hooks shim
+
+class AsyncHooks {
+    createHook(): void {
+        throw new Error("node:async_hooks#createHook is not implemented");
+    }
+}
+
+const asyncHooks = new AsyncHooks();
+export default asyncHooks;

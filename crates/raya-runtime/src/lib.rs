@@ -36,9 +36,9 @@ pub mod test_runner;
 mod vm_setup;
 
 // Re-export key types from raya-engine for convenience
+pub use crate::compile::TypeMode;
 pub use raya_engine::compiler::Module;
 pub use raya_engine::vm::Value;
-pub use crate::compile::TypeMode;
 
 // Backward-compatible re-exports
 pub use raya_stdlib::StdNativeHandler;

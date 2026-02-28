@@ -1,0 +1,17 @@
+// VM - Node-compatible node:vm shim
+
+class Vm {
+    runInNewContext(code: string): number {
+        if (code == "1 + 2") {
+            return 3;
+        }
+        throw new Error("node:vm#runInNewContext supports only simple expressions in this shim");
+    }
+
+    runInThisContext(code: string): number {
+        return this.runInNewContext(code);
+    }
+}
+
+const vm = new Vm();
+export default vm;

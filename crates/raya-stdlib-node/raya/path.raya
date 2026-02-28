@@ -1,0 +1,81 @@
+// node:path - Node.js-compatible path module
+// Usage: import path from "node:path";
+// Native-backed implementation (no std import indirection).
+
+class ParsedPath {
+    root: string;
+    dir: string;
+    base: string;
+    ext: string;
+    name: string;
+
+    constructor(root: string, dir: string, base: string, ext: string, name: string) {
+        this.root = root;
+        this.dir = dir;
+        this.base = base;
+        this.ext = ext;
+        this.name = name;
+    }
+}
+
+class NodePath {
+    join(a: string, b: string): string {
+        return __NATIVE_CALL<string>("path.join", a, b);
+    }
+
+    resolve(a: string, b: string): string {
+        return __NATIVE_CALL<string>("path.resolve", a, b);
+    }
+
+    normalize(p: string): string {
+        return __NATIVE_CALL<string>("path.normalize", p);
+    }
+
+    dirname(p: string): string {
+        return __NATIVE_CALL<string>("path.dirname", p);
+    }
+
+    basename(p: string, ext?: string): string {
+        const base = __NATIVE_CALL<string>("path.basename", p);
+        if (ext != null && base.endsWith(ext)) {
+            return base.slice(0, base.length - ext.length);
+        }
+        return base;
+    }
+
+    extname(p: string): string {
+        return __NATIVE_CALL<string>("path.extname", p);
+    }
+
+    isAbsolute(p: string): boolean {
+        return __NATIVE_CALL<boolean>("path.isAbsolute", p);
+    }
+
+    relative(from: string, to: string): string {
+        return __NATIVE_CALL<string>("path.relative", from, to);
+    }
+
+    parse(p: string): ParsedPath {
+        const dir = __NATIVE_CALL<string>("path.dirname", p);
+        const base = __NATIVE_CALL<string>("path.basename", p);
+        const ext = __NATIVE_CALL<string>("path.extname", p);
+        const name = __NATIVE_CALL<string>("path.stripExt", base);
+        const root = __NATIVE_CALL<boolean>("path.isAbsolute", p) ? "/" : "";
+        return new ParsedPath(root, dir, base, ext, name);
+    }
+
+    format(pathObj: ParsedPath): string {
+        return __NATIVE_CALL<string>("path.join", pathObj.dir, pathObj.base);
+    }
+
+    sep(): string {
+        return __NATIVE_CALL<string>("path.sep");
+    }
+    delimiter(): string {
+        return __NATIVE_CALL<string>("path.delimiter");
+    }
+}
+
+const path = new NodePath();
+export { ParsedPath };
+export default path;
