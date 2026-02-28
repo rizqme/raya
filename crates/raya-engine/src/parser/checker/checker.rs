@@ -3746,11 +3746,17 @@ impl<'a> TypeChecker<'a> {
 
         if let Some(key) = self.string_key_from_index_expr(&index.index) {
             if self.emit_missing_index_property_diagnostic(object_ty, &key, index.span) {
+                // Unavoidable fallback allowlist:
+                // literal key miss on object-like types still needs a value type to continue checking.
                 return self.fallback_type(index.span, FallbackReason::Unavoidable, "index-missing");
             }
         }
 
-        self.fallback_type(index.span, FallbackReason::Unavoidable, "index-access")
+        self.fallback_type(
+            index.span,
+            FallbackReason::RecoverableUnsupportedExpr,
+            "index-access",
+        )
     }
 
     fn index_access_from_type(
@@ -4730,6 +4736,8 @@ impl<'a> TypeChecker<'a> {
                     ty: self.format_type(object_ty),
                     span: member.span,
                 });
+                // Unavoidable fallback allowlist:
+                // union members are object-like but none provide the requested member.
                 return self.fallback_type(
                     member.span,
                     FallbackReason::Unavoidable,
@@ -4742,9 +4750,11 @@ impl<'a> TypeChecker<'a> {
         if let Some(crate::parser::types::Type::TypeVar(tv)) = &obj_type {
             if let Some(constraint_id) = tv.constraint {
                 if let Some(constraint_type) = self.type_ctx.get(constraint_id).cloned() {
+                    let mut object_like_constraint = false;
                     // Look up member on the constraint type (Object or Class)
                     match &constraint_type {
                         crate::parser::types::Type::Object(obj) => {
+                            object_like_constraint = true;
                             for prop in &obj.properties {
                                 if prop.name == property_name {
                                     return prop.ty;
@@ -4755,6 +4765,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         crate::parser::types::Type::Class(class) => {
+                            object_like_constraint = true;
                             if let Some((ty, _vis)) =
                                 self.lookup_class_member(class, &property_name)
                             {
@@ -4762,6 +4773,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         crate::parser::types::Type::Interface(interface_ty) => {
+                            object_like_constraint = true;
                             if let Some(ty) =
                                 self.lookup_interface_member(interface_ty, &property_name)
                             {
@@ -4769,6 +4781,20 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         _ => {}
+                    }
+                    if object_like_constraint {
+                        self.errors.push(CheckError::PropertyNotFound {
+                            property: property_name.clone(),
+                            ty: self.format_type(constraint_id),
+                            span: member.span,
+                        });
+                        // Unavoidable fallback allowlist:
+                        // constrained typevar has object-like constraint but requested member is absent.
+                        return self.fallback_type(
+                            member.span,
+                            FallbackReason::Unavoidable,
+                            "member-typevar-constraint",
+                        );
                     }
                 }
             }
@@ -4788,8 +4814,11 @@ impl<'a> TypeChecker<'a> {
             };
         }
 
-        // Unknown member access remains a fallback path.
-        self.fallback_type(member.span, FallbackReason::Unavoidable, "member-access")
+        self.fallback_type(
+            member.span,
+            FallbackReason::RecoverableUnsupportedExpr,
+            "member-access",
+        )
     }
 
     fn lookup_interface_member(

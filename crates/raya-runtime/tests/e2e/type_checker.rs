@@ -456,3 +456,21 @@ fn test_interface_extends_type_retained() {
         3,
     );
 }
+
+#[test]
+fn test_member_non_object_reports_unsupported_typing_path() {
+    expect_compile_error(
+        "let x: number = 1;
+         return x.foo;",
+        "UnsupportedExpressionTypingPath",
+    );
+}
+
+#[test]
+fn test_index_non_object_reports_unsupported_typing_path() {
+    expect_compile_error(
+        "let x: number = 1;
+         return x[0];",
+        "UnsupportedExpressionTypingPath",
+    );
+}

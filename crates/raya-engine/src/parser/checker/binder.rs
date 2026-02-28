@@ -1352,6 +1352,7 @@ impl<'a> Binder<'a> {
             return match class_name {
                 TC::ARRAY_TYPE_NAME if args.len() == 1 => self.type_ctx.array_type(args[0]),
                 TC::PROMISE_TYPE_NAME if args.len() == 1 => self.type_ctx.task_type(args[0]),
+                "Task" if args.len() == 1 => self.type_ctx.task_type(args[0]),
                 TC::CHANNEL_TYPE_NAME if args.len() == 1 => {
                     self.type_ctx.channel_type_with(args[0])
                 }
@@ -1359,6 +1360,12 @@ impl<'a> Binder<'a> {
                 TC::MAP_TYPE_NAME if args.len() == 2 => {
                     self.type_ctx.map_type_with(args[0], args[1])
                 }
+                TC::ARRAY_TYPE_NAME
+                | TC::PROMISE_TYPE_NAME
+                | TC::CHANNEL_TYPE_NAME
+                | TC::SET_TYPE_NAME
+                | TC::MAP_TYPE_NAME
+                | "Task" => self.fallback_type(BinderFallbackReason::UnresolvedTypeParse),
                 _ => {
                     if let Some(base_ty) = self.type_ctx.lookup_named_type(class_name) {
                         self.type_ctx
