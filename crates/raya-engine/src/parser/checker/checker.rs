@@ -908,56 +908,79 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Get return type from symbol table
         let func_name = self.resolve(func.name.name);
-        if let Some(symbol) = self
+        let symbol_func_ty = self
             .symbols
             .resolve_from_scope(&func_name, self.current_scope)
-        {
-            if let Some(crate::parser::types::Type::Function(func_ty)) =
-                self.type_ctx.get(symbol.ty)
-            {
-                let mut return_ty = func_ty.return_type;
-
-                // For async functions, the declared return type is Promise<T>,
-                // but return statements should check against T (the inner type)
-                if func.is_async {
-                    if let Some(crate::parser::types::Type::Task(task_ty)) =
-                        self.type_ctx.get(return_ty)
-                    {
-                        return_ty = task_ty.result;
-                    }
+            .and_then(|symbol| {
+                // In prelude shadowing mode, multiple same-name function declarations can exist.
+                // Only trust symbol-table function type when this declaration is the active symbol.
+                if symbol.span == func.name.span {
+                    self.type_ctx.get(symbol.ty).and_then(|ty| match ty {
+                        crate::parser::types::Type::Function(func_ty) => Some(func_ty.clone()),
+                        _ => None,
+                    })
+                } else {
+                    None
                 }
+            });
 
-                // Set current function return type
-                let prev_return_ty = self.current_function_return_type;
-                self.current_function_return_type = Some(return_ty);
+        let mut return_ty = if let Some(func_ty) = &symbol_func_ty {
+            func_ty.return_type
+        } else {
+            func.return_type
+                .as_ref()
+                .map(|ann| self.resolve_type_annotation(ann))
+                .unwrap_or_else(|| self.type_ctx.void_type())
+        };
 
-                // Collect parameter types before entering scope (to avoid borrow issues)
-                let param_types: Vec<_> = func_ty.params.iter().cloned().collect();
-
-                // Enter function scope (mirrors binder's push_scope for function)
-                self.enter_scope();
-
-                // Register parameter types in type_env for destructuring patterns
-                for (i, param) in func.params.iter().enumerate() {
-                    if let Some(&param_ty) = param_types.get(i) {
-                        self.check_destructure_pattern(&param.pattern, param_ty);
-                    }
-                }
-
-                // Check body
-                for stmt in &func.body.statements {
-                    self.check_stmt(stmt);
-                }
-
-                // Exit function scope
-                self.exit_scope();
-
-                // Restore previous return type
-                self.current_function_return_type = prev_return_ty;
+        // For async functions, the declared return type is Promise<T>,
+        // but return statements should check against T (the inner type)
+        if func.is_async {
+            if let Some(crate::parser::types::Type::Task(task_ty)) = self.type_ctx.get(return_ty) {
+                return_ty = task_ty.result;
             }
         }
+
+        let param_types: Vec<TypeId> = if let Some(func_ty) = symbol_func_ty {
+            func_ty.params.iter().cloned().collect()
+        } else {
+            func.params
+                .iter()
+                .map(|param| {
+                    param
+                        .type_annotation
+                        .as_ref()
+                        .map(|ann| self.resolve_type_annotation(ann))
+                        .unwrap_or_else(|| self.inference_fallback_type())
+                })
+                .collect()
+        };
+
+        // Set current function return type
+        let prev_return_ty = self.current_function_return_type;
+        self.current_function_return_type = Some(return_ty);
+
+        // Enter function scope (mirrors binder's push_scope for function)
+        self.enter_scope();
+
+        // Register parameter types in type_env for destructuring patterns
+        for (i, param) in func.params.iter().enumerate() {
+            if let Some(&param_ty) = param_types.get(i) {
+                self.check_destructure_pattern(&param.pattern, param_ty);
+            }
+        }
+
+        // Check body
+        for stmt in &func.body.statements {
+            self.check_stmt(stmt);
+        }
+
+        // Exit function scope
+        self.exit_scope();
+
+        // Restore previous return type
+        self.current_function_return_type = prev_return_ty;
 
         self.type_env = saved_env;
     }

@@ -1,105 +1,131 @@
 // Crypto - Standard crypto module
-// Usage: import crypto from "std:crypto";
+// Usage: import crypto from "std:crypto"
+// Usage: import { hash, randomUUID, encrypt } from "std:crypto"
 
-class Crypto {
-    // ── Hashing ──
+// ── Hashing ──
 
-    hash(algorithm: string, data: string): string {
-        return __NATIVE_CALL<string>("crypto.hash", algorithm, data);
-    }
-
-    hashBytes(algorithm: string, data: Buffer): Buffer {
-        return __NATIVE_CALL<Buffer>("crypto.hashBytes", algorithm, data);
-    }
-
-    // ── HMAC ──
-
-    hmac(algorithm: string, key: string, data: string): string {
-        return __NATIVE_CALL<string>("crypto.hmac", algorithm, key, data);
-    }
-
-    hmacBytes(algorithm: string, key: Buffer, data: Buffer): Buffer {
-        return __NATIVE_CALL<Buffer>("crypto.hmacBytes", algorithm, key, data);
-    }
-
-    // ── Random ──
-
-    randomBytes(size: number): Buffer {
-        return __NATIVE_CALL<Buffer>("crypto.randomBytes", size);
-    }
-
-    randomInt(min: number, max: number): number {
-        return __NATIVE_CALL<number>("crypto.randomInt", min, max);
-    }
-
-    randomUUID(): string {
-        return __NATIVE_CALL<string>("crypto.randomUUID");
-    }
-
-    // ── Encoding ──
-
-    toHex(data: Buffer): string {
-        return __NATIVE_CALL<string>("crypto.toHex", data);
-    }
-
-    fromHex(hex: string): Buffer {
-        return __NATIVE_CALL<Buffer>("crypto.fromHex", hex);
-    }
-
-    toBase64(data: Buffer): string {
-        return __NATIVE_CALL<string>("crypto.toBase64", data);
-    }
-
-    fromBase64(b64: string): Buffer {
-        return __NATIVE_CALL<Buffer>("crypto.fromBase64", b64);
-    }
-
-    // ── Comparison ──
-
-    timingSafeEqual(a: Buffer, b: Buffer): boolean {
-        return __NATIVE_CALL<boolean>("crypto.timingSafeEqual", a, b);
-    }
-
-    // ── Encryption ──
-
-    encrypt(key: Buffer, plaintext: Buffer): Buffer {
-        return __NATIVE_CALL<Buffer>("crypto.encrypt", key, plaintext);
-    }
-
-    decrypt(key: Buffer, ciphertext: Buffer): Buffer {
-        return __NATIVE_CALL<Buffer>("crypto.decrypt", key, ciphertext);
-    }
-
-    // ── Key Generation ──
-
-    generateKey(bits: number): Buffer {
-        return __NATIVE_CALL<Buffer>("crypto.generateKey", bits);
-    }
-
-    // ── Signing ──
-
-    sign(algorithm: string, privateKey: Buffer, data: Buffer): Buffer {
-        return __NATIVE_CALL<Buffer>("crypto.sign", algorithm, privateKey, data);
-    }
-
-    verify(algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer): boolean {
-        return __NATIVE_CALL<boolean>("crypto.verify", algorithm, publicKey, data, signature);
-    }
-
-    generateKeyPair(algorithm: string): string[] {
-        return __NATIVE_CALL<string[]>("crypto.generateKeyPair", algorithm);
-    }
-
-    // ── Key Derivation ──
-
-    hkdf(hash: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer {
-        return __NATIVE_CALL<Buffer>("crypto.hkdf", hash, ikm, salt, info, length);
-    }
-
-    pbkdf2(password: string, salt: Buffer, iterations: number, length: number, hash: string): Buffer {
-        return __NATIVE_CALL<Buffer>("crypto.pbkdf2", password, salt, iterations, length, hash);
-    }
+function hash(algorithm: string, data: string): string {
+    return __NATIVE_CALL<string>("crypto.hash", algorithm, data);
 }
 
-const crypto = new Crypto();
+function hashBytes(algorithm: string, data: Buffer): Buffer {
+    return __NATIVE_CALL<Buffer>("crypto.hashBytes", algorithm, data);
+}
+
+// ── HMAC ──
+
+function hmac(algorithm: string, key: string, data: string): string {
+    return __NATIVE_CALL<string>("crypto.hmac", algorithm, key, data);
+}
+
+function hmacBytes(algorithm: string, key: Buffer, data: Buffer): Buffer {
+    return __NATIVE_CALL<Buffer>("crypto.hmacBytes", algorithm, key, data);
+}
+
+// ── Random ──
+
+function randomBytes(size: number): Buffer {
+    return __NATIVE_CALL<Buffer>("crypto.randomBytes", size);
+}
+
+function randomInt(min: number, max: number): number {
+    return __NATIVE_CALL<number>("crypto.randomInt", min, max);
+}
+
+function randomUUID(): string {
+    return __NATIVE_CALL<string>("crypto.randomUUID");
+}
+
+// ── Encoding ──
+
+function toHex(data: Buffer): string {
+    return __NATIVE_CALL<string>("crypto.toHex", data);
+}
+
+function fromHex(hex: string): Buffer {
+    return __NATIVE_CALL<Buffer>("crypto.fromHex", hex);
+}
+
+function toBase64(data: Buffer): string {
+    return __NATIVE_CALL<string>("crypto.toBase64", data);
+}
+
+function fromBase64(b64: string): Buffer {
+    return __NATIVE_CALL<Buffer>("crypto.fromBase64", b64);
+}
+
+// ── Comparison ──
+
+function timingSafeEqual(a: Buffer, b: Buffer): boolean {
+    return __NATIVE_CALL<boolean>("crypto.timingSafeEqual", a, b);
+}
+
+// ── Encryption ──
+
+function encrypt(key: Buffer, plaintext: Buffer): Buffer {
+    return __NATIVE_CALL<Buffer>("crypto.encrypt", key, plaintext);
+}
+
+function decrypt(key: Buffer, ciphertext: Buffer): Buffer {
+    return __NATIVE_CALL<Buffer>("crypto.decrypt", key, ciphertext);
+}
+
+// ── Key Generation ──
+
+function generateKey(bits: number): Buffer {
+    return __NATIVE_CALL<Buffer>("crypto.generateKey", bits);
+}
+
+// ── Signing ──
+
+const sign = (algorithm: string, privateKey: Buffer, data: Buffer): Buffer => {
+    return __NATIVE_CALL<Buffer>("crypto.sign", algorithm, privateKey, data);
+};
+
+function verify(algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer): boolean {
+    return __NATIVE_CALL<boolean>("crypto.verify", algorithm, publicKey, data, signature);
+}
+
+function generateKeyPair(algorithm: string): string[] {
+    return __NATIVE_CALL<string[]>("crypto.generateKeyPair", algorithm);
+}
+
+// ── Key Derivation ──
+
+function hkdf(hashAlg: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer {
+    return __NATIVE_CALL<Buffer>("crypto.hkdf", hashAlg, ikm, salt, info, length);
+}
+
+function pbkdf2(password: string, salt: Buffer, iterations: number, length: number, hashAlg: string): Buffer {
+    return __NATIVE_CALL<Buffer>("crypto.pbkdf2", password, salt, iterations, length, hashAlg);
+}
+
+export { hash, hashBytes, hmac, hmacBytes, randomBytes, randomInt, randomUUID, toHex, fromHex, toBase64, fromBase64, timingSafeEqual, encrypt, decrypt, generateKey, sign, verify, generateKeyPair, hkdf, pbkdf2 };
+
+// ── Default export (class namespace for method dispatch) ──
+
+class CryptoNamespace {
+    hash(algorithm: string, data: string): string { return hash(algorithm, data); }
+    hashBytes(algorithm: string, data: Buffer): Buffer { return hashBytes(algorithm, data); }
+    hmac(algorithm: string, key: string, data: string): string { return hmac(algorithm, key, data); }
+    hmacBytes(algorithm: string, key: Buffer, data: Buffer): Buffer { return hmacBytes(algorithm, key, data); }
+    randomBytes(size: number): Buffer { return randomBytes(size); }
+    randomInt(min: number, max: number): number { return randomInt(min, max); }
+    randomUUID(): string { return randomUUID(); }
+    toHex(data: Buffer): string { return toHex(data); }
+    fromHex(hex: string): Buffer { return fromHex(hex); }
+    toBase64(data: Buffer): string { return toBase64(data); }
+    fromBase64(b64: string): Buffer { return fromBase64(b64); }
+    timingSafeEqual(a: Buffer, b: Buffer): boolean { return timingSafeEqual(a, b); }
+    encrypt(key: Buffer, plaintext: Buffer): Buffer { return encrypt(key, plaintext); }
+    decrypt(key: Buffer, ciphertext: Buffer): Buffer { return decrypt(key, ciphertext); }
+    generateKey(bits: number): Buffer { return generateKey(bits); }
+    sign(algorithm: string, privateKey: Buffer, data: Buffer): Buffer { return sign(algorithm, privateKey, data); }
+    verify(algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer): boolean { return verify(algorithm, publicKey, data, signature); }
+    generateKeyPair(algorithm: string): string[] { return generateKeyPair(algorithm); }
+    hkdf(hashAlg: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer { return hkdf(hashAlg, ikm, salt, info, length); }
+    pbkdf2(password: string, salt: Buffer, iterations: number, length: number, hashAlg: string): Buffer { return pbkdf2(password, salt, iterations, length, hashAlg); }
+}
+
+const crypto = new CryptoNamespace();
 export default crypto;

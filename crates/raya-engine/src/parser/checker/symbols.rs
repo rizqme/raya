@@ -152,15 +152,19 @@ impl SymbolTable {
 
     /// Define a symbol in the current scope
     ///
-    /// Returns an error if a symbol with the same name already exists in this scope,
-    /// unless the existing symbol is imported (allowing user code to shadow imports).
+    /// Returns an error if a symbol with the same name already exists in this
+    /// scope, unless the existing symbol is imported.
     pub fn define(&mut self, mut symbol: Symbol) -> Result<(), DuplicateSymbolError> {
         let scope = &mut self.scopes[self.current_scope.0 as usize];
 
         // Check for duplicate
         if let Some(existing) = scope.symbols.get(&symbol.name) {
-            // Allow shadowing of imported symbols
-            if !existing.flags.is_imported {
+            // Allow shadowing of imported symbols.
+            // At root scope, also allow cross-kind shadowing so user variables
+            // can shadow prelude helper functions/classes.
+            let allow_root_cross_kind_shadow =
+                self.current_scope.0 == 0 && existing.kind != symbol.kind;
+            if !existing.flags.is_imported && !allow_root_cross_kind_shadow {
                 return Err(DuplicateSymbolError {
                     name: symbol.name.clone(),
                     original: existing.span,
@@ -275,6 +279,19 @@ impl SymbolTable {
                 symbol.ty = new_ty;
                 return true;
             }
+        }
+        false
+    }
+
+    /// Replace a symbol entry in a specific scope without duplicate checks.
+    ///
+    /// Used by binder paths that intentionally allow top-level shadowing
+    /// (e.g., prelude/builtin declarations replaced by user declarations).
+    pub fn replace_in_scope(&mut self, scope_id: ScopeId, mut symbol: Symbol) -> bool {
+        if let Some(scope) = self.scopes.get_mut(scope_id.0 as usize) {
+            symbol.scope_id = scope_id;
+            scope.symbols.insert(symbol.name.clone(), symbol);
+            return true;
         }
         false
     }

@@ -1887,27 +1887,27 @@ impl<'a> Binder<'a> {
             rest_param_ty,
         );
 
-        // Define function symbol in parent scope (so it can be called recursively)
-        // If pre-registered by the pre-pass, update the type instead of re-defining
+        let symbol = Symbol {
+            name: func_name.clone(),
+            kind: SymbolKind::Function,
+            ty: func_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: func.is_async,
+                is_readonly: false,
+                is_imported: false,
+            },
+            scope_id: parent_scope_id,
+            span: func.name.span,
+            referenced: false,
+        };
+
+        // Define function symbol in parent scope (so it can be called recursively).
+        // If pre-registered by pre-pass, replace it so span/flags match the active declaration.
         if self.symbols.resolve(&func_name).is_some() {
-            self.symbols
-                .update_type(parent_scope_id, &func_name, func_ty);
+            self.symbols.replace_in_scope(parent_scope_id, symbol);
         } else {
-            let symbol = Symbol {
-                name: func_name,
-                kind: SymbolKind::Function,
-                ty: func_ty,
-                flags: SymbolFlags {
-                    is_exported: false,
-                    is_const: true,
-                    is_async: func.is_async,
-                    is_readonly: false,
-                    is_imported: false,
-                },
-                scope_id: parent_scope_id,
-                span: func.name.span,
-                referenced: false,
-            };
             self.symbols
                 .define_in_scope(parent_scope_id, symbol)
                 .map_err(|err| BindError::DuplicateSymbol {
@@ -2025,11 +2025,27 @@ impl<'a> Binder<'a> {
         // Store the scope ID where the class is defined (for later update)
         let class_definition_scope = self.symbols.current_scope_id();
 
-        // If the class was already registered by the pre-pass, update its type;
+        // If the class was already registered by the pre-pass, replace it;
         // otherwise define it now (handles non-top-level classes)
         if self.symbols.resolve(&class_name).is_some() {
-            self.symbols
-                .update_type(class_definition_scope, &class_name, class_ty);
+            self.symbols.replace_in_scope(
+                class_definition_scope,
+                Symbol {
+                    name: class_name.clone(),
+                    kind: SymbolKind::Class,
+                    ty: class_ty,
+                    flags: SymbolFlags {
+                        is_exported: false,
+                        is_const: true,
+                        is_async: false,
+                        is_readonly: false,
+                        is_imported: false,
+                    },
+                    scope_id: class_definition_scope,
+                    span: class.name.span,
+                    referenced: false,
+                },
+            );
         } else {
             let symbol = Symbol {
                 name: class_name.clone(),
