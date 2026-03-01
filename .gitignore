@@ -36,3 +36,6 @@ docs/.vitepress/cache/
 
 # Local temp planning
 .tmp/
+
+# Local readiness marker
+server.ready
