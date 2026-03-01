@@ -2131,6 +2131,36 @@ impl<'a> Lowerer<'a> {
                     }
                 })
                 .unwrap_or_else(|| "unknown receiver type".to_string());
+
+            let dynamic_call_fallback = if object.ty.0 == UNRESOLVED_TYPE_ID {
+                true
+            } else {
+                matches!(
+                    self.type_ctx.get(object.ty),
+                    Some(crate::parser::types::ty::Type::Unknown)
+                        | Some(crate::parser::types::ty::Type::Any)
+                        | Some(crate::parser::types::ty::Type::JSObject)
+                        | Some(crate::parser::types::ty::Type::Json)
+                        | Some(crate::parser::types::ty::Type::Object(_))
+                        | Some(crate::parser::types::ty::Type::Union(_))
+                        | Some(crate::parser::types::ty::Type::TypeVar(_))
+                )
+            };
+            if dynamic_call_fallback {
+                let callee = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::LateBoundMember {
+                    dest: callee.clone(),
+                    object,
+                    property: method_name.to_string(),
+                });
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest.clone()),
+                    closure: callee,
+                    args,
+                });
+                return dest;
+            }
+
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
                     message: format!(
@@ -2496,6 +2526,33 @@ impl<'a> Lowerer<'a> {
                 }
             })
             .unwrap_or_else(|| "unknown receiver type".to_string());
+
+        // Dynamic/member-latebound fallback: when receiver typing remains unresolved
+        // (unknown/any/jsobject/etc), preserve runtime behavior instead of hard ICE.
+        let dynamic_member_fallback = if object.ty.0 == UNRESOLVED_TYPE_ID {
+            true
+        } else {
+            matches!(
+                self.type_ctx.get(object.ty),
+                Some(crate::parser::types::ty::Type::Unknown)
+                    | Some(crate::parser::types::ty::Type::Any)
+                    | Some(crate::parser::types::ty::Type::JSObject)
+                    | Some(crate::parser::types::ty::Type::Json)
+                    | Some(crate::parser::types::ty::Type::Object(_))
+                    | Some(crate::parser::types::ty::Type::Union(_))
+                    | Some(crate::parser::types::ty::Type::TypeVar(_))
+            )
+        };
+        if dynamic_member_fallback {
+            let dest = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::LateBoundMember {
+                dest: dest.clone(),
+                object,
+                property: prop_name.to_string(),
+            });
+            return dest;
+        }
+
         self.errors
             .push(crate::compiler::CompileError::InternalError {
                 message: format!(

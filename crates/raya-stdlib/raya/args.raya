@@ -204,7 +204,8 @@ class ArgParser {
                     idx = idx + 1;
                 } else {
                     let name = arg.substring(2, arg.length);
-                    const argType: string = this._typeMap.has(name) ? this._typeMap.get(name) : "";
+                    const typeEntry = this._typeMap.get(name);
+                    const argType: string = "" + (typeEntry != null ? typeEntry : "");
                     if (argType == "boolean") {
                         this._setResult(result, name, "true");
                         this._markPresent(result, name);
@@ -224,7 +225,8 @@ class ArgParser {
             if (arg.length == 2 && arg.substring(0, 1) == "-") {
                 let short = arg.substring(1, 2);
                 let name = this._resolveAlias(short);
-                const argType: string = this._typeMap.has(name) ? this._typeMap.get(name) : "";
+                const typeEntry = this._typeMap.get(name);
+                const argType: string = "" + (typeEntry != null ? typeEntry : "");
                 if (argType == "boolean") {
                     this._setResult(result, name, "true");
                     this._markPresent(result, name);
@@ -285,8 +287,9 @@ class ArgParser {
     }
 
     _resolveAlias(short: string): string {
-        if (this._aliasMap.has(short)) {
-            return this._aliasMap.get(short);
+        const alias = this._aliasMap.get(short);
+        if (alias != null) {
+            return "" + alias;
         }
         return short;
     }

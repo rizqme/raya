@@ -514,11 +514,12 @@ fn transform_std_module(
                     module_allowed_types.insert(name);
                 }
                 if let Statement::VariableDecl(v) = stmt {
-                    let var_type = rewrite_local_class_refs(
-                        &variable_decl_type_expr(v, module),
-                        &local_type_names,
-                        &module_tag,
-                    );
+                    let raw_var_type = variable_decl_type_expr(v, module);
+                    let var_type = if local_type_names.contains(&raw_var_type) {
+                        raw_var_type
+                    } else {
+                        rewrite_local_class_refs(&raw_var_type, &local_type_names, &module_tag)
+                    };
                     if let Pattern::Identifier(id) = &v.pattern {
                         let var_name = module.interner.resolve(id.name).to_string();
                         local_var_types.insert(var_name, var_type);
@@ -562,12 +563,10 @@ fn transform_std_module(
     let mut export_pairs: Vec<String> = Vec::new();
     let mut export_type_fields: Vec<String> = Vec::new();
     for (name, binding) in &exports {
-        export_pairs.push(format!(
-            "\"{}\": {}",
-            escape_string(name),
-            binding.value_expr
-        ));
-        export_type_fields.push(format!("{}: {}", type_field_key(name), binding.type_expr));
+        export_pairs.push(format!("{}: {}", type_field_key(name), binding.value_expr));
+        let export_field_type =
+            rewrite_local_class_refs(&binding.type_expr, &local_type_names, &module_tag);
+        export_type_fields.push(format!("{}: {}", type_field_key(name), export_field_type));
     }
 
     let export_literal = format!("{{{}}}", export_pairs.join(", "));
@@ -754,6 +753,8 @@ fn transform_export_decl(
                         let class_type = format!("__t_{}_{}", module_tag, imported);
                         type_exports.insert(exported.clone(), class_type.clone());
                         export_type_expr = class_type;
+                    } else if let Some(var_type) = local_var_types.get(&imported) {
+                        export_type_expr = var_type.clone();
                     }
                     if let Some(sig) = local_function_sigs.get(&imported) {
                         function_exports.insert(exported.clone(), sig.clone());

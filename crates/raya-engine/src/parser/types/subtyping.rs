@@ -268,6 +268,9 @@ impl<'a> SubtypingContext<'a> {
             // Class <: Object (structural): class instance <: object type
             // Optional properties in the target object type don't need to exist in the class
             (Type::Class(c), Type::Object(o)) => {
+                if c.name == "<anonymous>" {
+                    return true;
+                }
                 o.properties.iter().all(|op| {
                     // If the target property is optional, the class doesn't need to have it
                     if op.optional {
