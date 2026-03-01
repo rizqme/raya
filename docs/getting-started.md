@@ -143,8 +143,12 @@ raya eval "1 + 2"
 # Package manager
 raya init              # Initialize project (raya.toml mode)
 raya init --node       # Initialize project (package.json mode)
+raya init -n           # Short alias for --node
+raya init --npm        # Initialize raya.toml project with npm registry mode
 raya add <package>     # Add dependency
 raya install           # Install dependencies
+raya install --frozen  # Fail if raya.lock would change
+raya install --ignore-scripts  # Skip preinstall/install/postinstall
 ```
 
 ## Project Structure

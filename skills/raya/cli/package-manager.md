@@ -12,6 +12,8 @@ Initialize a new project.
 
 ```bash
 raya init
+raya init -n           # Node/package.json mode
+raya init --npm        # Raya TOML project with npm registry mode
 raya pkg init
 ```
 
@@ -33,6 +35,8 @@ Install all dependencies.
 ```bash
 raya install
 raya i  # Short alias
+raya install --frozen
+raya install --ignore-scripts
 raya pkg install
 ```
 

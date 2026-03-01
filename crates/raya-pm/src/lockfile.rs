@@ -73,6 +73,15 @@ pub struct LockedPackage {
     /// Direct dependencies of this package
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<String>,
+    /// Peer dependencies resolved/required by this package
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peer_dependencies: Vec<String>,
+    /// Per-package type mode (raya | ts | js) for runtime compilation behavior
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_mode: Option<String>,
+    /// Deterministic flattened install path key under .raya/packages
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_path: Option<String>,
 }
 
 /// Package source
@@ -157,17 +166,23 @@ impl Lockfile {
                 )));
             }
 
-            if pkg.checksum.is_empty() {
+            let checksum_required =
+                matches!(&pkg.source, Source::Registry { .. } | Source::Url { .. });
+            if checksum_required && pkg.checksum.is_empty() {
                 return Err(LockfileError::ValidationError(format!(
                     "Package '{}' has empty checksum",
                     pkg.name
                 )));
             }
+            if !checksum_required && pkg.checksum.is_empty() {
+                continue;
+            }
 
-            // Validate checksum is valid hex
-            if pkg.checksum.len() != 64 || !pkg.checksum.chars().all(|c| c.is_ascii_hexdigit()) {
+            // Validate checksum is valid hex (sha1=40 for npm, sha256=64 for raya registry).
+            let len = pkg.checksum.len();
+            if (len != 40 && len != 64) || !pkg.checksum.chars().all(|c| c.is_ascii_hexdigit()) {
                 return Err(LockfileError::ValidationError(format!(
-                    "Package '{}' has invalid checksum (must be 64 hex characters)",
+                    "Package '{}' has invalid checksum (must be 40 or 64 hex characters)",
                     pkg.name
                 )));
             }
@@ -251,6 +266,9 @@ impl LockedPackage {
             checksum,
             source,
             dependencies: Vec::new(),
+            peer_dependencies: Vec::new(),
+            type_mode: None,
+            install_path: None,
         }
     }
 

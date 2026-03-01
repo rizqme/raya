@@ -2,7 +2,12 @@
 
 use raya_runtime::Runtime;
 
-pub fn execute(production: bool, _frozen: bool, force: bool) -> anyhow::Result<()> {
+pub fn execute(
+    production: bool,
+    frozen: bool,
+    force: bool,
+    ignore_scripts: bool,
+) -> anyhow::Result<()> {
     let rt = Runtime::new();
     let cwd = std::env::current_dir()?
         .display()
@@ -11,9 +16,9 @@ pub fn execute(production: bool, _frozen: bool, force: bool) -> anyhow::Result<(
         .replace('"', "\\\"");
     let script = format!(
         r#"import pm from "std:pm";
-const result = pm.install("{}", {}, {}, false);
+const result = pm.install("{}", {}, {}, false, {}, {});
 io.writeln("Done! " + result.installed.toString() + " installed, " + result.cached.toString() + " from cache.")"#,
-        cwd, production, force
+        cwd, production, force, frozen, ignore_scripts
     );
     match rt.eval(&script) {
         Ok(_) => Ok(()),

@@ -220,11 +220,22 @@ impl<'a> SubtypingContext<'a> {
                 params_match && return_match
             }
 
+            // Function <: Object: in JavaScript, all functions are objects.
+            // This allows storing function references in Object-typed containers.
+            (Type::Function(_), Type::Class(class)) if class.name == "Object" => true,
+
             // Array subtyping: T[] <: U[] if T <: U
             (Type::Array(a1), Type::Array(a2)) => self.is_subtype(a1.element, a2.element),
 
             // Promise subtyping: Promise<T> <: Promise<U> if T <: U (covariant)
             (Type::Task(t1), Type::Task(t2)) => self.is_subtype(t1.result, t2.result),
+
+            // Array-to-tuple subtyping: T[] <: [U1, U2, ..., Un] if T <: Ui for all i.
+            // This allows array literals (typed as T[]) to satisfy tuple expectations.
+            (Type::Array(arr), Type::Tuple(tup)) => tup
+                .elements
+                .iter()
+                .all(|&elem| self.is_subtype(arr.element, elem)),
 
             // Tuple subtyping: [T1, T2, ..., Tn] <: [U1, U2, ..., Um]
             // if n = m and Ti <: Ui for all i

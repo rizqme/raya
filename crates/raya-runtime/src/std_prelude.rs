@@ -1269,7 +1269,7 @@ fn emit_default_object_binding(local: &str, export_var: &str, meta: &ModuleMeta)
 
 fn normalize_type_snippet(raw: &str) -> String {
     let mut s = raw.trim().to_string();
-    while s.ends_with('{') || s.ends_with(')') || s.ends_with(',') {
+    while s.ends_with('{') || s.ends_with(')') || s.ends_with(',') || s.ends_with(';') {
         s.pop();
         s = s.trim_end().to_string();
     }

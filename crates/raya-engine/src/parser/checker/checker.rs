@@ -161,6 +161,10 @@ pub struct TypeChecker<'a> {
     /// Capture information for all closures
     capture_info: ModuleCaptureInfo,
 
+    /// Method-level type parameters for the currently checked method body.
+    /// Maps type parameter names (e.g. "K", "U") to their TypeVar TypeIds.
+    method_type_params: FxHashMap<String, TypeId>,
+
     /// Current class type for checking `this` expressions
     current_class_type: Option<TypeId>,
 
@@ -225,6 +229,7 @@ impl<'a> TypeChecker<'a> {
             unbound_method_receiver_types: FxHashMap::default(),
             constructible_vars: FxHashSet::default(),
             capture_info: ModuleCaptureInfo::new(),
+            method_type_params: FxHashMap::default(),
             current_class_type: None,
             in_constructor: false,
             arrow_depth: 0,
@@ -1300,6 +1305,23 @@ impl<'a> TypeChecker<'a> {
         for member in &class.members {
             match member {
                 crate::parser::ast::ClassMember::Method(method) => {
+                    // Register method-level type parameters so resolve_type can
+                    // find them during build_method_type (param/return resolution).
+                    self.method_type_params.clear();
+                    if let Some(ref type_params) = method.type_params {
+                        for tp in type_params {
+                            let param_name = self.resolve(tp.name.name);
+                            let constraint_ty = tp
+                                .constraint
+                                .as_ref()
+                                .map(|c| self.resolve_type_annotation(c));
+                            let type_var = self
+                                .type_ctx
+                                .type_variable_with_constraint(param_name.clone(), constraint_ty);
+                            self.method_type_params.insert(param_name, type_var);
+                        }
+                    }
+
                     let method_ty = self.build_method_type(method);
                     self.check_method_decorators(method, method_ty);
                     for param in &method.params {
@@ -1355,6 +1377,7 @@ impl<'a> TypeChecker<'a> {
                         }
 
                         self.current_function_return_type = prev_return_ty;
+                        self.method_type_params.clear();
                         self.exit_scope();
                         self.type_env = saved_env;
                     }
@@ -2926,6 +2949,36 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            // Union of function types: pick the first function member and call it.
+            // This supports patterns like `(Object[] | null).push(...)` where the
+            // member access resolves to a union of function types.
+            Some(crate::parser::types::Type::Union(union)) => {
+                for &member_id in &union.members {
+                    if let Some(crate::parser::types::Type::Function(func)) =
+                        self.type_ctx.get(member_id).cloned()
+                    {
+                        // Re-dispatch with this function type
+                        for (i, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
+                            if i < func.params.len() {
+                                self.check_assignable(*arg_ty, func.params[i], *arg_span);
+                            }
+                        }
+                        return if func.is_async {
+                            match self.type_ctx.get(func.return_type) {
+                                Some(crate::parser::types::Type::Task(_)) => func.return_type,
+                                _ => self.type_ctx.task_type(func.return_type),
+                            }
+                        } else {
+                            func.return_type
+                        };
+                    }
+                }
+                self.errors.push(CheckError::NotCallable {
+                    ty: self.format_type(callee_ty),
+                    span: call.span,
+                });
+                self.type_ctx.unknown_type()
+            }
             _ => {
                 if self.allows_dynamic_any() && self.type_is_dynamic_anyish(callee_ty) {
                     return self.type_ctx.any_type();
@@ -3911,6 +3964,13 @@ impl<'a> TypeChecker<'a> {
             Type::TypeVar(tv) => tv.constraint.and_then(|constraint| {
                 self.index_access_from_type(constraint, index_ty, index_expr)
             }),
+            // IndexedAccess and Keyof types are unresolved type-level operations on
+            // type variables.  At runtime they always produce concrete values, but the
+            // checker cannot reduce them further statically.  Treat numeric index into
+            // an unresolved indexed-access type as unknown rather than emitting an error.
+            Type::IndexedAccess(_) | Type::Keyof(_) => {
+                Some(self.type_ctx.unknown_type())
+            }
             Type::Union(union) => {
                 let mut out = Vec::new();
                 for member in union.members {
@@ -4184,6 +4244,19 @@ impl<'a> TypeChecker<'a> {
             return task_ty.result;
         }
 
+        // If the argument is a Promise class instance (e.g., `await this` inside Promise class body),
+        // resolve T from the class type parameter in the current scope.
+        if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(arg_ty) {
+            if class.name == "Promise" && !class.type_params.is_empty() {
+                if let Some(symbol) = self
+                    .symbols
+                    .resolve_from_scope(&class.type_params[0], self.current_scope)
+                {
+                    return symbol.ty;
+                }
+            }
+        }
+
         // If the argument is Promise<T>[], return T[] (parallel await)
         if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(arg_ty) {
             if let Some(crate::parser::types::Type::Task(task_ty)) =
@@ -4276,12 +4349,13 @@ impl<'a> TypeChecker<'a> {
                     if let Some(crate::parser::types::Type::Class(class_ty)) =
                         self.type_ctx.get(*operand_ty)
                     {
-                        if class_ty.name == "Promise" {
-                            return self.fallback_type(
-                                call.span,
-                                FallbackReason::Unavoidable,
-                                "__OPCODE_AWAIT_Promise",
-                            );
+                        if class_ty.name == "Promise" && !class_ty.type_params.is_empty() {
+                            if let Some(sym) = self.symbols.resolve_from_scope(
+                                &class_ty.type_params[0],
+                                self.current_scope,
+                            ) {
+                                return sym.ty;
+                            }
                         }
                     }
                     if self.allows_dynamic_any() && self.type_is_dynamic_anyish(*operand_ty) {
@@ -4307,13 +4381,13 @@ impl<'a> TypeChecker<'a> {
                         if let Some(crate::parser::types::Type::Class(class_ty)) =
                             self.type_ctx.get(arr_ty.element)
                         {
-                            if class_ty.name == "Promise" {
-                                let elem = self.fallback_type(
-                                    call.span,
-                                    FallbackReason::Unavoidable,
-                                    "__OPCODE_AWAIT_ALL_Promise",
-                                );
-                                return self.type_ctx.array_type(elem);
+                            if class_ty.name == "Promise" && !class_ty.type_params.is_empty() {
+                                if let Some(sym) = self.symbols.resolve_from_scope(
+                                    &class_ty.type_params[0],
+                                    self.current_scope,
+                                ) {
+                                    return self.type_ctx.array_type(sym.ty);
+                                }
                             }
                         }
                     }
@@ -4599,6 +4673,11 @@ impl<'a> TypeChecker<'a> {
             if let Some(method_type) = self.get_task_method_type(&property_name, task_ty.result) {
                 return method_type;
             }
+            if let Some(ty) =
+                self.resolve_builtin_class_member("Promise", &property_name, member.span)
+            {
+                return ty;
+            }
         }
 
         // Check for built-in RegExp methods
@@ -4615,12 +4694,22 @@ impl<'a> TypeChecker<'a> {
             {
                 return method_type;
             }
+            if let Some(ty) =
+                self.resolve_builtin_class_member("Map", &property_name, member.span)
+            {
+                return ty;
+            }
         }
 
         // Check for built-in Set methods
         if let Some(crate::parser::types::Type::Set(set_ty)) = &obj_type {
             if let Some(method_type) = self.get_set_method_type(&property_name, set_ty.element) {
                 return method_type;
+            }
+            if let Some(ty) =
+                self.resolve_builtin_class_member("Set", &property_name, member.span)
+            {
+                return ty;
             }
         }
 
@@ -4630,6 +4719,15 @@ impl<'a> TypeChecker<'a> {
                 if let Some(method_type) = self.get_buffer_method_type(&property_name, object_ty) {
                     return method_type;
                 }
+            }
+        }
+
+        // Type::Buffer comes from type annotations; resolve via class definition.
+        if matches!(&obj_type, Some(crate::parser::types::Type::Buffer)) {
+            if let Some(ty) =
+                self.resolve_builtin_class_member("Buffer", &property_name, member.span)
+            {
+                return ty;
             }
         }
 
@@ -4646,6 +4744,11 @@ impl<'a> TypeChecker<'a> {
             if let Some(method_type) = self.get_channel_method_type(&property_name, chan_ty.message)
             {
                 return method_type;
+            }
+            if let Some(ty) =
+                self.resolve_builtin_class_member("Channel", &property_name, member.span)
+            {
+                return ty;
             }
         }
 
@@ -4779,6 +4882,38 @@ impl<'a> TypeChecker<'a> {
                             object_like_members += 1;
                             if let Some(ty) =
                                 self.lookup_interface_member(&interface_ty, &property_name)
+                            {
+                                if !found_types.contains(&ty) {
+                                    found_types.push(ty);
+                                }
+                            }
+                        }
+                        crate::parser::types::Type::Array(arr) => {
+                            object_like_members += 1;
+                            if let Some(ty) =
+                                self.get_array_method_type(&property_name, arr.element)
+                            {
+                                if !found_types.contains(&ty) {
+                                    found_types.push(ty);
+                                }
+                            }
+                        }
+                        crate::parser::types::Type::Map(map_ty) => {
+                            object_like_members += 1;
+                            if let Some(ty) = self.get_map_method_type(
+                                &property_name,
+                                map_ty.key,
+                                map_ty.value,
+                            ) {
+                                if !found_types.contains(&ty) {
+                                    found_types.push(ty);
+                                }
+                            }
+                        }
+                        crate::parser::types::Type::Set(set_ty) => {
+                            object_like_members += 1;
+                            if let Some(ty) =
+                                self.get_set_method_type(&property_name, set_ty.element)
                             {
                                 if !found_types.contains(&ty) {
                                     found_types.push(ty);
@@ -5074,6 +5209,47 @@ impl<'a> TypeChecker<'a> {
 
         // Not found in class hierarchy
         None
+    }
+
+    /// Resolve a member on a built-in type by looking up its source-level class definition.
+    /// Built-in types (Set, Map, Channel, Task/Promise) use specialised Type variants
+    /// for core method resolution, but their `.raya` class definitions may declare
+    /// additional members (e.g. internal fields like `setPtr`). This resolves those.
+    fn resolve_builtin_class_member(
+        &mut self,
+        class_name: &str,
+        property_name: &str,
+        span: Span,
+    ) -> Option<TypeId> {
+        let symbol = self
+            .symbols
+            .resolve_from_scope(class_name, self.current_scope)?;
+        if symbol.kind != SymbolKind::Class {
+            return None;
+        }
+        let class = match self.type_ctx.get(symbol.ty).cloned() {
+            Some(crate::parser::types::Type::Class(c)) => c,
+            _ => return None,
+        };
+        let (ty, vis) = self.lookup_class_member(&class, property_name)?;
+        if vis == crate::parser::ast::Visibility::Private {
+            let accessing_own_class = self.current_class_type.is_some_and(|ct| {
+                if let Some(crate::parser::types::Type::Class(cur_class)) = self.type_ctx.get(ct) {
+                    cur_class.name == class_name
+                } else {
+                    false
+                }
+            });
+            if !accessing_own_class {
+                self.errors.push(CheckError::PropertyNotFound {
+                    property: format!("private member '{}'", property_name),
+                    ty: class_name.to_string(),
+                    span,
+                });
+                return Some(self.type_ctx.unknown_type());
+            }
+        }
+        Some(ty)
     }
 
     /// Get the type of a built-in array method
@@ -6320,6 +6496,11 @@ impl<'a> TypeChecker<'a> {
 
                 if let Some(named_ty) = self.type_ctx.lookup_named_type(&name) {
                     return named_ty;
+                }
+
+                // Check method-level type parameters (e.g. K, U from generic methods)
+                if let Some(&type_var) = self.method_type_params.get(&name) {
+                    return type_var;
                 }
 
                 if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {

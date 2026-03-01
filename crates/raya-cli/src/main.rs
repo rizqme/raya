@@ -245,7 +245,7 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
         /// Project name
-        #[arg(short, long)]
+        #[arg(short = 'N', long)]
         name: Option<String>,
         /// Project template
         #[arg(long, default_value = "basic")]
@@ -257,8 +257,11 @@ enum Commands {
         #[arg(long)]
         interactive: bool,
         /// Initialize as a Node-style project using package.json
-        #[arg(long)]
+        #[arg(short = 'n', long)]
         node: bool,
+        /// Enable npm registry mode for raya.toml projects
+        #[arg(long)]
+        npm: bool,
     },
 
     /// Add a dependency
@@ -296,6 +299,9 @@ enum Commands {
         /// Force re-download even if cached
         #[arg(short, long)]
         force: bool,
+        /// Skip lifecycle script execution
+        #[arg(long)]
+        ignore_scripts: bool,
     },
 
     /// Update dependencies
@@ -559,7 +565,8 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             yes,
             interactive,
             node,
-        } => commands::init::execute(path, name, template, yes, interactive, node),
+            npm,
+        } => commands::init::execute(path, name, template, yes, interactive, node, npm),
 
         Commands::Add {
             package,
@@ -574,7 +581,8 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             production,
             frozen,
             force,
-        } => commands::install::execute(production, frozen, force),
+            ignore_scripts,
+        } => commands::install::execute(production, frozen, force, ignore_scripts),
 
         Commands::Update { package } => commands::update::execute(package),
 
@@ -632,7 +640,8 @@ mod tests {
             "--template",
             "lib",
             "--interactive",
-            "--node",
+            "-n",
+            "--npm",
         ]);
         match cli.command {
             Some(Commands::Init {
@@ -642,6 +651,7 @@ mod tests {
                 yes,
                 interactive,
                 node,
+                npm,
             }) => {
                 assert!(path.to_string_lossy().ends_with("my-app"));
                 assert_eq!(name.as_deref(), Some("app"));
@@ -649,6 +659,7 @@ mod tests {
                 assert!(!yes);
                 assert!(interactive);
                 assert!(node);
+                assert!(npm);
             }
             _ => panic!("expected init command"),
         }

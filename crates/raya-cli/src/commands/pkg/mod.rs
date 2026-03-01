@@ -21,7 +21,7 @@ pub enum PkgCommands {
         #[arg(default_value = ".")]
         path: PathBuf,
         /// Project name
-        #[arg(short, long)]
+        #[arg(short = 'N', long)]
         name: Option<String>,
         /// Project template
         #[arg(long, default_value = "basic")]
@@ -33,8 +33,11 @@ pub enum PkgCommands {
         #[arg(long)]
         interactive: bool,
         /// Initialize as a Node-style project using package.json
-        #[arg(long)]
+        #[arg(short = 'n', long)]
         node: bool,
+        /// Enable npm registry mode for raya.toml projects
+        #[arg(long)]
+        npm: bool,
     },
 
     /// Install all dependencies
@@ -49,6 +52,9 @@ pub enum PkgCommands {
         /// Force re-download even if cached
         #[arg(short, long)]
         force: bool,
+        /// Skip lifecycle script execution
+        #[arg(long)]
+        ignore_scripts: bool,
     },
 
     /// Add a dependency
@@ -159,9 +165,14 @@ pub fn execute(cmd: PkgCommands) -> anyhow::Result<()> {
             yes,
             interactive,
             node,
-        } => super::init::execute(path, name, template, yes, interactive, node),
-        PkgCommands::Install { production, frozen, force } =>
-            super::install::execute(production, frozen, force),
+            npm,
+        } => super::init::execute(path, name, template, yes, interactive, node, npm),
+        PkgCommands::Install {
+            production,
+            frozen,
+            force,
+            ignore_scripts,
+        } => super::install::execute(production, frozen, force, ignore_scripts),
         PkgCommands::Add { package, dev, exact, no_install } =>
             super::add::execute(package, dev, exact, no_install),
         PkgCommands::Remove { package } =>

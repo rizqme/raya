@@ -73,20 +73,20 @@ fn find_library(name: &str, base_dir: &Path) -> Result<CompiledModule, RuntimeEr
     // 3. .raya/packages/{name}/ — look for entry point
     let local_raya_pkg_dir = base_dir.join(".raya").join("packages").join(name);
     if local_raya_pkg_dir.exists() {
-        return load_package_dir(&local_raya_pkg_dir, name);
+        return load_package_dir_with_mode(&local_raya_pkg_dir, name, None);
     }
 
     // 4. raya_packages/{name}/ — legacy fallback
     let pkg_dir = base_dir.join("raya_packages").join(name);
     if pkg_dir.exists() {
-        return load_package_dir(&pkg_dir, name);
+        return load_package_dir_with_mode(&pkg_dir, name, None);
     }
 
     // 5. ~/.raya/packages/{name}/ — global
     if let Some(home) = dirs::home_dir() {
         let global_pkg = home.join(".raya").join("packages").join(name);
         if global_pkg.exists() {
-            return load_package_dir(&global_pkg, name);
+            return load_package_dir_with_mode(&global_pkg, name, None);
         }
     }
 
@@ -107,18 +107,39 @@ fn find_library(name: &str, base_dir: &Path) -> Result<CompiledModule, RuntimeEr
 ///
 /// Public alias for use by the dependency resolver.
 pub fn load_package_dir_pub(dir: &Path, name: &str) -> Result<CompiledModule, RuntimeError> {
-    load_package_dir(dir, name)
+    load_package_dir_with_mode(dir, name, None)
+}
+
+/// Load a package using an explicit dependency type mode when available.
+pub fn load_package_dir_with_mode_pub(
+    dir: &Path,
+    name: &str,
+    forced_mode: Option<TypeMode>,
+) -> Result<CompiledModule, RuntimeError> {
+    load_package_dir_with_mode(dir, name, forced_mode)
 }
 
 /// Load an entry point file, dispatching by extension.
 ///
 /// Public alias for use by the dependency resolver.
 pub fn load_entry_point_pub(path: &Path) -> Result<CompiledModule, RuntimeError> {
-    load_entry_point(path)
+    load_entry_point_with_mode(path, None)
+}
+
+/// Load an entry point with an explicit type mode override.
+pub fn load_entry_point_with_mode_pub(
+    path: &Path,
+    forced_mode: Option<TypeMode>,
+) -> Result<CompiledModule, RuntimeError> {
+    load_entry_point_with_mode(path, forced_mode)
 }
 
 /// Load a package from its directory, finding the entry point.
-fn load_package_dir(dir: &Path, name: &str) -> Result<CompiledModule, RuntimeError> {
+fn load_package_dir_with_mode(
+    dir: &Path,
+    name: &str,
+    forced_mode: Option<TypeMode>,
+) -> Result<CompiledModule, RuntimeError> {
     // Try package.json → raya.entry/main first
     let package_json_path = dir.join("package.json");
     if package_json_path.exists() {
@@ -132,7 +153,7 @@ fn load_package_dir(dir: &Path, name: &str) -> Result<CompiledModule, RuntimeErr
                 if let Some(main) = entry {
                     let entry = dir.join(main);
                     if entry.exists() {
-                        return load_entry_point(&entry);
+                        return load_entry_point_with_mode(&entry, forced_mode);
                     }
                 }
             }
@@ -146,7 +167,7 @@ fn load_package_dir(dir: &Path, name: &str) -> Result<CompiledModule, RuntimeErr
             if let Some(main) = &manifest.package.main {
                 let entry = dir.join(main);
                 if entry.exists() {
-                    return load_entry_point(&entry);
+                    return load_entry_point_with_mode(&entry, forced_mode);
                 }
             }
         }
@@ -164,7 +185,7 @@ fn load_package_dir(dir: &Path, name: &str) -> Result<CompiledModule, RuntimeErr
 
     for candidate in &candidates {
         if candidate.exists() {
-            return load_entry_point(candidate);
+            return load_entry_point_with_mode(candidate, forced_mode);
         }
     }
 
@@ -177,15 +198,26 @@ fn load_package_dir(dir: &Path, name: &str) -> Result<CompiledModule, RuntimeErr
 }
 
 /// Load an entry point file, dispatching by extension.
-fn load_entry_point(path: &Path) -> Result<CompiledModule, RuntimeError> {
+fn builtin_mode_for_type_mode(type_mode: TypeMode) -> BuiltinMode {
+    match type_mode {
+        TypeMode::Raya => BuiltinMode::RayaStrict,
+        TypeMode::Ts | TypeMode::Js => BuiltinMode::NodeCompat,
+    }
+}
+
+fn load_entry_point_with_mode(
+    path: &Path,
+    forced_mode: Option<TypeMode>,
+) -> Result<CompiledModule, RuntimeError> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("ryb") => load_bytecode_file(path),
         Some("raya") => {
             let source = std::fs::read_to_string(path)?;
-            let (type_mode, ts_options) = infer_type_mode_for_path(path)?;
+            let (inferred_mode, ts_options) = infer_type_mode_for_path(path)?;
+            let type_mode = forced_mode.unwrap_or(inferred_mode);
             let (module, interner) = compile::compile_source_with_modes_and_ts_options(
                 &source,
-                BuiltinMode::RayaStrict,
+                builtin_mode_for_type_mode(type_mode),
                 type_mode,
                 ts_options.as_ref(),
             )?;

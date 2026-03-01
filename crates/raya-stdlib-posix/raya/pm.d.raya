@@ -6,8 +6,8 @@
  * Usage:
  *   import pm from "std:pm";
  *
- *   pm.init("/path/to/project", "my-project", false);
- *   pm.install(".", false, false, false);
+ *   pm.init("/path/to/project", "my-project", false, false);
+ *   pm.install(".", false, false, false, false, false);
  *   pm.add(".", "logging@^1.0.0", false, false, false);
  *   pm.remove(".", "logging");
  *   pm.update(".", false);
@@ -103,8 +103,9 @@ declare class PackageManager {
      * @param dir - Directory to initialize
      * @param name - Package name (defaults to directory basename)
      * @param nodeMode - If true, create package.json + raya config block
+     * @param npmMode - If true, configure npm registry mode for raya.toml projects
      */
-    init(dir: string, name: string | null, nodeMode: boolean): void;
+    init(dir: string, name: string | null, nodeMode: boolean, npmMode: boolean): void;
 
     /**
      * Install all dependencies from raya.toml.
@@ -112,8 +113,10 @@ declare class PackageManager {
      * @param production - If true, skip dev dependencies
      * @param force - If true, re-download even if cached
      * @param update - If true, ignore lockfile and resolve fresh
+     * @param frozen - If true, fail if lockfile would change
+     * @param ignoreScripts - If true, skip lifecycle scripts
      */
-    install(startDir: string, production: boolean, force: boolean, update: boolean): InstallResult;
+    install(startDir: string, production: boolean, force: boolean, update: boolean, frozen: boolean, ignoreScripts: boolean): InstallResult;
 
     /**
      * Add a dependency to the project.

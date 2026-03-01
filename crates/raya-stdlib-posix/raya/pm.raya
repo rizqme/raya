@@ -5,11 +5,13 @@
 import fs from "std:fs";
 import path from "std:path";
 import env from "std:env";
+import io from "std:io";
 import fetch from "std:fetch";
 import archive from "std:archive";
 import crypto from "std:crypto";
 import semver from "std:semver";
 import encoding from "std:encoding";
+import glob from "std:glob";
 import { JsonValue } from "std:encoding";
 
 // ── Constants ──
@@ -121,15 +123,38 @@ class Manifest {
         }
     }
 
-    static registryUrl(manifest: JsonValue, nodeMode: boolean): string {
+    static registryConfig(manifest: JsonValue, nodeMode: boolean): JsonValue {
+        const cfg = encoding.json.newObject();
         if (nodeMode) {
-            const npm = manifest.get("raya").get("registry").get("url");
-            if (!npm.isNull() && npm.type() == "string") return npm.string();
-            return DEFAULT_NPM_REGISTRY;
+            const reg = manifest.get("raya").get("registry");
+            const npm = reg.get("url");
+            if (!npm.isNull() && npm.type() == "string") {
+                cfg.set("url", npm);
+            } else {
+                cfg.set("url", encoding.json.fromString(DEFAULT_NPM_REGISTRY));
+            }
+            const npmMode = reg.get("npm");
+            if (!npmMode.isNull() && npmMode.type() == "boolean") {
+                cfg.set("npmMode", npmMode);
+            } else {
+                cfg.set("npmMode", encoding.json.fromBool(true));
+            }
+            return cfg;
         }
-        const reg = manifest.get("registry").get("url");
-        if (!reg.isNull() && reg.type() == "string") return reg.string();
-        return DEFAULT_RAYA_REGISTRY;
+        const reg = manifest.get("registry");
+        const url = reg.get("url");
+        if (!url.isNull() && url.type() == "string") {
+            cfg.set("url", url);
+        } else {
+            cfg.set("url", encoding.json.fromString(DEFAULT_RAYA_REGISTRY));
+        }
+        const npmMode = reg.get("npm");
+        if (!npmMode.isNull() && npmMode.type() == "boolean") {
+            cfg.set("npmMode", npmMode);
+        } else {
+            cfg.set("npmMode", encoding.json.fromBool(false));
+        }
+        return cfg;
     }
 
     static isJsonManifest(manifest: JsonValue): boolean {
@@ -455,11 +480,128 @@ function resolveVersions(
     return best;
 }
 
+function normalizeExtractedSourceDir(dir: string): string {
+    const nested = path.join(dir, "package");
+    if (fs.isDir(nested)) return nested;
+    return dir;
+}
+
+function depVersionKey(name: string, version: string): string {
+    return name + "@" + version;
+}
+
+function readPackageJsonMaybe(dir: string): JsonValue | null {
+    const f = path.join(dir, "package.json");
+    if (!fs.exists(f)) return null;
+    try {
+        return encoding.json.parse(fs.readTextFile(f));
+    } catch (_e) {
+        return null;
+    }
+}
+
+function readLifecycleScripts(pkgDir: string): string[] {
+    const out: string[] = [];
+    const json = readPackageJsonMaybe(pkgDir);
+    if (json == null) return out;
+    const scripts = json.get("scripts");
+    if (scripts.isNull() || scripts.type() != "object") {
+        json.release();
+        return out;
+    }
+    const names: string[] = [];
+    names.push("preinstall");
+    names.push("install");
+    names.push("postinstall");
+    let i = 0;
+    while (i < names.length) {
+        const cmd = scripts.get(names[i]);
+        if (!cmd.isNull() && cmd.type() == "string") {
+            out.push(names[i] + ":" + cmd.string());
+        }
+        i = i + 1;
+    }
+    json.release();
+    return out;
+}
+
+function runLifecycleScripts(pkgName: string, pkgDir: string): void {
+    const steps = readLifecycleScripts(pkgDir);
+    let i = 0;
+    while (i < steps.length) {
+        const step = steps[i];
+        const idx = step.indexOf(":");
+        const hook = step.substring(0, idx);
+        const cmd = step.substring(idx + 1);
+        io.writeln("[" + pkgName + "] " + hook + " > " + cmd);
+        const wrapped = "cd \"" + pkgDir.replace("\"", "\\\"") + "\" && " + cmd;
+        const handle = __NATIVE_CALL<number>("process.exec", wrapped);
+        const code = __NATIVE_CALL<number>("process.execGetCode", handle);
+        const out = __NATIVE_CALL<string>("process.execGetStdout", handle);
+        const err = __NATIVE_CALL<string>("process.execGetStderr", handle);
+        __NATIVE_CALL("process.execRelease", handle);
+        if (out.length > 0) io.writeln("[" + pkgName + "] " + out.trim());
+        if (err.length > 0) io.writeln("[" + pkgName + "] " + err.trim());
+        if (code != 0) {
+            throw new Error("Lifecycle script failed for " + pkgName + " (" + hook + "), exit code " + code.toString());
+        }
+        i = i + 1;
+    }
+}
+
+function readWorkspacesFromPackageJson(rootDir: string): string[] {
+    const paths: string[] = [];
+    const pkg = readPackageJsonMaybe(rootDir);
+    if (pkg == null) return paths;
+    const workspaces = pkg.get("workspaces");
+    if (!workspaces.isNull() && workspaces.type() == "array") {
+        let i = 0;
+        while (i < workspaces.length()) {
+            const pat = workspaces.at(i);
+            if (!pat.isNull() && pat.type() == "string") {
+                const matches = glob.findInDir(pat.string(), rootDir);
+                let j = 0;
+                while (j < matches.length) {
+                    const p = path.join(rootDir, matches[j]);
+                    if (fs.isDir(p)) paths.push(p);
+                    j = j + 1;
+                }
+            }
+            i = i + 1;
+        }
+    } else if (!workspaces.isNull() && workspaces.type() == "object") {
+        const arr = workspaces.get("packages");
+        if (!arr.isNull() && arr.type() == "array") {
+            let i = 0;
+            while (i < arr.length()) {
+                const pat = arr.at(i);
+                if (!pat.isNull() && pat.type() == "string") {
+                    const matches = glob.findInDir(pat.string(), rootDir);
+                    let j = 0;
+                    while (j < matches.length) {
+                        const p = path.join(rootDir, matches[j]);
+                        if (fs.isDir(p)) paths.push(p);
+                        j = j + 1;
+                    }
+                }
+                i = i + 1;
+            }
+        }
+    }
+    pkg.release();
+    return paths;
+}
+
+function jsonEquals(a: JsonValue | null, b: JsonValue): boolean {
+    if (a == null) return false;
+    return encoding.toml.stringify(a) == encoding.toml.stringify(b);
+}
+
 // ── Commands ──
 
 // -- init --
 
-function pmInit(dir: string, name: string | null, nodeMode: boolean): void {
+function pmInit(dir: string, name: string | null, nodeMode: boolean, npmMode: boolean): void {
     const tomlPath = path.join(dir, "raya.toml");
     const packageJsonPath = path.join(dir, "package.json");
     if (fs.exists(tomlPath) || fs.exists(packageJsonPath)) {
@@ -489,6 +631,7 @@ function pmInit(dir: string, name: string | null, nodeMode: boolean): void {
         rayaCfg.set("entry", encoding.json.fromString("src/main.raya"));
         const registry = encoding.json.newObject();
         registry.set("url", encoding.json.fromString(DEFAULT_NPM_REGISTRY));
+        registry.set("npm", encoding.json.fromBool(true));
         rayaCfg.set("registry", registry);
         manifest.set("raya", rayaCfg);
         fs.writeTextFile(packageJsonPath, encoding.json.stringify(manifest));
@@ -502,6 +645,15 @@ function pmInit(dir: string, name: string | null, nodeMode: boolean): void {
         manifest.set("package", pkg);
         manifest.set("dependencies", encoding.json.newObject());
         manifest.set("dev-dependencies", encoding.json.newObject());
+        const reg = encoding.json.newObject();
+        if (npmMode) {
+            reg.set("url", encoding.json.fromString(DEFAULT_NPM_REGISTRY));
+            reg.set("npm", encoding.json.fromBool(true));
+        } else {
+            reg.set("url", encoding.json.fromString(DEFAULT_RAYA_REGISTRY));
+            reg.set("npm", encoding.json.fromBool(false));
+        }
+        manifest.set("registry", reg);
         fs.writeTextFile(tomlPath, encoding.toml.stringify(manifest));
     }
     manifest.release();
@@ -517,89 +669,21 @@ function pmInit(dir: string, name: string | null, nodeMode: boolean): void {
 
 // -- install --
 
-function pmInstall(startDir: string, production: boolean, force: boolean, update: boolean): InstallResult {
-    const dir = findProjectRoot(startDir);
-    const manifest = Manifest.load(dir);
-    const rootName = Manifest.name(manifest);
-    const nodeMode = Manifest.isNodeMode(dir);
-    fs.mkdirRecursive(localPackagesDir(dir));
-    fs.mkdirRecursive(localBuildDir(dir));
-
-    // Load or create lockfile
-    let lockfile: JsonValue | null = null;
-    if (!update) {
-        lockfile = LockfileUtil.load(dir);
+function checksumFromVersionInfo(info: JsonValue, npmMode: boolean): string {
+    if (npmMode) {
+        const shasum = info.get("dist").get("shasum");
+        if (!shasum.isNull() && shasum.type() == "string") return shasum.string();
     }
+    const checksum = info.get("checksum");
+    if (!checksum.isNull() && checksum.type() == "string") return checksum.string();
+    return "";
+}
 
-    // Initialize cache
-    const cache = new Cache();
-    cache.init();
-
-    // Registry defaults: package.json => npm, raya.toml => raya registry
-    const registryUrl = Manifest.registryUrl(manifest, nodeMode);
-    const registry = new Registry(registryUrl, nodeMode);
-
-    // Collect all dependencies
-    const deps = Manifest.dependencies(manifest);
-    const devDeps = production ? encoding.json.newObject() : Manifest.devDependencies(manifest);
-
-    let installed = 0;
-    let cached = 0;
-    let failed = 0;
-
-    // Create new lockfile
-    const newLock = LockfileUtil.createEmpty(rootName);
-    const packages = newLock.get("packages");
-
-    // Process each dependency
-    const depNames = deps.keys();
-    let i = 0;
-    while (i < depNames.length) {
-        const depName = depNames[i];
-        const dep = deps.get(depName);
-        const result = installDependency(
-            depName, dep, dir, registry, cache, lockfile, force
-        );
-        if (result != null) {
-            packages.push(result);
-            if (result.get("_cached").bool()) {
-                cached = cached + 1;
-            } else {
-                installed = installed + 1;
-            }
-        }
-        i = i + 1;
-    }
-
-    // Process dev dependencies
-    const devDepNames = devDeps.keys();
-    i = 0;
-    while (i < devDepNames.length) {
-        const depName = devDepNames[i];
-        const dep = devDeps.get(depName);
-        const result = installDependency(
-            depName, dep, dir, registry, cache, lockfile, force
-        );
-        if (result != null) {
-            packages.push(result);
-            if (result.get("_cached").bool()) {
-                cached = cached + 1;
-            } else {
-                installed = installed + 1;
-            }
-        }
-        i = i + 1;
-    }
-
-    // Save lockfile
-    LockfileUtil.save(dir, newLock);
-
-    // Cleanup handles
-    manifest.release();
-    newLock.release();
-    if (lockfile != null) lockfile.release();
-
-    return new InstallResult(installed, cached, failed);
+function extractDepMap(info: JsonValue, npmMode: boolean, key: string): JsonValue {
+    if (!npmMode) return encoding.json.newObject();
+    const deps = info.get(key);
+    if (deps.isNull() || deps.type() != "object") return encoding.json.newObject();
+    return deps;
 }
 
 function installDependency(
@@ -609,17 +693,14 @@ function installDependency(
     registry: Registry,
     cache: Cache,
     lockfile: JsonValue | null,
-    force: boolean
+    force: boolean,
+    npmMode: boolean
 ): JsonValue | null {
     fs.mkdirRecursive(localPackagesDir(projectDir));
 
-    // Path dependency — no download needed
     if (isDependencyPath(dep)) {
         const depPath = getDependencyPath(dep);
-        const resolvedPath = path.isAbsolute(depPath)
-            ? depPath
-            : path.resolve(projectDir, depPath);
-
+        const resolvedPath = path.isAbsolute(depPath) ? depPath : path.resolve(projectDir, depPath);
         const pkg = encoding.json.newObject();
         pkg.set("name", encoding.json.fromString(name));
         pkg.set("version", encoding.json.fromString("0.0.0"));
@@ -629,12 +710,13 @@ function installDependency(
         source.set("path", encoding.json.fromString(resolvedPath));
         pkg.set("source", source);
         pkg.set("dependencies", encoding.json.newArray());
+        pkg.set("peer_dependencies", encoding.json.newArray());
+        pkg.set("install_path", encoding.json.fromString(name));
         pkg.set("type_mode", encoding.json.fromString(inferTypeModeFromTsconfig(resolvedPath)));
         pkg.set("_cached", encoding.json.fromBool(true));
         return pkg;
     }
 
-    // Git dependency — not yet supported in download
     if (isDependencyGit(dep)) {
         const pkg = encoding.json.newObject();
         pkg.set("name", encoding.json.fromString(name));
@@ -645,15 +727,14 @@ function installDependency(
         source.set("url", dep.get("git"));
         pkg.set("source", source);
         pkg.set("dependencies", encoding.json.newArray());
+        pkg.set("peer_dependencies", encoding.json.newArray());
+        pkg.set("install_path", encoding.json.fromString(name));
         pkg.set("type_mode", encoding.json.fromString("raya"));
         pkg.set("_cached", encoding.json.fromBool(true));
         return pkg;
     }
 
-    // Registry dependency
     const constraint = parseDependencyConstraint(dep);
-
-    // Check lockfile first
     if (lockfile != null && !force) {
         const locked = LockfileUtil.findPackage(lockfile, name);
         if (locked != null) {
@@ -661,7 +742,6 @@ function installDependency(
             if (semver.satisfies(lockedVersion, constraint)) {
                 const checksum = locked.get("checksum").string();
                 if (checksum.length > 0 && cache.exists(checksum)) {
-                    // Already cached with matching version
                     const pkg = encoding.json.newObject();
                     pkg.set("name", encoding.json.fromString(name));
                     pkg.set("version", encoding.json.fromString(lockedVersion));
@@ -669,15 +749,20 @@ function installDependency(
                     const source = encoding.json.newObject();
                     source.set("type", encoding.json.fromString("registry"));
                     pkg.set("source", source);
-                    pkg.set("dependencies", encoding.json.newArray());
-                    const materializedDir = path.join(localPackagesDir(projectDir), name);
+                    const deps = locked.get("dependencies");
+                    pkg.set("dependencies", deps.isNull() ? encoding.json.newArray() : deps);
+                    const peers = locked.get("peer_dependencies");
+                    pkg.set("peer_dependencies", peers.isNull() ? encoding.json.newArray() : peers);
+                    const installPath = locked.get("install_path");
+                    const installKey = (!installPath.isNull() && installPath.type() == "string")
+                        ? installPath.string()
+                        : name;
+                    pkg.set("install_path", encoding.json.fromString(installKey));
+                    const materializedDir = path.join(localPackagesDir(projectDir), installKey);
                     if (!fs.isDir(materializedDir)) {
-                        copyDirRecursive(cache.modulePath(checksum), materializedDir);
+                        copyDirRecursive(normalizeExtractedSourceDir(cache.modulePath(checksum)), materializedDir);
                     }
-                    pkg.set(
-                        "type_mode",
-                        encoding.json.fromString(inferTypeModeFromTsconfig(materializedDir))
-                    );
+                    pkg.set("type_mode", encoding.json.fromString(inferTypeModeFromTsconfig(materializedDir)));
                     pkg.set("_cached", encoding.json.fromBool(true));
                     return pkg;
                 }
@@ -685,27 +770,42 @@ function installDependency(
         }
     }
 
-    // Fetch available versions from registry
     const versions = registry.getVersions(name);
     const resolved = resolveVersions(name, constraint, versions);
-    if (resolved == null) {
-        throw new Error(
-            "No version of " + name + " satisfies constraint " + constraint
-        );
-    }
+    if (resolved == null) throw new Error("No version of " + name + " satisfies constraint " + constraint);
 
-    // Check if already cached by checksum from registry
     const versionInfo = registry.getVersion(name, resolved);
-    const expectedChecksum = versionInfo.get("checksum").string();
-    versionInfo.release();
+    const expectedChecksum = checksumFromVersionInfo(versionInfo, npmMode);
+    const depsObj = extractDepMap(versionInfo, npmMode, "dependencies");
+    const peersObj = extractDepMap(versionInfo, npmMode, "peerDependencies");
 
     let wasCached = false;
     if (!force && expectedChecksum.length > 0 && cache.exists(expectedChecksum)) {
         wasCached = true;
     } else {
-        // Download to cache
-        const targetDir = cache.modulePath(expectedChecksum);
-        registry.download(name, resolved, targetDir);
+        registry.download(name, resolved, cache.modulePath(expectedChecksum));
+    }
+
+    const installKey = name;
+    const cacheDir = normalizeExtractedSourceDir(cache.modulePath(expectedChecksum));
+    const materializedDir = path.join(localPackagesDir(projectDir), installKey);
+    if (!fs.exists(materializedDir)) {
+        copyDirRecursive(cacheDir, materializedDir);
+    }
+
+    const depNames = depsObj.keys();
+    const depList = encoding.json.newArray();
+    let i = 0;
+    while (i < depNames.length) {
+        depList.push(encoding.json.fromString(depNames[i]));
+        i = i + 1;
+    }
+    const peerNames = peersObj.keys();
+    const peerList = encoding.json.newArray();
+    i = 0;
+    while (i < peerNames.length) {
+        peerList.push(encoding.json.fromString(peerNames[i]));
+        i = i + 1;
     }
 
     const pkg = encoding.json.newObject();
@@ -715,18 +815,143 @@ function installDependency(
     const source = encoding.json.newObject();
     source.set("type", encoding.json.fromString("registry"));
     pkg.set("source", source);
-    pkg.set("dependencies", encoding.json.newArray());
-    const cacheDir = cache.modulePath(expectedChecksum);
-    const materializedDir = path.join(localPackagesDir(projectDir), name);
-    if (!fs.exists(materializedDir)) {
-        copyDirRecursive(cacheDir, materializedDir);
-    }
-    pkg.set(
-        "type_mode",
-        encoding.json.fromString(inferTypeModeFromTsconfig(materializedDir))
-    );
+    pkg.set("dependencies", depList);
+    pkg.set("peer_dependencies", peerList);
+    pkg.set("install_path", encoding.json.fromString(installKey));
+    pkg.set("type_mode", encoding.json.fromString(inferTypeModeFromTsconfig(materializedDir)));
     pkg.set("_cached", encoding.json.fromBool(wasCached));
+    versionInfo.release();
     return pkg;
+}
+
+function pmInstall(
+    startDir: string,
+    production: boolean,
+    force: boolean,
+    update: boolean,
+    frozen: boolean,
+    ignoreScripts: boolean
+): InstallResult {
+    const dir = findProjectRoot(startDir);
+    fs.mkdirRecursive(localPackagesDir(dir));
+    fs.mkdirRecursive(localBuildDir(dir));
+
+    let previousLock: JsonValue | null = null;
+    if (!update) previousLock = LockfileUtil.load(dir);
+
+    const rootManifest = Manifest.load(dir);
+    const rootName = Manifest.name(rootManifest);
+    const rootNodeMode = Manifest.isNodeMode(dir);
+    const regCfg = Manifest.registryConfig(rootManifest, rootNodeMode);
+    const registryUrl = regCfg.get("url").string();
+    const npmMode = regCfg.get("npmMode").bool();
+    regCfg.release();
+    const registry = new Registry(registryUrl, npmMode);
+
+    const cache = new Cache();
+    cache.init();
+
+    let installed = 0;
+    let cached = 0;
+    let failed = 0;
+
+    const newLock = LockfileUtil.createEmpty(rootName);
+    const packages = newLock.get("packages");
+    const installedNames = encoding.json.newObject();
+    const pendingNames: string[] = [];
+    const pendingDeps: string[] = [];
+    const projectDirs: string[] = [];
+    projectDirs.push(dir);
+    const workspaceDirs = readWorkspacesFromPackageJson(dir);
+    let wi = 0;
+    while (wi < workspaceDirs.length) {
+        projectDirs.push(workspaceDirs[wi]);
+        wi = wi + 1;
+    }
+
+    let pi = 0;
+    while (pi < projectDirs.length) {
+        const manifest = Manifest.load(projectDirs[pi]);
+        const deps = Manifest.dependencies(manifest);
+        const devDeps = production
+            ? encoding.json.newObject()
+            : Manifest.devDependencies(manifest);
+        const depNames = deps.keys();
+        let i = 0;
+        while (i < depNames.length) {
+            pendingNames.push(depNames[i]);
+            pendingDeps.push(encoding.json.stringify(deps.get(depNames[i])));
+            i = i + 1;
+        }
+        const devNames = devDeps.keys();
+        i = 0;
+        while (i < devNames.length) {
+            pendingNames.push(devNames[i]);
+            pendingDeps.push(encoding.json.stringify(devDeps.get(devNames[i])));
+            i = i + 1;
+        }
+        manifest.release();
+        pi = pi + 1;
+    }
+
+    let q = 0;
+    while (q < pendingNames.length) {
+        const depName = pendingNames[q];
+        const dep = encoding.json.parse(pendingDeps[q]);
+        const already = installedNames.get(depName);
+        if (!already.isNull() && already.type() == "boolean" && already.bool()) {
+            q = q + 1;
+            continue;
+        }
+        try {
+            const result = installDependency(depName, dep, dir, registry, cache, previousLock, force, npmMode);
+            if (result != null) {
+                packages.push(result);
+                installedNames.set(depName, encoding.json.fromBool(true));
+                if (result.get("_cached").bool()) cached = cached + 1;
+                else installed = installed + 1;
+
+                // Bun-like peer auto-install (warn on unresolved during processing).
+                const peers = result.get("peer_dependencies");
+                let i = 0;
+                while (!peers.isNull() && peers.type() == "array" && i < peers.length()) {
+                    const peerName = peers.at(i).string();
+                    const seen = installedNames.get(peerName);
+                    if (seen.isNull()) {
+                        const peerDep = encoding.json.fromString("*");
+                        pendingNames.push(peerName);
+                        pendingDeps.push(encoding.json.stringify(peerDep));
+                        io.writeln("Warning: auto-installing peer dependency " + peerName + " for " + depName);
+                    }
+                    i = i + 1;
+                }
+
+                if (!ignoreScripts) {
+                    const installKey = result.get("install_path").string();
+                    const pkgDir = path.join(localPackagesDir(dir), installKey);
+                    if (fs.isDir(pkgDir)) runLifecycleScripts(depName, pkgDir);
+                }
+            }
+        } catch (e) {
+            failed = failed + 1;
+            throw e;
+        }
+        q = q + 1;
+    }
+
+    if (frozen && previousLock != null && !jsonEquals(previousLock, newLock)) {
+        newLock.release();
+        previousLock.release();
+        throw new Error("Lockfile is out of date; rerun without --frozen.");
+    }
+
+    LockfileUtil.save(dir, newLock);
+
+    rootManifest.release();
+    newLock.release();
+    if (previousLock != null) previousLock.release();
+
+    return new InstallResult(installed, cached, failed);
 }
 
 class InstallResult {
@@ -787,8 +1012,11 @@ function pmAdd(
         }
     } else {
         // No version — fetch latest from registry
-        const registryUrl = Manifest.registryUrl(manifest, nodeMode);
-        const registry = new Registry(registryUrl, nodeMode);
+        const regCfg = Manifest.registryConfig(manifest, nodeMode);
+        const registryUrl = regCfg.get("url").string();
+        const npmMode = regCfg.get("npmMode").bool();
+        regCfg.release();
+        const registry = new Registry(registryUrl, npmMode);
         const versions = registry.getVersions(pkgName);
 
         // Find latest non-prerelease version
@@ -832,7 +1060,7 @@ function pmAdd(
 
     // Run install unless --no-install
     if (!noInstall) {
-        pmInstall(dir, false, false, false);
+        pmInstall(dir, false, false, false, false, false);
     }
 }
 
@@ -902,18 +1130,25 @@ function pmRemove(startDir: string, pkgName: string): void {
 
 function pmUpdate(startDir: string, production: boolean): InstallResult {
     // Update is just install with update=true (ignores lockfile)
-    return pmInstall(startDir, production, false, true);
+    return pmInstall(startDir, production, false, true, false, false);
 }
 
 // ── PM Facade ──
 
 class PackageManager {
-    init(dir: string, name: string | null, nodeMode: boolean): void {
-        pmInit(dir, name, nodeMode);
+    init(dir: string, name: string | null, nodeMode: boolean, npmMode: boolean): void {
+        pmInit(dir, name, nodeMode, npmMode);
     }
 
-    install(startDir: string, production: boolean, force: boolean, update: boolean): InstallResult {
-        return pmInstall(startDir, production, force, update);
+    install(
+        startDir: string,
+        production: boolean,
+        force: boolean,
+        update: boolean,
+        frozen: boolean,
+        ignoreScripts: boolean
+    ): InstallResult {
+        return pmInstall(startDir, production, force, update, frozen, ignoreScripts);
     }
 
     add(startDir: string, spec: string, dev: boolean, exact: boolean, noInstall: boolean): void {

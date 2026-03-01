@@ -12,6 +12,7 @@ pub fn execute(
     yes: bool,
     interactive: bool,
     node: bool,
+    npm: bool,
 ) -> anyhow::Result<()> {
     let default_name = path
         .file_name()
@@ -38,8 +39,8 @@ pub fn execute(
     let name_arg = format!("\"{}\"", resolved_name.replace('"', "\\\""));
     let script = format!(
         r#"import pm from "std:pm";
-pm.init("{}", {}, {})"#,
-        dir_str, name_arg, node
+pm.init("{}", {}, {}, {})"#,
+        dir_str, name_arg, node, npm
     );
     match rt
         .eval(&script)
