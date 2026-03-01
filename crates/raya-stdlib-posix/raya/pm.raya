@@ -363,7 +363,7 @@ function copyDirRecursive(src: string, dst: string): void {
 
 function inferTypeModeFromTsconfig(depDir: string): string {
     const tsconfigPath = path.join(depDir, "tsconfig.json");
-    if (!fs.exists(tsconfigPath)) return "strict";
+    if (!fs.exists(tsconfigPath)) return "raya";
     try {
         const content = fs.readTextFile(tsconfigPath);
         const cfg = encoding.json.parse(content);
@@ -371,22 +371,12 @@ function inferTypeModeFromTsconfig(depDir: string): string {
         const allowJs = compilerOptions.get("allowJs");
         if (!allowJs.isNull() && allowJs.type() == "boolean" && allowJs.bool()) {
             cfg.release();
-            return "jsMode";
-        }
-        const strict = compilerOptions.get("strict");
-        if (!strict.isNull() && strict.type() == "boolean" && strict.bool()) {
-            cfg.release();
-            return "strict";
-        }
-        const noImplicitAny = compilerOptions.get("noImplicitAny");
-        if (!noImplicitAny.isNull() && noImplicitAny.type() == "boolean" && !noImplicitAny.bool()) {
-            cfg.release();
-            return "allowAny";
+            return "js";
         }
         cfg.release();
-        return "strict";
+        return "ts";
     } catch (_e) {
-        return "strict";
+        return "raya";
     }
 }
 
@@ -495,7 +485,7 @@ function pmInit(dir: string, name: string | null, nodeMode: boolean): void {
         manifest.set("dependencies", encoding.json.newObject());
         manifest.set("devDependencies", encoding.json.newObject());
         const rayaCfg = encoding.json.newObject();
-        rayaCfg.set("mode", encoding.json.fromString("strict"));
+        rayaCfg.set("mode", encoding.json.fromString("raya"));
         rayaCfg.set("entry", encoding.json.fromString("src/main.raya"));
         const registry = encoding.json.newObject();
         registry.set("url", encoding.json.fromString(DEFAULT_NPM_REGISTRY));
@@ -655,7 +645,7 @@ function installDependency(
         source.set("url", dep.get("git"));
         pkg.set("source", source);
         pkg.set("dependencies", encoding.json.newArray());
-        pkg.set("type_mode", encoding.json.fromString("strict"));
+        pkg.set("type_mode", encoding.json.fromString("raya"));
         pkg.set("_cached", encoding.json.fromBool(true));
         return pkg;
     }

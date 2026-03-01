@@ -567,7 +567,7 @@ fn transform_std_module(
             escape_string(name),
             binding.value_expr
         ));
-        export_type_fields.push(format!("{}: unknown", type_field_key(name)));
+        export_type_fields.push(format!("{}: {}", type_field_key(name), binding.type_expr));
     }
 
     let export_literal = format!("{{{}}}", export_pairs.join(", "));

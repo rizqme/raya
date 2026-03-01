@@ -1,6 +1,6 @@
 //! `raya eval` — Evaluate an inline expression or statement.
 
-use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, Value};
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode, Value};
 
 pub fn execute(
     code: String,
@@ -8,7 +8,11 @@ pub fn execute(
     no_print: bool,
     no_jit: bool,
     node_compat: bool,
+    type_mode: TypeMode,
 ) -> anyhow::Result<()> {
+    if matches!(type_mode, TypeMode::Ts | TypeMode::Js) && !node_compat {
+        anyhow::bail!("--mode ts/js requires --node-compat");
+    }
     let rt = Runtime::with_options(RuntimeOptions {
         no_jit,
         builtin_mode: if node_compat {
@@ -16,6 +20,8 @@ pub fn execute(
         } else {
             BuiltinMode::RayaStrict
         },
+        type_mode: Some(type_mode),
+        ts_options: None,
         ..Default::default()
     });
 

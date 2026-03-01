@@ -80,15 +80,18 @@ function divide(a: number, b: number): Result<number> {
 
 ## Mode-Specific Dynamic Types
 
-Raya has two type-system modes:
+Raya has three parsing/type modes:
 
-- `RayaStrict` (default):
+- `raya`:
   - `any` is forbidden.
   - bare `let x;` is forbidden.
   - fallback inference uses `unknown`.
   - `unknown` is not actionable until narrowed/casted.
-- `NodeCompat`:
-  - `any` is allowed.
+- `ts`:
+  - behavior is driven by `tsconfig.json` `compilerOptions`.
+  - explicit `any` is allowed, while implicit-any checks depend on flags.
+- `js`:
+  - dynamic JavaScript-compatible behavior.
   - bare `let x;` is allowed.
   - dynamic fallback may infer `JSObject`.
 

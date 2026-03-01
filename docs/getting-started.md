@@ -191,7 +191,7 @@ entry = "src/main.raya"
 dev = "run src/main.raya"
 ```
 
-Node mode writes `package.json` and places Raya settings under a top-level `raya` object with strict mode default:
+Node mode writes `package.json` and places Raya settings under a top-level `raya` object with raya mode default:
 
 ```json
 {
@@ -200,7 +200,7 @@ Node mode writes `package.json` and places Raya settings under a top-level `raya
   "dependencies": {},
   "devDependencies": {},
   "raya": {
-    "mode": "strict",
+    "mode": "raya",
     "entry": "src/main.raya",
     "registry": { "url": "https://registry.npmjs.org" }
   }

@@ -6,7 +6,7 @@
 use super::builtins::BuiltinSignatures;
 use super::error::BindError;
 use super::symbols::{ScopeKind, Symbol, SymbolFlags, SymbolKind, SymbolTable};
-use super::TypeSystemMode;
+use super::{CheckerPolicy, TypeSystemMode};
 use crate::parser::ast::*;
 use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type};
 use crate::parser::types::{TypeContext, TypeId};
@@ -35,6 +35,8 @@ pub struct Binder<'a> {
     generic_type_alias_params: std::collections::HashMap<String, Vec<String>>,
     /// Type system behavior mode.
     mode: TypeSystemMode,
+    /// Effective checker policy.
+    policy: CheckerPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,19 +56,27 @@ impl<'a> Binder<'a> {
             bound_functions: std::collections::HashMap::new(),
             detect_top_level_duplicates: true,
             generic_type_alias_params: std::collections::HashMap::new(),
-            mode: TypeSystemMode::Strict,
+            mode: TypeSystemMode::Raya,
+            policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
         }
     }
 
     /// Set checker/binder behavior mode.
     pub fn with_mode(mut self, mode: TypeSystemMode) -> Self {
         self.mode = mode;
+        self.policy = CheckerPolicy::for_mode(mode);
+        self
+    }
+
+    /// Set explicit checker/binder policy.
+    pub fn with_policy(mut self, policy: CheckerPolicy) -> Self {
+        self.policy = policy;
         self
     }
 
     #[inline]
-    fn allows_any(&self) -> bool {
-        matches!(self.mode, TypeSystemMode::AllowAny | TypeSystemMode::JsMode)
+    fn allows_explicit_any(&self) -> bool {
+        self.policy.allow_explicit_any
     }
 
     #[inline]
@@ -2034,7 +2044,7 @@ impl<'a> Binder<'a> {
             let param_ty = match &param.type_annotation {
                 Some(ty_annot) => self.resolve_type_annotation(ty_annot)?,
                 None => {
-                    if self.allows_any() {
+                    if self.policy.allow_implicit_any {
                         self.type_ctx.any_type()
                     } else {
                         self.type_ctx.unknown_type()
@@ -3084,7 +3094,7 @@ impl<'a> Binder<'a> {
                 // Check if it's a user-defined type or type parameter
                 let name = self.resolve(type_ref.name.name);
                 if name == "any" {
-                    return if self.allows_any() {
+                    return if self.allows_explicit_any() {
                         Ok(self.type_ctx.any_type())
                     } else {
                         Err(BindError::InvalidTypeExpr {
@@ -3206,9 +3216,9 @@ impl<'a> Binder<'a> {
                     });
                 }
 
-                if let Some(symbol) =
-                    self.symbols
-                        .resolve_from_scope(&name, self.symbols.current_scope_id())
+                if let Some(symbol) = self
+                    .symbols
+                    .resolve_from_scope(&name, self.symbols.current_scope_id())
                 {
                     if symbol.kind == SymbolKind::TypeAlias
                         || symbol.kind == SymbolKind::TypeParameter

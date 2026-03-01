@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Context};
 use raya_pm::PackageManifest;
-use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,11 +24,15 @@ pub struct RunArgs {
     pub cpu_prof: Option<std::path::PathBuf>,
     pub prof_interval: u64,
     pub node_compat: bool,
+    pub type_mode: TypeMode,
 }
 
 impl RunArgs {
-    fn to_runtime_options(&self) -> RuntimeOptions {
-        RuntimeOptions {
+    fn to_runtime_options(&self) -> anyhow::Result<RuntimeOptions> {
+        if matches!(self.type_mode, TypeMode::Ts | TypeMode::Js) && !self.node_compat {
+            anyhow::bail!("--mode ts/js requires --node-compat");
+        }
+        Ok(RuntimeOptions {
             threads: self.threads,
             heap_limit: self.heap_limit * 1024 * 1024, // MB → bytes
             timeout: self.timeout,
@@ -41,8 +45,9 @@ impl RunArgs {
             } else {
                 BuiltinMode::RayaStrict
             },
-            type_mode: None,
-        }
+            type_mode: Some(self.type_mode),
+            ts_options: None,
+        })
     }
 }
 
@@ -60,7 +65,7 @@ pub fn execute(args: RunArgs) -> anyhow::Result<()> {
         return super::debug::execute(target, args.inspect_brk, None, false);
     }
 
-    let rt = Runtime::with_options(args.to_runtime_options());
+    let rt = Runtime::with_options(args.to_runtime_options()?);
 
     match &args.target {
         None => run_default(&rt, &args),

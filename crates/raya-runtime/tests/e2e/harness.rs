@@ -198,7 +198,7 @@ pub fn compile_with_builtins(source: &str) -> E2EResult<(Module, Interner)> {
 /// Internal compile function
 fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, Interner)> {
     // Optionally prepend builtin and std sources
-    let (full_source, prelude_offset) = if include_builtins {
+    let (full_source, _prelude_offset) = if include_builtins {
         let std_prelude = build_std_import_prelude(source)?;
         let prelude = if std_prelude.prelude_source.is_empty() {
             get_builtin_sources().to_string()
@@ -222,7 +222,7 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
 
     // Bind (creates symbol table)
     let mut type_ctx = TypeContext::new();
-    let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(TypeSystemMode::Strict);
+    let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(TypeSystemMode::Raya);
 
     // Register builtin type signatures only if NOT including builtin sources
     // (to avoid duplicate symbol errors when source files define the same classes)
@@ -243,13 +243,7 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
         .map_err(|e| E2EError::TypeCheck(format!("Binding error: {:?}", e)))?;
 
     // Type check
-    let checker = if let Some(offset) = prelude_offset {
-        TypeChecker::new(&mut type_ctx, &symbols, &interner)
-            .with_mode(TypeSystemMode::Strict)
-            .with_skip_class_bodies_before(offset)
-    } else {
-        TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(TypeSystemMode::Strict)
-    };
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(TypeSystemMode::Raya);
     let check_result = checker
         .check_module(&ast)
         .map_err(|e| E2EError::TypeCheck(format!("{:?}", e)))?;
@@ -1443,7 +1437,7 @@ pub fn debug_compile(source: &str) -> String {
     };
 
     let mut type_ctx = TypeContext::new();
-    let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(TypeSystemMode::Strict);
+    let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(TypeSystemMode::Raya);
 
     // Register builtin signatures
     let builtin_sigs = raya_engine::builtins::to_checker_signatures();
@@ -1455,7 +1449,7 @@ pub fn debug_compile(source: &str) -> String {
     };
 
     let checker =
-        TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(TypeSystemMode::Strict);
+        TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(TypeSystemMode::Raya);
     let check_result = match checker.check_module(&ast) {
         Ok(r) => r,
         Err(e) => return format!("Type check error: {:?}", e),

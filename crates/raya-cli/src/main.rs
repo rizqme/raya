@@ -7,6 +7,7 @@ mod commands;
 mod output;
 
 use clap::{Parser, Subcommand};
+use raya_runtime::TypeMode;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -72,6 +73,9 @@ enum Commands {
         /// Enable Node-compatible builtin API surface.
         #[arg(long)]
         node_compat: bool,
+        /// Parsing/type mode: raya | ts | js
+        #[arg(long, default_value = "raya")]
+        mode: String,
     },
 
     /// Debug a Raya script interactively
@@ -111,6 +115,12 @@ enum Commands {
         /// Show what would be built without writing
         #[arg(long)]
         dry_run: bool,
+        /// Enable Node-compatible builtin API surface.
+        #[arg(long)]
+        node_compat: bool,
+        /// Parsing/type mode: raya | ts | js
+        #[arg(long, default_value = "raya")]
+        mode: String,
     },
 
     /// Type-check without building
@@ -137,6 +147,12 @@ enum Commands {
         /// Suppress all warnings
         #[arg(long)]
         no_warnings: bool,
+        /// Enable Node-compatible builtin API surface.
+        #[arg(long)]
+        node_compat: bool,
+        /// Parsing/type mode: raya | ts | js
+        #[arg(long, default_value = "raya")]
+        mode: String,
     },
 
     /// Evaluate an inline expression
@@ -155,6 +171,9 @@ enum Commands {
         /// Enable Node-compatible builtin API surface.
         #[arg(long)]
         node_compat: bool,
+        /// Parsing/type mode: raya | ts | js
+        #[arg(long, default_value = "raya")]
+        mode: String,
     },
 
     /// Run tests
@@ -215,6 +234,9 @@ enum Commands {
         /// Enable Node-compatible builtin API surface.
         #[arg(long)]
         node_compat: bool,
+        /// Parsing/type mode: raya | ts | js
+        #[arg(long, default_value = "raya")]
+        mode: String,
     },
 
     /// Initialize a new Raya project
@@ -350,6 +372,22 @@ fn looks_like_raya_file(arg: &str) -> bool {
     arg.ends_with(".raya") || arg.ends_with(".ryb")
 }
 
+fn parse_type_mode(mode: &str) -> anyhow::Result<TypeMode> {
+    match mode {
+        "raya" => Ok(TypeMode::Raya),
+        "ts" => Ok(TypeMode::Ts),
+        "js" => Ok(TypeMode::Js),
+        "strict" | "allowAny" | "jsMode" => Err(anyhow::anyhow!(
+            "Legacy mode '{}' is no longer supported. Use one of: raya, ts, js.",
+            mode
+        )),
+        _ => Err(anyhow::anyhow!(
+            "Invalid --mode '{}'. Expected one of: raya, ts, js.",
+            mode
+        )),
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // Handle implicit run: `raya ./file.raya` or `raya src/main.raya`
     let raw_args: Vec<String> = std::env::args().collect();
@@ -392,6 +430,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             cpu_prof,
             prof_interval,
             node_compat,
+            mode,
         } => commands::run::execute(commands::run::RunArgs {
             target,
             args,
@@ -408,6 +447,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             cpu_prof,
             prof_interval,
             node_compat,
+            type_mode: parse_type_mode(&mode)?,
         }),
 
         Commands::Debug {
@@ -424,7 +464,18 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             watch,
             sourcemap,
             dry_run,
-        } => commands::build::execute(files, out_dir, release, watch, sourcemap, dry_run),
+            node_compat,
+            mode,
+        } => commands::build::execute(
+            files,
+            out_dir,
+            release,
+            watch,
+            sourcemap,
+            dry_run,
+            node_compat,
+            parse_type_mode(&mode)?,
+        ),
 
         Commands::Check {
             files,
@@ -434,7 +485,19 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             allow,
             deny,
             no_warnings,
-        } => commands::check::execute(files, watch, strict, format, allow, deny, no_warnings),
+            node_compat,
+            mode,
+        } => commands::check::execute(
+            files,
+            watch,
+            strict,
+            format,
+            allow,
+            deny,
+            no_warnings,
+            node_compat,
+            parse_type_mode(&mode)?,
+        ),
 
         Commands::Eval {
             code,
@@ -442,7 +505,15 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             no_print,
             no_jit,
             node_compat,
-        } => commands::eval::execute(code, print, no_print, no_jit, node_compat),
+            mode,
+        } => commands::eval::execute(
+            code,
+            print,
+            no_print,
+            no_jit,
+            node_compat,
+            parse_type_mode(&mode)?,
+        ),
 
         Commands::Test {
             filter,
@@ -478,7 +549,8 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
         Commands::Repl {
             no_jit,
             node_compat,
-        } => commands::repl::execute(no_jit, node_compat),
+            mode,
+        } => commands::repl::execute(no_jit, node_compat, parse_type_mode(&mode)?),
 
         Commands::Init {
             path,

@@ -37,6 +37,7 @@ pub mod test_runner;
 mod vm_setup;
 
 // Re-export key types from raya-engine for convenience
+pub use crate::compile::TsCompilerOptions;
 pub use crate::compile::TypeMode;
 pub use raya_engine::compiler::Module;
 pub use raya_engine::vm::Value;
@@ -91,6 +92,8 @@ pub struct RuntimeOptions {
     /// Optional type-system mode override.
     /// None = inferred from builtin mode.
     pub type_mode: Option<TypeMode>,
+    /// Optional TS compiler options payload for `TypeMode::Ts`.
+    pub ts_options: Option<TsCompilerOptions>,
 }
 
 impl Default for RuntimeOptions {
@@ -105,6 +108,7 @@ impl Default for RuntimeOptions {
             prof_interval_us: 10_000,
             builtin_mode: BuiltinMode::RayaStrict,
             type_mode: None,
+            ts_options: None,
         }
     }
 }
@@ -158,6 +162,24 @@ impl Default for Runtime {
 }
 
 impl Runtime {
+    fn resolve_ts_options_for_inline(&self) -> Result<Option<TsCompilerOptions>, RuntimeError> {
+        if !matches!(self.options.type_mode, Some(TypeMode::Ts)) {
+            return Ok(self.options.ts_options.clone());
+        }
+        if let Some(opts) = &self.options.ts_options {
+            return Ok(Some(opts.clone()));
+        }
+        let cwd = std::env::current_dir().map_err(|e| {
+            RuntimeError::TypeCheck(format!("Failed to determine current directory: {}", e))
+        })?;
+        let tsconfig = loader::find_tsconfig(&cwd).ok_or_else(|| {
+            RuntimeError::TypeCheck(
+                "Type mode 'ts' requires a discoverable tsconfig.json".to_string(),
+            )
+        })?;
+        Ok(Some(loader::load_ts_compiler_options(&tsconfig)?))
+    }
+
     /// Create a runtime with default options.
     pub fn new() -> Self {
         Self {
@@ -186,8 +208,13 @@ impl Runtime {
             .options
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
-        let (module, interner) =
-            compile::compile_source_with_modes(source, self.options.builtin_mode, type_mode)?;
+        let ts_options = self.resolve_ts_options_for_inline()?;
+        let (module, interner) = compile::compile_source_with_modes_and_ts_options(
+            source,
+            self.options.builtin_mode,
+            type_mode,
+            ts_options.as_ref(),
+        )?;
         Ok(CompiledModule {
             module,
             interner: Some(interner),
@@ -197,7 +224,31 @@ impl Runtime {
     /// Compile a .raya source file to a bytecode module.
     pub fn compile_file(&self, path: &Path) -> Result<CompiledModule, RuntimeError> {
         let source = compile::load_source_with_local_imports(path)?;
-        self.compile(&source)
+        let type_mode = self
+            .options
+            .type_mode
+            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
+        let ts_options = if matches!(type_mode, TypeMode::Ts) {
+            let tsconfig =
+                loader::find_tsconfig(path.parent().unwrap_or(path)).ok_or_else(|| {
+                    RuntimeError::TypeCheck(
+                        "Type mode 'ts' requires a discoverable tsconfig.json".to_string(),
+                    )
+                })?;
+            Some(loader::load_ts_compiler_options(&tsconfig)?)
+        } else {
+            self.options.ts_options.clone()
+        };
+        let (module, interner) = compile::compile_source_with_modes_and_ts_options(
+            &source,
+            self.options.builtin_mode,
+            type_mode,
+            ts_options.as_ref(),
+        )?;
+        Ok(CompiledModule {
+            module,
+            interner: Some(interner),
+        })
     }
 
     /// Compile a Raya source string with options (e.g., source map).
@@ -210,11 +261,13 @@ impl Runtime {
             .options
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
-        let (module, interner) = compile::compile_source_with_options_and_modes(
+        let ts_options = self.resolve_ts_options_for_inline()?;
+        let (module, interner) = compile::compile_source_with_options_and_modes_and_ts_options(
             source,
             options,
             self.options.builtin_mode,
             type_mode,
+            ts_options.as_ref(),
         )?;
         Ok(CompiledModule {
             module,
@@ -229,7 +282,32 @@ impl Runtime {
         options: &compile::CompileOptions,
     ) -> Result<CompiledModule, RuntimeError> {
         let source = compile::load_source_with_local_imports(path)?;
-        self.compile_with_options(&source, options)
+        let type_mode = self
+            .options
+            .type_mode
+            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
+        let ts_options = if matches!(type_mode, TypeMode::Ts) {
+            let tsconfig =
+                loader::find_tsconfig(path.parent().unwrap_or(path)).ok_or_else(|| {
+                    RuntimeError::TypeCheck(
+                        "Type mode 'ts' requires a discoverable tsconfig.json".to_string(),
+                    )
+                })?;
+            Some(loader::load_ts_compiler_options(&tsconfig)?)
+        } else {
+            self.options.ts_options.clone()
+        };
+        let (module, interner) = compile::compile_source_with_options_and_modes_and_ts_options(
+            &source,
+            options,
+            self.options.builtin_mode,
+            type_mode,
+            ts_options.as_ref(),
+        )?;
+        Ok(CompiledModule {
+            module,
+            interner: Some(interner),
+        })
     }
 
     // ── Checking ─────────────────────────────────────────────────────────
@@ -242,13 +320,39 @@ impl Runtime {
             .options
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
-        compile::check_source_with_modes(source, self.options.builtin_mode, type_mode)
+        let ts_options = self.resolve_ts_options_for_inline()?;
+        compile::check_source_with_modes_and_ts_options(
+            source,
+            self.options.builtin_mode,
+            type_mode,
+            ts_options.as_ref(),
+        )
     }
 
     /// Type-check a .raya source file without generating bytecode.
     pub fn check_file(&self, path: &Path) -> Result<compile::CheckDiagnostics, RuntimeError> {
         let source = compile::load_source_with_local_imports(path)?;
-        self.check(&source)
+        let type_mode = self
+            .options
+            .type_mode
+            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
+        let ts_options = if matches!(type_mode, TypeMode::Ts) {
+            let tsconfig =
+                loader::find_tsconfig(path.parent().unwrap_or(path)).ok_or_else(|| {
+                    RuntimeError::TypeCheck(
+                        "Type mode 'ts' requires a discoverable tsconfig.json".to_string(),
+                    )
+                })?;
+            Some(loader::load_ts_compiler_options(&tsconfig)?)
+        } else {
+            self.options.ts_options.clone()
+        };
+        compile::check_source_with_modes_and_ts_options(
+            &source,
+            self.options.builtin_mode,
+            type_mode,
+            ts_options.as_ref(),
+        )
     }
 
     // ── Loading ──────────────────────────────────────────────────────────

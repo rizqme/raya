@@ -487,6 +487,14 @@ impl Diagnostic {
             .with_code(ErrorCode(warning.code().as_str()))
             .with_primary_label(file_id, *shadow, "shadows outer variable")
             .with_secondary_label(file_id, *original, "previously declared here"),
+
+            CheckWarning::UnsupportedTsFlag { flag, span } => Diagnostic::warning(format!(
+                "Unsupported TypeScript compiler option '{}' is currently ignored",
+                flag
+            ))
+            .with_code(ErrorCode(warning.code().as_str()))
+            .with_primary_label(file_id, *span, "unsupported tsconfig flag")
+            .with_help("Flag parsed successfully, but behavior is not implemented yet"),
         }
     }
 

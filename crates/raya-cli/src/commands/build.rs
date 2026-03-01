@@ -1,7 +1,7 @@
 //! `raya build` — Compile Raya source to .ryb bytecode.
 
 use raya_runtime::compile::CompileOptions;
-use raya_runtime::Runtime;
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode};
 use std::path::{Path, PathBuf};
 
 pub fn execute(
@@ -11,10 +11,24 @@ pub fn execute(
     watch: bool,
     sourcemap: bool,
     dry_run: bool,
+    node_compat: bool,
+    type_mode: TypeMode,
 ) -> anyhow::Result<()> {
     let _ = (release, watch); // TODO: wire these flags
 
-    let rt = Runtime::new();
+    if matches!(type_mode, TypeMode::Ts | TypeMode::Js) && !node_compat {
+        anyhow::bail!("--mode ts/js requires --node-compat");
+    }
+
+    let rt = Runtime::with_options(RuntimeOptions {
+        builtin_mode: if node_compat {
+            BuiltinMode::NodeCompat
+        } else {
+            BuiltinMode::RayaStrict
+        },
+        type_mode: Some(type_mode),
+        ..Default::default()
+    });
     let out_dir = PathBuf::from(&out_dir);
 
     let options = CompileOptions { sourcemap };

@@ -4,7 +4,7 @@
 //! input support. State (variables, functions, classes, imports) is maintained
 //! across inputs.
 
-use raya_runtime::{BuiltinMode, RuntimeOptions, Session};
+use raya_runtime::{BuiltinMode, RuntimeOptions, Session, TypeMode};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use rustyline::{Cmd, KeyCode, KeyEvent, Modifiers};
@@ -12,7 +12,10 @@ use rustyline::{Cmd, KeyCode, KeyEvent, Modifiers};
 const PROMPT: &str = "raya> ";
 const CONTINUATION_PROMPT: &str = "  ... ";
 
-pub fn execute(no_jit: bool, node_compat: bool) -> anyhow::Result<()> {
+pub fn execute(no_jit: bool, node_compat: bool, type_mode: TypeMode) -> anyhow::Result<()> {
+    if matches!(type_mode, TypeMode::Ts | TypeMode::Js) && !node_compat {
+        anyhow::bail!("--mode ts/js requires --node-compat");
+    }
     let options = RuntimeOptions {
         no_jit,
         builtin_mode: if node_compat {
@@ -20,6 +23,8 @@ pub fn execute(no_jit: bool, node_compat: bool) -> anyhow::Result<()> {
         } else {
             BuiltinMode::RayaStrict
         },
+        type_mode: Some(type_mode),
+        ts_options: None,
         ..Default::default()
     };
 

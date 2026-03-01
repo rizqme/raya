@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -57,13 +57,6 @@ fn raya_cli_bin(workspace: &Path) -> PathBuf {
         bin
     })
     .clone()
-}
-
-fn cli_http_suite_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .expect("cli_http_e2e suite lock")
 }
 
 struct ServerHandle {
@@ -236,7 +229,6 @@ fn shutdown_server(workspace: &Path, tmp_dir: &Path, mut server: ServerHandle) -
 
 #[test]
 fn e2e_cli_http_stress_workflow() {
-    let _suite_guard = cli_http_suite_lock();
     let workspace = workspace_root();
     let tmp_dir = unique_tmp_dir("cli-http-stress");
     let mut server = boot_server(&workspace, &tmp_dir);
@@ -325,7 +317,6 @@ fn e2e_cli_http_stress_workflow() {
 
 #[test]
 fn e2e_cli_http_server_readiness_smoke() {
-    let _suite_guard = cli_http_suite_lock();
     let workspace = workspace_root();
     let tmp_dir = unique_tmp_dir("cli-http-ready-smoke");
     let server = boot_server(&workspace, &tmp_dir);
@@ -339,7 +330,6 @@ fn e2e_cli_http_server_readiness_smoke() {
 
 #[test]
 fn e2e_cli_http_route_sequence_contracts() {
-    let _suite_guard = cli_http_suite_lock();
     let workspace = workspace_root();
     let tmp_dir = unique_tmp_dir("cli-http-route-seq");
     let server = boot_server(&workspace, &tmp_dir);
@@ -401,7 +391,6 @@ fn e2e_cli_http_route_sequence_contracts() {
 
 #[test]
 fn e2e_cli_http_diag_contract() {
-    let _suite_guard = cli_http_suite_lock();
     let workspace = workspace_root();
     let tmp_dir = unique_tmp_dir("cli-http-diag");
     let mut server = boot_server(&workspace, &tmp_dir);
@@ -436,7 +425,6 @@ fn e2e_cli_http_diag_contract() {
 
 #[test]
 fn e2e_cli_http_echo_and_not_found_contracts() {
-    let _suite_guard = cli_http_suite_lock();
     let workspace = workspace_root();
     let tmp_dir = unique_tmp_dir("cli-http-echo404");
     let mut server = boot_server(&workspace, &tmp_dir);
@@ -498,7 +486,6 @@ fn e2e_cli_http_echo_and_not_found_contracts() {
 
 #[test]
 fn e2e_cli_http_health_contract_and_artifacts() {
-    let _suite_guard = cli_http_suite_lock();
     let workspace = workspace_root();
     let tmp_dir = unique_tmp_dir("cli-http-health");
     let server = boot_server(&workspace, &tmp_dir);
@@ -526,7 +513,6 @@ fn e2e_cli_http_health_contract_and_artifacts() {
 
 #[test]
 fn e2e_cli_http_echo_method_not_allowed_contract() {
-    let _suite_guard = cli_http_suite_lock();
     let workspace = workspace_root();
     let tmp_dir = unique_tmp_dir("cli-http-echo405");
     let server = boot_server(&workspace, &tmp_dir);

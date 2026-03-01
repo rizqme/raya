@@ -12,7 +12,7 @@ use super::exhaustiveness::{check_switch_exhaustiveness, ExhaustivenessResult};
 use super::narrowing::{apply_type_guard, TypeEnv};
 use super::symbols::{SymbolKind, SymbolTable};
 use super::type_guards::{extract_all_type_guards, extract_type_guard, TypeGuard};
-use super::TypeSystemMode;
+use super::{CheckerPolicy, TypeSystemMode};
 use crate::parser::ast::*;
 use crate::parser::token::Span;
 use crate::parser::types::normalize::contains_type_variables;
@@ -183,8 +183,14 @@ pub struct TypeChecker<'a> {
     /// will skip full member body checking and only sync scopes.
     /// Used by runtime compile pipeline to trust prepended builtin/stdlib sources.
     skip_class_bodies_before: Option<usize>,
+    /// If set, suppress checker errors whose span ends before this byte offset.
+    /// This is used to ignore diagnostics from trusted prepended prelude sources
+    /// while still collecting full expression type information.
+    suppress_errors_before: Option<usize>,
     /// Type-system behavior mode.
     mode: TypeSystemMode,
+    /// Effective checker policy.
+    policy: CheckerPolicy,
     /// True while checking the left-hand side of an assignment expression.
     in_assignment_lhs: bool,
 }
@@ -224,8 +230,10 @@ impl<'a> TypeChecker<'a> {
             arrow_depth: 0,
             warnings: Vec::new(),
             skip_class_bodies_before: None,
+            suppress_errors_before: None,
             return_type_collector: Vec::new(),
-            mode: TypeSystemMode::Strict,
+            mode: TypeSystemMode::Raya,
+            policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
             in_assignment_lhs: false,
         }
     }
@@ -233,22 +241,39 @@ impl<'a> TypeChecker<'a> {
     /// Set checker behavior mode.
     pub fn with_mode(mut self, mode: TypeSystemMode) -> Self {
         self.mode = mode;
+        self.policy = CheckerPolicy::for_mode(mode);
+        self
+    }
+
+    /// Set explicit checker policy.
+    pub fn with_policy(mut self, policy: CheckerPolicy) -> Self {
+        self.policy = policy;
         self
     }
 
     #[inline]
     fn is_strict_mode(&self) -> bool {
-        matches!(self.mode, TypeSystemMode::Strict | TypeSystemMode::AllowAny)
+        self.policy.strict_assignability
     }
 
     #[inline]
-    fn allows_any(&self) -> bool {
-        matches!(self.mode, TypeSystemMode::AllowAny | TypeSystemMode::JsMode)
+    fn allows_explicit_any(&self) -> bool {
+        self.policy.allow_explicit_any
+    }
+
+    #[inline]
+    fn allows_implicit_any(&self) -> bool {
+        self.policy.allow_implicit_any
+    }
+
+    #[inline]
+    fn allows_dynamic_any(&self) -> bool {
+        self.policy.allow_explicit_any || self.policy.allow_js_dynamic_fallback
     }
 
     #[inline]
     fn is_js_mode(&self) -> bool {
-        matches!(self.mode, TypeSystemMode::JsMode)
+        matches!(self.mode, TypeSystemMode::Js)
     }
 
     #[inline]
@@ -264,8 +289,8 @@ impl<'a> TypeChecker<'a> {
         self.type_ctx.jsobject_inner(ty).is_some()
             || matches!(
                 self.type_ctx.get(ty),
-                Some(crate::parser::types::Type::Unknown)
-                    | Some(crate::parser::types::Type::Any)
+                Some(crate::parser::types::Type::Any)
+                    | Some(crate::parser::types::Type::Unknown)
                     | Some(crate::parser::types::Type::JSObject)
             )
     }
@@ -295,7 +320,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_unknown_actionable(&mut self, ty: TypeId, operation: &str, span: Span) {
-        if self.is_strict_mode() && self.type_is_unknown(ty) {
+        if self.policy.enforce_unknown_not_actionable && self.type_is_unknown(ty) {
             self.errors.push(CheckError::UnknownNotActionable {
                 operation: operation.to_string(),
                 span,
@@ -447,7 +472,7 @@ impl<'a> TypeChecker<'a> {
         field_name: &str,
         field_ty: TypeId,
     ) {
-        if self.is_strict_mode() {
+        if !self.policy.allow_js_dynamic_fallback {
             return;
         }
         let Expression::Identifier(ident) = object_expr else {
@@ -475,7 +500,7 @@ impl<'a> TypeChecker<'a> {
             .unwrap_or_else(|| self.type_ctx.unknown_type());
 
         let inner_base = self.type_ctx.jsobject_inner(base_ty).unwrap_or(base_ty);
-        let index_value_ty = if self.allows_any() {
+        let index_value_ty = if self.allows_dynamic_any() {
             self.type_ctx.any_type()
         } else {
             self.type_ctx.unknown_type()
@@ -680,6 +705,12 @@ impl<'a> TypeChecker<'a> {
         self
     }
 
+    /// Suppress checker errors for spans fully before `offset`.
+    pub fn with_suppress_errors_before(mut self, offset: usize) -> Self {
+        self.suppress_errors_before = Some(offset);
+        self
+    }
+
     /// Resolve a parser Symbol to a String
     #[inline]
     fn resolve(&self, sym: ParserSymbol) -> String {
@@ -718,6 +749,10 @@ impl<'a> TypeChecker<'a> {
     pub fn check_module(mut self, module: &Module) -> Result<CheckResult, Vec<CheckError>> {
         for stmt in &module.statements {
             self.check_stmt(stmt);
+        }
+
+        if let Some(offset) = self.suppress_errors_before {
+            self.errors.retain(|e| e.span().end > offset);
         }
 
         // Collect unused variable warnings
@@ -821,7 +856,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Check variable declaration
     fn check_var_decl(&mut self, decl: &VariableDecl) {
-        if self.is_strict_mode()
+        if !self.policy.allow_bare_let
             && decl.kind == VariableKind::Let
             && decl.type_annotation.is_none()
             && decl.initializer.is_none()
@@ -988,7 +1023,7 @@ impl<'a> TypeChecker<'a> {
         let saved_env = self.type_env.clone();
         self.type_env = TypeEnv::new();
 
-        if self.is_strict_mode() && !self.allows_any() {
+        if !self.allows_implicit_any() {
             for param in &func.params {
                 if param.type_annotation.is_none() {
                     self.errors
@@ -1329,10 +1364,7 @@ impl<'a> TypeChecker<'a> {
                     self.type_env = TypeEnv::new();
 
                     for param in &ctor.params {
-                        if self.is_strict_mode()
-                            && !self.allows_any()
-                            && param.type_annotation.is_none()
-                        {
+                        if !self.allows_implicit_any() && param.type_annotation.is_none() {
                             self.errors
                                 .push(CheckError::ImplicitAnyForbidden { span: param.span });
                         }
@@ -1368,8 +1400,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 crate::parser::ast::ClassMember::Field(field) => {
                     self.check_field_decorators(field);
-                    if self.is_strict_mode()
-                        && !self.allows_any()
+                    if !self.allows_implicit_any()
                         && field.type_annotation.is_none()
                         && field.initializer.is_none()
                     {
@@ -1397,7 +1428,7 @@ impl<'a> TypeChecker<'a> {
 
         // strictPropertyInitialization: non-static fields without initializer
         // must be definitely assigned in constructor.
-        if self.is_strict_mode() {
+        if self.policy.strict_property_initialization {
             let required_fields: Vec<(String, Span)> = class
                 .members
                 .iter()
@@ -2239,7 +2270,7 @@ impl<'a> TypeChecker<'a> {
             if let Some(ref param) = catch.param {
                 let catch_ty = match param {
                     Pattern::Identifier(_) => {
-                        if self.is_strict_mode() {
+                        if self.policy.use_unknown_in_catch_variables {
                             self.type_ctx.unknown_type()
                         } else {
                             self.inference_fallback_type()
@@ -2356,7 +2387,7 @@ impl<'a> TypeChecker<'a> {
             return func.return_type;
         }
 
-        if self.allows_any() && self.type_is_dynamic_anyish(tag_ty) {
+        if self.allows_dynamic_any() && self.type_is_dynamic_anyish(tag_ty) {
             return self.type_ctx.any_type();
         }
 
@@ -2896,7 +2927,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => {
-                if self.allows_any() && self.type_is_dynamic_anyish(callee_ty) {
+                if self.allows_dynamic_any() && self.type_is_dynamic_anyish(callee_ty) {
                     return self.type_ctx.any_type();
                 }
                 self.errors.push(CheckError::NotCallable {
@@ -2922,7 +2953,7 @@ impl<'a> TypeChecker<'a> {
         let target_fn = match self.type_ctx.get(target_ty).cloned() {
             Some(crate::parser::types::Type::Function(func)) => func,
             _ => {
-                if self.allows_any() && self.type_is_dynamic_anyish(target_ty) {
+                if self.allows_dynamic_any() && self.type_is_dynamic_anyish(target_ty) {
                     for arg in &call.arguments {
                         self.check_expr(arg);
                     }
@@ -3517,7 +3548,7 @@ impl<'a> TypeChecker<'a> {
         let mut param_types = Vec::new();
 
         for param in &arrow.params {
-            if self.is_strict_mode() && !self.allows_any() && param.type_annotation.is_none() {
+            if !self.allows_implicit_any() && param.type_annotation.is_none() {
                 self.errors
                     .push(CheckError::ImplicitAnyForbidden { span: param.span });
             }
@@ -3739,7 +3770,7 @@ impl<'a> TypeChecker<'a> {
                 Some(crate::parser::types::Type::JSObject) | Some(crate::parser::types::Type::Any)
             )
         {
-            return if self.allows_any() {
+            return if self.allows_dynamic_any() {
                 self.type_ctx.any_type()
             } else {
                 self.inference_fallback_type()
@@ -4135,7 +4166,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(class_ty) = self.current_class_type {
             return class_ty;
         }
-        if self.is_strict_mode() {
+        if self.policy.no_implicit_this {
             self.errors.push(CheckError::ImplicitThisForbidden { span });
         }
         // Outside of a class, 'this' is unknown
@@ -4163,7 +4194,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Dynamic-anyish is allowed through in compatibility modes.
-        if self.allows_any() && self.type_is_dynamic_anyish(arg_ty) {
+        if self.allows_dynamic_any() && self.type_is_dynamic_anyish(arg_ty) {
             return self.type_ctx.any_type();
         }
 
@@ -4253,7 +4284,7 @@ impl<'a> TypeChecker<'a> {
                             );
                         }
                     }
-                    if self.allows_any() && self.type_is_dynamic_anyish(*operand_ty) {
+                    if self.allows_dynamic_any() && self.type_is_dynamic_anyish(*operand_ty) {
                         return self.type_ctx.any_type();
                     }
                 }
@@ -4286,7 +4317,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
-                    if self.allows_any() && self.type_is_dynamic_anyish(*operand_ty) {
+                    if self.allows_dynamic_any() && self.type_is_dynamic_anyish(*operand_ty) {
                         return self.type_ctx.any_type();
                     }
                 }
@@ -4840,7 +4871,7 @@ impl<'a> TypeChecker<'a> {
                 Some(crate::parser::types::Type::JSObject) | Some(crate::parser::types::Type::Any)
             )
         {
-            return if self.allows_any() {
+            return if self.allows_dynamic_any() {
                 self.type_ctx.any_type()
             } else {
                 self.inference_fallback_type()
@@ -6139,7 +6170,7 @@ impl<'a> TypeChecker<'a> {
                 // Check if it's a user-defined type or type parameter
                 let name = self.resolve(type_ref.name.name);
                 if name == "any" {
-                    if !self.allows_any() {
+                    if !self.allows_explicit_any() {
                         self.errors.push(CheckError::StrictAnyForbidden {
                             span: type_ref.name.span,
                         });
@@ -6902,8 +6933,9 @@ impl<'a> TypeChecker<'a> {
             Some(_) | None => {
                 self.errors.push(CheckError::InvalidDecorator {
                     ty: self.type_ctx.display(decorator_ty),
-                    expected: "ParameterDecorator<T> or decorator factory returning ParameterDecorator<T>"
-                        .to_string(),
+                    expected:
+                        "ParameterDecorator<T> or decorator factory returning ParameterDecorator<T>"
+                            .to_string(),
                     span: decorator.span,
                 });
             }

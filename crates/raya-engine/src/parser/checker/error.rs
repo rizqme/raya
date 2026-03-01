@@ -478,6 +478,8 @@ pub enum WarningCode {
     UnreachableCode,
     /// Shadowed variable (W1005)
     ShadowedVariable,
+    /// Unsupported tsconfig compiler option currently ignored (W1006)
+    UnsupportedTsFlag,
 }
 
 impl WarningCode {
@@ -489,6 +491,7 @@ impl WarningCode {
             WarningCode::UnusedParameter => "W1003",
             WarningCode::UnreachableCode => "W1004",
             WarningCode::ShadowedVariable => "W1005",
+            WarningCode::UnsupportedTsFlag => "W1006",
         }
     }
 
@@ -500,6 +503,7 @@ impl WarningCode {
             "unused-parameter" => Some(WarningCode::UnusedParameter),
             "unreachable-code" => Some(WarningCode::UnreachableCode),
             "shadowed-variable" => Some(WarningCode::ShadowedVariable),
+            "unsupported-ts-flag" => Some(WarningCode::UnsupportedTsFlag),
             _ => None,
         }
     }
@@ -531,6 +535,13 @@ pub enum CheckWarning {
         /// Location of shadowing declaration
         shadow: Span,
     },
+    /// Parsed tsconfig option is not implemented yet (warn and ignore).
+    UnsupportedTsFlag {
+        /// Flag key (compilerOptions key)
+        flag: String,
+        /// Anchor span in the user's source file
+        span: Span,
+    },
 }
 
 impl CheckWarning {
@@ -540,6 +551,7 @@ impl CheckWarning {
             CheckWarning::UnusedVariable { span, .. } => *span,
             CheckWarning::UnreachableCode { span } => *span,
             CheckWarning::ShadowedVariable { shadow, .. } => *shadow,
+            CheckWarning::UnsupportedTsFlag { span, .. } => *span,
         }
     }
 
@@ -549,6 +561,7 @@ impl CheckWarning {
             CheckWarning::UnusedVariable { .. } => WarningCode::UnusedVariable,
             CheckWarning::UnreachableCode { .. } => WarningCode::UnreachableCode,
             CheckWarning::ShadowedVariable { .. } => WarningCode::ShadowedVariable,
+            CheckWarning::UnsupportedTsFlag { .. } => WarningCode::UnsupportedTsFlag,
         }
     }
 }

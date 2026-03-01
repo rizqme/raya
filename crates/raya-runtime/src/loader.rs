@@ -2,7 +2,7 @@
 
 use raya_engine::compiler::Module;
 use serde_json::Value as JsonValue;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::RuntimeError;
 use crate::CompiledModule;
@@ -182,9 +182,13 @@ fn load_entry_point(path: &Path) -> Result<CompiledModule, RuntimeError> {
         Some("ryb") => load_bytecode_file(path),
         Some("raya") => {
             let source = std::fs::read_to_string(path)?;
-            let type_mode = infer_type_mode_for_path(path);
-            let (module, interner) =
-                compile::compile_source_with_modes(&source, BuiltinMode::RayaStrict, type_mode)?;
+            let (type_mode, ts_options) = infer_type_mode_for_path(path)?;
+            let (module, interner) = compile::compile_source_with_modes_and_ts_options(
+                &source,
+                BuiltinMode::RayaStrict,
+                type_mode,
+                ts_options.as_ref(),
+            )?;
             Ok(CompiledModule {
                 module,
                 interner: Some(interner),
@@ -197,44 +201,64 @@ fn load_entry_point(path: &Path) -> Result<CompiledModule, RuntimeError> {
     }
 }
 
-fn infer_type_mode_for_path(path: &Path) -> TypeMode {
+fn infer_type_mode_for_path(
+    path: &Path,
+) -> Result<(TypeMode, Option<compile::TsCompilerOptions>), RuntimeError> {
     let mut dir = match path.parent() {
         Some(p) => p.to_path_buf(),
-        None => return TypeMode::Strict,
+        None => return Ok((TypeMode::Raya, None)),
     };
+    loop {
+        if let Some(tsconfig_path) = find_tsconfig(&dir) {
+            let ts_options = load_ts_compiler_options(&tsconfig_path)?;
+            if ts_options.allow_js.unwrap_or(false) {
+                return Ok((TypeMode::Js, Some(ts_options)));
+            }
+            return Ok((TypeMode::Ts, Some(ts_options)));
+        }
+        if !dir.pop() {
+            return Ok((TypeMode::Raya, None));
+        }
+    }
+}
+
+pub fn find_tsconfig(start_dir: &Path) -> Option<PathBuf> {
+    let mut dir = start_dir.to_path_buf();
     loop {
         let tsconfig_path = dir.join("tsconfig.json");
         if tsconfig_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&tsconfig_path) {
-                if let Ok(value) = serde_json::from_str::<JsonValue>(&content) {
-                    let compiler = value.get("compilerOptions");
-                    let allow_js = compiler
-                        .and_then(|c| c.get("allowJs"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    if allow_js {
-                        return TypeMode::JsMode;
-                    }
-                    let strict = compiler
-                        .and_then(|c| c.get("strict"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    if strict {
-                        return TypeMode::Strict;
-                    }
-                    let no_implicit_any = compiler
-                        .and_then(|c| c.get("noImplicitAny"))
-                        .and_then(|v| v.as_bool());
-                    if no_implicit_any == Some(false) {
-                        return TypeMode::AllowAny;
-                    }
-                    return TypeMode::Strict;
-                }
-            }
-            return TypeMode::Strict;
+            return Some(tsconfig_path);
         }
         if !dir.pop() {
-            return TypeMode::Strict;
+            return None;
         }
     }
+}
+
+pub fn load_ts_compiler_options(path: &Path) -> Result<compile::TsCompilerOptions, RuntimeError> {
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        RuntimeError::TypeCheck(format!(
+            "Failed to read tsconfig '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+    let value: JsonValue = serde_json::from_str(&content).map_err(|e| {
+        RuntimeError::TypeCheck(format!(
+            "Failed to parse tsconfig '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+    let compiler = value
+        .get("compilerOptions")
+        .cloned()
+        .unwrap_or(JsonValue::Null);
+    serde_json::from_value::<compile::TsCompilerOptions>(compiler).map_err(|e| {
+        RuntimeError::TypeCheck(format!(
+            "Failed to parse compilerOptions in '{}': {}",
+            path.display(),
+            e
+        ))
+    })
 }

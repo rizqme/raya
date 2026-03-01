@@ -4,7 +4,7 @@ use raya_engine::parser::checker::{
     BindError, CheckError, CheckWarning, Diagnostic, SimpleFiles, WarningCode, WarningConfig,
 };
 use raya_engine::parser::Span;
-use raya_runtime::Runtime;
+use raya_runtime::{loader, BuiltinMode, Runtime, RuntimeOptions, TsCompilerOptions, TypeMode};
 
 use super::files::collect_raya_files;
 
@@ -16,6 +16,8 @@ pub fn execute(
     allow: Vec<String>,
     deny: Vec<String>,
     no_warnings: bool,
+    node_compat: bool,
+    type_mode: TypeMode,
 ) -> anyhow::Result<()> {
     let raya_files = collect_raya_files(&files)?;
 
@@ -24,8 +26,11 @@ pub fn execute(
         std::process::exit(1);
     }
 
+    if matches!(type_mode, TypeMode::Ts | TypeMode::Js) && !node_compat {
+        anyhow::bail!("--mode ts/js requires --node-compat");
+    }
+
     let warning_config = build_warning_config(strict, &allow, &deny, no_warnings);
-    let rt = Runtime::new();
 
     let mut total_errors = 0usize;
     let mut total_warnings = 0usize;
@@ -42,6 +47,32 @@ pub fn execute(
                 continue;
             }
         };
+
+        let ts_options: Option<TsCompilerOptions> = if matches!(type_mode, TypeMode::Ts) {
+            let parent = file_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let tsconfig = loader::find_tsconfig(parent).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--mode ts requires discoverable tsconfig.json near {}",
+                    file_path.display()
+                )
+            })?;
+            Some(loader::load_ts_compiler_options(&tsconfig)?)
+        } else {
+            None
+        };
+
+        let rt = Runtime::with_options(RuntimeOptions {
+            builtin_mode: if node_compat {
+                BuiltinMode::NodeCompat
+            } else {
+                BuiltinMode::RayaStrict
+            },
+            type_mode: Some(type_mode),
+            ts_options,
+            ..Default::default()
+        });
 
         let diagnostics = match rt.check(&source) {
             Ok(d) => d,
@@ -172,6 +203,7 @@ fn build_warning_config(
         config.disabled.insert(WarningCode::UnusedParameter);
         config.disabled.insert(WarningCode::UnreachableCode);
         config.disabled.insert(WarningCode::ShadowedVariable);
+        config.disabled.insert(WarningCode::UnsupportedTsFlag);
     }
 
     for name in allow {
@@ -314,6 +346,11 @@ fn adjust_warning(warn: &CheckWarning, offset: usize) -> Option<CheckWarning> {
     let mut adjusted = warn.clone();
     match &mut adjusted {
         CheckWarning::UnusedVariable { span, .. } => {
+            if let Some(s) = adjust_span(*span, offset) {
+                *span = s;
+            }
+        }
+        CheckWarning::UnsupportedTsFlag { span, .. } => {
             if let Some(s) = adjust_span(*span, offset) {
                 *span = s;
             }
