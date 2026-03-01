@@ -1169,3 +1169,35 @@ fn test_non_callable_method_decorator_expression_compile_error() {
         "InvalidDecorator",
     );
 }
+
+#[test]
+fn test_non_callable_class_decorator_factory_result_compile_error() {
+    expect_compile_error(
+        "function Controller(path: string): number {
+             return 1;
+         }
+
+         @Controller(\"/api\")
+         class Api {}
+
+         return 0;",
+        "InvalidDecorator",
+    );
+}
+
+#[test]
+fn test_non_callable_method_decorator_factory_result_compile_error() {
+    expect_compile_error(
+        "function Route(path: string): number {
+             return 1;
+         }
+
+         class Service {
+             @Route(\"/x\")
+             run(): number { return 1; }
+         }
+
+         return 0;",
+        "InvalidDecorator",
+    );
+}

@@ -347,6 +347,10 @@ pub struct Lowerer<'a> {
     local_map: FxHashMap<Symbol, u16>,
     /// Local variable index to register mapping
     local_registers: FxHashMap<u16, Register>,
+    /// Local indices declared callable via type annotations.
+    callable_local_hints: FxHashSet<u16>,
+    /// Symbols declared callable via type annotations.
+    callable_symbol_hints: FxHashSet<Symbol>,
     /// Next local index (for both named and anonymous locals)
     next_local: u16,
     /// Function name to ID mapping
@@ -434,6 +438,9 @@ pub struct Lowerer<'a> {
     /// Method return TypeId mapping (for ALL return types, not just class types)
     /// Populated during class registration. Used for bound method return type propagation.
     method_return_type_map: FxHashMap<(ClassId, Symbol), TypeId>,
+    /// Method return class-name fallback for forward references
+    /// (e.g., `accept(): TcpStream | null` declared before `class TcpStream`).
+    method_return_type_alias_map: FxHashMap<(ClassId, Symbol), String>,
     /// Tracks variables holding bound methods: var_name → (class_id, method_name)
     /// Used to propagate return types when calling bound method variables.
     bound_method_vars: FxHashMap<Symbol, (ClassId, Symbol)>,
@@ -909,6 +916,8 @@ impl<'a> Lowerer<'a> {
             next_block: 0,
             local_map: FxHashMap::default(),
             local_registers: FxHashMap::default(),
+            callable_local_hints: FxHashSet::default(),
+            callable_symbol_hints: FxHashSet::default(),
             next_local: 0,
             function_map: FxHashMap::default(),
             function_decl_ids: FxHashMap::default(),
@@ -952,6 +961,7 @@ impl<'a> Lowerer<'a> {
             function_return_class_map: FxHashMap::default(),
             function_return_type_alias_map: FxHashMap::default(),
             method_return_type_map: FxHashMap::default(),
+            method_return_type_alias_map: FxHashMap::default(),
             bound_method_vars: FxHashMap::default(),
             next_global_index: 0,
             module_var_globals: FxHashMap::default(),
@@ -1122,10 +1132,37 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Pre-pass: assign global indices to module-level let/var declarations
-        // so both main and module-level functions can access them via LoadGlobal/StoreGlobal.
-        // Only promote variables that are actually referenced by module-level function bodies.
+        // Pre-pass: assign global indices to module-level bindings so both main and
+        // module-level functions can access them via LoadGlobal/StoreGlobal.
+        //
+        // This includes:
+        // - import-local bindings (`import { x as y }`, `import d`, `import * as ns`)
+        // - module-level variable declarations
+        //
+        // Imported bindings are runtime values provided by module linkage; pre-registering
+        // them avoids unresolved-identifier lowering errors for valid imported references.
         {
+            // Step 0: Reserve globals for import-local bindings.
+            for raw_stmt in &module.statements {
+                let stmt = Self::unwrap_export(raw_stmt);
+                if let Statement::ImportDecl(import) = stmt {
+                    for specifier in &import.specifiers {
+                        let local_name = match specifier {
+                            ast::ImportSpecifier::Named { name, alias } => {
+                                alias.as_ref().map_or(name.name, |a| a.name)
+                            }
+                            ast::ImportSpecifier::Namespace(alias) => alias.name,
+                            ast::ImportSpecifier::Default(local) => local.name,
+                        };
+                        self.module_var_globals.entry(local_name).or_insert_with(|| {
+                            let global_index = self.next_global_index;
+                            self.next_global_index += 1;
+                            global_index
+                        });
+                    }
+                }
+            }
+
             // Step 1: Collect candidate module-level variable names (excluding constants)
             let candidates: FxHashSet<Symbol> = module
                 .statements
@@ -1198,9 +1235,11 @@ impl<'a> Lowerer<'a> {
                     collect_pattern_names(&decl.pattern, &mut names);
                     for name in names {
                         let _was_referenced = referenced.contains(&name);
-                        let global_index = self.next_global_index;
-                        self.next_global_index += 1;
-                        self.module_var_globals.insert(name, global_index);
+                        self.module_var_globals.entry(name).or_insert_with(|| {
+                            let global_index = self.next_global_index;
+                            self.next_global_index += 1;
+                            global_index
+                        });
                     }
                 }
             }
@@ -1770,6 +1809,11 @@ impl<'a> Lowerer<'a> {
                         if let Some(ret_class_id) = self.try_extract_class_from_type(ret_type) {
                             self.method_return_class_map
                                 .insert((class_id, method.name.name), ret_class_id);
+                        } else if let Some(ret_class_name) =
+                            self.try_extract_class_name_from_type(ret_type)
+                        {
+                            self.method_return_type_alias_map
+                                .insert((class_id, method.name.name), ret_class_name);
                         }
                         // Store full return TypeId for all return types (bound method propagation)
                         let type_id = self.resolve_type_annotation(ret_type);
@@ -1981,6 +2025,8 @@ impl<'a> Lowerer<'a> {
         self.next_block = 0;
         self.local_map.clear();
         self.local_registers.clear();
+        self.callable_local_hints.clear();
+        self.callable_symbol_hints.clear();
         // IMPORTANT: If there are destructuring parameters, start local allocation AFTER parameter slots
         // to avoid destructured variables overwriting parameter values
         if has_destructuring_params {
@@ -2054,18 +2100,23 @@ impl<'a> Lowerer<'a> {
             let reg = self.alloc_register(ty);
 
             // Extract parameter name from pattern
-            if let Pattern::Identifier(ident) = &param.pattern {
-                let local_idx = self.allocate_local(ident.name);
-                self.local_registers.insert(local_idx, reg.clone());
+                if let Pattern::Identifier(ident) = &param.pattern {
+                    let local_idx = self.allocate_local(ident.name);
+                    self.local_registers.insert(local_idx, reg.clone());
 
-                // Track class type for parameters with class type annotations
-                // so method calls can be statically resolved
-                if let Some(type_ann) = &param.type_annotation {
-                    if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
-                        self.variable_class_map.insert(ident.name, class_id);
+                    // Track class type for parameters with class type annotations
+                    // so method calls can be statically resolved
+                    if let Some(type_ann) = &param.type_annotation {
+                        if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
+                            self.variable_class_map.insert(ident.name, class_id);
+                        }
+                        self.register_variable_type_hints_from_annotation(ident.name, type_ann);
+                        if self.type_annotation_is_callable(type_ann) {
+                            self.callable_local_hints.insert(local_idx);
+                            self.callable_symbol_hints.insert(ident.name);
+                        }
                     }
-                }
-            } else {
+                } else {
                 // Destructuring pattern: track for later binding after entry block
                 destructure_params.push((params.len(), &param.pattern, reg.clone()));
             }
@@ -2143,6 +2194,8 @@ impl<'a> Lowerer<'a> {
         self.next_block = 0;
         self.local_map.clear();
         self.local_registers.clear();
+        self.callable_local_hints.clear();
+        self.callable_symbol_hints.clear();
         self.next_local = 0;
         self.refcell_vars.clear();
         self.refcell_registers.clear();
@@ -2345,6 +2398,8 @@ impl<'a> Lowerer<'a> {
                     self.next_local = 0;
                     self.local_map.clear();
                     self.local_registers.clear();
+                    self.callable_local_hints.clear();
+                    self.callable_symbol_hints.clear();
                     // Reset capture state for this method scope
                     self.refcell_vars.clear();
                     self.refcell_registers.clear();
@@ -2433,6 +2488,14 @@ impl<'a> Lowerer<'a> {
                                     self.try_extract_class_from_type(type_ann)
                                 {
                                     self.variable_class_map.insert(ident.name, param_class_id);
+                                }
+                                self.register_variable_type_hints_from_annotation(
+                                    ident.name,
+                                    type_ann,
+                                );
+                                if self.type_annotation_is_callable(type_ann) {
+                                    self.callable_local_hints.insert(local_idx);
+                                    self.callable_symbol_hints.insert(ident.name);
                                 }
                             }
                         } else {
@@ -2571,6 +2634,8 @@ impl<'a> Lowerer<'a> {
                 self.next_local = 0;
                 self.local_map.clear();
                 self.local_registers.clear();
+                self.callable_local_hints.clear();
+                self.callable_symbol_hints.clear();
                 // Reset capture state for constructor scope
                 self.refcell_vars.clear();
                 self.refcell_registers.clear();
@@ -2609,6 +2674,17 @@ impl<'a> Lowerer<'a> {
                     if let Pattern::Identifier(ident) = &param.pattern {
                         let local_idx = self.allocate_local(ident.name);
                         self.local_registers.insert(local_idx, reg.clone());
+                        if let Some(type_ann) = &param.type_annotation {
+                            if let Some(param_class_id) = self.try_extract_class_from_type(type_ann)
+                            {
+                                self.variable_class_map.insert(ident.name, param_class_id);
+                            }
+                            self.register_variable_type_hints_from_annotation(ident.name, type_ann);
+                            if self.type_annotation_is_callable(type_ann) {
+                                self.callable_local_hints.insert(local_idx);
+                                self.callable_symbol_hints.insert(ident.name);
+                            }
+                        }
                     } else {
                         // Destructuring pattern: track for later binding after entry block
                         destructure_params.push((params.len(), &param.pattern, reg.clone()));
@@ -2740,6 +2816,8 @@ impl<'a> Lowerer<'a> {
             self.next_local = 0;
             self.local_map.clear();
             self.local_registers.clear();
+            self.callable_local_hints.clear();
+            self.callable_symbol_hints.clear();
             self.refcell_vars.clear();
             self.refcell_registers.clear();
             self.refcell_inner_types.clear();
@@ -3371,10 +3449,7 @@ impl<'a> Lowerer<'a> {
             // The factory returns a closure that is the actual decorator
             let decorator_ty = self.get_expr_type(decorator_expr);
             let decorator_ty_raw = decorator_ty.as_u32();
-            if decorator_ty_raw != UNRESOLVED_TYPE_ID
-                && decorator_ty_raw != UNKNOWN_TYPE_ID
-                && !self.type_is_callable(decorator_ty)
-            {
+            if !self.type_is_callable(decorator_ty) {
                 self.errors
                     .push(crate::compiler::CompileError::InternalError {
                         message: format!(
@@ -3395,10 +3470,7 @@ impl<'a> Lowerer<'a> {
             // Case 3: Local variable or other expression - lower and use CallClosure
             let decorator_ty = self.get_expr_type(decorator_expr);
             let decorator_ty_raw = decorator_ty.as_u32();
-            if decorator_ty_raw != UNRESOLVED_TYPE_ID
-                && decorator_ty_raw != UNKNOWN_TYPE_ID
-                && !self.type_is_callable(decorator_ty)
-            {
+            if !self.type_is_callable(decorator_ty) {
                 self.errors
                     .push(crate::compiler::CompileError::InternalError {
                         message: format!(
@@ -3650,6 +3722,34 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Extract a class name from a type annotation without requiring the class to
+    /// be registered yet. Used for forward references in method return types.
+    fn try_extract_class_name_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<String> {
+        match &type_ann.ty {
+            ast::Type::Reference(type_ref) => {
+                Some(self.interner.resolve(type_ref.name.name).to_string())
+            }
+            ast::Type::Union(union_type) => {
+                let mut class_name: Option<String> = None;
+                for member in &union_type.types {
+                    match &member.ty {
+                        ast::Type::Primitive(ast::PrimitiveType::Null) => {}
+                        ast::Type::Reference(type_ref) => {
+                            let name = self.interner.resolve(type_ref.name.name).to_string();
+                            if class_name.is_some() {
+                                return None;
+                            }
+                            class_name = Some(name);
+                        }
+                        _ => return None,
+                    }
+                }
+                class_name
+            }
+            _ => None,
+        }
+    }
+
     /// Resolve a class ID from a type name.
     /// Supports direct class names and synthesized std-prelude aliases:
     /// `__t_<module>_<ClassName>`.
@@ -3716,6 +3816,85 @@ impl<'a> Lowerer<'a> {
                 }
             }
             _ => None,
+        }
+    }
+
+    /// Propagate object-layout hints from a variable type annotation.
+    /// This keeps strict member lowering deterministic for typed parameters,
+    /// including nullable aliases like `T | null`.
+    fn register_variable_type_hints_from_annotation(
+        &mut self,
+        var_name: Symbol,
+        type_ann: &ast::TypeAnnotation,
+    ) {
+        if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
+            self.variable_object_fields.insert(var_name, field_layout);
+        }
+
+        if let Some(alias_name) = self.try_extract_object_alias_name_from_type(type_ann) {
+            self.variable_object_type_aliases.insert(var_name, alias_name);
+        }
+    }
+
+    fn try_extract_object_alias_name_from_type(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+    ) -> Option<String> {
+        match &type_ann.ty {
+            ast::Type::Reference(type_ref) => {
+                let name = self.interner.resolve(type_ref.name.name).to_string();
+                if self.type_alias_object_fields.contains_key(&name) {
+                    Some(name)
+                } else {
+                    None
+                }
+            }
+            ast::Type::Union(union_type) => {
+                let mut found: Option<String> = None;
+                for member in &union_type.types {
+                    match &member.ty {
+                        ast::Type::Primitive(ast::PrimitiveType::Null) => {}
+                        ast::Type::Reference(type_ref) => {
+                            let name = self.interner.resolve(type_ref.name.name).to_string();
+                            if !self.type_alias_object_fields.contains_key(&name) {
+                                continue;
+                            }
+                            match &found {
+                                None => found = Some(name),
+                                Some(existing) if existing == &name => {}
+                                Some(_) => return None,
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                found
+            }
+            _ => None,
+        }
+    }
+
+    fn type_annotation_is_callable(&self, type_ann: &ast::TypeAnnotation) -> bool {
+        match &type_ann.ty {
+            ast::Type::Function(_) => true,
+            ast::Type::Parenthesized(inner) => self.type_annotation_is_callable(inner),
+            ast::Type::Union(union) => union
+                .types
+                .iter()
+                .any(|member| self.type_annotation_is_callable(member)),
+            _ => false,
+        }
+    }
+
+    fn expression_is_callable_hint(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::Arrow(_) => true,
+            Expression::TypeCast(cast) => {
+                self.type_annotation_is_callable(&cast.target_type)
+                    || self.expression_is_callable_hint(&cast.object)
+            }
+            Expression::Parenthesized(inner) => self.expression_is_callable_hint(&inner.expression),
+            _ => false,
         }
     }
 
@@ -4340,6 +4519,34 @@ mod class_identity_tests {
             lowerer.variable_class_map.get(&from_static_sym).copied(),
             Some(json_class),
             "static nullable return should preserve class id"
+        );
+    }
+
+    #[test]
+    fn import_local_bindings_are_registered_as_module_globals() {
+        let source = r#"
+            import { value as importedValue } from "./utils";
+            let x: number = importedValue;
+        "#;
+
+        let parser = Parser::new(source).expect("lexer error");
+        let (module, interner) = parser.parse().expect("parse error");
+        let type_ctx = TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ir = lowerer.lower_module(&module);
+
+        assert!(
+            lowerer.errors().is_empty(),
+            "unexpected lowerer errors: {:?}",
+            lowerer.errors()
+        );
+
+        let imported_sym = interner
+            .lookup("importedValue")
+            .expect("imported binding symbol");
+        assert!(
+            lowerer.module_var_globals.contains_key(&imported_sym),
+            "import-local binding should be pre-registered as module global"
         );
     }
 

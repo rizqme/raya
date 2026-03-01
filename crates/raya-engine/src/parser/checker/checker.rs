@@ -2332,6 +2332,7 @@ impl<'a> TypeChecker<'a> {
         tagged: &crate::parser::ast::TaggedTemplateExpression,
     ) -> TypeId {
         let tag_ty = self.check_expr(&tagged.tag);
+        self.check_unknown_actionable(tag_ty, "tagged-template-call", *tagged.tag.span());
         let mut arg_types: Vec<(TypeId, Span)> = Vec::new();
 
         // First argument in JS/TS tagged templates is an array of cooked strings.
@@ -2355,15 +2356,20 @@ impl<'a> TypeChecker<'a> {
             return func.return_type;
         }
 
-        self.errors.push(CheckError::NotCallable {
-            ty: self.format_type(tag_ty),
-            span: tagged.span,
-        });
-        self.fallback_type(
-            tagged.span,
-            FallbackReason::RecoverableUnsupportedExpr,
-            "tagged-template",
-        )
+        if self.allows_any() && self.type_is_dynamic_anyish(tag_ty) {
+            return self.type_ctx.any_type();
+        }
+
+        if !self.type_is_unknown(tag_ty) {
+            self.errors.push(CheckError::NotCallable {
+                ty: self.format_type(tag_ty),
+                span: tagged.span,
+            });
+        }
+
+        // Mirror call-expression behavior: keep flow moving with unknown type
+        // without forcing an additional fallback-path diagnostic.
+        self.type_ctx.unknown_type()
     }
 
     fn check_dynamic_import(
@@ -4140,6 +4146,7 @@ impl<'a> TypeChecker<'a> {
     fn check_await(&mut self, await_expr: &crate::parser::ast::AwaitExpression) -> TypeId {
         // Check the argument expression
         let arg_ty = self.check_expr(&await_expr.argument);
+        self.check_unknown_actionable(arg_ty, "await", *await_expr.argument.span());
 
         // If the argument is a Promise<T>, return T
         if let Some(crate::parser::types::Type::Task(task_ty)) = self.type_ctx.get(arg_ty) {
@@ -4155,8 +4162,23 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Otherwise return the argument type (for compatibility)
-        arg_ty
+        // Dynamic-anyish is allowed through in compatibility modes.
+        if self.allows_any() && self.type_is_dynamic_anyish(arg_ty) {
+            return self.type_ctx.any_type();
+        }
+
+        // Non-awaitable operand is a compile-time type error.
+        self.errors.push(CheckError::TypeMismatch {
+            expected: "Promise<T> or Promise<T>[]".to_string(),
+            actual: self.format_type(arg_ty),
+            span: await_expr.span,
+            note: None,
+        });
+        self.fallback_type(
+            await_expr.span,
+            FallbackReason::RecoverableUnsupportedExpr,
+            "await-non-task",
+        )
     }
 
     /// Try to check a compiler intrinsic call (__OPCODE_* or __NATIVE_CALL)
@@ -4317,6 +4339,7 @@ impl<'a> TypeChecker<'a> {
 
         // Get the callee's return type
         let callee_ty = self.check_expr(&async_call.callee);
+        self.check_unknown_actionable(callee_ty, "async-call", *async_call.callee.span());
 
         // If the callee is a function, get its return type and wrap in Promise
         if let Some(crate::parser::types::Type::Function(func_ty)) = self.type_ctx.get(callee_ty) {
@@ -4338,7 +4361,13 @@ impl<'a> TypeChecker<'a> {
             return callee_ty;
         }
 
-        // Otherwise just return Promise<unknown>
+        // Non-callable async callee is a compile-time error.
+        self.errors.push(CheckError::NotCallable {
+            ty: self.format_type(callee_ty),
+            span: async_call.span,
+        });
+
+        // Keep checking flow moving with Promise<unknown> fallback.
         let unknown = self.fallback_type(
             async_call.span,
             FallbackReason::Unavoidable,
@@ -6632,16 +6661,14 @@ impl<'a> TypeChecker<'a> {
                 // will validate at call site
             }
             Some(_) | None => {
-                // Not a function - might be a decorator factory (call expression)
-                // The call expression would have already been type-checked
-                // and its result type stored
-                if !matches!(decorator.expression, Expression::Call(_)) {
-                    self.errors.push(CheckError::InvalidDecorator {
-                        ty: self.type_ctx.display(decorator_ty),
-                        expected: "ClassDecorator<T> or decorator factory".to_string(),
-                        span: decorator.span,
-                    });
-                }
+                // Decorator expression must resolve to a callable decorator.
+                // Call expressions are only valid if their return type is a function.
+                self.errors.push(CheckError::InvalidDecorator {
+                    ty: self.type_ctx.display(decorator_ty),
+                    expected: "ClassDecorator<T> or decorator factory returning ClassDecorator<T>"
+                        .to_string(),
+                    span: decorator.span,
+                });
             }
         }
     }
@@ -6729,14 +6756,12 @@ impl<'a> TypeChecker<'a> {
                 // will be caught elsewhere, or custom decorator patterns)
             }
             Some(_) | None => {
-                // Not a function - might be a decorator factory (call expression)
-                if !matches!(decorator.expression, Expression::Call(_)) {
-                    self.errors.push(CheckError::InvalidDecorator {
-                        ty: self.type_ctx.display(decorator_ty),
-                        expected: "MethodDecorator or decorator factory".to_string(),
-                        span: decorator.span,
-                    });
-                }
+                self.errors.push(CheckError::InvalidDecorator {
+                    ty: self.type_ctx.display(decorator_ty),
+                    expected: "MethodDecorator or decorator factory returning MethodDecorator"
+                        .to_string(),
+                    span: decorator.span,
+                });
             }
         }
     }
@@ -6794,14 +6819,12 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Some(_) | None => {
-                // Not a function - might be a decorator factory
-                if !matches!(decorator.expression, Expression::Call(_)) {
-                    self.errors.push(CheckError::InvalidDecorator {
-                        ty: self.type_ctx.display(decorator_ty),
-                        expected: "FieldDecorator<T> or decorator factory".to_string(),
-                        span: decorator.span,
-                    });
-                }
+                self.errors.push(CheckError::InvalidDecorator {
+                    ty: self.type_ctx.display(decorator_ty),
+                    expected: "FieldDecorator<T> or decorator factory returning FieldDecorator<T>"
+                        .to_string(),
+                    span: decorator.span,
+                });
             }
         }
     }
@@ -6877,14 +6900,12 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Some(_) | None => {
-                // Not a function - might be a decorator factory
-                if !matches!(decorator.expression, Expression::Call(_)) {
-                    self.errors.push(CheckError::InvalidDecorator {
-                        ty: self.type_ctx.display(decorator_ty),
-                        expected: "ParameterDecorator<T> or decorator factory".to_string(),
-                        span: decorator.span,
-                    });
-                }
+                self.errors.push(CheckError::InvalidDecorator {
+                    ty: self.type_ctx.display(decorator_ty),
+                    expected: "ParameterDecorator<T> or decorator factory returning ParameterDecorator<T>"
+                        .to_string(),
+                    span: decorator.span,
+                });
             }
         }
     }

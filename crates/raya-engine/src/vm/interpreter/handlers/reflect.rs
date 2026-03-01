@@ -3,7 +3,7 @@
 use crate::compiler::Module;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, Closure, MapObject, Object, Proxy, RayaString};
+use crate::vm::object::{Array, BoundMethod, Closure, MapObject, Object, Proxy, RayaString};
 use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
@@ -393,8 +393,48 @@ impl<'a> Interpreter<'a> {
                     let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
                     obj.get_field(index).unwrap_or(Value::null())
                 } else {
-                    // Field not found in metadata - return null
-                    Value::null()
+                    // Field not found; allow method fallback for dynamic member access.
+                    // This makes Reflect.get(obj, "methodName") usable at runtime when
+                    // compile-time class identity is unavailable but the receiver is a class object.
+                    let class_metadata = self.class_metadata.read();
+                    let method_slot = class_metadata
+                        .get(class_id)
+                        .and_then(|meta| meta.get_method_index(&property_key));
+                    drop(class_metadata);
+
+                    if let Some(slot) = method_slot {
+                        let obj_ptr = unsafe { target.as_ptr::<Object>() };
+                        let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                        let classes = self.classes.read();
+                        let class = match classes.get_class(obj.class_id) {
+                            Some(c) => c,
+                            None => {
+                                return Err(VmError::RuntimeError(format!(
+                                    "Invalid class index: {}",
+                                    obj.class_id
+                                )));
+                            }
+                        };
+                        let func_id = match class.vtable.get_method(slot) {
+                            Some(fid) => fid,
+                            None => {
+                                return Err(VmError::RuntimeError(format!(
+                                    "Invalid method slot: {} for class {}",
+                                    slot, class.name
+                                )));
+                            }
+                        };
+                        drop(classes);
+
+                        let bm = BoundMethod {
+                            receiver: target,
+                            func_id,
+                        };
+                        let gc_ptr = self.gc.lock().allocate(bm);
+                        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                    } else {
+                        Value::null()
+                    }
                 }
             }
 

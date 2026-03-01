@@ -14,7 +14,7 @@ use crate::compiler::CompileError;
 use crate::parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
 use crate::parser::interner::Symbol;
 use crate::parser::{TypeContext as TC, TypeId};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 // Re-export VM builtin method IDs (canonical source of truth)
 #[allow(unused_imports)]
@@ -35,6 +35,17 @@ const CAST_KIND_OBJECT: u16 = 0x0040;
 const CAST_KIND_FUNCTION: u16 = 0x0080;
 
 impl<'a> Lowerer<'a> {
+    fn lower_unresolved_poison(&mut self) -> Register {
+        // Keep lowering progressing after a hard error, but preserve unresolved typing
+        // so downstream dispatch does not misclassify this as a concrete null receiver.
+        let dest = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Constant(IrConstant::Null),
+        });
+        dest
+    }
+
     /// Lower an expression, returning the register holding its value
     pub fn lower_expr(&mut self, expr: &Expression) -> Register {
         // Track source span for sourcemap generation
@@ -177,10 +188,7 @@ impl<'a> Lowerer<'a> {
         // Enforce the same strict callability policy as regular calls.
         let tag_ty = self.get_expr_type(&tagged.tag);
         let tag_ty_raw = tag_ty.as_u32();
-        if tag_ty_raw != UNRESOLVED_TYPE_ID
-            && tag_ty_raw != UNKNOWN_TYPE_ID
-            && !self.type_is_callable(tag_ty)
-        {
+        if !self.type_is_callable(tag_ty) {
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
                     message: format!(
@@ -495,7 +503,7 @@ impl<'a> Lowerer<'a> {
                     self.class_map.contains_key(&ident.name)
                 ),
             });
-        self.lower_null_literal()
+        self.lower_unresolved_poison()
     }
 
     fn lower_binary(&mut self, binary: &ast::BinaryExpression) -> Register {
@@ -1134,10 +1142,11 @@ impl<'a> Lowerer<'a> {
                 };
                 let callee_ty = self.get_expr_type(&call.callee);
                 let callee_ty_raw = callee_ty.as_u32();
-                if callee_ty_raw != UNRESOLVED_TYPE_ID
-                    && callee_ty_raw != UNKNOWN_TYPE_ID
-                    && !self.type_is_callable(callee_ty)
-                {
+                let known_callable = self.closure_locals.contains_key(&local_idx)
+                    || self.callable_local_hints.contains(&local_idx)
+                    || self.callable_symbol_hints.contains(&ident.name)
+                    || self.bound_method_vars.contains_key(&ident.name);
+                if !known_callable && !self.type_is_callable(callee_ty) {
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
                             message: format!(
@@ -1203,10 +1212,10 @@ impl<'a> Lowerer<'a> {
             if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
                 let closure_ty = self.get_expr_type(&call.callee);
                 let closure_ty_raw = closure_ty.as_u32();
-                if closure_ty_raw != UNRESOLVED_TYPE_ID
-                    && closure_ty_raw != UNKNOWN_TYPE_ID
-                    && !self.type_is_callable(closure_ty)
-                {
+                let known_callable = self.closure_globals.contains_key(&global_idx)
+                    || self.callable_symbol_hints.contains(&ident.name)
+                    || self.bound_method_vars.contains_key(&ident.name);
+                if !known_callable && !self.type_is_callable(closure_ty) {
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
                             message: format!(
@@ -1268,10 +1277,9 @@ impl<'a> Lowerer<'a> {
                 let closure = self.lower_identifier(ident);
                 let callee_ty = self.get_expr_type(&call.callee);
                 let callee_ty_raw = callee_ty.as_u32();
-                if callee_ty_raw != UNRESOLVED_TYPE_ID
-                    && callee_ty_raw != UNKNOWN_TYPE_ID
-                    && !self.type_is_callable(callee_ty)
-                {
+                let known_callable = self.bound_method_vars.contains_key(&ident.name)
+                    || self.callable_symbol_hints.contains(&ident.name);
+                if !known_callable && !self.type_is_callable(callee_ty) {
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
                             message: format!(
@@ -2148,10 +2156,7 @@ impl<'a> Lowerer<'a> {
                 callee_ty_raw == UNKNOWN_TYPE_ID
             );
         }
-        if callee_ty_raw != UNRESOLVED_TYPE_ID
-            && callee_ty_raw != UNKNOWN_TYPE_ID
-            && !self.type_is_callable(callee_ty)
-        {
+        if !self.type_is_callable(callee_ty) {
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
                     message: format!(
@@ -2449,27 +2454,6 @@ impl<'a> Lowerer<'a> {
                 object,
                 field: field_index,
                 optional: member.optional,
-            });
-            return dest;
-        }
-
-        // Guarded dynamic path for unknown/null receivers.
-        // Uses Reflect.get (name-based) instead of unsafe slot-based field access.
-        if class_id.is_none()
-            && (obj_ty_id == UNRESOLVED_TYPE_ID
-                || obj_ty_id == UNKNOWN_TYPE_ID
-                || obj_ty_id == NULL_TYPE_ID)
-        {
-            let key = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-            self.emit(IrInstr::Assign {
-                dest: key.clone(),
-                value: IrValue::Constant(IrConstant::String(prop_name.to_string())),
-            });
-            let dest = self.alloc_register(UNRESOLVED);
-            self.emit(IrInstr::NativeCall {
-                dest: Some(dest.clone()),
-                native_id: crate::compiler::native_id::REFLECT_GET,
-                args: vec![object, key],
             });
             return dest;
         }
@@ -2882,7 +2866,11 @@ impl<'a> Lowerer<'a> {
             // Store to LHS
             match &*assign.left {
                 Expression::Identifier(ident) => {
+                    let mut assigned_symbol = false;
+                    let mut assigned_local_idx: Option<u16> = None;
                     if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                        assigned_symbol = true;
+                        assigned_local_idx = Some(local_idx);
                         if self.refcell_registers.contains_key(&local_idx) {
                             let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                             self.emit(IrInstr::LoadLocal {
@@ -2900,6 +2888,7 @@ impl<'a> Lowerer<'a> {
                             });
                         }
                     } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                        assigned_symbol = true;
                         // Module-level variable — store via global slot
                         self.emit(IrInstr::StoreGlobal {
                             index: global_idx,
@@ -2908,6 +2897,7 @@ impl<'a> Lowerer<'a> {
                     } else if let Some(idx) =
                         self.captures.iter().position(|c| c.symbol == ident.name)
                     {
+                        assigned_symbol = true;
                         // Captured variable from outer scope
                         let is_refcell = self.captures[idx].is_refcell;
                         let capture_idx = self.captures[idx].capture_idx;
@@ -2930,6 +2920,7 @@ impl<'a> Lowerer<'a> {
                     } else if let Some(ref ancestors) = self.ancestor_variables.clone() {
                         // Lazy ancestor capture (mirror from regular assignment)
                         if let Some(ancestor_var) = ancestors.get(&ident.name) {
+                            assigned_symbol = true;
                             let ty = ancestor_var.ty;
                             let is_refcell = ancestor_var.is_refcell;
                             let capture_idx = self.next_capture_slot;
@@ -2958,10 +2949,21 @@ impl<'a> Lowerer<'a> {
                                 });
                             }
                         } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                            assigned_symbol = true;
                             self.emit(IrInstr::StoreGlobal {
                                 index: global_idx,
                                 value: rhs,
                             });
+                        }
+                    }
+
+                    // `??=` may assign RHS; keep callable hints conservative.
+                    // If RHS isn't callable, drop callable/bound-method hints.
+                    if assigned_symbol && !self.expression_is_callable_hint(&assign.right) {
+                        self.callable_symbol_hints.remove(&ident.name);
+                        self.bound_method_vars.remove(&ident.name);
+                        if let Some(local_idx) = assigned_local_idx {
+                            self.callable_local_hints.remove(&local_idx);
                         }
                     }
                 }
@@ -3070,10 +3072,16 @@ impl<'a> Lowerer<'a> {
         } else {
             rhs
         };
+        let callable_assign_hint = assign.operator == AssignmentOperator::Assign
+            && self.expression_is_callable_hint(&assign.right);
 
         match &*assign.left {
             Expression::Identifier(ident) => {
+                let mut assigned_local_idx: Option<u16> = None;
+                let mut assigned_symbol = false;
                 if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                    assigned_local_idx = Some(local_idx);
+                    assigned_symbol = true;
                     // Check if this is a RefCell variable
                     if self.refcell_registers.contains_key(&local_idx) {
                         // Load the RefCell pointer
@@ -3120,6 +3128,7 @@ impl<'a> Lowerer<'a> {
                     }
                 } else if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name)
                 {
+                    assigned_symbol = true;
                     // Variable is captured - handle assignment to captured variable
                     let is_refcell = self.captures[idx].is_refcell;
                     let capture_idx = self.captures[idx].capture_idx;
@@ -3147,6 +3156,7 @@ impl<'a> Lowerer<'a> {
                 } else if let Some(ref ancestors) = self.ancestor_variables.clone() {
                     // Variable not captured yet but exists in ancestor scope - add to captures
                     if let Some(ancestor_var) = ancestors.get(&ident.name) {
+                        assigned_symbol = true;
                         let ty = ancestor_var.ty;
                         let is_refcell = ancestor_var.is_refcell;
                         let capture_idx = self.next_capture_slot;
@@ -3180,6 +3190,7 @@ impl<'a> Lowerer<'a> {
                             });
                         }
                     } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                        assigned_symbol = true;
                         // Module-level variable inside arrow — store via global slot
                         self.emit(IrInstr::StoreGlobal {
                             index: global_idx,
@@ -3187,11 +3198,38 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                    assigned_symbol = true;
                     // Module-level variable — store via global slot
                     self.emit(IrInstr::StoreGlobal {
                         index: global_idx,
                         value: value.clone(),
                     });
+                }
+
+                // Keep callable-hint state in sync for identifier reassignments.
+                if assigned_symbol {
+                    if assign.operator == AssignmentOperator::Assign {
+                        if callable_assign_hint {
+                            self.callable_symbol_hints.insert(ident.name);
+                        } else {
+                            self.callable_symbol_hints.remove(&ident.name);
+                            self.bound_method_vars.remove(&ident.name);
+                        }
+                        if let Some(local_idx) = assigned_local_idx {
+                            if callable_assign_hint {
+                                self.callable_local_hints.insert(local_idx);
+                            } else {
+                                self.callable_local_hints.remove(&local_idx);
+                            }
+                        }
+                    } else {
+                        // Compound assignments produce non-callable values.
+                        self.callable_symbol_hints.remove(&ident.name);
+                        self.bound_method_vars.remove(&ident.name);
+                        if let Some(local_idx) = assigned_local_idx {
+                            self.callable_local_hints.remove(&local_idx);
+                        }
+                    }
                 }
             }
             Expression::Member(member) => {
@@ -3465,6 +3503,9 @@ impl<'a> Lowerer<'a> {
         let saved_block = self.next_block;
         let saved_local_map = self.local_map.clone();
         let saved_local_registers = self.local_registers.clone();
+        let saved_callable_local_hints = self.callable_local_hints.clone();
+        let saved_callable_symbol_hints = self.callable_symbol_hints.clone();
+        let saved_bound_method_vars = self.bound_method_vars.clone();
         let saved_refcell_registers = self.refcell_registers.clone();
         let saved_next_local = self.next_local;
         let saved_function = self.current_function.take();
@@ -3542,6 +3583,7 @@ impl<'a> Lowerer<'a> {
         self.next_block = 0;
         self.local_map.clear();
         self.local_registers.clear();
+        self.callable_local_hints.clear();
         self.refcell_registers.clear();
 
         // Check if any parameters use destructuring
@@ -3602,12 +3644,18 @@ impl<'a> Lowerer<'a> {
             if let ast::Pattern::Identifier(ident) = &param.pattern {
                 let local_idx = self.allocate_local(ident.name);
                 self.local_registers.insert(local_idx, reg.clone());
+                // Shadowing is by symbol name; ensure arrow params override outer callable hints.
+                self.callable_symbol_hints.remove(&ident.name);
 
                 // Track class type for parameters with class type annotations
                 // so method calls can be statically resolved
                 if let Some(type_ann) = &param.type_annotation {
                     if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
                         self.variable_class_map.insert(ident.name, class_id);
+                    }
+                    if self.type_annotation_is_callable(type_ann) {
+                        self.callable_local_hints.insert(local_idx);
+                        self.callable_symbol_hints.insert(ident.name);
                     }
                 }
             } else {
@@ -3683,6 +3731,18 @@ impl<'a> Lowerer<'a> {
 
         // Collect captures discovered during lowering
         let captured_vars: Vec<_> = self.captures.clone();
+        // Propagate callable-hint invalidations for captured outer symbols.
+        // Child scopes may clear callable hints after assigning non-callable
+        // values to captured identifiers; reflect that in the parent.
+        let mut propagate_callable_invalidations: FxHashSet<Symbol> = FxHashSet::default();
+        for cap in &captured_vars {
+            let sym = cap.symbol;
+            if saved_callable_symbol_hints.contains(&sym)
+                && !self.callable_symbol_hints.contains(&sym)
+            {
+                propagate_callable_invalidations.insert(sym);
+            }
+        }
         // Save the child's ancestor_variables for capture propagation
         let child_ancestor_variables = self.ancestor_variables.take();
         // Save child's this capture info
@@ -3699,6 +3759,9 @@ impl<'a> Lowerer<'a> {
         self.next_block = saved_block;
         self.local_map = saved_local_map;
         self.local_registers = saved_local_registers;
+        self.callable_local_hints = saved_callable_local_hints;
+        self.callable_symbol_hints = saved_callable_symbol_hints;
+        self.bound_method_vars = saved_bound_method_vars;
         self.refcell_registers = saved_refcell_registers;
         self.next_local = saved_next_local;
         self.current_function = saved_function;
@@ -3709,6 +3772,14 @@ impl<'a> Lowerer<'a> {
         self.this_register = saved_this_register;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
+
+        for sym in propagate_callable_invalidations {
+            self.callable_symbol_hints.remove(&sym);
+            self.bound_method_vars.remove(&sym);
+            if let Some(&local_idx) = self.local_map.get(&sym) {
+                self.callable_local_hints.remove(&local_idx);
+            }
+        }
 
         // Load captured variables and build captures list for MakeClosure
         // `this` (if captured) is inserted at its assigned slot index
@@ -4060,7 +4131,7 @@ impl<'a> Lowerer<'a> {
             .push(crate::compiler::CompileError::InternalError {
                 message: "unresolved constructor target in `new` expression".to_string(),
             });
-        self.lower_null_literal()
+        self.lower_unresolved_poison()
     }
 
     fn lower_await(&mut self, await_expr: &ast::AwaitExpression) -> Register {
@@ -4178,10 +4249,10 @@ impl<'a> Lowerer<'a> {
                 };
                 let callee_ty = self.get_expr_type(&async_call.callee);
                 let callee_ty_raw = callee_ty.as_u32();
-                if callee_ty_raw != UNRESOLVED_TYPE_ID
-                    && callee_ty_raw != UNKNOWN_TYPE_ID
-                    && !self.type_is_callable(callee_ty)
-                {
+                let known_callable = self.closure_locals.contains_key(&local_idx)
+                    || self.callable_local_hints.contains(&local_idx)
+                    || self.callable_symbol_hints.contains(&ident.name);
+                if !known_callable && !self.type_is_callable(callee_ty) {
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
                             message: format!(
@@ -4248,6 +4319,40 @@ impl<'a> Lowerer<'a> {
         }
 
         // Fallback: treat callee as closure/expression only when callable.
+        // For member calls we already emitted strict diagnostics above.
+        if let Expression::Member(member) = &*async_call.callee {
+            let method_name = self.interner.resolve(member.property.name);
+            let object_class = self.infer_class_id(&member.object).and_then(|cid| {
+                self.class_map.iter().find_map(|(&sym, &id)| {
+                    if id == cid {
+                        Some(self.interner.resolve(sym).to_string())
+                    } else {
+                        None
+                    }
+                })
+            });
+            let object_ty = self.get_expr_type(&member.object).as_u32();
+            let object_desc = object_class
+                .map(|name| format!("class {}", name))
+                .or_else(|| {
+                    if object_ty != UNRESOLVED_TYPE_ID {
+                        Some(format!("type id {}", object_ty))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "unknown receiver type".to_string());
+            self.errors
+                .push(crate::compiler::CompileError::InternalError {
+                    message: format!(
+                        "unresolved async member call '{}()' on {}: no class dispatch path",
+                        method_name, object_desc
+                    ),
+                });
+            return dest;
+        }
+
+        // Non-member async callee fallback: closure/expression path only when callable.
         let callee_ty = self.get_expr_type(&async_call.callee);
         let callee_ty_raw = callee_ty.as_u32();
         if std::env::var("RAYA_DEBUG_CALL_FALLBACK").is_ok() {
@@ -4271,10 +4376,7 @@ impl<'a> Lowerer<'a> {
                 callee_ty_raw == UNKNOWN_TYPE_ID
             );
         }
-        if callee_ty_raw != UNRESOLVED_TYPE_ID
-            && callee_ty_raw != UNKNOWN_TYPE_ID
-            && !self.type_is_callable(callee_ty)
-        {
+        if !self.type_is_callable(callee_ty) {
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
                     message: format!(
@@ -4330,7 +4432,7 @@ impl<'a> Lowerer<'a> {
             .push(crate::compiler::CompileError::InternalError {
                 message: "unresolved 'this' outside method/arrow-method context".to_string(),
             });
-        self.lower_null_literal()
+        self.lower_unresolved_poison()
     }
 
     fn lower_super(&mut self) -> Register {
@@ -4931,6 +5033,14 @@ impl<'a> Lowerer<'a> {
                         .get(&(obj_class_id, method_name))
                     {
                         return Some(ret_class_id);
+                    }
+                    if let Some(ret_class_name) = self
+                        .method_return_type_alias_map
+                        .get(&(obj_class_id, method_name))
+                    {
+                        if let Some(ret_class_id) = self.class_id_from_type_name(ret_class_name) {
+                            return Some(ret_class_id);
+                        }
                     }
                 }
                 // Standalone function/bound method call: check return class
@@ -5701,6 +5811,406 @@ mod tests {
         assert!(
             has_unresolved_property,
             "expected unresolved member property error, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn unresolved_async_member_call_reports_compile_error() {
+        let (module, interner) = parse_expr(
+            r#"
+            let n = 1;
+            async n.missing();
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_unresolved_async_call = lowerer.errors().iter().any(|err| {
+            err.to_string()
+                .contains("unresolved async member call 'missing()'")
+        });
+        assert!(
+            has_unresolved_async_call,
+            "expected unresolved async member call error, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn unresolved_local_call_without_callable_type_reports_compile_error() {
+        let (module, interner) = parse_expr(
+            r#"
+            let x = 1;
+            x();
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_unresolved_call = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved call target")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            has_unresolved_call,
+            "expected unresolved local-call error, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn unresolved_local_async_call_without_callable_type_reports_compile_error() {
+        let (module, interner) = parse_expr(
+            r#"
+            let x = 1;
+            async x();
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_unresolved_async_call = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved async call target")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            has_unresolved_async_call,
+            "expected unresolved local-async-call error, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn unresolved_parenthesized_call_without_callable_type_reports_compile_error() {
+        let (module, interner) = parse_expr(
+            r#"
+            let x = 1;
+            (x)();
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_unresolved_call = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved call target")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            has_unresolved_call,
+            "expected unresolved parenthesized-call error, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn callable_symbol_hints_do_not_leak_between_functions() {
+        let (module, interner) = parse_expr(
+            r#"
+            function acceptsCb(cb: (n: number) => number): number {
+                return cb(1);
+            }
+            function bad(cb: number): number {
+                return cb();
+            }
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_non_callable_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved call target 'cb'")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            has_non_callable_error,
+            "expected non-callable error for second function cb(), got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn callable_cast_local_variable_allows_call_lowering() {
+        let (module, interner) = parse_expr(
+            r#"
+            function run(value: number): number {
+                let fn = (value as ((n: number) => number));
+                return fn(1);
+            }
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_non_callable_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved call target 'fn'")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            !has_non_callable_error,
+            "did not expect non-callable error for casted callable local, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn arrow_param_shadowing_callable_symbol_reports_non_callable_error() {
+        let (module, interner) = parse_expr(
+            r#"
+            function outer(cb: (n: number) => number): number {
+                let f = (cb: number): number => cb();
+                return f(1);
+            }
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_non_callable_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved call target 'cb'")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            has_non_callable_error,
+            "expected non-callable error for shadowed arrow param, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn reassigned_local_from_callable_to_number_reports_non_callable_error() {
+        let (module, interner) = parse_expr(
+            r#"
+            function run(): number {
+                let fn = (x: number): number => x;
+                fn = 1;
+                return fn();
+            }
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_non_callable_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved call target 'fn'")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            has_non_callable_error,
+            "expected non-callable error after fn reassignment, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn compound_assignment_invalidates_callable_hint() {
+        let (module, interner) = parse_expr(
+            r#"
+            function run(): number {
+                let fn = (x: number): number => x;
+                fn += 1;
+                return fn();
+            }
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_non_callable_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved call target 'fn'")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            has_non_callable_error,
+            "expected non-callable error after compound assignment, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn null_coalesce_assignment_invalidates_callable_hint_when_rhs_not_callable() {
+        let (module, interner) = parse_expr(
+            r#"
+            function run(): number {
+                let fn: ((x: number) => number) | number | null = null;
+                fn ??= 1;
+                return fn();
+            }
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_non_callable_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved call target 'fn'")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            has_non_callable_error,
+            "expected non-callable error after ??= non-callable rhs, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn captured_callable_reassignment_in_arrow_invalidates_callable_hint() {
+        let (module, interner) = parse_expr(
+            r#"
+            function outer(): number {
+                let fn = (x: number): number => x;
+                let mutate = (): number => {
+                    fn = 1;
+                    return 0;
+                };
+                mutate();
+                return fn();
+            }
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_non_callable_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved call target 'fn'")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            has_non_callable_error,
+            "expected non-callable error after captured reassignment, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn captured_callable_null_coalesce_assignment_in_arrow_invalidates_hint() {
+        let (module, interner) = parse_expr(
+            r#"
+            function outer(): number {
+                let fn: ((x: number) => number) | number | null = null;
+                let mutate = (): number => {
+                    fn ??= 1;
+                    return 0;
+                };
+                mutate();
+                return fn();
+            }
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_non_callable_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved call target 'fn'")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            has_non_callable_error,
+            "expected non-callable error after captured ??= reassignment, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn captured_callable_reassignment_in_arrow_invalidates_async_call_hint() {
+        let (module, interner) = parse_expr(
+            r#"
+            function outer(): number {
+                let fn = (x: number): number => x;
+                let mutate = (): number => {
+                    fn = 1;
+                    return 0;
+                };
+                mutate();
+                async fn();
+                return 0;
+            }
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_non_callable_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved async call target 'fn'")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            has_non_callable_error,
+            "expected non-callable async error after captured reassignment, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn nested_arrow_async_call_on_captured_callable_param_does_not_false_error() {
+        let (module, interner) = parse_expr(
+            r#"
+            function outer(cb: (x: number) => number): number {
+                let run = (): number => {
+                    async cb();
+                    return 0;
+                };
+                return run();
+            }
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_unresolved_async_cb_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved async call target 'cb'")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            !has_unresolved_async_cb_error,
+            "did not expect unresolved async-call error for captured callable param, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn arrow_local_shadow_does_not_erase_parent_bound_method_mapping() {
+        let (module, interner) = parse_expr(
+            r#"
+            class A {
+                m(): number { return 1; }
+            }
+            function outer(): number {
+                let a = new A();
+                let f = a.m;
+                let g = (): number => {
+                    let f = 1;
+                    return f;
+                };
+                g();
+                return f();
+            }
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_non_callable_f_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved call target 'f'")
+                && err.to_string().contains("not callable")
+        });
+        assert!(
+            !has_non_callable_f_error,
+            "did not expect parent bound-method mapping to be erased by child shadow, got: {:?}",
             lowerer.errors()
         );
     }

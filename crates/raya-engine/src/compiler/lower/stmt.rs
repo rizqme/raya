@@ -1279,6 +1279,7 @@ impl<'a> Lowerer<'a> {
         self.bound_method_vars.remove(&name);
         self.variable_object_fields.remove(&name);
         self.variable_object_type_aliases.remove(&name);
+        self.callable_symbol_hints.remove(&name);
 
         // Check for compile-time constant: const with literal initializer
         // These are folded at compile time and emit no runtime code
@@ -1312,6 +1313,14 @@ impl<'a> Lowerer<'a> {
                                 }
                             }
                         }
+                    }
+                    let callable_hint = decl
+                        .type_annotation
+                        .as_ref()
+                        .is_some_and(|t| self.type_annotation_is_callable(t))
+                        || self.expression_is_callable_hint(init);
+                    if callable_hint {
+                        self.callable_symbol_hints.insert(name);
                     }
 
                     // Track class type from new expression (e.g., `let x = new MyClass()`).
@@ -1418,6 +1427,15 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 }
+            }
+            let callable_hint = decl
+                .type_annotation
+                .as_ref()
+                .is_some_and(|t| self.type_annotation_is_callable(t))
+                || self.expression_is_callable_hint(init);
+            if callable_hint {
+                self.callable_local_hints.insert(local_idx);
+                self.callable_symbol_hints.insert(name);
             }
 
             // Track class type from New expression (e.g., `let x = new MyClass()`).

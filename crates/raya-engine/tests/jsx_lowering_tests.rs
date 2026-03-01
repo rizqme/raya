@@ -245,6 +245,7 @@ fn test_jsx_component_uses_identifier() {
     // Uppercase element → identifier reference (not string)
     let ir = lower_jsx(
         r#"
+        function createElement(tag: unknown, props: unknown, child?: unknown): void {}
         function Button(): void {}
         const x = <Button />;
     "#,
@@ -415,7 +416,10 @@ fn test_jsx_compiles_via_ir_pipeline() {
     use raya_engine::compiler::lower::JsxOptions;
     use raya_engine::compiler::Compiler;
 
-    let source = r#"const x = <div className="test">Hello</div>;"#;
+    let source = r#"
+        function createElement(tag: unknown, props: unknown, child?: unknown): void {}
+        const x = <div className="test">Hello</div>;
+    "#;
     let parser = Parser::new(source).expect("lexer error");
     let (module, interner) = parser.parse().expect("parse error");
     let type_ctx = TypeContext::new();
@@ -436,7 +440,10 @@ fn test_jsx_fragment_compiles_via_ir_pipeline() {
     use raya_engine::compiler::lower::JsxOptions;
     use raya_engine::compiler::Compiler;
 
-    let source = r#"const x = <>Hello</>;"#;
+    let source = r#"
+        function createElement(tag: unknown, props: unknown, child?: unknown): void {}
+        const x = <>Hello</>;
+    "#;
     let parser = Parser::new(source).expect("lexer error");
     let (module, interner) = parser.parse().expect("parse error");
     let type_ctx = TypeContext::new();
