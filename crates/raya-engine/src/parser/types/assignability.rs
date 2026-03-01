@@ -6,6 +6,7 @@
 use super::context::TypeContext;
 use super::subtyping::SubtypingContext;
 use super::ty::{GenericType, PrimitiveType, Type, TypeId};
+use rustc_hash::FxHashSet;
 
 fn jsobject_generic_inner(type_ctx: &TypeContext, generic: &GenericType) -> Option<TypeId> {
     if generic.type_args.len() != 1 {
@@ -27,6 +28,10 @@ pub struct AssignabilityContext<'a> {
     subtyping: SubtypingContext<'a>,
     /// Strict mode flag toggles TS-strict assignability behavior.
     strict_mode: bool,
+    /// In-progress assignability checks for recursive structural types.
+    active_pairs: FxHashSet<(u32, u32)>,
+    /// Memoized assignability results for recursive structural comparisons.
+    pair_cache: rustc_hash::FxHashMap<(u32, u32), bool>,
 }
 
 impl<'a> AssignabilityContext<'a> {
@@ -36,6 +41,8 @@ impl<'a> AssignabilityContext<'a> {
             type_ctx,
             subtyping: SubtypingContext::new(type_ctx),
             strict_mode: false,
+            active_pairs: FxHashSet::default(),
+            pair_cache: rustc_hash::FxHashMap::default(),
         }
     }
 
@@ -45,6 +52,8 @@ impl<'a> AssignabilityContext<'a> {
             type_ctx,
             subtyping: SubtypingContext::new(type_ctx),
             strict_mode,
+            active_pairs: FxHashSet::default(),
+            pair_cache: rustc_hash::FxHashMap::default(),
         }
     }
 
@@ -55,20 +64,38 @@ impl<'a> AssignabilityContext<'a> {
     /// - boolean ~> string (implicit toString)
     /// - null ~> string (implicit toString)
     pub fn is_assignable(&mut self, source: TypeId, target: TypeId) -> bool {
+        let pair = (source.0, target.0);
+        if let Some(&cached) = self.pair_cache.get(&pair) {
+            return cached;
+        }
+        if !self.active_pairs.insert(pair) {
+            return true;
+        }
+
         // First check subtyping
         if self.subtyping.is_subtype(source, target) {
+            self.pair_cache.insert(pair, true);
+            self.active_pairs.remove(&pair);
             return true;
         }
 
         // Check implicit primitive coercions
         let source_ty = match self.type_ctx.get(source) {
             Some(ty) => ty,
-            None => return false,
+            None => {
+                self.pair_cache.insert(pair, false);
+                self.active_pairs.remove(&pair);
+                return false;
+            }
         };
 
         let target_ty = match self.type_ctx.get(target) {
             Some(ty) => ty,
-            None => return false,
+            None => {
+                self.pair_cache.insert(pair, false);
+                self.active_pairs.remove(&pair);
+                return false;
+            }
         };
 
         let is_object_like = |ty: &Type| {
@@ -86,7 +113,7 @@ impl<'a> AssignabilityContext<'a> {
             )
         };
 
-        match (source_ty, target_ty) {
+        let result = match (source_ty, target_ty) {
             // Node-compat dynamic `any`: assignable to/from everything.
             (Type::Any, _) | (_, Type::Any) => true,
 
@@ -155,7 +182,11 @@ impl<'a> AssignabilityContext<'a> {
                 .any(|&member| self.is_assignable(source, member)),
 
             _ => false,
-        }
+        };
+
+        self.pair_cache.insert(pair, result);
+        self.active_pairs.remove(&pair);
+        result
     }
 
     /// Check if an implicit coercion is needed

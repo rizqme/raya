@@ -4,7 +4,7 @@
 
 use super::context::TypeContext;
 use super::ty::{FunctionType, GenericType, PrimitiveType, Type, TypeId};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 fn jsobject_generic_inner(type_ctx: &TypeContext, generic: &GenericType) -> Option<TypeId> {
     if generic.type_args.len() != 1 {
@@ -26,6 +26,11 @@ pub struct SubtypingContext<'a> {
 
     /// Current type variable substitutions
     type_vars: FxHashMap<String, TypeId>,
+    /// In-progress subtype relation checks used for coinductive recursion
+    /// handling on recursive structural types.
+    active_pairs: FxHashSet<(u32, u32)>,
+    /// Memoized subtype results to avoid re-walking the same structural graph.
+    pair_cache: FxHashMap<(u32, u32), bool>,
 }
 
 impl<'a> SubtypingContext<'a> {
@@ -34,6 +39,8 @@ impl<'a> SubtypingContext<'a> {
         SubtypingContext {
             type_ctx,
             type_vars: FxHashMap::default(),
+            active_pairs: FxHashSet::default(),
+            pair_cache: FxHashMap::default(),
         }
     }
 
@@ -41,19 +48,39 @@ impl<'a> SubtypingContext<'a> {
     ///
     /// Returns true if a value of type `sub` can be used where `sup` is expected.
     pub fn is_subtype(&mut self, sub: TypeId, sup: TypeId) -> bool {
+        let pair = (sub.0, sup.0);
+        if let Some(&cached) = self.pair_cache.get(&pair) {
+            return cached;
+        }
+        // Coinductive guard: if we're already proving this pair, treat it as
+        // provisionally true to prevent infinite descent on recursive types.
+        if !self.active_pairs.insert(pair) {
+            return true;
+        }
+
         // Reflexivity: T <: T
         if sub == sup {
+            self.pair_cache.insert(pair, true);
+            self.active_pairs.remove(&pair);
             return true;
         }
 
         let sub_ty = match self.type_ctx.get(sub) {
             Some(ty) => ty,
-            None => return false,
+            None => {
+                self.pair_cache.insert(pair, false);
+                self.active_pairs.remove(&pair);
+                return false;
+            }
         };
 
         let sup_ty = match self.type_ctx.get(sup) {
             Some(ty) => ty,
-            None => return false,
+            None => {
+                self.pair_cache.insert(pair, false);
+                self.active_pairs.remove(&pair);
+                return false;
+            }
         };
 
         // Bridge specialized builtin container/runtime types with their class-type names.
@@ -64,6 +91,8 @@ impl<'a> SubtypingContext<'a> {
         if self.is_builtin_class_bridge(sub_ty, sup_ty)
             || self.is_builtin_class_bridge(sup_ty, sub_ty)
         {
+            self.pair_cache.insert(pair, true);
+            self.active_pairs.remove(&pair);
             return true;
         }
 
@@ -82,7 +111,7 @@ impl<'a> SubtypingContext<'a> {
             )
         };
 
-        match (sub_ty, sup_ty) {
+        let result = match (sub_ty, sup_ty) {
             // Never is subtype of everything
             (Type::Never, _) => true,
 
@@ -384,7 +413,11 @@ impl<'a> SubtypingContext<'a> {
 
             // No other subtyping relationships
             _ => false,
-        }
+        };
+
+        self.pair_cache.insert(pair, result);
+        self.active_pairs.remove(&pair);
+        result
     }
 
     fn is_builtin_class_bridge(&self, lhs: &Type, rhs: &Type) -> bool {

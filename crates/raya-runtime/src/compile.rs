@@ -891,6 +891,60 @@ mod tests {
     }
 
     #[test]
+    fn test_std_encoding_default_import_compiles_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            import encoding from "std:encoding";
+            const obj = encoding.json.newObject();
+            obj.set("ok", encoding.json.fromBool(true));
+            const ok = obj.get("ok").bool();
+            obj.release();
+            return ok;
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "std:encoding default import should compile in strict mode without recursive inference blowups"
+        );
+    }
+
+    #[test]
+    fn test_std_url_default_import_compiles_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            import url from "std:url";
+            const encoded = url.encode("a b");
+            const decoded = url.decode(encoded);
+            return decoded == "a b";
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "std:url default import should compile in strict mode without recursive inference blowups"
+        );
+    }
+
+    #[test]
+    fn test_std_encoding_url_combined_import_compiles_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            import encoding from "std:encoding";
+            import url from "std:url";
+            const raw = url.decode("a%20b");
+            const j = encoding.json.newObject();
+            j.set("v", encoding.json.fromString(raw));
+            const out = j.get("v").string();
+            j.release();
+            return out == "a b";
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "combined std:encoding/std:url graph should compile in strict mode"
+        );
+    }
+
+    #[test]
     fn test_namespace_std_import_is_supported() {
         let result = compile_source(
             r#"
