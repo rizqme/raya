@@ -126,6 +126,16 @@ fn test_template_string_multiline() {
     expect_string("return `line1\nline2`;", "line1\nline2");
 }
 
+#[test]
+fn test_non_callable_invocation_compile_error() {
+    expect_compile_error(
+        "let n: number = 1;
+         n`x`;
+         return 0;",
+        "NotCallable",
+    );
+}
+
 // ============================================================================
 // String Methods
 // ============================================================================

@@ -324,6 +324,82 @@ fn e2e_cli_http_stress_workflow() {
 }
 
 #[test]
+fn e2e_cli_http_server_readiness_smoke() {
+    let _suite_guard = cli_http_suite_lock();
+    let workspace = workspace_root();
+    let tmp_dir = unique_tmp_dir("cli-http-ready-smoke");
+    let server = boot_server(&workspace, &tmp_dir);
+
+    let ready_file = tmp_dir.join("server.ready");
+    assert!(ready_file.exists(), "server.ready missing after boot");
+
+    shutdown_server(&workspace, &tmp_dir, server);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn e2e_cli_http_route_sequence_contracts() {
+    let _suite_guard = cli_http_suite_lock();
+    let workspace = workspace_root();
+    let tmp_dir = unique_tmp_dir("cli-http-route-seq");
+    let server = boot_server(&workspace, &tmp_dir);
+
+    for route in ["/health", "/diag", "/missing"] {
+        let out = run_cli_and_capture_env(
+            &workspace,
+            &webapp_client_entry(),
+            &tmp_dir,
+            &[("RAYA_EXAMPLES_CLIENT_ROUTE", route)],
+        );
+        assert!(
+            out.status.success(),
+            "route {} client failed\nstdout:\n{}\nstderr:\n{}",
+            route,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let echo = run_cli_and_capture_env(
+        &workspace,
+        &webapp_client_entry(),
+        &tmp_dir,
+        &[
+            ("RAYA_EXAMPLES_CLIENT_ROUTE", "/echo"),
+            ("RAYA_EXAMPLES_CLIENT_METHOD", "POST"),
+            ("RAYA_EXAMPLES_CLIENT_BODY", "seq-payload"),
+            ("RAYA_EXAMPLES_CLIENT_HEADERS", "X-Trace: seq-1"),
+        ],
+    );
+    assert!(
+        echo.status.success(),
+        "echo route failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&echo.stdout),
+        String::from_utf8_lossy(&echo.stderr)
+    );
+
+    shutdown_server(&workspace, &tmp_dir, server);
+
+    let app_dir = app_dir(&tmp_dir);
+    let health =
+        std::fs::read_to_string(app_dir.join("client.health.txt")).expect("client.health.txt");
+    let diag = std::fs::read_to_string(app_dir.join("client.diag.txt")).expect("client.diag.txt");
+    let echo = std::fs::read_to_string(app_dir.join("client.echo.txt")).expect("client.echo.txt");
+    let missing =
+        std::fs::read_to_string(app_dir.join("client.missing.txt")).expect("client.missing.txt");
+    let shutdown =
+        std::fs::read_to_string(app_dir.join("client.shutdown.txt")).expect("client.shutdown.txt");
+
+    assert_eq!(health.trim(), "200:OK:OK");
+    assert!(diag.starts_with("200:OK:"));
+    assert!(echo.starts_with("201:Created:"));
+    assert_eq!(missing.trim(), "404:Not Found:not-found");
+    assert_eq!(shutdown.trim(), "200:OK:bye");
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
 fn e2e_cli_http_diag_contract() {
     let _suite_guard = cli_http_suite_lock();
     let workspace = workspace_root();

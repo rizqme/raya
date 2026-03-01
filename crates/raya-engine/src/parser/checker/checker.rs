@@ -3748,7 +3748,11 @@ impl<'a> TypeChecker<'a> {
             if self.emit_missing_index_property_diagnostic(object_ty, &key, index.span) {
                 // Unavoidable fallback allowlist:
                 // literal key miss on object-like types still needs a value type to continue checking.
-                return self.fallback_type(index.span, FallbackReason::Unavoidable, "index-missing");
+                return self.fallback_type(
+                    index.span,
+                    FallbackReason::Unavoidable,
+                    "index-missing",
+                );
             }
         }
 

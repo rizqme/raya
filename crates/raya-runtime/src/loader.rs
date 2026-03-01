@@ -5,8 +5,8 @@ use serde_json::Value as JsonValue;
 use std::path::Path;
 
 use crate::error::RuntimeError;
-use crate::{compile, BuiltinMode, TypeMode};
 use crate::CompiledModule;
+use crate::{compile, BuiltinMode, TypeMode};
 
 /// Load a .ryb bytecode file from disk.
 pub fn load_bytecode_file(path: &Path) -> Result<CompiledModule, RuntimeError> {

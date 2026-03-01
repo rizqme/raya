@@ -72,7 +72,7 @@ impl<'a> Interpreter<'a> {
         ip: &mut usize,
         code: &[u8],
         module: &Module,
-        _task: &Arc<Task>,
+        task: &Arc<Task>,
         opcode: Opcode,
     ) -> OpcodeResult {
         match opcode {
@@ -238,22 +238,19 @@ impl<'a> Interpreter<'a> {
                     // Compatibility path: function references may be encoded as
                     // direct function IDs (int) instead of closure pointers.
                     if expected == CAST_KIND_FUNCTION {
-                        let func_id = obj_val
-                            .as_i32()
-                            .map(|v| v as usize)
-                            .or_else(|| {
-                                obj_val.as_f64().and_then(|v| {
-                                    if v.is_finite()
-                                        && v.fract() == 0.0
-                                        && v >= 0.0
-                                        && v <= usize::MAX as f64
-                                    {
-                                        Some(v as usize)
-                                    } else {
-                                        None
-                                    }
-                                })
-                            });
+                        let func_id = obj_val.as_i32().map(|v| v as usize).or_else(|| {
+                            obj_val.as_f64().and_then(|v| {
+                                if v.is_finite()
+                                    && v.fract() == 0.0
+                                    && v >= 0.0
+                                    && v <= usize::MAX as f64
+                                {
+                                    Some(v as usize)
+                                } else {
+                                    None
+                                }
+                            })
+                        });
                         if let Some(func_id) = func_id {
                             if module.functions.get(func_id).is_some() {
                                 if let Err(e) = stack.push(obj_val) {
@@ -327,9 +324,36 @@ impl<'a> Interpreter<'a> {
                     OpcodeResult::Continue
                 } else {
                     // Cast failed - throw TypeError
+                    let target_name = {
+                        let classes = self.classes.read();
+                        classes
+                            .get_class(cast_target as usize)
+                            .map(|c| c.name.clone())
+                            .unwrap_or_else(|| "<unknown>".to_string())
+                    };
+                    let (actual_id, actual_name) = if let Some(obj_ptr) = unsafe { obj_val.as_ptr::<Object>() } {
+                        let obj = unsafe { &*obj_ptr.as_ptr() };
+                        let class_id = obj.class_id;
+                        let class_name = {
+                            let classes = self.classes.read();
+                            classes
+                                .get_class(class_id)
+                                .map(|c| c.name.clone())
+                                .unwrap_or_else(|| "<unknown>".to_string())
+                        };
+                        (class_id, class_name)
+                    } else {
+                        (usize::MAX, "<non-object>".to_string())
+                    };
+                    let current_func_id = task.current_func_id();
+                    let current_func_name = module
+                        .functions
+                        .get(current_func_id)
+                        .map(|f| f.name.as_str())
+                        .unwrap_or("<unknown>");
                     OpcodeResult::Error(VmError::TypeError(format!(
-                        "Cannot cast object to class index {}",
-                        cast_target
+                        "Cannot cast object(class_id={}, class_name={}) to class index {} ({}) in {}#{}",
+                        actual_id, actual_name, cast_target, target_name, current_func_name, current_func_id
                     )))
                 }
             }

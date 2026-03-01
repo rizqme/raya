@@ -9,7 +9,7 @@ use crate::compiler::ir::{
 };
 use crate::parser::ast::{self, Statement};
 use crate::parser::TypeId;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForOfIterableKind {
@@ -19,6 +19,37 @@ enum ForOfIterableKind {
 }
 
 impl<'a> Lowerer<'a> {
+    fn materialize_current_locals_for_method_env(
+        &mut self,
+    ) -> FxHashMap<crate::parser::Symbol, u16> {
+        let mut env_globals = FxHashMap::default();
+        let locals: Vec<(crate::parser::Symbol, u16)> =
+            self.local_map.iter().map(|(s, i)| (*s, *i)).collect();
+
+        for (sym, local_idx) in locals {
+            let Some(reg) = self.local_registers.get(&local_idx).cloned() else {
+                continue;
+            };
+
+            let local_val = self.alloc_register(reg.ty);
+            self.emit(IrInstr::LoadLocal {
+                dest: local_val.clone(),
+                index: local_idx,
+            });
+
+            let global_idx = self.next_global_index;
+            self.next_global_index += 1;
+            self.global_type_map.insert(global_idx, reg.ty);
+            self.emit(IrInstr::StoreGlobal {
+                index: global_idx,
+                value: local_val,
+            });
+            env_globals.insert(sym, global_idx);
+        }
+
+        env_globals
+    }
+
     fn classify_for_of_iterable(
         &self,
         iterable: &ast::Expression,
@@ -134,21 +165,40 @@ impl<'a> Lowerer<'a> {
             Statement::Try(try_stmt) => self.lower_try(try_stmt),
             Statement::Switch(switch) => self.lower_switch(switch),
             Statement::FunctionDecl(func_decl) => {
-                if !self.function_map.contains_key(&func_decl.name.name) {
+                let is_pre_registered = self.function_id_for_decl(func_decl).is_some();
+                if !self.function_map.contains_key(&func_decl.name.name) || is_pre_registered {
                     // Nested function declaration — treat as closure with captures
                     self.lower_nested_function_decl(func_decl);
                 }
                 // Module-level declarations handled in lower_module first pass
             }
             Statement::ClassDecl(class) => {
-                if !self.class_map.contains_key(&class.name.name) {
-                    // Nested class declaration — register and lower inline.
-                    // lower_class resets per-function state (registers, blocks, locals)
-                    // for each method/constructor, so we must save and restore the
-                    // enclosing function's state around it.
-                    self.register_class(class);
+                let Some(class_id) = self.class_id_for_decl(class) else {
+                    self.errors
+                        .push(crate::compiler::CompileError::InternalError {
+                            message: format!(
+                                "class declaration '{}' at span {} missing ClassId registration",
+                                self.interner.resolve(class.name.name),
+                                class.span.start
+                            ),
+                        });
+                    return;
+                };
 
-                    // Save per-function state
+                if !self.lowered_class_ids.contains(&class_id) {
+                    // Nested class declaration — lower once by declaration identity.
+                    // lower_class resets per-function state (registers, blocks, locals)
+                    // for each method/constructor, so save and restore enclosing state.
+                    let in_std_wrapper = self
+                        .current_function
+                        .as_ref()
+                        .is_some_and(|f| f.name.starts_with("__std_module_"));
+                    let saved_pending_method_env = self.pending_class_method_env_globals.take();
+                    if in_std_wrapper {
+                        self.pending_class_method_env_globals =
+                            Some(self.materialize_current_locals_for_method_env());
+                    }
+
                     let saved_register = self.next_register;
                     let saved_block = self.next_block;
                     let saved_local_map = self.local_map.clone();
@@ -163,8 +213,7 @@ impl<'a> Lowerer<'a> {
                     let saved_current_class = self.current_class.take();
                     let saved_this_register = self.this_register.take();
 
-                    let ir_class = self.lower_class(class);
-                    self.pending_classes.push(ir_class);
+                    self.lower_class_declaration(class);
 
                     // Restore per-function state
                     self.next_register = saved_register;
@@ -180,19 +229,18 @@ impl<'a> Lowerer<'a> {
                     self.current_block = saved_current_block;
                     self.current_class = saved_current_class;
                     self.this_register = saved_this_register;
+                    self.pending_class_method_env_globals = saved_pending_method_env;
                 } else {
-                    // Module-level class already lowered — emit static blocks at this point
-                    // so they execute in declaration order (matching JS semantics).
-                    if let Some(&class_id) = self.class_map.get(&class.name.name) {
-                        let static_blocks: Vec<ast::BlockStatement> = self
-                            .class_info_map
-                            .get(&class_id)
-                            .map(|info| info.static_blocks.clone())
-                            .unwrap_or_default();
-                        for block in static_blocks {
-                            for s in &block.statements {
-                                self.lower_stmt(s);
-                            }
+                    // Already-lowered declaration: emit static blocks at declaration position
+                    // so execution order matches source semantics.
+                    let static_blocks: Vec<ast::BlockStatement> = self
+                        .class_info_map
+                        .get(&class_id)
+                        .map(|info| info.static_blocks.clone())
+                        .unwrap_or_default();
+                    for block in static_blocks {
+                        for s in &block.statements {
+                            self.lower_stmt(s);
                         }
                     }
                 }
@@ -1008,58 +1056,53 @@ impl<'a> Lowerer<'a> {
                 }
             }
             ast::Pattern::Object(obj_pat) => {
-                // Object destructuring: field indices are positional (0, 1, 2, ...)
-                // Look up field layout from register_object_fields or variable_object_fields
+                // Object destructuring
+                // Prefer statically known field layout; otherwise use Reflect.get by property name.
                 let field_layout: Option<Vec<(String, usize)>> =
                     self.register_object_fields.get(&value_reg.id).cloned();
 
                 for property in &obj_pat.properties {
                     let prop_name = self.interner.resolve(property.key.name).to_string();
 
-                    // Find field index by name from the field layout
-                    let field_index = if let Some(ref layout) = field_layout {
-                        layout
+                    let field_reg = if let Some(ref layout) = field_layout {
+                        // Statically known layout: use direct field slot when present.
+                        let field_index = layout
                             .iter()
                             .find(|(name, _)| name == &prop_name)
-                            .map(|(_, idx)| *idx as u16)
-                    } else {
-                        // Fallback: use positional index (no layout available)
-                        Some(
-                            obj_pat
-                                .properties
-                                .iter()
-                                .position(|p| p.key.name == property.key.name)
-                                .unwrap_or(0) as u16,
-                        )
-                    };
-
-                    // If the field doesn't exist in the layout, use default or null
-                    if field_index.is_none() {
-                        if let Some(default_expr) = &property.default {
-                            let default_val = self.lower_expr(default_expr);
-                            self.bind_pattern(&property.value, default_val);
-                        } else {
-                            let null_reg = self.lower_null_literal();
-                            self.bind_pattern(&property.value, null_reg);
+                            .map(|(_, idx)| *idx as u16);
+                        if field_index.is_none() {
+                            if let Some(default_expr) = &property.default {
+                                let default_val = self.lower_expr(default_expr);
+                                self.bind_pattern(&property.value, default_val);
+                            } else {
+                                let null_reg = self.lower_null_literal();
+                                self.bind_pattern(&property.value, null_reg);
+                            }
+                            continue;
                         }
-                        continue;
-                    }
-
-                    // Special handling for object literals without explicit field layout
-                    // If there's a default value, use it directly to avoid LoadField on missing properties
-                    if field_layout.is_none() && property.default.is_some() {
-                        let default_val = self.lower_expr(property.default.as_ref().unwrap());
-                        self.bind_pattern(&property.value, default_val);
-                        continue;
-                    }
-
-                    let field_reg = self.alloc_register(TypeId::new(0));
-                    self.emit(IrInstr::LoadField {
-                        dest: field_reg.clone(),
-                        object: value_reg.clone(),
-                        field: field_index.unwrap(),
-                        optional: false,
-                    });
+                        let loaded = self.alloc_register(TypeId::new(0));
+                        self.emit(IrInstr::LoadField {
+                            dest: loaded.clone(),
+                            object: value_reg.clone(),
+                            field: field_index.unwrap(),
+                            optional: false,
+                        });
+                        loaded
+                    } else {
+                        // Dynamic layout: read by property name instead of positional slot fallback.
+                        let key_reg = self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: key_reg.clone(),
+                            value: IrValue::Constant(IrConstant::String(prop_name.clone())),
+                        });
+                        let loaded = self.alloc_register(TypeId::new(0));
+                        self.emit(IrInstr::NativeCall {
+                            dest: Some(loaded.clone()),
+                            native_id: crate::compiler::native_id::REFLECT_GET,
+                            args: vec![value_reg.clone(), key_reg],
+                        });
+                        loaded
+                    };
 
                     // Handle default values
                     if let Some(default_expr) = &property.default {
@@ -1183,6 +1226,37 @@ impl<'a> Lowerer<'a> {
         value
     }
 
+    fn track_variable_object_alias_from_annotation(
+        &mut self,
+        name: crate::parser::Symbol,
+        type_ann: &ast::TypeAnnotation,
+    ) {
+        if let ast::Type::Reference(type_ref) = &type_ann.ty {
+            let alias_name = self.interner.resolve(type_ref.name.name).to_string();
+            if self.type_alias_object_fields.contains_key(&alias_name) {
+                self.variable_object_type_aliases.insert(name, alias_name);
+            }
+        }
+    }
+
+    fn track_variable_object_alias_from_initializer(
+        &mut self,
+        name: crate::parser::Symbol,
+        init: &ast::Expression,
+    ) {
+        if let ast::Expression::Call(call) = init {
+            if let ast::Expression::Identifier(func_ident) = &*call.callee {
+                if let Some(alias_name) = self.function_return_type_alias_map.get(&func_ident.name)
+                {
+                    if self.type_alias_object_fields.contains_key(alias_name) {
+                        self.variable_object_type_aliases
+                            .insert(name, alias_name.clone());
+                    }
+                }
+            }
+        }
+    }
+
     fn lower_var_decl(&mut self, decl: &ast::VariableDecl) {
         // Handle destructuring patterns
         let name = match &decl.pattern {
@@ -1198,6 +1272,13 @@ impl<'a> Lowerer<'a> {
             }
             ast::Pattern::Rest(_) => return,
         };
+
+        // Reset stale per-name inference from other scopes before rebinding this declaration.
+        self.variable_class_map.remove(&name);
+        self.array_element_class_map.remove(&name);
+        self.bound_method_vars.remove(&name);
+        self.variable_object_fields.remove(&name);
+        self.variable_object_type_aliases.remove(&name);
 
         // Check for compile-time constant: const with literal initializer
         // These are folded at compile time and emit no runtime code
@@ -1223,6 +1304,7 @@ impl<'a> Lowerer<'a> {
                         if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
                             self.variable_class_map.insert(name, class_id);
                         }
+                        self.track_variable_object_alias_from_annotation(name, type_ann);
                         if let ast::Type::Array(arr_ty) = &type_ann.ty {
                             if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
                                 if let Some(&class_id) = self.class_map.get(&elem_ref.name.name) {
@@ -1246,6 +1328,7 @@ impl<'a> Lowerer<'a> {
                     if let Some(class_id) = self.infer_class_id(init) {
                         self.variable_class_map.insert(name, class_id);
                     }
+                    self.track_variable_object_alias_from_initializer(name, init);
 
                     // Track bound method variables (e.g., `let f = obj.method`)
                     if !self.js_this_binding_compat && matches!(init, ast::Expression::Member(_)) {
@@ -1326,6 +1409,7 @@ impl<'a> Lowerer<'a> {
                 if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
                     self.variable_class_map.insert(name, class_id);
                 }
+                self.track_variable_object_alias_from_annotation(name, type_ann);
                 // Track array element class type (e.g., `let items: Item[] = [...]`)
                 if let ast::Type::Array(arr_ty) = &type_ann.ty {
                     if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
@@ -1351,6 +1435,7 @@ impl<'a> Lowerer<'a> {
             if let Some(class_id) = self.infer_class_id(init) {
                 self.variable_class_map.insert(name, class_id);
             }
+            self.track_variable_object_alias_from_initializer(name, init);
 
             // Track bound method variables (e.g., `let f = obj.method`)
             if !self.js_this_binding_compat && matches!(init, ast::Expression::Member(_)) {
@@ -1391,6 +1476,19 @@ impl<'a> Lowerer<'a> {
             // (for decode<T> results so property access resolves correctly)
             if let Some(fields) = self.register_object_fields.get(&value.id).cloned() {
                 self.variable_object_fields.insert(name, fields);
+            }
+
+            // Std wrapper top-scope arrow bindings (e.g., `const sign = (...) => ...`)
+            // are referenced from nested class methods. Class methods are lowered as
+            // standalone IR functions, so resolve these helpers via function_map.
+            let in_std_wrapper = self
+                .current_function
+                .as_ref()
+                .is_some_and(|f| f.name.starts_with("__std_module_"));
+            if in_std_wrapper && matches!(init, ast::Expression::Arrow(_)) {
+                if let Some(func_id) = self.last_arrow_func_id {
+                    self.function_map.insert(name, func_id);
+                }
             }
 
             // Track closure locals for async closure detection
@@ -1511,8 +1609,35 @@ impl<'a> Lowerer<'a> {
             span: Span::new(0, 0, 0, 0),
         };
 
-        // Lower as arrow (handles capture analysis, MakeClosure, etc.)
-        let closure_reg = self.lower_arrow(&arrow);
+        // Lower as arrow (handles capture analysis, MakeClosure, etc.).
+        // Std wrapper nested functions may have a pre-assigned function ID.
+        let preassigned_func_id = self.function_id_for_decl(func_decl);
+        let closure_reg = self.lower_arrow_with_preassigned_id(&arrow, preassigned_func_id);
+
+        // Std-prelude wrappers rely on sibling helper functions from class methods
+        // (e.g., EnvNamespace.cwd() calling local `cwd()`), so expose wrapper-local
+        // function declarations in function_map for direct identifier calls.
+        let in_std_wrapper = self
+            .current_function
+            .as_ref()
+            .is_some_and(|f| f.name.starts_with("__std_module_"));
+        if in_std_wrapper {
+            if let Some(func_id) = self.last_arrow_func_id {
+                self.function_map.insert(func_decl.name.name, func_id);
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    eprintln!(
+                        "[lower] std wrapper helper fn '{}' -> func_id={} preassigned={}",
+                        self.interner.resolve(func_decl.name.name),
+                        func_id.as_u32(),
+                        preassigned_func_id
+                            .map(|id| id.as_u32().to_string())
+                            .unwrap_or_else(|| "none".to_string())
+                    );
+                }
+            }
+        }
+
+        self.record_function_return_mappings(func_decl.name.name, func_decl.return_type.as_ref());
 
         // Assign to a local variable with the function's name
         let local_idx = self.allocate_local(func_decl.name.name);

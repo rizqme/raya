@@ -1141,3 +1141,31 @@ fn test_type_constrained_decorator_factory_mismatch() {
         "signature",
     );
 }
+
+#[test]
+fn test_non_callable_decorator_expression_compile_error() {
+    expect_compile_error(
+        "let NotCallable = 1;
+
+         @NotCallable
+         class Service {}
+
+         return 0;",
+        "InvalidDecorator",
+    );
+}
+
+#[test]
+fn test_non_callable_method_decorator_expression_compile_error() {
+    expect_compile_error(
+        "let NotCallable = 1;
+
+         class Service {
+             @NotCallable
+             run(): number { return 1; }
+         }
+
+         return 0;",
+        "InvalidDecorator",
+    );
+}

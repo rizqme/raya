@@ -123,6 +123,7 @@ fn parse_expression_with_precedence(
                 | Token::LeftBracket
                 | Token::PlusPlus
                 | Token::MinusMinus
+                | Token::TemplateLiteral(_)
         );
 
         // Treat `<...>(` as postfix generic-call suffix even in higher-precedence contexts.

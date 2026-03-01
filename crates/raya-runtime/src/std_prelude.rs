@@ -193,7 +193,10 @@ pub fn build_std_prelude(source: &str) -> Result<StdPreludeOutput, RuntimeError>
         let merged = if output.prelude_source.is_empty() {
             output.rewritten_user_source.clone()
         } else {
-            format!("{}\n{}", output.prelude_source, output.rewritten_user_source)
+            format!(
+                "{}\n{}",
+                output.prelude_source, output.rewritten_user_source
+            )
         };
         let _ = std::fs::write(path, merged);
     }
@@ -220,7 +223,10 @@ fn resolve_and_visit_module(
         match state {
             VisitState::Visited => return Ok(canonical),
             VisitState::Visiting => {
-                let cycle_idx = stack.iter().position(|name| name == &canonical).unwrap_or(0);
+                let cycle_idx = stack
+                    .iter()
+                    .position(|name| name == &canonical)
+                    .unwrap_or(0);
                 let mut chain: Vec<String> = stack[cycle_idx..].to_vec();
                 chain.push(canonical.clone());
                 return Err(RuntimeError::Dependency(format!(
@@ -283,7 +289,10 @@ fn resolve_and_visit_module(
     Ok(canonical)
 }
 
-fn convert_import_specifiers(specifiers: &[ImportSpecifier], interner: &Interner) -> Vec<BindingSpec> {
+fn convert_import_specifiers(
+    specifiers: &[ImportSpecifier],
+    interner: &Interner,
+) -> Vec<BindingSpec> {
     let mut out = Vec::new();
     for spec in specifiers {
         match spec {
@@ -436,7 +445,10 @@ fn transform_std_module(
                 let bindings = convert_import_specifiers(&import.specifiers, &module.interner);
                 let mut named_locals = HashSet::new();
                 let has_default_or_namespace = bindings.iter().any(|binding| {
-                    matches!(binding, BindingSpec::Default { .. } | BindingSpec::Namespace { .. })
+                    matches!(
+                        binding,
+                        BindingSpec::Default { .. } | BindingSpec::Namespace { .. }
+                    )
                 });
                 for binding in &bindings {
                     if let BindingSpec::Named { imported, local } = binding {
@@ -465,7 +477,7 @@ fn transform_std_module(
                     &specifier,
                     BindingContext::Internal,
                     Some(&module_allowed_types),
-                    None,
+                    Some(&module.source),
                 )?);
             }
             Statement::ExportDecl(export) => {
@@ -676,9 +688,7 @@ fn transform_export_decl(
             }
         }
         ExportDecl::Named {
-            specifiers,
-            source,
-            ..
+            specifiers, source, ..
         } => {
             if let Some(src) = source {
                 let source_specifier = module.interner.resolve(src.value).to_string();
@@ -771,10 +781,11 @@ fn transform_export_decl(
             let expr_src = expression.span().slice(&module.source).trim().to_string();
 
             // Infer default export type from expression
-            let type_expr = if let Some(class_name) = expr_src
-                .strip_prefix("new ")
-                .and_then(|rest| rest.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').next())
-            {
+            let type_expr = if let Some(class_name) =
+                expr_src.strip_prefix("new ").and_then(|rest| {
+                    rest.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                        .next()
+                }) {
                 if local_type_names.contains(class_name) {
                     format!("__t_{}_{}", module_tag, class_name)
                 } else {
@@ -792,10 +803,7 @@ fn transform_export_decl(
                 "unknown".to_string()
             };
 
-            out.push_str(&format!(
-                "const {} = {};\n",
-                default_var, expr_src
-            ));
+            out.push_str(&format!("const {} = {};\n", default_var, expr_src));
             exports.insert(
                 "default".to_string(),
                 ExportBinding {
@@ -876,10 +884,7 @@ fn emit_binding_lines(
                             || canonical.starts_with("_node_")
                             || canonical.starts_with("__node_")
                         {
-                            out.push_str(&format!(
-                                "const {} = {};\n",
-                                local, default_accessor
-                            ));
+                            out.push_str(&format!("const {} = {};\n", local, default_accessor));
                         } else {
                             out.push_str(&format!(
                                 "const {} = ({} as {});\n",
@@ -893,10 +898,7 @@ fn emit_binding_lines(
                     {
                         out.push_str(&emit_default_object_binding(local, &export_var, meta));
                     } else {
-                        out.push_str(&format!(
-                            "const {} = {};\n",
-                            local, default_accessor
-                        ));
+                        out.push_str(&format!("const {} = {};\n", local, default_accessor));
                     }
                 } else if !meta.function_exports.is_empty() {
                     out.push_str(&emit_default_wrapper(
@@ -907,10 +909,7 @@ fn emit_binding_lines(
                         allowed_types,
                     ));
                 } else {
-                    out.push_str(&format!(
-                        "const {} = {};\n",
-                        local, default_accessor
-                    ));
+                    out.push_str(&format!("const {} = {};\n", local, default_accessor));
                 }
             }
             BindingSpec::Named { imported, local } => {
@@ -919,7 +918,8 @@ fn emit_binding_lines(
                     let usage = usage_source
                         .map(|src| infer_identifier_usage(src, local))
                         .unwrap_or(IdentifierUsage::Both);
-                    if !matches!(usage, IdentifierUsage::ValueOnly) {
+                    let should_emit_type_alias = !matches!(usage, IdentifierUsage::ValueOnly);
+                    if should_emit_type_alias {
                         out.push_str(&format!("type {} = {};\n", local, type_expr));
                     }
                     if matches!(usage, IdentifierUsage::TypeOnly) {
@@ -988,16 +988,18 @@ fn resolve_canonical_from_deps(
     source_specifier: &str,
 ) -> Result<String, RuntimeError> {
     let registry = StdModuleRegistry::new();
-    let (canonical, _) = registry.resolve_specifier(source_specifier).ok_or_else(|| {
-        if StdModuleRegistry::is_node_import(source_specifier) {
-            unsupported_node_import_error(source_specifier)
-        } else {
-            RuntimeError::Dependency(format!(
-                "Unknown std module import '{}' in '{}'",
-                source_specifier, module.canonical
-            ))
-        }
-    })?;
+    let (canonical, _) = registry
+        .resolve_specifier(source_specifier)
+        .ok_or_else(|| {
+            if StdModuleRegistry::is_node_import(source_specifier) {
+                unsupported_node_import_error(source_specifier)
+            } else {
+                RuntimeError::Dependency(format!(
+                    "Unknown std module import '{}' in '{}'",
+                    source_specifier, module.canonical
+                ))
+            }
+        })?;
 
     if module.deps.iter().any(|dep| dep == &canonical) {
         Ok(canonical)
@@ -1337,23 +1339,53 @@ fn variable_decl_type_expr(
 
 fn hoisted_declaration_source(stmt: &Statement, module: &ParsedStdModule) -> Option<String> {
     match stmt {
-        Statement::TypeAliasDecl(_) => {
-            Some(stmt.span().slice(&module.source).to_string())
-        }
+        Statement::TypeAliasDecl(_) => Some(stmt.span().slice(&module.source).to_string()),
         Statement::ClassDecl(_) if module.canonical == "pm" => {
             Some(stmt.span().slice(&module.source).to_string())
         }
+        Statement::VariableDecl(var)
+            if module.canonical == "pm" && is_pm_hoistable_var_decl(var) =>
+        {
+            Some(stmt.span().slice(&module.source).to_string())
+        }
         Statement::ExportDecl(ExportDecl::Declaration(inner)) => match inner.as_ref() {
-            Statement::TypeAliasDecl(_) => {
-                Some(strip_export_prefix(export_decl_source(stmt, &module.source)))
-            }
-            Statement::ClassDecl(_) if module.canonical == "pm" => {
-                Some(strip_export_prefix(export_decl_source(stmt, &module.source)))
+            Statement::TypeAliasDecl(_) => Some(strip_export_prefix(export_decl_source(
+                stmt,
+                &module.source,
+            ))),
+            Statement::ClassDecl(_) if module.canonical == "pm" => Some(strip_export_prefix(
+                export_decl_source(stmt, &module.source),
+            )),
+            Statement::VariableDecl(var)
+                if module.canonical == "pm" && is_pm_hoistable_var_decl(var) =>
+            {
+                Some(strip_export_prefix(export_decl_source(
+                    stmt,
+                    &module.source,
+                )))
             }
             _ => None,
         },
         _ => None,
     }
+}
+
+fn is_pm_hoistable_var_decl(var: &raya_engine::parser::ast::VariableDecl) -> bool {
+    if !matches!(var.kind, raya_engine::parser::ast::VariableKind::Const) {
+        return false;
+    }
+    if !matches!(var.pattern, Pattern::Identifier(_)) {
+        return false;
+    }
+    matches!(
+        var.initializer.as_ref(),
+        Some(
+            raya_engine::parser::ast::Expression::StringLiteral(_)
+                | raya_engine::parser::ast::Expression::FloatLiteral(_)
+                | raya_engine::parser::ast::Expression::IntLiteral(_)
+                | raya_engine::parser::ast::Expression::BooleanLiteral(_)
+        )
+    )
 }
 
 fn export_decl_source<'a>(stmt: &Statement, source: &'a str) -> &'a str {
@@ -1380,6 +1412,7 @@ fn sanitize_wrapper_sig(sig: &FunctionSig, allowed_types: Option<&HashSet<String
 fn sanitize_wrapper_type(ty: &str, allowed_types: Option<&HashSet<String>>) -> String {
     let allowed = [
         "string", "number", "boolean", "void", "unknown", "null", "int", "float", "Buffer",
+        "Promise", "Task",
     ];
     let mut token = String::new();
     for ch in ty.chars() {
@@ -1461,9 +1494,7 @@ fn extract_class_type_meta(
                     .enumerate()
                     .map(|(idx, param)| {
                         let pname = match &param.pattern {
-                            Pattern::Identifier(id) => {
-                                module.interner.resolve(id.name).to_string()
-                            }
+                            Pattern::Identifier(id) => module.interner.resolve(id.name).to_string(),
                             _ => format!("arg{}", idx),
                         };
                         FunctionParamSig {
@@ -1471,9 +1502,7 @@ fn extract_class_type_meta(
                             ty: param
                                 .type_annotation
                                 .as_ref()
-                                .map(|ann| {
-                                    normalize_type_snippet(ann.span.slice(&module.source))
-                                })
+                                .map(|ann| normalize_type_snippet(ann.span.slice(&module.source)))
                                 .unwrap_or_else(|| "unknown".to_string()),
                             optional: param.optional,
                             has_default: param.default_value.is_some(),
@@ -1486,7 +1515,13 @@ fn extract_class_type_meta(
                     .as_ref()
                     .map(|ann| normalize_type_snippet(ann.span.slice(&module.source)))
                     .unwrap_or_else(|| "void".to_string());
-                methods.push((name, FunctionSig { params, return_type }));
+                methods.push((
+                    name,
+                    FunctionSig {
+                        params,
+                        return_type,
+                    },
+                ));
             }
             _ => {}
         }
@@ -1596,7 +1631,10 @@ fn topo_sort_classes(
     // Emit classes with 0 remaining dependencies first.
     let mut in_deg: BTreeMap<&str, usize> = BTreeMap::new();
     for name in class_types.keys() {
-        in_deg.insert(name.as_str(), deps.get(name.as_str()).map_or(0, |d| d.len()));
+        in_deg.insert(
+            name.as_str(),
+            deps.get(name.as_str()).map_or(0, |d| d.len()),
+        );
     }
 
     let mut ready: Vec<&str> = in_deg
@@ -1739,6 +1777,27 @@ mod tests {
     }
 
     #[test]
+    fn prelude_named_class_import_emits_type_and_value_bindings_for_mixed_usage() {
+        let source = r#"
+            import { HttpServer } from "std:http";
+            function usesType(server: HttpServer): void {}
+            const server = new HttpServer("127.0.0.1", 0);
+            server.localPort();
+        "#;
+        let out = build_std_prelude(source).expect("std prelude should build");
+        assert!(
+            out.prelude_source.contains("const HttpServer"),
+            "expected class value binding for HttpServer, got:\n{}",
+            out.prelude_source
+        );
+        assert!(
+            out.prelude_source.contains("type HttpServer ="),
+            "expected class type binding for HttpServer, got:\n{}",
+            out.prelude_source
+        );
+    }
+
+    #[test]
     fn prelude_dedupes_repeated_default_import_bindings() {
         let source = r#"
             import env from "std:env";
@@ -1746,10 +1805,15 @@ mod tests {
             env.cwd();
         "#;
         let out = build_std_prelude(source).expect("std prelude should build");
-        let count = out
+        let dot = out
+            .prelude_source
+            .matches("const env = (__std_exports_env.default as __t_env_EnvNamespace);")
+            .count();
+        let bracket = out
             .prelude_source
             .matches("const env = (__std_exports_env[\"default\"] as __t_env_EnvNamespace);")
             .count();
+        let count = dot + bracket;
         assert_eq!(
             count, 1,
             "expected one env binding, got {} in:\n{}",
@@ -1767,6 +1831,51 @@ mod tests {
         assert!(
             out.prelude_source.contains("const ReadableStream"),
             "expected runtime value binding for ReadableStream, got:\n{}",
+            out.prelude_source
+        );
+    }
+
+    #[test]
+    fn prelude_alias_synthesis_preserves_generic_params() {
+        let source = r#"
+            import { ReadableStream } from "std:stream";
+            ReadableStream;
+        "#;
+        let out = build_std_prelude(source).expect("std prelude should build");
+        assert!(
+            out.prelude_source
+                .contains("type __t_stream_ReadableStream<T = unknown> = {"),
+            "expected generic alias for ReadableStream, got:\n{}",
+            out.prelude_source
+        );
+    }
+
+    #[test]
+    fn prelude_alias_synthesis_marks_defaulted_params_optional() {
+        let source = r#"
+            import compress from "std:compress";
+            compress.gzip;
+        "#;
+        let out = build_std_prelude(source).expect("std prelude should build");
+        assert!(
+            out.prelude_source
+                .contains("gzip: (data: Buffer, level?: number) => Buffer"),
+            "expected defaulted parameter to be optional in synthesized alias, got:\n{}",
+            out.prelude_source
+        );
+    }
+
+    #[test]
+    fn prelude_alias_synthesis_preserves_promise_returns() {
+        let source = r#"
+            import { HttpServer } from "std:http";
+            HttpServer;
+        "#;
+        let out = build_std_prelude(source).expect("std prelude should build");
+        assert!(
+            out.prelude_source
+                .contains("serve: (handler: unknown) => Promise"),
+            "expected Promise return in synthesized HttpServer alias, got:\n{}",
             out.prelude_source
         );
     }

@@ -746,11 +746,13 @@ impl<'a> Lexer<'a> {
             {
                 // In JSX closing tags (e.g. `</div>`), `/` must remain a slash token.
                 // Guard this specific context before regex-literal detection.
-                let jsx_closing_tag_slash = self.tokens.last().map_or(false, |(tok, _)| {
-                    matches!(tok, Token::Less)
-                }) && (pos + 1 < self.source.len()
-                    && (self.source.as_bytes()[pos + 1].is_ascii_alphabetic()
-                        || self.source.as_bytes()[pos + 1] == b'>'));
+                let jsx_closing_tag_slash = self
+                    .tokens
+                    .last()
+                    .map_or(false, |(tok, _)| matches!(tok, Token::Less))
+                    && (pos + 1 < self.source.len()
+                        && (self.source.as_bytes()[pos + 1].is_ascii_alphabetic()
+                            || self.source.as_bytes()[pos + 1] == b'>'));
 
                 let is_division = self.tokens.last().map_or(false, |(tok, _)| {
                     matches!(

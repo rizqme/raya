@@ -1454,6 +1454,63 @@ impl<'a> Binder<'a> {
         }
     }
 
+    /// Pre-pass nested declarations inside a function body scope.
+    /// This enables forward references between function-local classes/functions/type aliases.
+    fn prepass_stmt_nested(&mut self, stmt: &Statement) -> Result<(), BindError> {
+        match stmt {
+            Statement::ClassDecl(class) => self.prepass_class(class),
+            Statement::FunctionDecl(func) => self.prepass_function(func),
+            Statement::TypeAliasDecl(alias) => self.prepass_type_alias(alias),
+            Statement::Block(block) => {
+                for s in &block.statements {
+                    self.prepass_stmt_nested(s)?;
+                }
+                Ok(())
+            }
+            Statement::If(if_stmt) => {
+                self.prepass_stmt_nested(&if_stmt.then_branch)?;
+                if let Some(else_branch) = &if_stmt.else_branch {
+                    self.prepass_stmt_nested(else_branch)?;
+                }
+                Ok(())
+            }
+            Statement::While(while_stmt) => self.prepass_stmt_nested(&while_stmt.body),
+            Statement::DoWhile(do_while) => self.prepass_stmt_nested(&do_while.body),
+            Statement::For(for_stmt) => self.prepass_stmt_nested(&for_stmt.body),
+            Statement::ForOf(for_of) => self.prepass_stmt_nested(&for_of.body),
+            Statement::ForIn(for_in) => self.prepass_stmt_nested(&for_in.body),
+            Statement::Labeled(labeled) => self.prepass_stmt_nested(&labeled.body),
+            Statement::Switch(switch_stmt) => {
+                for case in &switch_stmt.cases {
+                    for s in &case.consequent {
+                        self.prepass_stmt_nested(s)?;
+                    }
+                }
+                Ok(())
+            }
+            Statement::Try(try_stmt) => {
+                for s in &try_stmt.body.statements {
+                    self.prepass_stmt_nested(s)?;
+                }
+                if let Some(catch) = &try_stmt.catch_clause {
+                    for s in &catch.body.statements {
+                        self.prepass_stmt_nested(s)?;
+                    }
+                }
+                if let Some(finally) = &try_stmt.finally_clause {
+                    for s in &finally.statements {
+                        self.prepass_stmt_nested(s)?;
+                    }
+                }
+                Ok(())
+            }
+            Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => {
+                self.prepass_stmt_nested(inner_stmt)
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Pre-pass: register a class name with a placeholder type
     fn prepass_class(&mut self, class: &ClassDecl) -> Result<(), BindError> {
         let class_name = self.resolve(class.name.name);
@@ -1784,6 +1841,16 @@ impl<'a> Binder<'a> {
         match pattern {
             Pattern::Identifier(ident) => {
                 let name = self.resolve(ident.name);
+                let current_scope = self.symbols.current_scope_id();
+                if let Some(existing) = self.symbols.resolve_from_scope(&name, current_scope) {
+                    if existing.scope_id == current_scope && existing.kind == SymbolKind::TypeAlias
+                    {
+                        // Allow value binding to coexist with a same-name type alias in this scope.
+                        // The checker resolves identifiers by TypeId, so the type alias symbol
+                        // can service both type and value references for std-prelude shims.
+                        return Ok(());
+                    }
+                }
                 let symbol = Symbol {
                     name,
                     kind: SymbolKind::Variable,
@@ -1795,7 +1862,7 @@ impl<'a> Binder<'a> {
                         is_readonly: false,
                         is_imported: false,
                     },
-                    scope_id: self.symbols.current_scope_id(),
+                    scope_id: current_scope,
                     span: ident.span,
                     referenced: false,
                 };
@@ -1891,6 +1958,11 @@ impl<'a> Binder<'a> {
 
         // Push function scope - type parameters, parameters, and body all share this scope
         self.symbols.push_scope(ScopeKind::Function);
+
+        // Pre-pass function-local declarations for forward references inside this scope.
+        for stmt in &func.body.statements {
+            self.prepass_stmt_nested(stmt)?;
+        }
 
         // Bind type parameters first (before resolving parameter types)
         if let Some(ref type_params) = func.type_params {
@@ -3044,10 +3116,17 @@ impl<'a> Binder<'a> {
                 // Handle Promise<T> (and legacy Task<T> alias) for async functions
                 if name == TC::PROMISE_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.is_empty() {
+                            let unknown = self.type_ctx.unknown_type();
+                            return Ok(self.type_ctx.task_type(unknown));
+                        }
                         if type_args.len() == 1 {
                             let result_ty = self.resolve_type_annotation(&type_args[0])?;
                             return Ok(self.type_ctx.task_type(result_ty));
                         }
+                    } else {
+                        let unknown = self.type_ctx.unknown_type();
+                        return Ok(self.type_ctx.task_type(unknown));
                     }
                     return Err(BindError::InvalidTypeArguments {
                         name,
@@ -3127,7 +3206,10 @@ impl<'a> Binder<'a> {
                     });
                 }
 
-                if let Some(symbol) = self.symbols.resolve(&name) {
+                if let Some(symbol) =
+                    self.symbols
+                        .resolve_from_scope(&name, self.symbols.current_scope_id())
+                {
                     if symbol.kind == SymbolKind::TypeAlias
                         || symbol.kind == SymbolKind::TypeParameter
                         || symbol.kind == SymbolKind::Class
@@ -3293,11 +3375,7 @@ impl<'a> Binder<'a> {
                             }
                             let return_ty = self.resolve_type_annotation(&method.return_type)?;
                             let func_ty = self.type_ctx.function_type_with_rest(
-                                param_tys,
-                                return_ty,
-                                false,
-                                min_params,
-                                rest_param,
+                                param_tys, return_ty, false, min_params, rest_param,
                             );
 
                             properties.push(PropertySignature {
@@ -3588,5 +3666,30 @@ mod tests {
             Some(other) => panic!("expected json field to be class Json, got {other:?}"),
             None => panic!("missing field type"),
         }
+    }
+
+    #[test]
+    fn test_function_local_class_forward_type_reference_binds() {
+        let source = r#"
+            function wrap(): void {
+                class A {
+                    next(): B | null { return null; }
+                }
+                class B {}
+                let _a = new A();
+                let _b = new B();
+            }
+        "#;
+        let _ = parse_and_bind(source);
+    }
+
+    #[test]
+    fn test_promise_without_type_args_defaults_to_unknown_task() {
+        let source = r#"
+            async function f(): Promise {
+                return 1;
+            }
+        "#;
+        let _ = parse_and_bind(source);
     }
 }

@@ -51,10 +51,8 @@ impl<'a> Interpreter<'a> {
                     if !closure_val.is_ptr() {
                         // Compatibility path: some lowered function references may
                         // be represented as direct function IDs.
-                        let direct_func_id = closure_val
-                            .as_i32()
-                            .map(|v| v as usize)
-                            .or_else(|| {
+                        let direct_func_id =
+                            closure_val.as_i32().map(|v| v as usize).or_else(|| {
                                 closure_val.as_f64().and_then(|v| {
                                     if v.is_finite()
                                         && v.fract() == 0.0
@@ -95,9 +93,15 @@ impl<'a> Interpreter<'a> {
                         } else {
                             "non-pointer primitive".to_string()
                         };
+                        let current_func_id = task.current_func_id();
+                        let current_func_name = module
+                            .functions
+                            .get(current_func_id)
+                            .map(|f| f.name.as_str())
+                            .unwrap_or("<unknown>");
                         return OpcodeResult::Error(VmError::TypeError(format!(
-                            "Expected closure or bound method, got {}",
-                            got
+                            "Expected closure or bound method, got {} (in {}#{})",
+                            got, current_func_name, current_func_id
                         )));
                     }
 
@@ -149,6 +153,17 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                 } else {
+                    if std::env::var("RAYA_DEBUG_VM_CALLS").is_ok() {
+                        let name = module
+                            .functions
+                            .get(func_index)
+                            .map(|f| f.name.as_str())
+                            .unwrap_or("<invalid>");
+                        eprintln!(
+                            "[vm] Call func_index={} arg_count={} name={}",
+                            func_index, arg_count, name
+                        );
+                    }
                     // Regular function call - args are already on the stack
                     OpcodeResult::PushFrame {
                         func_id: func_index,
@@ -402,9 +417,15 @@ impl<'a> Interpreter<'a> {
                     } else {
                         "UnknownGcType"
                     };
+                    let current_func_id = task.current_func_id();
+                    let current_func_name = module
+                        .functions
+                        .get(current_func_id)
+                        .map(|f| f.name.as_str())
+                        .unwrap_or("<unknown>");
                     return OpcodeResult::Error(VmError::TypeError(format!(
-                        "Expected Object receiver for method call (method_index={}), got {}",
-                        method_index, receiver_kind
+                        "Expected Object receiver for method call (method_index={}), got {} (in {}#{})",
+                        method_index, receiver_kind, current_func_name, current_func_id
                     )));
                 }
 

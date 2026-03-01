@@ -82,7 +82,10 @@ fn prompt_line(prompt: &str, default: &str) -> anyhow::Result<String> {
     }
 }
 
-fn prompt_init_config(default_name: &str, current_template: &str) -> anyhow::Result<(String, String)> {
+fn prompt_init_config(
+    default_name: &str,
+    current_template: &str,
+) -> anyhow::Result<(String, String)> {
     println!("This utility will walk you through creating a Raya project.");
     let name = prompt_line("package name", default_name)?;
     let default_template = normalize_template(current_template);
@@ -109,8 +112,8 @@ fn apply_template(path: &PathBuf, template: &str, node: bool) -> anyhow::Result<
     if node {
         let package_json_path = path.join("package.json");
         if package_json_path.exists() {
-            let content = std::fs::read_to_string(&package_json_path)
-                .with_context(|| "read package.json")?;
+            let content =
+                std::fs::read_to_string(&package_json_path).with_context(|| "read package.json")?;
             let mut json: serde_json::Value =
                 serde_json::from_str(&content).with_context(|| "parse package.json")?;
             if !json.get("raya").map(|v| v.is_object()).unwrap_or(false) {

@@ -509,7 +509,7 @@ fn parse_block_or_object_literal(parser: &mut Parser) -> Result<Statement, Parse
             | Token::Export         // Block starts with export
             | Token::Import         // Block starts with import
             | Token::At             // Block starts with annotation
-            | Token::LeftBrace      // Nested block: { { ... } }
+            | Token::LeftBrace // Nested block: { { ... } }
         )
     } else {
         false

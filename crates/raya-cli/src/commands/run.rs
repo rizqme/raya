@@ -263,7 +263,12 @@ fn load_project_manifest() -> anyhow::Result<ProjectManifest> {
             .and_then(|v| v.get("entry"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .or_else(|| value.get("main").and_then(|v| v.as_str()).map(|s| s.to_string()));
+            .or_else(|| {
+                value
+                    .get("main")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            });
         Ok(ProjectManifest::PackageJson(PackageJsonManifest {
             scripts,
             main,

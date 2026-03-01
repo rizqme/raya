@@ -103,10 +103,7 @@ impl StdModuleRegistry {
             "compress",
             include_str!("../../../../raya-stdlib/raya/compress.raya"),
         );
-        modules.insert(
-            "url",
-            include_str!("../../../../raya-stdlib/raya/url.raya"),
-        );
+        modules.insert("url", include_str!("../../../../raya-stdlib/raya/url.raya"));
         modules.insert(
             "args",
             include_str!("../../../../raya-stdlib/raya/args.raya"),

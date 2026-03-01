@@ -174,6 +174,22 @@ impl<'a> Lowerer<'a> {
         }
 
         // Lower the tag expression and call it: tag(strings, ...exprs)
+        // Enforce the same strict callability policy as regular calls.
+        let tag_ty = self.get_expr_type(&tagged.tag);
+        let tag_ty_raw = tag_ty.as_u32();
+        if tag_ty_raw != UNRESOLVED_TYPE_ID
+            && tag_ty_raw != UNKNOWN_TYPE_ID
+            && !self.type_is_callable(tag_ty)
+        {
+            self.errors
+                .push(crate::compiler::CompileError::InternalError {
+                    message: format!(
+                        "unresolved tagged template call target: tag expression is not callable (type id {})",
+                        tag_ty_raw
+                    ),
+                });
+            return dest;
+        }
         let tag_reg = self.lower_expr(&tagged.tag);
         let mut args = vec![strings_arr];
         args.extend(expr_regs);
@@ -408,8 +424,77 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        // Unknown variable - could be a global or error
-        // For now, return a null placeholder
+        // Nested class method environment bridge:
+        // std-wrapper class methods can reference enclosing wrapper locals.
+        if let Some(env_globals) = &self.current_method_env_globals {
+            if let Some(&global_idx) = env_globals.get(&ident.name) {
+                let ty = self
+                    .global_type_map
+                    .get(&global_idx)
+                    .copied()
+                    .unwrap_or(UNRESOLVED);
+                let dest = self.alloc_register(ty);
+                self.emit(IrInstr::LoadGlobal {
+                    dest: dest.clone(),
+                    index: global_idx,
+                });
+                return dest;
+            }
+        }
+
+        // Class identifiers may legitimately appear in value position
+        // (e.g., class aliasing/import scaffolding). Class values are resolved
+        // through class maps at use sites (new/static/member), not as plain locals.
+        if let Some(&class_id) = self.class_map.get(&ident.name) {
+            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: dest.clone(),
+                value: IrValue::Constant(IrConstant::I32(class_id.as_u32() as i32)),
+            });
+            return dest;
+        }
+
+        // Unknown identifier: do not silently lower to null.
+        // Keep lowering moving, but surface a hard compile error.
+        if std::env::var("RAYA_DEBUG_UNRESOLVED_IDENT").is_ok() {
+            let fn_name = self
+                .current_function
+                .as_ref()
+                .map(|f| f.name.clone())
+                .unwrap_or_else(|| "<none>".to_string());
+            let current_class = self
+                .current_class
+                .map(|cid| cid.as_u32().to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let has_local = self.local_map.contains_key(&ident.name);
+            let has_capture = self.captures.iter().any(|c| c.symbol == ident.name);
+            let has_ancestor = self
+                .ancestor_variables
+                .as_ref()
+                .is_some_and(|m| m.contains_key(&ident.name));
+            let has_module_global = self.module_var_globals.contains_key(&ident.name);
+            let has_function = self.function_map.contains_key(&ident.name);
+            eprintln!(
+                "[lower][unresolved-ident] name={} fn={} class={} local={} capture={} ancestor={} module_global={} function={} class_map={}",
+                self.interner.resolve(ident.name),
+                fn_name,
+                current_class,
+                has_local,
+                has_capture,
+                has_ancestor,
+                has_module_global,
+                has_function,
+                self.class_map.contains_key(&ident.name)
+            );
+        }
+        self.errors
+            .push(crate::compiler::CompileError::InternalError {
+                message: format!(
+                    "unresolved identifier '{}': no local, captured, module-global, or function binding (class_map_contains={})",
+                    self.interner.resolve(ident.name),
+                    self.class_map.contains_key(&ident.name)
+                ),
+            });
         self.lower_null_literal()
     }
 
@@ -477,6 +562,21 @@ impl<'a> Lowerer<'a> {
             let prop_name = self.interner.resolve(member.property.name).to_string();
             let class_id = self.infer_class_id(&member.object);
             let object = self.lower_expr(&member.object);
+            let obj_ty_id = {
+                let reg_ty = object.ty.as_u32();
+                let checker_ty = self.get_expr_type(&member.object).as_u32();
+                let reg_dispatch = self.normalize_type_for_dispatch(reg_ty);
+                let checker_dispatch = self.normalize_type_for_dispatch(checker_ty);
+                if reg_dispatch != UNRESOLVED_TYPE_ID && reg_dispatch != UNKNOWN_TYPE_ID {
+                    reg_dispatch
+                } else if checker_dispatch != UNRESOLVED_TYPE_ID
+                    && checker_dispatch != UNKNOWN_TYPE_ID
+                {
+                    checker_dispatch
+                } else {
+                    UNRESOLVED_TYPE_ID
+                }
+            };
 
             // Create a null value to assign
             let null_reg = self.alloc_register(TypeId::new(NULL_TYPE_ID));
@@ -499,20 +599,39 @@ impl<'a> Lowerer<'a> {
                         value: null_reg,
                     });
                 } else {
-                    // Unknown field on known class — use JSON store as fallback
-                    self.emit(IrInstr::JsonStoreProperty {
-                        object,
-                        property: prop_name,
-                        value: null_reg,
-                    });
+                    let class_name = self
+                        .class_map
+                        .iter()
+                        .find_map(|(&sym, &id)| {
+                            if id == cid {
+                                Some(self.interner.resolve(sym).to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| format!("class#{}", cid.as_u32()));
+                    self.errors
+                        .push(crate::compiler::CompileError::InternalError {
+                            message: format!(
+                                "cannot delete unknown class field '{}.{}'",
+                                class_name, prop_name
+                            ),
+                        });
                 }
-            } else {
-                // Unknown object type — use JSON property store
+            } else if obj_ty_id == JSON_TYPE_ID {
                 self.emit(IrInstr::JsonStoreProperty {
                     object,
                     property: prop_name,
                     value: null_reg,
                 });
+            } else {
+                self.errors
+                    .push(crate::compiler::CompileError::InternalError {
+                        message: format!(
+                            "cannot delete unresolved member '{}': no class field or JSON receiver",
+                            prop_name
+                        ),
+                    });
             }
 
             // Return true (delete always succeeds in our implementation)
@@ -883,6 +1002,29 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
+            // Handle __OPCODE_AWAIT intrinsic variants.
+            // The checker may emit specialized names (e.g. __OPCODE_AWAIT_Promise).
+            if name == "__OPCODE_AWAIT" || name.starts_with("__OPCODE_AWAIT_") {
+                if !args.is_empty() {
+                    self.emit(IrInstr::Await {
+                        dest: dest.clone(),
+                        task: args[0].clone(),
+                    });
+                }
+                return dest;
+            }
+
+            // Handle __OPCODE_AWAIT_ALL intrinsic variants.
+            if name == "__OPCODE_AWAIT_ALL" || name.starts_with("__OPCODE_AWAIT_ALL_") {
+                if !args.is_empty() {
+                    self.emit(IrInstr::AwaitAll {
+                        dest: dest.clone(),
+                        tasks: args[0].clone(),
+                    });
+                }
+                return dest;
+            }
+
             if name == "sleep" {
                 // sleep(ms) - emit Sleep instruction
                 if !args.is_empty() {
@@ -912,6 +1054,13 @@ impl<'a> Lowerer<'a> {
 
             // Check if it's a direct function call
             if let Some(&func_id) = self.function_map.get(&ident.name) {
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    eprintln!(
+                        "[lower] direct call '{}' -> func_id={}",
+                        self.interner.resolve(ident.name),
+                        func_id.as_u32()
+                    );
+                }
                 // Call-site specialization: only for generic functions with constrained type
                 // parameters (e.g., T extends HasLength). Unconstrained generics are handled
                 // correctly by the normal monomorphization pipeline.
@@ -962,12 +1111,43 @@ impl<'a> Lowerer<'a> {
 
             // Otherwise, it might be a closure stored in a variable
             if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                // Load the closure from the local variable
-                let closure_ty = self
-                    .local_registers
-                    .get(&local_idx)
-                    .map(|r| r.ty)
-                    .unwrap_or(TypeId::new(NUMBER_TYPE_ID));
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    eprintln!(
+                        "[lower] closure call '{}' via local idx={}",
+                        self.interner.resolve(ident.name),
+                        local_idx
+                    );
+                }
+                // Load the closure from the local variable.
+                // Do not silently coerce missing local type metadata to number; fail loudly.
+                let closure_ty = if let Some(reg) = self.local_registers.get(&local_idx) {
+                    reg.ty
+                } else {
+                    self.errors
+                        .push(crate::compiler::CompileError::InternalError {
+                            message: format!(
+                                "internal error: missing local register metadata for callable '{}'",
+                                self.interner.resolve(ident.name)
+                            ),
+                        });
+                    return dest;
+                };
+                let callee_ty = self.get_expr_type(&call.callee);
+                let callee_ty_raw = callee_ty.as_u32();
+                if callee_ty_raw != UNRESOLVED_TYPE_ID
+                    && callee_ty_raw != UNKNOWN_TYPE_ID
+                    && !self.type_is_callable(callee_ty)
+                {
+                    self.errors
+                        .push(crate::compiler::CompileError::InternalError {
+                            message: format!(
+                                "unresolved call target '{}': local value is not callable (type id {})",
+                                self.interner.resolve(ident.name),
+                                callee_ty_raw
+                            ),
+                        });
+                    return dest;
+                }
                 let closure_raw = self.alloc_register(closure_ty);
                 self.emit(IrInstr::LoadLocal {
                     dest: closure_raw.clone(),
@@ -1021,7 +1201,23 @@ impl<'a> Lowerer<'a> {
 
             // Check for closure stored in a module-level global variable
             if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
-                let closure = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                let closure_ty = self.get_expr_type(&call.callee);
+                let closure_ty_raw = closure_ty.as_u32();
+                if closure_ty_raw != UNRESOLVED_TYPE_ID
+                    && closure_ty_raw != UNKNOWN_TYPE_ID
+                    && !self.type_is_callable(closure_ty)
+                {
+                    self.errors
+                        .push(crate::compiler::CompileError::InternalError {
+                            message: format!(
+                                "unresolved call target '{}': module/global value is not callable (type id {})",
+                                self.interner.resolve(ident.name),
+                                closure_ty_raw
+                            ),
+                        });
+                    return dest;
+                }
+                let closure = self.alloc_register(closure_ty);
                 self.emit(IrInstr::LoadGlobal {
                     dest: closure.clone(),
                     index: global_idx,
@@ -1058,6 +1254,39 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
+                return dest;
+            }
+
+            // Captured/ancestor identifier call (e.g. method param used inside arrow):
+            // resolve through identifier lowering so capture slots are honored.
+            let is_captured = self.captures.iter().any(|c| c.symbol == ident.name);
+            let is_ancestor = self
+                .ancestor_variables
+                .as_ref()
+                .is_some_and(|m| m.contains_key(&ident.name));
+            if is_captured || is_ancestor {
+                let closure = self.lower_identifier(ident);
+                let callee_ty = self.get_expr_type(&call.callee);
+                let callee_ty_raw = callee_ty.as_u32();
+                if callee_ty_raw != UNRESOLVED_TYPE_ID
+                    && callee_ty_raw != UNKNOWN_TYPE_ID
+                    && !self.type_is_callable(callee_ty)
+                {
+                    self.errors
+                        .push(crate::compiler::CompileError::InternalError {
+                            message: format!(
+                                "unresolved call target '{}': captured/ancestor value is not callable (type id {})",
+                                self.interner.resolve(ident.name),
+                                callee_ty_raw
+                            ),
+                        });
+                    return dest;
+                }
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest.clone()),
+                    closure,
+                    args,
+                });
                 return dest;
             }
         }
@@ -1551,6 +1780,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
+            let inferred_class_id = class_id;
 
             // Skip class dispatch for builtin primitive types — their methods
             // are dispatched via the type registry (native calls / class methods)
@@ -1601,6 +1831,17 @@ impl<'a> Lowerer<'a> {
                 }
 
                 if let Some(func_id) = self.find_method(class_id, method_name_symbol) {
+                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                        if let Expression::Identifier(obj_ident) = &*member.object {
+                            eprintln!(
+                                "[lower] class member call '{}.{}(...)' class_id={} func_id={}",
+                                self.interner.resolve(obj_ident.name),
+                                method_name,
+                                class_id.as_u32(),
+                                func_id.as_u32()
+                            );
+                        }
+                    }
                     // Lower the object (receiver) first
                     let object = self.lower_expr(&member.object);
 
@@ -1631,14 +1872,27 @@ impl<'a> Lowerer<'a> {
                             optional: member.optional,
                         });
                     } else {
-                        // Fallback: static call (shouldn't happen for instance methods)
-                        let mut method_args = vec![object];
-                        method_args.extend(args);
-                        self.emit(IrInstr::Call {
-                            dest: Some(dest.clone()),
-                            func: func_id,
-                            args: method_args,
-                        });
+                        let class_name = self
+                            .class_map
+                            .iter()
+                            .find_map(|(&sym, &id)| {
+                                if id == class_id {
+                                    Some(self.interner.resolve(sym).to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| format!("class#{}", class_id.as_u32()));
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: format!(
+                                    "missing vtable slot for instance method '{}.{}' (func_id={})",
+                                    class_name,
+                                    method_name,
+                                    func_id.as_u32()
+                                ),
+                            });
+                        return dest;
                     }
 
                     // Preserve precise method return typing for user-defined class methods.
@@ -1694,6 +1948,35 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
+            // Structural object-call path: `obj.f(...)` where `f` is function-typed.
+            // Keep this explicit so strict dispatch does not regress object-method calls.
+            if class_id.is_none()
+                && self.is_structural_object_type(self.get_expr_type(&member.object))
+                && self.type_is_callable(self.get_expr_type(&call.callee))
+            {
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    if let Expression::Identifier(obj_ident) = &*member.object {
+                        eprintln!(
+                            "[lower] structural member call '{}.{}(...)' (class_id unresolved)",
+                            self.interner.resolve(obj_ident.name),
+                            method_name
+                        );
+                    } else {
+                        eprintln!(
+                            "[lower] structural member call '<expr>.{}(...)' (class_id unresolved)",
+                            method_name
+                        );
+                    }
+                }
+                let closure = self.lower_member(member);
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest.clone()),
+                    closure,
+                    args,
+                });
+                return dest;
+            }
+
             // Fall back to registry-based dispatch
             let object = self.lower_expr(&member.object);
 
@@ -1714,6 +1997,16 @@ impl<'a> Lowerer<'a> {
                     UNRESOLVED_TYPE_ID
                 }
             };
+            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                if let Expression::Identifier(obj_ident) = &*member.object {
+                    eprintln!(
+                        "[lower] registry member call fallback '{}.{}(...)' obj_ty_id={}",
+                        self.interner.resolve(obj_ident.name),
+                        method_name,
+                        obj_type_id
+                    );
+                }
+            }
 
             // For no-arg calls like length(), check registry properties (opcode dispatch)
             if args.is_empty() && obj_type_id != UNRESOLVED_TYPE_ID {
@@ -1756,7 +2049,7 @@ impl<'a> Lowerer<'a> {
                                     _ => {}
                                 }
                             }
-                            id
+                            Some(id)
                         }
                         crate::compiler::type_registry::DispatchAction::ClassMethod(
                             ref cm_type,
@@ -1774,37 +2067,101 @@ impl<'a> Lowerer<'a> {
                             });
                             return dest;
                         }
-                        crate::compiler::type_registry::DispatchAction::Opcode(_) => 0, // Properties handled above
+                        crate::compiler::type_registry::DispatchAction::Opcode(_) => None,
                     }
                 } else {
-                    0 // Not in registry — fall through to vtable dispatch at runtime
+                    None
                 }
             } else {
-                0 // UNRESOLVED type — fall through to vtable dispatch at runtime
+                None
             };
 
-            self.emit(IrInstr::CallMethod {
-                dest: Some(dest.clone()),
-                object,
-                method: method_id,
-                args,
-                optional: member.optional,
-            });
+            if let Some(method_id) = method_id {
+                self.emit(IrInstr::CallMethod {
+                    dest: Some(dest.clone()),
+                    object,
+                    method: method_id,
+                    args,
+                    optional: member.optional,
+                });
 
-            // Propagate return type for builtin methods so subsequent operations
-            // use the correct typed opcodes (e.g., Iadd vs Fadd, Seq vs Feq).
-            // Return types are extracted from .raya builtin file method signatures.
-            if method_id != 0 {
+                // Propagate return type for builtin methods so subsequent operations
+                // use the correct typed opcodes (e.g., Iadd vs Fadd, Seq vs Feq).
+                // Return types are extracted from .raya builtin file method signatures.
                 if let Some(ret_type) = self.type_registry.lookup_return_type(method_id) {
                     dest.ty = TypeId::new(ret_type);
                 }
+                return dest;
             }
 
+            let class_name = inferred_class_id.and_then(|cid| {
+                self.class_map.iter().find_map(|(&sym, &id)| {
+                    if id == cid {
+                        Some(self.interner.resolve(sym).to_string())
+                    } else {
+                        None
+                    }
+                })
+            });
+            let object_type = class_name
+                .map(|name| format!("class {}", name))
+                .or_else(|| {
+                    if obj_type_id != UNRESOLVED_TYPE_ID {
+                        Some(format!("type id {}", obj_type_id))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "unknown receiver type".to_string());
+            self.errors
+                .push(crate::compiler::CompileError::InternalError {
+                    message: format!(
+                        "unresolved member call '{}()' on {}: no class or registry dispatch path",
+                        method_name, object_type
+                    ),
+                });
             return dest;
         }
 
-        // Fallback: callee is an expression (e.g., (getFunc())())
-        // Lower the callee as an expression, then call it as a closure
+        // Fallback: callee is an expression (e.g., (getFunc())()).
+        // Require callability; do not emit an unsafe call to an arbitrary value.
+        let callee_ty = self.get_expr_type(&call.callee);
+        let callee_ty_raw = callee_ty.as_u32();
+        if std::env::var("RAYA_DEBUG_CALL_FALLBACK").is_ok() {
+            let callee_desc = match &*call.callee {
+                Expression::Identifier(id) => {
+                    format!("Identifier({})", self.interner.resolve(id.name))
+                }
+                Expression::Member(member) => {
+                    format!("Member(.{})", self.interner.resolve(member.property.name))
+                }
+                Expression::Call(_) => "Call(...)".to_string(),
+                Expression::TypeCast(_) => "TypeCast(...)".to_string(),
+                Expression::Parenthesized(_) => "Parenthesized(...)".to_string(),
+                _ => format!("{:?}", &*call.callee),
+            };
+            eprintln!(
+                "[lower][call-fallback] callee={} ty={} unresolved={} unknown={}",
+                callee_desc,
+                callee_ty_raw,
+                callee_ty_raw == UNRESOLVED_TYPE_ID,
+                callee_ty_raw == UNKNOWN_TYPE_ID
+            );
+        }
+        if callee_ty_raw != UNRESOLVED_TYPE_ID
+            && callee_ty_raw != UNKNOWN_TYPE_ID
+            && !self.type_is_callable(callee_ty)
+        {
+            self.errors
+                .push(crate::compiler::CompileError::InternalError {
+                    message: format!(
+                        "unresolved call target: callee expression is not callable (type id {})",
+                        callee_ty.as_u32()
+                    ),
+                });
+            return dest;
+        }
+
         let closure = self.lower_expr(&call.callee);
         self.emit(IrInstr::CallClosure {
             dest: Some(dest.clone()),
@@ -1940,7 +2297,7 @@ impl<'a> Lowerer<'a> {
         }
 
         // Look up field index and type by name if we know the class type (including inherited fields)
-        let (field_index, field_ty) = if let Some(class_id) = class_id {
+        let resolved_field = if let Some(class_id) = class_id {
             // Get all fields including parent fields
             let all_fields = self.get_all_fields(class_id);
             // Use .rev() so child fields shadow parent fields with the same name
@@ -1949,7 +2306,7 @@ impl<'a> Lowerer<'a> {
                 .rev()
                 .find(|f| self.interner.resolve(f.name) == prop_name)
             {
-                (field.index, field.ty)
+                Some((field.index, field.ty))
             } else {
                 // Field not found — check if it's a method (bound method extraction)
                 if let Some(&slot) = self.method_slot_map.get(&(class_id, member.property.name)) {
@@ -1973,62 +2330,84 @@ impl<'a> Lowerer<'a> {
                     return dest;
                 }
                 // Not a field or method — fall through to the non-class path below.
-                (0, UNRESOLVED)
+                None
             }
         } else {
-            // Check variable_object_fields for decoded object field layout
-            let obj_field_idx = match &*member.object {
+            let alias_field_idx = match &*member.object {
                 Expression::Identifier(ident) => self
-                    .variable_object_fields
+                    .variable_object_type_aliases
                     .get(&ident.name)
-                    .and_then(|fields| {
-                        fields
-                            .iter()
-                            .find(|(name, _)| name == prop_name)
-                            .map(|(_, idx)| *idx as u16)
-                    }),
+                    .and_then(|alias| self.type_alias_field_lookup(alias, prop_name)),
                 _ => None,
             };
 
-            if let Some(idx) = obj_field_idx {
-                (idx, UNRESOLVED)
+            if let Some(result) = alias_field_idx {
+                Some(result)
             } else {
-                // Fall back to type-based field resolution (for function parameters typed as object types)
-                let expr_ty = self.get_expr_type(&member.object);
-                let type_field_idx = self.type_ctx.get(expr_ty).and_then(|ty| {
-                    if let crate::parser::types::ty::Type::Object(obj) = ty {
-                        obj.properties.iter().enumerate().find_map(|(i, p)| {
-                            if p.name == prop_name {
-                                Some((i as u16, p.ty))
-                            } else {
-                                None
-                            }
-                        })
-                    } else if let crate::parser::types::ty::Type::Union(union) = ty {
-                        // Search union members for the property
-                        for &member_id in &union.members {
-                            if let Some(crate::parser::types::ty::Type::Object(obj)) =
-                                self.type_ctx.get(member_id)
-                            {
-                                if let Some(result) =
-                                    obj.properties.iter().enumerate().find_map(|(i, p)| {
-                                        if p.name == prop_name {
-                                            Some((i as u16, p.ty))
-                                        } else {
-                                            None
+                // Check variable_object_fields for decoded object field layout
+                let obj_field_idx = match &*member.object {
+                    Expression::Identifier(ident) => self
+                        .variable_object_fields
+                        .get(&ident.name)
+                        .and_then(|fields| {
+                            fields
+                                .iter()
+                                .find(|(name, _)| name == prop_name)
+                                .map(|(_, idx)| *idx as u16)
+                        }),
+                    _ => None,
+                };
+
+                if let Some(idx) = obj_field_idx {
+                    Some((idx, UNRESOLVED))
+                } else {
+                    // Fall back to type-based field resolution (for function parameters typed as object types)
+                    let expr_ty = self.get_expr_type(&member.object);
+                    let type_field_idx = self.type_ctx.get(expr_ty).and_then(|ty| {
+                        if let crate::parser::types::ty::Type::Object(obj) = ty {
+                            obj.properties.iter().enumerate().find_map(|(i, p)| {
+                                if p.name == prop_name {
+                                    Some((i as u16, p.ty))
+                                } else {
+                                    None
+                                }
+                            })
+                        } else if let crate::parser::types::ty::Type::Reference(reference) = ty {
+                            self.type_alias_field_lookup(&reference.name, prop_name)
+                        } else if let crate::parser::types::ty::Type::Union(union) = ty {
+                            // Search union members for the property
+                            for &member_id in &union.members {
+                                match self.type_ctx.get(member_id) {
+                                    Some(crate::parser::types::ty::Type::Object(obj)) => {
+                                        if let Some(result) =
+                                            obj.properties.iter().enumerate().find_map(|(i, p)| {
+                                                if p.name == prop_name {
+                                                    Some((i as u16, p.ty))
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                        {
+                                            return Some(result);
                                         }
-                                    })
-                                {
-                                    return Some(result);
+                                    }
+                                    Some(crate::parser::types::ty::Type::Reference(reference)) => {
+                                        if let Some(result) =
+                                            self.type_alias_field_lookup(&reference.name, prop_name)
+                                        {
+                                            return Some(result);
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
+                            None
+                        } else {
+                            None
                         }
-                        None
-                    } else {
-                        None
-                    }
-                });
-                type_field_idx.unwrap_or((0, UNRESOLVED))
+                    });
+                    type_field_idx
+                }
             }
         };
 
@@ -2062,14 +2441,66 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Fall back to field access for objects
-        let dest = self.alloc_register(field_ty);
-        self.emit(IrInstr::LoadField {
-            dest: dest.clone(),
-            object,
-            field: field_index,
-            optional: member.optional,
+        if let Some((field_index, field_ty)) = resolved_field {
+            // Concrete object-layout field access path.
+            let dest = self.alloc_register(field_ty);
+            self.emit(IrInstr::LoadField {
+                dest: dest.clone(),
+                object,
+                field: field_index,
+                optional: member.optional,
+            });
+            return dest;
+        }
+
+        // Guarded dynamic path for unknown/null receivers.
+        // Uses Reflect.get (name-based) instead of unsafe slot-based field access.
+        if class_id.is_none()
+            && (obj_ty_id == UNRESOLVED_TYPE_ID
+                || obj_ty_id == UNKNOWN_TYPE_ID
+                || obj_ty_id == NULL_TYPE_ID)
+        {
+            let key = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: key.clone(),
+                value: IrValue::Constant(IrConstant::String(prop_name.to_string())),
+            });
+            let dest = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::NativeCall {
+                dest: Some(dest.clone()),
+                native_id: crate::compiler::native_id::REFLECT_GET,
+                args: vec![object, key],
+            });
+            return dest;
+        }
+
+        let class_name = class_id.and_then(|cid| {
+            self.class_map.iter().find_map(|(&sym, &id)| {
+                if id == cid {
+                    Some(self.interner.resolve(sym).to_string())
+                } else {
+                    None
+                }
+            })
         });
+        let object_type = class_name
+            .map(|name| format!("class {}", name))
+            .or_else(|| {
+                if obj_ty_id != UNRESOLVED_TYPE_ID {
+                    Some(format!("type id {}", obj_ty_id))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "unknown receiver type".to_string());
+        self.errors
+            .push(crate::compiler::CompileError::InternalError {
+                message: format!(
+                    "unresolved member property '{}.{}': no class field, registry property, or object layout",
+                    object_type, prop_name
+                ),
+            });
+        let dest = self.alloc_register(UNRESOLVED);
         dest
     }
 
@@ -2764,7 +3195,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expression::Member(member) => {
-                let prop_name = self.interner.resolve(member.property.name);
+                let prop_name = self.interner.resolve(member.property.name).to_string();
 
                 // Check for static field write: ClassName.staticField = value
                 if let Expression::Identifier(ident) = &*member.object {
@@ -2785,9 +3216,25 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
-                // Instance field write
+                // Instance/object field write
                 let class_id = self.infer_class_id(&member.object);
                 let object = self.lower_expr(&member.object);
+                let obj_ty_id = {
+                    let reg_ty = object.ty.as_u32();
+                    let checker_ty = self.get_expr_type(&member.object).as_u32();
+                    let reg_dispatch = self.normalize_type_for_dispatch(reg_ty);
+                    let checker_dispatch = self.normalize_type_for_dispatch(checker_ty);
+                    if reg_dispatch != UNRESOLVED_TYPE_ID && reg_dispatch != UNKNOWN_TYPE_ID {
+                        reg_dispatch
+                    } else if checker_dispatch != UNRESOLVED_TYPE_ID
+                        && checker_dispatch != UNKNOWN_TYPE_ID
+                    {
+                        checker_dispatch
+                    } else {
+                        UNRESOLVED_TYPE_ID
+                    }
+                };
+
                 if let Some(class_id) = class_id {
                     if let Some(field) = self
                         .get_all_fields(class_id)
@@ -2801,30 +3248,111 @@ impl<'a> Lowerer<'a> {
                             value: value.clone(),
                         });
                     } else {
-                        // Dynamic fallback for unresolved field names (e.g. `any`/monkeypatch flows).
-                        let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                        self.emit(IrInstr::Assign {
-                            dest: prop_reg.clone(),
-                            value: IrValue::Constant(IrConstant::String(prop_name.to_string())),
-                        });
-                        self.emit(IrInstr::NativeCall {
-                            dest: None,
-                            native_id: crate::compiler::native_id::REFLECT_SET,
-                            args: vec![object, prop_reg, value.clone()],
-                        });
+                        let class_name = self
+                            .class_map
+                            .iter()
+                            .find_map(|(&sym, &id)| {
+                                if id == class_id {
+                                    Some(self.interner.resolve(sym).to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| format!("class#{}", class_id.as_u32()));
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: format!(
+                                    "unresolved member assignment '{}.{}': class field not found",
+                                    class_name, prop_name
+                                ),
+                            });
                     }
                 } else {
-                    // Dynamic fallback for non-class/static-unknown object writes.
-                    let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                    self.emit(IrInstr::Assign {
-                        dest: prop_reg.clone(),
-                        value: IrValue::Constant(IrConstant::String(prop_name.to_string())),
+                    let resolved_field_idx = match &*member.object {
+                        Expression::Identifier(ident) => self
+                            .variable_object_fields
+                            .get(&ident.name)
+                            .and_then(|fields| {
+                                fields
+                                    .iter()
+                                    .find(|(name, _)| name == &prop_name)
+                                    .map(|(_, idx)| *idx as u16)
+                            }),
+                        _ => None,
+                    }
+                    .or_else(|| {
+                        let expr_ty = self.get_expr_type(&member.object);
+                        self.type_ctx.get(expr_ty).and_then(|ty| match ty {
+                            crate::parser::types::ty::Type::Object(obj) => {
+                                obj.properties.iter().enumerate().find_map(|(i, p)| {
+                                    if p.name == prop_name {
+                                        Some(i as u16)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            }
+                            crate::parser::types::ty::Type::Reference(reference) => self
+                                .type_alias_field_lookup(&reference.name, &prop_name)
+                                .map(|(idx, _)| idx),
+                            crate::parser::types::ty::Type::Union(union) => {
+                                for &member_id in &union.members {
+                                    match self.type_ctx.get(member_id) {
+                                        Some(crate::parser::types::ty::Type::Object(obj)) => {
+                                            if let Some(idx) =
+                                                obj.properties.iter().enumerate().find_map(
+                                                    |(i, p)| {
+                                                        if p.name == prop_name {
+                                                            Some(i as u16)
+                                                        } else {
+                                                            None
+                                                        }
+                                                    },
+                                                )
+                                            {
+                                                return Some(idx);
+                                            }
+                                        }
+                                        Some(crate::parser::types::ty::Type::Reference(
+                                            reference,
+                                        )) => {
+                                            if let Some((idx, _)) = self.type_alias_field_lookup(
+                                                &reference.name,
+                                                &prop_name,
+                                            ) {
+                                                return Some(idx);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                None
+                            }
+                            _ => None,
+                        })
                     });
-                    self.emit(IrInstr::NativeCall {
-                        dest: None,
-                        native_id: crate::compiler::native_id::REFLECT_SET,
-                        args: vec![object, prop_reg, value.clone()],
-                    });
+
+                    if let Some(field_idx) = resolved_field_idx {
+                        self.emit(IrInstr::StoreField {
+                            object,
+                            field: field_idx,
+                            value: value.clone(),
+                        });
+                    } else if obj_ty_id == JSON_TYPE_ID {
+                        self.emit(IrInstr::JsonStoreProperty {
+                            object,
+                            property: prop_name.clone(),
+                            value: value.clone(),
+                        });
+                    } else {
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: format!(
+                                    "unresolved member assignment '.{}': no class field, object layout, or JSON receiver",
+                                    prop_name
+                                ),
+                            });
+                    }
                 }
             }
             Expression::Index(index) => {
@@ -2901,13 +3429,31 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn lower_arrow(&mut self, arrow: &ast::ArrowFunction) -> Register {
+        self.lower_arrow_with_preassigned_id(arrow, None)
+    }
+
+    pub(super) fn lower_arrow_with_preassigned_id(
+        &mut self,
+        arrow: &ast::ArrowFunction,
+        preassigned_func_id: Option<crate::ir::FunctionId>,
+    ) -> Register {
         // Generate unique name for the arrow function
         let arrow_name = format!("__arrow_{}", self.arrow_counter);
         self.arrow_counter += 1;
 
-        // Allocate function ID for the arrow
-        let func_id = crate::ir::FunctionId::new(self.next_function_id);
-        self.next_function_id += 1;
+        // Allocate or reuse function ID for the arrow.
+        // Reuse is required for pre-registered nested std-wrapper helpers so
+        // forward sibling calls target the exact emitted function.
+        let func_id = if let Some(func_id) = preassigned_func_id {
+            if func_id.as_u32() >= self.next_function_id {
+                self.next_function_id = func_id.as_u32() + 1;
+            }
+            func_id
+        } else {
+            let func_id = crate::ir::FunctionId::new(self.next_function_id);
+            self.next_function_id += 1;
+            func_id
+        };
 
         // Track async closures for SpawnClosure emission
         if arrow.is_async {
@@ -3441,6 +3987,9 @@ impl<'a> Lowerer<'a> {
                 .copied()
                 .or_else(|| self.variable_class_map.get(&ident.name).copied());
             if let Some(class_id) = class_id_opt {
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    eprintln!("[lower] new {} -> class_id={}", name, class_id.as_u32());
+                }
                 // Create the object
                 self.emit(IrInstr::NewObject {
                     dest: dest.clone(),
@@ -3507,13 +4056,11 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Unknown class or not an identifier - emit NewObject with class ID 0 as fallback
-        self.emit(IrInstr::NewObject {
-            dest: dest.clone(),
-            class: crate::ir::ClassId::new(0),
-        });
-
-        dest
+        self.errors
+            .push(crate::compiler::CompileError::InternalError {
+                message: "unresolved constructor target in `new` expression".to_string(),
+            });
+        self.lower_null_literal()
     }
 
     fn lower_await(&mut self, await_expr: &ast::AwaitExpression) -> Register {
@@ -3617,11 +4164,34 @@ impl<'a> Lowerer<'a> {
 
             // Closure call: async closureVar()
             if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                let closure_ty = self
-                    .local_registers
-                    .get(&local_idx)
-                    .map(|r| r.ty)
-                    .unwrap_or(TypeId::new(NUMBER_TYPE_ID));
+                let closure_ty = if let Some(reg) = self.local_registers.get(&local_idx) {
+                    reg.ty
+                } else {
+                    self.errors
+                        .push(crate::compiler::CompileError::InternalError {
+                            message: format!(
+                                    "internal error: missing local register metadata for async callable '{}'",
+                                    self.interner.resolve(ident.name)
+                            ),
+                        });
+                    return dest;
+                };
+                let callee_ty = self.get_expr_type(&async_call.callee);
+                let callee_ty_raw = callee_ty.as_u32();
+                if callee_ty_raw != UNRESOLVED_TYPE_ID
+                    && callee_ty_raw != UNKNOWN_TYPE_ID
+                    && !self.type_is_callable(callee_ty)
+                {
+                    self.errors
+                        .push(crate::compiler::CompileError::InternalError {
+                            message: format!(
+                                "unresolved async call target '{}': local value is not callable (type id {})",
+                                self.interner.resolve(ident.name),
+                                callee_ty_raw
+                            ),
+                        });
+                    return dest;
+                }
                 let closure = self.alloc_register(closure_ty);
                 self.emit(IrInstr::LoadLocal {
                     dest: closure.clone(),
@@ -3677,7 +4247,44 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Fallback: treat callee as a closure/expression and spawn it
+        // Fallback: treat callee as closure/expression only when callable.
+        let callee_ty = self.get_expr_type(&async_call.callee);
+        let callee_ty_raw = callee_ty.as_u32();
+        if std::env::var("RAYA_DEBUG_CALL_FALLBACK").is_ok() {
+            let callee_desc = match &*async_call.callee {
+                Expression::Identifier(id) => {
+                    format!("Identifier({})", self.interner.resolve(id.name))
+                }
+                Expression::Member(member) => {
+                    format!("Member(.{})", self.interner.resolve(member.property.name))
+                }
+                Expression::Call(_) => "Call(...)".to_string(),
+                Expression::TypeCast(_) => "TypeCast(...)".to_string(),
+                Expression::Parenthesized(_) => "Parenthesized(...)".to_string(),
+                _ => format!("{:?}", &*async_call.callee),
+            };
+            eprintln!(
+                "[lower][async-call-fallback] callee={} ty={} unresolved={} unknown={}",
+                callee_desc,
+                callee_ty_raw,
+                callee_ty_raw == UNRESOLVED_TYPE_ID,
+                callee_ty_raw == UNKNOWN_TYPE_ID
+            );
+        }
+        if callee_ty_raw != UNRESOLVED_TYPE_ID
+            && callee_ty_raw != UNKNOWN_TYPE_ID
+            && !self.type_is_callable(callee_ty)
+        {
+            self.errors
+                .push(crate::compiler::CompileError::InternalError {
+                    message: format!(
+                    "unresolved async call target: callee expression is not callable (type id {})",
+                    callee_ty.as_u32()
+                ),
+                });
+            return dest;
+        }
+
         let callee_reg = self.lower_expr(&async_call.callee);
         self.emit(IrInstr::SpawnClosure {
             dest: dest.clone(),
@@ -3718,7 +4325,11 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        // If not in a method context and no ancestor has `this`, return null
+        // `this` outside class/arrow-method context is unresolved.
+        self.errors
+            .push(crate::compiler::CompileError::InternalError {
+                message: "unresolved 'this' outside method/arrow-method context".to_string(),
+            });
         self.lower_null_literal()
     }
 
@@ -3733,10 +4344,18 @@ impl<'a> Lowerer<'a> {
         // Lower the object expression
         let object = self.lower_expr(&instanceof.object);
 
-        // Resolve the class ID from the type annotation
-        let class_id = self
-            .resolve_class_from_type(&instanceof.type_name)
-            .unwrap_or(ClassId::new(0));
+        let Some(class_id) = self.resolve_class_from_type(&instanceof.type_name) else {
+            self.errors
+                .push(crate::compiler::CompileError::InternalError {
+                    message: "unresolved class in `instanceof` type annotation".to_string(),
+                });
+            let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: dest.clone(),
+                value: IrValue::Constant(IrConstant::Boolean(false)),
+            });
+            return dest;
+        };
 
         // Allocate register for boolean result
         let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID)); // Boolean type
@@ -3762,6 +4381,31 @@ impl<'a> Lowerer<'a> {
         // Runtime cast checks are currently supported for class-reference targets.
         // Non-class targets use compile-time cast typing only.
         if let Some(class_id) = self.resolve_class_from_type(&cast.target_type) {
+            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                match &*cast.object {
+                    Expression::Member(member) => {
+                        if let Expression::Identifier(obj_ident) = &*member.object {
+                            eprintln!(
+                                "[lower] cast member '{}.{}' -> class_id={}",
+                                self.interner.resolve(obj_ident.name),
+                                self.interner.resolve(member.property.name),
+                                class_id.as_u32()
+                            );
+                        } else {
+                            eprintln!(
+                                "[lower] cast <member expr> -> class_id={}",
+                                class_id.as_u32()
+                            );
+                        }
+                    }
+                    Expression::Identifier(ident) => eprintln!(
+                        "[lower] cast ident '{}' -> class_id={}",
+                        self.interner.resolve(ident.name),
+                        class_id.as_u32()
+                    ),
+                    _ => eprintln!("[lower] cast expr -> class_id={}", class_id.as_u32()),
+                }
+            }
             self.emit(IrInstr::Cast {
                 dest: dest.clone(),
                 object,
@@ -3820,11 +4464,7 @@ impl<'a> Lowerer<'a> {
 
         match &type_ann.ty {
             Type::Reference(type_ref) => {
-                // Look up the class by name
-                if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
-                    return Some(class_id);
-                }
-                None
+                self.class_id_from_type_name(self.interner.resolve(type_ref.name.name))
             }
             _ => None,
         }
@@ -4161,6 +4801,40 @@ impl<'a> Lowerer<'a> {
         None
     }
 
+    pub(super) fn type_is_callable(&self, ty_id: TypeId) -> bool {
+        use crate::parser::types::ty::Type;
+
+        match self.type_ctx.get(ty_id) {
+            Some(Type::Function(_)) => true,
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.type_is_callable(constraint)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_is_callable(member)),
+            _ => false,
+        }
+    }
+
+    fn is_structural_object_type(&self, ty_id: TypeId) -> bool {
+        use crate::parser::types::ty::Type;
+
+        match self.type_ctx.get(ty_id) {
+            Some(Type::Object(_) | Type::Interface(_)) => true,
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.is_structural_object_type(member)),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.is_structural_object_type(constraint)),
+            _ => false,
+        }
+    }
+
     /// When a child extends a generic parent (e.g., `extends Base<string>`),
     /// parent field types are substituted with concrete type arguments.
     pub(super) fn get_all_fields(&self, class_id: ClassId) -> Vec<ClassFieldInfo> {
@@ -4200,11 +4874,22 @@ impl<'a> Lowerer<'a> {
                 .variable_class_map
                 .get(&ident.name)
                 .copied()
+                .or_else(|| self.class_map.get(&ident.name).copied())
                 .or_else(|| self.class_id_from_type_id(self.get_expr_type(expr))),
             Expression::TypeCast(cast) => self
                 .try_extract_class_from_type(&cast.target_type)
                 .or_else(|| self.infer_class_id(&cast.object))
                 .or_else(|| self.class_id_from_type_id(self.get_expr_type(expr))),
+            Expression::Conditional(cond) => {
+                let then_class = self.infer_class_id(&cond.consequent);
+                let else_class = self.infer_class_id(&cond.alternate);
+                match (then_class, else_class) {
+                    (Some(a), Some(b)) if a == b => Some(a),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    _ => self.class_id_from_type_id(self.get_expr_type(expr)),
+                }
+            }
             // Field access: look up the field's type in the class definition
             Expression::Member(member) => {
                 // Get the class of the object
@@ -4916,15 +5601,14 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Factory not found in scope — emit a CallClosure with a null callee
-        // This will produce a runtime error, which is the expected behavior
-        // when the factory function hasn't been imported/defined
-        let null_reg = self.lower_null_literal();
-        self.emit(IrInstr::CallClosure {
-            dest: Some(dest.clone()),
-            closure: null_reg,
-            args,
-        });
+        // Factory must resolve at compile time; do not lower an unsafe null-closure call.
+        self.errors
+            .push(crate::compiler::CompileError::InternalError {
+                message: format!(
+                    "unresolved JSX factory '{}': no function or local closure binding in scope",
+                    factory_name
+                ),
+            });
         dest
     }
 }
@@ -4974,4 +5658,75 @@ mod tests {
 
         assert!(ir.get_function_by_name("add").is_some());
     }
+
+    #[test]
+    fn unresolved_member_call_reports_compile_error() {
+        let (module, interner) = parse_expr(
+            r#"
+            let n = 1;
+            n.missing();
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_unresolved_call = lowerer.errors().iter().any(|err| {
+            err.to_string()
+                .contains("unresolved member call 'missing()'")
+        });
+        assert!(
+            has_unresolved_call,
+            "expected unresolved member call error, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn unresolved_member_property_reports_compile_error() {
+        let (module, interner) = parse_expr(
+            r#"
+            let n = 1;
+            n.missing;
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ = lowerer.lower_module(&module);
+
+        let has_unresolved_property = lowerer.errors().iter().any(|err| {
+            err.to_string().contains("unresolved member property")
+                && err.to_string().contains(".missing")
+        });
+        assert!(
+            has_unresolved_property,
+            "expected unresolved member property error, got: {:?}",
+            lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn parser_produces_tagged_template_expression_shape() {
+        let (module, _interner) = parse_expr(
+            r#"
+            let n: number = 1;
+            n`x`;
+            "#,
+        );
+
+        let mut found = false;
+        for stmt in &module.statements {
+            if let crate::parser::ast::Statement::Expression(expr_stmt) = stmt {
+                if matches!(
+                    expr_stmt.expression,
+                    crate::parser::ast::Expression::TaggedTemplate(_)
+                ) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "expected tagged template expression in parsed AST");
+    }
+
 }

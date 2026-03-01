@@ -87,7 +87,7 @@ pub enum Token {
     Null,
 
     // Identifiers
-    Identifier(Symbol), // Interned identifier
+    Identifier(Symbol),        // Interned identifier
     PrivateIdentifier(Symbol), // Interned private identifier (#name → name)
 
     // Operators

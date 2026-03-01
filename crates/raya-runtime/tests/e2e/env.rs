@@ -89,3 +89,45 @@ fn test_env_all() {
         true,
     );
 }
+
+#[test]
+fn test_env_cwd_template_interpolation() {
+    expect_bool_with_builtins(
+        r#"
+        import env from "std:env";
+        const s = `${env.cwd()}`;
+        return s.length > 0;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_env_cwd_string_coercion() {
+    expect_bool_with_builtins(
+        r#"
+        import env from "std:env";
+        const s = String(env.cwd());
+        return s.length > 0;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_path_fs_roundtrip() {
+    expect_string_with_builtins(
+        r#"
+        import env from "std:env";
+        import path from "std:path";
+        import fs from "std:fs";
+
+        const p = path.join(env.cwd(), ".raya-node-compat-roundtrip.tmp");
+        fs.writeTextFile(p, "a");
+        const read = fs.readTextFile(p);
+        fs.remove(p);
+        return read;
+    "#,
+        "a",
+    );
+}

@@ -260,7 +260,12 @@ pub fn resolve_late_bound_members(
                         .unwrap_or(crate::compiler::type_registry::UNRESOLVED_TYPE_ID);
 
                     if dispatch_ty == crate::compiler::type_registry::UNRESOLVED_TYPE_ID {
-                        // Still unresolved — leave as-is (will panic at codegen)
+                        // Still unresolved after substitution: keep name-based dynamic lookup.
+                        *instr = IrInstr::JsonLoadProperty {
+                            dest: dest.clone(),
+                            object: object.clone(),
+                            property: property.clone(),
+                        };
                         continue;
                     }
 
@@ -286,13 +291,12 @@ pub fn resolve_late_bound_members(
                         }
                     }
 
-                    // Fall back to LoadField with field index 0
-                    // (for object types where the property is a regular field)
-                    *instr = IrInstr::LoadField {
+                    // Conservative dynamic fallback: preserve property-name dispatch.
+                    // Avoid unsafe slot-0 field assumptions for unresolved layouts.
+                    *instr = IrInstr::JsonLoadProperty {
                         dest: dest.clone(),
                         object: object.clone(),
-                        field: 0,
-                        optional: false,
+                        property: property.clone(),
                     };
                 }
             }
