@@ -327,7 +327,8 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
         .with_sourcemap(options.sourcemap)
         .with_emit_generic_templates(options.emit_generic_templates)
         .with_monomorphization_mode(options.monomorphization_mode)
-        .with_js_this_binding_compat(true);
+        .with_js_this_binding_compat(true)
+        .with_source_text(full_source.clone());
     let bytecode = compiler.compile_via_ir(&ast)?;
 
     Ok((bytecode, interner))

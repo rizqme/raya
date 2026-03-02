@@ -381,25 +381,26 @@ fn transform_library_module(
     let object_literal = if export_values.is_empty() {
         "{}".to_string()
     } else {
-        let fields = export_values
+        // Iterate export_types (BTreeMap keyed by public names like "default") to produce
+        // fields in the same order as the type alias.  export_values uses internal names
+        // (e.g. "__default") which sort differently in BTreeMap, causing a field-index
+        // mismatch between the type alias and the runtime object when LoadField is used.
+        let fields = export_types
             .iter()
-            .map(|(name, value)| {
-                let exported_name = if name == INTERNAL_DEFAULT_EXPORT {
-                    "default"
+            .filter_map(|(exported_name, ty)| {
+                let internal_name = internal_export_name(exported_name);
+                let value = export_values.get(&internal_name)?;
+                let typed_value = if ty.starts_with("__t_") {
+                    format!("({} as {})", value, ty)
                 } else {
-                    name.as_str()
+                    value.clone()
                 };
-                let typed_value = export_types
-                    .get(exported_name)
-                    .filter(|ty| ty.starts_with("__t_"))
-                    .map(|ty| format!("({} as {})", value, ty))
-                    .unwrap_or_else(|| value.clone());
-                let key = if is_safe_property_identifier(name) {
-                    name.clone()
+                let key = if is_safe_property_identifier(&internal_name) {
+                    internal_name
                 } else {
-                    format!("\"{}\"", escape_string(name))
+                    format!("\"{}\"", escape_string(&internal_name))
                 };
-                format!("{}: {}", key, typed_value)
+                Some(format!("{}: {}", key, typed_value))
             })
             .collect::<Vec<_>>()
             .join(", ");

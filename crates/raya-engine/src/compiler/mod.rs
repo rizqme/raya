@@ -74,6 +74,8 @@ pub struct Compiler<'a> {
     emit_generic_templates: bool,
     /// Monomorphization mode for IR pipeline.
     monomorphization_mode: MonomorphizationMode,
+    /// Original source text for debug dumps (enables source-annotated IR/bytecode output)
+    source_text: Option<String>,
 }
 
 impl<'a> Compiler<'a> {
@@ -87,7 +89,17 @@ impl<'a> Compiler<'a> {
             js_this_binding_compat: false,
             emit_generic_templates: false,
             monomorphization_mode: MonomorphizationMode::ConsumerLink,
+            source_text: None,
         }
+    }
+
+    /// Attach original source text for annotated debug dumps.
+    ///
+    /// When set and `RAYA_DEBUG_DUMP_IR` or `RAYA_DEBUG_DUMP_BYTECODE` are active,
+    /// each IR instruction / bytecode opcode is followed by the corresponding source line.
+    pub fn with_source_text(mut self, source: impl Into<String>) -> Self {
+        self.source_text = Some(source.into());
+        self
     }
 
     /// Set expression types from the type checker's CheckResult
@@ -151,10 +163,15 @@ impl<'a> Compiler<'a> {
     /// 2. Monomorphization (generic specialization)
     /// 3. Optimization passes
     pub fn compile_to_optimized_ir(&self, module: &ast::Module) -> CompileResult<ir::IrModule> {
+        // Auto-enable sourcemap when debug dump env vars are active
+        let dump_ir = std::env::var("RAYA_DEBUG_DUMP_IR").is_ok();
+        let dump_bc = std::env::var("RAYA_DEBUG_DUMP_BYTECODE").is_ok();
+        let need_sourcemap = self.emit_sourcemap || dump_ir || dump_bc;
+
         // Step 1: Lower AST to IR
         let mut lowerer =
             lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
-                .with_sourcemap(self.emit_sourcemap)
+                .with_sourcemap(need_sourcemap)
                 .with_js_this_binding_compat(self.js_this_binding_compat);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
@@ -185,6 +202,16 @@ impl<'a> Compiler<'a> {
         let optimizer = optimize::Optimizer::basic();
         optimizer.optimize(&mut ir_module);
 
+        // Dump annotated IR to stderr when RAYA_DEBUG_DUMP_IR is set
+        if dump_ir {
+            dump_ir_module(&ir_module, self.source_text.as_deref(), Some(&self.type_ctx));
+        }
+
+        // Dump type table when RAYA_DEBUG_DUMP_TYPES is set
+        if std::env::var("RAYA_DEBUG_DUMP_TYPES").is_ok() {
+            dump_type_table(&self.type_ctx);
+        }
+
         Ok(ir_module)
     }
 
@@ -196,11 +223,15 @@ impl<'a> Compiler<'a> {
     /// 3. Optimizations
     /// 4. IR → Bytecode code generation
     pub fn compile_via_ir(&self, module: &ast::Module) -> CompileResult<Module> {
-        // Get optimized IR
+        let dump_bc = std::env::var("RAYA_DEBUG_DUMP_BYTECODE").is_ok();
+        let need_sourcemap = self.emit_sourcemap || dump_bc
+            || std::env::var("RAYA_DEBUG_DUMP_IR").is_ok();
+
+        // Get optimized IR (sourcemap enabling and IR dump happen inside)
         let ir_module = self.compile_to_optimized_ir(module)?;
 
         // Generate bytecode from IR
-        let mut bytecode_module = codegen::generate(&ir_module, self.emit_sourcemap)?;
+        let mut bytecode_module = codegen::generate(&ir_module, need_sourcemap)?;
         if self.emit_generic_templates {
             bytecode_module.metadata.generic_templates =
                 monomorphize::collect_generic_templates(&ir_module);
@@ -209,6 +240,12 @@ impl<'a> Compiler<'a> {
             bytecode_module.metadata.mono_debug_map =
                 monomorphize::collect_mono_debug_map(&ir_module);
         }
+
+        // Dump annotated bytecode to stderr when RAYA_DEBUG_DUMP_BYTECODE is set
+        if dump_bc {
+            dump_bytecode_module(&bytecode_module, self.source_text.as_deref());
+        }
+
         Ok(bytecode_module)
     }
 
@@ -393,3 +430,286 @@ pub fn disassemble_function(func: &Function) -> String {
 
     output
 }
+
+/// Disassemble a function's bytecode with source-line comments.
+///
+/// Each opcode line is followed by `; L{line}:{col} | {source_snippet}` when
+/// debug info and source text are available.
+pub fn disassemble_function_annotated(
+    func: &Function,
+    debug_info: Option<&bytecode::FunctionDebugInfo>,
+    source_lines: &[&str],
+) -> String {
+    use std::fmt::Write;
+
+    let mut output = String::new();
+    let code = &func.code;
+    let mut offset = 0;
+
+    while offset < code.len() {
+        let opcode_byte = code[offset];
+        if let Some(opcode) = Opcode::from_u8(opcode_byte) {
+            write!(output, "    {:04x}: {:<22}", offset, format!("{:?}", opcode)).unwrap();
+            let instr_start_offset = offset;
+            offset += 1;
+
+            let operand_size = codegen::emit::opcode_size(opcode) - 1;
+            if operand_size > 0 && offset + operand_size <= code.len() {
+                match operand_size {
+                    1 => {
+                        write!(output, " {:3}", code[offset]).unwrap();
+                    }
+                    2 => {
+                        let val = u16::from_le_bytes([code[offset], code[offset + 1]]);
+                        write!(output, " {:5}", val).unwrap();
+                    }
+                    4 => {
+                        let val = i32::from_le_bytes([
+                            code[offset],
+                            code[offset + 1],
+                            code[offset + 2],
+                            code[offset + 3],
+                        ]);
+                        write!(output, " {:10}", val).unwrap();
+                    }
+                    6 => {
+                        let val1 = u32::from_le_bytes([
+                            code[offset],
+                            code[offset + 1],
+                            code[offset + 2],
+                            code[offset + 3],
+                        ]);
+                        let val2 = u16::from_le_bytes([code[offset + 4], code[offset + 5]]);
+                        write!(output, " {} {}", val1, val2).unwrap();
+                    }
+                    8 => {
+                        let val = f64::from_le_bytes([
+                            code[offset],
+                            code[offset + 1],
+                            code[offset + 2],
+                            code[offset + 3],
+                            code[offset + 4],
+                            code[offset + 5],
+                            code[offset + 6],
+                            code[offset + 7],
+                        ]);
+                        write!(output, " {:.6}", val).unwrap();
+                    }
+                    _ => {}
+                }
+                offset += operand_size;
+            }
+
+            // Append source annotation if debug info is available
+            if let Some(dbg) = debug_info {
+                if let Some(entry) = dbg.line_table.iter()
+                    .filter(|e| e.bytecode_offset as usize <= instr_start_offset)
+                    .last()
+                {
+                    let line = entry.line as usize;
+                    let col = entry.column;
+                    if !source_lines.is_empty() && line > 0 && line <= source_lines.len() {
+                        let src = source_lines[line - 1].trim();
+                        // Truncate long lines so output stays readable
+                        let snippet = if src.len() > 60 { &src[..60] } else { src };
+                        write!(output, "  ; L{}:{} | {}", line, col, snippet).unwrap();
+                    } else {
+                        write!(output, "  ; L{}:{}", line, col).unwrap();
+                    }
+                }
+            }
+
+            writeln!(output).unwrap();
+        } else {
+            writeln!(
+                output,
+                "    {:04x}: <invalid opcode {:#x}>",
+                offset, opcode_byte
+            )
+            .unwrap();
+            offset += 1;
+        }
+    }
+
+    output
+}
+
+/// Replace `:N` type-id suffixes in IR text with human-readable type names.
+///
+/// Registers are printed as `r{id}:{typeId}` (e.g., `r0:16`).  This function
+/// rewrites them to `r{id}:{typename}` (e.g., `r0:int`) using the TypeContext.
+fn annotate_type_ids(text: &str, type_ctx: &TypeContext) -> String {
+    let mut out = String::with_capacity(text.len() + 32);
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+    while i < n {
+        // Match `r` followed by one or more digits then `:` then one or more digits
+        if chars[i] == 'r' && i + 1 < n && chars[i + 1].is_ascii_digit() {
+            let r_start = i;
+            i += 1; // skip 'r'
+            // Consume register-id digits
+            while i < n && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i < n && chars[i] == ':' && i + 1 < n && chars[i + 1].is_ascii_digit() {
+                let colon_pos = i;
+                i += 1; // skip ':'
+                let tid_start = i;
+                while i < n && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                let tid_str: String = chars[tid_start..i].iter().collect();
+                if let Ok(n_val) = tid_str.parse::<u32>() {
+                    // Output r{id} then :typename
+                    out.extend(chars[r_start..colon_pos].iter());
+                    out.push(':');
+                    out.push_str(&type_ctx.format_type(TypeId::new(n_val)));
+                    continue;
+                }
+                // Fallback: not a valid u32, output as-is
+                out.extend(chars[r_start..i].iter());
+                continue;
+            }
+            // Not a register pattern (no colon+digits), emit as-is
+            out.extend(chars[r_start..i].iter());
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Dump the IR module to stderr with source-span annotations and type names.
+///
+/// Activated by the `RAYA_DEBUG_DUMP_IR` environment variable.
+/// Pass `RAYA_DEBUG_DUMP_TYPES` to also get the full type table.
+fn dump_ir_module(
+    ir_module: &ir::IrModule,
+    source_text: Option<&str>,
+    type_ctx: Option<&TypeContext>,
+) {
+    let source_lines: Vec<&str> = source_text
+        .map(|s| s.lines().collect())
+        .unwrap_or_default();
+
+    eprintln!("\n╔═══════════════════════════════════════════════════════════════╗");
+    eprintln!("║  RAYA_DEBUG_DUMP_IR — Annotated IR Module                     ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+
+    for (func_idx, func) in ir_module.functions.iter().enumerate() {
+        eprintln!("\n─── fn{}: {} (params={}) ───", func_idx, func.name, func.params.len());
+        for block in &func.blocks {
+            let label = block.label.as_deref().unwrap_or("");
+            if label.is_empty() {
+                eprintln!("  {}:", block.id);
+            } else {
+                eprintln!("  {}: ; {}", block.id, label);
+            }
+            let has_spans = block.instruction_spans.len() == block.instructions.len();
+            for (i, instr) in block.instructions.iter().enumerate() {
+                let raw = format_ir_instr_pretty(instr);
+                let ir_text = if let Some(ctx) = type_ctx {
+                    annotate_type_ids(&raw, ctx)
+                } else {
+                    raw
+                };
+                if has_spans {
+                    let span = &block.instruction_spans[i];
+                    if span.line > 0 {
+                        let line = span.line as usize;
+                        let src_snippet = if !source_lines.is_empty() && line <= source_lines.len() {
+                            let s = source_lines[line - 1].trim();
+                            if s.len() > 70 { &s[..70] } else { s }
+                        } else {
+                            ""
+                        };
+                        if src_snippet.is_empty() {
+                            eprintln!("    {:<60}  ; L{}:{}", ir_text, span.line, span.column);
+                        } else {
+                            eprintln!("    {:<60}  ; L{}:{} | {}", ir_text, span.line, span.column, src_snippet);
+                        }
+                    } else {
+                        eprintln!("    {}", ir_text);
+                    }
+                } else {
+                    eprintln!("    {}", ir_text);
+                }
+            }
+            // Terminator
+            let raw_term = format!("{}", block.terminator);
+            let term_text = if let Some(ctx) = type_ctx {
+                annotate_type_ids(&raw_term, ctx)
+            } else {
+                raw_term
+            };
+            if block.terminator_span.line > 0 {
+                let line = block.terminator_span.line as usize;
+                let src_snippet = if !source_lines.is_empty() && line <= source_lines.len() {
+                    let s = source_lines[line - 1].trim();
+                    if s.len() > 70 { &s[..70] } else { s }
+                } else {
+                    ""
+                };
+                if src_snippet.is_empty() {
+                    eprintln!("    {:<60}  ; L{}:{}", term_text, block.terminator_span.line, block.terminator_span.column);
+                } else {
+                    eprintln!("    {:<60}  ; L{}:{} | {}", term_text, block.terminator_span.line, block.terminator_span.column, src_snippet);
+                }
+            } else {
+                eprintln!("    {}", term_text);
+            }
+        }
+    }
+    eprintln!();
+}
+
+/// Dump the entire TypeContext as a numbered table to stderr.
+///
+/// Activated by the `RAYA_DEBUG_DUMP_TYPES` environment variable.
+fn dump_type_table(type_ctx: &TypeContext) {
+    eprintln!("\n╔═══════════════════════════════════════════════════════════════╗");
+    eprintln!("║  RAYA_DEBUG_DUMP_TYPES — Interned Type Table                  ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+    eprintln!("  {:>6}  {}", "TypeId", "Description");
+    eprintln!("  {:>6}  {}", "------", "-----------");
+    for (id, desc) in type_ctx.format_type_table() {
+        eprintln!("  {:>6}  {}", id, desc);
+    }
+    eprintln!("  {:>6}  {}", "u32::MAX", "<unresolved>");
+    eprintln!();
+}
+
+/// Format a single IR instruction for display (delegates to the pretty printer)
+fn format_ir_instr_pretty(instr: &ir::IrInstr) -> String {
+    ir::format_instr_pub(instr)
+}
+
+/// Dump annotated bytecode for every function to stderr.
+///
+/// Activated by the `RAYA_DEBUG_DUMP_BYTECODE` environment variable.
+fn dump_bytecode_module(module: &Module, source_text: Option<&str>) {
+    let source_lines: Vec<&str> = source_text
+        .map(|s| s.lines().collect())
+        .unwrap_or_default();
+
+    eprintln!("\n╔═══════════════════════════════════════════════════════════════╗");
+    eprintln!("║  RAYA_DEBUG_DUMP_BYTECODE — Annotated Bytecode                ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════╝");
+
+    for (i, func) in module.functions.iter().enumerate() {
+        let debug_info = module
+            .debug_info
+            .as_ref()
+            .and_then(|d| d.functions.get(i));
+        eprintln!(
+            "\n─── fn{}: {} (locals={}, params={}, {} bytes) ───",
+            i, func.name, func.local_count, func.param_count, func.code.len()
+        );
+        let disasm = disassemble_function_annotated(func, debug_info, &source_lines);
+        eprint!("{}", disasm);
+    }
+    eprintln!();
+}
+

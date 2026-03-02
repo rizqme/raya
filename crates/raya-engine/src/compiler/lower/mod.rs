@@ -2181,6 +2181,12 @@ impl<'a> Lowerer<'a> {
         self.captures.clear();
         self.next_capture_slot = 0;
         self.this_captured_idx = None;
+        // closure_locals maps local-slot indices to async func IDs.  It is
+        // strictly per-function: stale entries from a previously-lowered
+        // function (e.g. std:math init code registering `wrapped` at slot 2)
+        // must not bleed into a subsequent function that happens to allocate
+        // the same slot index for an unrelated, non-async local (e.g. `compute`).
+        self.closure_locals.clear();
 
         // Pre-scan to identify captured variables
         let mut locals = FxHashSet::default();

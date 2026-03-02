@@ -604,6 +604,180 @@ impl TypeContext {
             .unwrap_or_else(|| format!("InvalidType({})", id.0))
     }
 
+    /// Format a TypeId as a human-readable type description.
+    ///
+    /// Unlike `display`, this resolves nested TypeIds recursively so you get
+    /// `number[]` instead of `TypeId(0)[]`.  Depth is capped at 3 to avoid
+    /// extremely long strings for complex recursive types.
+    pub fn format_type(&self, id: TypeId) -> String {
+        if id.0 == u32::MAX {
+            return "<unresolved>".to_string();
+        }
+        self.format_type_depth(id, 0)
+    }
+
+    fn format_type_depth(&self, id: TypeId, depth: usize) -> String {
+        if id.0 == u32::MAX {
+            return "<unresolved>".to_string();
+        }
+        let Some(ty) = self.get(id) else {
+            return format!("<invalid:{}>", id.0);
+        };
+        // Depth guard — beyond depth 2 just show the raw shape name
+        if depth > 2 {
+            return match ty {
+                Type::Primitive(p) => format!("{}", p),
+                Type::Class(c) => format!("{}", c.name),
+                Type::Interface(i) => format!("{}", i.name),
+                Type::Reference(r) => r.name.clone(),
+                Type::TypeVar(tv) => tv.name.clone(),
+                _ => "…".to_string(),
+            };
+        }
+        match ty {
+            Type::Primitive(p) => format!("{}", p),
+            Type::Never => "never".to_string(),
+            Type::Unknown => "unknown".to_string(),
+            Type::Any => "any".to_string(),
+            Type::JSObject => "JSObject".to_string(),
+            Type::Mutex => "Mutex".to_string(),
+            Type::RegExp => "RegExp".to_string(),
+            Type::Date => "Date".to_string(),
+            Type::Buffer => "Buffer".to_string(),
+            Type::Json => "Json".to_string(),
+            Type::Reference(r) => {
+                if let Some(args) = &r.type_args {
+                    let arg_strs: Vec<_> = args
+                        .iter()
+                        .map(|a| self.format_type_depth(*a, depth + 1))
+                        .collect();
+                    format!("{}<{}>", r.name, arg_strs.join(", "))
+                } else {
+                    r.name.clone()
+                }
+            }
+            Type::Union(u) => {
+                let parts: Vec<_> = u
+                    .members
+                    .iter()
+                    .map(|m| self.format_type_depth(*m, depth + 1))
+                    .collect();
+                parts.join(" | ")
+            }
+            Type::Function(f) => {
+                let params: Vec<_> = f
+                    .params
+                    .iter()
+                    .map(|p| self.format_type_depth(*p, depth + 1))
+                    .collect();
+                let ret = self.format_type_depth(f.return_type, depth + 1);
+                let async_prefix = if f.is_async { "async " } else { "" };
+                format!("{}({}) => {}", async_prefix, params.join(", "), ret)
+            }
+            Type::Array(a) => {
+                format!("{}[]", self.format_type_depth(a.element, depth + 1))
+            }
+            Type::Task(t) => {
+                format!("Promise<{}>", self.format_type_depth(t.result, depth + 1))
+            }
+            Type::Channel(c) => {
+                format!("Channel<{}>", self.format_type_depth(c.message, depth + 1))
+            }
+            Type::Map(m) => {
+                format!(
+                    "Map<{}, {}>",
+                    self.format_type_depth(m.key, depth + 1),
+                    self.format_type_depth(m.value, depth + 1)
+                )
+            }
+            Type::Set(s) => {
+                format!("Set<{}>", self.format_type_depth(s.element, depth + 1))
+            }
+            Type::Tuple(t) => {
+                let elems: Vec<_> = t
+                    .elements
+                    .iter()
+                    .map(|e| self.format_type_depth(*e, depth + 1))
+                    .collect();
+                format!("[{}]", elems.join(", "))
+            }
+            Type::Object(o) => {
+                if o.properties.is_empty() {
+                    return "{}".to_string();
+                }
+                let max_props = if depth == 0 { 6 } else { 3 };
+                let props: Vec<_> = o
+                    .properties
+                    .iter()
+                    .take(max_props)
+                    .map(|p| {
+                        let opt = if p.optional { "?" } else { "" };
+                        format!("{}{}: {}", p.name, opt, self.format_type_depth(p.ty, depth + 1))
+                    })
+                    .collect();
+                let ellipsis = if o.properties.len() > max_props { ", …" } else { "" };
+                format!("{{ {}{} }}", props.join(", "), ellipsis)
+            }
+            Type::Class(c) => {
+                if c.type_params.is_empty() {
+                    format!("class {}", c.name)
+                } else {
+                    format!("class {}<{}>", c.name, c.type_params.join(", "))
+                }
+            }
+            Type::Interface(i) => {
+                if i.type_params.is_empty() {
+                    format!("interface {}", i.name)
+                } else {
+                    format!("interface {}<{}>", i.name, i.type_params.join(", "))
+                }
+            }
+            Type::TypeVar(tv) => {
+                if let Some(c) = tv.constraint {
+                    format!("{} extends {}", tv.name, self.format_type_depth(c, depth + 1))
+                } else {
+                    tv.name.clone()
+                }
+            }
+            Type::Generic(g) => {
+                let args: Vec<_> = g
+                    .type_args
+                    .iter()
+                    .map(|a| self.format_type_depth(*a, depth + 1))
+                    .collect();
+                format!(
+                    "{}<{}>",
+                    self.format_type_depth(g.base, depth + 1),
+                    args.join(", ")
+                )
+            }
+            Type::Keyof(k) => {
+                format!("keyof {}", self.format_type_depth(k.target, depth + 1))
+            }
+            Type::IndexedAccess(ia) => {
+                format!(
+                    "{}[{}]",
+                    self.format_type_depth(ia.object, depth + 1),
+                    self.format_type_depth(ia.index, depth + 1)
+                )
+            }
+            Type::StringLiteral(s) => format!("\"{}\"", s),
+            Type::NumberLiteral(n) => format!("{}", n),
+            Type::BooleanLiteral(b) => format!("{}", b),
+        }
+    }
+
+    /// Produce a sorted table of all interned TypeIds and their readable descriptions.
+    ///
+    /// Useful with the `RAYA_DEBUG_DUMP_TYPES` environment variable.
+    pub fn format_type_table(&self) -> Vec<(u32, String)> {
+        self.types
+            .iter()
+            .enumerate()
+            .map(|(i, _)| (i as u32, self.format_type(TypeId(i as u32))))
+            .collect()
+    }
+
     /// Get the number of types in the context
     pub fn len(&self) -> usize {
         self.types.len()

@@ -76,6 +76,14 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
+                if std::env::var("RAYA_DEBUG_FIELD_TRACE").is_ok() {
+                    eprintln!(
+                        "[field-trace] LoadCaptured[{}] => {:?} (is_ptr={})",
+                        capture_index,
+                        value,
+                        value.is_ptr()
+                    );
+                }
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }

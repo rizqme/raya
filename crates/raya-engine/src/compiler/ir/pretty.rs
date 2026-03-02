@@ -101,6 +101,11 @@ impl BasicBlock {
     }
 }
 
+/// Public re-export of the instruction formatter (used by debug dump in `compiler::mod`).
+pub fn format_instr_pub(instr: &IrInstr) -> String {
+    format_instr(instr)
+}
+
 fn format_instr(instr: &IrInstr) -> String {
     match instr {
         IrInstr::Assign { dest, value } => {

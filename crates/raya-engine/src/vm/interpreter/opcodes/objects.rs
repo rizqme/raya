@@ -348,6 +348,16 @@ impl<'a> Interpreter<'a> {
                 // Missing fields resolve to null. This matches object destructuring defaults
                 // and allows optional object properties to be absent at runtime.
                 let value = obj.get_field(field_offset).unwrap_or(Value::null());
+                if std::env::var("RAYA_DEBUG_FIELD_TRACE").is_ok() {
+                    eprintln!(
+                        "[field-trace] LoadField[{}] class_id={} field_count={} => {:?} (is_ptr={})",
+                        field_offset,
+                        obj.class_id,
+                        obj.field_count(),
+                        value,
+                        value.is_ptr()
+                    );
+                }
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
@@ -498,6 +508,16 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 let value = obj.get_field(field_offset).unwrap_or(Value::null());
+                if std::env::var("RAYA_DEBUG_FIELD_TRACE").is_ok() {
+                    eprintln!(
+                        "[field-trace] LoadFieldFast[{}] class_id={} field_count={} => {:?} (is_ptr={})",
+                        field_offset,
+                        obj.class_id,
+                        obj.field_count(),
+                        value,
+                        value.is_ptr()
+                    );
+                }
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }

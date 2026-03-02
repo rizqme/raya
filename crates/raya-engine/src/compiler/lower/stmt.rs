@@ -1358,6 +1358,33 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        // Populate field layout from inline object type annotation (e.g. `const x: { a: T } = ...`).
+        // This gives has_concrete_layout=true so LoadField is emitted instead of LateBoundMember.
+        if !self.variable_object_fields.contains_key(&name) {
+            if let Some(type_ann) = &decl.type_annotation {
+                if let ast::Type::Object(obj_type) = &type_ann.ty {
+                    let fields: Vec<(String, usize)> = obj_type
+                        .members
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, member)| match member {
+                            ast::ObjectTypeMember::Property(prop) => Some((
+                                self.interner.resolve(prop.name.name).to_string(),
+                                idx,
+                            )),
+                            ast::ObjectTypeMember::Method(method) => Some((
+                                self.interner.resolve(method.name.name).to_string(),
+                                idx,
+                            )),
+                        })
+                        .collect();
+                    if !fields.is_empty() {
+                        self.variable_object_fields.insert(name, fields);
+                    }
+                }
+            }
+        }
+
         // Check for compile-time constant: const with literal initializer
         // These are folded at compile time and emit no runtime code
         if decl.kind == crate::parser::ast::VariableKind::Const {

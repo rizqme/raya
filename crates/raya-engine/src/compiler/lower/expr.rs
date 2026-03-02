@@ -1210,6 +1210,14 @@ impl<'a> Lowerer<'a> {
                 if let Some(&func_id) = self.closure_locals.get(&local_idx) {
                     if self.async_closures.contains(&func_id) {
                         // Emit SpawnClosure instead of CallClosure for async closures
+                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                            eprintln!(
+                                "[lower] SpawnClosure[local-async] '{}' local_idx={} func_id={}",
+                                self.interner.resolve(ident.name),
+                                local_idx,
+                                func_id.as_u32()
+                            );
+                        }
                         self.emit(IrInstr::SpawnClosure {
                             dest: dest.clone(),
                             closure,
@@ -1220,6 +1228,12 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Regular closure call
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    eprintln!(
+                        "[lower] CallClosure[local] '{}'",
+                        self.interner.resolve(ident.name)
+                    );
+                }
                 self.emit(IrInstr::CallClosure {
                     dest: Some(dest.clone()),
                     closure,
@@ -1265,6 +1279,14 @@ impl<'a> Lowerer<'a> {
                 });
                 if let Some(&func_id) = self.closure_globals.get(&global_idx) {
                     if self.async_closures.contains(&func_id) {
+                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                            eprintln!(
+                                "[lower] SpawnClosure[global-async] '{}' global_idx={} func_id={}",
+                                self.interner.resolve(ident.name),
+                                global_idx,
+                                func_id.as_u32()
+                            );
+                        }
                         self.emit(IrInstr::SpawnClosure {
                             dest: dest.clone(),
                             closure,
@@ -1325,6 +1347,15 @@ impl<'a> Lowerer<'a> {
                     if self.async_functions.contains(&func_id)
                         || self.async_closures.contains(&func_id)
                     {
+                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                            eprintln!(
+                                "[lower] SpawnClosure[captured-async] '{}' func_id={} is_captured={} is_ancestor={}",
+                                self.interner.resolve(ident.name),
+                                func_id.as_u32(),
+                                is_captured,
+                                is_ancestor
+                            );
+                        }
                         self.emit(IrInstr::SpawnClosure {
                             dest: dest.clone(),
                             closure,
@@ -2033,6 +2064,33 @@ impl<'a> Lowerer<'a> {
                     args,
                 });
                 return dest;
+            }
+
+            // Free-variable concrete-layout call path: `obj.method(...)` where `obj` is an
+            // identifier with a known field layout (variable_object_fields) but the checker
+            // type is unresolved (e.g. captured from an outer scope inside a nested function).
+            // This avoids falling into JsonGet when the object is a stdlib module default export.
+            if class_id.is_none() {
+                if let Expression::Identifier(obj_ident) = &*member.object {
+                    if let Some(fields) = self.variable_object_fields.get(&obj_ident.name) {
+                        if fields.iter().any(|(n, _)| n == method_name) {
+                            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                eprintln!(
+                                    "[lower] concrete-layout member call '{}.{}(...)' via variable_object_fields (WILL USE LoadField+CallClosure)",
+                                    self.interner.resolve(obj_ident.name),
+                                    method_name
+                                );
+                            }
+                            let closure = self.lower_member(member);
+                            self.emit(IrInstr::CallClosure {
+                                dest: Some(dest.clone()),
+                                closure,
+                                args,
+                            });
+                            return dest;
+                        }
+                    }
+                }
             }
 
             // Fall back to registry-based dispatch
@@ -3835,6 +3893,11 @@ impl<'a> Lowerer<'a> {
         let saved_this_register = self.this_register.take();
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
+        // closure_locals maps local-slot indices to async func IDs; it is
+        // per-scope, so it must be cleared on entry and restored on exit to
+        // prevent stale entries from an outer (or sibling) function bleeding
+        // into this function's local-slot numbering.
+        let saved_closure_locals = std::mem::take(&mut self.closure_locals);
 
         // Build ancestor_variables for the child arrow:
         // 1. Current local_map becomes ImmediateParentLocal for the child
@@ -4091,6 +4154,7 @@ impl<'a> Lowerer<'a> {
         self.this_register = saved_this_register;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
+        self.closure_locals = saved_closure_locals;
 
         for sym in propagate_callable_invalidations {
             self.callable_symbol_hints.remove(&sym);
@@ -4615,6 +4679,13 @@ impl<'a> Lowerer<'a> {
                     index: local_idx,
                 });
 
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    eprintln!(
+                        "[lower] SpawnClosure[lower_async_call-local] '{}' local_idx={}",
+                        self.interner.resolve(ident.name),
+                        local_idx
+                    );
+                }
                 self.emit(IrInstr::SpawnClosure {
                     dest: dest.clone(),
                     closure,
@@ -4736,6 +4807,12 @@ impl<'a> Lowerer<'a> {
         }
 
         let callee_reg = self.lower_expr(&async_call.callee);
+        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+            eprintln!(
+                "[lower] SpawnClosure[lower_async_call-generic] callee_ty={}",
+                callee_ty.as_u32()
+            );
+        }
         self.emit(IrInstr::SpawnClosure {
             dest: dest.clone(),
             closure: callee_reg,

@@ -424,7 +424,7 @@ impl IrCodeGenerator {
         ctx: &mut FunctionContext,
         block: &BasicBlock,
     ) -> CompileResult<()> {
-        let has_spans = !block.instruction_spans.is_empty();
+        let has_spans = block.instruction_spans.len() == block.instructions.len();
 
         // Emit instructions
         for (i, instr) in block.instructions.iter().enumerate() {
