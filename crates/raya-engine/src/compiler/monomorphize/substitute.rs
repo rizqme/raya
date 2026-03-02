@@ -196,20 +196,20 @@ impl TypeSubstitution {
                 field: *field,
                 value: self.apply_register(value),
             },
-            IrInstr::JsonLoadProperty {
+            IrInstr::DynGetProp {
                 dest,
                 object,
                 property,
-            } => IrInstr::JsonLoadProperty {
+            } => IrInstr::DynGetProp {
                 dest: self.apply_register(dest),
                 object: self.apply_register(object),
                 property: property.clone(),
             },
-            IrInstr::JsonStoreProperty {
+            IrInstr::DynSetProp {
                 object,
                 property,
                 value,
-            } => IrInstr::JsonStoreProperty {
+            } => IrInstr::DynSetProp {
                 object: self.apply_register(object),
                 property: property.clone(),
                 value: self.apply_register(value),

@@ -995,8 +995,8 @@ impl LoweringCtx {
             | HelperCall::InstanceOf
             | HelperCall::Cast
             | HelperCall::Typeof
-            | HelperCall::JsonLoadProperty
-            | HelperCall::JsonStoreProperty
+            | HelperCall::DynGetProp
+            | HelperCall::DynSetProp
             | HelperCall::StringCompare
             | HelperCall::AwaitTask
             | HelperCall::AwaitAll

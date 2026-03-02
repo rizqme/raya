@@ -638,50 +638,50 @@ pub enum JitInstr {
         const_index: u32,
     },
 
-    // ===== JSON Operations =====
-    JsonGet {
+    // ===== Dynamic-object Operations =====
+    DynGet {
         dest: Reg,
         object: Reg,
         key_index: u32,
     },
-    JsonSet {
+    DynSet {
         object: Reg,
         key_index: u32,
         value: Reg,
     },
-    JsonDelete {
+    DynDelete {
         object: Reg,
         key_index: u32,
     },
-    JsonIndex {
+    DynGetKeyed {
         dest: Reg,
         object: Reg,
         index: Reg,
     },
-    JsonIndexSet {
+    DynSetKeyed {
         object: Reg,
         index: Reg,
         value: Reg,
     },
-    JsonPush {
+    DynArrayPush {
         array: Reg,
         value: Reg,
     },
-    JsonPop {
+    DynArrayPop {
         dest: Reg,
         array: Reg,
     },
-    JsonNewObject {
+    DynHas {
         dest: Reg,
     },
-    JsonNewArray {
+    DynNewObject {
         dest: Reg,
     },
-    JsonKeys {
+    DynKeys {
         dest: Reg,
         object: Reg,
     },
-    JsonLength {
+    DynKeysLen {
         dest: Reg,
         object: Reg,
     },
@@ -861,14 +861,14 @@ impl JitInstr {
             // Module
             JitInstr::LoadModule { dest, .. } | JitInstr::LoadConst { dest, .. } => Some(*dest),
 
-            // JSON
-            JitInstr::JsonGet { dest, .. }
-            | JitInstr::JsonIndex { dest, .. }
-            | JitInstr::JsonPop { dest, .. }
-            | JitInstr::JsonNewObject { dest }
-            | JitInstr::JsonNewArray { dest }
-            | JitInstr::JsonKeys { dest, .. }
-            | JitInstr::JsonLength { dest, .. } => Some(*dest),
+            // Dynamic-object ops with dest
+            JitInstr::DynGet { dest, .. }
+            | JitInstr::DynGetKeyed { dest, .. }
+            | JitInstr::DynArrayPop { dest, .. }
+            | JitInstr::DynHas { dest }
+            | JitInstr::DynNewObject { dest }
+            | JitInstr::DynKeys { dest, .. }
+            | JitInstr::DynKeysLen { dest, .. } => Some(*dest),
 
             // SSA
             JitInstr::Phi { dest, .. } | JitInstr::Move { dest, .. } => Some(*dest),
@@ -899,10 +899,10 @@ impl JitInstr {
             | JitInstr::EndTry
             | JitInstr::Throw { .. }
             | JitInstr::Rethrow
-            | JitInstr::JsonSet { .. }
-            | JitInstr::JsonDelete { .. }
-            | JitInstr::JsonIndexSet { .. }
-            | JitInstr::JsonPush { .. } => None,
+            | JitInstr::DynSet { .. }
+            | JitInstr::DynDelete { .. }
+            | JitInstr::DynSetKeyed { .. }
+            | JitInstr::DynArrayPush { .. } => None,
         }
     }
 

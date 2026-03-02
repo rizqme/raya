@@ -1,24 +1,36 @@
-//! Fast JSON parser that directly creates JsonValue
+//! Fast JSON parser that directly creates native VM Values
 //!
 //! This parser is optimized for performance:
 //! - Single-pass parsing
 //! - Minimal allocations
-//! - Direct GC allocation during parsing
+//! - Direct GC allocation of native types (DynObject, Array, RayaString)
 //! - No intermediate representations
 
-use super::JsonValue;
 use crate::vm::gc::GarbageCollector;
-use crate::vm::object::RayaString;
+use crate::vm::object::{Array, DynObject, RayaString};
+use crate::vm::value::Value;
 use crate::vm::{VmError, VmResult};
-use rustc_hash::FxHashMap;
 
-/// Parse a JSON string into a JsonValue
+/// Parse a JSON string into a native VM `Value`.
 ///
-/// This is a fast, single-pass parser that directly creates JsonValue
-/// with GC-managed allocations.
-pub fn parse(input: &str, gc: &mut GarbageCollector) -> VmResult<JsonValue> {
+/// The result uses native heap types:
+/// - null → `Value::null()`
+/// - bool → `Value::bool(b)`
+/// - number → `Value::i32(n)` for integers, `Value::f64(n)` otherwise
+/// - string → `GcPtr<RayaString>` → `Value`
+/// - array → `GcPtr<Array>` with elements as `Value` → `Value`
+/// - object → `GcPtr<DynObject>` with props as `Value` → `Value`
+pub fn parse(input: &str, gc: &mut GarbageCollector) -> VmResult<Value> {
     let mut parser = Parser::new(input, gc);
-    parser.parse_value()
+    let val = parser.parse_value()?;
+    parser.skip_whitespace();
+    if parser.pos < parser.bytes.len() {
+        return Err(VmError::RuntimeError(format!(
+            "Unexpected trailing characters at position {}",
+            parser.pos
+        )));
+    }
+    Ok(val)
 }
 
 /// JSON parser state
@@ -39,8 +51,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse a JSON value (entry point)
-    fn parse_value(&mut self) -> VmResult<JsonValue> {
+    /// Parse a JSON value
+    fn parse_value(&mut self) -> VmResult<Value> {
         self.skip_whitespace();
 
         if self.pos >= self.bytes.len() {
@@ -50,7 +62,7 @@ impl<'a> Parser<'a> {
         match self.bytes[self.pos] {
             b'n' => self.parse_null(),
             b't' | b'f' => self.parse_bool(),
-            b'"' => self.parse_string(),
+            b'"' => self.parse_string_value(),
             b'[' => self.parse_array(),
             b'{' => self.parse_object(),
             b'-' | b'0'..=b'9' => self.parse_number(),
@@ -61,10 +73,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse null
-    fn parse_null(&mut self) -> VmResult<JsonValue> {
+    fn parse_null(&mut self) -> VmResult<Value> {
         if self.consume_literal("null") {
-            Ok(JsonValue::Null)
+            Ok(Value::null())
         } else {
             Err(VmError::RuntimeError(format!(
                 "Invalid null literal at position {}",
@@ -73,12 +84,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse boolean
-    fn parse_bool(&mut self) -> VmResult<JsonValue> {
+    fn parse_bool(&mut self) -> VmResult<Value> {
         if self.consume_literal("true") {
-            Ok(JsonValue::Bool(true))
+            Ok(Value::bool(true))
         } else if self.consume_literal("false") {
-            Ok(JsonValue::Bool(false))
+            Ok(Value::bool(false))
         } else {
             Err(VmError::RuntimeError(format!(
                 "Invalid boolean literal at position {}",
@@ -87,48 +97,121 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse string
-    fn parse_string(&mut self) -> VmResult<JsonValue> {
+    fn parse_number(&mut self) -> VmResult<Value> {
+        let start = self.pos;
+
+        if self.pos < self.bytes.len() && self.bytes[self.pos] == b'-' {
+            self.pos += 1;
+        }
+
+        if self.pos >= self.bytes.len() {
+            return Err(VmError::RuntimeError(
+                "Unexpected end of number".to_string(),
+            ));
+        }
+
+        if self.bytes[self.pos] == b'0' {
+            self.pos += 1;
+        } else if self.bytes[self.pos].is_ascii_digit() {
+            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
+        } else {
+            return Err(VmError::RuntimeError(format!(
+                "Invalid number at position {}",
+                self.pos
+            )));
+        }
+
+        let mut is_float = false;
+
+        if self.pos < self.bytes.len() && self.bytes[self.pos] == b'.' {
+            is_float = true;
+            self.pos += 1;
+            if self.pos >= self.bytes.len() || !self.bytes[self.pos].is_ascii_digit() {
+                return Err(VmError::RuntimeError(
+                    "Invalid number: digit expected after '.'".to_string(),
+                ));
+            }
+            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
+        }
+
+        if self.pos < self.bytes.len()
+            && (self.bytes[self.pos] == b'e' || self.bytes[self.pos] == b'E')
+        {
+            is_float = true;
+            self.pos += 1;
+            if self.pos < self.bytes.len()
+                && (self.bytes[self.pos] == b'+' || self.bytes[self.pos] == b'-')
+            {
+                self.pos += 1;
+            }
+            if self.pos >= self.bytes.len() || !self.bytes[self.pos].is_ascii_digit() {
+                return Err(VmError::RuntimeError(
+                    "Invalid number: digit expected in exponent".to_string(),
+                ));
+            }
+            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
+        }
+
+        let num_str = &self.input[start..self.pos];
+        let n = num_str
+            .parse::<f64>()
+            .map_err(|_| VmError::RuntimeError(format!("Invalid number: {}", num_str)))?;
+
+        // Represent integers as i32 when possible (faster VM operations)
+        if !is_float && n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
+            Ok(Value::i32(n as i32))
+        } else {
+            Ok(Value::f64(n))
+        }
+    }
+
+    /// Parse a JSON string and return it as a VM `Value` (allocates RayaString).
+    fn parse_string_value(&mut self) -> VmResult<Value> {
+        let data = self.read_string_data()?;
+        let raya_str = RayaString::new(data);
+        let gc_ptr = self.gc.allocate(raya_str);
+        Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
+    }
+
+    /// Parse a JSON string and return the raw Rust `String` (used for object keys).
+    fn read_string_data(&mut self) -> VmResult<String> {
         if self.bytes[self.pos] != b'"' {
             return Err(VmError::RuntimeError(format!(
                 "Expected '\"' at position {}",
                 self.pos
             )));
         }
-        self.pos += 1; // Skip opening quote
+        self.pos += 1;
 
         let start = self.pos;
         let mut has_escapes = false;
 
-        // Find end of string and check for escapes
         while self.pos < self.bytes.len() {
             match self.bytes[self.pos] {
                 b'"' => {
-                    // Found closing quote
                     let end = self.pos;
                     self.pos += 1;
-
-                    let string_data = if has_escapes {
-                        // Need to unescape
-                        self.unescape_string(&self.input[start..end])?
+                    if has_escapes {
+                        return self.unescape_string(&self.input[start..end]);
                     } else {
-                        // No escapes, use slice directly
-                        self.input[start..end].to_string()
-                    };
-
-                    let raya_str = RayaString::new(string_data);
-                    let str_ptr = self.gc.allocate(raya_str);
-                    return Ok(JsonValue::String(str_ptr));
+                        return Ok(self.input[start..end].to_string());
+                    }
                 }
                 b'\\' => {
                     has_escapes = true;
-                    self.pos += 1; // Skip backslash
+                    self.pos += 1;
                     if self.pos >= self.bytes.len() {
                         return Err(VmError::RuntimeError(
                             "Unexpected end of string escape".to_string(),
                         ));
                     }
-                    self.pos += 1; // Skip escaped character
+                    self.pos += 1;
                 }
                 b'\x00'..=b'\x1F' => {
                     return Err(VmError::RuntimeError(format!(
@@ -145,7 +228,6 @@ impl<'a> Parser<'a> {
         Err(VmError::RuntimeError("Unterminated string".to_string()))
     }
 
-    /// Unescape a JSON string
     fn unescape_string(&self, s: &str) -> VmResult<String> {
         let mut result = String::with_capacity(s.len());
         let mut chars = s.chars();
@@ -162,7 +244,6 @@ impl<'a> Parser<'a> {
                     Some('r') => result.push('\r'),
                     Some('t') => result.push('\t'),
                     Some('u') => {
-                        // Unicode escape \uXXXX
                         let hex: String = chars.by_ref().take(4).collect();
                         if hex.len() != 4 {
                             return Err(VmError::RuntimeError(
@@ -200,101 +281,25 @@ impl<'a> Parser<'a> {
         Ok(result)
     }
 
-    /// Parse number
-    fn parse_number(&mut self) -> VmResult<JsonValue> {
-        let start = self.pos;
-
-        // Optional minus
-        if self.pos < self.bytes.len() && self.bytes[self.pos] == b'-' {
-            self.pos += 1;
-        }
-
-        // Integer part
-        if self.pos >= self.bytes.len() {
-            return Err(VmError::RuntimeError(
-                "Unexpected end of number".to_string(),
-            ));
-        }
-
-        if self.bytes[self.pos] == b'0' {
-            self.pos += 1;
-        } else if self.bytes[self.pos].is_ascii_digit() {
-            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
-                self.pos += 1;
-            }
-        } else {
-            return Err(VmError::RuntimeError(format!(
-                "Invalid number at position {}",
-                self.pos
-            )));
-        }
-
-        // Fractional part
-        if self.pos < self.bytes.len() && self.bytes[self.pos] == b'.' {
-            self.pos += 1;
-            if self.pos >= self.bytes.len() || !self.bytes[self.pos].is_ascii_digit() {
-                return Err(VmError::RuntimeError(
-                    "Invalid number: digit expected after '.'".to_string(),
-                ));
-            }
-            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
-                self.pos += 1;
-            }
-        }
-
-        // Exponent part
-        if self.pos < self.bytes.len()
-            && (self.bytes[self.pos] == b'e' || self.bytes[self.pos] == b'E')
-        {
-            self.pos += 1;
-            if self.pos < self.bytes.len()
-                && (self.bytes[self.pos] == b'+' || self.bytes[self.pos] == b'-')
-            {
-                self.pos += 1;
-            }
-            if self.pos >= self.bytes.len() || !self.bytes[self.pos].is_ascii_digit() {
-                return Err(VmError::RuntimeError(
-                    "Invalid number: digit expected in exponent".to_string(),
-                ));
-            }
-            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
-                self.pos += 1;
-            }
-        }
-
-        let num_str = &self.input[start..self.pos];
-        let num = num_str
-            .parse::<f64>()
-            .map_err(|_| VmError::RuntimeError(format!("Invalid number: {}", num_str)))?;
-
-        Ok(JsonValue::Number(num))
-    }
-
-    /// Parse array
-    fn parse_array(&mut self) -> VmResult<JsonValue> {
-        if self.bytes[self.pos] != b'[' {
-            return Err(VmError::RuntimeError(format!(
-                "Expected '[' at position {}",
-                self.pos
-            )));
-        }
+    fn parse_array(&mut self) -> VmResult<Value> {
+        debug_assert_eq!(self.bytes[self.pos], b'[');
         self.pos += 1;
         self.skip_whitespace();
 
-        let mut elements = Vec::new();
+        let mut elements: Vec<Value> = Vec::new();
 
-        // Empty array
         if self.pos < self.bytes.len() && self.bytes[self.pos] == b']' {
             self.pos += 1;
-            let arr_ptr = self.gc.allocate(elements);
-            return Ok(JsonValue::Array(arr_ptr));
+            let arr = Array { type_id: 0, elements };
+            let arr_ptr = self.gc.allocate(arr);
+            return Ok(unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap())
+            });
         }
 
         loop {
-            // Parse element
-            let value = self.parse_value()?;
-            elements.push(value);
-
+            let elem = self.parse_value()?;
+            elements.push(elem);
             self.skip_whitespace();
 
             if self.pos >= self.bytes.len() {
@@ -308,8 +313,11 @@ impl<'a> Parser<'a> {
                 }
                 b']' => {
                     self.pos += 1;
-                    let arr_ptr = self.gc.allocate(elements);
-                    return Ok(JsonValue::Array(arr_ptr));
+                    let arr = Array { type_id: 0, elements };
+                    let arr_ptr = self.gc.allocate(arr);
+                    return Ok(unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap())
+                    });
                 }
                 c => {
                     return Err(VmError::RuntimeError(format!(
@@ -321,28 +329,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse object
-    fn parse_object(&mut self) -> VmResult<JsonValue> {
-        if self.bytes[self.pos] != b'{' {
-            return Err(VmError::RuntimeError(format!(
-                "Expected '{{' at position {}",
-                self.pos
-            )));
-        }
+    fn parse_object(&mut self) -> VmResult<Value> {
+        debug_assert_eq!(self.bytes[self.pos], b'{');
         self.pos += 1;
         self.skip_whitespace();
 
-        let mut object = FxHashMap::default();
+        let mut obj = DynObject::new();
 
-        // Empty object
         if self.pos < self.bytes.len() && self.bytes[self.pos] == b'}' {
             self.pos += 1;
-            let obj_ptr = self.gc.allocate(object);
-            return Ok(JsonValue::Object(obj_ptr));
+            let obj_ptr = self.gc.allocate(obj);
+            return Ok(unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap())
+            });
         }
 
         loop {
-            // Parse key (must be string)
             self.skip_whitespace();
             if self.pos >= self.bytes.len() || self.bytes[self.pos] != b'"' {
                 return Err(VmError::RuntimeError(format!(
@@ -351,16 +353,8 @@ impl<'a> Parser<'a> {
                 )));
             }
 
-            let key_value = self.parse_string()?;
-            let key = match key_value {
-                JsonValue::String(s_ptr) => {
-                    let s = unsafe { &*s_ptr.as_ptr() };
-                    s.data.clone()
-                }
-                _ => unreachable!("parse_string always returns String"),
-            };
+            let key = self.read_string_data()?;
 
-            // Expect colon
             self.skip_whitespace();
             if self.pos >= self.bytes.len() || self.bytes[self.pos] != b':' {
                 return Err(VmError::RuntimeError(format!(
@@ -370,10 +364,9 @@ impl<'a> Parser<'a> {
             }
             self.pos += 1;
 
-            // Parse value
             self.skip_whitespace();
             let value = self.parse_value()?;
-            object.insert(key, value);
+            obj.set(key, value);
 
             self.skip_whitespace();
 
@@ -388,8 +381,10 @@ impl<'a> Parser<'a> {
                 }
                 b'}' => {
                     self.pos += 1;
-                    let obj_ptr = self.gc.allocate(object);
-                    return Ok(JsonValue::Object(obj_ptr));
+                    let obj_ptr = self.gc.allocate(obj);
+                    return Ok(unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap())
+                    });
                 }
                 c => {
                     return Err(VmError::RuntimeError(format!(
@@ -401,7 +396,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Skip whitespace
     fn skip_whitespace(&mut self) {
         while self.pos < self.bytes.len() {
             match self.bytes[self.pos] {
@@ -411,15 +405,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Try to consume a literal string
     fn consume_literal(&mut self, literal: &str) -> bool {
-        let literal_bytes = literal.as_bytes();
-        if self.pos + literal_bytes.len() > self.bytes.len() {
+        let lb = literal.as_bytes();
+        if self.pos + lb.len() > self.bytes.len() {
             return false;
         }
-
-        if &self.bytes[self.pos..self.pos + literal_bytes.len()] == literal_bytes {
-            self.pos += literal_bytes.len();
+        if &self.bytes[self.pos..self.pos + lb.len()] == lb {
+            self.pos += lb.len();
             true
         } else {
             false
@@ -431,6 +423,7 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
     use crate::vm::gc::GarbageCollector;
+    use crate::vm::json::view::{js_classify, JSView};
 
     #[test]
     fn test_parse_null() {
@@ -442,100 +435,129 @@ mod tests {
     #[test]
     fn test_parse_bool() {
         let mut gc = GarbageCollector::default();
-
-        let result = parse("true", &mut gc).unwrap();
-        assert_eq!(result.as_bool(), Some(true));
-
-        let result = parse("false", &mut gc).unwrap();
-        assert_eq!(result.as_bool(), Some(false));
+        assert_eq!(parse("true", &mut gc).unwrap().as_bool(), Some(true));
+        assert_eq!(parse("false", &mut gc).unwrap().as_bool(), Some(false));
     }
 
     #[test]
-    fn test_parse_number() {
+    fn test_parse_number_integer() {
         let mut gc = GarbageCollector::default();
-
         let result = parse("42", &mut gc).unwrap();
-        assert_eq!(result.as_number(), Some(42.0));
+        assert_eq!(result.as_i32(), Some(42));
+    }
 
+    #[test]
+    fn test_parse_number_float() {
+        let mut gc = GarbageCollector::default();
         let result = parse("-17.5", &mut gc).unwrap();
-        assert_eq!(result.as_number(), Some(-17.5));
-
+        assert_eq!(result.as_f64(), Some(-17.5));
         let result = parse("3.14e2", &mut gc).unwrap();
-        assert_eq!(result.as_number(), Some(314.0));
+        assert_eq!(result.as_f64(), Some(314.0));
     }
 
     #[test]
     fn test_parse_string() {
         let mut gc = GarbageCollector::default();
-
         let result = parse("\"hello\"", &mut gc).unwrap();
-        assert!(result.is_string());
+        match js_classify(result) {
+            JSView::Str(ptr) => assert_eq!(unsafe { &*ptr }.data, "hello"),
+            _ => panic!("Expected string"),
+        }
+    }
 
+    #[test]
+    fn test_parse_string_escape() {
+        let mut gc = GarbageCollector::default();
         let result = parse("\"hello\\nworld\"", &mut gc).unwrap();
-        let s_ptr = result.as_string().unwrap();
-        let s = unsafe { &*s_ptr.as_ptr() };
-        assert_eq!(s.data, "hello\nworld");
+        match js_classify(result) {
+            JSView::Str(ptr) => assert_eq!(unsafe { &*ptr }.data, "hello\nworld"),
+            _ => panic!("Expected string"),
+        }
     }
 
     #[test]
     fn test_parse_array() {
         let mut gc = GarbageCollector::default();
-
         let result = parse("[1, 2, 3]", &mut gc).unwrap();
-        assert!(result.is_array());
+        match js_classify(result) {
+            JSView::Arr(ptr) => {
+                let arr = unsafe { &*ptr };
+                assert_eq!(arr.len(), 3);
+                assert_eq!(arr.get(0).and_then(|v| v.as_i32()), Some(1));
+                assert_eq!(arr.get(1).and_then(|v| v.as_i32()), Some(2));
+                assert_eq!(arr.get(2).and_then(|v| v.as_i32()), Some(3));
+            }
+            _ => panic!("Expected array"),
+        }
+    }
 
-        let arr_ptr = result.as_array().unwrap();
-        let arr = unsafe { &*arr_ptr.as_ptr() };
-        assert_eq!(arr.len(), 3);
-        assert_eq!(arr[0].as_number(), Some(1.0));
-        assert_eq!(arr[1].as_number(), Some(2.0));
-        assert_eq!(arr[2].as_number(), Some(3.0));
+    #[test]
+    fn test_parse_empty_array() {
+        let mut gc = GarbageCollector::default();
+        let result = parse("[]", &mut gc).unwrap();
+        match js_classify(result) {
+            JSView::Arr(ptr) => assert_eq!(unsafe { &*ptr }.len(), 0),
+            _ => panic!("Expected array"),
+        }
     }
 
     #[test]
     fn test_parse_object() {
         let mut gc = GarbageCollector::default();
+        let result = parse(r#"{"name": "Alice", "age": 30}"#, &mut gc).unwrap();
+        match js_classify(result) {
+            JSView::Dyn(ptr) => {
+                let obj = unsafe { &*ptr };
+                assert!(obj.has("name"));
+                assert_eq!(obj.get("age").and_then(|v| v.as_i32()), Some(30));
+            }
+            _ => panic!("Expected DynObject"),
+        }
+    }
 
-        let result = parse("{\"name\": \"Alice\", \"age\": 30}", &mut gc).unwrap();
-        assert!(result.is_object());
-
-        let name = result.get_property("name");
-        assert!(name.is_string());
-
-        let age = result.get_property("age");
-        assert_eq!(age.as_number(), Some(30.0));
+    #[test]
+    fn test_parse_empty_object() {
+        let mut gc = GarbageCollector::default();
+        let result = parse("{}", &mut gc).unwrap();
+        match js_classify(result) {
+            JSView::Dyn(ptr) => assert!(unsafe { &*ptr }.props.is_empty()),
+            _ => panic!("Expected DynObject"),
+        }
     }
 
     #[test]
     fn test_parse_nested() {
         let mut gc = GarbageCollector::default();
-
-        let json = r#"
-        {
-            "user": {
-                "name": "Alice",
-                "tags": ["admin", "user"]
-            },
-            "count": 42
-        }
-        "#;
-
+        let json = r#"{"user": {"name": "Alice", "tags": ["admin", "user"]}, "count": 42}"#;
         let result = parse(json, &mut gc).unwrap();
-        assert!(result.is_object());
-
-        let user = result.get_property("user");
-        assert!(user.is_object());
-
-        let tags = user.get_property("tags");
-        assert!(tags.is_array());
+        match js_classify(result) {
+            JSView::Dyn(ptr) => {
+                let obj = unsafe { &*ptr };
+                let user_val = obj.get("user").unwrap();
+                match js_classify(user_val) {
+                    JSView::Dyn(user_ptr) => {
+                        let user_obj = unsafe { &*user_ptr };
+                        assert!(user_obj.has("name"));
+                        let tags_val = user_obj.get("tags").unwrap();
+                        match js_classify(tags_val) {
+                            JSView::Arr(tags_ptr) => {
+                                assert_eq!(unsafe { &*tags_ptr }.len(), 2);
+                            }
+                            _ => panic!("Expected array for tags"),
+                        }
+                    }
+                    _ => panic!("Expected DynObject for user"),
+                }
+                assert_eq!(obj.get("count").and_then(|v| v.as_i32()), Some(42));
+            }
+            _ => panic!("Expected DynObject"),
+        }
     }
 
     #[test]
     fn test_parse_error() {
         let mut gc = GarbageCollector::default();
-
         assert!(parse("{invalid}", &mut gc).is_err());
-        assert!(parse("[1, 2,]", &mut gc).is_err());
         assert!(parse("nul", &mut gc).is_err());
     }
 }

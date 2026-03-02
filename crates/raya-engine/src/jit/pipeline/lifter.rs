@@ -1591,11 +1591,11 @@ fn lift_instruction(
         }
 
         // ===== JSON Operations =====
-        Opcode::JsonGet => {
+        Opcode::DynGet => {
             if let Operands::U32(key_index) = instr.operands {
                 let object = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::JsonGet {
+                func.block_mut(block).instrs.push(JitInstr::DynGet {
                     dest,
                     object,
                     key_index,
@@ -1603,89 +1603,89 @@ fn lift_instruction(
                 stack.push(dest);
             }
         }
-        Opcode::JsonSet => {
+        Opcode::DynSet => {
             if let Operands::U32(key_index) = instr.operands {
                 let value = stack.pop(instr.offset)?;
                 let object = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::JsonSet {
+                func.block_mut(block).instrs.push(JitInstr::DynSet {
                     object,
                     key_index,
                     value,
                 });
             }
         }
-        Opcode::JsonDelete => {
+        Opcode::DynDelete => {
             if let Operands::U32(key_index) = instr.operands {
                 let object = stack.pop(instr.offset)?;
                 func.block_mut(block)
                     .instrs
-                    .push(JitInstr::JsonDelete { object, key_index });
+                    .push(JitInstr::DynDelete { object, key_index });
             }
         }
-        Opcode::JsonIndex => {
+        Opcode::DynGetKeyed => {
             let index = stack.pop(instr.offset)?;
             let object = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::JsonIndex {
+            func.block_mut(block).instrs.push(JitInstr::DynGetKeyed {
                 dest,
                 object,
                 index,
             });
             stack.push(dest);
         }
-        Opcode::JsonIndexSet => {
+        Opcode::DynSetKeyed => {
             let value = stack.pop(instr.offset)?;
             let index = stack.pop(instr.offset)?;
             let object = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::JsonIndexSet {
+            func.block_mut(block).instrs.push(JitInstr::DynSetKeyed {
                 object,
                 index,
                 value,
             });
         }
-        Opcode::JsonPush => {
+        Opcode::DynNewObject => {
             let value = stack.pop(instr.offset)?;
             let array = stack.pop(instr.offset)?;
             func.block_mut(block)
                 .instrs
-                .push(JitInstr::JsonPush { array, value });
+                .push(JitInstr::DynArrayPush { array, value });
         }
-        Opcode::JsonPop => {
+        Opcode::DynKeys => {
             let array = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Value);
             func.block_mut(block)
                 .instrs
-                .push(JitInstr::JsonPop { dest, array });
+                .push(JitInstr::DynArrayPop { dest, array });
             stack.push(dest);
         }
-        Opcode::JsonNewObject => {
+        Opcode::DynHas => {
             let dest = func.alloc_reg(JitType::Ptr);
             func.block_mut(block)
                 .instrs
-                .push(JitInstr::JsonNewObject { dest });
+                .push(JitInstr::DynHas { dest });
             stack.push(dest);
         }
-        Opcode::JsonNewArray => {
+        Opcode::DynNewObject => {
             let dest = func.alloc_reg(JitType::Ptr);
             func.block_mut(block)
                 .instrs
-                .push(JitInstr::JsonNewArray { dest });
+                .push(JitInstr::DynNewObject { dest });
             stack.push(dest);
         }
-        Opcode::JsonKeys => {
+        Opcode::DynKeys => {
             let object = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Ptr);
             func.block_mut(block)
                 .instrs
-                .push(JitInstr::JsonKeys { dest, object });
+                .push(JitInstr::DynKeys { dest, object });
             stack.push(dest);
         }
-        Opcode::JsonLength => {
+        Opcode::DynKeys => {
             let object = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::I32);
             func.block_mut(block)
                 .instrs
-                .push(JitInstr::JsonLength { dest, object });
+                .push(JitInstr::DynKeysLen { dest, object });
             stack.push(dest);
         }
 

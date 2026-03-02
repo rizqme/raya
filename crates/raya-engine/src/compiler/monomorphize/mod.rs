@@ -290,7 +290,7 @@ pub fn resolve_late_bound_members(
 
                     if dispatch_ty == crate::compiler::type_registry::UNRESOLVED_TYPE_ID {
                         // Still unresolved after substitution: keep name-based dynamic lookup.
-                        *instr = IrInstr::JsonLoadProperty {
+                        *instr = IrInstr::DynGetProp {
                             dest: dest.clone(),
                             object: object.clone(),
                             property: property.clone(),
@@ -322,7 +322,7 @@ pub fn resolve_late_bound_members(
 
                     // Conservative dynamic fallback: preserve property-name dispatch.
                     // Avoid unsafe slot-0 field assumptions for unresolved layouts.
-                    *instr = IrInstr::JsonLoadProperty {
+                    *instr = IrInstr::DynGetProp {
                         dest: dest.clone(),
                         object: object.clone(),
                         property: property.clone(),

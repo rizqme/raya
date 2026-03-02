@@ -130,7 +130,7 @@ strip = true
 panic = "abort"
 
 [profile.dev]
-debug = 1
+# debug = 1
 
 [profile.test]
 inherits = "release"

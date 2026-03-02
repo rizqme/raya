@@ -4,8 +4,8 @@
 
 use super::{
     ClassFieldInfo, ConstantValue, Lowerer, BOOLEAN_TYPE_ID, CHANNEL_TYPE_ID, INT_TYPE_ID,
-    JSON_TYPE_ID, NULL_TYPE_ID, NUMBER_TYPE_ID, REGEXP_TYPE_ID, STRING_TYPE_ID, TASK_TYPE_ID,
-    UNKNOWN_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
+    JSON_OBJECT_TYPE_ID, JSON_TYPE_ID, NULL_TYPE_ID, NUMBER_TYPE_ID, REGEXP_TYPE_ID,
+    STRING_TYPE_ID, TASK_TYPE_ID, UNKNOWN_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
 };
 use crate::compiler::ir::{
     BinaryOp, ClassId, FunctionId, IrConstant, IrInstr, IrValue, Register, Terminator, UnaryOp,
@@ -647,8 +647,8 @@ impl<'a> Lowerer<'a> {
                             ),
                         });
                 }
-            } else if obj_ty_id == JSON_TYPE_ID {
-                self.emit(IrInstr::JsonStoreProperty {
+            } else if obj_ty_id == JSON_TYPE_ID || obj_ty_id == JSON_OBJECT_TYPE_ID {
+                self.emit(IrInstr::DynSetProp {
                     object,
                     property: prop_name,
                     value: null_reg,
@@ -2417,11 +2417,11 @@ impl<'a> Lowerer<'a> {
             }
         };
 
-        // Check for JSON type - use duck typing with dynamic property access
-        if obj_ty_id == JSON_TYPE_ID {
+        // Check for JSON/JsonObject types - use duck typing with dynamic property access
+        if obj_ty_id == JSON_TYPE_ID || obj_ty_id == JSON_OBJECT_TYPE_ID {
             let json_type = TypeId::new(JSON_TYPE_ID);
             let dest = self.alloc_register(json_type);
-            self.emit(IrInstr::JsonLoadProperty {
+            self.emit(IrInstr::DynGetProp {
                 dest: dest.clone(),
                 object,
                 property: prop_name.to_string(),
@@ -3327,8 +3327,8 @@ impl<'a> Lowerer<'a> {
                                     });
                             }
                         }
-                    } else if obj_ty_id == JSON_TYPE_ID {
-                        self.emit(IrInstr::JsonStoreProperty {
+                    } else if obj_ty_id == JSON_TYPE_ID || obj_ty_id == JSON_OBJECT_TYPE_ID {
+                        self.emit(IrInstr::DynSetProp {
                             object,
                             property: prop_name.to_string(),
                             value: rhs,
@@ -3740,8 +3740,8 @@ impl<'a> Lowerer<'a> {
                             field: field_idx,
                             value: value.clone(),
                         });
-                    } else if obj_ty_id == JSON_TYPE_ID {
-                        self.emit(IrInstr::JsonStoreProperty {
+                    } else if obj_ty_id == JSON_TYPE_ID || obj_ty_id == JSON_OBJECT_TYPE_ID {
+                        self.emit(IrInstr::DynSetProp {
                             object,
                             property: prop_name.clone(),
                             value: value.clone(),
@@ -5955,7 +5955,7 @@ impl<'a> Lowerer<'a> {
         // Emit field access: obj.property
         let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
         let field_name = self.interner.resolve(property.name).to_string();
-        self.emit(IrInstr::JsonLoadProperty {
+        self.emit(IrInstr::DynGetProp {
             dest: dest.clone(),
             object: obj_reg,
             property: field_name,
@@ -6024,7 +6024,7 @@ impl<'a> Lowerer<'a> {
 
     /// Lower JSX props that include spread attributes.
     ///
-    /// Uses JsonStoreProperty to build the object incrementally,
+    /// Uses DynSetProp to build the object incrementally,
     /// preserving attribute evaluation order.
     fn lower_jsx_props_with_spread(&mut self, attributes: &[ast::JsxAttribute]) -> Register {
         // Start with an empty object
@@ -6049,7 +6049,7 @@ impl<'a> Lowerer<'a> {
                 ast::JsxAttribute::Attribute { name, value, .. } => {
                     let key = self.jsx_attr_name_string(name);
                     let value_reg = self.lower_jsx_attr_value(value);
-                    self.emit(IrInstr::JsonStoreProperty {
+                    self.emit(IrInstr::DynSetProp {
                         object: dest.clone(),
                         property: key,
                         value: value_reg,

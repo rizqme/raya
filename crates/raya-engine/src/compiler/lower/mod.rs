@@ -38,6 +38,8 @@ pub(super) const CHANNEL_TYPE_ID: u32 = TypeContext::CHANNEL_TYPE_ID;
 pub(super) const MAP_TYPE_ID: u32 = TypeContext::MAP_TYPE_ID;
 pub(super) const SET_TYPE_ID: u32 = TypeContext::SET_TYPE_ID;
 pub(super) const JSON_TYPE_ID: u32 = TypeContext::JSON_TYPE_ID;
+pub(super) const JSON_ARRAY_TYPE_ID: u32 = TypeContext::JSON_ARRAY_TYPE_ID;
+pub(super) const JSON_OBJECT_TYPE_ID: u32 = TypeContext::JSON_OBJECT_TYPE_ID;
 pub(super) const INT_TYPE_ID: u32 = TypeContext::INT_TYPE_ID;
 pub(super) const BOOL_TYPE_ID: u32 = TypeContext::BOOLEAN_TYPE_ID;
 pub(super) const ARRAY_TYPE_ID: u32 = TypeContext::ARRAY_TYPE_ID;
@@ -2397,13 +2399,6 @@ impl<'a> Lowerer<'a> {
         let name = self.interner.resolve(class.name.name);
         let mut ir_class = IrClass::new(name);
 
-        // Check if class has //@@json annotation
-        for annotation in &class.annotations {
-            if annotation.tag == "json" {
-                ir_class.json_serializable = true;
-            }
-        }
-
         // Get class ID from per-declaration map (safe even when names collide)
         let class_id = self.class_id_for_decl(class).unwrap_or_else(|| {
             panic!(
@@ -2470,23 +2465,8 @@ impl<'a> Lowerer<'a> {
                         continue;
                     };
 
-                    // Process JSON annotations for this field
                     let mut ir_field = IrField::new(field_name, ty, index);
                     ir_field.readonly = field.is_readonly;
-                    for annotation in &field.annotations {
-                        if annotation.tag == "json" {
-                            if annotation.is_skip() {
-                                ir_field.json_skip = true;
-                            } else {
-                                // Get the JSON field name (if different from struct field)
-                                if let Some(json_name) = annotation.json_field_name() {
-                                    ir_field.json_name = Some(json_name.to_string());
-                                }
-                                ir_field.json_omitempty = annotation.has_omitempty();
-                            }
-                        }
-                    }
-
                     ir_class.add_field(ir_field);
                 }
             }
@@ -3070,22 +3050,7 @@ impl<'a> Lowerer<'a> {
                     let field_name = self.interner.resolve(prop.name.name);
                     let ty = self.resolve_type_annotation(&prop.ty);
 
-                    let mut field = IrTypeAliasField::new(field_name, ty, prop.optional);
-
-                    // Process JSON annotations for this field
-                    for annotation in &prop.annotations {
-                        if annotation.tag == "json" {
-                            if annotation.is_skip() {
-                                field.json_skip = true;
-                            } else {
-                                if let Some(json_name) = annotation.json_field_name() {
-                                    field.json_name = Some(json_name.to_string());
-                                }
-                                field.json_omitempty = annotation.has_omitempty();
-                            }
-                        }
-                    }
-
+                    let field = IrTypeAliasField::new(field_name, ty, prop.optional);
                     ir_type_alias.add_field(field);
                 }
             }
@@ -4110,30 +4075,13 @@ impl<'a> Lowerer<'a> {
                 for member in &obj_type.members {
                     if let ast::ObjectTypeMember::Property(prop) = member {
                         let field_name = self.interner.resolve(prop.name.name).to_string();
-
-                        // Check for //@@json annotation to get custom JSON key
-                        let mut json_key = field_name.clone();
-                        let mut skip = false;
-
-                        for annotation in &prop.annotations {
-                            if annotation.tag == "json" {
-                                if annotation.is_skip() {
-                                    skip = true;
-                                } else if let Some(name) = annotation.json_field_name() {
-                                    json_key = name.to_string();
-                                }
-                            }
-                        }
-
-                        if !skip {
-                            let type_id = self.resolve_type_annotation(&prop.ty);
-                            fields.push(JsonFieldInfo {
-                                json_key,
-                                field_name,
-                                type_id,
-                                optional: prop.optional,
-                            });
-                        }
+                        let type_id = self.resolve_type_annotation(&prop.ty);
+                        fields.push(JsonFieldInfo {
+                            json_key: field_name.clone(),
+                            field_name,
+                            type_id,
+                            optional: prop.optional,
+                        });
                     }
                 }
                 Some(fields)
@@ -4208,7 +4156,7 @@ impl<'a> Lowerer<'a> {
 /// Information about a JSON field for specialized decode
 #[derive(Debug, Clone)]
 pub struct JsonFieldInfo {
-    /// The key name in JSON (may differ from field name due to //@@json annotation)
+    /// The key name in JSON (same as field name)
     pub json_key: String,
     /// The field name in the target type
     pub field_name: String,

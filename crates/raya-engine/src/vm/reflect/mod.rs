@@ -53,7 +53,7 @@ pub use bytecode_builder::{
     opcode as bc_opcode, BytecodeBuilder, BytecodeBuilderRegistry, CompiledFunction, ConstantValue,
     Label, LocalVariable, StackType, ValidationResult,
 };
-pub use class_metadata::{ClassMetadata, ClassMetadataRegistry};
+pub use class_metadata::{ClassMetadata, ClassMetadataRegistry, FieldDescriptor};
 pub use dynamic_module::{
     DynamicExport, DynamicModule, DynamicModuleInfo, DynamicModuleRegistry, ImportResolution,
     ModuleState, DYNAMIC_FUNCTION_BASE, DYNAMIC_MODULE_BASE,

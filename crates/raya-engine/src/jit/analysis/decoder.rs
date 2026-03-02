@@ -186,14 +186,14 @@ fn decode_operands(
         | Opcode::WaitAll
         | Opcode::Sleep
         | Opcode::TaskCancel
-        | Opcode::JsonIndex
-        | Opcode::JsonIndexSet
-        | Opcode::JsonPush
-        | Opcode::JsonPop
-        | Opcode::JsonNewObject
-        | Opcode::JsonNewArray
-        | Opcode::JsonKeys
-        | Opcode::JsonLength
+        | Opcode::DynGetKeyed
+        | Opcode::DynSetKeyed
+        | Opcode::DynNewObject
+        | Opcode::DynKeys
+        | Opcode::DynHas
+        | Opcode::DynNewObject
+        | Opcode::DynKeys
+        | Opcode::DynKeys
         | Opcode::Throw
         | Opcode::EndTry
         | Opcode::Rethrow
@@ -274,9 +274,9 @@ fn decode_operands(
         | Opcode::StoreGlobal
         | Opcode::LoadStatic
         | Opcode::StoreStatic
-        | Opcode::JsonGet
-        | Opcode::JsonSet
-        | Opcode::JsonDelete => {
+        | Opcode::DynGet
+        | Opcode::DynSet
+        | Opcode::DynDelete => {
             let v = read_u32(code, pos, offset)?;
             Ok(Operands::U32(v))
         }

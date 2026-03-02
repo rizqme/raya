@@ -2240,8 +2240,8 @@ class User {
             if let crate::parser::ast::ClassMember::Field(field) = &class.members[0] {
                 assert_eq!(field.annotations.len(), 1);
                 assert_eq!(field.annotations[0].tag, "json");
-                assert_eq!(field.annotations[0].json_field_name(), Some("age"));
-                assert!(field.annotations[0].has_omitempty());
+                // Annotation value is the raw text "age,omitempty"
+                assert_eq!(field.annotations[0].value.as_deref(), Some("age,omitempty"));
             } else {
                 panic!("Expected Field");
             }

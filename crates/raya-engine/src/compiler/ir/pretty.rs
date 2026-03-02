@@ -260,14 +260,14 @@ fn format_instr(instr: &IrInstr) -> String {
         } => {
             format!("store_field {}.field{} = {}", object, field, value)
         }
-        IrInstr::JsonLoadProperty {
+        IrInstr::DynGetProp {
             dest,
             object,
             property,
         } => {
             format!("{} = json_get {}.\"{}\"", dest, object, property)
         }
-        IrInstr::JsonStoreProperty {
+        IrInstr::DynSetProp {
             object,
             property,
             value,

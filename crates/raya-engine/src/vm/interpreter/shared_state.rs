@@ -287,7 +287,8 @@ impl SharedVmState {
                     if field.is_static {
                         class_meta.add_static_field(field.name.clone(), field_index);
                     } else {
-                        class_meta.add_field(field.name.clone(), field_index);
+                        let type_id = reflect_type_name_to_id(&field.type_name);
+                        class_meta.add_field_with_type(field.name.clone(), field_index, type_id);
                     }
                 }
 
@@ -323,3 +324,24 @@ impl SharedVmState {
         Ok(())
     }
 }
+
+/// Convert a `FieldReflectionData.type_name` string back to the u32 compiler TypeId it originated from.
+///
+/// The mapping mirrors `IrCodeGenerator::get_type_name()`:
+/// 0=number, 1=string, 2=boolean, 3=null, 4=void, 5=never, 6=unknown, 16=int.
+/// Generic class TypeIds are serialised as "type#N" and parsed back here.
+fn reflect_type_name_to_id(type_name: &str) -> u32 {
+    match type_name {
+        "number"  => 0,
+        "string"  => 1,
+        "boolean" => 2,
+        "null"    => 3,
+        "void"    => 4,
+        "never"   => 5,
+        "unknown" => 6,
+        "int"     => 16,
+        s if s.starts_with("type#") => s[5..].parse().unwrap_or(0),
+        _ => 0,
+    }
+}
+

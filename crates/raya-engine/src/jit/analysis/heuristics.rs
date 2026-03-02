@@ -236,17 +236,17 @@ impl HeuristicsAnalyzer {
                 }
 
                 // === Penalties: JSON ops ===
-                Opcode::JsonGet
-                | Opcode::JsonSet
-                | Opcode::JsonDelete
-                | Opcode::JsonIndex
-                | Opcode::JsonIndexSet
-                | Opcode::JsonPush
-                | Opcode::JsonPop
-                | Opcode::JsonNewObject
-                | Opcode::JsonNewArray
-                | Opcode::JsonKeys
-                | Opcode::JsonLength => {
+                Opcode::DynGet
+                | Opcode::DynSet
+                | Opcode::DynDelete
+                | Opcode::DynGetKeyed
+                | Opcode::DynSetKeyed
+                | Opcode::DynNewObject
+                | Opcode::DynKeys
+                | Opcode::DynHas
+                | Opcode::DynNewObject
+                | Opcode::DynKeys
+                | Opcode::DynKeys => {
                     score += PENALTY_JSON;
                 }
 

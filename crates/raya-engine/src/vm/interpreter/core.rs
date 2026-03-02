@@ -1431,8 +1431,8 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             Opcode::InstanceOf
             | Opcode::Cast
-            | Opcode::JsonGet
-            | Opcode::JsonSet
+            | Opcode::DynGet
+            | Opcode::DynSet
             | Opcode::NewMutex
             | Opcode::NewChannel
             | Opcode::LoadStatic

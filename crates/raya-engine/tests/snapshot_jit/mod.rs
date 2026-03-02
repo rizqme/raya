@@ -6,7 +6,7 @@
 
 #![cfg(feature = "jit")]
 
-use raya_engine::compiler::bytecode::{ConstantPool, Function, Metadata, Module, Opcode};
+use raya_engine::compiler::bytecode::{ConstantPool, Function, Metadata, Module, Opcode, VERSION};
 use raya_engine::jit::JitConfig;
 use raya_engine::vm::value::Value;
 use raya_engine::Vm;
@@ -28,7 +28,7 @@ fn emit_i32(code: &mut Vec<u8>, val: i32) {
 fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module {
     Module {
         magic: *b"RAYA",
-        version: 1,
+        version: VERSION,
         flags: 0,
         constants: ConstantPool::new(),
         functions: vec![Function {

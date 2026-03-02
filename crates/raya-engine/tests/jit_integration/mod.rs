@@ -1,4 +1,3 @@
-#![cfg(feature = "jit")]
 
 //! Comprehensive JIT end-to-end integration tests.
 //!
@@ -10,7 +9,7 @@
 //! 4. Native execution — comparisons, logic, branches
 //! 5. Full pipeline + VM integration
 
-use raya_engine::compiler::bytecode::{ConstantPool, Function, Metadata, Module, Opcode};
+use raya_engine::compiler::bytecode::{ConstantPool, Function, Metadata, Module, Opcode, VERSION};
 use raya_engine::jit::backend::cranelift::lowering::{jit_entry_signature, LoweringContext};
 use raya_engine::jit::backend::cranelift::CraneliftBackend;
 use raya_engine::jit::backend::traits::CodegenBackend;
@@ -95,7 +94,7 @@ fn is_null(val: u64) -> bool {
 fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module {
     Module {
         magic: *b"RAYA",
-        version: 1,
+        version: VERSION,
         flags: 0,
         constants: ConstantPool::new(),
         functions: vec![Function {
@@ -126,7 +125,7 @@ fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module 
 fn make_vm_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module {
     Module {
         magic: *b"RAYA",
-        version: 1,
+        version: VERSION,
         flags: 0,
         constants: ConstantPool::new(),
         functions: vec![Function {
@@ -2032,7 +2031,7 @@ fn engine_prewarm_selects_hot() {
 
     let module = Module {
         magic: *b"RAYA",
-        version: 1,
+        version: VERSION,
         flags: 0,
         constants: ConstantPool::new(),
         functions: vec![
@@ -2283,7 +2282,7 @@ fn background_compiler_processes_request() {
 
     let module = Arc::new(Module {
         magic: *b"RAYA",
-        version: 1,
+        version: VERSION,
         flags: 0,
         constants: ConstantPool::new(),
         functions: vec![Function {
@@ -2359,7 +2358,7 @@ fn jit_hints_encode_decode_roundtrip() {
     // Create a module with JIT hints
     let mut module = Module {
         magic: *b"RAYA",
-        version: 1,
+        version: VERSION,
         flags: flags::HAS_JIT_HINTS,
         constants: ConstantPool::new(),
         functions: vec![
@@ -2426,7 +2425,7 @@ fn jit_hints_absent_when_no_flag() {
     // Module without HAS_JIT_HINTS flag should decode with empty hints
     let module = Module {
         magic: *b"RAYA",
-        version: 1,
+        version: VERSION,
         flags: 0,
         constants: ConstantPool::new(),
         functions: vec![Function {
@@ -2515,7 +2514,7 @@ fn prewarm_candidates_submitted_to_background() {
 
     let module = Module {
         magic: *b"RAYA",
-        version: 1,
+        version: VERSION,
         flags: 0,
         constants: ConstantPool::new(),
         functions: vec![Function {

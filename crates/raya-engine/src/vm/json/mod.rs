@@ -1,379 +1,157 @@
-//! Native JSON type runtime support
+//! JSON support: parsing, stringification, type dispatch
 //!
-//! This module implements the `json` type, which provides dynamic JSON values
-//! with runtime type casting and validation. JSON values are heap-allocated
-//! and garbage-collected.
+//! # Design
 //!
-//! # Design Philosophy
-//!
-//! - **Dynamic until cast**: JSON values are opaque at compile time
-//! - **Property access returns json**: No compile-time structure validation
-//! - **Runtime validation on cast**: `as` operator performs tree validation
-//! - **JavaScript-like behavior**: Missing properties return Undefined
-//!
-//! # Example
-//!
-//! ```raya
-//! let response: json = await fetch("/api/user");
-//! let user = response as User;  // Runtime validation
-//! logger.info(user.name.toUpperCase());  // Fully typed
-//! ```
+//! - `parser::parse()` produces native VM `Value` using `DynObject`/`Array`/`RayaString`
+//! - `stringify::stringify()` uses `js_classify()` for dispatch
+//! - `JSView` / `js_classify()` are the single dispatch entry point for all type checks
+//! - `JsonValue` is kept as a **stack-only** internal type for the `cast` module
+//!   (never GC-heap-allocated)
 
 use crate::vm::gc::{GarbageCollector, GcPtr};
 use crate::vm::object::{Array, RayaString};
 use crate::vm::value::Value;
-use rustc_hash::FxHashMap;
-use std::fmt;
 
 pub mod cast;
 pub mod parser;
 pub mod stringify;
+pub mod view;
 
-/// Convert a VM Value to a JsonValue for stringify
-///
-/// This handles the common value types:
-/// - null/undefined -> JsonValue::Null
-/// - boolean -> JsonValue::Bool
-/// - number (i32/f64) -> JsonValue::Number
-/// - string -> JsonValue::String
-/// - array -> JsonValue::Array (recursive)
-pub fn value_to_json(value: Value, gc: &mut GarbageCollector) -> JsonValue {
-    // Check for null
-    if value.is_null() {
-        return JsonValue::Null;
-    }
-
-    // Check for boolean
-    if let Some(b) = value.as_bool() {
-        return JsonValue::Bool(b);
-    }
-
-    // Check for i32
-    if let Some(n) = value.as_i32() {
-        return JsonValue::Number(n as f64);
-    }
-
-    // Check for f64
-    if let Some(n) = value.as_f64() {
-        return JsonValue::Number(n);
-    }
-
-    // Check for pointer types (string, array)
-    if value.is_ptr() {
-        // Try string
-        if let Some(str_ptr) = unsafe { value.as_ptr::<RayaString>() } {
-            // Create a new GcPtr from the NonNull
-            let gc_ptr = unsafe { GcPtr::new(str_ptr) };
-            return JsonValue::String(gc_ptr);
-        }
-
-        // Try array
-        if let Some(arr_ptr) = unsafe { value.as_ptr::<Array>() } {
-            let arr = unsafe { &*arr_ptr.as_ptr() };
-            let mut json_arr: Vec<JsonValue> = Vec::new();
-            for i in 0..arr.len() {
-                if let Some(elem) = arr.get(i) {
-                    json_arr.push(value_to_json(elem, gc));
-                }
-            }
-            let gc_ptr = gc.allocate(json_arr);
-            return JsonValue::Array(gc_ptr);
-        }
-
-        // Note: Object-to-JSON requires class metadata for field names.
-        // For now, objects are not supported in stringify.
-        // TODO: Add object support with class metadata in a future milestone.
-    }
-
-    // Fallback to null for unsupported types
-    JsonValue::Null
-}
-
-/// Convert a JsonValue to a VM Value for parse
-///
-/// This handles:
-/// - JsonValue::Null -> Value::null()
-/// - JsonValue::Bool -> Value::bool()
-/// - JsonValue::Number -> Value::f64()
-/// - JsonValue::String -> Value with string pointer
-/// - JsonValue::Array -> Value with array pointer (as JsonValue to support duck typing)
-/// - JsonValue::Object -> Value with JsonValue pointer (to support duck typing property access)
-///
-/// Note: Objects and arrays are stored as JsonValue pointers to enable duck typing.
-pub fn json_to_value(json: &JsonValue, gc: &mut GarbageCollector) -> Value {
-    match json {
-        JsonValue::Null | JsonValue::Undefined => Value::null(),
-        JsonValue::Bool(b) => Value::bool(*b),
-        JsonValue::Number(n) => Value::f64(*n),
-        JsonValue::String(s_ptr) => {
-            // Convert string pointer to Value
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap()) }
-        }
-        JsonValue::Array(_) | JsonValue::Object(_) => {
-            // Store the JsonValue itself on the heap to enable duck typing
-            // This allows property access via JsonGet opcode
-            let json_clone = json.clone();
-            let gc_ptr = gc.allocate(json_clone);
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
-        }
-    }
-}
-
-// Re-export key types for easier access
+// Re-export key types and functions
 pub use cast::{validate_cast, TypeKind, TypeSchema, TypeSchemaRegistry};
+pub use view::{js_classify, JSView};
 
-/// Runtime representation of JSON values
+/// Stack-only representation of a JSON value.
 ///
-/// All JSON values are heap-allocated and managed by the garbage collector.
-/// This enum represents the 7 possible JSON value types plus Undefined for
-/// missing properties/elements.
+/// Used internally by `cast.rs` for runtime type validation.
+/// **Never** allocated on the GC heap — no `GcPtr<JsonValue>` should exist.
+///
+/// The `String` and `Array` variants hold `GcPtr` handles pointing to
+/// GC-managed objects that must remain reachable via other roots (e.g. the
+/// VM value stack) while a `JsonValue` lives on the Rust stack.
 #[derive(Debug, Clone)]
 pub enum JsonValue {
-    /// JSON null
+    /// JSON null / undefined
     Null,
 
-    /// JSON boolean (true/false)
+    /// JSON boolean
     Bool(bool),
 
-    /// JSON number (always f64, following JSON spec)
+    /// JSON number (always f64 following JSON spec)
     Number(f64),
 
-    /// JSON string (heap-allocated, GC-managed)
+    /// JSON string — points to a GC-managed RayaString
     String(GcPtr<RayaString>),
 
-    /// JSON array (heap-allocated vector of JsonValues)
-    Array(GcPtr<Vec<JsonValue>>),
+    /// JSON array — points to a GC-managed Array of Values
+    Array(GcPtr<Array>),
 
-    /// JSON object (heap-allocated hashmap, GC-managed)
-    Object(GcPtr<FxHashMap<String, JsonValue>>),
+    /// JSON object — represented as a DynObject value
+    ///
+    /// We store it as a `Value` (pointer to GcPtr<DynObject>) so that cast.rs
+    /// can pass it to property accessors without knowing the concrete type.
+    Object(Value),
 
-    /// Undefined value (for missing properties/elements)
-    /// Not part of JSON spec, but needed for JavaScript-like behavior
+    /// Undefined (missing property)
     Undefined,
 }
 
 impl JsonValue {
-    /// Get a property from a JSON object
-    ///
-    /// Returns the value if the object has the property, otherwise Undefined.
-    /// If called on a non-object, returns Undefined.
-    ///
-    /// # Example
-    ///
-    /// ```raya
-    /// let obj: json = { "name": "Alice", "age": 30 };
-    /// let name = obj.name;  // Compiles to get_property("name")
-    /// ```
+    /// Get a property from a JSON object.
     pub fn get_property(&self, key: &str) -> JsonValue {
         match self {
-            JsonValue::Object(obj_ptr) => {
-                // Safety: GcPtr guarantees valid pointer from GC
-                let obj = unsafe { &*obj_ptr.as_ptr() };
-                obj.get(key).cloned().unwrap_or(JsonValue::Undefined)
+            JsonValue::Object(val) => {
+                use view::JSView;
+                match js_classify(*val) {
+                    JSView::Dyn(ptr) => {
+                        let obj = unsafe { &*ptr };
+                        match obj.get(key) {
+                            Some(v) => value_to_json_stack(v),
+                            None => JsonValue::Undefined,
+                        }
+                    }
+                    _ => JsonValue::Undefined,
+                }
             }
             _ => JsonValue::Undefined,
         }
     }
 
-    /// Get an element from a JSON array by index
-    ///
-    /// Returns the element if the index is valid, otherwise Undefined.
-    /// If called on a non-array, returns Undefined.
-    ///
-    /// # Example
-    ///
-    /// ```raya
-    /// let arr: json = [1, 2, 3];
-    /// let first = arr[0];  // Compiles to get_index(0)
-    /// ```
+    /// Get an element from a JSON array by index.
     pub fn get_index(&self, index: usize) -> JsonValue {
         match self {
             JsonValue::Array(arr_ptr) => {
-                // Safety: GcPtr guarantees valid pointer from GC
                 let arr = unsafe { &*arr_ptr.as_ptr() };
-                arr.get(index).cloned().unwrap_or(JsonValue::Undefined)
+                match arr.get(index) {
+                    Some(v) => value_to_json_stack(v),
+                    None => JsonValue::Undefined,
+                }
             }
             _ => JsonValue::Undefined,
         }
     }
 
-    /// Get the type name as a string (for typeof operator)
-    ///
-    /// Returns:
-    /// - "null" for Null
-    /// - "boolean" for Bool
-    /// - "number" for Number
-    /// - "string" for String
-    /// - "object" for Object
-    /// - "object" for Array (following JavaScript convention)
-    /// - "undefined" for Undefined
+    pub fn is_null(&self) -> bool { matches!(self, JsonValue::Null) }
+    pub fn is_bool(&self) -> bool { matches!(self, JsonValue::Bool(_)) }
+    pub fn is_number(&self) -> bool { matches!(self, JsonValue::Number(_)) }
+    pub fn is_string(&self) -> bool { matches!(self, JsonValue::String(_)) }
+    pub fn is_array(&self) -> bool { matches!(self, JsonValue::Array(_)) }
+    pub fn is_object(&self) -> bool { matches!(self, JsonValue::Object(_)) }
+    pub fn is_undefined(&self) -> bool { matches!(self, JsonValue::Undefined) }
+
+    /// Length of the array (0 if not an array).
+    pub fn array_len(&self) -> usize {
+        match self {
+            JsonValue::Array(arr_ptr) => unsafe { &*arr_ptr.as_ptr() }.len(),
+            _ => 0,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self { JsonValue::Bool(b) => Some(*b), _ => None }
+    }
+
+    pub fn as_number(&self) -> Option<f64> {
+        match self { JsonValue::Number(n) => Some(*n), _ => None }
+    }
+
+    pub fn as_string(&self) -> Option<GcPtr<RayaString>> {
+        match self { JsonValue::String(s) => Some(*s), _ => None }
+    }
+
     pub fn type_name(&self) -> &'static str {
         match self {
             JsonValue::Null => "null",
             JsonValue::Bool(_) => "boolean",
             JsonValue::Number(_) => "number",
             JsonValue::String(_) => "string",
-            JsonValue::Array(_) => "object", // JavaScript convention
+            JsonValue::Array(_) => "object",
             JsonValue::Object(_) => "object",
             JsonValue::Undefined => "undefined",
         }
     }
 
-    /// Check if this is a null value
-    pub fn is_null(&self) -> bool {
-        matches!(self, JsonValue::Null)
-    }
-
-    /// Check if this is a boolean value
-    pub fn is_bool(&self) -> bool {
-        matches!(self, JsonValue::Bool(_))
-    }
-
-    /// Check if this is a number value
-    pub fn is_number(&self) -> bool {
-        matches!(self, JsonValue::Number(_))
-    }
-
-    /// Check if this is a string value
-    pub fn is_string(&self) -> bool {
-        matches!(self, JsonValue::String(_))
-    }
-
-    /// Check if this is an array value
-    pub fn is_array(&self) -> bool {
-        matches!(self, JsonValue::Array(_))
-    }
-
-    /// Check if this is an object value
-    pub fn is_object(&self) -> bool {
-        matches!(self, JsonValue::Object(_))
-    }
-
-    /// Check if this is undefined
-    pub fn is_undefined(&self) -> bool {
-        matches!(self, JsonValue::Undefined)
-    }
-
-    /// Get the boolean value if this is a Bool
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            JsonValue::Bool(b) => Some(*b),
-            _ => None,
-        }
-    }
-
-    /// Get the number value if this is a Number
-    pub fn as_number(&self) -> Option<f64> {
-        match self {
-            JsonValue::Number(n) => Some(*n),
-            _ => None,
-        }
-    }
-
-    /// Get the string pointer if this is a String
-    pub fn as_string(&self) -> Option<GcPtr<RayaString>> {
-        match self {
-            JsonValue::String(s) => Some(*s),
-            _ => None,
-        }
-    }
-
-    /// Get the array pointer if this is an Array
-    pub fn as_array(&self) -> Option<GcPtr<Vec<JsonValue>>> {
-        match self {
-            JsonValue::Array(arr) => Some(*arr),
-            _ => None,
-        }
-    }
-
-    /// Get the object pointer if this is an Object
-    pub fn as_object(&self) -> Option<GcPtr<FxHashMap<String, JsonValue>>> {
-        match self {
-            JsonValue::Object(obj) => Some(*obj),
-            _ => None,
-        }
-    }
-
-    /// Convert to a boolean following JavaScript truthiness rules
-    ///
-    /// Falsy values: null, undefined, false, 0, NaN, ""
-    /// Everything else is truthy
     pub fn to_bool(&self) -> bool {
         match self {
             JsonValue::Null | JsonValue::Undefined => false,
             JsonValue::Bool(b) => *b,
             JsonValue::Number(n) => *n != 0.0 && !n.is_nan(),
-            JsonValue::String(s_ptr) => {
-                // Safety: GcPtr guarantees valid pointer
-                let s = unsafe { &*s_ptr.as_ptr() };
-                !s.is_empty()
-            }
+            JsonValue::String(s_ptr) => !unsafe { &*s_ptr.as_ptr() }.is_empty(),
             JsonValue::Array(_) | JsonValue::Object(_) => true,
         }
     }
 
-    /// Convert to a number following JavaScript coercion rules
-    ///
-    /// Returns:
-    /// - 0.0 for null
-    /// - NaN for undefined
-    /// - 0.0 or 1.0 for boolean
-    /// - The number itself for number
-    /// - Parsed number or NaN for string
-    /// - NaN for array/object
     pub fn to_number(&self) -> f64 {
         match self {
             JsonValue::Null => 0.0,
             JsonValue::Undefined => f64::NAN,
-            JsonValue::Bool(b) => {
-                if *b {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
+            JsonValue::Bool(b) => if *b { 1.0 } else { 0.0 },
             JsonValue::Number(n) => *n,
             JsonValue::String(s_ptr) => {
-                // Safety: GcPtr guarantees valid pointer
                 let s = unsafe { &*s_ptr.as_ptr() };
                 s.data.as_str().trim().parse::<f64>().unwrap_or(f64::NAN)
             }
             JsonValue::Array(_) | JsonValue::Object(_) => f64::NAN,
-        }
-    }
-
-    /// Convert to a string following JavaScript conversion rules
-    ///
-    /// This is a best-effort conversion that doesn't allocate.
-    /// For actual string allocation, use to_raya_string().
-    pub fn to_string_static(&self) -> &'static str {
-        match self {
-            JsonValue::Null => "null",
-            JsonValue::Undefined => "undefined",
-            JsonValue::Bool(true) => "true",
-            JsonValue::Bool(false) => "false",
-            JsonValue::Number(_) => "[number]",
-            JsonValue::String(_) => "[string]",
-            JsonValue::Array(_) => "[array]",
-            JsonValue::Object(_) => "[object]",
-        }
-    }
-}
-
-impl fmt::Display for JsonValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            JsonValue::Null => write!(f, "null"),
-            JsonValue::Bool(b) => write!(f, "{}", b),
-            JsonValue::Number(n) => write!(f, "{}", n),
-            JsonValue::String(s_ptr) => {
-                // Safety: GcPtr guarantees valid pointer
-                let s = unsafe { &*s_ptr.as_ptr() };
-                write!(f, "\"{}\"", s.data.as_str())
-            }
-            JsonValue::Array(_) => write!(f, "[Array]"),
-            JsonValue::Object(_) => write!(f, "[Object]"),
-            JsonValue::Undefined => write!(f, "undefined"),
         }
     }
 }
@@ -385,37 +163,72 @@ impl PartialEq for JsonValue {
             (JsonValue::Undefined, JsonValue::Undefined) => true,
             (JsonValue::Bool(a), JsonValue::Bool(b)) => a == b,
             (JsonValue::Number(a), JsonValue::Number(b)) => {
-                // Handle NaN specially (NaN != NaN in IEEE 754)
-                if a.is_nan() && b.is_nan() {
-                    true
-                } else {
-                    a == b
-                }
+                if a.is_nan() && b.is_nan() { true } else { a == b }
             }
             (JsonValue::String(a), JsonValue::String(b)) => {
-                // Compare string contents
                 let a_str = unsafe { &*a.as_ptr() };
                 let b_str = unsafe { &*b.as_ptr() };
-                a_str.data.as_str() == b_str.data.as_str()
-            }
-            (JsonValue::Array(a), JsonValue::Array(b)) => {
-                // Compare array contents
-                let a_vec = unsafe { &*a.as_ptr() };
-                let b_vec = unsafe { &*b.as_ptr() };
-                a_vec == b_vec
-            }
-            (JsonValue::Object(a), JsonValue::Object(b)) => {
-                // Compare object contents
-                let a_map = unsafe { &*a.as_ptr() };
-                let b_map = unsafe { &*b.as_ptr() };
-                a_map == b_map
+                a_str.data == b_str.data
             }
             _ => false,
         }
     }
 }
-
 impl Eq for JsonValue {}
+
+/// Convert a `Value` to a stack-only `JsonValue` (no GC allocation).
+///
+/// Used by `cast.rs` to inspect parsed JSON values.
+/// The returned `JsonValue` borrows GC objects via `GcPtr` handles
+/// that must remain reachable while the `JsonValue` is live.
+pub fn value_to_json_stack(value: Value) -> JsonValue {
+    use view::JSView;
+    match js_classify(value) {
+        JSView::Null => JsonValue::Null,
+        JSView::Bool(b) => JsonValue::Bool(b),
+        JSView::Int(i) => JsonValue::Number(i as f64),
+        JSView::Number(n) => JsonValue::Number(n),
+        JSView::Str(ptr) => {
+            let gc_ptr = unsafe { GcPtr::new(std::ptr::NonNull::new(ptr as *mut RayaString).unwrap()) };
+            JsonValue::String(gc_ptr)
+        }
+        JSView::Arr(ptr) => {
+            let gc_ptr = unsafe { GcPtr::new(std::ptr::NonNull::new(ptr as *mut Array).unwrap()) };
+            JsonValue::Array(gc_ptr)
+        }
+        JSView::Dyn(_) => JsonValue::Object(value),
+        JSView::Struct { .. } => JsonValue::Object(value),
+        JSView::Other => JsonValue::Null,
+    }
+}
+
+/// Convert a parsed `Value` (produced by `parser::parse()`) to a `Value`.
+///
+/// Since `parser::parse()` already returns a native `Value`, this is now
+/// a no-op identity function kept for call-site compatibility.
+#[inline]
+pub fn json_to_value(json: &JsonValue, gc: &mut GarbageCollector) -> Value {
+    match json {
+        JsonValue::Null | JsonValue::Undefined => Value::null(),
+        JsonValue::Bool(b) => Value::bool(*b),
+        JsonValue::Number(n) => Value::f64(*n),
+        JsonValue::String(s_ptr) => {
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap()) }
+        }
+        JsonValue::Array(arr_ptr) => {
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+        }
+        JsonValue::Object(val) => *val,
+    }
+}
+
+/// Convert a VM `Value` to a `JsonValue` for use by `cast.rs`.
+///
+/// Does NOT allocate on the GC heap.
+#[inline]
+pub fn value_to_json(value: Value, _gc: &mut GarbageCollector) -> JsonValue {
+    value_to_json_stack(value)
+}
 
 #[cfg(test)]
 mod tests {
@@ -470,13 +283,5 @@ mod tests {
         assert_eq!(JsonValue::Number(42.0), JsonValue::Number(42.0));
         assert_ne!(JsonValue::Null, JsonValue::Undefined);
         assert_ne!(JsonValue::Bool(true), JsonValue::Bool(false));
-    }
-
-    #[test]
-    fn test_json_value_display() {
-        assert_eq!(format!("{}", JsonValue::Null), "null");
-        assert_eq!(format!("{}", JsonValue::Bool(true)), "true");
-        assert_eq!(format!("{}", JsonValue::Number(42.0)), "42");
-        assert_eq!(format!("{}", JsonValue::Undefined), "undefined");
     }
 }

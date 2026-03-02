@@ -500,35 +500,35 @@ impl fmt::Display for JitInstr {
             }
 
             // JSON
-            JitInstr::JsonGet {
+            JitInstr::DynGet {
                 dest,
                 object,
                 key_index,
             } => write!(f, "{} = json.get {}.@{}", dest, object, key_index),
-            JitInstr::JsonSet {
+            JitInstr::DynSet {
                 object,
                 key_index,
                 value,
             } => write!(f, "json.set {}.@{}, {}", object, key_index, value),
-            JitInstr::JsonDelete { object, key_index } => {
+            JitInstr::DynDelete { object, key_index } => {
                 write!(f, "json.delete {}.@{}", object, key_index)
             }
-            JitInstr::JsonIndex {
+            JitInstr::DynGetKeyed {
                 dest,
                 object,
                 index,
             } => write!(f, "{} = json.index {}[{}]", dest, object, index),
-            JitInstr::JsonIndexSet {
+            JitInstr::DynSetKeyed {
                 object,
                 index,
                 value,
             } => write!(f, "json.index_set {}[{}], {}", object, index, value),
-            JitInstr::JsonPush { array, value } => write!(f, "json.push {}, {}", array, value),
-            JitInstr::JsonPop { dest, array } => write!(f, "{} = json.pop {}", dest, array),
-            JitInstr::JsonNewObject { dest } => write!(f, "{} = json.new_object", dest),
-            JitInstr::JsonNewArray { dest } => write!(f, "{} = json.new_array", dest),
-            JitInstr::JsonKeys { dest, object } => write!(f, "{} = json.keys {}", dest, object),
-            JitInstr::JsonLength { dest, object } => write!(f, "{} = json.length {}", dest, object),
+            JitInstr::DynArrayPush { array, value } => write!(f, "json.push {}, {}", array, value),
+            JitInstr::DynArrayPop { dest, array } => write!(f, "{} = json.pop {}", dest, array),
+            JitInstr::DynHas { dest } => write!(f, "{} = json.new_object", dest),
+            JitInstr::DynNewObject { dest } => write!(f, "{} = json.new_array", dest),
+            JitInstr::DynKeys { dest, object } => write!(f, "{} = json.keys {}", dest, object),
+            JitInstr::DynKeysLen { dest, object } => write!(f, "{} = json.length {}", dest, object),
 
             // Runtime
             JitInstr::GcSafepoint { .. } => write!(f, "gc.safepoint"),

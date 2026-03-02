@@ -193,8 +193,7 @@ impl TypeRegistryBuilder {
 
 /// Create a standard type registry with built-in types
 pub fn create_standard_registry() -> TypeRegistry {
-    use crate::vm::json::JsonValue;
-    use crate::vm::object::{Array, Object, RayaString};
+    use crate::vm::object::{Array, DynObject, Object, RayaString};
 
     TypeRegistry::builder()
         // Primitives (no pointers)
@@ -210,8 +209,8 @@ pub fn create_standard_registry() -> TypeRegistry {
         .register::<Object>("Object", PointerMap::none())
         .register::<Array>("Array", PointerMap::none())
         .register::<RayaString>("RayaString", PointerMap::none())
-        // JSON values (special handling in GC for nested object/array graphs)
-        .register::<JsonValue>("JsonValue", PointerMap::none())
+        // Dynamic hashmap object — special GC handling marks props values
+        .register::<DynObject>("DynObject", PointerMap::none())
         .build()
 }
 

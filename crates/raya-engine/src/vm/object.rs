@@ -1,6 +1,7 @@
 //! Object model and class system
 
 use crate::vm::value::Value;
+use rustc_hash::FxHashMap;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -57,6 +58,54 @@ impl Object {
     /// Get number of fields
     pub fn field_count(&self) -> usize {
         self.fields.len()
+    }
+}
+
+/// Dynamic (hashmap-backed) object for JSON.parse() results and JsonObject-typed values.
+///
+/// Unlike `Object` which has a fixed field schema indexed by slot, `DynObject`
+/// stores all properties by name. It is the runtime representation of
+/// `JsonObject = {[key: string]: Json}`.
+///
+/// GC marks all values in `props` (see collector.rs `"DynObject"` case).
+#[derive(Debug, Clone)]
+pub struct DynObject {
+    /// Named properties
+    pub props: FxHashMap<String, Value>,
+}
+
+impl DynObject {
+    /// Create an empty dynamic object
+    pub fn new() -> Self {
+        Self {
+            props: FxHashMap::default(),
+        }
+    }
+
+    /// Get a property value by name
+    pub fn get(&self, key: &str) -> Option<Value> {
+        self.props.get(key).copied()
+    }
+
+    /// Set a property value by name
+    pub fn set(&mut self, key: String, val: Value) {
+        self.props.insert(key, val);
+    }
+
+    /// Delete a property, returns true if it existed
+    pub fn delete(&mut self, key: &str) -> bool {
+        self.props.remove(key).is_some()
+    }
+
+    /// Check if a property exists
+    pub fn has(&self, key: &str) -> bool {
+        self.props.contains_key(key)
+    }
+}
+
+impl Default for DynObject {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

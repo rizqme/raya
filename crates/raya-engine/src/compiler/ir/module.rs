@@ -190,8 +190,6 @@ pub struct IrClass {
     pub constructor: Option<FunctionId>,
     /// Parent class ID (if any)
     pub parent: Option<ClassId>,
-    /// Whether this class has //@@json annotation (enables JSON.decode<T>)
-    pub json_serializable: bool,
 }
 
 impl IrClass {
@@ -204,7 +202,6 @@ impl IrClass {
             method_slots: Vec::new(),
             constructor: None,
             parent: None,
-            json_serializable: false,
         }
     }
 
@@ -254,12 +251,6 @@ pub struct IrField {
     pub index: u16,
     /// Whether this field is readonly
     pub readonly: bool,
-    /// JSON key name for this field (None = use field name, Some("-") would be skip but we use json_skip)
-    pub json_name: Option<String>,
-    /// Whether to skip this field in JSON serialization (//@@json -)
-    pub json_skip: bool,
-    /// Whether to omit this field if empty/zero (//@@json field,omitempty)
-    pub json_omitempty: bool,
 }
 
 impl IrField {
@@ -270,9 +261,6 @@ impl IrField {
             ty,
             index,
             readonly: false,
-            json_name: None,
-            json_skip: false,
-            json_omitempty: false,
         }
     }
 
@@ -283,27 +271,6 @@ impl IrField {
             ty,
             index,
             readonly: true,
-            json_name: None,
-            json_skip: false,
-            json_omitempty: false,
-        }
-    }
-
-    /// Set JSON mapping for this field
-    pub fn with_json(mut self, json_name: Option<String>, skip: bool, omitempty: bool) -> Self {
-        self.json_name = json_name;
-        self.json_skip = skip;
-        self.json_omitempty = omitempty;
-        self
-    }
-
-    /// Get the JSON key name for this field
-    /// Returns the json_name if set, otherwise uses the field name
-    pub fn json_key(&self) -> Option<&str> {
-        if self.json_skip {
-            None
-        } else {
-            Some(self.json_name.as_deref().unwrap_or(&self.name))
         }
     }
 }
@@ -360,12 +327,6 @@ pub struct IrTypeAliasField {
     pub ty: TypeId,
     /// Whether this field is optional
     pub optional: bool,
-    /// JSON key name for this field (None = use field name)
-    pub json_name: Option<String>,
-    /// Whether to skip this field in JSON serialization (//@@json -)
-    pub json_skip: bool,
-    /// Whether to omit this field if empty/zero (//@@json field,omitempty)
-    pub json_omitempty: bool,
 }
 
 impl IrTypeAliasField {
@@ -375,27 +336,6 @@ impl IrTypeAliasField {
             name: name.into(),
             ty,
             optional,
-            json_name: None,
-            json_skip: false,
-            json_omitempty: false,
-        }
-    }
-
-    /// Set JSON mapping for this field
-    pub fn with_json(mut self, json_name: Option<String>, skip: bool, omitempty: bool) -> Self {
-        self.json_name = json_name;
-        self.json_skip = skip;
-        self.json_omitempty = omitempty;
-        self
-    }
-
-    /// Get the JSON key name for this field
-    /// Returns the json_name if set, otherwise uses the field name
-    pub fn json_key(&self) -> Option<&str> {
-        if self.json_skip {
-            None
-        } else {
-            Some(self.json_name.as_deref().unwrap_or(&self.name))
         }
     }
 }

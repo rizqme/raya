@@ -387,8 +387,8 @@ pub enum HelperCall {
     Typeof,
 
     // JSON operations
-    JsonLoadProperty,
-    JsonStoreProperty,
+    DynGetProp,
+    DynSetProp,
 
     // String comparison
     StringCompare,

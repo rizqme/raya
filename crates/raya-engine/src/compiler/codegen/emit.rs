@@ -89,14 +89,10 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::WaitAll
         | Opcode::Sleep
         | Opcode::TaskCancel
-        | Opcode::JsonIndex
-        | Opcode::JsonIndexSet
-        | Opcode::JsonPush
-        | Opcode::JsonPop
-        | Opcode::JsonNewObject
-        | Opcode::JsonNewArray
-        | Opcode::JsonKeys
-        | Opcode::JsonLength
+        | Opcode::DynGetKeyed
+        | Opcode::DynSetKeyed
+        | Opcode::DynNewObject
+        | Opcode::DynKeys
         | Opcode::Throw
         | Opcode::EndTry
         | Opcode::Rethrow
@@ -154,9 +150,10 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::StoreGlobal
         | Opcode::LoadStatic
         | Opcode::StoreStatic
-        | Opcode::JsonGet
-        | Opcode::JsonSet
-        | Opcode::JsonDelete => 1 + 4,
+        | Opcode::DynGet
+        | Opcode::DynSet
+        | Opcode::DynDelete
+        | Opcode::DynHas => 1 + 4,
 
         // u32 + u16 operands
         Opcode::Call

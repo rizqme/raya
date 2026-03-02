@@ -438,26 +438,6 @@ impl Annotation {
         self.value.as_deref() == Some("-")
     }
 
-    /// Get the JSON field name if this is a json annotation
-    pub fn json_field_name(&self) -> Option<&str> {
-        if self.tag != "json" {
-            return None;
-        }
-        match &self.value {
-            None => None,                // Use struct field name
-            Some(v) if v == "-" => None, // Skip
-            Some(v) => {
-                // Split on comma to get just the field name (without options)
-                Some(v.split(',').next().unwrap_or(v))
-            }
-        }
-    }
-
-    /// Check if this json annotation has the "omitempty" option
-    pub fn has_omitempty(&self) -> bool {
-        self.value.as_ref().is_some_and(|v| v.contains("omitempty"))
-    }
-
     /// Get the proto field number if this is a proto annotation
     /// Returns None if this is not a proto annotation or if the value is "-" (skip)
     pub fn proto_field_number(&self) -> Option<u32> {

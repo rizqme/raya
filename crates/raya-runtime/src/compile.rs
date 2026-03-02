@@ -163,13 +163,53 @@ pub fn compile_source_with_modes(
 }
 
 /// Compile source with explicit builtin + type mode + optional TS options.
+///
+/// When the source contains `std:` or `node:` import specifiers, routes
+/// through the full module-system graph builder so those imports are resolved
+/// and inlined before compilation.  For plain source with no such imports,
+/// falls through to the lighter `compile_graph_source` path to avoid the
+/// linker's module-wrapper transformation that would otherwise change
+/// top-level execution semantics (e.g. for the test runner).
 pub fn compile_source_with_modes_and_ts_options(
     source: &str,
     builtin_mode: BuiltinMode,
     type_mode: TypeMode,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<(Module, Interner), RuntimeError> {
-    compile_graph_source_with_modes_and_ts_options(source, builtin_mode, type_mode, ts_options)
+    if source_has_std_or_node_imports(source) {
+        use crate::module_system::ProgramCompiler;
+        let virtual_entry = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("__raya_inline_entry.raya");
+        let compiler = ProgramCompiler {
+            builtin_mode,
+            type_mode,
+            ts_options: ts_options.cloned(),
+            compile_options: None,
+        };
+        let program = compiler.compile_program_source(source, &virtual_entry)?;
+        let module = program.entry.module;
+        let interner = program
+            .entry
+            .interner
+            .expect("compile_program_source always sets interner");
+        Ok((module, interner))
+    } else {
+        compile_graph_source_with_modes_and_ts_options(source, builtin_mode, type_mode, ts_options)
+    }
+}
+
+/// Returns true if `source` contains an `import … from "std:…"` or
+/// `import … from "node:…"` statement that the plain compiler cannot handle
+/// without the module-system linker.
+///
+/// This is a fast text-based heuristic — false positives from comments or
+/// string literals are benign (they just take the slower linker path).
+fn source_has_std_or_node_imports(source: &str) -> bool {
+    source.contains("from \"std:")
+        || source.contains("from 'std:")
+        || source.contains("from \"node:")
+        || source.contains("from 'node:")
 }
 
 /// Compile Raya source code to a bytecode module with options.

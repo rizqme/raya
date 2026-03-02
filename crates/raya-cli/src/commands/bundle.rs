@@ -316,14 +316,10 @@ mod aot_impl {
             | Opcode::MutexLock
             | Opcode::MutexUnlock
             | Opcode::Throw
-            | Opcode::JsonIndex
-            | Opcode::JsonIndexSet
-            | Opcode::JsonPush
-            | Opcode::JsonPop
-            | Opcode::JsonNewObject
-            | Opcode::JsonNewArray
-            | Opcode::JsonKeys
-            | Opcode::JsonLength
+            | Opcode::DynGetKeyed
+            | Opcode::DynSetKeyed
+            | Opcode::DynNewObject
+            | Opcode::DynKeys
             | Opcode::NewSemaphore
             | Opcode::SemAcquire
             | Opcode::SemRelease
@@ -371,9 +367,10 @@ mod aot_impl {
             | Opcode::NewArray
             | Opcode::LoadModule
             | Opcode::TaskThen
-            | Opcode::JsonGet
-            | Opcode::JsonSet
-            | Opcode::JsonDelete
+            | Opcode::DynGet
+            | Opcode::DynSet
+            | Opcode::DynDelete
+            | Opcode::DynHas
             | Opcode::LoadStatic
             | Opcode::StoreStatic => 4,
             Opcode::ConstF64 | Opcode::ArrayLiteral | Opcode::Try => 8,

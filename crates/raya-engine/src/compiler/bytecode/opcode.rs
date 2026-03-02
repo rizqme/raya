@@ -320,30 +320,26 @@ pub enum Opcode {
     /// Stack: [refcell_ptr, value] -> []
     StoreRefCell = 0xDE,
 
-    // ===== JSON Operations (0xE0-0xEF) =====
-    // Note: JsonParse and JsonStringify use NativeCall (0x0C00, 0x0C01) instead of opcodes
-    /// JSON property access: pop json object, push property value (operand: u32 propertyIndex)
-    JsonGet = 0xE2,
-    /// Set JSON object property: pop value, pop object (operand: u32 propertyIndex)
-    JsonSet = 0xE3,
-    /// Delete property from JSON object: pop object (operand: u32 propertyIndex)
-    JsonDelete = 0xE4,
-    /// JSON array indexing: pop index, pop json array, push element
-    JsonIndex = 0xE5,
-    /// Set JSON array element: pop value, pop index, pop array
-    JsonIndexSet = 0xE6,
-    /// Push element to JSON array: pop value, pop array
-    JsonPush = 0xE7,
-    /// Pop element from JSON array: pop array, push popped element
-    JsonPop = 0xE8,
-    /// Create new empty JSON object: push json object
-    JsonNewObject = 0xE9,
-    /// Create new empty JSON array: push json array
-    JsonNewArray = 0xEA,
-    /// Get object keys as array: pop json object, push string array
-    JsonKeys = 0xEB,
-    /// Get object/array length: pop json, push length
-    JsonLength = 0xEC,
+    // ===== Dynamic-object Operations (0xE0-0xEF) =====
+    // Note: JSON.parse / JSON.stringify use NativeCall (0x0C00, 0x0C01) instead of opcodes
+    // 0xE0, 0xE1 reserved
+    /// Get property of DynObject by const-pool name: pop object, push value  (operand: u32 nameIdx)
+    DynGet = 0xE2,
+    /// Set property of DynObject by const-pool name: pop value, pop object  (operand: u32 nameIdx)
+    DynSet = 0xE3,
+    /// Delete property from DynObject by const-pool name: pop object  (operand: u32 nameIdx)
+    DynDelete = 0xE4,
+    /// Get property by runtime string key: pop key, pop object, push value  (no operand)
+    DynGetKeyed = 0xE5,
+    /// Set property by runtime string key: pop value, pop key, pop object  (no operand)
+    DynSetKeyed = 0xE6,
+    /// Allocate empty DynObject and push Value  (no operand)
+    DynNewObject = 0xE7,
+    /// Get DynObject keys as Array<string>: pop object, push array  (no operand)
+    DynKeys = 0xE8,
+    /// Check DynObject has property by const-pool name: pop object, push bool  (operand: u32 nameIdx)
+    DynHas = 0xE9,
+    // 0xEA, 0xEB, 0xEC freed (JsonNewArray, JsonKeys, JsonLength removed)
 
     // ===== Task Control & Type Operations (0xED-0xEF) =====
     /// Cancel a task: pop TaskHandle, task is marked for cancellation
@@ -558,18 +554,16 @@ impl Opcode {
             0xDD => Some(Self::LoadRefCell),
             0xDE => Some(Self::StoreRefCell),
 
-            // JSON operations (0xE0, 0xE1 reserved for NativeCall parse/stringify)
-            0xE2 => Some(Self::JsonGet),
-            0xE3 => Some(Self::JsonSet),
-            0xE4 => Some(Self::JsonDelete),
-            0xE5 => Some(Self::JsonIndex),
-            0xE6 => Some(Self::JsonIndexSet),
-            0xE7 => Some(Self::JsonPush),
-            0xE8 => Some(Self::JsonPop),
-            0xE9 => Some(Self::JsonNewObject),
-            0xEA => Some(Self::JsonNewArray),
-            0xEB => Some(Self::JsonKeys),
-            0xEC => Some(Self::JsonLength),
+            // Dynamic-object operations (0xE0, 0xE1 reserved for NativeCall parse/stringify)
+            0xE2 => Some(Self::DynGet),
+            0xE3 => Some(Self::DynSet),
+            0xE4 => Some(Self::DynDelete),
+            0xE5 => Some(Self::DynGetKeyed),
+            0xE6 => Some(Self::DynSetKeyed),
+            0xE7 => Some(Self::DynNewObject),
+            0xE8 => Some(Self::DynKeys),
+            0xE9 => Some(Self::DynHas),
+            // 0xEA, 0xEB, 0xEC freed
 
             // Task control & type operations
             0xED => Some(Self::TaskCancel),
@@ -727,17 +721,14 @@ impl Opcode {
             Self::WaitAll => "WAIT_ALL",
             Self::SpawnClosure => "SPAWN_CLOSURE",
             Self::Sleep => "SLEEP",
-            Self::JsonGet => "JSON_GET",
-            Self::JsonSet => "JSON_SET",
-            Self::JsonDelete => "JSON_DELETE",
-            Self::JsonIndex => "JSON_INDEX",
-            Self::JsonIndexSet => "JSON_INDEX_SET",
-            Self::JsonPush => "JSON_PUSH",
-            Self::JsonPop => "JSON_POP",
-            Self::JsonNewObject => "JSON_NEW_OBJECT",
-            Self::JsonNewArray => "JSON_NEW_ARRAY",
-            Self::JsonKeys => "JSON_KEYS",
-            Self::JsonLength => "JSON_LENGTH",
+            Self::DynGet => "DYN_GET",
+            Self::DynSet => "DYN_SET",
+            Self::DynDelete => "DYN_DELETE",
+            Self::DynGetKeyed => "DYN_GET_KEYED",
+            Self::DynSetKeyed => "DYN_SET_KEYED",
+            Self::DynNewObject => "DYN_NEW_OBJECT",
+            Self::DynKeys => "DYN_KEYS",
+            Self::DynHas => "DYN_HAS",
             Self::TaskCancel => "TASK_CANCEL",
             Self::InstanceOf => "INSTANCE_OF",
             Self::Cast => "CAST",
@@ -1077,17 +1068,14 @@ mod tests {
             Opcode::NewRefCell,
             Opcode::LoadRefCell,
             Opcode::StoreRefCell,
-            Opcode::JsonGet,
-            Opcode::JsonSet,
-            Opcode::JsonDelete,
-            Opcode::JsonIndex,
-            Opcode::JsonIndexSet,
-            Opcode::JsonPush,
-            Opcode::JsonPop,
-            Opcode::JsonNewObject,
-            Opcode::JsonNewArray,
-            Opcode::JsonKeys,
-            Opcode::JsonLength,
+            Opcode::DynGet,
+            Opcode::DynSet,
+            Opcode::DynDelete,
+            Opcode::DynGetKeyed,
+            Opcode::DynSetKeyed,
+            Opcode::DynNewObject,
+            Opcode::DynKeys,
+            Opcode::DynHas,
             Opcode::TaskCancel,
             Opcode::InstanceOf,
             Opcode::Cast,

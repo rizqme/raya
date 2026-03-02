@@ -97,10 +97,10 @@ impl DeadCodeEliminator {
                 used.insert(object.id);
                 used.insert(value.id);
             }
-            IrInstr::JsonLoadProperty { object, .. } => {
+            IrInstr::DynGetProp { object, .. } => {
                 used.insert(object.id);
             }
-            IrInstr::JsonStoreProperty { object, value, .. } => {
+            IrInstr::DynSetProp { object, value, .. } => {
                 used.insert(object.id);
                 used.insert(value.id);
             }

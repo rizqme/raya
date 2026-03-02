@@ -181,17 +181,16 @@ pub enum IrInstr {
         value: Register,
     },
 
-    /// Load JSON property by name: dest = json_object[property_name]
-    /// Used for duck typing on JSON values - property lookup by string key
-    JsonLoadProperty {
+    /// Get DynObject property by const-pool name: dest = dyn_object[property_name]
+    DynGetProp {
         dest: Register,
         object: Register,
         /// Property name (interned string)
         property: String,
     },
 
-    /// Store JSON property by name: json_object[property_name] = value
-    JsonStoreProperty {
+    /// Set DynObject property by const-pool name: dyn_object[property_name] = value
+    DynSetProp {
         object: Register,
         /// Property name (interned string)
         property: String,
@@ -399,7 +398,7 @@ impl IrInstr {
             | IrInstr::LoadArgLocal { dest, .. }
             | IrInstr::LoadGlobal { dest, .. }
             | IrInstr::LoadField { dest, .. }
-            | IrInstr::JsonLoadProperty { dest, .. }
+            | IrInstr::DynGetProp { dest, .. }
             | IrInstr::LoadElement { dest, .. }
             | IrInstr::NewObject { dest, .. }
             | IrInstr::NewArray { dest, .. }
@@ -434,7 +433,7 @@ impl IrInstr {
             IrInstr::StoreLocal { .. }
             | IrInstr::StoreGlobal { .. }
             | IrInstr::StoreField { .. }
-            | IrInstr::JsonStoreProperty { .. }
+            | IrInstr::DynSetProp { .. }
             | IrInstr::StoreElement { .. }
             | IrInstr::ArrayPush { .. }
             | IrInstr::StoreCaptured { .. }
@@ -465,7 +464,7 @@ impl IrInstr {
                 | IrInstr::PopToLocal { .. }
                 | IrInstr::StoreGlobal { .. }
                 | IrInstr::StoreField { .. }
-                | IrInstr::JsonStoreProperty { .. }
+                | IrInstr::DynSetProp { .. }
                 | IrInstr::StoreElement { .. }
                 | IrInstr::ArrayPush { .. }
                 | IrInstr::ArrayPop { .. }

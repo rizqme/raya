@@ -244,14 +244,10 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::MutexLock
         | Opcode::MutexUnlock
         | Opcode::Throw
-        | Opcode::JsonIndex
-        | Opcode::JsonIndexSet
-        | Opcode::JsonPush
-        | Opcode::JsonPop
-        | Opcode::JsonNewObject
-        | Opcode::JsonNewArray
-        | Opcode::JsonKeys
-        | Opcode::JsonLength
+        | Opcode::DynGetKeyed
+        | Opcode::DynSetKeyed
+        | Opcode::DynNewObject
+        | Opcode::DynKeys
         | Opcode::NewSemaphore
         | Opcode::SemAcquire
         | Opcode::SemRelease
@@ -300,9 +296,10 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::NewArray
         | Opcode::LoadModule
         | Opcode::TaskThen
-        | Opcode::JsonGet
-        | Opcode::JsonSet
-        | Opcode::JsonDelete => 4,
+        | Opcode::DynGet
+        | Opcode::DynSet
+        | Opcode::DynDelete
+        | Opcode::DynHas => 4,
 
         // 8-byte operands (f64)
         Opcode::ConstF64 => 8,
@@ -487,18 +484,15 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::LoadRefCell => (1, 1), // Pop refcell ptr, push value
         Opcode::StoreRefCell => (2, 0), // Pop refcell ptr + value
 
-        // JSON operations (parse/stringify use NativeCall)
-        Opcode::JsonGet => (1, 1),       // Pop json object, push value
-        Opcode::JsonSet => (2, 0),       // Pop value + object (mutates)
-        Opcode::JsonDelete => (1, 0),    // Pop object (mutates)
-        Opcode::JsonIndex => (2, 1),     // Pop index + json array, push element
-        Opcode::JsonIndexSet => (3, 0),  // Pop value + index + array (mutates)
-        Opcode::JsonPush => (2, 0),      // Pop value + array (mutates)
-        Opcode::JsonPop => (1, 1),       // Pop array, push popped element
-        Opcode::JsonNewObject => (0, 1), // Push new empty json object
-        Opcode::JsonNewArray => (0, 1),  // Push new empty json array
-        Opcode::JsonKeys => (1, 1),      // Pop json object, push string array
-        Opcode::JsonLength => (1, 1),    // Pop json, push length
+        // Dynamic-object operations (parse/stringify use NativeCall)
+        Opcode::DynGet => (1, 1),       // Pop DynObject, push value
+        Opcode::DynSet => (2, 0),       // Pop value + object (mutates)
+        Opcode::DynDelete => (1, 0),    // Pop object (mutates)
+        Opcode::DynGetKeyed => (2, 1),  // Pop key + object, push value
+        Opcode::DynSetKeyed => (3, 0),  // Pop value + key + object (mutates)
+        Opcode::DynNewObject => (0, 1), // Push new empty DynObject
+        Opcode::DynKeys => (1, 1),      // Pop DynObject, push string array
+        Opcode::DynHas => (1, 1),       // Pop DynObject, push bool
 
         // Semaphore operations
         Opcode::NewSemaphore => (1, 1), // Pop permit count, push semaphore

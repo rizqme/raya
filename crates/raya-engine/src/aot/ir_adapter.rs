@@ -441,17 +441,17 @@ impl<'a> IrFunctionAdapter<'a> {
             }
 
             // === JSON Property Access ===
-            IrInstr::JsonLoadProperty { dest, object, .. } => {
+            IrInstr::DynGetProp { dest, object, .. } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
-                    helper: HelperCall::JsonLoadProperty,
+                    helper: HelperCall::DynGetProp,
                     args: vec![Self::reg(object)], // TODO: property name index
                 });
             }
-            IrInstr::JsonStoreProperty { object, value, .. } => {
+            IrInstr::DynSetProp { object, value, .. } => {
                 out.push(SmInstr::CallHelper {
                     dest: None,
-                    helper: HelperCall::JsonStoreProperty,
+                    helper: HelperCall::DynSetProp,
                     args: vec![Self::reg(object), Self::reg(value)],
                 });
             }

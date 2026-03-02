@@ -3,6 +3,7 @@
 //! Tests the complete module loading pipeline from .ryb bytes to registered modules.
 
 use raya_engine::compiler::Opcode;
+use raya_engine::compiler::bytecode::VERSION;
 use raya_engine::compiler::{Function, Module};
 use raya_engine::vm::Vm;
 
@@ -846,7 +847,7 @@ fn test_e2e_version_preserved_in_encode_decode() {
     let decoded = Module::decode(&bytes).unwrap();
 
     assert_eq!(decoded.magic, *b"RAYA");
-    assert_eq!(decoded.version, 1);
+    assert_eq!(decoded.version, VERSION);
     assert_eq!(decoded.metadata.name, "version_test");
 }
 

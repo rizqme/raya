@@ -8,6 +8,21 @@ use rustc_hash::FxHashMap;
 
 use super::{ConstructorInfo, FieldInfo, MethodInfo, TypeInfo};
 
+/// Lightweight descriptor for a field: name + compile-time type ID + slot.
+///
+/// Returned by `ClassMetadata::get_field_descriptor()`.
+/// `type_id` matches the TypeId values used by the compiler (0=number, 1=string, 2=boolean, …).
+/// It is 0 (unknown) when the metadata was built without type information.
+#[derive(Debug, Clone)]
+pub struct FieldDescriptor {
+    /// Field name
+    pub name: String,
+    /// Compiler TypeId value (u32); 0 = unknown
+    pub type_id: u32,
+    /// Field slot index in the Object fields array
+    pub slot: usize,
+}
+
 /// Reflection metadata for a single class
 #[derive(Debug, Clone, Default)]
 pub struct ClassMetadata {
@@ -15,6 +30,8 @@ pub struct ClassMetadata {
     pub field_indices: FxHashMap<String, usize>,
     /// Field names in order (by index)
     pub field_names: Vec<String>,
+    /// Field type IDs in slot order (parallel to `field_names`); 0 = unknown
+    pub field_types: Vec<u32>,
     /// Detailed field information (if available)
     pub fields: Vec<FieldInfo>,
 
@@ -43,14 +60,37 @@ impl ClassMetadata {
         Self::default()
     }
 
-    /// Add a field with name
+    /// Add a field with name (type_id defaults to 0 = unknown).
     pub fn add_field(&mut self, name: String, index: usize) {
+        self.add_field_with_type(name, index, 0);
+    }
+
+    /// Add a field with name and compile-time type ID.
+    pub fn add_field_with_type(&mut self, name: String, index: usize, type_id: u32) {
         self.field_indices.insert(name.clone(), index);
-        // Ensure field_names has enough space
         while self.field_names.len() <= index {
             self.field_names.push(String::new());
         }
         self.field_names[index] = name;
+        while self.field_types.len() <= index {
+            self.field_types.push(0);
+        }
+        self.field_types[index] = type_id;
+    }
+
+    /// Get the compile-time type ID for a field slot (0 = unknown).
+    pub fn get_field_type(&self, index: usize) -> u32 {
+        self.field_types.get(index).copied().unwrap_or(0)
+    }
+
+    /// Get a `FieldDescriptor` by field name, or `None` if the field does not exist.
+    pub fn get_field_descriptor(&self, name: &str) -> Option<FieldDescriptor> {
+        let index = self.get_field_index(name)?;
+        Some(FieldDescriptor {
+            name: name.to_string(),
+            type_id: self.get_field_type(index),
+            slot: index,
+        })
     }
 
     /// Add a method with name

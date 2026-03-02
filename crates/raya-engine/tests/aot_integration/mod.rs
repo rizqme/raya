@@ -1,4 +1,3 @@
-#![cfg(feature = "aot")]
 
 use raya_engine::aot::executor::{allocate_initial_frame, build_task_context, prepare_resume};
 use raya_engine::aot::helpers::create_default_helper_table;

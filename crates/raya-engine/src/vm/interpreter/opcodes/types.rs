@@ -1,5 +1,5 @@
-//! Type operation opcode handlers: InstanceOf, Cast, Typeof, JsonGet, JsonSet,
-//! NewMutex, NewChannel, LoadStatic, StoreStatic
+//! Type operation opcode handlers: InstanceOf, Cast, Typeof, DynGet, DynSet, DynGetKeyed,
+//! DynSetKeyed, DynNewObject, DynKeys, DynHas, DynDelete, NewMutex, NewChannel, LoadStatic, StoreStatic
 
 use crate::compiler::{Module, Opcode};
 use crate::vm::gc::GcHeader;
@@ -370,10 +370,10 @@ impl<'a> Interpreter<'a> {
             }
 
             // =========================================================
-            // JSON Operations (Duck Typing)
+            // Dynamic-object Operations
             // =========================================================
-            Opcode::JsonGet => {
-                use crate::vm::json::{self, JsonValue};
+            Opcode::DynGet => {
+                use crate::vm::json::view::{js_classify, JSView};
 
                 // Read property name index from constant pool
                 let prop_index = match Self::read_u32(code, ip) {
@@ -392,66 +392,37 @@ impl<'a> Interpreter<'a> {
                     }
                 };
 
-                // Pop the JSON object from stack
+                // Pop the object from stack
                 let obj_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                // Handle different value types
-                let result = if obj_val.is_null() {
-                    // Accessing property on null returns null
-                    Value::null()
-                } else if obj_val.is_ptr() {
-                    // Distinguish runtime heap object kinds via GC header.
-                    let raw_ptr = match unsafe { obj_val.as_ptr::<u8>() } {
-                        Some(ptr) => ptr,
-                        None => {
-                            if let Err(e) = stack.push(Value::null()) {
-                                return OpcodeResult::Error(e);
-                            }
-                            return OpcodeResult::Continue;
-                        }
-                    };
-                    let header = unsafe {
-                        let hp = raw_ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
-                        &*(hp as *const GcHeader)
-                    };
-
-                    if header.type_id() == std::any::TypeId::of::<Object>() {
-                        // Dynamic class-instance property access by name.
-                        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
-                        let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
-
+                let result = match js_classify(obj_val) {
+                    JSView::Struct { ptr, class_id } => {
+                        // Typed class instance: name → slot lookup
+                        let obj = unsafe { &*ptr };
                         let class_metadata = self.class_metadata.read();
                         let field_index = class_metadata
-                            .get(obj.class_id)
+                            .get(class_id)
                             .and_then(|meta| meta.get_field_index(&prop_name));
                         let method_slot = if field_index.is_none() {
                             class_metadata
-                                .get(obj.class_id)
+                                .get(class_id)
                                 .and_then(|meta| meta.get_method_index(&prop_name))
                         } else {
                             None
                         };
                         drop(class_metadata);
-                        if std::env::var("RAYA_DEBUG_JSON_GET").is_ok() {
-                            eprintln!(
-                                "[json_get] class_id={} prop={} field_index={:?} method_slot={:?}",
-                                obj.class_id, prop_name, field_index, method_slot
-                            );
-                        }
 
                         if let Some(index) = field_index {
                             obj.get_field(index).unwrap_or(Value::null())
                         } else {
                             let classes = self.classes.read();
-                            let func_id = classes.get_class(obj.class_id).and_then(|class| {
-                                // Preferred: explicit metadata slot mapping.
+                            let func_id = classes.get_class(class_id).and_then(|class| {
                                 method_slot
                                     .and_then(|slot| class.vtable.get_method(slot))
                                     .or_else(|| {
-                                        // Fallback: scan class vtable function names.
                                         class.vtable.methods.iter().copied().find(|fid| {
                                             module
                                                 .functions
@@ -459,10 +430,8 @@ impl<'a> Interpreter<'a> {
                                                 .map(|f| {
                                                     let name = f.name.as_str();
                                                     name == prop_name
-                                                        || name
-                                                            .ends_with(&format!(".{}", prop_name))
-                                                        || name
-                                                            .ends_with(&format!("::{}", prop_name))
+                                                        || name.ends_with(&format!(".{}", prop_name))
+                                                        || name.ends_with(&format!("::{}", prop_name))
                                                 })
                                                 .unwrap_or(false)
                                         })
@@ -483,23 +452,12 @@ impl<'a> Interpreter<'a> {
                                 Value::null()
                             }
                         }
-                    } else if header.type_id() == std::any::TypeId::of::<JsonValue>() {
-                        // JSON object duck-typing fallback.
-                        let ptr = unsafe { obj_val.as_ptr::<JsonValue>() };
-                        if let Some(json_ptr) = ptr {
-                            let json_val = unsafe { &*json_ptr.as_ptr() };
-                            let prop_val = json_val.get_property(&prop_name);
-                            json::json_to_value(&prop_val, &mut self.gc.lock())
-                        } else {
-                            Value::null()
-                        }
-                    } else {
-                        // Primitive heap types (String/Array/etc.) do not support JsonGet.
-                        Value::null()
                     }
-                } else {
-                    // Primitive non-pointer types don't support property access
-                    Value::null()
+                    JSView::Dyn(ptr) => {
+                        // DynObject: hashmap lookup
+                        unsafe { (*ptr).get(&prop_name) }.unwrap_or(Value::null())
+                    }
+                    _ => Value::null(),
                 };
 
                 if let Err(e) = stack.push(result) {
@@ -508,8 +466,9 @@ impl<'a> Interpreter<'a> {
                 OpcodeResult::Continue
             }
 
-            Opcode::JsonSet => {
-                use crate::vm::json::{self, JsonValue};
+            Opcode::DynSet => {
+                use crate::vm::json::view::{js_classify, JSView};
+                use crate::vm::object::DynObject;
 
                 // Read property name index from constant pool
                 let prop_index = match Self::read_u32(code, ip) {
@@ -522,7 +481,7 @@ impl<'a> Interpreter<'a> {
                     Some(s) => s.to_string(),
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid constant index {} for JSON property",
+                            "Invalid constant index {} for DynSet property",
                             prop_index
                         )));
                     }
@@ -540,31 +499,236 @@ impl<'a> Interpreter<'a> {
 
                 if !obj_val.is_ptr() {
                     return OpcodeResult::Error(VmError::TypeError(
-                        "Expected JSON object for property assignment".to_string(),
+                        "Expected object for property assignment".to_string(),
                     ));
                 }
 
-                // Try to access as JsonValue and set property
-                let ptr = unsafe { obj_val.as_ptr::<JsonValue>() };
-                if let Some(json_ptr) = ptr {
-                    let json_val = unsafe { &*json_ptr.as_ptr() };
-                    // Get the inner HashMap from the JsonValue::Object
-                    if let Some(obj_ptr) = json_val.as_object() {
-                        let map = unsafe { &mut *obj_ptr.as_ptr() };
-                        // Convert Value to JsonValue
-                        let new_json_val = json::value_to_json(value, &mut self.gc.lock());
-                        map.insert(prop_name, new_json_val);
-                    } else {
+                match js_classify(obj_val) {
+                    JSView::Struct { ptr, class_id } => {
+                        let obj = unsafe { &mut *(ptr as *mut Object) };
+                        let class_metadata = self.class_metadata.read();
+                        let field_index = class_metadata
+                            .get(class_id)
+                            .and_then(|meta| meta.get_field_index(&prop_name));
+                        drop(class_metadata);
+                        if let Some(index) = field_index {
+                            let _ = obj.set_field(index, value);
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(format!(
+                                "Field '{}' not found on object",
+                                prop_name
+                            )));
+                        }
+                    }
+                    JSView::Dyn(ptr) => {
+                        let obj = unsafe { &mut *(ptr as *mut DynObject) };
+                        obj.set(prop_name, value);
+                    }
+                    _ => {
                         return OpcodeResult::Error(VmError::TypeError(
-                            "Expected JSON object for property assignment".to_string(),
+                            "Expected object for property assignment".to_string(),
                         ));
                     }
-                } else {
-                    return OpcodeResult::Error(VmError::TypeError(
-                        "Expected JSON object for property assignment".to_string(),
-                    ));
                 }
 
+                OpcodeResult::Continue
+            }
+
+            Opcode::DynDelete => {
+                use crate::vm::json::view::{js_classify, JSView};
+                use crate::vm::object::DynObject;
+
+                let prop_index = match Self::read_u32(code, ip) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let prop_name = match module.constants.get_string(prop_index) {
+                    Some(s) => s.to_string(),
+                    None => return OpcodeResult::Error(VmError::RuntimeError(
+                        format!("Invalid constant index {} for DynDelete", prop_index)
+                    )),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                if let JSView::Dyn(ptr) = js_classify(obj_val) {
+                    unsafe { &mut *(ptr as *mut DynObject) }.props.remove(&prop_name);
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::DynGetKeyed => {
+                use crate::vm::json::view::{js_classify, JSView};
+                use crate::vm::object::RayaString;
+
+                // Stack: [..., object, key] → key popped first
+                let key_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                // Extract string key
+                let key_str = match js_classify(key_val) {
+                    JSView::Str(ptr) => unsafe { &*ptr }.data.clone(),
+                    _ => return OpcodeResult::Error(VmError::TypeError(
+                        "DynGetKeyed key must be a string".to_string()
+                    )),
+                };
+
+                let result = match js_classify(obj_val) {
+                    JSView::Dyn(ptr) => {
+                        unsafe { (*ptr).get(&key_str) }.unwrap_or(Value::null())
+                    }
+                    JSView::Struct { ptr, class_id } => {
+                        let obj = unsafe { &*ptr };
+                        let class_metadata = self.class_metadata.read();
+                        let field_index = class_metadata
+                            .get(class_id)
+                            .and_then(|meta| meta.get_field_index(&key_str));
+                        drop(class_metadata);
+                        if let Some(index) = field_index {
+                            obj.get_field(index).unwrap_or(Value::null())
+                        } else {
+                            Value::null()
+                        }
+                    }
+                    _ => Value::null(),
+                };
+
+                if let Err(e) = stack.push(result) {
+                    return OpcodeResult::Error(e);
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::DynSetKeyed => {
+                use crate::vm::json::view::{js_classify, JSView};
+                use crate::vm::object::DynObject;
+
+                // Stack: [..., object, key, value] → value popped first
+                let value = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let key_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                let key_str = match js_classify(key_val) {
+                    JSView::Str(ptr) => unsafe { &*ptr }.data.clone(),
+                    _ => return OpcodeResult::Error(VmError::TypeError(
+                        "DynSetKeyed key must be a string".to_string()
+                    )),
+                };
+
+                match js_classify(obj_val) {
+                    JSView::Dyn(ptr) => {
+                        let obj = unsafe { &mut *(ptr as *mut DynObject) };
+                        obj.set(key_str, value);
+                    }
+                    JSView::Struct { ptr, class_id } => {
+                        let obj = unsafe { &mut *(ptr as *mut Object) };
+                        let class_metadata = self.class_metadata.read();
+                        let field_index = class_metadata
+                            .get(class_id)
+                            .and_then(|meta| meta.get_field_index(&key_str));
+                        drop(class_metadata);
+                        if let Some(index) = field_index {
+                            let _ = obj.set_field(index, value);
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(format!(
+                                "Field '{}' not found on struct",
+                                key_str
+                            )));
+                        }
+                    }
+                    _ => return OpcodeResult::Error(VmError::TypeError(
+                        "DynSetKeyed target must be an object".to_string()
+                    )),
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::DynNewObject => {
+                use crate::vm::object::DynObject;
+
+                let dyn_obj = DynObject::new();
+                let gc_ptr = self.gc.lock().allocate(dyn_obj);
+                let val = unsafe {
+                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                };
+                if let Err(e) = stack.push(val) {
+                    return OpcodeResult::Error(e);
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::DynKeys => {
+                use crate::vm::json::view::{js_classify, JSView};
+                use crate::vm::object::{Array, RayaString};
+
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                let keys: Vec<Value> = match js_classify(obj_val) {
+                    JSView::Dyn(ptr) => {
+                        let obj = unsafe { &*ptr };
+                        obj.props.keys().map(|k| {
+                            let raya_str = RayaString::new(k.clone());
+                            let gc_ptr = self.gc.lock().allocate(raya_str);
+                            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                        }).collect()
+                    }
+                    _ => vec![],
+                };
+
+                let arr = Array { type_id: 0, elements: keys };
+                let arr_ptr = self.gc.lock().allocate(arr);
+                let result = unsafe {
+                    Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap())
+                };
+                if let Err(e) = stack.push(result) {
+                    return OpcodeResult::Error(e);
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::DynHas => {
+                use crate::vm::json::view::{js_classify, JSView};
+
+                let prop_index = match Self::read_u32(code, ip) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let prop_name = match module.constants.get_string(prop_index) {
+                    Some(s) => s.to_string(),
+                    None => return OpcodeResult::Error(VmError::RuntimeError(
+                        format!("Invalid constant index {} for DynHas", prop_index)
+                    )),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let has = match js_classify(obj_val) {
+                    JSView::Dyn(ptr) => unsafe { &*ptr }.has(&prop_name),
+                    _ => false,
+                };
+                if let Err(e) = stack.push(Value::bool(has)) {
+                    return OpcodeResult::Error(e);
+                }
                 OpcodeResult::Continue
             }
 

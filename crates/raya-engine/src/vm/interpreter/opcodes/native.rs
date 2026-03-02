@@ -2191,11 +2191,8 @@ impl<'a> Interpreter<'a> {
                         }
                         let value = args[0];
 
-                        // Convert Value to JsonValue
-                        let json_value = json::value_to_json(value, &mut self.gc.lock());
-
-                        // Stringify the JsonValue
-                        match json::stringify::stringify(&json_value) {
+                        // Stringify the Value using js_classify() dispatch
+                        match json::stringify::stringify(value) {
                             Ok(json_str) => {
                                 let result_str = RayaString::new(json_str);
                                 let gc_ptr = self.gc.lock().allocate(result_str);
@@ -2238,8 +2235,8 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
 
-                        // Parse the JSON string (lock scope ends before json_to_value)
-                        let json_value = {
+                        // Parse the JSON string — returns Value directly (DynObject/Array/RayaString)
+                        let result = {
                             let mut gc = self.gc.lock();
                             match json::parser::parse(&json_str, &mut gc) {
                                 Ok(v) => v,
@@ -2247,8 +2244,6 @@ impl<'a> Interpreter<'a> {
                             }
                         };
 
-                        // Convert JsonValue to Value (separate lock scope)
-                        let result = json::json_to_value(&json_value, &mut self.gc.lock());
                         if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
                         }
@@ -2259,6 +2254,7 @@ impl<'a> Interpreter<'a> {
                     // Args: [json_string, field_count, ...field_keys]
                     0x0C02 => {
                         use crate::vm::json;
+                        use crate::vm::json::view::{js_classify, JSView};
 
                         if args.len() < 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -2305,8 +2301,8 @@ impl<'a> Interpreter<'a> {
                             }
                         }
 
-                        // Parse the JSON string
-                        let json_value = {
+                        // Parse the JSON string — returns Value directly (DynObject/Array/RayaString)
+                        let json_val = {
                             let mut gc = self.gc.lock();
                             match json::parser::parse(&json_str, &mut gc) {
                                 Ok(v) => v,
@@ -2318,11 +2314,13 @@ impl<'a> Interpreter<'a> {
                         let mut gc = self.gc.lock();
                         let mut obj = Object::new(0, field_keys.len()); // class_id 0 for anonymous
 
-                        // Extract each field from the JSON and store in object
+                        // Extract each field from the parsed DynObject and store in typed Object
                         for (index, key) in field_keys.iter().enumerate() {
-                            let field_value = json_value.get_property(key);
-                            let vm_value = json::json_to_value(&field_value, &mut gc);
-                            let _ = obj.set_field(index, vm_value);
+                            let field_value = match js_classify(json_val) {
+                                JSView::Dyn(ptr) => unsafe { (*ptr).get(key) }.unwrap_or(Value::null()),
+                                _ => Value::null(),
+                            };
+                            let _ = obj.set_field(index, field_value);
                         }
 
                         // Allocate and return the object
@@ -2340,7 +2338,8 @@ impl<'a> Interpreter<'a> {
 
                     // JSON.merge(dest, source) - copy all properties from source to dest
                     0x0C03 => {
-                        use crate::vm::json::JsonValue;
+                        use crate::vm::json::view::{js_classify, JSView};
+                        use crate::vm::object::DynObject;
 
                         if args.len() < 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -2358,24 +2357,17 @@ impl<'a> Interpreter<'a> {
                             return OpcodeResult::Continue;
                         }
 
-                        // Get source as JsonValue object
-                        let source_ptr = unsafe { source_val.as_ptr::<JsonValue>() };
-                        if let Some(source_json_ptr) = source_ptr {
-                            let source_json = unsafe { &*source_json_ptr.as_ptr() };
-                            if let Some(source_obj_ptr) = source_json.as_object() {
-                                // Get dest as JsonValue object
-                                if dest_val.is_ptr() {
-                                    let dest_ptr = unsafe { dest_val.as_ptr::<JsonValue>() };
-                                    if let Some(dest_json_ptr) = dest_ptr {
-                                        let dest_json = unsafe { &*dest_json_ptr.as_ptr() };
-                                        if let Some(dest_obj_ptr) = dest_json.as_object() {
-                                            let source_map = unsafe { &*source_obj_ptr.as_ptr() };
-                                            let dest_map = unsafe { &mut *dest_obj_ptr.as_ptr() };
-                                            // Copy all properties from source to dest
-                                            for (key, value) in source_map.iter() {
-                                                dest_map.insert(key.clone(), value.clone());
-                                            }
-                                        }
+                        // Copy all props from source DynObject into dest DynObject
+                        if let JSView::Dyn(source_ptr) = js_classify(source_val) {
+                            if dest_val.is_ptr() {
+                                if let JSView::Dyn(dest_ptr) = js_classify(dest_val) {
+                                    // Collect first to avoid aliasing issues
+                                    let pairs: Vec<(String, Value)> = unsafe {
+                                        (*source_ptr).props.iter().map(|(k, v)| (k.clone(), *v)).collect()
+                                    };
+                                    let dest_obj = unsafe { &mut *(dest_ptr as *mut DynObject) };
+                                    for (key, val) in pairs {
+                                        dest_obj.set(key, val);
                                     }
                                 }
                             }

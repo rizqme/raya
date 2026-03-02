@@ -14,7 +14,7 @@ pub use encoder::{BytecodeReader, BytecodeWriter, DecodeError};
 pub use module::{
     flags, ClassDebugInfo, ClassDef, ClassReflectionData, DebugInfo, Export, FieldReflectionData,
     Function, FunctionDebugInfo, GenericTemplateInfo, Import, JitHint, LineEntry, Metadata, Method,
-    Module, ModuleError, MonoDebugEntry, ReflectionData, SymbolType, TemplateSymbolEntry,
+    Module, ModuleError, MonoDebugEntry, ReflectionData, SymbolType, TemplateSymbolEntry, VERSION,
 };
 pub use opcode::Opcode;
 pub use verify::{verify_module, VerifyError};

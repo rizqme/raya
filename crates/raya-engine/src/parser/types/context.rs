@@ -110,6 +110,17 @@ impl TypeContext {
         }));
         ctx.register_named_type("Array".into(), array);
 
+        // JsonArray = Array<Json> — type alias for JSON arrays (runtime: Array)
+        let json_array = ctx.intern(Type::Array(super::ty::ArrayType { element: json }));
+        ctx.register_named_type("JsonArray".into(), json_array);
+
+        // JsonObject = {[key: string]: Json} — dynamic string-keyed map (runtime: DynObject)
+        let json_object = ctx.intern(Type::Object(super::ty::ObjectType {
+            properties: vec![],
+            index_signature: Some(("string".into(), json)),
+        }));
+        ctx.register_named_type("JsonObject".into(), json_object);
+
         // Validate that interning order matches the well-known constants.
         debug_assert_eq!(number.0, Self::NUMBER_TYPE_ID, "NUMBER_TYPE_ID mismatch");
         debug_assert_eq!(string.0, Self::STRING_TYPE_ID, "STRING_TYPE_ID mismatch");
@@ -129,6 +140,16 @@ impl TypeContext {
         debug_assert_eq!(json.0, Self::JSON_TYPE_ID, "JSON_TYPE_ID mismatch");
         debug_assert_eq!(int.0, Self::INT_TYPE_ID, "INT_TYPE_ID mismatch");
         debug_assert_eq!(array.0, Self::ARRAY_TYPE_ID, "ARRAY_TYPE_ID mismatch");
+        debug_assert_eq!(
+            json_array.0,
+            Self::JSON_ARRAY_TYPE_ID,
+            "JSON_ARRAY_TYPE_ID mismatch"
+        );
+        debug_assert_eq!(
+            json_object.0,
+            Self::JSON_OBJECT_TYPE_ID,
+            "JSON_OBJECT_TYPE_ID mismatch"
+        );
 
         // TS-like utility key type used by builtins (EventEmitter EventMap, Record, etc.).
         // Register after fixed-ID bootstrap so TypeId constants remain stable.
@@ -158,6 +179,8 @@ impl TypeContext {
     pub const JSON_TYPE_ID: u32 = 15;
     pub const INT_TYPE_ID: u32 = 16;
     pub const ARRAY_TYPE_ID: u32 = 17;
+    pub const JSON_ARRAY_TYPE_ID: u32 = 18;
+    pub const JSON_OBJECT_TYPE_ID: u32 = 19;
 
     // Well-known builtin type names (must match the names registered above).
     pub const ARRAY_TYPE_NAME: &str = "Array";
@@ -170,6 +193,8 @@ impl TypeContext {
     pub const DATE_TYPE_NAME: &str = "Date";
     pub const MUTEX_TYPE_NAME: &str = "Mutex";
     pub const JSON_TYPE_NAME: &str = "Json";
+    pub const JSON_ARRAY_TYPE_NAME: &str = "JsonArray";
+    pub const JSON_OBJECT_TYPE_NAME: &str = "JsonObject";
 
     /// Intern a type, returning its TypeId
     ///

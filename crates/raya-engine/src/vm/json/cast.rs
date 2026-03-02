@@ -264,26 +264,21 @@ fn validate_interface(
     depth: usize,
 ) -> VmResult<Value> {
     // Must be an object
-    let obj_ptr = match json.as_object() {
-        Some(ptr) => ptr,
-        None => {
-            return Err(VmError::TypeError(format!(
-                "Expected object, got {}",
-                json.type_name()
-            )))
-        }
-    };
+    if !json.is_object() {
+        return Err(VmError::TypeError(format!(
+            "Expected object, got {}",
+            json.type_name()
+        )));
+    }
 
-    let json_obj = unsafe { &*obj_ptr.as_ptr() };
-
-    // Validate each field
+    // Validate each field using get_property() (converts Value → JsonValue)
     let mut field_values = Vec::with_capacity(fields.len());
 
     for (field_name, field_type_id) in fields {
-        // Get field value from JSON object
-        let field_json = json_obj
-            .get(field_name)
-            .ok_or_else(|| VmError::TypeError(format!("Missing field: {}", field_name)))?;
+        let field_json = json.get_property(field_name);
+        if field_json.is_undefined() {
+            return Err(VmError::TypeError(format!("Missing field: {}", field_name)));
+        }
 
         // Get field type schema
         let field_schema = schema_registry
@@ -292,7 +287,7 @@ fn validate_interface(
 
         // Recursively validate field
         let field_value =
-            validate_cast_impl(field_json, &field_schema, schema_registry, gc, depth + 1)?;
+            validate_cast_impl(&field_json, &field_schema, schema_registry, gc, depth + 1)?;
 
         field_values.push(field_value);
     }
@@ -315,29 +310,26 @@ fn validate_array(
     depth: usize,
 ) -> VmResult<Value> {
     // Must be an array
-    let arr_ptr = match json.as_array() {
-        Some(ptr) => ptr,
-        None => {
-            return Err(VmError::TypeError(format!(
-                "Expected array, got {}",
-                json.type_name()
-            )))
-        }
-    };
-
-    let json_arr = unsafe { &*arr_ptr.as_ptr() };
+    if !json.is_array() {
+        return Err(VmError::TypeError(format!(
+            "Expected array, got {}",
+            json.type_name()
+        )));
+    }
 
     // Get element type schema
     let element_schema = schema_registry
         .get(element_type_id)
         .ok_or_else(|| VmError::TypeError(format!("Unknown type ID: {}", element_type_id)))?;
 
-    // Validate each element
-    let mut element_values = Vec::with_capacity(json_arr.len());
+    // Validate each element using get_index() (converts Value → JsonValue)
+    let len = json.array_len();
+    let mut element_values = Vec::with_capacity(len);
 
-    for json_elem in json_arr {
+    for i in 0..len {
+        let json_elem = json.get_index(i);
         let elem_value =
-            validate_cast_impl(json_elem, &element_schema, schema_registry, gc, depth + 1)?;
+            validate_cast_impl(&json_elem, &element_schema, schema_registry, gc, depth + 1)?;
         element_values.push(elem_value);
     }
 
@@ -364,29 +356,25 @@ fn validate_union(
     // If discriminant is specified, use it to select the variant
     if let Some(disc_field) = discriminant {
         // Must be an object with the discriminant field
-        let obj_ptr = match json.as_object() {
-            Some(ptr) => ptr,
-            None => {
-                return Err(VmError::TypeError(format!(
-                    "Expected object with discriminant '{}', got {}",
-                    disc_field,
-                    json.type_name()
-                )))
-            }
-        };
+        if !json.is_object() {
+            return Err(VmError::TypeError(format!(
+                "Expected object with discriminant '{}', got {}",
+                disc_field,
+                json.type_name()
+            )));
+        }
 
-        let json_obj = unsafe { &*obj_ptr.as_ptr() };
+        // Get discriminant value using get_property() (returns JsonValue)
+        let disc_value = json.get_property(disc_field);
+        if disc_value.is_undefined() {
+            return Err(VmError::TypeError(format!(
+                "Missing discriminant field: {}",
+                disc_field
+            )));
+        }
 
-        // Get discriminant value
-        let disc_value = json_obj.get(disc_field).ok_or_else(|| {
-            VmError::TypeError(format!("Missing discriminant field: {}", disc_field))
-        })?;
-
-        let disc_str = match disc_value.as_string() {
-            Some(s_ptr) => {
-                let s = unsafe { &*s_ptr.as_ptr() };
-                s.data.as_str()
-            }
+        let disc_str = match &disc_value {
+            JsonValue::String(s_ptr) => unsafe { &*s_ptr.as_ptr() }.data.clone(),
             _ => {
                 return Err(VmError::TypeError(format!(
                     "Discriminant must be string, got {}",
@@ -402,6 +390,8 @@ fn validate_union(
             let variant_schema = schema_registry.get(*variant_type_id).ok_or_else(|| {
                 VmError::TypeError(format!("Unknown type ID: {}", variant_type_id))
             })?;
+
+            let _ = disc_str.as_str(); // suppress unused warning
 
             // Try to validate against this variant
             if let Ok(value) =
@@ -431,8 +421,8 @@ fn validate_union(
         }
 
         Err(VmError::TypeError(format!(
-            "No matching variant in union for value: {}",
-            json
+            "No matching variant in union for value of type: {}",
+            json.type_name()
         )))
     }
 }

@@ -2900,7 +2900,19 @@ impl<'a> TypeChecker<'a> {
                                 match gen_ctx.unify(param_ty, *arg_ty) {
                                     Ok(true) => {}
                                     Ok(false) | Err(_) => {
-                                        failed_unifications.push((*arg_ty, param_ty, *arg_span));
+                                        // Apply substitutions accumulated so far so that
+                                        // check_assignable sees the concrete expected type.
+                                        // Example: `listener: (...args: E[K]) => void` becomes
+                                        // `(...args: [number]) => void` after K is resolved from
+                                        // a prior argument, enabling proper subtype checking.
+                                        let resolved_param = gen_ctx
+                                            .apply_substitution(param_ty)
+                                            .unwrap_or(param_ty);
+                                        failed_unifications.push((
+                                            *arg_ty,
+                                            resolved_param,
+                                            *arg_span,
+                                        ));
                                     }
                                 }
                             }
