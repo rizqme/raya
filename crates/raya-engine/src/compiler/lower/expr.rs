@@ -330,6 +330,14 @@ impl<'a> Lowerer<'a> {
             // Propagate object field layout so destructuring can resolve field names
             if let Some(fields) = self.variable_object_fields.get(&ident.name).cloned() {
                 self.register_object_fields.insert(dest.id, fields);
+                if let Some(nested_fields) =
+                    self.variable_nested_object_fields.get(&ident.name).cloned()
+                {
+                    for (field_idx, layout) in nested_fields {
+                        self.register_nested_object_fields
+                            .insert((dest.id, field_idx), layout);
+                    }
+                }
             }
             return dest;
         }
@@ -422,6 +430,14 @@ impl<'a> Lowerer<'a> {
             // Propagate object field layout so destructuring can resolve field names
             if let Some(fields) = self.variable_object_fields.get(&ident.name).cloned() {
                 self.register_object_fields.insert(dest.id, fields);
+                if let Some(nested_fields) =
+                    self.variable_nested_object_fields.get(&ident.name).cloned()
+                {
+                    for (field_idx, layout) in nested_fields {
+                        self.register_nested_object_fields
+                            .insert((dest.id, field_idx), layout);
+                    }
+                }
             }
             return dest;
         }
@@ -2511,7 +2527,12 @@ impl<'a> Lowerer<'a> {
                                 .find(|(name, _)| name == prop_name)
                                 .map(|(_, idx)| *idx as u16)
                         }),
-                    _ => None,
+                    _ => self.register_object_fields.get(&object.id).and_then(|fields| {
+                        fields
+                            .iter()
+                            .find(|(name, _)| name == prop_name)
+                            .map(|(_, idx)| *idx as u16)
+                    }),
                 };
 
                 if let Some(idx) = obj_field_idx {
@@ -2561,12 +2582,18 @@ impl<'a> Lowerer<'a> {
             // Use direct field loads only when we have a proven concrete object layout.
             // Type-driven object/alias lookups are structural and may target class instances,
             // so they must use late-bound property access.
+            let has_register_layout = self
+                .register_object_fields
+                .get(&object.id)
+                .is_some_and(|fields| fields.iter().any(|(name, _)| name == prop_name));
             let has_concrete_layout = if class_id.is_some() {
                 true
             } else {
                 match &*member.object {
                     Expression::Identifier(ident) => {
-                        self.variable_object_fields
+                        has_register_layout
+                            || self
+                                .variable_object_fields
                             .get(&ident.name)
                             .is_some_and(|fields| fields.iter().any(|(name, _)| name == prop_name))
                             || self
@@ -2577,10 +2604,11 @@ impl<'a> Lowerer<'a> {
                                         && self.type_alias_field_lookup(alias, prop_name).is_some()
                                 })
                     }
-                    _ => false,
+                    _ => has_register_layout,
                 }
             };
 
+            let object_id = object.id;
             let dest = self.alloc_register(field_ty);
             if has_concrete_layout {
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
@@ -2599,6 +2627,13 @@ impl<'a> Lowerer<'a> {
                     field: field_index,
                     optional: member.optional,
                 });
+                if let Some(nested_layout) = self
+                    .register_nested_object_fields
+                    .get(&(object_id, field_index))
+                    .cloned()
+                {
+                    self.register_object_fields.insert(dest.id, nested_layout);
+                }
             } else {
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                     let obj_name = match &*member.object {
@@ -2971,6 +3006,10 @@ impl<'a> Lowerer<'a> {
                         continue;
                     };
                     let value = self.lower_expr(&p.value);
+                    if let Some(nested_layout) = self.register_object_fields.get(&value.id).cloned() {
+                        self.register_nested_object_fields
+                            .insert((dest.id, field_index as u16), nested_layout);
+                    }
                     self.emit(IrInstr::StoreField {
                         object: dest.clone(),
                         field: field_index as u16,
@@ -3002,6 +3041,14 @@ impl<'a> Lowerer<'a> {
                             field: src_field_idx,
                             optional: false,
                         });
+                        if let Some(nested_layout) = self
+                            .register_nested_object_fields
+                            .get(&(spread_reg.id, src_field_idx))
+                            .cloned()
+                        {
+                            self.register_nested_object_fields
+                                .insert((dest.id, dest_idx as u16), nested_layout);
+                        }
                         self.emit(IrInstr::StoreField {
                             object: dest.clone(),
                             field: dest_idx as u16,

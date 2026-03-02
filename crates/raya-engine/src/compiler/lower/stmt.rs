@@ -853,6 +853,17 @@ impl<'a> Lowerer<'a> {
                             self.register_object_fields.get(&value_reg.id).cloned()
                         {
                             self.variable_object_fields.insert(ident.name, fields);
+                            let nested_fields: FxHashMap<u16, Vec<(String, usize)>> = self
+                                .register_nested_object_fields
+                                .iter()
+                                .filter_map(|(&(obj_reg, field_idx), layout)| {
+                                    (obj_reg == value_reg.id).then_some((field_idx, layout.clone()))
+                                })
+                                .collect();
+                            if !nested_fields.is_empty() {
+                                self.variable_nested_object_fields
+                                    .insert(ident.name, nested_fields);
+                            }
                         }
                         self.emit(IrInstr::StoreGlobal {
                             index: global_idx,
@@ -1299,6 +1310,7 @@ impl<'a> Lowerer<'a> {
         self.array_element_class_map.remove(&name);
         self.bound_method_vars.remove(&name);
         self.variable_object_fields.remove(&name);
+        self.variable_nested_object_fields.remove(&name);
         self.variable_object_type_aliases.remove(&name);
         self.callable_symbol_hints.remove(&name);
 
@@ -1446,6 +1458,16 @@ impl<'a> Lowerer<'a> {
                     // Transfer object field layout from register to variable
                     if let Some(fields) = self.register_object_fields.get(&value.id).cloned() {
                         self.variable_object_fields.insert(name, fields);
+                        let nested_fields: FxHashMap<u16, Vec<(String, usize)>> = self
+                            .register_nested_object_fields
+                            .iter()
+                            .filter_map(|(&(obj_reg, field_idx), layout)| {
+                                (obj_reg == value.id).then_some((field_idx, layout.clone()))
+                            })
+                            .collect();
+                        if !nested_fields.is_empty() {
+                            self.variable_nested_object_fields.insert(name, nested_fields);
+                        }
                     }
 
                     self.emit(IrInstr::StoreGlobal {
@@ -1559,6 +1581,16 @@ impl<'a> Lowerer<'a> {
             // (for decode<T> results so property access resolves correctly)
             if let Some(fields) = self.register_object_fields.get(&value.id).cloned() {
                 self.variable_object_fields.insert(name, fields);
+                let nested_fields: FxHashMap<u16, Vec<(String, usize)>> = self
+                    .register_nested_object_fields
+                    .iter()
+                    .filter_map(|(&(obj_reg, field_idx), layout)| {
+                        (obj_reg == value.id).then_some((field_idx, layout.clone()))
+                    })
+                    .collect();
+                if !nested_fields.is_empty() {
+                    self.variable_nested_object_fields.insert(name, nested_fields);
+                }
             }
 
             // Std wrapper top-scope arrow bindings (e.g., `const sign = (...) => ...`)

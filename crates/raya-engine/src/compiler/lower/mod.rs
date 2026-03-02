@@ -478,9 +478,15 @@ pub struct Lowerer<'a> {
     /// Object field layout for registers from decode<T> calls
     /// Maps register id → Vec<(field_name, field_index)>
     register_object_fields: FxHashMap<RegisterId, Vec<(String, usize)>>,
+    /// Nested object field layouts for concrete object fields.
+    /// Maps (object register id, field index) -> nested field layout of the stored value.
+    register_nested_object_fields: FxHashMap<(RegisterId, u16), Vec<(String, usize)>>,
     /// Object field layout for local variables holding decoded objects
     /// Maps variable name → Vec<(field_name, field_index)>
     variable_object_fields: FxHashMap<Symbol, Vec<(String, usize)>>,
+    /// Nested object field layouts for object-typed variables.
+    /// Maps variable name -> (field index -> nested field layout).
+    variable_nested_object_fields: FxHashMap<Symbol, FxHashMap<u16, Vec<(String, usize)>>>,
     /// Alias name backing object-typed variables (identifier -> type alias name).
     /// Used to prefer declaration-order alias field indices over checker-internal object order.
     variable_object_type_aliases: FxHashMap<Symbol, String>,
@@ -982,7 +988,9 @@ impl<'a> Lowerer<'a> {
             current_method_env_globals: None,
             constant_map: FxHashMap::default(),
             register_object_fields: FxHashMap::default(),
+            register_nested_object_fields: FxHashMap::default(),
             variable_object_fields: FxHashMap::default(),
+            variable_nested_object_fields: FxHashMap::default(),
             variable_object_type_aliases: FxHashMap::default(),
             object_spread_target_filter: None,
             native_function_table: Vec::new(),
@@ -2136,6 +2144,8 @@ impl<'a> Lowerer<'a> {
         self.local_registers.clear();
         self.callable_local_hints.clear();
         self.callable_symbol_hints.clear();
+        self.register_object_fields.clear();
+        self.register_nested_object_fields.clear();
         // IMPORTANT: If there are destructuring parameters, start local allocation AFTER parameter slots
         // to avoid destructured variables overwriting parameter values
         if has_destructuring_params {
