@@ -19,6 +19,10 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+const VM_WORKER_RECV_TIMEOUT: Duration = Duration::from_millis(5);
+const IO_WORKER_RECV_TIMEOUT: Duration = Duration::from_millis(10);
+const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
 // ============================================================================
 // Channel message types
 // ============================================================================
@@ -302,7 +306,7 @@ impl Reactor {
                 drop(handle);
                 return;
             }
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(JOIN_POLL_INTERVAL);
         }
     }
 
@@ -318,7 +322,7 @@ impl Reactor {
         shutdown: Arc<AtomicBool>,
     ) {
         while !shutdown.load(AtomicOrdering::Acquire) {
-            let work = match work_rx.recv_timeout(Duration::from_millis(50)) {
+            let work = match work_rx.recv_timeout(VM_WORKER_RECV_TIMEOUT) {
                 Ok(w) => w,
                 Err(channel::RecvTimeoutError::Timeout) => continue,
                 Err(channel::RecvTimeoutError::Disconnected) => break,
@@ -397,7 +401,7 @@ impl Reactor {
 
     fn io_worker_loop(work_rx: Receiver<IoWork>, shutdown: Arc<AtomicBool>) {
         while !shutdown.load(AtomicOrdering::Acquire) {
-            let work = match work_rx.recv_timeout(Duration::from_millis(100)) {
+            let work = match work_rx.recv_timeout(IO_WORKER_RECV_TIMEOUT) {
                 Ok(w) => w,
                 Err(channel::RecvTimeoutError::Timeout) => continue,
                 Err(channel::RecvTimeoutError::Disconnected) => break,

@@ -13,7 +13,6 @@ doctest = false
 
 [dependencies]
 raya-sdk = { workspace = true }
-parking_lot = { workspace = true }
 dashmap = { workspace = true }
 libc = { workspace = true }
 rustls = { workspace = true }
@@ -31,4 +30,3 @@ glob = { workspace = true }
 
 # File watching
 notify = { workspace = true }
-rusqlite = { version = "0.32", features = ["bundled"] }

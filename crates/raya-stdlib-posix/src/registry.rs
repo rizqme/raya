@@ -17,7 +17,6 @@ pub fn register_posix(registry: &mut NativeFunctionRegistry) {
     register_http2(registry);
     register_fetch(registry);
     register_dns(registry);
-    register_sqlite(registry);
     register_terminal(registry);
     register_ws(registry);
     register_readline(registry);
@@ -452,13 +451,6 @@ fn register_dns(registry: &mut NativeFunctionRegistry) {
     registry.register("dns.reverse", |ctx, args| {
         crate::dns::dns_reverse(ctx, args)
     });
-}
-
-fn register_sqlite(registry: &mut NativeFunctionRegistry) {
-    registry.register("sqlite.open", |ctx, args| crate::sqlite::open(ctx, args));
-    registry.register("sqlite.close", |ctx, args| crate::sqlite::close(ctx, args));
-    registry.register("sqlite.exec", |ctx, args| crate::sqlite::exec(ctx, args));
-    registry.register("sqlite.query", |ctx, args| crate::sqlite::query(ctx, args));
 }
 
 fn register_terminal(registry: &mut NativeFunctionRegistry) {

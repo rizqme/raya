@@ -219,7 +219,9 @@ impl Runtime {
             ts_options,
             compile_options: None,
         };
-        Ok(compiler.compile_program_source(source, &virtual_entry)?.entry)
+        Ok(compiler
+            .compile_program_source(source, &virtual_entry)?
+            .entry)
     }
 
     /// Compile a .raya source file to a bytecode module.
@@ -247,7 +249,9 @@ impl Runtime {
             ts_options,
             compile_options: Some(options.clone()),
         };
-        Ok(compiler.compile_program_source(source, &virtual_entry)?.entry)
+        Ok(compiler
+            .compile_program_source(source, &virtual_entry)?
+            .entry)
     }
 
     /// Compile a .raya source file with options (e.g., source map).

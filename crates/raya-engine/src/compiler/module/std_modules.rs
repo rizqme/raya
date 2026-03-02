@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-const NODE_STD_ALIASES: [(&str, &str); 39] = [
+const NODE_STD_ALIASES: [(&str, &str); 38] = [
     ("fs", "__node_fs"),
     ("fs/promises", "__node_fs_promises"),
     ("path", "__node_path"),
@@ -45,7 +45,6 @@ const NODE_STD_ALIASES: [(&str, &str); 39] = [
     ("cluster", "__node_cluster"),
     ("repl", "__node_repl"),
     ("perf_hooks", "__node_perf_hooks"),
-    ("sqlite", "sqlite"),
 ];
 
 /// Registry of standard library modules
@@ -193,10 +192,6 @@ impl StdModuleRegistry {
         modules.insert(
             "pm",
             include_str!("../../../../raya-stdlib-posix/raya/pm.raya"),
-        );
-        modules.insert(
-            "sqlite",
-            include_str!("../../../../raya-stdlib-posix/raya/sqlite.raya"),
         );
         modules.insert(
             "__node_events",
@@ -348,10 +343,6 @@ impl StdModuleRegistry {
             "__node_http2",
             include_str!("../../../../raya-stdlib-node/raya/http2.raya"),
         );
-        modules.insert(
-            "__node_sqlite",
-            include_str!("../../../../raya-stdlib-node/raya/sqlite.raya"),
-        );
 
         let node_aliases = NODE_STD_ALIASES.into_iter().collect();
 
@@ -485,7 +476,6 @@ mod tests {
         assert!(StdModuleRegistry::is_supported_node_import(
             "node:timers/promises"
         ));
-        assert!(StdModuleRegistry::is_supported_node_import("node:sqlite"));
         assert!(!StdModuleRegistry::is_supported_node_import("std:fs"));
     }
 

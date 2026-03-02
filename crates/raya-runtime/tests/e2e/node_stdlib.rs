@@ -259,7 +259,7 @@ fn test_node_cluster_is_primary() {
     );
 }
 
-// ── std:http2 / std:sqlite (unchanged) ──
+// ── std:http2 (unchanged) ──
 
 #[test]
 fn test_std_http2_server_lifecycle() {
@@ -275,23 +275,7 @@ fn test_std_http2_server_lifecycle() {
     );
 }
 
-#[test]
-fn test_std_sqlite_basic_query() {
-    expect_bool_with_builtins(
-        r#"
-        import sqlite from "std:sqlite";
-        const db = sqlite.open(":memory:");
-        db.exec("create table t(v integer);");
-        db.exec("insert into t(v) values (7);");
-        const rows = db.query("select v from t;");
-        db.close();
-        return rows[0] == "7";
-    "#,
-        true,
-    );
-}
-
-// ── node:http2 / node:sqlite smoke tests ──
+// ── node:http2 smoke tests ──
 
 #[test]
 fn test_node_http2_import_smoke() {
@@ -299,17 +283,6 @@ fn test_node_http2_import_smoke() {
         r#"
         import http2 from "node:http2";
         return http2 != null;
-    "#,
-        true,
-    );
-}
-
-#[test]
-fn test_node_sqlite_import_smoke() {
-    expect_runtime_eval_bool(
-        r#"
-        import sqlite from "node:sqlite";
-        return sqlite != null;
     "#,
         true,
     );

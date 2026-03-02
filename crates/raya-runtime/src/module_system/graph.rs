@@ -241,7 +241,10 @@ mod tests {
         fs::write(&c, r#"export const c: number = 3;"#).unwrap();
 
         let graph = ProgramGraphBuilder::new().build(&a).unwrap();
-        assert_eq!(graph.topological_order.last(), Some(&ModuleKey::File(a.canonicalize().unwrap())));
+        assert_eq!(
+            graph.topological_order.last(),
+            Some(&ModuleKey::File(a.canonicalize().unwrap()))
+        );
         assert!(graph
             .topological_order
             .contains(&ModuleKey::File(b.canonicalize().unwrap())));
@@ -259,8 +262,16 @@ mod tests {
         let a = root.join("a.raya");
         let b = root.join("b.raya");
 
-        fs::write(&a, r#"import { b } from "./b"; export const a: number = 1;"#).unwrap();
-        fs::write(&b, r#"import { a } from "./a"; export const b: number = 2;"#).unwrap();
+        fs::write(
+            &a,
+            r#"import { b } from "./b"; export const a: number = 1;"#,
+        )
+        .unwrap();
+        fs::write(
+            &b,
+            r#"import { a } from "./a"; export const b: number = 2;"#,
+        )
+        .unwrap();
 
         let err = ProgramGraphBuilder::new().build(&a).unwrap_err();
         let msg = format!("{err}");

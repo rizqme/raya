@@ -129,5 +129,8 @@ opt-level = 3
 strip = true
 panic = "abort"
 
+[profile.dev]
+debug = 1
+
 [profile.bench]
 inherits = "release"

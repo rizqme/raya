@@ -1,7 +1,7 @@
 use crate::error::RuntimeError;
-use raya_engine::compiler::module::StdModuleRegistry;
 
 use super::resolver::ModuleKey;
+use super::std_module_registry;
 
 #[derive(Debug, Clone)]
 pub struct LoadedModuleSource {
@@ -26,8 +26,7 @@ impl ModuleLoaderV2 {
                 })
             }
             ModuleKey::Std(canonical) => {
-                let registry = StdModuleRegistry::new();
-                let source = registry.get(canonical).ok_or_else(|| {
+                let source = std_module_registry().get(canonical).ok_or_else(|| {
                     RuntimeError::Dependency(format!(
                         "Standard module source not found for '{}'",
                         canonical

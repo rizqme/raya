@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_NODE_ROOT: &str = "/Users/rizqme/Workspace/node/test";
-const SUPPORTED_NODE_MODULES: [&str; 39] = [
+const SUPPORTED_NODE_MODULES: [&str; 38] = [
     "node:fs",
     "node:fs/promises",
     "node:path",
@@ -47,7 +47,6 @@ const SUPPORTED_NODE_MODULES: [&str; 39] = [
     "node:cluster",
     "node:repl",
     "node:perf_hooks",
-    "node:sqlite",
 ];
 
 #[test]

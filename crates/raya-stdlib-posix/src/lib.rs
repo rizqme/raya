@@ -26,7 +26,6 @@ pub mod net;
 pub mod os;
 pub mod process;
 pub mod readline;
-pub mod sqlite;
 pub mod terminal;
 pub mod watch;
 pub mod ws;

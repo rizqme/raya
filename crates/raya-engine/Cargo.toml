@@ -14,7 +14,6 @@ doctest = false
 [dependencies]
 # Lexer
 logos = "0.14"
-unicode-xid = "0.2"
 
 # Data structures and hashing
 rustc-hash = "2.0"
@@ -33,7 +32,6 @@ dirs = "5.0"
 
 # Diagnostics
 codespan-reporting = "0.11"
-termcolor = "1.4"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -50,13 +48,9 @@ crossbeam-deque = { workspace = true }
 parking_lot = { workspace = true }
 dashmap = { workspace = true }
 num_cpus = { workspace = true }
-rand = { workspace = true }
 
 # Regex (for VM)
 regex = { workspace = true }
-
-# Lazy initialization
-once_cell = { workspace = true }
 
 # JIT compilation (optional, behind "jit" feature)
 cranelift-codegen = { workspace = true, optional = true }
@@ -64,7 +58,6 @@ cranelift-frontend = { workspace = true, optional = true }
 cranelift-module = { workspace = true, optional = true }
 cranelift-jit = { workspace = true, optional = true }
 cranelift-native = { workspace = true, optional = true }
-cranelift-object = { workspace = true, optional = true }
 target-lexicon = { workspace = true, optional = true }
 
 [features]
@@ -80,7 +73,6 @@ aot = [
     "dep:cranelift-codegen",
     "dep:cranelift-frontend",
     "dep:cranelift-module",
-    "dep:cranelift-object",
     "dep:cranelift-native",
     "dep:target-lexicon",
 ]

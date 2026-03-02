@@ -127,7 +127,14 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if std::env::var("RAYA_DEBUG_VM_CALLS").is_ok() {
-                    eprintln!("[cast] target={} obj_raw=0x{:016X} is_null={} is_ptr={} is_i32={}", cast_target, obj_val.raw(), obj_val.is_null(), obj_val.is_ptr(), obj_val.is_i32());
+                    eprintln!(
+                        "[cast] target={} obj_raw=0x{:016X} is_null={} is_ptr={} is_i32={}",
+                        cast_target,
+                        obj_val.raw(),
+                        obj_val.is_null(),
+                        obj_val.is_ptr(),
+                        obj_val.is_i32()
+                    );
                 }
 
                 let cast_target = cast_target as u16;
@@ -334,20 +341,21 @@ impl<'a> Interpreter<'a> {
                             .map(|c| c.name.clone())
                             .unwrap_or_else(|| "<unknown>".to_string())
                     };
-                    let (actual_id, actual_name) = if let Some(obj_ptr) = unsafe { obj_val.as_ptr::<Object>() } {
-                        let obj = unsafe { &*obj_ptr.as_ptr() };
-                        let class_id = obj.class_id;
-                        let class_name = {
-                            let classes = self.classes.read();
-                            classes
-                                .get_class(class_id)
-                                .map(|c| c.name.clone())
-                                .unwrap_or_else(|| "<unknown>".to_string())
+                    let (actual_id, actual_name) =
+                        if let Some(obj_ptr) = unsafe { obj_val.as_ptr::<Object>() } {
+                            let obj = unsafe { &*obj_ptr.as_ptr() };
+                            let class_id = obj.class_id;
+                            let class_name = {
+                                let classes = self.classes.read();
+                                classes
+                                    .get_class(class_id)
+                                    .map(|c| c.name.clone())
+                                    .unwrap_or_else(|| "<unknown>".to_string())
+                            };
+                            (class_id, class_name)
+                        } else {
+                            (usize::MAX, "<non-object>".to_string())
                         };
-                        (class_id, class_name)
-                    } else {
-                        (usize::MAX, "<non-object>".to_string())
-                    };
                     let current_func_id = task.current_func_id();
                     let current_func_name = module
                         .functions
@@ -440,8 +448,9 @@ impl<'a> Interpreter<'a> {
                             let classes = self.classes.read();
                             let func_id = classes.get_class(obj.class_id).and_then(|class| {
                                 // Preferred: explicit metadata slot mapping.
-                                method_slot.and_then(|slot| class.vtable.get_method(slot)).or_else(
-                                    || {
+                                method_slot
+                                    .and_then(|slot| class.vtable.get_method(slot))
+                                    .or_else(|| {
                                         // Fallback: scan class vtable function names.
                                         class.vtable.methods.iter().copied().find(|fid| {
                                             module
@@ -452,15 +461,12 @@ impl<'a> Interpreter<'a> {
                                                     name == prop_name
                                                         || name
                                                             .ends_with(&format!(".{}", prop_name))
-                                                        || name.ends_with(&format!(
-                                                            "::{}",
-                                                            prop_name
-                                                        ))
+                                                        || name
+                                                            .ends_with(&format!("::{}", prop_name))
                                                 })
                                                 .unwrap_or(false)
                                         })
-                                    },
-                                )
+                                    })
                             });
                             drop(classes);
                             if let Some(func_id) = func_id {

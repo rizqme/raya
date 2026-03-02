@@ -2527,12 +2527,15 @@ impl<'a> Lowerer<'a> {
                                 .find(|(name, _)| name == prop_name)
                                 .map(|(_, idx)| *idx as u16)
                         }),
-                    _ => self.register_object_fields.get(&object.id).and_then(|fields| {
-                        fields
-                            .iter()
-                            .find(|(name, _)| name == prop_name)
-                            .map(|(_, idx)| *idx as u16)
-                    }),
+                    _ => self
+                        .register_object_fields
+                        .get(&object.id)
+                        .and_then(|fields| {
+                            fields
+                                .iter()
+                                .find(|(name, _)| name == prop_name)
+                                .map(|(_, idx)| *idx as u16)
+                        }),
                 };
 
                 if let Some(idx) = obj_field_idx {
@@ -2594,8 +2597,10 @@ impl<'a> Lowerer<'a> {
                         has_register_layout
                             || self
                                 .variable_object_fields
-                            .get(&ident.name)
-                            .is_some_and(|fields| fields.iter().any(|(name, _)| name == prop_name))
+                                .get(&ident.name)
+                                .is_some_and(|fields| {
+                                    fields.iter().any(|(name, _)| name == prop_name)
+                                })
                             || self
                                 .variable_object_type_aliases
                                 .get(&ident.name)
@@ -3006,7 +3011,8 @@ impl<'a> Lowerer<'a> {
                         continue;
                     };
                     let value = self.lower_expr(&p.value);
-                    if let Some(nested_layout) = self.register_object_fields.get(&value.id).cloned() {
+                    if let Some(nested_layout) = self.register_object_fields.get(&value.id).cloned()
+                    {
                         self.register_nested_object_fields
                             .insert((dest.id, field_index as u16), nested_layout);
                     }

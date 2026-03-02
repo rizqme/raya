@@ -155,8 +155,6 @@ pub fn std_sources() -> &'static str {
         "\n",
         include_str!("../../raya-stdlib-posix/raya/dns.raya"),
         "\n",
-        include_str!("../../raya-stdlib-posix/raya/sqlite.raya"),
-        "\n",
         include_str!("../../raya-stdlib-posix/raya/terminal.raya"),
         "\n",
         include_str!("../../raya-stdlib-posix/raya/ws.raya"),

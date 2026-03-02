@@ -167,14 +167,14 @@ impl<'a> SubtypingContext<'a> {
 
             // Union-to-union subtyping:
             // S1 | ... | Sn <: T1 | ... | Tm iff every Si is a subtype of some Tj.
-            (Type::Union(sub_union), Type::Union(sup_union)) => sub_union.members.iter().all(
-                |&sub_member| {
+            (Type::Union(sub_union), Type::Union(sup_union)) => {
+                sub_union.members.iter().all(|&sub_member| {
                     sup_union
                         .members
                         .iter()
                         .any(|&sup_member| self.is_subtype(sub_member, sup_member))
-                },
-            ),
+                })
+            }
 
             // Union subtyping: T <: U1 | U2 | ... | Un if T <: Ui for some i
             (_, Type::Union(union)) => union

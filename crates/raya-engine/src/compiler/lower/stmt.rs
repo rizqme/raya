@@ -1466,7 +1466,8 @@ impl<'a> Lowerer<'a> {
                             })
                             .collect();
                         if !nested_fields.is_empty() {
-                            self.variable_nested_object_fields.insert(name, nested_fields);
+                            self.variable_nested_object_fields
+                                .insert(name, nested_fields);
                         }
                     }
 
@@ -1589,7 +1590,8 @@ impl<'a> Lowerer<'a> {
                     })
                     .collect();
                 if !nested_fields.is_empty() {
-                    self.variable_nested_object_fields.insert(name, nested_fields);
+                    self.variable_nested_object_fields
+                        .insert(name, nested_fields);
                 }
             }
 

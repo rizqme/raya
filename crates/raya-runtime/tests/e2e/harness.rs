@@ -82,8 +82,7 @@ pub fn compile_with_builtins(source: &str) -> E2EResult<(Module, Interner)> {
     });
     let compiled = runtime
         .compile(source)
-        .map_err(|e| E2EError::TypeCheck(e.to_string()))
-        ?;
+        .map_err(|e| E2EError::TypeCheck(e.to_string()))?;
     Ok((compiled.module().clone(), Interner::new()))
 }
 
@@ -108,7 +107,8 @@ fn compile_internal(source: &str) -> E2EResult<(Module, Interner)> {
         .map_err(|e| E2EError::TypeCheck(format!("Binding error: {:?}", e)))?;
 
     // Type check
-    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(TypeSystemMode::Raya);
+    let checker =
+        TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(TypeSystemMode::Raya);
     let check_result = checker
         .check_module(&ast)
         .map_err(|e| E2EError::TypeCheck(format!("{:?}", e)))?;

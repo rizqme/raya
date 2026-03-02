@@ -10,8 +10,3 @@ description = "Language Server Protocol implementation for Raya"
 
 [lib]
 doctest = false
-
-[dependencies]
-raya-engine = { workspace = true }
-tower-lsp = { workspace = true }
-tokio = { workspace = true }

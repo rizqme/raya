@@ -59,7 +59,6 @@ import { describe, it } from "node:test";
 | **node:stream/promises** | Minimal | finished (no-op), pipeline (stub) |
 | **node:stream/web** | Stub | All methods throw |
 | **node:http2** | Passthrough | Delegates to std:http2 |
-| **node:sqlite** | Passthrough | Delegates to std:sqlite |
 | **node:worker_threads** | Minimal | isMainThread only, no real threading |
 | **node:cluster** | Stub | isPrimary returns true |
 | **node:module** | Stub | createRequire returns thrower |
@@ -106,7 +105,7 @@ operations use `__NATIVE_CALL()` to invoke registered Rust functions from `raya-
 
 ## Test coverage
 
-99 E2E tests in `crates/raya-runtime/tests/e2e/node_stdlib.rs` covering:
+97 E2E tests in `crates/raya-runtime/tests/e2e/node_stdlib.rs` covering:
 
 - **path**: join, parse, dirname, basename, extname, isAbsolute, normalize, resolve,
   format, sep/delimiter, toNamespacedPath

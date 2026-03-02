@@ -1,6 +1,6 @@
 use crate::compile;
-use crate::error::RuntimeError;
 use crate::compile::{TsCompilerOptions, TypeMode};
+use crate::error::RuntimeError;
 use crate::BuiltinMode;
 use std::path::{Path, PathBuf};
 

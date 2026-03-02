@@ -2,6 +2,8 @@ use crate::error::RuntimeError;
 use raya_engine::compiler::module::{ModuleResolver as EngineModuleResolver, StdModuleRegistry};
 use std::path::{Path, PathBuf};
 
+use super::std_module_registry;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ModuleKey {
     File(PathBuf),
@@ -39,7 +41,8 @@ impl ModuleResolverV2 {
         importer: &ModuleKey,
         specifier: &str,
     ) -> Result<ImportResolution, RuntimeError> {
-        let kind = if let Some((canonical, _)) = StdModuleRegistry::new().resolve_specifier(specifier) {
+        let kind = if let Some((canonical, _)) = std_module_registry().resolve_specifier(specifier)
+        {
             ModuleSpecifierKind::Std(canonical)
         } else if specifier.starts_with("node:") {
             let supported = StdModuleRegistry::supported_node_module_names()
