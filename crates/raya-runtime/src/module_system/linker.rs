@@ -283,8 +283,12 @@ fn transform_library_module(
                             .cloned()
                             .or_else(|| imported_binding_types.get(&local_name).cloned())
                             .unwrap_or_else(|| "unknown".to_string());
-                        if ty == "unknown" && looks_like_class_identifier(&local_name) {
-                            ty = local_name.clone();
+                        if ty == "unknown" {
+                            if let Some(alias) = class_aliases.get(&local_name) {
+                                ty = alias.clone();
+                            } else if is_known_global_class(&local_name) {
+                                ty = local_name.clone();
+                            }
                         }
                         export_types.insert(exported.clone(), ty);
                         export_values.insert(internal_export_name(&exported), local_name);
@@ -373,8 +377,8 @@ fn transform_library_module(
     }
     code.push_str(&export_alias);
     code.push_str(&format!(
-        "function __raya_mod_init_{}(): {} {{\n",
-        module_id, export_type_name
+        "function __raya_mod_init_{}(): unknown {{\n",
+        module_id
     ));
     code.push_str(&body);
     let object_literal = if export_values.is_empty() {
@@ -395,14 +399,14 @@ fn transform_library_module(
         format!("{{ {} }}", fields)
     };
     code.push_str(&format!(
-        "let __raya_exports: {} = {};\n",
-        export_type_name, object_literal
+        "let __raya_exports = {};\n",
+        object_literal
     ));
     code.push_str("return __raya_exports;\n");
     code.push_str("}\n");
     code.push_str(&format!(
-        "const {}: {} = __raya_mod_init_{}();\n",
-        export_var_name, export_type_name, module_id
+        "const {}: {} = (__raya_mod_init_{}() as {});\n",
+        export_var_name, export_type_name, module_id, export_type_name
     ));
 
     Ok((
@@ -708,7 +712,11 @@ fn collect_local_value_types(
             }
             Statement::ClassDecl(class) => {
                 let name = interner.resolve(class.name.name).to_string();
-                out.insert(name.clone(), name);
+                let ty = class_aliases
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone());
+                out.insert(name, ty);
             }
             Statement::VariableDecl(decl) => {
                 let ty = infer_variable_decl_type(decl, source, class_aliases);
@@ -726,7 +734,11 @@ fn collect_local_value_types(
                 }
                 Statement::ClassDecl(class) => {
                     let name = interner.resolve(class.name.name).to_string();
-                    out.insert(name.clone(), name);
+                    let ty = class_aliases
+                        .get(&name)
+                        .cloned()
+                        .unwrap_or_else(|| name.clone());
+                    out.insert(name, ty);
                 }
                 Statement::VariableDecl(decl) => {
                     let ty = infer_variable_decl_type(decl, source, class_aliases);
@@ -828,8 +840,14 @@ fn infer_expression_type(
             if let Some(ty) = imported_binding_types.get(&name) {
                 return ty.clone();
             }
-            if looks_like_class_identifier(&name) {
+            if let Some(alias) = class_aliases.get(&name) {
+                return alias.clone();
+            }
+            if looks_like_class_identifier(&name) && is_known_global_class(&name) {
                 return name;
+            }
+            if looks_like_class_identifier(&name) {
+                return "unknown".to_string();
             }
         }
         Expression::Object(obj) => {

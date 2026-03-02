@@ -1700,6 +1700,11 @@ impl<'a> Lowerer<'a> {
         // Lower as arrow (handles capture analysis, MakeClosure, etc.).
         // Std wrapper nested functions may have a pre-assigned function ID.
         let preassigned_func_id = self.function_id_for_decl(func_decl);
+        if let Some(func_id) = preassigned_func_id {
+            // Register before lowering body so recursive calls resolve through
+            // direct-call lowering instead of falling back to non-callable locals.
+            self.function_map.insert(func_decl.name.name, func_id);
+        }
         let closure_reg = self.lower_arrow_with_preassigned_id(&arrow, preassigned_func_id);
 
         // Std-prelude wrappers rely on sibling helper functions from class methods

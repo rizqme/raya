@@ -2161,7 +2161,8 @@ impl<'a> Lowerer<'a> {
 
         // Get function name
         let name = self.interner.resolve(func.name.name);
-        let is_std_wrapper = name.starts_with("__std_module_");
+        let is_std_wrapper =
+            name.starts_with("__std_module_") || name.starts_with("__raya_mod_init_");
 
         // Std wrapper helpers are frequently referenced before declaration
         // (e.g. pmInstall -> installDependency). Pre-register nested function
