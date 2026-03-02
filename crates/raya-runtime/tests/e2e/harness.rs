@@ -8,7 +8,6 @@ use raya_engine::parser::{Interner, Parser, TypeContext};
 use raya_engine::vm::gc::GcHeader;
 use raya_engine::vm::scheduler::SchedulerLimits;
 use raya_engine::vm::{Array, Object, RayaString, Value, Vm, VmError};
-use raya_runtime::std_prelude::{build_std_prelude, StdPreludeOutput};
 use raya_runtime::{BuiltinMode, StdNativeHandler};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -33,121 +32,6 @@ fn keep_vm_alive(vm: Vm) {
             kept.pop_front();
         }
     });
-}
-
-/// Get the builtin source files content
-///
-/// Returns the source code for all builtin classes.
-fn get_builtin_sources() -> &'static str {
-    concat!(
-        // Object class (base class)
-        include_str!("../../../raya-engine/builtins/strict/object.raya"),
-        "\n",
-        // Error classes (must come before other classes that might throw)
-        include_str!("../../../raya-engine/builtins/strict/error.raya"),
-        "\n",
-        // Symbol class
-        include_str!("../../../raya-engine/builtins/strict/symbol.raya"),
-        "\n",
-        // Shared globals
-        include_str!("../../../raya-engine/builtins/strict/globals.shared.raya"),
-        "\n",
-        // Map class
-        include_str!("../../../raya-engine/builtins/strict/map.raya"),
-        "\n",
-        // Set class
-        include_str!("../../../raya-engine/builtins/strict/set.raya"),
-        "\n",
-        // Buffer class
-        include_str!("../../../raya-engine/builtins/strict/buffer.raya"),
-        "\n",
-        // Date class
-        include_str!("../../../raya-engine/builtins/strict/date.raya"),
-        "\n",
-        // Channel class
-        include_str!("../../../raya-engine/builtins/strict/channel.raya"),
-        "\n",
-        // Mutex class
-        include_str!("../../../raya-engine/builtins/strict/mutex.raya"),
-        "\n",
-        // Promise class
-        include_str!("../../../raya-engine/builtins/strict/promise.raya"),
-        "\n",
-        // EventEmitter class
-        include_str!("../../../raya-engine/builtins/strict/event_emitter.raya"),
-        "\n",
-        // Iterator class
-        include_str!("../../../raya-engine/builtins/strict/iterator.raya"),
-        "\n",
-        // Temporal class
-        include_str!("../../../raya-engine/builtins/strict/temporal.raya"),
-        "\n",
-    )
-}
-
-/// Get the standard library module sources
-///
-/// Returns source code for std: modules (Logger, etc.) that are
-/// included as builtins for single-file compilation in tests.
-fn get_std_sources() -> &'static str {
-    concat!(
-        // Core stdlib
-        include_str!("../../../raya-stdlib/raya/logger.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/math.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/reflect.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/runtime.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/crypto.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/time.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/path.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/stream.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/url.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/compress.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/encoding.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/semver.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/template.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib/raya/args.raya"),
-        "\n",
-        // POSIX stdlib modules
-        include_str!("../../../raya-stdlib-posix/raya/fs.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/net.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/http.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/http2.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/fetch.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/env.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/process.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/os.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/io.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/dns.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/sqlite.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/glob.raya"),
-        "\n",
-        include_str!("../../../raya-stdlib-posix/raya/archive.raya"),
-        "\n",
-    )
 }
 
 /// Error type for e2e tests
@@ -184,38 +68,29 @@ pub type E2EResult<T> = Result<T, E2EError>;
 
 /// Compile Raya source code to bytecode
 pub fn compile(source: &str) -> E2EResult<(Module, Interner)> {
-    compile_internal(source, false)
+    compile_internal(source)
 }
 
 /// Compile Raya source code with builtin classes included
 ///
-/// This prepends the builtin .raya source files (Map, Set, Buffer, Date, Channel)
-/// so they are compiled together with the user code.
+/// Uses the production runtime module pipeline (Module System V2), with no
+/// std-prelude/source-rewrite fallback path.
 pub fn compile_with_builtins(source: &str) -> E2EResult<(Module, Interner)> {
-    compile_internal(source, true)
+    let runtime = raya_runtime::Runtime::with_options(raya_runtime::RuntimeOptions {
+        builtin_mode: BuiltinMode::RayaStrict,
+        ..Default::default()
+    });
+    let compiled = runtime
+        .compile(source)
+        .map_err(|e| E2EError::TypeCheck(e.to_string()))
+        ?;
+    Ok((compiled.module().clone(), Interner::new()))
 }
 
 /// Internal compile function
-fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, Interner)> {
-    // Optionally prepend builtin and std sources
-    let (full_source, _prelude_offset) = if include_builtins {
-        let std_prelude = build_std_import_prelude(source)?;
-        let prelude = if std_prelude.prelude_source.is_empty() {
-            get_builtin_sources().to_string()
-        } else {
-            format!("{}\n{}", get_builtin_sources(), std_prelude.prelude_source)
-        };
-        let offset = prelude.len() + 1; // +1 for separator newline before user source
-        (
-            format!("{}\n{}", prelude, std_prelude.rewritten_user_source),
-            Some(offset),
-        )
-    } else {
-        (source.to_string(), None)
-    };
-
+fn compile_internal(source: &str) -> E2EResult<(Module, Interner)> {
     // Parse
-    let parser = Parser::new(&full_source).map_err(|e| E2EError::Lex(format!("{:?}", e)))?;
+    let parser = Parser::new(source).map_err(|e| E2EError::Lex(format!("{:?}", e)))?;
     let (ast, interner) = parser
         .parse()
         .map_err(|e| E2EError::Parse(format!("{:?}", e)))?;
@@ -224,19 +99,9 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
     let mut type_ctx = TypeContext::new();
     let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(TypeSystemMode::Raya);
 
-    // Register builtin type signatures only if NOT including builtin sources
-    // (to avoid duplicate symbol errors when source files define the same classes)
-    if include_builtins {
-        // When including builtin sources, just register intrinsics (__NATIVE_CALL, etc.)
-        let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
-        binder.register_builtins(&empty_sigs);
-        // Disable duplicate detection since user code may shadow builtin class/function names
-        binder.skip_top_level_duplicate_detection();
-    } else {
-        // Normal mode: register type signatures from precompiled builtins
-        let builtin_sigs = raya_engine::builtins::to_checker_signatures();
-        binder.register_builtins(&builtin_sigs);
-    }
+    // Register type signatures from precompiled builtins.
+    let builtin_sigs = raya_engine::builtins::to_checker_signatures();
+    binder.register_builtins(&builtin_sigs);
 
     let mut symbols = binder
         .bind_module(&ast)
@@ -262,49 +127,6 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
     let bytecode = compiler.compile_via_ir(&ast).map_err(E2EError::Compile)?;
 
     Ok((bytecode, interner))
-}
-
-fn build_std_import_prelude(source: &str) -> E2EResult<StdPreludeOutput> {
-    // E2E compatibility: historically compile_with_builtins exposed a few std
-    // globals without explicit imports.
-    let mut scan_source = String::new();
-    if !source.contains("\"std:math\"") && source.contains("math.") {
-        scan_source.push_str("import math from \"std:math\";\n");
-    }
-    if !source.contains("\"std:args\"")
-        && (source.contains("ArgParser") || source.contains("ArgResult"))
-    {
-        scan_source.push_str("import args from \"std:args\";\n");
-    }
-    if !source.contains("\"std:stream\"")
-        && (source.contains("ReadableStream")
-            || source.contains("WritableStream")
-            || source.contains("TransformStream")
-            || source.contains("ReadableController")
-            || source.contains("WritableController")
-            || source.contains("TransformController"))
-    {
-        let mut names: Vec<&str> = Vec::new();
-        for name in [
-            "ReadableStream",
-            "WritableStream",
-            "TransformStream",
-            "ReadableController",
-            "WritableController",
-            "TransformController",
-        ] {
-            if source.contains(name) {
-                names.push(name);
-            }
-        }
-        scan_source.push_str(&format!(
-            "import {{ {} }} from \"std:stream\";\n",
-            names.join(", ")
-        ));
-    }
-    scan_source.push_str(source);
-
-    build_std_prelude(&scan_source).map_err(|e| E2EError::TypeCheck(e.to_string()))
 }
 
 /// Compile and execute Raya source code, returning the result
@@ -344,8 +166,7 @@ pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
 
 /// Compile and execute using the production runtime compile pipeline.
 ///
-/// This path mirrors `raya run/eval` behavior (builtin + std prelude injection)
-/// and is useful for validating builtins that depend on runtime compile semantics.
+/// This path mirrors `raya run/eval` behavior through the module-system pipeline.
 pub fn compile_and_run_runtime(source: &str) -> E2EResult<Value> {
     compile_and_run_runtime_with_mode(source, BuiltinMode::RayaStrict)
 }
@@ -353,8 +174,14 @@ pub fn compile_and_run_runtime(source: &str) -> E2EResult<Value> {
 /// Compile and execute using the production runtime compile pipeline with an
 /// explicit builtin compatibility mode.
 pub fn compile_and_run_runtime_with_mode(source: &str, mode: BuiltinMode) -> E2EResult<Value> {
-    let (module, _interner) = raya_runtime::compile::compile_source_with_mode(source, mode)
+    let runtime = raya_runtime::Runtime::with_options(raya_runtime::RuntimeOptions {
+        builtin_mode: mode,
+        ..Default::default()
+    });
+    let compiled = runtime
+        .compile(source)
         .map_err(|e| E2EError::TypeCheck(e.to_string()))?;
+    let module = compiled.module().clone();
 
     let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
     {

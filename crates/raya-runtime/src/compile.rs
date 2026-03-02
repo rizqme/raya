@@ -12,13 +12,10 @@ use raya_engine::parser::{Interner, LexError, ParseError, Parser, TypeContext};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 
 use crate::builtin_manifest;
 use crate::builtins;
 use crate::error::RuntimeError;
-use crate::std_prelude::build_std_prelude;
 use crate::BuiltinMode;
 
 /// Checker behavior mode, independent from builtin API surface.
@@ -168,95 +165,7 @@ pub fn compile_source_with_modes_and_ts_options(
     type_mode: TypeMode,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<(Module, Interner), RuntimeError> {
-    validate_mode_constraints(builtin_mode, type_mode, ts_options)?;
-    precheck_user_top_level_duplicates(source)?;
-    precheck_node_compat_symbol_usage(source, builtin_mode)?;
-
-    let std_prelude = build_std_prelude(source)?;
-    let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-    let prelude_src = if std_prelude.prelude_source.is_empty() {
-        builtin_src.to_string()
-    } else {
-        format!("{}\n{}", builtin_src, std_prelude.prelude_source)
-    };
-    let user_offset = prelude_src.len() + 1;
-    let full_source = format!("{}\n{}", prelude_src, std_prelude.rewritten_user_source);
-    if let Ok(path) = std::env::var("RAYA_DEBUG_DUMP_SOURCE") {
-        let _ = std::fs::write(path, &full_source);
-    }
-    let prefix_lines = full_source[..user_offset]
-        .bytes()
-        .filter(|&b| b == b'\n')
-        .count();
-
-    // Parse
-    let parser = Parser::new(&full_source)
-        .map_err(|errors| RuntimeError::Lex(format_lex_errors(&errors, prefix_lines)))?;
-    let (ast, interner) = parser
-        .parse()
-        .map_err(|errors| RuntimeError::Parse(format_parse_errors(&errors, prefix_lines)))?;
-
-    // Bind (creates symbol table)
-    let mut type_ctx = TypeContext::new();
-    let policy = checker_policy_for_mode(type_mode, ts_options);
-    let mut binder = Binder::new(&mut type_ctx, &interner)
-        .with_mode(type_system_mode(type_mode))
-        .with_policy(policy);
-
-    // Register only intrinsics (__NATIVE_CALL, etc.) — builtin class sources
-    // are included in the source text, so their types come from parsing.
-    let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
-    binder.register_builtins(&empty_sigs);
-    binder.skip_top_level_duplicate_detection();
-
-    let mut symbols = binder.bind_module(&ast).map_err(|errors| {
-        RuntimeError::TypeCheck(
-            errors
-                .iter()
-                .map(|e| format_bind_error(e, user_offset, &full_source))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-    })?;
-
-    // Type check
-    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
-        .with_mode(type_system_mode(type_mode))
-        .with_policy(policy)
-        .with_suppress_errors_before(user_offset);
-    let check_result = checker.check_module(&ast).map_err(|errors| {
-        RuntimeError::TypeCheck(
-            errors
-                .iter()
-                .map(|e| format_check_error(e, user_offset, &full_source))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-    })?;
-
-    // Apply inferred types to symbol table
-    for ((scope_id, name), ty) in check_result.inferred_types {
-        symbols.update_type(ScopeId(scope_id), &name, ty);
-    }
-
-    // Compile via IR pipeline
-    let compiler = Compiler::new(type_ctx, &interner)
-        .with_expr_types(check_result.expr_types)
-        .with_js_this_binding_compat(true);
-    let bytecode = compiler.compile_via_ir(&ast)?;
-
-    Ok((bytecode, interner))
-}
-
-/// Load a Raya file and inline all transitive local (`./`, `../`) imports.
-///
-/// This keeps runtime compilation compatible with the single-module pipeline
-/// while supporting multi-file projects that use local imports.
-pub fn load_source_with_local_imports(path: &Path) -> Result<String, RuntimeError> {
-    let mut visited = HashSet::new();
-    let mut ordered_sources = Vec::new();
-    collect_local_sources(path, &mut visited, &mut ordered_sources)?;
-    Ok(ordered_sources.join("\n"))
+    compile_graph_source_with_modes_and_ts_options(source, builtin_mode, type_mode, ts_options)
 }
 
 /// Compile Raya source code to a bytecode module with options.
@@ -307,82 +216,13 @@ pub fn compile_source_with_options_and_modes_and_ts_options(
     type_mode: TypeMode,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<(Module, Interner), RuntimeError> {
-    validate_mode_constraints(builtin_mode, type_mode, ts_options)?;
-    precheck_user_top_level_duplicates(source)?;
-    precheck_node_compat_symbol_usage(source, builtin_mode)?;
-
-    let std_prelude = build_std_prelude(source)?;
-    let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-    let prelude_src = if std_prelude.prelude_source.is_empty() {
-        builtin_src.to_string()
-    } else {
-        format!("{}\n{}", builtin_src, std_prelude.prelude_source)
-    };
-    let user_offset = prelude_src.len() + 1;
-    let full_source = format!("{}\n{}", prelude_src, std_prelude.rewritten_user_source);
-    if let Ok(path) = std::env::var("RAYA_DEBUG_DUMP_SOURCE") {
-        let _ = std::fs::write(path, &full_source);
-    }
-    let prefix_lines = full_source[..user_offset]
-        .bytes()
-        .filter(|&b| b == b'\n')
-        .count();
-
-    // Parse
-    let parser = Parser::new(&full_source)
-        .map_err(|errors| RuntimeError::Lex(format_lex_errors(&errors, prefix_lines)))?;
-    let (ast, interner) = parser
-        .parse()
-        .map_err(|errors| RuntimeError::Parse(format_parse_errors(&errors, prefix_lines)))?;
-
-    // Bind (creates symbol table)
-    let mut type_ctx = TypeContext::new();
-    let policy = checker_policy_for_mode(type_mode, ts_options);
-    let mut binder = Binder::new(&mut type_ctx, &interner)
-        .with_mode(type_system_mode(type_mode))
-        .with_policy(policy);
-    let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
-    binder.register_builtins(&empty_sigs);
-    binder.skip_top_level_duplicate_detection();
-
-    let mut symbols = binder.bind_module(&ast).map_err(|errors| {
-        RuntimeError::TypeCheck(
-            errors
-                .iter()
-                .map(|e| format_bind_error(e, user_offset, &full_source))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-    })?;
-
-    // Type check
-    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
-        .with_mode(type_system_mode(type_mode))
-        .with_policy(policy)
-        .with_suppress_errors_before(user_offset);
-    let check_result = checker.check_module(&ast).map_err(|errors| {
-        RuntimeError::TypeCheck(
-            errors
-                .iter()
-                .map(|e| format_check_error(e, user_offset, &full_source))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-    })?;
-
-    // Apply inferred types to symbol table
-    for ((scope_id, name), ty) in check_result.inferred_types {
-        symbols.update_type(ScopeId(scope_id), &name, ty);
-    }
-
-    // Compile via IR pipeline
-    let compiler = Compiler::new(type_ctx, &interner)
-        .with_expr_types(check_result.expr_types)
-        .with_sourcemap(options.sourcemap)
-        .with_js_this_binding_compat(true);
-    let bytecode = compiler.compile_via_ir(&ast)?;
-
-    Ok((bytecode, interner))
+    compile_graph_source_with_options_and_modes_and_ts_options(
+        source,
+        options,
+        builtin_mode,
+        type_mode,
+        ts_options,
+    )
 }
 
 /// Compile already-linked module-graph source (Module System V2 path).
@@ -522,87 +362,7 @@ pub fn check_source_with_modes_and_ts_options(
     type_mode: TypeMode,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<CheckDiagnostics, RuntimeError> {
-    validate_mode_constraints(builtin_mode, type_mode, ts_options)?;
-    precheck_user_top_level_duplicates(source)?;
-    precheck_node_compat_symbol_usage(source, builtin_mode)?;
-
-    let std_prelude = build_std_prelude(source)?;
-    let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-    let prelude_src = if std_prelude.prelude_source.is_empty() {
-        builtin_src.to_string()
-    } else {
-        format!("{}\n{}", builtin_src, std_prelude.prelude_source)
-    };
-    let user_offset = prelude_src.len() + 1; // +1 for \n separator
-
-    let full_source = format!("{}\n{}", prelude_src, std_prelude.rewritten_user_source);
-
-    let prefix_lines = full_source[..user_offset]
-        .bytes()
-        .filter(|&b| b == b'\n')
-        .count();
-
-    // Parse
-    let parser = Parser::new(&full_source)
-        .map_err(|errors| RuntimeError::Lex(format_lex_errors(&errors, prefix_lines)))?;
-    let (ast, interner) = parser
-        .parse()
-        .map_err(|errors| RuntimeError::Parse(format_parse_errors(&errors, prefix_lines)))?;
-
-    // Bind
-    let mut type_ctx = TypeContext::new();
-    let policy = checker_policy_for_mode(type_mode, ts_options);
-    let mut binder = Binder::new(&mut type_ctx, &interner)
-        .with_mode(type_system_mode(type_mode))
-        .with_policy(policy);
-    let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
-    binder.register_builtins(&empty_sigs);
-    binder.skip_top_level_duplicate_detection();
-
-    let bind_result = binder.bind_module(&ast);
-
-    let (bind_errors, check_errors, warnings) = match bind_result {
-        Err(bind_errs) => {
-            // Binding failed — return bind errors, no type checking
-            (bind_errs, vec![], vec![])
-        }
-        Ok(symbols) => {
-            // Binding succeeded — run type checker
-            let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
-                .with_mode(type_system_mode(type_mode))
-                .with_policy(policy)
-                .with_suppress_errors_before(user_offset);
-            match checker.check_module(&ast) {
-                Ok(mut result) => {
-                    if matches!(type_mode, TypeMode::Ts) {
-                        if let Some(options) = ts_options {
-                            for flag in options.unsupported_but_parsed_flags() {
-                                result.warnings.push(CheckWarning::UnsupportedTsFlag {
-                                    flag,
-                                    span: raya_engine::parser::Span::new(
-                                        user_offset,
-                                        user_offset + 1,
-                                        1,
-                                        1,
-                                    ),
-                                });
-                            }
-                        }
-                    }
-                    (vec![], vec![], result.warnings)
-                }
-                Err(check_errs) => (vec![], check_errs, vec![]),
-            }
-        }
-    };
-
-    Ok(CheckDiagnostics {
-        errors: check_errors,
-        bind_errors,
-        warnings,
-        source: full_source,
-        user_offset,
-    })
+    check_graph_source_with_modes_and_ts_options(source, builtin_mode, type_mode, ts_options)
 }
 
 /// Type-check already-linked module-graph source (Module System V2 path).
@@ -859,85 +619,6 @@ fn precheck_node_compat_symbol_usage(
     }
 
     Ok(())
-}
-
-fn collect_local_sources(
-    path: &Path,
-    visited: &mut HashSet<PathBuf>,
-    ordered_sources: &mut Vec<String>,
-) -> Result<(), RuntimeError> {
-    let canonical = path.canonicalize()?;
-    if visited.contains(&canonical) {
-        return Ok(());
-    }
-    visited.insert(canonical.clone());
-
-    let source = std::fs::read_to_string(&canonical)?;
-    let parser =
-        Parser::new(&source).map_err(|errors| RuntimeError::Lex(format_lex_errors(&errors, 0)))?;
-    let (ast, interner) = parser
-        .parse()
-        .map_err(|errors| RuntimeError::Parse(format_parse_errors(&errors, 0)))?;
-
-    for stmt in &ast.statements {
-        if let Statement::ImportDecl(import) = stmt {
-            let specifier = interner.resolve(import.source.value).to_string();
-            if is_local_import(&specifier) {
-                let resolved = resolve_local_import(&canonical, &specifier)?;
-                collect_local_sources(&resolved, visited, ordered_sources)?;
-            }
-        }
-    }
-
-    ordered_sources.push(source);
-    Ok(())
-}
-
-fn is_local_import(specifier: &str) -> bool {
-    specifier.starts_with("./") || specifier.starts_with("../")
-}
-
-fn resolve_local_import(from_file: &Path, specifier: &str) -> Result<PathBuf, RuntimeError> {
-    let base_dir = from_file.parent().ok_or_else(|| {
-        RuntimeError::Dependency(format!(
-            "Cannot resolve import '{}' from '{}': no parent directory",
-            specifier,
-            from_file.display()
-        ))
-    })?;
-
-    let candidate = base_dir.join(specifier);
-    let mut tried = Vec::new();
-
-    if candidate.extension().is_some() {
-        tried.push(candidate.clone());
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    } else {
-        let with_ext = candidate.with_extension("raya");
-        tried.push(with_ext.clone());
-        if with_ext.exists() {
-            return Ok(with_ext);
-        }
-    }
-
-    let index_candidate = candidate.join("index.raya");
-    tried.push(index_candidate.clone());
-    if index_candidate.exists() {
-        return Ok(index_candidate);
-    }
-
-    Err(RuntimeError::Dependency(format!(
-        "Module not found: '{}' from '{}'. Tried: {}",
-        specifier,
-        from_file.display(),
-        tried
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    )))
 }
 
 #[cfg(test)]

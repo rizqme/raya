@@ -1,7 +1,7 @@
 use crate::error::RuntimeError;
 use raya_engine::parser::ast::{
-    ClassDecl, ClassMember, ExportDecl, FunctionDecl, ImportSpecifier, Pattern, Statement,
-    VariableDecl,
+    ClassDecl, ClassMember, ExportDecl, Expression, FunctionDecl, ImportSpecifier, ObjectProperty,
+    Pattern, PropertyKey, Statement, VariableDecl,
 };
 use raya_engine::parser::{Interner, Parser};
 use std::collections::{BTreeMap, HashMap};
@@ -177,6 +177,9 @@ fn transform_library_module(
                                     property_accessor(&dep_binding, &imported)
                                 ));
                             }
+                            if ty != "unknown" && looks_like_class_identifier(&local) {
+                                body.push_str(&format!("type {} = {};\n", local, ty));
+                            }
                             imported_binding_types.insert(local.clone(), ty.clone());
                             local_value_types.entry(local).or_insert(ty);
                         }
@@ -192,6 +195,9 @@ fn transform_library_module(
                                 local_name,
                                 property_accessor(&dep_binding, INTERNAL_DEFAULT_EXPORT)
                             ));
+                            if ty != "unknown" && looks_like_class_identifier(&local_name) {
+                                body.push_str(&format!("type {} = {};\n", local_name, ty));
+                            }
                             imported_binding_types.insert(local_name.clone(), ty.clone());
                             local_value_types.entry(local_name).or_insert(ty);
                         }
@@ -443,7 +449,7 @@ fn transform_entry_module(
         match stmt {
             Statement::ImportDecl(import) => {
                 let span = stmt.span();
-                body.push_str(&node.source[cursor..span.start.min(node.source.len())]);
+                append_source_segment(&mut body, &node.source, &mut cursor, span.start);
                 let specifier = interner.resolve(import.source.value);
                 let dep_key = dep_map.get(specifier).ok_or_else(|| {
                     RuntimeError::Dependency(format!(
@@ -514,27 +520,27 @@ fn transform_entry_module(
                         }
                     }
                 }
-                cursor = span.end.min(node.source.len());
+                cursor = cursor.max(span.end.min(node.source.len()));
             }
             Statement::ExportDecl(ExportDecl::Declaration(inner)) => {
                 let span = stmt.span();
-                body.push_str(&node.source[cursor..span.start.min(node.source.len())]);
+                append_source_segment(&mut body, &node.source, &mut cursor, span.start);
                 body.push_str(strip_export_prefix(span.slice(&node.source)));
                 body.push('\n');
-                cursor = span.end.min(node.source.len());
+                cursor = cursor.max(span.end.min(node.source.len()));
             }
             Statement::ExportDecl(ExportDecl::Default { expression, .. }) => {
                 let span = stmt.span();
-                body.push_str(&node.source[cursor..span.start.min(node.source.len())]);
+                append_source_segment(&mut body, &node.source, &mut cursor, span.start);
                 body.push_str(expression.span().slice(&node.source));
                 body.push_str(";\n");
-                cursor = span.end.min(node.source.len());
+                cursor = cursor.max(span.end.min(node.source.len()));
             }
             Statement::ExportDecl(ExportDecl::Named { .. })
             | Statement::ExportDecl(ExportDecl::All { .. }) => {
                 let span = stmt.span();
-                body.push_str(&node.source[cursor..span.start.min(node.source.len())]);
-                cursor = span.end.min(node.source.len());
+                append_source_segment(&mut body, &node.source, &mut cursor, span.start);
+                cursor = cursor.max(span.end.min(node.source.len()));
             }
             _ => {}
         }
@@ -669,7 +675,7 @@ fn synthesize_class_aliases(
                         .map(|ann| normalize_return_type_snippet(ann.span.slice(source)))
                         .map(|ty| rewrite_local_class_refs(&ty, class_aliases))
                         .unwrap_or_else(|| "void".to_string());
-                    let key = if is_safe_property_identifier(&method_name) {
+                    let key = if is_identifier(&method_name) {
                         method_name
                     } else {
                         format!("\"{}\"", escape_string(&method_name))
@@ -702,8 +708,7 @@ fn collect_local_value_types(
             }
             Statement::ClassDecl(class) => {
                 let name = interner.resolve(class.name.name).to_string();
-                let ty = class_aliases.get(&name).cloned().unwrap_or(name.clone());
-                out.insert(name, ty);
+                out.insert(name.clone(), name);
             }
             Statement::VariableDecl(decl) => {
                 let ty = infer_variable_decl_type(decl, source, class_aliases);
@@ -721,8 +726,7 @@ fn collect_local_value_types(
                 }
                 Statement::ClassDecl(class) => {
                     let name = interner.resolve(class.name.name).to_string();
-                    let ty = class_aliases.get(&name).cloned().unwrap_or(name.clone());
-                    out.insert(name, ty);
+                    out.insert(name.clone(), name);
                 }
                 Statement::VariableDecl(decl) => {
                     let ty = infer_variable_decl_type(decl, source, class_aliases);
@@ -796,9 +800,9 @@ fn infer_variable_decl_type(
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect::<String>();
             if !class_name.is_empty() {
-                // Instance values crossing module boundaries should not be forced into
-                // structural class-alias object types, otherwise method calls lower as
-                // field-closure calls instead of dynamic/member dispatch.
+                if let Some(alias) = class_aliases.get(&class_name) {
+                    return alias.clone();
+                }
                 return "unknown".to_string();
             }
         }
@@ -808,25 +812,55 @@ fn infer_variable_decl_type(
 
 fn infer_expression_type(
     expr_src: &str,
-    expression: &raya_engine::parser::ast::Expression,
-    _source: &str,
+    expression: &Expression,
+    source: &str,
     interner: &Interner,
     local_value_types: &HashMap<String, String>,
     imported_binding_types: &HashMap<String, String>,
     class_aliases: &HashMap<String, String>,
 ) -> String {
-    if let raya_engine::parser::ast::Expression::Identifier(id) = expression {
-        let name = interner.resolve(id.name).to_string();
-        if let Some(ty) = local_value_types.get(&name) {
-            return ty.clone();
+    match expression {
+        Expression::Identifier(id) => {
+            let name = interner.resolve(id.name).to_string();
+            if let Some(ty) = local_value_types.get(&name) {
+                return ty.clone();
+            }
+            if let Some(ty) = imported_binding_types.get(&name) {
+                return ty.clone();
+            }
+            if looks_like_class_identifier(&name) {
+                return name;
+            }
         }
-        if let Some(ty) = imported_binding_types.get(&name) {
-            return ty.clone();
+        Expression::Object(obj) => {
+            return infer_object_expression_type(
+                obj,
+                source,
+                interner,
+                local_value_types,
+                imported_binding_types,
+                class_aliases,
+            );
         }
-        if looks_like_class_identifier(&name) {
-            return name;
+        Expression::Parenthesized(paren) => {
+            let inner_src = paren.expression.span().slice(source);
+            return infer_expression_type(
+                inner_src,
+                &paren.expression,
+                source,
+                interner,
+                local_value_types,
+                imported_binding_types,
+                class_aliases,
+            );
         }
+        Expression::TypeCast(cast) => {
+            let ty = normalize_type_snippet(cast.target_type.span.slice(source));
+            return rewrite_local_class_refs(&ty, class_aliases);
+        }
+        _ => {}
     }
+
     let trimmed = expr_src.trim();
     if let Some(rest) = trimmed.strip_prefix("new ") {
         let class_name = rest
@@ -834,12 +868,76 @@ fn infer_expression_type(
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
             .collect::<String>();
         if !class_name.is_empty() {
-            // Same rationale as infer_variable_decl_type: preserve runtime method
-            // dispatch behavior at module boundaries.
+            if let Some(alias) = class_aliases.get(&class_name) {
+                return alias.clone();
+            }
             return "unknown".to_string();
         }
     }
     "unknown".to_string()
+}
+
+fn infer_object_expression_type(
+    obj: &raya_engine::parser::ast::ObjectExpression,
+    source: &str,
+    interner: &Interner,
+    local_value_types: &HashMap<String, String>,
+    imported_binding_types: &HashMap<String, String>,
+    class_aliases: &HashMap<String, String>,
+) -> String {
+    let mut fields = Vec::new();
+
+    for prop in &obj.properties {
+        let ObjectProperty::Property(property) = prop else {
+            // Preserve strictness until object spread typing is modeled in linker inference.
+            return "unknown".to_string();
+        };
+
+        let Some(key) = object_property_key_type(property, interner) else {
+            return "unknown".to_string();
+        };
+
+        let value_src = property.value.span().slice(source);
+        let value_ty = infer_expression_type(
+            value_src,
+            &property.value,
+            source,
+            interner,
+            local_value_types,
+            imported_binding_types,
+            class_aliases,
+        );
+
+        fields.push(format!("{}: {}", key, value_ty));
+    }
+
+    if fields.is_empty() {
+        "{}".to_string()
+    } else {
+        format!("{{ {} }}", fields.join(", "))
+    }
+}
+
+fn object_property_key_type(
+    property: &raya_engine::parser::ast::Property,
+    interner: &Interner,
+) -> Option<String> {
+    match &property.key {
+        PropertyKey::Identifier(id) => {
+            let name = interner.resolve(id.name).to_string();
+            if is_identifier(&name) {
+                Some(name)
+            } else {
+                Some(format!("\"{}\"", escape_string(&name)))
+            }
+        }
+        PropertyKey::StringLiteral(s) => Some(format!(
+            "\"{}\"",
+            escape_string(interner.resolve(s.value))
+        )),
+        PropertyKey::IntLiteral(n) => Some(format!("\"{}\"", n.value)),
+        PropertyKey::Computed(_) => None,
+    }
 }
 
 fn declaration_runtime_names(stmt: &Statement, interner: &Interner) -> Vec<String> {
@@ -879,6 +977,13 @@ fn collect_pattern_names(pattern: &Pattern, interner: &Interner, out: &mut Vec<S
                 out.push(interner.resolve(rest.name).to_string());
             }
         }
+    }
+}
+
+fn append_source_segment(output: &mut String, source: &str, cursor: &mut usize, next_start: usize) {
+    let start = next_start.min(source.len());
+    if *cursor < start {
+        output.push_str(&source[*cursor..start]);
     }
 }
 
@@ -1018,13 +1123,22 @@ fn normalize_return_type_snippet(raw: &str) -> String {
 
 fn normalize_param_type_snippet(raw: &str, is_rest: bool) -> String {
     let mut ty = normalize_type_snippet(raw);
+    while ty.ends_with(',') {
+        ty.pop();
+    }
     if is_rest {
         while ty.ends_with(')') {
             ty.pop();
         }
-        ty = ty.trim().to_string();
+    } else {
+        let opens = ty.chars().filter(|c| *c == '(').count();
+        let mut closes = ty.chars().filter(|c| *c == ')').count();
+        while closes > opens && ty.ends_with(')') {
+            ty.pop();
+            closes -= 1;
+        }
     }
-    ty
+    ty.trim().to_string()
 }
 
 fn rewrite_local_class_refs(type_expr: &str, class_aliases: &HashMap<String, String>) -> String {
@@ -1040,6 +1154,11 @@ fn rewrite_local_class_refs(type_expr: &str, class_aliases: &HashMap<String, Str
             if !token.is_empty() {
                 if let Some(alias) = class_aliases.get(&token) {
                     result.push_str(alias);
+                } else if looks_like_class_identifier(&token)
+                    && !is_known_global_class(&token)
+                    && !token.starts_with("__t_")
+                {
+                    result.push_str("unknown");
                 } else {
                     result.push_str(&token);
                 }
@@ -1051,6 +1170,11 @@ fn rewrite_local_class_refs(type_expr: &str, class_aliases: &HashMap<String, Str
     if !token.is_empty() {
         if let Some(alias) = class_aliases.get(&token) {
             result.push_str(alias);
+        } else if looks_like_class_identifier(&token)
+            && !is_known_global_class(&token)
+            && !token.starts_with("__t_")
+        {
+            result.push_str("unknown");
         } else {
             result.push_str(&token);
         }

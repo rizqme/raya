@@ -192,7 +192,10 @@ impl<'a> Lowerer<'a> {
                     let in_std_wrapper = self
                         .current_function
                         .as_ref()
-                        .is_some_and(|f| f.name.starts_with("__std_module_"));
+                        .is_some_and(|f| {
+                            f.name.starts_with("__std_module_")
+                                || f.name.starts_with("__raya_mod_init_")
+                        });
                     let saved_pending_method_env = self.pending_class_method_env_globals.take();
                     if in_std_wrapper {
                         self.pending_class_method_env_globals =
@@ -1567,7 +1570,9 @@ impl<'a> Lowerer<'a> {
             let in_std_wrapper = self
                 .current_function
                 .as_ref()
-                .is_some_and(|f| f.name.starts_with("__std_module_"));
+                .is_some_and(|f| {
+                    f.name.starts_with("__std_module_") || f.name.starts_with("__raya_mod_init_")
+                });
             if in_std_wrapper && matches!(init, ast::Expression::Arrow(_)) {
                 if let Some(func_id) = self.last_arrow_func_id {
                     self.function_map.insert(name, func_id);
@@ -1703,7 +1708,9 @@ impl<'a> Lowerer<'a> {
         let in_std_wrapper = self
             .current_function
             .as_ref()
-            .is_some_and(|f| f.name.starts_with("__std_module_"));
+            .is_some_and(|f| {
+                f.name.starts_with("__std_module_") || f.name.starts_with("__raya_mod_init_")
+            });
         if in_std_wrapper {
             if let Some(func_id) = self.last_arrow_func_id {
                 self.function_map.insert(func_decl.name.name, func_id);
@@ -1724,6 +1731,10 @@ impl<'a> Lowerer<'a> {
 
         // Assign to a local variable with the function's name
         let local_idx = self.allocate_local(func_decl.name.name);
+        // Nested function declarations are callable closures; mark both the symbol
+        // and local slot so captured/ancestor call lowering treats them as callable.
+        self.callable_local_hints.insert(local_idx);
+        self.callable_symbol_hints.insert(func_decl.name.name);
         self.local_registers.insert(local_idx, closure_reg.clone());
         self.emit(IrInstr::StoreLocal {
             index: local_idx,

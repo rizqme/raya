@@ -33,7 +33,6 @@ pub mod error;
 pub mod loader;
 pub mod module_system;
 pub mod session;
-pub mod std_prelude;
 pub mod test_runner;
 mod vm_setup;
 
