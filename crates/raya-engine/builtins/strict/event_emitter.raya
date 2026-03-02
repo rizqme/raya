@@ -3,9 +3,9 @@
 type EventMap = Record<PropertyKey, readonly unknown[]>;
 
 class EventEmitter<E extends EventMap> {
-    private _listeners: Map<string, Object[]>;
-    private _onceListeners: Map<string, Object[]>;
-    private _maxListeners: number;
+    _listeners: Map<string, Object[]>;
+    _onceListeners: Map<string, Object[]>;
+    _maxListeners: number;
 
     constructor() {
         this._listeners = new Map<string, Object[]>();

@@ -390,16 +390,16 @@ fn test_compiler_compile_ast_with_expression() {
 }
 
 // ============================================================================
-// Phase 3: Vm.current()
+// Phase 3: vm
 // ============================================================================
 
 #[test]
 fn test_vm_current_returns_instance() {
-    // Vm.current() should return a VmInstance with a positive ID
+    // vm should return a VmInstance with a positive ID
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let current: VmInstance = Vm.current();
+        import vm, { Vm } from "std:runtime";
+        let current: Vm = vm;
         return current.id() > 0;
     "#,
         true,
@@ -410,8 +410,8 @@ fn test_vm_current_returns_instance() {
 fn test_vm_current_is_root() {
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let current: VmInstance = Vm.current();
+        import vm, { Vm } from "std:runtime";
+        let current: Vm = vm;
         return current.isRoot();
     "#,
         true,
@@ -422,23 +422,23 @@ fn test_vm_current_is_root() {
 fn test_vm_current_is_alive() {
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.current().isAlive();
+        import vm, { Vm } from "std:runtime";
+        return vm.isAlive();
     "#,
         true,
     );
 }
 
 // ============================================================================
-// Phase 3: Vm.spawn()
+// Phase 3: new Vm()
 // ============================================================================
 
 #[test]
 fn test_vm_spawn_returns_instance() {
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let child: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let child: Vm = new Vm();
         return child.id() > 0;
     "#,
         true,
@@ -449,8 +449,8 @@ fn test_vm_spawn_returns_instance() {
 fn test_vm_spawn_is_not_root() {
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let child: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let child: Vm = new Vm();
         return child.isRoot();
     "#,
         false,
@@ -461,8 +461,8 @@ fn test_vm_spawn_is_not_root() {
 fn test_vm_spawn_is_alive() {
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let child: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let child: Vm = new Vm();
         return child.isAlive();
     "#,
         true,
@@ -477,8 +477,8 @@ fn test_vm_spawn_is_alive() {
 fn test_child_compile_and_execute() {
     expect_i32_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let child: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let child: Vm = new Vm();
         let mod: number = child.compile("return 42;");
         return child.execute(mod);
     "#,
@@ -490,8 +490,8 @@ fn test_child_compile_and_execute() {
 fn test_child_eval() {
     expect_i32_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let child: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let child: Vm = new Vm();
         return child.eval("return 10 + 20;");
     "#,
         30,
@@ -502,8 +502,8 @@ fn test_child_eval() {
 fn test_child_eval_with_variable() {
     expect_i32_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let child: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let child: Vm = new Vm();
         return child.eval("let x: number = 7; return x * 6;");
     "#,
         42,
@@ -518,8 +518,8 @@ fn test_child_eval_with_variable() {
 fn test_terminate_marks_destroyed() {
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let child: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let child: Vm = new Vm();
         child.terminate();
         return child.isDestroyed();
     "#,
@@ -531,8 +531,8 @@ fn test_terminate_marks_destroyed() {
 fn test_terminated_not_alive() {
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let child: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let child: Vm = new Vm();
         child.terminate();
         return child.isAlive();
     "#,
@@ -544,8 +544,8 @@ fn test_terminated_not_alive() {
 fn test_execute_on_terminated_child_errors() {
     let result = compile_and_run_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let child: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let child: Vm = new Vm();
         let mod: number = child.compile("return 1;");
         child.terminate();
         return child.execute(mod);
@@ -565,9 +565,9 @@ fn test_execute_on_terminated_child_errors() {
 fn test_multiple_children_isolated() {
     expect_i32_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let a: VmInstance = Vm.spawn();
-        let b: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let a: Vm = new Vm();
+        let b: Vm = new Vm();
         let ra: number = a.eval("return 10;");
         let rb: number = b.eval("return 20;");
         return ra + rb;
@@ -585,8 +585,8 @@ fn test_vm_has_permission_eval() {
     // Root VM should have eval permission
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.hasPermission("eval");
+        import vm, { Vm } from "std:runtime";
+        return vm.hasPermission("eval");
     "#,
         true,
     );
@@ -597,8 +597,8 @@ fn test_vm_has_permission_vm_spawn() {
     // Root VM should have vmSpawn permission
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.hasPermission("vmSpawn");
+        import vm, { Vm } from "std:runtime";
+        return vm.hasPermission("vmSpawn");
     "#,
         true,
     );
@@ -609,8 +609,8 @@ fn test_vm_has_permission_binary_io() {
     // Root VM should have binaryIO permission
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.hasPermission("binaryIO");
+        import vm, { Vm } from "std:runtime";
+        return vm.hasPermission("binaryIO");
     "#,
         true,
     );
@@ -621,8 +621,8 @@ fn test_vm_has_permission_lib_load() {
     // Root VM should have libLoad permission
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.hasPermission("libLoad");
+        import vm, { Vm } from "std:runtime";
+        return vm.hasPermission("libLoad");
     "#,
         true,
     );
@@ -633,8 +633,8 @@ fn test_vm_has_permission_reflect() {
     // Root VM should have reflect permission
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.hasPermission("reflect");
+        import vm, { Vm } from "std:runtime";
+        return vm.hasPermission("reflect");
     "#,
         true,
     );
@@ -645,8 +645,8 @@ fn test_vm_has_permission_unknown() {
     // Unknown permission name should return false
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.hasPermission("unknownPerm");
+        import vm, { Vm } from "std:runtime";
+        return vm.hasPermission("unknownPerm");
     "#,
         false,
     );
@@ -657,8 +657,8 @@ fn test_vm_get_permissions() {
     // Root VM should have all permissions listed
     expect_string_contains_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.getPermissions();
+        import vm, { Vm } from "std:runtime";
+        return vm.getPermissions();
     "#,
         "eval",
     );
@@ -668,8 +668,8 @@ fn test_vm_get_permissions() {
 fn test_vm_get_permissions_contains_vm_spawn() {
     expect_string_contains_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.getPermissions();
+        import vm, { Vm } from "std:runtime";
+        return vm.getPermissions();
     "#,
         "vmSpawn",
     );
@@ -680,8 +680,8 @@ fn test_vm_get_allowed_stdlib() {
     // Root VM should allow all stdlib ("*")
     expect_string_contains_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.getAllowedStdlib();
+        import vm, { Vm } from "std:runtime";
+        return vm.getAllowedStdlib();
     "#,
         "*",
     );
@@ -692,8 +692,8 @@ fn test_vm_is_stdlib_allowed_math() {
     // Root VM should allow std:math
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.isStdlibAllowed("std:math");
+        import vm, { Vm } from "std:runtime";
+        return vm.isStdlibAllowed("std:math");
     "#,
         true,
     );
@@ -704,8 +704,8 @@ fn test_vm_is_stdlib_allowed_logger() {
     // Root VM should allow std:logger
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.isStdlibAllowed("std:logger");
+        import vm, { Vm } from "std:runtime";
+        return vm.isStdlibAllowed("std:logger");
     "#,
         true,
     );
@@ -720,8 +720,8 @@ fn test_vm_heap_used_non_negative() {
     // heapUsed() should return >= 0
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.heapUsed() >= 0;
+        import vm, { Vm } from "std:runtime";
+        return vm.heapUsed() >= 0;
     "#,
         true,
     );
@@ -732,8 +732,8 @@ fn test_vm_heap_limit_unlimited() {
     // heapLimit() returns 0 for unlimited
     expect_i32_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.heapLimit();
+        import vm, { Vm } from "std:runtime";
+        return vm.heapLimit();
     "#,
         0,
     );
@@ -744,8 +744,8 @@ fn test_vm_thread_count_positive() {
     // threadCount() should return at least 1
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.threadCount() > 0;
+        import vm, { Vm } from "std:runtime";
+        return vm.threadCount() > 0;
     "#,
         true,
     );
@@ -756,8 +756,8 @@ fn test_vm_task_count_non_negative() {
     // taskCount() placeholder returns 0
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.taskCount() >= 0;
+        import vm, { Vm } from "std:runtime";
+        return vm.taskCount() >= 0;
     "#,
         true,
     );
@@ -768,8 +768,8 @@ fn test_vm_concurrency_non_negative() {
     // concurrency() placeholder returns 0
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.concurrency() >= 0;
+        import vm, { Vm } from "std:runtime";
+        return vm.concurrency() >= 0;
     "#,
         true,
     );
@@ -780,8 +780,8 @@ fn test_vm_gc_stats_non_negative() {
     // gcStats() should return >= 0 bytes freed
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.gcStats() >= 0;
+        import vm, { Vm } from "std:runtime";
+        return vm.gcStats() >= 0;
     "#,
         true,
     );
@@ -792,8 +792,8 @@ fn test_vm_gc_collect_no_error() {
     // gcCollect() should not error; return a value after calling it
     expect_i32_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        Vm.gcCollect();
+        import vm, { Vm } from "std:runtime";
+        vm.gcCollect();
         return 1;
     "#,
         1,
@@ -805,8 +805,8 @@ fn test_vm_version_contains_0_1() {
     // version() should contain "0.1"
     expect_string_contains_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.version();
+        import vm, { Vm } from "std:runtime";
+        return vm.version();
     "#,
         "0.1",
     );
@@ -817,8 +817,8 @@ fn test_vm_uptime_non_negative() {
     // uptime() should be >= 0
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.uptime() >= 0;
+        import vm, { Vm } from "std:runtime";
+        return vm.uptime() >= 0;
     "#,
         true,
     );
@@ -829,8 +829,8 @@ fn test_vm_has_module_false() {
     // hasModule() should return false for non-existent module
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        return Vm.hasModule("nonexistent");
+        import vm, { Vm } from "std:runtime";
+        return vm.hasModule("nonexistent");
     "#,
         false,
     );
@@ -841,8 +841,8 @@ fn test_vm_loaded_modules_is_string() {
     // loadedModules() should return a string (may be empty)
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let mods: string = Vm.loadedModules();
+        import vm, { Vm } from "std:runtime";
+        let mods: string = vm.loadedModules();
         return true;
     "#,
         true,
@@ -1194,10 +1194,10 @@ fn test_child_load_bytecode_and_execute() {
     // Compile in parent, encode, load into child, execute
     expect_i32_with_builtins(
         r#"
-        import { Compiler, Bytecode, Vm } from "std:runtime";
+        import vm, { Compiler, Bytecode, Vm } from "std:runtime";
         let mod: number = Compiler.compile("return 55;");
         let bytes: Buffer = Bytecode.encode(mod);
-        let child: VmInstance = Vm.spawn();
+        let child: Vm = new Vm();
         let childMod: number = child.loadBytecode(bytes);
         let result: number = child.execute(childMod);
         child.terminate();
@@ -1212,10 +1212,10 @@ fn test_child_run_entry() {
     // Compile a module with a return statement, load into child, run entry
     expect_i32_with_builtins(
         r#"
-        import { Compiler, Bytecode, Vm } from "std:runtime";
+        import vm, { Compiler, Bytecode, Vm } from "std:runtime";
         let mod: number = Compiler.compile("return 42;");
         let bytes: Buffer = Bytecode.encode(mod);
-        let child: VmInstance = Vm.spawn();
+        let child: Vm = new Vm();
         child.loadBytecode(bytes);
         let result: number = child.runEntry("main");
         child.terminate();
@@ -1230,8 +1230,8 @@ fn test_child_fault_containment() {
     // An error in a child VM should not crash the parent
     expect_i32_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let child: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let child: Vm = new Vm();
         let ok: number = child.eval("return 100;");
         child.terminate();
         return ok;
@@ -1245,8 +1245,8 @@ fn test_child_eval_multiple_times() {
     // A child VM should support multiple eval calls
     expect_i32_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let child: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let child: Vm = new Vm();
         let a: number = child.eval("return 10;");
         let b: number = child.eval("return 20;");
         let c: number = child.eval("return 30;");
@@ -1262,9 +1262,9 @@ fn test_vm_spawn_unique_ids() {
     // Each spawned VM should get a unique ID
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let a: VmInstance = Vm.spawn();
-        let b: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let a: Vm = new Vm();
+        let b: Vm = new Vm();
         let unique: boolean = a.id() != b.id();
         a.terminate();
         b.terminate();
@@ -1279,8 +1279,8 @@ fn test_vm_current_not_destroyed() {
     // Root VM should never be destroyed
     expect_bool_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let root: VmInstance = Vm.current();
+        import vm, { Vm } from "std:runtime";
+        let root: Vm = vm;
         return root.isAlive();
     "#,
         true,
@@ -1294,9 +1294,9 @@ fn test_compile_in_child_execute_independently() {
     // Two children compile and execute independently
     expect_i32_with_builtins(
         r#"
-        import { Vm } from "std:runtime";
-        let c1: VmInstance = Vm.spawn();
-        let c2: VmInstance = Vm.spawn();
+        import vm, { Vm } from "std:runtime";
+        let c1: Vm = new Vm();
+        let c2: Vm = new Vm();
         let r1: number = c1.eval("return 7 * 3;");
         let r2: number = c2.eval("return 8 * 4;");
         c1.terminate();
@@ -1392,10 +1392,10 @@ fn test_multiple_imports_same_statement() {
     // Import multiple classes from std:runtime in one statement
     expect_i32_with_builtins(
         r#"
-        import { Compiler, Bytecode, Parser, TypeChecker, Vm } from "std:runtime";
+        import vm, { Compiler, Bytecode, Parser, TypeChecker, Vm } from "std:runtime";
         let mod: number = Compiler.compile("return 1;");
         let ast: number = Parser.parse("return 2;");
-        let version: string = Vm.version();
+        let version: string = vm.version();
         return 1;
     "#,
         1,

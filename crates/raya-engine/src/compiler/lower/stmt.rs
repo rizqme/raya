@@ -1244,13 +1244,34 @@ impl<'a> Lowerer<'a> {
         name: crate::parser::Symbol,
         init: &ast::Expression,
     ) {
-        if let ast::Expression::Call(call) = init {
+        let (call, cast_alias_name) = match init {
+            ast::Expression::Call(call) => (Some(call), None),
+            ast::Expression::TypeCast(cast) => {
+                let alias_name = match &cast.target_type.ty {
+                    ast::Type::Reference(type_ref) => {
+                        Some(self.interner.resolve(type_ref.name.name).to_string())
+                    }
+                    _ => None,
+                };
+                if let ast::Expression::Call(call) = &*cast.object {
+                    (Some(call), alias_name)
+                } else {
+                    (None, alias_name)
+                }
+            }
+            _ => (None, None),
+        };
+
+        if let Some(call) = call {
             if let ast::Expression::Identifier(func_ident) = &*call.callee {
-                if let Some(alias_name) = self.function_return_type_alias_map.get(&func_ident.name)
-                {
-                    if self.type_alias_object_fields.contains_key(alias_name) {
-                        self.variable_object_type_aliases
-                            .insert(name, alias_name.clone());
+                let inferred_alias = self
+                    .function_return_type_alias_map
+                    .get(&func_ident.name)
+                    .cloned();
+                let alias_name = cast_alias_name.or(inferred_alias);
+                if let Some(alias_name) = alias_name {
+                    if self.type_alias_object_fields.contains_key(&alias_name) {
+                        self.variable_object_type_aliases.insert(name, alias_name);
                     }
                 }
             }
@@ -1280,6 +1301,50 @@ impl<'a> Lowerer<'a> {
         self.variable_object_fields.remove(&name);
         self.variable_object_type_aliases.remove(&name);
         self.callable_symbol_hints.remove(&name);
+
+        // Re-populate object field layout for __std_exports_<tag> variables.
+        // These are declared as `const __std_exports_<tag> = __std_module_<tag>()`.
+        // Doing this here (after the stale-entry removal) ensures has_concrete_layout=true
+        // in lower_member when the next sibling decl accesses a field of this variable.
+        if let Some(init) = &decl.initializer {
+            let (call_expr, cast_alias_name) = match init {
+                ast::Expression::Call(call_expr) => (Some(call_expr), None),
+                ast::Expression::TypeCast(cast) => {
+                    let alias_name = match &cast.target_type.ty {
+                        ast::Type::Reference(type_ref) => {
+                            Some(self.interner.resolve(type_ref.name.name).to_string())
+                        }
+                        _ => None,
+                    };
+                    if let ast::Expression::Call(call_expr) = &*cast.object {
+                        (Some(call_expr), alias_name)
+                    } else {
+                        (None, alias_name)
+                    }
+                }
+                _ => (None, None),
+            };
+
+            if let Some(call_expr) = call_expr {
+                if let ast::Expression::Identifier(func_ident) = &*call_expr.callee {
+                    let func_name = self.interner.resolve(func_ident.name).to_string();
+                    if let Some(tag) = func_name.strip_prefix("__std_module_") {
+                        let alias_name = cast_alias_name
+                            .unwrap_or_else(|| format!("__std_exports_type_{}", tag));
+                        if let Some(fields) =
+                            self.type_alias_object_fields.get(&alias_name).cloned()
+                        {
+                            let field_layout: Vec<(String, usize)> = fields
+                                .iter()
+                                .map(|(n, idx, _)| (n.clone(), *idx as usize))
+                                .collect();
+                            self.variable_object_fields.insert(name, field_layout);
+                            self.variable_object_type_aliases.insert(name, alias_name);
+                        }
+                    }
+                }
+            }
+        }
 
         // Check for compile-time constant: const with literal initializer
         // These are folded at compile time and emit no runtime code

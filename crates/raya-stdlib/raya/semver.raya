@@ -79,19 +79,4 @@ function eq(a: string, b: string): boolean {
 
 export { parse, valid, compare, satisfies, gt, gte, lt, lte, eq };
 
-// ── Default export (class namespace for method dispatch) ──
-
-class SemverNamespace {
-    parse(version: string): SemverVersion { return parse(version); }
-    valid(version: string): boolean { return valid(version); }
-    compare(a: string, b: string): number { return compare(a, b); }
-    satisfies(version: string, range: string): boolean { return satisfies(version, range); }
-    gt(a: string, b: string): boolean { return gt(a, b); }
-    gte(a: string, b: string): boolean { return gte(a, b); }
-    lt(a: string, b: string): boolean { return lt(a, b); }
-    lte(a: string, b: string): boolean { return lte(a, b); }
-    eq(a: string, b: string): boolean { return eq(a, b); }
-}
-
-const semver = new SemverNamespace();
-export default semver;
+export default { parse, valid, compare, satisfies, gt, gte, lt, lte, eq };

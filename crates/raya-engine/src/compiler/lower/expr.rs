@@ -1156,10 +1156,10 @@ impl<'a> Lowerer<'a> {
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
                             message: format!(
-                                "unresolved call target '{}': local value is not callable (type id {})",
-                                self.interner.resolve(ident.name),
-                                callee_ty_raw
-                            ),
+                            "unresolved call target '{}': local value is not callable (type id {})",
+                            self.interner.resolve(ident.name),
+                            callee_ty_raw
+                        ),
                         });
                     self.poison_register(&dest);
                     return dest;
@@ -1973,16 +1973,22 @@ impl<'a> Lowerer<'a> {
                 && self.type_is_callable(self.get_expr_type(&call.callee))
             {
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    let obj_type = self.get_expr_type(&member.object);
+                    let obj_type_str = format!("{:?}", obj_type);
                     if let Expression::Identifier(obj_ident) = &*member.object {
+                        let in_vcm = self.variable_class_map.contains_key(&obj_ident.name);
                         eprintln!(
-                            "[lower] structural member call '{}.{}(...)' (class_id unresolved)",
+                            "[lower] structural member call '{}.{}(...)' — obj type_id={} in_variable_class_map={} (WILL USE LoadField+CallClosure)",
                             self.interner.resolve(obj_ident.name),
-                            method_name
+                            method_name,
+                            obj_type_str,
+                            in_vcm
                         );
                     } else {
                         eprintln!(
-                            "[lower] structural member call '<expr>.{}(...)' (class_id unresolved)",
-                            method_name
+                            "[lower] structural member call '<expr>.{}(...)' — obj type_id={} (WILL USE LoadField+CallClosure)",
+                            method_name,
+                            obj_type_str
                         );
                     }
                 }
@@ -2112,6 +2118,55 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
+            // Last structural fallback: if the receiver is a known object-literal
+            // with a concrete field layout, treat `obj.m(...)` as loading a
+            // function-valued field then invoking it as a closure.
+            if let Expression::Identifier(ident) = &*member.object {
+                let field_index = self
+                    .variable_object_fields
+                    .get(&ident.name)
+                    .and_then(|fields| {
+                        fields
+                            .iter()
+                            .find(|(name, _)| name == method_name)
+                            .map(|(_, idx)| *idx as u16)
+                    });
+                if let Some(field_index) = field_index {
+                    let object = self.lower_expr(&member.object);
+                    let closure = self.alloc_register(UNRESOLVED);
+                    self.emit(IrInstr::LoadField {
+                        dest: closure.clone(),
+                        object,
+                        field: field_index,
+                        optional: member.optional,
+                    });
+                    self.emit(IrInstr::CallClosure {
+                        dest: Some(dest.clone()),
+                        closure,
+                        args,
+                    });
+                    return dest;
+                }
+            }
+
+            // Unknown/dynamic receiver fallback: lower `obj.m(...)` as
+            // `CallClosure(LateBoundMember(obj, "m"), args)` so strict mode
+            // can still compile unresolved-but-valid dynamic patterns.
+            if class_id.is_none() && (obj_type_id == UNRESOLVED_TYPE_ID || obj_type_id == 6) {
+                let closure = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::LateBoundMember {
+                    dest: closure.clone(),
+                    object,
+                    property: method_name.to_string(),
+                });
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest.clone()),
+                    closure,
+                    args,
+                });
+                return dest;
+            }
+
             let class_name = inferred_class_id.and_then(|cid| {
                 self.class_map.iter().find_map(|(&sym, &id)| {
                     if id == cid {
@@ -2131,35 +2186,6 @@ impl<'a> Lowerer<'a> {
                     }
                 })
                 .unwrap_or_else(|| "unknown receiver type".to_string());
-
-            let dynamic_call_fallback = if object.ty.0 == UNRESOLVED_TYPE_ID {
-                true
-            } else {
-                matches!(
-                    self.type_ctx.get(object.ty),
-                    Some(crate::parser::types::ty::Type::Unknown)
-                        | Some(crate::parser::types::ty::Type::Any)
-                        | Some(crate::parser::types::ty::Type::JSObject)
-                        | Some(crate::parser::types::ty::Type::Json)
-                        | Some(crate::parser::types::ty::Type::Object(_))
-                        | Some(crate::parser::types::ty::Type::Union(_))
-                        | Some(crate::parser::types::ty::Type::TypeVar(_))
-                )
-            };
-            if dynamic_call_fallback {
-                let callee = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::LateBoundMember {
-                    dest: callee.clone(),
-                    object,
-                    property: method_name.to_string(),
-                });
-                self.emit(IrInstr::CallClosure {
-                    dest: Some(dest.clone()),
-                    closure: callee,
-                    args,
-                });
-                return dest;
-            }
 
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
@@ -2355,6 +2381,22 @@ impl<'a> Lowerer<'a> {
             {
                 Some((field.index, field.ty))
             } else {
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    let class_name = self
+                        .class_map
+                        .iter()
+                        .find_map(|(&sym, &id)| (id == class_id).then(|| self.interner.resolve(sym)))
+                        .unwrap_or("<unknown>");
+                    let field_list = all_fields
+                        .iter()
+                        .map(|f| self.interner.resolve(f.name).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    eprintln!(
+                        "[lower] member miss on class {} property '{}' fields=[{}]",
+                        class_name, prop_name, field_list
+                    );
+                }
                 // Field not found — check if it's a method (bound method extraction)
                 if let Some(&slot) = self.method_slot_map.get(&(class_id, member.property.name)) {
                     if self.js_this_binding_compat {
@@ -2496,15 +2538,68 @@ impl<'a> Lowerer<'a> {
         }
 
         if let Some((field_index, field_ty)) = resolved_field {
-            // Concrete object-layout field access path.
+            // Use direct field loads only when we have a proven concrete object layout.
+            // Type-driven object/alias lookups are structural and may target class instances,
+            // so they must use late-bound property access.
+            let has_concrete_layout = if class_id.is_some() {
+                true
+            } else {
+                match &*member.object {
+                    Expression::Identifier(ident) => self
+                        .variable_object_fields
+                        .get(&ident.name)
+                        .is_some_and(|fields| fields.iter().any(|(name, _)| name == prop_name))
+                        || self
+                            .variable_object_type_aliases
+                            .get(&ident.name)
+                            .is_some_and(|alias| {
+                                alias.starts_with("__raya_mod_exports_type_")
+                                    && self.type_alias_field_lookup(alias, prop_name).is_some()
+                            }),
+                    _ => false,
+                }
+            };
+
             let dest = self.alloc_register(field_ty);
-            self.emit(IrInstr::LoadField {
-                dest: dest.clone(),
-                object,
-                field: field_index,
-                optional: member.optional,
-            });
+            if has_concrete_layout {
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    let obj_name = match &*member.object {
+                        Expression::Identifier(i) => self.interner.resolve(i.name).to_string(),
+                        _ => "<expr>".to_string(),
+                    };
+                    eprintln!(
+                        "[lower] LoadField: {}.{} field_index={}",
+                        obj_name, prop_name, field_index
+                    );
+                }
+                self.emit(IrInstr::LoadField {
+                    dest: dest.clone(),
+                    object,
+                    field: field_index,
+                    optional: member.optional,
+                });
+            } else {
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    let obj_name = match &*member.object {
+                        Expression::Identifier(i) => self.interner.resolve(i.name).to_string(),
+                        _ => "<expr>".to_string(),
+                    };
+                    eprintln!(
+                        "[lower] LateBoundMember: {}.{} (has_concrete_layout=false)",
+                        obj_name, prop_name
+                    );
+                }
+                self.emit(IrInstr::LateBoundMember {
+                    dest: dest.clone(),
+                    object,
+                    property: prop_name.to_string(),
+                });
+            }
             return dest;
+        }
+
+        if class_id.is_none() && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+            eprintln!("[lower] unresolved member object AST: {:?}", &*member.object);
         }
 
         let class_name = class_id.and_then(|cid| {
@@ -2529,21 +2624,7 @@ impl<'a> Lowerer<'a> {
 
         // Dynamic/member-latebound fallback: when receiver typing remains unresolved
         // (unknown/any/jsobject/etc), preserve runtime behavior instead of hard ICE.
-        let dynamic_member_fallback = if object.ty.0 == UNRESOLVED_TYPE_ID {
-            true
-        } else {
-            matches!(
-                self.type_ctx.get(object.ty),
-                Some(crate::parser::types::ty::Type::Unknown)
-                    | Some(crate::parser::types::ty::Type::Any)
-                    | Some(crate::parser::types::ty::Type::JSObject)
-                    | Some(crate::parser::types::ty::Type::Json)
-                    | Some(crate::parser::types::ty::Type::Object(_))
-                    | Some(crate::parser::types::ty::Type::Union(_))
-                    | Some(crate::parser::types::ty::Type::TypeVar(_))
-            )
-        };
-        if dynamic_member_fallback {
+        if class_id.is_none() && (obj_ty_id == UNRESOLVED_TYPE_ID || obj_ty_id == 6) {
             let dest = self.alloc_register(UNRESOLVED);
             self.emit(IrInstr::LateBoundMember {
                 dest: dest.clone(),
@@ -3447,9 +3528,9 @@ impl<'a> Lowerer<'a> {
                             self.errors
                                 .push(crate::compiler::CompileError::InternalError {
                                     message: format!(
-                                        "unresolved member assignment '{}.{}': class field not found",
-                                        class_name, prop_name
-                                    ),
+                                    "unresolved member assignment '{}.{}': class field not found",
+                                    class_name, prop_name
+                                ),
                                 });
                         }
                     }
@@ -4248,6 +4329,14 @@ impl<'a> Lowerer<'a> {
                     .get(&class_id)
                     .and_then(|info| info.constructor);
 
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    eprintln!(
+                        "[lower] new {} ctor_func_id={:?}",
+                        name,
+                        constructor_func_id.map(|id| id.as_u32())
+                    );
+                }
+
                 // Call the constructor if one exists
                 if let Some(ctor_func_id) = constructor_func_id {
                     // Get constructor parameter info for default values
@@ -4282,6 +4371,12 @@ impl<'a> Lowerer<'a> {
                         func: ctor_func_id,
                         args,
                     });
+                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                        eprintln!(
+                            "[lower] emitted constructor call func_id={}",
+                            ctor_func_id.as_u32()
+                        );
+                    }
                 }
 
                 return dest;
@@ -5143,14 +5238,41 @@ impl<'a> Lowerer<'a> {
     pub(super) fn infer_class_id(&self, expr: &Expression) -> Option<ClassId> {
         match expr {
             // 'this' uses current class context
-            Expression::This(_) => self.current_class,
+            Expression::This(_) => {
+                let resolved = self.current_class.or_else(|| {
+                    self.this_register
+                        .as_ref()
+                        .and_then(|reg| self.class_id_from_type_id(reg.ty))
+                });
+                if resolved.is_none() && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    let this_ty = self
+                        .this_register
+                        .as_ref()
+                        .map(|reg| reg.ty.as_u32())
+                        .unwrap_or(u32::MAX);
+                    eprintln!(
+                        "[lower] infer_class_id(this)=None current_class={:?} this_ty={}",
+                        self.current_class.map(|id| id.as_u32()),
+                        this_ty
+                    );
+                }
+                resolved
+            }
             // Variable lookup
-            Expression::Identifier(ident) => self
-                .variable_class_map
-                .get(&ident.name)
-                .copied()
-                .or_else(|| self.class_map.get(&ident.name).copied())
-                .or_else(|| self.class_id_from_type_id(self.get_expr_type(expr))),
+            Expression::Identifier(ident) => {
+                if self.interner.resolve(ident.name) == "this" {
+                    return self.current_class.or_else(|| {
+                        self.this_register
+                            .as_ref()
+                            .and_then(|reg| self.class_id_from_type_id(reg.ty))
+                    });
+                }
+                self.variable_class_map
+                    .get(&ident.name)
+                    .copied()
+                    .or_else(|| self.class_map.get(&ident.name).copied())
+                    .or_else(|| self.class_id_from_type_id(self.get_expr_type(expr)))
+            }
             Expression::TypeCast(cast) => self
                 .try_extract_class_from_type(&cast.target_type)
                 .or_else(|| self.infer_class_id(&cast.object))
@@ -5165,6 +5287,7 @@ impl<'a> Lowerer<'a> {
                     _ => self.class_id_from_type_id(self.get_expr_type(expr)),
                 }
             }
+            Expression::Parenthesized(inner) => self.infer_class_id(&inner.expression),
             // Field access: look up the field's type in the class definition
             Expression::Member(member) => {
                 // Get the class of the object
@@ -6451,7 +6574,8 @@ mod tests {
         let _ = lowerer.lower_module(&module);
 
         let has_non_callable_error = lowerer.errors().iter().any(|err| {
-            err.to_string().contains("unresolved async call target 'fn'")
+            err.to_string()
+                .contains("unresolved async call target 'fn'")
                 && err.to_string().contains("not callable")
         });
         assert!(
@@ -6479,7 +6603,8 @@ mod tests {
         let _ = lowerer.lower_module(&module);
 
         let has_unresolved_async_cb_error = lowerer.errors().iter().any(|err| {
-            err.to_string().contains("unresolved async call target 'cb'")
+            err.to_string()
+                .contains("unresolved async call target 'cb'")
                 && err.to_string().contains("not callable")
         });
         assert!(
@@ -6546,5 +6671,4 @@ mod tests {
         }
         assert!(found, "expected tagged template expression in parsed AST");
     }
-
 }

@@ -54,23 +54,4 @@ export function setPrefix(prefix: string): void {
     __NATIVE_CALL("logger.setPrefix", prefix);
 }
 
-// ── Default export (class namespace for method dispatch) ──
-
-class LoggerNamespace {
-    debug(message: string): void { debug(message); }
-    info(message: string): void { info(message); }
-    warn(message: string): void { warn(message); }
-    error(message: string): void { error(message); }
-    setLevel(level: string): void { setLevel(level); }
-    getLevel(): string { return getLevel(); }
-    debugData(message: string, data: string): void { debugData(message, data); }
-    infoData(message: string, data: string): void { infoData(message, data); }
-    warnData(message: string, data: string): void { warnData(message, data); }
-    errorData(message: string, data: string): void { errorData(message, data); }
-    setFormat(format: string): void { setFormat(format); }
-    setTimestamp(enabled: boolean): void { setTimestamp(enabled); }
-    setPrefix(prefix: string): void { setPrefix(prefix); }
-}
-
-const logger = new LoggerNamespace();
-export default logger;
+export default { debug, info, warn, error, setLevel, getLevel, debugData, infoData, warnData, errorData, setFormat, setTimestamp, setPrefix };

@@ -105,34 +105,4 @@ export function random(): number {
     return __NATIVE_CALL<number>("math.random");
 }
 
-// ── Default export (class namespace for method dispatch) ──
-
-class MathNamespace {
-    PI: number = PI;
-    E: number = E;
-
-    abs(x: number): number { return abs(x); }
-    sign(x: number): number { return sign(x); }
-    floor(x: number): number { return floor(x); }
-    ceil(x: number): number { return ceil(x); }
-    round(x: number): number { return round(x); }
-    trunc(x: number): number { return trunc(x); }
-    min(a: number, b: number): number { return min(a, b); }
-    max(a: number, b: number): number { return max(a, b); }
-    pow(base: number, exp: number): number { return pow(base, exp); }
-    sqrt(x: number): number { return sqrt(x); }
-    sin(x: number): number { return sin(x); }
-    cos(x: number): number { return cos(x); }
-    tan(x: number): number { return tan(x); }
-    asin(x: number): number { return asin(x); }
-    acos(x: number): number { return acos(x); }
-    atan(x: number): number { return atan(x); }
-    atan2(y: number, x: number): number { return atan2(y, x); }
-    exp(x: number): number { return exp(x); }
-    log(x: number): number { return log(x); }
-    log10(x: number): number { return log10(x); }
-    random(): number { return random(); }
-}
-
-const math = new MathNamespace();
-export default math;
+export default { PI, E, abs, sign, floor, ceil, round, trunc, min, max, pow, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, random };

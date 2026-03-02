@@ -1154,11 +1154,13 @@ impl<'a> Lowerer<'a> {
                             ast::ImportSpecifier::Namespace(alias) => alias.name,
                             ast::ImportSpecifier::Default(local) => local.name,
                         };
-                        self.module_var_globals.entry(local_name).or_insert_with(|| {
-                            let global_index = self.next_global_index;
-                            self.next_global_index += 1;
-                            global_index
-                        });
+                        self.module_var_globals
+                            .entry(local_name)
+                            .or_insert_with(|| {
+                                let global_index = self.next_global_index;
+                                self.next_global_index += 1;
+                                global_index
+                            });
                     }
                 }
             }
@@ -1335,6 +1337,107 @@ impl<'a> Lowerer<'a> {
                                 {
                                     if let Some(&class_id) = self.class_map.get(&class_ident.name) {
                                         self.variable_class_map.insert(name, class_id);
+                                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                            eprintln!(
+                                                "[lower] variable_class_map: '{}' = class_id({}) (from new {}())",
+                                                self.interner.resolve(name),
+                                                class_id.as_u32(),
+                                                self.interner.resolve(class_ident.name)
+                                            );
+                                        }
+                                    } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                        eprintln!(
+                                            "[lower] variable_class_map: '{}' NOT added — class '{}' not in class_map",
+                                            self.interner.resolve(name),
+                                            self.interner.resolve(class_ident.name)
+                                        );
+                                    }
+                                }
+                            } else if let ast::Expression::TypeCast(cast) = init {
+                                // Preserve class dispatch for import bindings such as:
+                                //   const path = (__std_exports___node_path.default as __t___node_path_NodePath);
+                                if let Some(class_id) =
+                                    self.try_extract_class_from_type(&cast.target_type)
+                                {
+                                    self.variable_class_map.insert(name, class_id);
+                                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                        eprintln!(
+                                            "[lower] variable_class_map: '{}' = class_id({}) (from cast)",
+                                            self.interner.resolve(name),
+                                            class_id.as_u32(),
+                                        );
+                                    }
+                                }
+                            } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                // Log why annotation-less non-new expressions are skipped
+                                let var_name = self.interner.resolve(name);
+                                if !var_name.starts_with('_') {
+                                    eprintln!(
+                                        "[lower] variable_class_map: '{}' NOT added — initializer is not a new-expr and no class type annotation",
+                                        var_name
+                                    );
+                                }
+                            }
+                        }
+                    } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                        let var_name = self.interner.resolve(name);
+                        eprintln!(
+                            "[lower] variable_class_map: '{}' added from type annotation",
+                            var_name
+                        );
+                    }
+                    // Populate object field layout for __std_exports_<tag> variables.
+                    // When the initializer is `__std_module_<tag>()`, the return type is
+                    // `__std_exports_type_<tag>` whose field layout is already known.
+                    // Populating variable_object_fields here makes has_concrete_layout=true
+                    // in lower_member, so LoadField (static index) is emitted instead of
+                    // LateBoundMember (name-based lookup that returns null at runtime).
+                    if let Some(init) = &decl.initializer {
+                        let (call_expr, cast_alias_name) = match init {
+                            ast::Expression::Call(call_expr) => (Some(call_expr), None),
+                            ast::Expression::TypeCast(cast) => {
+                                let alias_name = match &cast.target_type.ty {
+                                    ast::Type::Reference(type_ref) => {
+                                        Some(self.interner.resolve(type_ref.name.name).to_string())
+                                    }
+                                    _ => None,
+                                };
+                                if let ast::Expression::Call(call_expr) = &*cast.object {
+                                    (Some(call_expr), alias_name)
+                                } else {
+                                    (None, alias_name)
+                                }
+                            }
+                            _ => (None, None),
+                        };
+
+                        if let Some(call_expr) = call_expr {
+                            if let ast::Expression::Identifier(func_ident) = &*call_expr.callee {
+                                let func_name = self.interner.resolve(func_ident.name).to_string();
+                                if let Some(tag) = func_name.strip_prefix("__std_module_") {
+                                    let alias_name = cast_alias_name
+                                        .unwrap_or_else(|| format!("__std_exports_type_{}", tag));
+                                    if let Some(fields) =
+                                        self.type_alias_object_fields.get(&alias_name).cloned()
+                                    {
+                                        let field_layout: Vec<(String, usize)> = fields
+                                            .iter()
+                                            .map(|(n, idx, _)| (n.clone(), *idx as usize))
+                                            .collect();
+                                        eprintln!(
+                                            "[lower] __std_exports prepass: '{}' -> alias='{}' fields=[{}]",
+                                            self.interner.resolve(name),
+                                            alias_name,
+                                            field_layout.iter().map(|(n,i)| format!("{}:{}", n, i)).collect::<Vec<_>>().join(", ")
+                                        );
+                                        self.variable_object_fields.insert(name, field_layout);
+                                        self.variable_object_type_aliases.insert(name, alias_name);
+                                    } else {
+                                        eprintln!(
+                                            "[lower] __std_exports prepass: '{}' -> alias='{}' NOT FOUND in type_alias_object_fields",
+                                            self.interner.resolve(name),
+                                            alias_name
+                                        );
                                     }
                                 }
                             }
@@ -2100,23 +2203,23 @@ impl<'a> Lowerer<'a> {
             let reg = self.alloc_register(ty);
 
             // Extract parameter name from pattern
-                if let Pattern::Identifier(ident) = &param.pattern {
-                    let local_idx = self.allocate_local(ident.name);
-                    self.local_registers.insert(local_idx, reg.clone());
+            if let Pattern::Identifier(ident) = &param.pattern {
+                let local_idx = self.allocate_local(ident.name);
+                self.local_registers.insert(local_idx, reg.clone());
 
-                    // Track class type for parameters with class type annotations
-                    // so method calls can be statically resolved
-                    if let Some(type_ann) = &param.type_annotation {
-                        if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
-                            self.variable_class_map.insert(ident.name, class_id);
-                        }
-                        self.register_variable_type_hints_from_annotation(ident.name, type_ann);
-                        if self.type_annotation_is_callable(type_ann) {
-                            self.callable_local_hints.insert(local_idx);
-                            self.callable_symbol_hints.insert(ident.name);
-                        }
+                // Track class type for parameters with class type annotations
+                // so method calls can be statically resolved
+                if let Some(type_ann) = &param.type_annotation {
+                    if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
+                        self.variable_class_map.insert(ident.name, class_id);
                     }
-                } else {
+                    self.register_variable_type_hints_from_annotation(ident.name, type_ann);
+                    if self.type_annotation_is_callable(type_ann) {
+                        self.callable_local_hints.insert(local_idx);
+                        self.callable_symbol_hints.insert(ident.name);
+                    }
+                }
+            } else {
                 // Destructuring pattern: track for later binding after entry block
                 destructure_params.push((params.len(), &param.pattern, reg.clone()));
             }
@@ -2436,6 +2539,9 @@ impl<'a> Lowerer<'a> {
                         let this_reg = self.alloc_register(this_ty);
                         params.push(this_reg.clone());
                         self.this_register = Some(this_reg);
+                        if let Some(this_sym) = self.interner.lookup("this") {
+                            self.variable_class_map.insert(this_sym, class_id);
+                        }
                         // Check if there are destructuring parameters
                         let has_destructuring = method.params.iter().any(|p| {
                             !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
@@ -2490,8 +2596,7 @@ impl<'a> Lowerer<'a> {
                                     self.variable_class_map.insert(ident.name, param_class_id);
                                 }
                                 self.register_variable_type_hints_from_annotation(
-                                    ident.name,
-                                    type_ann,
+                                    ident.name, type_ann,
                                 );
                                 if self.type_annotation_is_callable(type_ann) {
                                     self.callable_local_hints.insert(local_idx);
@@ -2616,6 +2721,9 @@ impl<'a> Lowerer<'a> {
                     // Clear method context
                     self.current_class = None;
                     self.this_register = None;
+                    if let Some(this_sym) = self.interner.lookup("this") {
+                        self.variable_class_map.remove(&this_sym);
+                    }
                     self.current_method_env_globals = None;
                 }
             }
@@ -2658,6 +2766,9 @@ impl<'a> Lowerer<'a> {
                 let this_reg = self.alloc_register(this_ty);
                 params.push(this_reg.clone());
                 self.this_register = Some(this_reg);
+                if let Some(this_sym) = self.interner.lookup("this") {
+                    self.variable_class_map.insert(this_sym, class_id);
+                }
                 self.next_local = 1; // Explicit parameters start at slot 1
 
                 // Add explicit parameters from constructor
@@ -2791,6 +2902,9 @@ impl<'a> Lowerer<'a> {
                 // Clear method context
                 self.current_class = None;
                 self.this_register = None;
+                if let Some(this_sym) = self.interner.lookup("this") {
+                    self.variable_class_map.remove(&this_sym);
+                }
                 self.current_method_env_globals = None;
                 break; // Only one constructor
             }
@@ -2833,6 +2947,9 @@ impl<'a> Lowerer<'a> {
                 .unwrap_or(TypeId::new(0));
             let this_reg = self.alloc_register(this_ty);
             self.this_register = Some(this_reg.clone());
+            if let Some(this_sym) = self.interner.lookup("this") {
+                self.variable_class_map.insert(this_sym, class_id);
+            }
             let params = vec![this_reg];
             let mut ir_func =
                 IrFunction::new(&format!("{}::constructor", name), params, TypeId::new(0));
@@ -2853,6 +2970,9 @@ impl<'a> Lowerer<'a> {
 
             self.current_class = None;
             self.this_register = None;
+            if let Some(this_sym) = self.interner.lookup("this") {
+                self.variable_class_map.remove(&this_sym);
+            }
             self.current_method_env_globals = None;
         }
 
@@ -3832,7 +3952,8 @@ impl<'a> Lowerer<'a> {
         }
 
         if let Some(alias_name) = self.try_extract_object_alias_name_from_type(type_ann) {
-            self.variable_object_type_aliases.insert(var_name, alias_name);
+            self.variable_object_type_aliases
+                .insert(var_name, alias_name);
         }
     }
 
@@ -4242,7 +4363,6 @@ mod decorator_tests {
         );
         assert_eq!(module.class_count(), 1, "Should have 1 class");
     }
-
 }
 
 #[cfg(test)]
@@ -4575,31 +4695,36 @@ mod class_identity_tests {
         let expected = a_class_id.as_u32() as i32;
 
         let main = ir.get_function_by_name("main").expect("main function");
-        let has_class_id_i32_assign = main.blocks.iter().flat_map(|b| &b.instructions).any(
-            |instr| {
+        let has_class_id_i32_assign =
+            main.blocks
+                .iter()
+                .flat_map(|b| &b.instructions)
+                .any(|instr| {
+                    matches!(
+                        instr,
+                        IrInstr::Assign {
+                            value: IrValue::Constant(IrConstant::I32(v)),
+                            ..
+                        } if *v == expected
+                    )
+                });
+        let has_null_assign = main
+            .blocks
+            .iter()
+            .flat_map(|b| &b.instructions)
+            .any(|instr| {
                 matches!(
                     instr,
                     IrInstr::Assign {
-                        value: IrValue::Constant(IrConstant::I32(v)),
+                        value: IrValue::Constant(IrConstant::Null),
                         ..
-                    } if *v == expected
+                    }
                 )
-            },
-        );
-        let has_null_assign = main.blocks.iter().flat_map(|b| &b.instructions).any(|instr| {
-            matches!(
-                instr,
-                IrInstr::Assign {
-                    value: IrValue::Constant(IrConstant::Null),
-                    ..
-                }
-            )
-        });
+            });
         assert!(
             has_class_id_i32_assign,
             "expected class id constant assignment in main IR (class id {}), main blocks: {:?}",
-            expected,
-            main.blocks
+            expected, main.blocks
         );
         assert!(
             !has_null_assign,

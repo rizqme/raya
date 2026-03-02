@@ -31,12 +31,4 @@ function render(source: string, data: string): string {
 
 export { compile, render };
 
-// ── Default export (class namespace for method dispatch) ──
-
-class TemplateNamespace {
-    compile(source: string): CompiledTemplate { return compile(source); }
-    render(source: string, data: string): string { return render(source, data); }
-}
-
-const template = new TemplateNamespace();
-export default template;
+export default { compile, render };

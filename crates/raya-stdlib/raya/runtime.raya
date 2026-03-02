@@ -1,5 +1,6 @@
 // Runtime - Standard runtime module
-// Usage: import { Compiler, Bytecode, Parser, TypeChecker, Vm, VmInstance, BytecodeBuilder } from "std:runtime";
+// Usage: import { Compiler, Bytecode, Parser, TypeChecker, Vm, BytecodeBuilder } from "std:runtime";
+// Usage: import vm from "std:runtime";  // current VM instance
 
 // ============================================================================
 // Native call IDs (must match raya-engine/src/vm/builtin.rs)
@@ -122,108 +123,56 @@ const VM_SET_BP_CONDITION: number = 0x3080;
 const VM_DEBUG_BREAK_AT_ENTRY: number = 0x3081;
 
 // ============================================================================
-// Compiler class
+// Compiler (stateless utility — backed by a class instance for dispatch)
 // ============================================================================
 
-class CompilerClass {
-    compile(source: string): number {
-        return __NATIVE_CALL<number>(COMPILER_COMPILE, source);
-    }
-
-    compileExpression(expr: string): number {
-        return __NATIVE_CALL<number>(COMPILER_COMPILE_EXPRESSION, expr);
-    }
-
-    compileAst(astId: number): number {
-        return __NATIVE_CALL<number>(COMPILER_COMPILE_AST, astId);
-    }
-
-    eval(source: string): number {
-        return __NATIVE_CALL<number>(COMPILER_EVAL, source);
-    }
-
-    execute(moduleId: number): number {
-        return __NATIVE_CALL<number>(COMPILER_EXECUTE, moduleId);
-    }
-
-    executeFunction(moduleId: number, funcName: string): number {
-        return __NATIVE_CALL<number>(COMPILER_EXECUTE_FUNCTION, moduleId, funcName);
-    }
+class _CompilerImpl {
+    compile(source: string): number { return __NATIVE_CALL<number>(COMPILER_COMPILE, source); }
+    compileExpression(expr: string): number { return __NATIVE_CALL<number>(COMPILER_COMPILE_EXPRESSION, expr); }
+    compileAst(astId: number): number { return __NATIVE_CALL<number>(COMPILER_COMPILE_AST, astId); }
+    eval(source: string): number { return __NATIVE_CALL<number>(COMPILER_EVAL, source); }
+    execute(moduleId: number): number { return __NATIVE_CALL<number>(COMPILER_EXECUTE, moduleId); }
+    executeFunction(moduleId: number, funcName: string): number { return __NATIVE_CALL<number>(COMPILER_EXECUTE_FUNCTION, moduleId, funcName); }
 }
+const Compiler = new _CompilerImpl();
 
 // ============================================================================
-// Bytecode class
+// Bytecode (stateless utility — backed by a class instance for dispatch)
 // ============================================================================
 
-class BytecodeClass {
-    encode(moduleId: number): Buffer {
-        return __NATIVE_CALL<Buffer>(BYTECODE_ENCODE, moduleId);
-    }
-
-    decode(data: Buffer): number {
-        return __NATIVE_CALL<number>(BYTECODE_DECODE, data);
-    }
-
-    validate(moduleId: number): boolean {
-        return __NATIVE_CALL<boolean>(BYTECODE_VALIDATE, moduleId);
-    }
-
-    disassemble(moduleId: number): string {
-        return __NATIVE_CALL<string>(BYTECODE_DISASSEMBLE, moduleId);
-    }
-
-    getModuleName(moduleId: number): string {
-        return __NATIVE_CALL<string>(BYTECODE_GET_MODULE_NAME, moduleId);
-    }
-
-    getModuleFunctions(moduleId: number): string {
-        return __NATIVE_CALL<string>(BYTECODE_GET_MODULE_FUNCTIONS, moduleId);
-    }
-
-    getModuleClasses(moduleId: number): string {
-        return __NATIVE_CALL<string>(BYTECODE_GET_MODULE_CLASSES, moduleId);
-    }
-
-    loadLibrary(path: string): number {
-        return __NATIVE_CALL<number>(BYTECODE_LOAD_LIBRARY, path);
-    }
-
-    loadDependency(path: string, name: string): number {
-        return __NATIVE_CALL<number>(BYTECODE_LOAD_DEPENDENCY, path, name);
-    }
-
-    resolveDependency(name: string): number {
-        return __NATIVE_CALL<number>(BYTECODE_RESOLVE_DEPENDENCY, name);
-    }
+class _BytecodeImpl {
+    encode(moduleId: number): Buffer { return __NATIVE_CALL<Buffer>(BYTECODE_ENCODE, moduleId); }
+    decode(data: Buffer): number { return __NATIVE_CALL<number>(BYTECODE_DECODE, data); }
+    validate(moduleId: number): boolean { return __NATIVE_CALL<boolean>(BYTECODE_VALIDATE, moduleId); }
+    disassemble(moduleId: number): string { return __NATIVE_CALL<string>(BYTECODE_DISASSEMBLE, moduleId); }
+    getModuleName(moduleId: number): string { return __NATIVE_CALL<string>(BYTECODE_GET_MODULE_NAME, moduleId); }
+    getModuleFunctions(moduleId: number): string { return __NATIVE_CALL<string>(BYTECODE_GET_MODULE_FUNCTIONS, moduleId); }
+    getModuleClasses(moduleId: number): string { return __NATIVE_CALL<string>(BYTECODE_GET_MODULE_CLASSES, moduleId); }
+    loadLibrary(path: string): number { return __NATIVE_CALL<number>(BYTECODE_LOAD_LIBRARY, path); }
+    loadDependency(path: string, name: string): number { return __NATIVE_CALL<number>(BYTECODE_LOAD_DEPENDENCY, path, name); }
+    resolveDependency(name: string): number { return __NATIVE_CALL<number>(BYTECODE_RESOLVE_DEPENDENCY, name); }
 }
+const Bytecode = new _BytecodeImpl();
 
 // ============================================================================
-// Parser class
+// Parser (stateless utility — backed by a class instance for dispatch)
 // ============================================================================
 
-class ParserClass {
-    parse(source: string): number {
-        return __NATIVE_CALL<number>(PARSER_PARSE, source);
-    }
-
-    parseExpression(expr: string): number {
-        return __NATIVE_CALL<number>(PARSER_PARSE_EXPRESSION, expr);
-    }
+class _ParserImpl {
+    parse(source: string): number { return __NATIVE_CALL<number>(PARSER_PARSE, source); }
+    parseExpression(expr: string): number { return __NATIVE_CALL<number>(PARSER_PARSE_EXPRESSION, expr); }
 }
+const Parser = new _ParserImpl();
 
 // ============================================================================
-// TypeChecker class
+// TypeChecker (stateless utility — backed by a class instance for dispatch)
 // ============================================================================
 
-class TypeCheckerClass {
-    check(astId: number): number {
-        return __NATIVE_CALL<number>(TYPECHECKER_CHECK, astId);
-    }
-
-    checkExpression(astId: number): number {
-        return __NATIVE_CALL<number>(TYPECHECKER_CHECK_EXPRESSION, astId);
-    }
+class _TypeCheckerImpl {
+    check(astId: number): number { return __NATIVE_CALL<number>(TYPECHECKER_CHECK, astId); }
+    checkExpression(astId: number): number { return __NATIVE_CALL<number>(TYPECHECKER_CHECK_EXPRESSION, astId); }
 }
+const TypeChecker = new _TypeCheckerImpl();
 
 // ============================================================================
 // BytecodeBuilder class (wraps reflect bytecode generation handlers)
@@ -370,15 +319,21 @@ class DynamicModule {
 }
 
 // ============================================================================
-// VmInstance class (wraps opaque handle)
+// Vm class — unified VM instance
+// new Vm()       → spawns a sub-VM under the current VM
+// new Vm(true)   → wraps the current (root) VM (internal use)
 // ============================================================================
 
-class VmInstance {
+class Vm {
     _handle: number;
 
-    constructor(handle: number) {
-        this._handle = handle;
+    constructor(_isCurrent?: boolean) {
+        this._handle = _isCurrent
+            ? __NATIVE_CALL<number>(VM_CURRENT)
+            : __NATIVE_CALL<number>(VM_SPAWN);
     }
+
+    // ─── Identity ───
 
     id(): number {
         return __NATIVE_CALL<number>(VM_INSTANCE_ID, this._handle);
@@ -395,6 +350,8 @@ class VmInstance {
     isDestroyed(): boolean {
         return __NATIVE_CALL<boolean>(VM_INSTANCE_IS_DESTROYED, this._handle);
     }
+
+    // ─── Compilation & Execution ───
 
     compile(source: string): number {
         return __NATIVE_CALL<number>(VM_INSTANCE_COMPILE, this._handle, source);
@@ -418,6 +375,70 @@ class VmInstance {
 
     terminate(): void {
         __NATIVE_CALL<number>(VM_INSTANCE_TERMINATE, this._handle);
+    }
+
+    // ─── Permissions ───
+
+    hasPermission(name: string): boolean {
+        return __NATIVE_CALL<boolean>(VM_HAS_PERMISSION, name);
+    }
+
+    getPermissions(): string {
+        return __NATIVE_CALL<string>(VM_GET_PERMISSIONS);
+    }
+
+    getAllowedStdlib(): string {
+        return __NATIVE_CALL<string>(VM_GET_ALLOWED_STDLIB);
+    }
+
+    isStdlibAllowed(module: string): boolean {
+        return __NATIVE_CALL<boolean>(VM_IS_STDLIB_ALLOWED, module);
+    }
+
+    // ─── Introspection ───
+
+    heapUsed(): number {
+        return __NATIVE_CALL<number>(VM_HEAP_USED);
+    }
+
+    heapLimit(): number {
+        return __NATIVE_CALL<number>(VM_HEAP_LIMIT);
+    }
+
+    taskCount(): number {
+        return __NATIVE_CALL<number>(VM_TASK_COUNT);
+    }
+
+    concurrency(): number {
+        return __NATIVE_CALL<number>(VM_CONCURRENCY);
+    }
+
+    threadCount(): number {
+        return __NATIVE_CALL<number>(VM_THREAD_COUNT);
+    }
+
+    gcCollect(): void {
+        __NATIVE_CALL<number>(VM_GC_COLLECT);
+    }
+
+    gcStats(): number {
+        return __NATIVE_CALL<number>(VM_GC_STATS);
+    }
+
+    version(): string {
+        return __NATIVE_CALL<string>(VM_VERSION);
+    }
+
+    uptime(): number {
+        return __NATIVE_CALL<number>(VM_UPTIME);
+    }
+
+    loadedModules(): string {
+        return __NATIVE_CALL<string>(VM_LOADED_MODULES);
+    }
+
+    hasModule(name: string): boolean {
+        return __NATIVE_CALL<boolean>(VM_HAS_MODULE, name);
     }
 
     // ─── Debug Control ───
@@ -499,91 +520,15 @@ class VmInstance {
     }
 }
 
-// ============================================================================
-// Vm class
-// ============================================================================
-
-class VmClass {
-    current(): VmInstance {
-        let handle: number = __NATIVE_CALL<number>(VM_CURRENT);
-        return new VmInstance(handle);
-    }
-
-    spawn(): VmInstance {
-        let handle: number = __NATIVE_CALL<number>(VM_SPAWN);
-        return new VmInstance(handle);
-    }
-
-    hasPermission(name: string): boolean {
-        return __NATIVE_CALL<boolean>(VM_HAS_PERMISSION, name);
-    }
-
-    getPermissions(): string {
-        return __NATIVE_CALL<string>(VM_GET_PERMISSIONS);
-    }
-
-    getAllowedStdlib(): string {
-        return __NATIVE_CALL<string>(VM_GET_ALLOWED_STDLIB);
-    }
-
-    isStdlibAllowed(module: string): boolean {
-        return __NATIVE_CALL<boolean>(VM_IS_STDLIB_ALLOWED, module);
-    }
-
-    heapUsed(): number {
-        return __NATIVE_CALL<number>(VM_HEAP_USED);
-    }
-
-    heapLimit(): number {
-        return __NATIVE_CALL<number>(VM_HEAP_LIMIT);
-    }
-
-    taskCount(): number {
-        return __NATIVE_CALL<number>(VM_TASK_COUNT);
-    }
-
-    concurrency(): number {
-        return __NATIVE_CALL<number>(VM_CONCURRENCY);
-    }
-
-    threadCount(): number {
-        return __NATIVE_CALL<number>(VM_THREAD_COUNT);
-    }
-
-    gcCollect(): void {
-        __NATIVE_CALL<number>(VM_GC_COLLECT);
-    }
-
-    gcStats(): number {
-        return __NATIVE_CALL<number>(VM_GC_STATS);
-    }
-
-    version(): string {
-        return __NATIVE_CALL<string>(VM_VERSION);
-    }
-
-    uptime(): number {
-        return __NATIVE_CALL<number>(VM_UPTIME);
-    }
-
-    loadedModules(): string {
-        return __NATIVE_CALL<string>(VM_LOADED_MODULES);
-    }
-
-    hasModule(name: string): boolean {
-        return __NATIVE_CALL<boolean>(VM_HAS_MODULE, name);
-    }
-}
+// VmInstance is now Vm (kept for backward compatibility)
+const VmInstance = Vm;
 
 // ============================================================================
-// Named exports
+// Exports
 // ============================================================================
 
-const Compiler = new CompilerClass();
-const Bytecode = new BytecodeClass();
-const Parser = new ParserClass();
-const TypeChecker = new TypeCheckerClass();
-const Vm = new VmClass();
+// Default export: current VM instance
+const vm = new Vm(true);
+export default vm;
 
 export { Compiler, Bytecode, Parser, TypeChecker, Vm, VmInstance, BytecodeBuilder, ClassBuilder, DynamicModule };
-export default Vm;

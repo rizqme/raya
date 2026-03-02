@@ -578,18 +578,19 @@ fn transform_std_module(
     let module_fn = format!("__std_module_{}", module_tag);
     let export_type_alias = format!("__std_exports_type_{}", module_tag);
 
-    // Wrapper function needs a return type annotation (checker infers void otherwise).
+    // Return through `unknown` and cast at the call site. This avoids wrapper
+    // return-type mismatches while preserving typed import bindings.
     let wrapped = format!(
-        "{}type {} = {};\nfunction {}(): {} {{\n{}\nreturn {};\n}}\nconst {} = {}();\n",
+        "{}type {} = {};\nfunction {}(): unknown {{\n{}\nreturn {};\n}}\nconst {} = ({}() as {});\n",
         type_alias_block,
         export_type_alias,
         export_type,
         module_fn,
-        export_type_alias,
         transformed,
         export_literal,
         export_var,
-        module_fn
+        module_fn,
+        export_type_alias
     );
 
     let value_exports = exports
@@ -755,9 +756,18 @@ fn transform_export_decl(
                         export_type_expr = class_type;
                     } else if let Some(var_type) = local_var_types.get(&imported) {
                         export_type_expr = var_type.clone();
+                    } else if looks_like_class_identifier(&imported) {
+                        // Re-exporting global class symbols (e.g., EventEmitter) should keep
+                        // constructor callability through wrapper type metadata.
+                        export_type_expr = imported.clone();
                     }
                     if let Some(sig) = local_function_sigs.get(&imported) {
                         function_exports.insert(exported.clone(), sig.clone());
+                        export_type_expr = rewrite_local_class_refs(
+                            &function_type_from_sig(sig),
+                            local_type_names,
+                            module_tag,
+                        );
                     }
 
                     exports.insert(
@@ -800,6 +810,8 @@ fn transform_export_decl(
                 } else {
                     "unknown".to_string()
                 }
+            } else if looks_like_class_identifier(&expr_src) {
+                expr_src.clone()
             } else {
                 "unknown".to_string()
             };
@@ -881,17 +893,10 @@ fn emit_binding_lines(
                 let default_accessor = property_accessor(&export_var, "default");
                 if let Some(default_type) = meta.value_exports.get("default") {
                     if default_type != "unknown" {
-                        if canonical.starts_with("node_")
-                            || canonical.starts_with("_node_")
-                            || canonical.starts_with("__node_")
-                        {
-                            out.push_str(&format!("const {} = {};\n", local, default_accessor));
-                        } else {
-                            out.push_str(&format!(
-                                "const {} = ({} as {});\n",
-                                local, default_accessor, default_type
-                            ));
-                        }
+                        out.push_str(&format!(
+                            "const {} = ({} as {});\n",
+                            local, default_accessor, default_type
+                        ));
                     } else if has_named_value_exports(meta)
                         && !canonical.starts_with("node_")
                         && !canonical.starts_with("_node_")
@@ -958,7 +963,26 @@ fn emit_binding_lines(
                         local, accessor, class_type
                     ));
                 } else {
-                    out.push_str(&format!("const {} = {};\n", local, accessor));
+                    // Check if this exported value is an instance of a known class type
+                    // (e.g., `const Compiler = new _CompilerImpl()` where _CompilerImpl is a class).
+                    // If so, emit a typed cast to the class's synthesized alias
+                    // (`__t_<tag>_<ClassName>`) so the compiler can resolve the class ID via
+                    // `type_alias_class_map` and use vtable dispatch for method calls.
+                    let var_type = meta
+                        .value_exports
+                        .get(imported)
+                        .map(|s| s.as_str())
+                        .unwrap_or("unknown");
+                    if meta.class_types.contains_key(var_type) {
+                        let module_tag = sanitize_module_specifier(canonical);
+                        let class_alias = format!("__t_{}_{}", module_tag, var_type);
+                        out.push_str(&format!(
+                            "const {} = ({} as {});\n",
+                            local, accessor, class_alias
+                        ));
+                    } else {
+                        out.push_str(&format!("const {} = {};\n", local, accessor));
+                    }
                 }
             }
             BindingSpec::Namespace { local } => {
@@ -1091,6 +1115,12 @@ fn is_identifier(name: &str) -> bool {
         return false;
     }
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+fn looks_like_class_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn property_accessor(obj: &str, prop: &str) -> String {

@@ -6071,7 +6071,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Check object literal
     fn check_object(&mut self, obj: &ObjectExpression) -> TypeId {
-        use crate::parser::types::ty::{ClassType, PropertySignature};
+        use crate::parser::types::ty::{ObjectType, PropertySignature};
 
         let mut properties = Vec::new();
         for prop in &obj.properties {
@@ -6116,19 +6116,10 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        let class_type = ClassType {
-            name: "<anonymous>".to_string(),
-            type_params: vec![],
+        self.type_ctx.intern(crate::parser::types::Type::Object(ObjectType {
             properties,
-            methods: vec![],
-            static_properties: vec![],
-            static_methods: vec![],
-            extends: None,
-            implements: vec![],
-            is_abstract: false,
-        };
-        self.type_ctx
-            .intern(crate::parser::types::Type::Class(class_type))
+            index_signature: None,
+        }))
     }
 
     /// Check conditional (ternary) expression
@@ -6279,6 +6270,31 @@ impl<'a> TypeChecker<'a> {
     fn check_assignable(&mut self, source: TypeId, target: TypeId, span: crate::parser::Span) {
         let mut assign_ctx = self.make_assignability_ctx();
         if !assign_ctx.is_assignable(source, target) {
+            if std::env::var_os("RAYA_DEBUG_CHECK_ASSIGNABLE").is_some() {
+                use crate::parser::types::Type;
+                eprintln!(
+                    "[check-assignable] mismatch at line {} col {}: source={} target={}",
+                    span.line,
+                    span.column,
+                    self.format_type(source),
+                    self.format_type(target),
+                );
+                if let Some(Type::Function(f)) = self.type_ctx.get(source) {
+                    eprintln!(
+                        "  source fn: params={:?} min={} rest={:?} async={}",
+                        f.params, f.min_params, f.rest_param, f.is_async
+                    );
+                }
+                if let Some(Type::Function(f)) = self.type_ctx.get(target) {
+                    eprintln!(
+                        "  target fn: params={:?} min={} rest={:?} async={}",
+                        f.params, f.min_params, f.rest_param, f.is_async
+                    );
+                }
+                if let Some(Type::TypeVar(tv)) = self.type_ctx.get(target) {
+                    eprintln!("  target typevar: name={} constraint={:?}", tv.name, tv.constraint);
+                }
+            }
             self.errors.push(CheckError::TypeMismatch {
                 expected: self.format_type(target),
                 actual: self.format_type(source),

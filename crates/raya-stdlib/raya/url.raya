@@ -191,14 +191,4 @@ export function decodePath(path: string): string {
 
 export { Url, UrlSearchParams };
 
-// ── Default export (class namespace for method dispatch) ──
-
-class UrlNamespace {
-    encode(component: string): string { return encode(component); }
-    decode(component: string): string { return decode(component); }
-    encodePath(path: string): string { return encodePath(path); }
-    decodePath(path: string): string { return decodePath(path); }
-}
-
-const url = new UrlNamespace();
-export default url;
+export default { encode, decode, encodePath, decodePath };

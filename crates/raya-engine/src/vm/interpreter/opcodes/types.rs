@@ -126,6 +126,9 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                if std::env::var("RAYA_DEBUG_VM_CALLS").is_ok() {
+                    eprintln!("[cast] target={} obj_raw=0x{:016X} is_null={} is_ptr={} is_i32={}", cast_target, obj_val.raw(), obj_val.is_null(), obj_val.is_ptr(), obj_val.is_i32());
+                }
 
                 let cast_target = cast_target as u16;
 
@@ -392,21 +395,104 @@ impl<'a> Interpreter<'a> {
                     // Accessing property on null returns null
                     Value::null()
                 } else if obj_val.is_ptr() {
-                    // Try to access as JsonValue (stored on heap by json_to_value)
-                    let ptr = unsafe { obj_val.as_ptr::<JsonValue>() };
-                    if let Some(json_ptr) = ptr {
-                        let json_val = unsafe { &*json_ptr.as_ptr() };
-                        // Use JsonValue's get_property method for duck typing
-                        let prop_val = json_val.get_property(&prop_name);
-                        // Convert the result to a Value
-                        json::json_to_value(&prop_val, &mut self.gc.lock())
+                    // Distinguish runtime heap object kinds via GC header.
+                    let raw_ptr = match unsafe { obj_val.as_ptr::<u8>() } {
+                        Some(ptr) => ptr,
+                        None => {
+                            if let Err(e) = stack.push(Value::null()) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+                    };
+                    let header = unsafe {
+                        let hp = raw_ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
+                        &*(hp as *const GcHeader)
+                    };
+
+                    if header.type_id() == std::any::TypeId::of::<Object>() {
+                        // Dynamic class-instance property access by name.
+                        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+                        let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+
+                        let class_metadata = self.class_metadata.read();
+                        let field_index = class_metadata
+                            .get(obj.class_id)
+                            .and_then(|meta| meta.get_field_index(&prop_name));
+                        let method_slot = if field_index.is_none() {
+                            class_metadata
+                                .get(obj.class_id)
+                                .and_then(|meta| meta.get_method_index(&prop_name))
+                        } else {
+                            None
+                        };
+                        drop(class_metadata);
+                        if std::env::var("RAYA_DEBUG_JSON_GET").is_ok() {
+                            eprintln!(
+                                "[json_get] class_id={} prop={} field_index={:?} method_slot={:?}",
+                                obj.class_id, prop_name, field_index, method_slot
+                            );
+                        }
+
+                        if let Some(index) = field_index {
+                            obj.get_field(index).unwrap_or(Value::null())
+                        } else {
+                            let classes = self.classes.read();
+                            let func_id = classes.get_class(obj.class_id).and_then(|class| {
+                                // Preferred: explicit metadata slot mapping.
+                                method_slot.and_then(|slot| class.vtable.get_method(slot)).or_else(
+                                    || {
+                                        // Fallback: scan class vtable function names.
+                                        class.vtable.methods.iter().copied().find(|fid| {
+                                            module
+                                                .functions
+                                                .get(*fid)
+                                                .map(|f| {
+                                                    let name = f.name.as_str();
+                                                    name == prop_name
+                                                        || name
+                                                            .ends_with(&format!(".{}", prop_name))
+                                                        || name.ends_with(&format!(
+                                                            "::{}",
+                                                            prop_name
+                                                        ))
+                                                })
+                                                .unwrap_or(false)
+                                        })
+                                    },
+                                )
+                            });
+                            drop(classes);
+                            if let Some(func_id) = func_id {
+                                let gc_ptr = self.gc.lock().allocate(BoundMethod {
+                                    receiver: obj_val,
+                                    func_id,
+                                });
+                                unsafe {
+                                    Value::from_ptr(
+                                        std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
+                                    )
+                                }
+                            } else {
+                                Value::null()
+                            }
+                        }
+                    } else if header.type_id() == std::any::TypeId::of::<JsonValue>() {
+                        // JSON object duck-typing fallback.
+                        let ptr = unsafe { obj_val.as_ptr::<JsonValue>() };
+                        if let Some(json_ptr) = ptr {
+                            let json_val = unsafe { &*json_ptr.as_ptr() };
+                            let prop_val = json_val.get_property(&prop_name);
+                            json::json_to_value(&prop_val, &mut self.gc.lock())
+                        } else {
+                            Value::null()
+                        }
                     } else {
-                        return OpcodeResult::Error(VmError::TypeError(
-                            "Expected JSON object for property access".to_string(),
-                        ));
+                        // Primitive heap types (String/Array/etc.) do not support JsonGet.
+                        Value::null()
                     }
                 } else {
-                    // Primitive types don't support property access
+                    // Primitive non-pointer types don't support property access
                     Value::null()
                 };
 

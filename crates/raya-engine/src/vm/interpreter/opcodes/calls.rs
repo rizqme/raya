@@ -391,6 +391,14 @@ impl<'a> Interpreter<'a> {
 
                 // Fall through to vtable dispatch for user-defined methods
                 if !receiver_val.is_ptr() {
+                    if std::env::var("RAYA_DEBUG_VM_CALLS").is_ok() {
+                        eprintln!(
+                            "[vm] CallMethod fail: receiver not ptr! method_index={} arg_count={} receiver_raw=0x{:016X}",
+                            method_index,
+                            arg_count,
+                            receiver_val.raw()
+                        );
+                    }
                     return OpcodeResult::Error(VmError::TypeError(
                         "Expected object for method call".to_string(),
                     ));

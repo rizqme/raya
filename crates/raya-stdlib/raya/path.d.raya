@@ -58,21 +58,20 @@ export function withExt(p: string, ext: string): string;
 /** Check if a path is relative (not absolute). */
 export function isRelative(p: string): boolean;
 
-// ── Default export (namespace class for method dispatch) ──
-
-export default class PathNamespace {
-    join(a: string, b: string): string;
-    normalize(p: string): string;
-    dirname(p: string): string;
-    basename(p: string): string;
-    extname(p: string): string;
-    isAbsolute(p: string): boolean;
-    resolve(base: string, target: string): string;
-    relative(base: string, target: string): string;
-    cwd(): string;
-    sep(): string;
-    delimiter(): string;
-    stripExt(p: string): string;
-    withExt(p: string, ext: string): string;
-    isRelative(p: string): boolean;
-}
+declare const path: {
+    join: (a: string, b: string) => string;
+    normalize: (p: string) => string;
+    dirname: (p: string) => string;
+    basename: (p: string) => string;
+    extname: (p: string) => string;
+    isAbsolute: (p: string) => boolean;
+    resolve: (base: string, target: string) => string;
+    relative: (base: string, target: string) => string;
+    cwd: () => string;
+    sep: () => string;
+    delimiter: () => string;
+    stripExt: (p: string) => string;
+    withExt: (p: string, ext: string) => string;
+    isRelative: (p: string) => boolean;
+};
+export default path;

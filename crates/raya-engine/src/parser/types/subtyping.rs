@@ -181,31 +181,120 @@ impl<'a> SubtypingContext<'a> {
             // (P1, P2, ..., Pn) => R <: (Q1, Q2, ..., Qm) => S
             // if m = n, Qi <: Pi for all i (contravariant), and R <: S (covariant)
             (Type::Function(f1), Type::Function(f2)) => {
-                let expand_params = |f: &FunctionType, this: &TypeContext| -> Option<Vec<TypeId>> {
-                    let mut out = f.params.clone();
-                    if let Some(rest_ty) = f.rest_param {
-                        match this.get(rest_ty) {
-                            Some(Type::Tuple(t)) => {
-                                out.extend(t.elements.iter().copied());
-                            }
-                            _ => return None,
-                        }
-                    }
-                    Some(out)
-                };
-
-                let p1 = expand_params(f1, self.type_ctx);
-                let p2 = expand_params(f2, self.type_ctx);
-                let (Some(p1), Some(p2)) = (p1, p2) else {
-                    return false;
-                };
-
-                if p1.len() != p2.len() {
-                    return false;
+                #[derive(Clone)]
+                enum RestSpec {
+                    None,
+                    Tuple(Vec<TypeId>),
+                    Array(TypeId),
+                    // Variadic but unresolved to a concrete tuple/array element shape.
+                    // This appears in generic signatures like (...args: E[K]).
+                    Unresolved,
                 }
 
-                // Parameters are contravariant: sup params <: sub params
-                let params_match = p1.iter().zip(&p2).all(|(&p1, &p2)| self.is_subtype(p2, p1)); // Note: reversed!
+                #[derive(Clone, Copy)]
+                enum ParamSlot {
+                    Absent,
+                    Ty(TypeId),
+                    Wildcard,
+                }
+
+                let rest_spec = |f: &FunctionType, this: &TypeContext| -> RestSpec {
+                    let Some(rest_ty) = f.rest_param else {
+                        return RestSpec::None;
+                    };
+                    match this.get(rest_ty) {
+                        Some(Type::Tuple(t)) => RestSpec::Tuple(t.elements.clone()),
+                        Some(Type::Array(arr)) => RestSpec::Array(arr.element),
+                        Some(Type::IndexedAccess(_))
+                        | Some(Type::Keyof(_))
+                        | Some(Type::TypeVar(_))
+                        | Some(Type::Union(_))
+                        | Some(Type::Unknown) => RestSpec::Unresolved,
+                        _ => RestSpec::Unresolved,
+                    }
+                };
+
+                let arity_bounds = |f: &FunctionType, rest: &RestSpec| -> (usize, usize) {
+                    match rest {
+                        RestSpec::None => (f.min_params, f.params.len()),
+                        RestSpec::Tuple(t) => (f.min_params + t.len(), f.params.len() + t.len()),
+                        RestSpec::Array(_) | RestSpec::Unresolved => (f.min_params, usize::MAX),
+                    }
+                };
+
+                let finite_prefix_len = |f: &FunctionType, rest: &RestSpec| -> usize {
+                    match rest {
+                        RestSpec::None => f.params.len(),
+                        RestSpec::Tuple(t) => f.params.len() + t.len(),
+                        RestSpec::Array(_) | RestSpec::Unresolved => f.params.len(),
+                    }
+                };
+
+                let slot_at = |f: &FunctionType, rest: &RestSpec, idx: usize| -> ParamSlot {
+                    if idx < f.params.len() {
+                        return ParamSlot::Ty(f.params[idx]);
+                    }
+                    let rest_idx = idx - f.params.len();
+                    match rest {
+                        RestSpec::None => ParamSlot::Absent,
+                        RestSpec::Tuple(t) => t
+                            .get(rest_idx)
+                            .copied()
+                            .map(ParamSlot::Ty)
+                            .unwrap_or(ParamSlot::Absent),
+                        RestSpec::Array(elem) => ParamSlot::Ty(*elem),
+                        RestSpec::Unresolved => ParamSlot::Wildcard,
+                    }
+                };
+
+                let r1 = rest_spec(f1, self.type_ctx);
+                let r2 = rest_spec(f2, self.type_ctx);
+                let (min1, max1) = arity_bounds(f1, &r1);
+                let (min2, max2) = arity_bounds(f2, &r2);
+
+                // f1 <: f2 requires f1 to accept every call shape accepted by f2.
+                let has_unresolved_arity =
+                    matches!(r1, RestSpec::Unresolved) || matches!(r2, RestSpec::Unresolved);
+                if !has_unresolved_arity {
+                    if min1 > min2 {
+                        return false;
+                    }
+                    if max1 < max2 {
+                        return false;
+                    }
+                }
+
+                let p1_prefix = finite_prefix_len(f1, &r1);
+                let p2_prefix = finite_prefix_len(f2, &r2);
+                let compare_len = if max2 == usize::MAX {
+                    // Compare finite prefixes and one extra slot for variadic element compatibility.
+                    p1_prefix.max(p2_prefix).saturating_add(1)
+                } else {
+                    max2
+                };
+
+                let mut params_match = true;
+                for i in 0..compare_len {
+                    let sub_slot = slot_at(f1, &r1, i);
+                    let sup_slot = slot_at(f2, &r2, i);
+                    match (sub_slot, sup_slot) {
+                        // Unresolved variadic generic slots are checked at call-site unification;
+                        // treat as wildcard here to avoid rejecting valid generic callbacks.
+                        (ParamSlot::Wildcard, _) | (_, ParamSlot::Wildcard) => {}
+                        (ParamSlot::Absent, ParamSlot::Absent) => {}
+                        (ParamSlot::Absent, _) => {
+                            params_match = false;
+                            break;
+                        }
+                        (_, ParamSlot::Absent) => {}
+                        (ParamSlot::Ty(p1), ParamSlot::Ty(p2)) => {
+                            if !self.is_subtype(p2, p1) {
+                                params_match = false;
+                                break;
+                            }
+                        }
+                    }
+                }
 
                 // Return type is covariant, comparing effective returns:
                 // - async fn (...): T is treated as (... ) => Promise<T>
@@ -268,9 +357,6 @@ impl<'a> SubtypingContext<'a> {
             // Class <: Object (structural): class instance <: object type
             // Optional properties in the target object type don't need to exist in the class
             (Type::Class(c), Type::Object(o)) => {
-                if c.name == "<anonymous>" {
-                    return true;
-                }
                 o.properties.iter().all(|op| {
                     // If the target property is optional, the class doesn't need to have it
                     if op.optional {

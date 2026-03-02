@@ -32,16 +32,4 @@ export function zlibDecompress(data: Buffer): Buffer {
     return __NATIVE_CALL<Buffer>("compress.zlibDecompress", data);
 }
 
-// ── Default export (class namespace for method dispatch) ──
-
-class CompressNamespace {
-    gzip(data: Buffer, level: number = 6): Buffer { return gzip(data, level); }
-    gunzip(data: Buffer): Buffer { return gunzip(data); }
-    deflate(data: Buffer, level: number = 6): Buffer { return deflate(data, level); }
-    inflate(data: Buffer): Buffer { return inflate(data); }
-    zlibCompress(data: Buffer, level: number = 6): Buffer { return zlibCompress(data, level); }
-    zlibDecompress(data: Buffer): Buffer { return zlibDecompress(data); }
-}
-
-const compress = new CompressNamespace();
-export default compress;
+export default { gzip, gunzip, deflate, inflate, zlibCompress, zlibDecompress };

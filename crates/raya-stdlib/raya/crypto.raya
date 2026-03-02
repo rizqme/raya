@@ -102,30 +102,4 @@ function pbkdf2(password: string, salt: Buffer, iterations: number, length: numb
 
 export { hash, hashBytes, hmac, hmacBytes, randomBytes, randomInt, randomUUID, toHex, fromHex, toBase64, fromBase64, timingSafeEqual, encrypt, decrypt, generateKey, sign, verify, generateKeyPair, hkdf, pbkdf2 };
 
-// ── Default export (class namespace for method dispatch) ──
-
-class CryptoNamespace {
-    hash(algorithm: string, data: string): string { return hash(algorithm, data); }
-    hashBytes(algorithm: string, data: Buffer): Buffer { return hashBytes(algorithm, data); }
-    hmac(algorithm: string, key: string, data: string): string { return hmac(algorithm, key, data); }
-    hmacBytes(algorithm: string, key: Buffer, data: Buffer): Buffer { return hmacBytes(algorithm, key, data); }
-    randomBytes(size: number): Buffer { return randomBytes(size); }
-    randomInt(min: number, max: number): number { return randomInt(min, max); }
-    randomUUID(): string { return randomUUID(); }
-    toHex(data: Buffer): string { return toHex(data); }
-    fromHex(hex: string): Buffer { return fromHex(hex); }
-    toBase64(data: Buffer): string { return toBase64(data); }
-    fromBase64(b64: string): Buffer { return fromBase64(b64); }
-    timingSafeEqual(a: Buffer, b: Buffer): boolean { return timingSafeEqual(a, b); }
-    encrypt(key: Buffer, plaintext: Buffer): Buffer { return encrypt(key, plaintext); }
-    decrypt(key: Buffer, ciphertext: Buffer): Buffer { return decrypt(key, ciphertext); }
-    generateKey(bits: number): Buffer { return generateKey(bits); }
-    sign(algorithm: string, privateKey: Buffer, data: Buffer): Buffer { return sign(algorithm, privateKey, data); }
-    verify(algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer): boolean { return verify(algorithm, publicKey, data, signature); }
-    generateKeyPair(algorithm: string): string[] { return generateKeyPair(algorithm); }
-    hkdf(hashAlg: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer { return hkdf(hashAlg, ikm, salt, info, length); }
-    pbkdf2(password: string, salt: Buffer, iterations: number, length: number, hashAlg: string): Buffer { return pbkdf2(password, salt, iterations, length, hashAlg); }
-}
-
-const crypto = new CryptoNamespace();
-export default crypto;
+export default { hash, hashBytes, hmac, hmacBytes, randomBytes, randomInt, randomUUID, toHex, fromHex, toBase64, fromBase64, timingSafeEqual, encrypt, decrypt, generateKey, sign, verify, generateKeyPair, hkdf, pbkdf2 };

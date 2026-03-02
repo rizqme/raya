@@ -58,22 +58,4 @@ export function toHours(ms: number): number {
     return ms / 3600000;
 }
 
-// ── Default export (class namespace for method dispatch) ──
-
-class TimeNamespace {
-    now(): number { return now(); }
-    monotonic(): number { return monotonic(); }
-    hrtime(): number { return hrtime(); }
-    elapsed(start: number): number { return elapsed(start); }
-    sleep(ms: number): void { sleep(ms); }
-    sleepMicros(us: number): void { sleepMicros(us); }
-    seconds(n: number): number { return seconds(n); }
-    minutes(n: number): number { return minutes(n); }
-    hours(n: number): number { return hours(n); }
-    toSeconds(ms: number): number { return toSeconds(ms); }
-    toMinutes(ms: number): number { return toMinutes(ms); }
-    toHours(ms: number): number { return toHours(ms); }
-}
-
-const time = new TimeNamespace();
-export default time;
+export default { now, monotonic, hrtime, elapsed, sleep, sleepMicros, seconds, minutes, hours, toSeconds, toMinutes, toHours };

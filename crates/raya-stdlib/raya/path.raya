@@ -68,24 +68,4 @@ export function isRelative(p: string): boolean {
     return !isAbsolute(p);
 }
 
-// ── Default export (class namespace for method dispatch) ──
-
-class PathNamespace {
-    join(a: string, b: string): string { return join(a, b); }
-    normalize(p: string): string { return normalize(p); }
-    dirname(p: string): string { return dirname(p); }
-    basename(p: string): string { return basename(p); }
-    extname(p: string): string { return extname(p); }
-    isAbsolute(p: string): boolean { return isAbsolute(p); }
-    resolve(base: string, target: string): string { return resolve(base, target); }
-    relative(base: string, target: string): string { return relative(base, target); }
-    cwd(): string { return cwd(); }
-    sep(): string { return sep(); }
-    delimiter(): string { return delimiter(); }
-    stripExt(p: string): string { return stripExt(p); }
-    withExt(p: string, ext: string): string { return withExt(p, ext); }
-    isRelative(p: string): boolean { return isRelative(p); }
-}
-
-const path = new PathNamespace();
-export default path;
+export default { join, normalize, dirname, basename, extname, isAbsolute, resolve, relative, cwd, sep, delimiter, stripExt, withExt, isRelative };

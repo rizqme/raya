@@ -51,20 +51,19 @@ export function setTimestamp(enabled: boolean): void;
 /** Set a prefix string (e.g., "[MyApp]") for all log messages */
 export function setPrefix(prefix: string): void;
 
-// ── Default export (namespace class for method dispatch) ──
-
-export default class LoggerNamespace {
-    debug(message: string): void;
-    info(message: string): void;
-    warn(message: string): void;
-    error(message: string): void;
-    setLevel(level: string): void;
-    getLevel(): string;
-    debugData(message: string, data: string): void;
-    infoData(message: string, data: string): void;
-    warnData(message: string, data: string): void;
-    errorData(message: string, data: string): void;
-    setFormat(format: string): void;
-    setTimestamp(enabled: boolean): void;
-    setPrefix(prefix: string): void;
-}
+declare const logger: {
+    debug: (message: string) => void;
+    info: (message: string) => void;
+    warn: (message: string) => void;
+    error: (message: string) => void;
+    setLevel: (level: string) => void;
+    getLevel: () => string;
+    debugData: (message: string, data: string) => void;
+    infoData: (message: string, data: string) => void;
+    warnData: (message: string, data: string) => void;
+    errorData: (message: string, data: string) => void;
+    setFormat: (format: string) => void;
+    setTimestamp: (enabled: boolean) => void;
+    setPrefix: (prefix: string) => void;
+};
+export default logger;

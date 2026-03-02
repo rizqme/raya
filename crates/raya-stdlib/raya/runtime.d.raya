@@ -5,95 +5,100 @@
  * bytecode management, and isolated VM instances.
  *
  * Usage:
- *   import { Compiler, Bytecode, Parser, TypeChecker, Vm, VmInstance, BytecodeBuilder } from "std:runtime";
+ *   import { Compiler, Bytecode, Parser, TypeChecker, Vm, BytecodeBuilder } from "std:runtime";
+ *   import vm from "std:runtime";  // current VM instance
+ *
  *   let mod: number = Compiler.compile("return 42;");
  *   let result: number = Compiler.execute(mod);
  *
- *   let child: VmInstance = Vm.spawn();
+ *   let child: Vm = new Vm();   // spawns a sub-VM
  *   let r: number = child.eval("return 10 + 20;");
  *   child.terminate();
+ *
+ *   vm.heapUsed();              // introspect current VM
  */
 
 /**
  * Compiler provides methods for compiling and executing Raya source code.
+ * Used as a stateless utility object: Compiler.compile(source).
  */
-export class CompilerClass {
+declare const Compiler: {
     /** Parse, type-check, and compile source to bytecode. Returns module ID. */
-    compile(source: string): number;
+    compile: (source: string) => number;
 
     /** Wrap expression in `return <expr>;` and compile. Returns module ID. */
-    compileExpression(expr: string): number;
+    compileExpression: (expr: string) => number;
 
     /** Compile a pre-parsed and type-checked AST to bytecode. Returns module ID. */
-    compileAst(astId: number): number;
+    compileAst: (astId: number) => number;
 
     /** Compile and immediately execute source. Returns result. */
-    eval(source: string): number;
+    eval: (source: string) => number;
 
     /** Execute a compiled module's main function. Returns result. */
-    execute(moduleId: number): number;
+    execute: (moduleId: number) => number;
 
-    /** Execute a named function from a compiled module with arguments. Returns result. */
-    executeFunction(moduleId: number, funcName: string): number;
-}
+    /** Execute a named function from a compiled module. Returns result. */
+    executeFunction: (moduleId: number, funcName: string) => number;
+};
 
 /**
  * Bytecode provides methods for binary I/O, bytecode inspection,
  * library loading, and dependency management.
  */
-export class BytecodeClass {
+declare const Bytecode: {
     /** Serialize a compiled module to .ryb binary format. Returns Buffer. */
-    encode(moduleId: number): Buffer;
+    encode: (moduleId: number) => Buffer;
 
     /** Deserialize .ryb binary data to a module. Returns module ID. */
-    decode(data: Buffer): number;
+    decode: (data: Buffer) => number;
 
     /** Verify module integrity (magic, version, bytecode verification). Returns true if valid. */
-    validate(moduleId: number): boolean;
+    validate: (moduleId: number) => boolean;
 
     /** Disassemble module bytecode to human-readable listing. */
-    disassemble(moduleId: number): string;
+    disassemble: (moduleId: number) => string;
 
     /** Get the module's name from its metadata. */
-    getModuleName(moduleId: number): string;
+    getModuleName: (moduleId: number) => string;
 
     /** Get comma-separated list of function names in the module. */
-    getModuleFunctions(moduleId: number): string;
+    getModuleFunctions: (moduleId: number) => string;
 
     /** Get comma-separated list of class names in the module. */
-    getModuleClasses(moduleId: number): string;
+    getModuleClasses: (moduleId: number) => string;
 
     /** Load a .ryb file from the given path. Returns module ID. */
-    loadLibrary(path: string): number;
+    loadLibrary: (path: string) => number;
 
     /** Load a .ryb file and register it as an importable module under `name`. Returns module ID. */
-    loadDependency(path: string, name: string): number;
+    loadDependency: (path: string, name: string) => number;
 
     /** Auto-resolve a .ryb file from search paths and register as importable. Returns module ID. */
-    resolveDependency(name: string): number;
-}
+    resolveDependency: (name: string) => number;
+};
 
 /**
  * Parser provides methods for parsing Raya source code to an AST.
  */
-export class ParserClass {
+declare const Parser: {
     /** Parse source code to an AST. Returns AST ID. */
-    parse(source: string): number;
+    parse: (source: string) => number;
 
     /** Parse a single expression (wraps as `return <expr>;`). Returns AST ID. */
-    parseExpression(expr: string): number;
-}
+    parseExpression: (expr: string) => number;
+};
 
 /**
  * TypeChecker provides methods for type-checking parsed ASTs.
  */
-export class TypeCheckerClass {
+declare const TypeChecker: {
     /** Type-check a parsed AST. Returns typed AST ID. */
-    check(astId: number): number;
+    check: (astId: number) => number;
 
     /** Type-check an expression AST. Returns typed AST ID. */
-    checkExpression(astId: number): number;
-}
+    checkExpression: (astId: number) => number;
+};
 
 /**
  * BytecodeBuilder provides a fluent API for generating bytecode at runtime.
@@ -229,12 +234,33 @@ export class DynamicModule {
 }
 
 /**
- * VmInstance represents an isolated VM execution context.
- * Created via Vm.spawn() or Vm.current().
+ * Vm — unified VM instance class.
+ *
+ * `new Vm()` spawns a sub-VM under the current VM.
+ * The default export `vm` is the current (root) VM instance.
+ *
+ * Usage:
+ *   import vm from "std:runtime";
+ *   import { Vm } from "std:runtime";
+ *
+ *   let child: Vm = new Vm();
+ *   child.eval("return 42;");
+ *   child.terminate();
+ *
+ *   vm.heapUsed();
  */
-export class VmInstance {
+export class Vm {
     /** Internal handle to the VM instance. */
     _handle: number;
+
+    /**
+     * Create a VM instance.
+     * - `new Vm()` → spawns a new sub-VM under the current VM
+     * - `new Vm(true)` → wraps the current root VM (used internally for default export)
+     */
+    constructor(_isCurrent?: boolean);
+
+    // ─── Identity ───
 
     /** Get the instance ID. */
     id(): number;
@@ -247,6 +273,8 @@ export class VmInstance {
 
     /** Check if the VM instance has been terminated. */
     isDestroyed(): boolean;
+
+    // ─── Compilation & Execution ───
 
     /** Compile source code within this VM instance. Returns module ID. */
     compile(source: string): number;
@@ -265,6 +293,55 @@ export class VmInstance {
 
     /** Terminate this VM instance and all its descendants. */
     terminate(): void;
+
+    // ─── Permissions ───
+
+    /** Check if the current VM has a named permission (e.g. "eval", "vmSpawn", "libLoad"). */
+    hasPermission(name: string): boolean;
+
+    /** Get the current VM's enabled permissions as a comma-separated string. */
+    getPermissions(): string;
+
+    /** Get the allowed stdlib modules as a comma-separated string ("*" = all). */
+    getAllowedStdlib(): string;
+
+    /** Check if a specific stdlib module is allowed (e.g. "std:math"). */
+    isStdlibAllowed(module: string): boolean;
+
+    // ─── Introspection ───
+
+    /** Get current heap allocation in bytes. */
+    heapUsed(): number;
+
+    /** Get max heap size in bytes (0 = unlimited). */
+    heapLimit(): number;
+
+    /** Get total task count (queued + running + suspended). */
+    taskCount(): number;
+
+    /** Get number of tasks actively running right now. */
+    concurrency(): number;
+
+    /** Get number of available worker threads. */
+    threadCount(): number;
+
+    /** Trigger manual garbage collection. */
+    gcCollect(): void;
+
+    /** Get total bytes freed by garbage collection. */
+    gcStats(): number;
+
+    /** Get the Raya VM version string. */
+    version(): string;
+
+    /** Get VM uptime in milliseconds. */
+    uptime(): number;
+
+    /** Get comma-separated list of loaded module names. */
+    loadedModules(): string;
+
+    /** Check if a module is loaded by name. */
+    hasModule(name: string): boolean;
 
     // ─── Debug Control ───
 
@@ -327,75 +404,11 @@ export class VmInstance {
     debugIsPaused(): boolean;
 }
 
-/**
- * Vm provides methods for managing VM instances.
- */
-export class VmClass {
-    /** Get the current (root) VM instance. */
-    current(): VmInstance;
+/** VmInstance is an alias for Vm (backward compatibility). */
+declare const VmInstance: typeof Vm;
 
-    /** Spawn a new isolated child VM instance. */
-    spawn(): VmInstance;
-
-    /** Check if the current VM has a named permission (e.g. "eval", "vmSpawn", "libLoad"). */
-    hasPermission(name: string): boolean;
-
-    /** Get the current VM's enabled permissions as a comma-separated string. */
-    getPermissions(): string;
-
-    /** Get the allowed stdlib modules as a comma-separated string ("*" = all). */
-    getAllowedStdlib(): string;
-
-    /** Check if a specific stdlib module is allowed (e.g. "std:math"). */
-    isStdlibAllowed(module: string): boolean;
-
-    /** Get current heap allocation in bytes. */
-    heapUsed(): number;
-
-    /** Get max heap size in bytes (0 = unlimited). */
-    heapLimit(): number;
-
-    /** Get total task count (queued + running + suspended). */
-    taskCount(): number;
-
-    /** Get number of tasks actively running right now. */
-    concurrency(): number;
-
-    /** Get number of available worker threads. */
-    threadCount(): number;
-
-    /** Trigger manual garbage collection. */
-    gcCollect(): void;
-
-    /** Get total bytes freed by garbage collection. */
-    gcStats(): number;
-
-    /** Get the Raya VM version string. */
-    version(): string;
-
-    /** Get VM uptime in milliseconds. */
-    uptime(): number;
-
-    /** Get comma-separated list of loaded module names. */
-    loadedModules(): string;
-
-    /** Check if a module is loaded by name. */
-    hasModule(name: string): boolean;
-}
-
-/** Compiler singleton instance */
-declare const Compiler: CompilerClass;
-
-/** Bytecode singleton instance */
-declare const Bytecode: BytecodeClass;
-
-/** Parser singleton instance */
-declare const Parser: ParserClass;
-
-/** TypeChecker singleton instance */
-declare const TypeChecker: TypeCheckerClass;
-
-/** Vm singleton instance */
-declare const Vm: VmClass;
+/** Default export: the current (root) VM instance. */
+declare const vm: Vm;
+export default vm;
 
 export { Compiler, Bytecode, Parser, TypeChecker, Vm, VmInstance, BytecodeBuilder, ClassBuilder, DynamicModule };

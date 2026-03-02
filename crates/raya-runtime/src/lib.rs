@@ -31,6 +31,7 @@ pub mod compile;
 pub mod deps;
 pub mod error;
 pub mod loader;
+pub mod module_system;
 pub mod session;
 pub mod std_prelude;
 pub mod test_runner;
@@ -47,6 +48,7 @@ pub use raya_stdlib::StdNativeHandler;
 pub use raya_stdlib_posix::register_posix;
 
 pub use error::RuntimeError;
+pub use module_system::{CompiledProgram, ProgramDiagnostics};
 pub use session::Session;
 
 use raya_engine::parser::Interner;
@@ -209,46 +211,21 @@ impl Runtime {
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
         let ts_options = self.resolve_ts_options_for_inline()?;
-        let (module, interner) = compile::compile_source_with_modes_and_ts_options(
-            source,
-            self.options.builtin_mode,
+        let virtual_entry = std::env::current_dir()
+            .map_err(RuntimeError::Io)?
+            .join("__raya_inline_entry.raya");
+        let compiler = module_system::ProgramCompiler {
+            builtin_mode: self.options.builtin_mode,
             type_mode,
-            ts_options.as_ref(),
-        )?;
-        Ok(CompiledModule {
-            module,
-            interner: Some(interner),
-        })
+            ts_options,
+            compile_options: None,
+        };
+        Ok(compiler.compile_program_source(source, &virtual_entry)?.entry)
     }
 
     /// Compile a .raya source file to a bytecode module.
     pub fn compile_file(&self, path: &Path) -> Result<CompiledModule, RuntimeError> {
-        let source = compile::load_source_with_local_imports(path)?;
-        let type_mode = self
-            .options
-            .type_mode
-            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
-        let ts_options = if matches!(type_mode, TypeMode::Ts) {
-            let tsconfig =
-                loader::find_tsconfig(path.parent().unwrap_or(path)).ok_or_else(|| {
-                    RuntimeError::TypeCheck(
-                        "Type mode 'ts' requires a discoverable tsconfig.json".to_string(),
-                    )
-                })?;
-            Some(loader::load_ts_compiler_options(&tsconfig)?)
-        } else {
-            self.options.ts_options.clone()
-        };
-        let (module, interner) = compile::compile_source_with_modes_and_ts_options(
-            &source,
-            self.options.builtin_mode,
-            type_mode,
-            ts_options.as_ref(),
-        )?;
-        Ok(CompiledModule {
-            module,
-            interner: Some(interner),
-        })
+        Ok(self.compile_program_file(path)?.entry)
     }
 
     /// Compile a Raya source string with options (e.g., source map).
@@ -262,17 +239,16 @@ impl Runtime {
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
         let ts_options = self.resolve_ts_options_for_inline()?;
-        let (module, interner) = compile::compile_source_with_options_and_modes_and_ts_options(
-            source,
-            options,
-            self.options.builtin_mode,
+        let virtual_entry = std::env::current_dir()
+            .map_err(RuntimeError::Io)?
+            .join("__raya_inline_entry.raya");
+        let compiler = module_system::ProgramCompiler {
+            builtin_mode: self.options.builtin_mode,
             type_mode,
-            ts_options.as_ref(),
-        )?;
-        Ok(CompiledModule {
-            module,
-            interner: Some(interner),
-        })
+            ts_options,
+            compile_options: Some(options.clone()),
+        };
+        Ok(compiler.compile_program_source(source, &virtual_entry)?.entry)
     }
 
     /// Compile a .raya source file with options (e.g., source map).
@@ -281,33 +257,7 @@ impl Runtime {
         path: &Path,
         options: &compile::CompileOptions,
     ) -> Result<CompiledModule, RuntimeError> {
-        let source = compile::load_source_with_local_imports(path)?;
-        let type_mode = self
-            .options
-            .type_mode
-            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
-        let ts_options = if matches!(type_mode, TypeMode::Ts) {
-            let tsconfig =
-                loader::find_tsconfig(path.parent().unwrap_or(path)).ok_or_else(|| {
-                    RuntimeError::TypeCheck(
-                        "Type mode 'ts' requires a discoverable tsconfig.json".to_string(),
-                    )
-                })?;
-            Some(loader::load_ts_compiler_options(&tsconfig)?)
-        } else {
-            self.options.ts_options.clone()
-        };
-        let (module, interner) = compile::compile_source_with_options_and_modes_and_ts_options(
-            &source,
-            options,
-            self.options.builtin_mode,
-            type_mode,
-            ts_options.as_ref(),
-        )?;
-        Ok(CompiledModule {
-            module,
-            interner: Some(interner),
-        })
+        Ok(self.compile_program_file_with_options(path, options)?.entry)
     }
 
     // ── Checking ─────────────────────────────────────────────────────────
@@ -321,17 +271,36 @@ impl Runtime {
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
         let ts_options = self.resolve_ts_options_for_inline()?;
-        compile::check_source_with_modes_and_ts_options(
-            source,
-            self.options.builtin_mode,
+        let virtual_entry = std::env::current_dir()
+            .map_err(RuntimeError::Io)?
+            .join("__raya_inline_entry.raya");
+        let compiler = module_system::ProgramCompiler {
+            builtin_mode: self.options.builtin_mode,
             type_mode,
-            ts_options.as_ref(),
-        )
+            ts_options,
+            compile_options: None,
+        };
+        Ok(compiler
+            .check_program_source(source, &virtual_entry)?
+            .diagnostics)
     }
 
     /// Type-check a .raya source file without generating bytecode.
     pub fn check_file(&self, path: &Path) -> Result<compile::CheckDiagnostics, RuntimeError> {
-        let source = compile::load_source_with_local_imports(path)?;
+        Ok(self.check_program_file(path)?.diagnostics)
+    }
+
+    /// Compile a full file program (entry + resolved local module graph).
+    pub fn compile_program_file(&self, path: &Path) -> Result<CompiledProgram, RuntimeError> {
+        self.compile_program_file_with_options(path, &compile::CompileOptions::default())
+    }
+
+    /// Compile a full file program (entry + resolved local module graph) with options.
+    pub fn compile_program_file_with_options(
+        &self,
+        path: &Path,
+        options: &compile::CompileOptions,
+    ) -> Result<CompiledProgram, RuntimeError> {
         let type_mode = self
             .options
             .type_mode
@@ -347,12 +316,41 @@ impl Runtime {
         } else {
             self.options.ts_options.clone()
         };
-        compile::check_source_with_modes_and_ts_options(
-            &source,
-            self.options.builtin_mode,
+
+        let compiler = module_system::ProgramCompiler {
+            builtin_mode: self.options.builtin_mode,
             type_mode,
-            ts_options.as_ref(),
-        )
+            ts_options,
+            compile_options: Some(options.clone()),
+        };
+        compiler.compile_program_file(path)
+    }
+
+    /// Type-check a full file program (entry + resolved local module graph).
+    pub fn check_program_file(&self, path: &Path) -> Result<ProgramDiagnostics, RuntimeError> {
+        let type_mode = self
+            .options
+            .type_mode
+            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
+        let ts_options = if matches!(type_mode, TypeMode::Ts) {
+            let tsconfig =
+                loader::find_tsconfig(path.parent().unwrap_or(path)).ok_or_else(|| {
+                    RuntimeError::TypeCheck(
+                        "Type mode 'ts' requires a discoverable tsconfig.json".to_string(),
+                    )
+                })?;
+            Some(loader::load_ts_compiler_options(&tsconfig)?)
+        } else {
+            self.options.ts_options.clone()
+        };
+
+        let compiler = module_system::ProgramCompiler {
+            builtin_mode: self.options.builtin_mode,
+            type_mode,
+            ts_options,
+            compile_options: None,
+        };
+        compiler.check_program_file(path)
     }
 
     // ── Loading ──────────────────────────────────────────────────────────
@@ -374,7 +372,11 @@ impl Runtime {
         let mut vm = vm_setup::create_vm(&self.options);
         self.maybe_enable_jit(&mut vm);
         self.maybe_enable_profiling(&vm);
-        let result = vm.execute(&module.module)?;
+        let result = if self.options.builtin_mode == BuiltinMode::RayaStrict {
+            vm.execute_entry_only(&module.module)?
+        } else {
+            vm.execute(&module.module)?
+        };
         self.maybe_write_profile(&vm, &module.module);
         self.maybe_emit_jit_telemetry(&vm);
         Ok(result)
@@ -401,7 +403,11 @@ impl Runtime {
 
         self.maybe_enable_jit(&mut vm);
         self.maybe_enable_profiling(&vm);
-        let result = vm.execute(&module.module)?;
+        let result = if self.options.builtin_mode == BuiltinMode::RayaStrict {
+            vm.execute_entry_only(&module.module)?
+        } else {
+            vm.execute(&module.module)?
+        };
         self.maybe_write_profile(&vm, &module.module);
         self.maybe_emit_jit_telemetry(&vm);
         Ok(result)

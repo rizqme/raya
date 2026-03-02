@@ -52,9 +52,8 @@ export function compile(source: string): CompiledTemplate;
  */
 export function render(source: string, data: string): string;
 
-// ── Default export (namespace class for method dispatch) ──
-
-export default class TemplateNamespace {
-    compile(source: string): CompiledTemplate;
-    render(source: string, data: string): string;
-}
+declare const template: {
+    compile: (source: string) => CompiledTemplate;
+    render: (source: string, data: string) => string;
+};
+export default template;

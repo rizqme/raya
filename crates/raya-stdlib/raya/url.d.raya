@@ -136,11 +136,10 @@ export function encodePath(path: string): string;
 /** Percent-decode a path segment. */
 export function decodePath(path: string): string;
 
-// ── Default export (namespace class for method dispatch) ──
-
-export default class UrlNamespace {
-    encode(component: string): string;
-    decode(component: string): string;
-    encodePath(path: string): string;
-    decodePath(path: string): string;
-}
+declare const url: {
+    encode: (component: string) => string;
+    decode: (component: string) => string;
+    encodePath: (path: string) => string;
+    decodePath: (path: string) => string;
+};
+export default url;

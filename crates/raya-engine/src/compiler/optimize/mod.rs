@@ -59,9 +59,12 @@ impl Optimizer {
             return;
         }
 
-        // Run function inlining first (exposes more optimization opportunities)
-        let inliner = Inliner::new();
-        inliner.inline(module);
+        // Inlining in Basic mode has caused semantic regressions around constructor
+        // side effects and call argument remapping. Keep Basic mode conservative.
+        if self.level == OptLevel::Full {
+            let inliner = Inliner::new();
+            inliner.inline(module);
+        }
 
         // Run constant folding
         let folder = ConstantFolder::new();

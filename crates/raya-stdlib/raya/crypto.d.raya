@@ -90,27 +90,26 @@ export function hkdf(hashAlg: string, ikm: Buffer, salt: Buffer, info: Buffer, l
 /** PBKDF2 key derivation. Supported hashes: "sha256", "sha384", "sha512". */
 export function pbkdf2(password: string, salt: Buffer, iterations: number, length: number, hashAlg: string): Buffer;
 
-// ── Default export (namespace class for method dispatch) ──
-
-export default class CryptoNamespace {
-    hash(algorithm: string, data: string): string;
-    hashBytes(algorithm: string, data: Buffer): Buffer;
-    hmac(algorithm: string, key: string, data: string): string;
-    hmacBytes(algorithm: string, key: Buffer, data: Buffer): Buffer;
-    randomBytes(size: number): Buffer;
-    randomInt(min: number, max: number): number;
-    randomUUID(): string;
-    toHex(data: Buffer): string;
-    fromHex(hex: string): Buffer;
-    toBase64(data: Buffer): string;
-    fromBase64(b64: string): Buffer;
-    timingSafeEqual(a: Buffer, b: Buffer): boolean;
-    encrypt(key: Buffer, plaintext: Buffer): Buffer;
-    decrypt(key: Buffer, ciphertext: Buffer): Buffer;
-    generateKey(bits: number): Buffer;
-    sign(algorithm: string, privateKey: Buffer, data: Buffer): Buffer;
-    verify(algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer): boolean;
-    generateKeyPair(algorithm: string): string[];
-    hkdf(hashAlg: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer;
-    pbkdf2(password: string, salt: Buffer, iterations: number, length: number, hashAlg: string): Buffer;
-}
+declare const crypto: {
+    hash: (algorithm: string, data: string) => string;
+    hashBytes: (algorithm: string, data: Buffer) => Buffer;
+    hmac: (algorithm: string, key: string, data: string) => string;
+    hmacBytes: (algorithm: string, key: Buffer, data: Buffer) => Buffer;
+    randomBytes: (size: number) => Buffer;
+    randomInt: (min: number, max: number) => number;
+    randomUUID: () => string;
+    toHex: (data: Buffer) => string;
+    fromHex: (hex: string) => Buffer;
+    toBase64: (data: Buffer) => string;
+    fromBase64: (b64: string) => Buffer;
+    timingSafeEqual: (a: Buffer, b: Buffer) => boolean;
+    encrypt: (key: Buffer, plaintext: Buffer) => Buffer;
+    decrypt: (key: Buffer, ciphertext: Buffer) => Buffer;
+    generateKey: (bits: number) => Buffer;
+    sign: (algorithm: string, privateKey: Buffer, data: Buffer) => Buffer;
+    verify: (algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer) => boolean;
+    generateKeyPair: (algorithm: string) => string[];
+    hkdf: (hashAlg: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number) => Buffer;
+    pbkdf2: (password: string, salt: Buffer, iterations: number, length: number, hashAlg: string) => Buffer;
+};
+export default crypto;

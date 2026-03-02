@@ -36,13 +36,12 @@ export function zlibCompress(data: Buffer, level?: number): Buffer;
 /** Zlib decompress. */
 export function zlibDecompress(data: Buffer): Buffer;
 
-// ── Default export (namespace class for method dispatch) ──
-
-export default class CompressNamespace {
-    gzip(data: Buffer, level?: number): Buffer;
-    gunzip(data: Buffer): Buffer;
-    deflate(data: Buffer, level?: number): Buffer;
-    inflate(data: Buffer): Buffer;
-    zlibCompress(data: Buffer, level?: number): Buffer;
-    zlibDecompress(data: Buffer): Buffer;
-}
+declare const compress: {
+    gzip: (data: Buffer, level?: number) => Buffer;
+    gunzip: (data: Buffer) => Buffer;
+    deflate: (data: Buffer, level?: number) => Buffer;
+    inflate: (data: Buffer) => Buffer;
+    zlibCompress: (data: Buffer, level?: number) => Buffer;
+    zlibDecompress: (data: Buffer) => Buffer;
+};
+export default compress;
