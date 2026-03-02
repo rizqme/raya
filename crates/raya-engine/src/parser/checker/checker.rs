@@ -3968,9 +3968,7 @@ impl<'a> TypeChecker<'a> {
             // type variables.  At runtime they always produce concrete values, but the
             // checker cannot reduce them further statically.  Treat numeric index into
             // an unresolved indexed-access type as unknown rather than emitting an error.
-            Type::IndexedAccess(_) | Type::Keyof(_) => {
-                Some(self.type_ctx.unknown_type())
-            }
+            Type::IndexedAccess(_) | Type::Keyof(_) => Some(self.type_ctx.unknown_type()),
             Type::Union(union) => {
                 let mut out = Vec::new();
                 for member in union.members {
@@ -4264,6 +4262,18 @@ impl<'a> TypeChecker<'a> {
             {
                 return self.type_ctx.array_type(task_ty.result);
             }
+            if let Some(crate::parser::types::Type::Class(class_ty)) =
+                self.type_ctx.get(arr_ty.element)
+            {
+                if class_ty.name == "Promise" && !class_ty.type_params.is_empty() {
+                    if let Some(symbol) = self
+                        .symbols
+                        .resolve_from_scope(&class_ty.type_params[0], self.current_scope)
+                    {
+                        return self.type_ctx.array_type(symbol.ty);
+                    }
+                }
+            }
         }
 
         // Dynamic-anyish is allowed through in compatibility modes.
@@ -4350,10 +4360,10 @@ impl<'a> TypeChecker<'a> {
                         self.type_ctx.get(*operand_ty)
                     {
                         if class_ty.name == "Promise" && !class_ty.type_params.is_empty() {
-                            if let Some(sym) = self.symbols.resolve_from_scope(
-                                &class_ty.type_params[0],
-                                self.current_scope,
-                            ) {
+                            if let Some(sym) = self
+                                .symbols
+                                .resolve_from_scope(&class_ty.type_params[0], self.current_scope)
+                            {
                                 return sym.ty;
                             }
                         }
@@ -4694,8 +4704,7 @@ impl<'a> TypeChecker<'a> {
             {
                 return method_type;
             }
-            if let Some(ty) =
-                self.resolve_builtin_class_member("Map", &property_name, member.span)
+            if let Some(ty) = self.resolve_builtin_class_member("Map", &property_name, member.span)
             {
                 return ty;
             }
@@ -4706,8 +4715,7 @@ impl<'a> TypeChecker<'a> {
             if let Some(method_type) = self.get_set_method_type(&property_name, set_ty.element) {
                 return method_type;
             }
-            if let Some(ty) =
-                self.resolve_builtin_class_member("Set", &property_name, member.span)
+            if let Some(ty) = self.resolve_builtin_class_member("Set", &property_name, member.span)
             {
                 return ty;
             }
@@ -4900,11 +4908,9 @@ impl<'a> TypeChecker<'a> {
                         }
                         crate::parser::types::Type::Map(map_ty) => {
                             object_like_members += 1;
-                            if let Some(ty) = self.get_map_method_type(
-                                &property_name,
-                                map_ty.key,
-                                map_ty.value,
-                            ) {
+                            if let Some(ty) =
+                                self.get_map_method_type(&property_name, map_ty.key, map_ty.value)
+                            {
                                 if !found_types.contains(&ty) {
                                     found_types.push(ty);
                                 }
@@ -6116,10 +6122,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        self.type_ctx.intern(crate::parser::types::Type::Object(ObjectType {
-            properties,
-            index_signature: None,
-        }))
+        self.type_ctx
+            .intern(crate::parser::types::Type::Object(ObjectType {
+                properties,
+                index_signature: None,
+            }))
     }
 
     /// Check conditional (ternary) expression
@@ -6292,7 +6299,10 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
                 if let Some(Type::TypeVar(tv)) = self.type_ctx.get(target) {
-                    eprintln!("  target typevar: name={} constraint={:?}", tv.name, tv.constraint);
+                    eprintln!(
+                        "  target typevar: name={} constraint={:?}",
+                        tv.name, tv.constraint
+                    );
                 }
             }
             self.errors.push(CheckError::TypeMismatch {

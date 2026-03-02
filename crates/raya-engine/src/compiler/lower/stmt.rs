@@ -2,7 +2,7 @@
 //!
 //! Converts AST statements to IR instructions.
 
-use super::{Lowerer, UNRESOLVED};
+use super::{is_module_wrapper_function_name, Lowerer, UNRESOLVED};
 use crate::compiler::ir::block::BasicBlockId;
 use crate::compiler::ir::{
     BinaryOp, IrConstant, IrInstr, IrValue, Register, StringCompareMode, Terminator,
@@ -192,10 +192,7 @@ impl<'a> Lowerer<'a> {
                     let in_std_wrapper = self
                         .current_function
                         .as_ref()
-                        .is_some_and(|f| {
-                            f.name.starts_with("__std_module_")
-                                || f.name.starts_with("__raya_mod_init_")
-                        });
+                        .is_some_and(|f| is_module_wrapper_function_name(&f.name));
                     let saved_pending_method_env = self.pending_class_method_env_globals.take();
                     if in_std_wrapper {
                         self.pending_class_method_env_globals =
@@ -1570,9 +1567,7 @@ impl<'a> Lowerer<'a> {
             let in_std_wrapper = self
                 .current_function
                 .as_ref()
-                .is_some_and(|f| {
-                    f.name.starts_with("__std_module_") || f.name.starts_with("__raya_mod_init_")
-                });
+                .is_some_and(|f| is_module_wrapper_function_name(&f.name));
             if in_std_wrapper && matches!(init, ast::Expression::Arrow(_)) {
                 if let Some(func_id) = self.last_arrow_func_id {
                     self.function_map.insert(name, func_id);
@@ -1713,9 +1708,7 @@ impl<'a> Lowerer<'a> {
         let in_std_wrapper = self
             .current_function
             .as_ref()
-            .is_some_and(|f| {
-                f.name.starts_with("__std_module_") || f.name.starts_with("__raya_mod_init_")
-            });
+            .is_some_and(|f| is_module_wrapper_function_name(&f.name));
         if in_std_wrapper {
             if let Some(func_id) = self.last_arrow_func_id {
                 self.function_map.insert(func_decl.name.name, func_id);

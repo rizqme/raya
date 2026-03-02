@@ -800,6 +800,12 @@ impl Visitor for ScopeAssignmentCollector<'_> {
     fn visit_class_decl(&mut self, _: &ast::ClassDecl) {}
 }
 
+pub(super) fn is_module_wrapper_function_name(name: &str) -> bool {
+    name.starts_with("__std_module_")
+        || name.starts_with("__raya_mod_init_")
+        || name.starts_with("__raya_entry_main_")
+}
+
 /// Visitor that pre-registers class declarations inside nested statement trees.
 /// Carries std-prelude wrapper context (`__std_module_<tag>`) to build exact alias mappings.
 struct NestedClassRegistrar<'l, 'a> {
@@ -2161,8 +2167,7 @@ impl<'a> Lowerer<'a> {
 
         // Get function name
         let name = self.interner.resolve(func.name.name);
-        let is_std_wrapper =
-            name.starts_with("__std_module_") || name.starts_with("__raya_mod_init_");
+        let is_std_wrapper = is_module_wrapper_function_name(name);
 
         // Std wrapper helpers are frequently referenced before declaration
         // (e.g. pmInstall -> installDependency). Pre-register nested function

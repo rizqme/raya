@@ -123,9 +123,7 @@ fn test_run_with_local_path_dependency() {
 function add(a: number, b: number): number {
     return a + b;
 }
-function main(): number {
-    return add(1, 2);
-}
+return add(1, 2);
 "#;
     let value = rt.eval(dep_source).expect("dep compilation failed");
     assert!(
@@ -182,8 +180,7 @@ fn test_url_dep_from_cache() {
     let rt = Runtime::new();
 
     // Compile a simple module to .ryb
-    let dep_source =
-        "function helper(): number { return 99; }\nfunction main(): number { return helper(); }";
+    let dep_source = "function helper(): number { return 99; }\nreturn helper();";
     let compiled = rt.compile(dep_source).expect("compile dep failed");
     let bytes = compiled.encode();
 
@@ -243,7 +240,8 @@ fn test_mixed_deps_ryb_and_source() {
     std::fs::create_dir_all(&tmp_dir).unwrap();
 
     // Create a .ryb dependency (precompiled)
-    let precompiled_source = "function double(x: number): number { return x * 2; }\nfunction main(): number { return double(5); }";
+    let precompiled_source =
+        "function double(x: number): number { return x * 2; }\nreturn double(5);";
     let compiled = rt.compile(precompiled_source).expect("compile precompiled");
     std::fs::write(tmp_dir.join("precompiled.ryb"), compiled.encode()).unwrap();
 
@@ -284,7 +282,8 @@ fn test_ryb_with_separate_library() {
     std::fs::create_dir_all(&tmp_dir).unwrap();
 
     // Compile a library module
-    let lib_source = "function add(a: number, b: number): number { return a + b; }\nfunction main(): number { return add(10, 20); }";
+    let lib_source =
+        "function add(a: number, b: number): number { return a + b; }\nreturn add(10, 20);";
     let lib_compiled = rt.compile(lib_source).expect("compile lib");
     std::fs::write(tmp_dir.join("mathlib.ryb"), lib_compiled.encode()).unwrap();
 
@@ -300,7 +299,7 @@ fn test_ryb_with_separate_library() {
     );
 
     // Test execute_with_deps: load mathlib as a dep for another module
-    let main_source = "function main(): number { return 42; }";
+    let main_source = "return 42;";
     let main_compiled = rt.compile(main_source).expect("compile main");
     let main_bytes = main_compiled.encode();
     std::fs::write(tmp_dir.join("main.ryb"), &main_bytes).unwrap();
@@ -350,7 +349,7 @@ fn test_eval_function() {
     let rt = Runtime::new();
 
     let value = rt
-        .eval("function main(): number { return 42; }")
+        .eval("function answer(): number { return 42; }\nreturn answer();")
         .expect("eval function failed");
     assert!(
         value.as_i32() == Some(42) || value.as_f64() == Some(42.0),
@@ -368,9 +367,7 @@ function fib(n: number): number {
     if (n <= 1) { return n; }
     return fib(n - 1) + fib(n - 2);
 }
-function main(): number {
-    return fib(10);
-}
+return fib(10);
 "#;
     let value = rt.eval(source).expect("eval fib failed");
     assert!(

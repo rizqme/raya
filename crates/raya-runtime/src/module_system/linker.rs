@@ -40,10 +40,9 @@ impl ProgramLinkerV2 {
             if key == &graph.entry {
                 continue;
             }
-            let node = graph
-                .nodes
-                .get(key)
-                .ok_or_else(|| RuntimeError::Dependency(format!("Missing graph node '{}'", key.display_name())))?;
+            let node = graph.nodes.get(key).ok_or_else(|| {
+                RuntimeError::Dependency(format!("Missing graph node '{}'", key.display_name()))
+            })?;
             let id = *module_ids
                 .get(key)
                 .ok_or_else(|| RuntimeError::Dependency("Missing module id".to_string()))?;
@@ -105,15 +104,12 @@ fn transform_library_module(
                 .join("\n"),
         )
     })?;
+    precheck_top_level_duplicates(&ast.statements, &interner)?;
 
     let module_tag = format!("m{}", module_id);
     let class_aliases = collect_class_aliases(&ast.statements, &interner, &module_tag);
-    let class_alias_block = synthesize_class_aliases(
-        &ast.statements,
-        &node.source,
-        &interner,
-        &class_aliases,
-    );
+    let class_alias_block =
+        synthesize_class_aliases(&ast.statements, &node.source, &interner, &class_aliases);
 
     let mut local_value_types =
         collect_local_value_types(&ast.statements, &node.source, &interner, &class_aliases);
@@ -203,10 +199,7 @@ fn transform_library_module(
                         }
                         ImportSpecifier::Namespace(alias) => {
                             let local_name = interner.resolve(alias.name).to_string();
-                            body.push_str(&format!(
-                                "const {} = {};\n",
-                                local_name, dep_binding
-                            ));
+                            body.push_str(&format!("const {} = {};\n", local_name, dep_binding));
                             imported_binding_types
                                 .insert(local_name.clone(), dep_meta.export_type_name.clone());
                             local_value_types
@@ -229,9 +222,7 @@ fn transform_library_module(
                 }
             }
             Statement::ExportDecl(ExportDecl::Named {
-                specifiers,
-                source,
-                ..
+                specifiers, source, ..
             }) => {
                 if let Some(src) = source {
                     let specifier = interner.resolve(src.value);
@@ -443,6 +434,7 @@ fn transform_entry_module(
                 .join("\n"),
         )
     })?;
+    precheck_top_level_duplicates(&ast.statements, &interner)?;
 
     let dep_map = dependency_map(node);
     let mut body = String::new();
@@ -517,10 +509,7 @@ fn transform_entry_module(
                         }
                         ImportSpecifier::Namespace(alias) => {
                             let local_name = interner.resolve(alias.name).to_string();
-                            body.push_str(&format!(
-                                "const {} = {};\n",
-                                local_name, dep_binding
-                            ));
+                            body.push_str(&format!("const {} = {};\n", local_name, dep_binding));
                         }
                     }
                 }
@@ -562,6 +551,69 @@ fn transform_entry_module(
     code.push_str("}\n");
     code.push_str(&format!("return __raya_entry_main_{}();\n", module_id));
     Ok(code)
+}
+
+fn precheck_top_level_duplicates(
+    statements: &[Statement],
+    interner: &Interner,
+) -> Result<(), RuntimeError> {
+    let mut seen_functions: HashMap<String, usize> = HashMap::new();
+    let mut seen_classes: HashMap<String, usize> = HashMap::new();
+
+    for stmt in statements {
+        match stmt {
+            Statement::FunctionDecl(func) => {
+                check_duplicate_function(&mut seen_functions, interner, func)?;
+            }
+            Statement::ClassDecl(class) => {
+                check_duplicate_class(&mut seen_classes, interner, class)?;
+            }
+            Statement::ExportDecl(ExportDecl::Declaration(inner)) => match inner.as_ref() {
+                Statement::FunctionDecl(func) => {
+                    check_duplicate_function(&mut seen_functions, interner, func)?;
+                }
+                Statement::ClassDecl(class) => {
+                    check_duplicate_class(&mut seen_classes, interner, class)?;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn check_duplicate_function(
+    seen: &mut HashMap<String, usize>,
+    interner: &Interner,
+    func: &FunctionDecl,
+) -> Result<(), RuntimeError> {
+    let name = interner.resolve(func.name.name).to_string();
+    let line = func.name.span.line as usize;
+    if let Some(original_line) = seen.insert(name.clone(), line) {
+        return Err(RuntimeError::TypeCheck(format!(
+            "Duplicate function declaration '{}': first at line {}, again at line {}",
+            name, original_line, line
+        )));
+    }
+    Ok(())
+}
+
+fn check_duplicate_class(
+    seen: &mut HashMap<String, usize>,
+    interner: &Interner,
+    class: &ClassDecl,
+) -> Result<(), RuntimeError> {
+    let name = interner.resolve(class.name.name).to_string();
+    let line = class.name.span.line as usize;
+    if let Some(original_line) = seen.insert(name.clone(), line) {
+        return Err(RuntimeError::TypeCheck(format!(
+            "Duplicate class declaration '{}': first at line {}, again at line {}",
+            name, original_line, line
+        )));
+    }
+    Ok(())
 }
 
 fn dependency_map(node: &ProgramGraphNode) -> HashMap<String, ModuleKey> {
@@ -684,7 +736,11 @@ fn synthesize_class_aliases(
                 _ => {}
             }
         }
-        out.push_str(&format!("type {} = {{ {} }};\n", alias_name, members.join(", ")));
+        out.push_str(&format!(
+            "type {} = {{ {} }};\n",
+            alias_name,
+            members.join(", ")
+        ));
     }
     out
 }
@@ -945,10 +1001,9 @@ fn object_property_key_type(
                 Some(format!("\"{}\"", escape_string(&name)))
             }
         }
-        PropertyKey::StringLiteral(s) => Some(format!(
-            "\"{}\"",
-            escape_string(interner.resolve(s.value))
-        )),
+        PropertyKey::StringLiteral(s) => {
+            Some(format!("\"{}\"", escape_string(interner.resolve(s.value))))
+        }
         PropertyKey::IntLiteral(n) => Some(format!("\"{}\"", n.value)),
         PropertyKey::Computed(_) => None,
     }
@@ -1136,9 +1191,9 @@ fn render_type_expr(
     source: &str,
     interner: &Interner,
 ) -> String {
-    use raya_engine::parser::ast::Type as AstType;
     use raya_engine::parser::ast::types::ObjectTypeMember;
     use raya_engine::parser::ast::PrimitiveType;
+    use raya_engine::parser::ast::Type as AstType;
 
     match ty {
         AstType::Primitive(p) => match p {

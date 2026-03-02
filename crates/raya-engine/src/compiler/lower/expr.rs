@@ -1065,61 +1065,69 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
-            // Check if it's a direct function call
-            if let Some(&func_id) = self.function_map.get(&ident.name) {
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    eprintln!(
-                        "[lower] direct call '{}' -> func_id={}",
-                        self.interner.resolve(ident.name),
-                        func_id.as_u32()
-                    );
-                }
-                // Call-site specialization: only for generic functions with constrained type
-                // parameters (e.g., T extends HasLength). Unconstrained generics are handled
-                // correctly by the normal monomorphization pipeline.
-                let effective_func_id = if call.type_args.is_some() {
-                    let needs_specialization = self
-                        .generic_function_asts
-                        .get(&ident.name)
-                        .map(|func_ast| {
-                            func_ast
-                                .type_params
-                                .as_ref()
-                                .is_some_and(|tps| tps.iter().any(|tp| tp.constraint.is_some()))
-                        })
-                        .unwrap_or(false);
-                    if needs_specialization {
-                        self.specialize_generic_function(ident.name, call)
-                            .unwrap_or(func_id)
+            let is_captured = self.captures.iter().any(|c| c.symbol == ident.name);
+            let is_ancestor = self
+                .ancestor_variables
+                .as_ref()
+                .is_some_and(|m| m.contains_key(&ident.name));
+
+            // Check if it's a direct function call. Prefer closure/capture paths when
+            // the identifier is locally bound or captured so lexical environments stay intact.
+            if !self.local_map.contains_key(&ident.name) && !is_captured && !is_ancestor {
+                if let Some(&func_id) = self.function_map.get(&ident.name) {
+                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                        eprintln!(
+                            "[lower] direct call '{}' -> func_id={}",
+                            self.interner.resolve(ident.name),
+                            func_id.as_u32()
+                        );
+                    }
+                    // Call-site specialization: only for generic functions with constrained type
+                    // parameters (e.g., T extends HasLength). Unconstrained generics are handled
+                    // correctly by the normal monomorphization pipeline.
+                    let effective_func_id = if call.type_args.is_some() {
+                        let needs_specialization =
+                            self.generic_function_asts
+                                .get(&ident.name)
+                                .map(|func_ast| {
+                                    func_ast.type_params.as_ref().is_some_and(|tps| {
+                                        tps.iter().any(|tp| tp.constraint.is_some())
+                                    })
+                                })
+                                .unwrap_or(false);
+                        if needs_specialization {
+                            self.specialize_generic_function(ident.name, call)
+                                .unwrap_or(func_id)
+                        } else {
+                            func_id
+                        }
                     } else {
                         func_id
-                    }
-                } else {
-                    func_id
-                };
+                    };
 
-                // Check if this is an async function - emit Spawn instead of Call
-                if self.async_functions.contains(&effective_func_id) {
-                    // Use proper Task type for the destination register
-                    let task_ty = self
-                        .type_ctx
-                        .generic_task_type()
-                        .unwrap_or(TypeId::new(TASK_TYPE_ID));
-                    let task_dest = self.alloc_register(task_ty);
-                    self.emit(IrInstr::Spawn {
-                        dest: task_dest.clone(),
-                        func: effective_func_id,
-                        args,
-                    });
-                    return task_dest;
-                } else {
-                    self.emit(IrInstr::Call {
-                        dest: Some(dest.clone()),
-                        func: effective_func_id,
-                        args,
-                    });
+                    // Check if this is an async function - emit Spawn instead of Call
+                    if self.async_functions.contains(&effective_func_id) {
+                        // Use proper Task type for the destination register
+                        let task_ty = self
+                            .type_ctx
+                            .generic_task_type()
+                            .unwrap_or(TypeId::new(TASK_TYPE_ID));
+                        let task_dest = self.alloc_register(task_ty);
+                        self.emit(IrInstr::Spawn {
+                            dest: task_dest.clone(),
+                            func: effective_func_id,
+                            args,
+                        });
+                        return task_dest;
+                    } else {
+                        self.emit(IrInstr::Call {
+                            dest: Some(dest.clone()),
+                            func: effective_func_id,
+                            args,
+                        });
+                    }
+                    return dest;
                 }
-                return dest;
             }
 
             // Otherwise, it might be a closure stored in a variable
@@ -1276,17 +1284,13 @@ impl<'a> Lowerer<'a> {
 
             // Captured/ancestor identifier call (e.g. method param used inside arrow):
             // resolve through identifier lowering so capture slots are honored.
-            let is_captured = self.captures.iter().any(|c| c.symbol == ident.name);
-            let is_ancestor = self
-                .ancestor_variables
-                .as_ref()
-                .is_some_and(|m| m.contains_key(&ident.name));
             if is_captured || is_ancestor {
                 let closure = self.lower_identifier(ident);
                 let callee_ty = self.get_expr_type(&call.callee);
                 let callee_ty_raw = callee_ty.as_u32();
                 let known_callable = self.bound_method_vars.contains_key(&ident.name)
-                    || self.callable_symbol_hints.contains(&ident.name);
+                    || self.callable_symbol_hints.contains(&ident.name)
+                    || self.function_map.contains_key(&ident.name);
                 if !known_callable && !self.type_is_callable(callee_ty) {
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
@@ -1298,6 +1302,20 @@ impl<'a> Lowerer<'a> {
                         });
                     self.poison_register(&dest);
                     return dest;
+                }
+                // Captured/ancestor async function declarations are represented as closures.
+                // Spawn them to preserve Task semantics required by await/await-all.
+                if let Some(&func_id) = self.function_map.get(&ident.name) {
+                    if self.async_functions.contains(&func_id)
+                        || self.async_closures.contains(&func_id)
+                    {
+                        self.emit(IrInstr::SpawnClosure {
+                            dest: dest.clone(),
+                            closure,
+                            args,
+                        });
+                        return dest;
+                    }
                 }
                 self.emit(IrInstr::CallClosure {
                     dest: Some(dest.clone()),
@@ -2385,7 +2403,9 @@ impl<'a> Lowerer<'a> {
                     let class_name = self
                         .class_map
                         .iter()
-                        .find_map(|(&sym, &id)| (id == class_id).then(|| self.interner.resolve(sym)))
+                        .find_map(|(&sym, &id)| {
+                            (id == class_id).then(|| self.interner.resolve(sym))
+                        })
                         .unwrap_or("<unknown>");
                     let field_list = all_fields
                         .iter()
@@ -2545,17 +2565,18 @@ impl<'a> Lowerer<'a> {
                 true
             } else {
                 match &*member.object {
-                    Expression::Identifier(ident) => self
-                        .variable_object_fields
-                        .get(&ident.name)
-                        .is_some_and(|fields| fields.iter().any(|(name, _)| name == prop_name))
-                        || self
-                            .variable_object_type_aliases
+                    Expression::Identifier(ident) => {
+                        self.variable_object_fields
                             .get(&ident.name)
-                            .is_some_and(|alias| {
-                                alias.starts_with("__raya_mod_exports_type_")
-                                    && self.type_alias_field_lookup(alias, prop_name).is_some()
-                            }),
+                            .is_some_and(|fields| fields.iter().any(|(name, _)| name == prop_name))
+                            || self
+                                .variable_object_type_aliases
+                                .get(&ident.name)
+                                .is_some_and(|alias| {
+                                    alias.starts_with("__raya_mod_exports_type_")
+                                        && self.type_alias_field_lookup(alias, prop_name).is_some()
+                                })
+                    }
                     _ => false,
                 }
             };
@@ -2599,7 +2620,10 @@ impl<'a> Lowerer<'a> {
         }
 
         if class_id.is_none() && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-            eprintln!("[lower] unresolved member object AST: {:?}", &*member.object);
+            eprintln!(
+                "[lower] unresolved member object AST: {:?}",
+                &*member.object
+            );
         }
 
         let class_name = class_id.and_then(|cid| {
@@ -4428,12 +4452,19 @@ impl<'a> Lowerer<'a> {
         // Lower the awaited expression
         let task_or_array = self.lower_expr(&await_expr.argument);
 
-        // Check if the expression type is an array - if so, use AwaitAll
+        // Check if the awaited value is an array - if so, use AwaitAll.
+        // Prefer checker type information, but fall back to lowered register type
+        // so await-all remains correct when checker inference is temporarily unresolved.
         let expr_type = self.get_expr_type(&await_expr.argument);
-        if matches!(
+        let checker_is_array = matches!(
             self.type_ctx.get(expr_type),
             Some(crate::parser::types::ty::Type::Array(_))
-        ) {
+        );
+        let lowered_is_array = matches!(
+            self.type_ctx.get(task_or_array.ty),
+            Some(crate::parser::types::ty::Type::Array(_))
+        );
+        if checker_is_array || lowered_is_array {
             // Awaiting an array variable - emit AwaitAll
             // Result is an array (use generic ARRAY_TYPE_ID)
             let dest = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
@@ -4449,8 +4480,12 @@ impl<'a> Lowerer<'a> {
             self.type_ctx.get(expr_type)
         {
             task_ty.result
+        } else if let Some(crate::parser::types::ty::Type::Task(task_ty)) =
+            self.type_ctx.get(task_or_array.ty)
+        {
+            task_ty.result
         } else {
-            TypeId::new(NUMBER_TYPE_ID) // Fallback to number if not a Task type
+            UNRESOLVED
         };
 
         // Emit await instruction for single task
