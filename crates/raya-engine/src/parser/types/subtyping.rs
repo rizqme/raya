@@ -165,6 +165,17 @@ impl<'a> SubtypingContext<'a> {
             (Type::NumberLiteral(a), Type::NumberLiteral(b)) => a == b,
             (Type::BooleanLiteral(a), Type::BooleanLiteral(b)) => a == b,
 
+            // Union-to-union subtyping:
+            // S1 | ... | Sn <: T1 | ... | Tm iff every Si is a subtype of some Tj.
+            (Type::Union(sub_union), Type::Union(sup_union)) => sub_union.members.iter().all(
+                |&sub_member| {
+                    sup_union
+                        .members
+                        .iter()
+                        .any(|&sup_member| self.is_subtype(sub_member, sup_member))
+                },
+            ),
+
             // Union subtyping: T <: U1 | U2 | ... | Un if T <: Ui for some i
             (_, Type::Union(union)) => union
                 .members

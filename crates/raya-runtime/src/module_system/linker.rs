@@ -377,8 +377,8 @@ fn transform_library_module(
     }
     code.push_str(&export_alias);
     code.push_str(&format!(
-        "function __raya_mod_init_{}(): unknown {{\n",
-        module_id
+        "function __raya_mod_init_{}(): {} {{\n",
+        module_id, export_type_name
     ));
     code.push_str(&body);
     let object_literal = if export_values.is_empty() {
@@ -399,14 +399,14 @@ fn transform_library_module(
         format!("{{ {} }}", fields)
     };
     code.push_str(&format!(
-        "let __raya_exports = {};\n",
-        object_literal
+        "let __raya_exports: {} = {};\n",
+        export_type_name, object_literal
     ));
     code.push_str("return __raya_exports;\n");
     code.push_str("}\n");
     code.push_str(&format!(
-        "const {}: {} = (__raya_mod_init_{}() as {});\n",
-        export_var_name, export_type_name, module_id, export_type_name
+        "const {}: {} = __raya_mod_init_{}();\n",
+        export_var_name, export_type_name, module_id
     ));
 
     Ok((
@@ -635,7 +635,7 @@ fn synthesize_class_aliases(
                     let ty = field
                         .type_annotation
                         .as_ref()
-                        .map(|ann| normalize_type_snippet(ann.span.slice(source)))
+                        .map(|ann| render_type_annotation(ann, source, interner))
                         .map(|ty| rewrite_local_class_refs(&ty, class_aliases))
                         .unwrap_or_else(|| "unknown".to_string());
                     members.push(format!("{}: {}", field_name, ty));
@@ -661,12 +661,7 @@ fn synthesize_class_aliases(
                             let ty = param
                                 .type_annotation
                                 .as_ref()
-                                .map(|ann| {
-                                    normalize_param_type_snippet(
-                                        ann.span.slice(source),
-                                        param.is_rest,
-                                    )
-                                })
+                                .map(|ann| render_type_annotation(ann, source, interner))
                                 .map(|ty| rewrite_local_class_refs(&ty, class_aliases))
                                 .unwrap_or_else(|| "unknown".to_string());
                             format!("{}: {}", suffix, ty)
@@ -676,7 +671,7 @@ fn synthesize_class_aliases(
                     let ret = method
                         .return_type
                         .as_ref()
-                        .map(|ann| normalize_return_type_snippet(ann.span.slice(source)))
+                        .map(|ann| render_type_annotation(ann, source, interner))
                         .map(|ty| rewrite_local_class_refs(&ty, class_aliases))
                         .unwrap_or_else(|| "void".to_string());
                     let key = if is_identifier(&method_name) {
@@ -719,7 +714,7 @@ fn collect_local_value_types(
                 out.insert(name, ty);
             }
             Statement::VariableDecl(decl) => {
-                let ty = infer_variable_decl_type(decl, source, class_aliases);
+                let ty = infer_variable_decl_type(decl, source, interner, class_aliases);
                 for name in pattern_names(&decl.pattern, interner) {
                     out.insert(name, ty.clone());
                 }
@@ -741,7 +736,7 @@ fn collect_local_value_types(
                     out.insert(name, ty);
                 }
                 Statement::VariableDecl(decl) => {
-                    let ty = infer_variable_decl_type(decl, source, class_aliases);
+                    let ty = infer_variable_decl_type(decl, source, interner, class_aliases);
                     for name in pattern_names(&decl.pattern, interner) {
                         out.insert(name, ty.clone());
                     }
@@ -772,7 +767,7 @@ fn function_type_expr(
             let ty = param
                 .type_annotation
                 .as_ref()
-                .map(|ann| normalize_param_type_snippet(ann.span.slice(source), param.is_rest))
+                .map(|ann| render_type_annotation(ann, source, interner))
                 .map(|ty| rewrite_local_class_refs(&ty, class_aliases))
                 .unwrap_or_else(|| "unknown".to_string());
             let maybe = if param.is_rest {
@@ -789,7 +784,7 @@ fn function_type_expr(
     let ret = func
         .return_type
         .as_ref()
-        .map(|ann| normalize_return_type_snippet(ann.span.slice(source)))
+        .map(|ann| render_type_annotation(ann, source, interner))
         .map(|ty| rewrite_local_class_refs(&ty, class_aliases))
         .unwrap_or_else(|| "void".to_string());
     format!("({}) => {}", params, ret)
@@ -798,10 +793,11 @@ fn function_type_expr(
 fn infer_variable_decl_type(
     decl: &VariableDecl,
     source: &str,
+    interner: &Interner,
     class_aliases: &HashMap<String, String>,
 ) -> String {
     if let Some(ann) = &decl.type_annotation {
-        let ty = normalize_type_snippet(ann.span.slice(source));
+        let ty = render_type_annotation(ann, source, interner);
         return rewrite_local_class_refs(&ty, class_aliases);
     }
     if let Some(init) = &decl.initializer {
@@ -873,7 +869,7 @@ fn infer_expression_type(
             );
         }
         Expression::TypeCast(cast) => {
-            let ty = normalize_type_snippet(cast.target_type.span.slice(source));
+            let ty = render_type_annotation(&cast.target_type, source, interner);
             return rewrite_local_class_refs(&ty, class_aliases);
         }
         _ => {}
@@ -1127,36 +1123,171 @@ fn is_known_global_class(name: &str) -> bool {
     )
 }
 
-fn normalize_type_snippet(raw: &str) -> String {
-    raw.trim().trim_end_matches(';').trim().to_string()
+fn render_type_annotation(
+    ann: &raya_engine::parser::ast::TypeAnnotation,
+    source: &str,
+    interner: &Interner,
+) -> String {
+    render_type_expr(&ann.ty, source, interner)
 }
 
-fn normalize_return_type_snippet(raw: &str) -> String {
-    let mut ty = normalize_type_snippet(raw);
-    while ty.ends_with('{') {
-        ty.pop();
-    }
-    ty.trim().to_string()
-}
+fn render_type_expr(
+    ty: &raya_engine::parser::ast::Type,
+    source: &str,
+    interner: &Interner,
+) -> String {
+    use raya_engine::parser::ast::Type as AstType;
+    use raya_engine::parser::ast::types::ObjectTypeMember;
+    use raya_engine::parser::ast::PrimitiveType;
 
-fn normalize_param_type_snippet(raw: &str, is_rest: bool) -> String {
-    let mut ty = normalize_type_snippet(raw);
-    while ty.ends_with(',') {
-        ty.pop();
-    }
-    if is_rest {
-        while ty.ends_with(')') {
-            ty.pop();
+    match ty {
+        AstType::Primitive(p) => match p {
+            PrimitiveType::Number => "number".to_string(),
+            PrimitiveType::Int => "int".to_string(),
+            PrimitiveType::String => "string".to_string(),
+            PrimitiveType::Boolean => "boolean".to_string(),
+            PrimitiveType::Null => "null".to_string(),
+            PrimitiveType::Void => "void".to_string(),
+        },
+        AstType::Reference(reference) => {
+            let mut out = interner.resolve(reference.name.name).to_string();
+            if let Some(args) = &reference.type_args {
+                let rendered = args
+                    .iter()
+                    .map(|a| render_type_annotation(a, source, interner))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push('<');
+                out.push_str(&rendered);
+                out.push('>');
+            }
+            out
         }
-    } else {
-        let opens = ty.chars().filter(|c| *c == '(').count();
-        let mut closes = ty.chars().filter(|c| *c == ')').count();
-        while closes > opens && ty.ends_with(')') {
-            ty.pop();
-            closes -= 1;
+        AstType::Union(union) => union
+            .types
+            .iter()
+            .map(|t| render_type_annotation(t, source, interner))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        AstType::Intersection(intersection) => intersection
+            .types
+            .iter()
+            .map(|t| render_type_annotation(t, source, interner))
+            .collect::<Vec<_>>()
+            .join(" & "),
+        AstType::Function(function) => {
+            let params = function
+                .params
+                .iter()
+                .enumerate()
+                .map(|(idx, p)| {
+                    let name = p
+                        .name
+                        .as_ref()
+                        .map(|id| interner.resolve(id.name).to_string())
+                        .unwrap_or_else(|| format!("arg{}", idx));
+                    let head = if p.is_rest {
+                        format!("...{}", name)
+                    } else if p.optional {
+                        format!("{}?", name)
+                    } else {
+                        name
+                    };
+                    let ty = render_type_annotation(&p.ty, source, interner);
+                    format!("{}: {}", head, ty)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret = render_type_annotation(&function.return_type, source, interner);
+            format!("({}) => {}", params, ret)
+        }
+        AstType::Array(arr) => {
+            let elem = render_type_annotation(&arr.element_type, source, interner);
+            format!("{}[]", elem)
+        }
+        AstType::Tuple(tuple) => {
+            let elems = tuple
+                .element_types
+                .iter()
+                .map(|t| render_type_annotation(t, source, interner))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{}]", elems)
+        }
+        AstType::Object(obj) => {
+            let members = obj
+                .members
+                .iter()
+                .map(|m| match m {
+                    ObjectTypeMember::Property(prop) => {
+                        let name = interner.resolve(prop.name.name).to_string();
+                        let maybe = if prop.optional {
+                            format!("{}?", name)
+                        } else {
+                            name
+                        };
+                        let ty = render_type_annotation(&prop.ty, source, interner);
+                        format!("{}: {}", maybe, ty)
+                    }
+                    ObjectTypeMember::Method(method) => {
+                        let name = interner.resolve(method.name.name).to_string();
+                        let params = method
+                            .params
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, p)| {
+                                let pname = p
+                                    .name
+                                    .as_ref()
+                                    .map(|id| interner.resolve(id.name).to_string())
+                                    .unwrap_or_else(|| format!("arg{}", idx));
+                                let head = if p.is_rest {
+                                    format!("...{}", pname)
+                                } else if p.optional {
+                                    format!("{}?", pname)
+                                } else {
+                                    pname
+                                };
+                                let pty = render_type_annotation(&p.ty, source, interner);
+                                format!("{}: {}", head, pty)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let ret = render_type_annotation(&method.return_type, source, interner);
+                        format!("{}: ({}) => {}", name, params, ret)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ {} }}", members)
+        }
+        AstType::Typeof(typeof_ty) => {
+            let expr = typeof_ty.argument.span().slice(source).trim();
+            format!("typeof {}", expr)
+        }
+        AstType::Keyof(keyof_ty) => {
+            let inner = render_type_annotation(&keyof_ty.target, source, interner);
+            format!("keyof {}", inner)
+        }
+        AstType::IndexedAccess(indexed) => {
+            let object = render_type_annotation(&indexed.object, source, interner);
+            let index = render_type_annotation(&indexed.index, source, interner);
+            format!("{}[{}]", object, index)
+        }
+        AstType::StringLiteral(sym) => format!("\"{}\"", escape_string(interner.resolve(*sym))),
+        AstType::NumberLiteral(n) => {
+            if (n.fract()).abs() < f64::EPSILON {
+                format!("{}", *n as i64)
+            } else {
+                n.to_string()
+            }
+        }
+        AstType::BooleanLiteral(b) => b.to_string(),
+        AstType::Parenthesized(inner) => {
+            let rendered = render_type_annotation(inner, source, interner);
+            format!("({})", rendered)
         }
     }
-    ty.trim().to_string()
 }
 
 fn rewrite_local_class_refs(type_expr: &str, class_aliases: &HashMap<String, String>) -> String {
