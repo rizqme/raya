@@ -722,10 +722,14 @@ impl Reactor {
                 shared_state.stack_pool.release(vr.task.take_stack());
             }
             ExecutionResult::Suspended(reason) => {
-                if matches!(reason, SuspendReason::MutexLock { .. }) {
+                if matches!(
+                    reason,
+                    SuspendReason::MutexLock { .. } | SuspendReason::AwaitTask(_)
+                ) {
                     // MutexLock wakeup is handled by the MutexUnlock opcode on
                     // VM workers (not by the reactor). Use try_suspend to avoid
-                    // overwriting a Resumed state if unlock already woke the task.
+                    // overwriting a Resumed state if another completion already
+                    // woke the task.
                     vr.task.try_suspend(reason);
                 } else {
                     vr.task.suspend(reason.clone());

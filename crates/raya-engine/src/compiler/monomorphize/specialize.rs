@@ -4,6 +4,7 @@
 //! for specific type argument combinations.
 
 use super::collect::{GenericClassInfo, GenericFunctionInfo};
+use super::rewrite::CallSiteRewriter;
 use super::substitute::TypeSubstitution;
 use super::{
     InstantiationKind, MonoKey, MonomorphizationContext, MonomorphizationResult,
@@ -73,21 +74,30 @@ impl<'a> Monomorphizer<'a> {
             self.process_instantiation(module, pending);
         }
 
-        // Phase 4: Rewrite call sites (handled by rewrite module)
-        // This will be done separately
+        // Phase 4: Rewrite call/new call-sites to specialized symbols.
+        let call_sites_rewritten = {
+            let mut rewriter = CallSiteRewriter::new(&self.ctx);
+            for info in self.generic_functions.values() {
+                rewriter.register_generic_function(info.func_id, info.type_params.clone());
+            }
+            for info in self.generic_classes.values() {
+                rewriter.register_generic_class(info.class_id, info.type_params.clone());
+            }
+            rewriter.rewrite(module)
+        };
 
         MonomorphizationResult {
             functions_specialized: self.functions_specialized,
             classes_specialized: self.classes_specialized,
-            call_sites_rewritten: 0, // Will be updated by rewriter
+            call_sites_rewritten,
         }
     }
 
     /// Identify generic functions and classes in the module
     fn identify_generics(&mut self, _module: &IrModule) {
-        // For now, we consider functions with type parameters as generic
-        // In the current IR, we don't have explicit type parameters yet,
-        // so we'll use a heuristic or rely on external registration
+        // Generic discovery is currently driven by explicit registrations from
+        // lowering/binding paths. Keep this conservative to avoid rewriting
+        // non-generic call sites during regular program execution.
     }
 
     /// Collect initial instantiations from the module
@@ -196,7 +206,7 @@ impl<'a> Monomorphizer<'a> {
         let mut specialized = substitution.apply_function(&generic_func);
 
         // Generate mangled name
-        specialized.name = self.mangle_function_name(&generic_func.name, &key.type_args);
+        specialized.name = self.mangle_function_name(&generic_func.name, key);
 
         // Add to module
         let new_id = module.add_function(specialized);
@@ -234,8 +244,7 @@ impl<'a> Monomorphizer<'a> {
         let substitution = TypeSubstitution::from_params_and_args(&type_params, &key.type_args);
 
         // Create specialized class
-        let mut specialized =
-            IrClass::new(self.mangle_class_name(&generic_class.name, &key.type_args));
+        let mut specialized = IrClass::new(self.mangle_class_name(&generic_class.name, key));
 
         // Substitute field types
         for field in &generic_class.fields {
@@ -280,37 +289,15 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// Generate a mangled name for a specialized function
-    fn mangle_function_name(&self, base_name: &str, type_args: &[TypeId]) -> String {
-        let mut name = base_name.to_string();
-        for ty in type_args {
-            name.push('_');
-            name.push_str(&self.type_name(*ty));
-        }
-        name
+    fn mangle_function_name(&self, base_name: &str, key: &MonoKey) -> String {
+        let hash = key.stable_hash_hex();
+        format!("{}__mono_{}", base_name, &hash[..12])
     }
 
     /// Generate a mangled name for a specialized class
-    fn mangle_class_name(&self, base_name: &str, type_args: &[TypeId]) -> String {
-        let mut name = base_name.to_string();
-        for ty in type_args {
-            name.push('_');
-            name.push_str(&self.type_name(*ty));
-        }
-        name
-    }
-
-    /// Get a string representation of a type for name mangling
-    fn type_name(&self, ty: TypeId) -> String {
-        // Use simple type ID for now
-        // In a real implementation, this would resolve to actual type names
-        match ty.as_u32() {
-            0 => "null".to_string(),
-            1 => "i32".to_string(),
-            2 => "f64".to_string(),
-            3 => "string".to_string(),
-            4 => "bool".to_string(),
-            n => format!("type{}", n),
-        }
+    fn mangle_class_name(&self, base_name: &str, key: &MonoKey) -> String {
+        let hash = key.stable_hash_hex();
+        format!("{}__mono_{}", base_name, &hash[..12])
     }
 
     /// Get the specialized function ID for a key
@@ -355,11 +342,10 @@ mod tests {
         let interner = Interner::new();
         let mono = Monomorphizer::new(&type_ctx, &interner);
 
-        let name = mono.mangle_function_name("identity", &[TypeId::new(1)]);
-        assert_eq!(name, "identity_i32");
-
-        let name2 = mono.mangle_function_name("pair", &[TypeId::new(1), TypeId::new(3)]);
-        assert_eq!(name2, "pair_i32_string");
+        let key = MonoKey::function(FunctionId::new(0), vec![TypeId::new(1)]);
+        let name = mono.mangle_function_name("identity", &key);
+        assert!(name.starts_with("identity__mono_"));
+        assert_eq!(name.len(), "identity__mono_".len() + 12);
     }
 
     #[test]
@@ -368,8 +354,10 @@ mod tests {
         let interner = Interner::new();
         let mono = Monomorphizer::new(&type_ctx, &interner);
 
-        let name = mono.mangle_class_name("Box", &[TypeId::new(1)]);
-        assert_eq!(name, "Box_i32");
+        let key = MonoKey::class(ClassId::new(0), vec![TypeId::new(1)]);
+        let name = mono.mangle_class_name("Box", &key);
+        assert!(name.starts_with("Box__mono_"));
+        assert_eq!(name.len(), "Box__mono_".len() + 12);
     }
 
     #[test]
@@ -403,7 +391,7 @@ mod tests {
         let specialized_id = mono.ctx.get_function(&key).unwrap();
         let specialized = module.get_function(specialized_id).unwrap();
 
-        assert_eq!(specialized.name, "identity_i32");
+        assert!(specialized.name.starts_with("identity__mono_"));
         assert_eq!(specialized.return_ty, TypeId::new(1));
         assert_eq!(specialized.params[0].ty, TypeId::new(1));
     }
@@ -442,8 +430,16 @@ mod tests {
         assert_ne!(id1, id2);
 
         // Check names
-        assert_eq!(module.get_function(id1).unwrap().name, "identity_i32");
-        assert_eq!(module.get_function(id2).unwrap().name, "identity_string");
+        assert!(module
+            .get_function(id1)
+            .unwrap()
+            .name
+            .starts_with("identity__mono_"));
+        assert!(module
+            .get_function(id2)
+            .unwrap()
+            .name
+            .starts_with("identity__mono_"));
     }
 
     #[test]
@@ -475,7 +471,7 @@ mod tests {
         let specialized_id = mono.ctx.get_class(&key).unwrap();
         let specialized = module.get_class(specialized_id).unwrap();
 
-        assert_eq!(specialized.name, "Box_i32");
+        assert!(specialized.name.starts_with("Box__mono_"));
         assert_eq!(specialized.fields[0].ty, TypeId::new(1));
     }
 }

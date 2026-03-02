@@ -33,11 +33,13 @@ pub use rewrite::CallSiteRewriter;
 pub use specialize::Monomorphizer;
 pub use substitute::TypeSubstitution;
 
+use crate::compiler::bytecode::{GenericTemplateInfo, MonoDebugEntry, TemplateSymbolEntry};
 use crate::compiler::ir::instr::IrInstr;
 use crate::compiler::ir::{ClassId, FunctionId, IrModule};
 use crate::compiler::type_registry::TypeRegistry;
 use crate::parser::{Interner, TypeContext, TypeId};
 use rustc_hash::FxHashMap;
+use sha2::{Digest, Sha256};
 use std::hash::Hash;
 
 /// Identifies whether a generic entity is a function or class
@@ -82,6 +84,33 @@ impl MonoKey {
     /// Create a key for a class instantiation
     pub fn class(class_id: ClassId, type_args: Vec<TypeId>) -> Self {
         Self::new(GenericId::Class(class_id), type_args)
+    }
+
+    /// Canonical serialization of concrete type arguments for deterministic keys.
+    pub fn canonical_type_args(&self) -> String {
+        self.type_args
+            .iter()
+            .map(|ty| ty.as_u32().to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// Stable key hash used for specialization dedup/mangling.
+    pub fn stable_hash_hex(&self) -> String {
+        let mut hasher = Sha256::new();
+        match self.generic_id {
+            GenericId::Function(id) => hasher.update(format!("fn:{}", id.as_u32())),
+            GenericId::Class(id) => hasher.update(format!("class:{}", id.as_u32())),
+            GenericId::Method(class_id, method_idx) => {
+                hasher.update(format!("method:{}:{}", class_id.as_u32(), method_idx));
+            }
+            GenericId::Constructor(class_id) => {
+                hasher.update(format!("ctor:{}", class_id.as_u32()));
+            }
+        }
+        hasher.update(self.canonical_type_args().as_bytes());
+        let digest = hasher.finalize();
+        hex::encode(digest)
     }
 }
 
@@ -302,6 +331,75 @@ pub fn resolve_late_bound_members(
             }
         }
     }
+}
+
+/// Collect generic template metadata from IR module.
+pub fn collect_generic_templates(ir_module: &IrModule) -> Vec<GenericTemplateInfo> {
+    let mut templates = Vec::new();
+
+    for (idx, func) in ir_module.functions.iter().enumerate() {
+        if func.type_param_ids.is_empty() {
+            continue;
+        }
+        let type_params = func
+            .type_param_ids
+            .iter()
+            .map(|ty| format!("T{}", ty.as_u32()))
+            .collect::<Vec<_>>();
+        let template_id = format!("fn:{}:{}", idx, func.name);
+        let mut fp_hasher = Sha256::new();
+        fp_hasher.update(func.name.as_bytes());
+        fp_hasher.update(func.type_param_ids.len().to_le_bytes());
+        fp_hasher.update(func.instruction_count().to_le_bytes());
+        let body_fingerprint = hex::encode(fp_hasher.finalize());
+        templates.push(GenericTemplateInfo {
+            template_id,
+            symbol: func.name.clone(),
+            type_params,
+            constraints: Vec::new(),
+            body_fingerprint,
+        });
+    }
+
+    templates
+}
+
+/// Build template->symbol table from module generic templates.
+pub fn collect_template_symbol_table(ir_module: &IrModule) -> Vec<TemplateSymbolEntry> {
+    collect_generic_templates(ir_module)
+        .into_iter()
+        .map(|template| TemplateSymbolEntry {
+            template_id: template.template_id,
+            symbol: template.symbol,
+        })
+        .collect()
+}
+
+/// Collect monomorphization debug mapping entries from IR symbol names.
+pub fn collect_mono_debug_map(ir_module: &IrModule) -> Vec<MonoDebugEntry> {
+    let mut out = Vec::new();
+
+    for func in &ir_module.functions {
+        if let Some((template, _)) = func.name.split_once("__mono_") {
+            out.push(MonoDebugEntry {
+                specialized_symbol: func.name.clone(),
+                template_id: format!("fn-template:{}", template),
+                concrete_args: Vec::new(),
+            });
+        }
+    }
+
+    for class in &ir_module.classes {
+        if let Some((template, _)) = class.name.split_once("__mono_") {
+            out.push(MonoDebugEntry {
+                specialized_symbol: class.name.clone(),
+                template_id: format!("class-template:{}", template),
+                concrete_args: Vec::new(),
+            });
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]

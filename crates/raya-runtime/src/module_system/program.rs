@@ -203,6 +203,9 @@ fn looks_like_dynamic_import(source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::TempDir;
 
     #[test]
     fn detects_dynamic_import_syntax() {
@@ -224,5 +227,80 @@ mod tests {
             .unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("Dynamic import is not supported in strict mode"));
+    }
+
+    #[test]
+    fn compile_program_source_with_std_stream_import_succeeds() {
+        let compiler = ProgramCompiler {
+            builtin_mode: BuiltinMode::RayaStrict,
+            type_mode: TypeMode::Raya,
+            ts_options: None,
+            compile_options: None,
+        };
+
+        let result = compiler.compile_program_source(
+            r#"
+            import stream from "std:stream";
+            return stream != null;
+            "#,
+            Path::new("/virtual/main.raya"),
+        );
+
+        assert!(
+            result.is_ok(),
+            "std:stream import should compile through linker path: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn linker_preserves_generic_alias_arity_for_class_method_references() {
+        let temp = TempDir::new().expect("temp dir");
+        let lib_path = temp.path().join("lib.raya");
+        let main_path = temp.path().join("main.raya");
+
+        fs::write(
+            &lib_path,
+            r#"
+            export class C<T> {
+                value: T;
+                constructor(value: T) {
+                    this.value = value;
+                }
+            }
+
+            export class S<T> {
+                pipe(c: C<T>): string {
+                    return "ok";
+                }
+            }
+            "#,
+        )
+        .expect("write lib");
+
+        fs::write(
+            &main_path,
+            r#"
+            import { C, S } from "./lib.raya";
+            return 1;
+            "#,
+        )
+        .expect("write main");
+
+        let graph = super::ProgramGraphBuilder::new()
+            .build(&main_path)
+            .expect("build graph");
+        let linked = super::ProgramLinkerV2::link(&graph).expect("link");
+
+        assert!(
+            linked.source.contains("type __t_m0_C<T> ="),
+            "generic class alias should preserve arity: {}",
+            linked.source
+        );
+        assert!(
+            linked.source.contains("pipe: (c: __t_m0_C<T>) => string"),
+            "method reference should keep generic argument in alias expansion: {}",
+            linked.source
+        );
     }
 }

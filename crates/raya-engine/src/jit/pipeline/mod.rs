@@ -129,6 +129,9 @@ mod tests {
             metadata: Metadata {
                 name: "test_module".to_string(),
                 source_file: None,
+                generic_templates: vec![],
+                template_symbol_table: vec![],
+                mono_debug_map: vec![],
             },
             exports: vec![],
             imports: vec![],
@@ -298,6 +301,9 @@ mod tests {
             metadata: Metadata {
                 name: "multi".to_string(),
                 source_file: None,
+                generic_templates: vec![],
+                template_symbol_table: vec![],
+                mono_debug_map: vec![],
             },
             exports: vec![],
             imports: vec![],

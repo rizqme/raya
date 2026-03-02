@@ -108,6 +108,9 @@ fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module 
         metadata: Metadata {
             name: "test_module".to_string(),
             source_file: None,
+            generic_templates: vec![],
+            template_symbol_table: vec![],
+            mono_debug_map: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -136,6 +139,9 @@ fn make_vm_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Modu
         metadata: Metadata {
             name: "test_module".to_string(),
             source_file: None,
+            generic_templates: vec![],
+            template_symbol_table: vec![],
+            mono_debug_map: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -2047,6 +2053,9 @@ fn engine_prewarm_selects_hot() {
         metadata: Metadata {
             name: "prewarm_test".to_string(),
             source_file: None,
+            generic_templates: vec![],
+            template_symbol_table: vec![],
+            mono_debug_map: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -2287,6 +2296,9 @@ fn background_compiler_processes_request() {
         metadata: Metadata {
             name: "bg_test".to_string(),
             source_file: None,
+            generic_templates: vec![],
+            template_symbol_table: vec![],
+            mono_debug_map: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -2368,6 +2380,9 @@ fn jit_hints_encode_decode_roundtrip() {
         metadata: Metadata {
             name: "hints_test".to_string(),
             source_file: None,
+            generic_templates: vec![],
+            template_symbol_table: vec![],
+            mono_debug_map: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -2424,6 +2439,9 @@ fn jit_hints_absent_when_no_flag() {
         metadata: Metadata {
             name: "no_hints".to_string(),
             source_file: None,
+            generic_templates: vec![],
+            template_symbol_table: vec![],
+            mono_debug_map: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -2510,6 +2528,9 @@ fn prewarm_candidates_submitted_to_background() {
         metadata: Metadata {
             name: "prewarm_bg_test".to_string(),
             source_file: None,
+            generic_templates: vec![],
+            template_symbol_table: vec![],
+            mono_debug_map: vec![],
         },
         exports: vec![],
         imports: vec![],

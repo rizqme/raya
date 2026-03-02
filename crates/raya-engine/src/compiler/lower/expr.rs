@@ -5359,6 +5359,11 @@ impl<'a> Lowerer<'a> {
                     .get(&ident.name)
                     .copied()
                     .or_else(|| self.class_map.get(&ident.name).copied())
+                    .or_else(|| {
+                        self.variable_object_type_aliases
+                            .get(&ident.name)
+                            .and_then(|alias| self.class_id_from_type_name(alias))
+                    })
                     .or_else(|| self.class_id_from_type_id(self.get_expr_type(expr)))
             }
             Expression::TypeCast(cast) => self

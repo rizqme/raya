@@ -2,7 +2,7 @@
 //!
 //! Parse → Bind → TypeCheck → Compile to bytecode.
 
-use raya_engine::compiler::{Compiler, Module};
+use raya_engine::compiler::{Compiler, Module, MonomorphizationMode};
 use raya_engine::parser::ast::Statement;
 use raya_engine::parser::checker::{
     BindError, Binder, CheckError, CheckWarning, CheckerPolicy, ScopeId, TsTypeFlags, TypeChecker,
@@ -112,6 +112,10 @@ fn checker_policy_for_mode(
 pub struct CompileOptions {
     /// Include source map (bytecode offset → source location) in output.
     pub sourcemap: bool,
+    /// Emit generic template metadata into output artifacts.
+    pub emit_generic_templates: bool,
+    /// Monomorphization strategy for generic specialization.
+    pub monomorphization_mode: MonomorphizationMode,
 }
 
 /// Diagnostics returned from a check-only pass (no codegen).
@@ -321,6 +325,8 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     let compiler = Compiler::new(type_ctx, &interner)
         .with_expr_types(check_result.expr_types)
         .with_sourcemap(options.sourcemap)
+        .with_emit_generic_templates(options.emit_generic_templates)
+        .with_monomorphization_mode(options.monomorphization_mode)
         .with_js_this_binding_compat(true);
     let bytecode = compiler.compile_via_ir(&ast)?;
 

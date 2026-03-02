@@ -239,6 +239,9 @@ mod tests {
             metadata: Metadata {
                 name: name.to_string(),
                 source_file: Some(format!("{}.raya", name)),
+                generic_templates: vec![],
+                template_symbol_table: vec![],
+                mono_debug_map: vec![],
             },
             exports: vec![],
             imports: vec![],

@@ -4,7 +4,7 @@ use raya_engine::parser::ast::{
     Pattern, PropertyKey, Statement, VariableDecl,
 };
 use raya_engine::parser::{Interner, Parser};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::graph::{ProgramGraph, ProgramGraphNode};
 use super::resolver::{ModuleKey, ModuleSpecifierKind};
@@ -167,10 +167,11 @@ fn transform_library_module(
                                     body.push_str(&format!("const {} = {};\n", local, imported));
                                 }
                             } else {
-                                body.push_str(&format!(
-                                    "const {} = {};\n",
-                                    local,
-                                    property_accessor(&dep_binding, &imported)
+                                let accessor = property_accessor(&dep_binding, &imported);
+                                body.push_str(&const_binding_with_optional_type(
+                                    &local,
+                                    &accessor,
+                                    Some(&ty),
                                 ));
                             }
                             if ty != "unknown" && looks_like_class_identifier(&local) {
@@ -181,15 +182,20 @@ fn transform_library_module(
                         }
                         ImportSpecifier::Default(local) => {
                             let local_name = interner.resolve(local.name).to_string();
-                            let ty = dep_meta
-                                .export_types
-                                .get("default")
-                                .cloned()
-                                .unwrap_or_else(|| "unknown".to_string());
-                            body.push_str(&format!(
-                                "const {} = {};\n",
-                                local_name,
-                                property_accessor(&dep_binding, INTERNAL_DEFAULT_EXPORT)
+                            let (value_expr, ty) =
+                                if let Some(default_ty) = dep_meta.export_types.get("default") {
+                                    (
+                                        property_accessor(&dep_binding, INTERNAL_DEFAULT_EXPORT),
+                                        default_ty.clone(),
+                                    )
+                                } else {
+                                    // Synthetic default for namespace-style imports.
+                                    (dep_binding.clone(), dep_meta.export_type_name.clone())
+                                };
+                            body.push_str(&const_binding_with_optional_type(
+                                &local_name,
+                                &value_expr,
+                                Some(&ty),
                             ));
                             if ty != "unknown" && looks_like_class_identifier(&local_name) {
                                 body.push_str(&format!("type {} = {};\n", local_name, ty));
@@ -378,12 +384,22 @@ fn transform_library_module(
         let fields = export_values
             .iter()
             .map(|(name, value)| {
+                let exported_name = if name == INTERNAL_DEFAULT_EXPORT {
+                    "default"
+                } else {
+                    name.as_str()
+                };
+                let typed_value = export_types
+                    .get(exported_name)
+                    .filter(|ty| ty.starts_with("__t_"))
+                    .map(|ty| format!("({} as {})", value, ty))
+                    .unwrap_or_else(|| value.clone());
                 let key = if is_safe_property_identifier(name) {
                     name.clone()
                 } else {
                     format!("\"{}\"", escape_string(name))
                 };
-                format!("{}: {}", key, value)
+                format!("{}: {}", key, typed_value)
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -487,24 +503,29 @@ fn transform_entry_module(
                                     body.push_str(&format!("const {} = {};\n", local, imported));
                                 }
                             } else {
-                                body.push_str(&format!(
-                                    "const {} = {};\n",
-                                    local,
-                                    property_accessor(&dep_binding, &imported)
+                                let accessor = property_accessor(&dep_binding, &imported);
+                                body.push_str(&const_binding_with_optional_type(
+                                    &local,
+                                    &accessor,
+                                    Some(&ty),
                                 ));
                             }
                         }
                         ImportSpecifier::Default(local) => {
                             let local_name = interner.resolve(local.name).to_string();
-                            let ty = dep_meta
-                                .export_types
-                                .get("default")
-                                .cloned()
-                                .unwrap_or_else(|| "unknown".to_string());
-                            body.push_str(&format!(
-                                "const {} = {};\n",
-                                local_name,
-                                property_accessor(&dep_binding, INTERNAL_DEFAULT_EXPORT)
+                            let (value_expr, ty) =
+                                if let Some(default_ty) = dep_meta.export_types.get("default") {
+                                    (
+                                        property_accessor(&dep_binding, INTERNAL_DEFAULT_EXPORT),
+                                        default_ty.clone(),
+                                    )
+                                } else {
+                                    (dep_binding.clone(), dep_meta.export_type_name.clone())
+                                };
+                            body.push_str(&const_binding_with_optional_type(
+                                &local_name,
+                                &value_expr,
+                                Some(&ty),
                             ));
                         }
                         ImportSpecifier::Namespace(alias) => {
@@ -679,21 +700,45 @@ fn synthesize_class_aliases(
         let Some(alias_name) = class_aliases.get(&class_name) else {
             continue;
         };
+        let class_type_params: Vec<String> = class
+            .type_params
+            .as_ref()
+            .map(|params| {
+                params
+                    .iter()
+                    .map(|param| interner.resolve(param.name.name).to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let class_type_param_set: HashSet<String> = class_type_params.iter().cloned().collect();
         let mut members = Vec::new();
         for member in &class.members {
             match member {
-                ClassMember::Field(field) if !field.is_static => {
+                ClassMember::Field(field) => {
                     let field_name = interner.resolve(field.name.name).to_string();
                     let ty = field
                         .type_annotation
                         .as_ref()
                         .map(|ann| render_type_annotation(ann, source, interner))
-                        .map(|ty| rewrite_local_class_refs(&ty, class_aliases))
+                        .map(|ty| {
+                            rewrite_local_class_refs_with_type_params(
+                                &ty,
+                                class_aliases,
+                                &class_type_param_set,
+                            )
+                        })
                         .unwrap_or_else(|| "unknown".to_string());
                     members.push(format!("{}: {}", field_name, ty));
                 }
-                ClassMember::Method(method) if !method.is_static => {
+                ClassMember::Method(method) => {
                     let method_name = interner.resolve(method.name.name).to_string();
+                    let mut method_type_param_set = class_type_param_set.clone();
+                    if let Some(method_type_params) = &method.type_params {
+                        for param in method_type_params {
+                            method_type_param_set
+                                .insert(interner.resolve(param.name.name).to_string());
+                        }
+                    }
                     let params = method
                         .params
                         .iter()
@@ -714,7 +759,13 @@ fn synthesize_class_aliases(
                                 .type_annotation
                                 .as_ref()
                                 .map(|ann| render_type_annotation(ann, source, interner))
-                                .map(|ty| rewrite_local_class_refs(&ty, class_aliases))
+                                .map(|ty| {
+                                    rewrite_local_class_refs_with_type_params(
+                                        &ty,
+                                        class_aliases,
+                                        &method_type_param_set,
+                                    )
+                                })
                                 .unwrap_or_else(|| "unknown".to_string());
                             format!("{}: {}", suffix, ty)
                         })
@@ -724,7 +775,13 @@ fn synthesize_class_aliases(
                         .return_type
                         .as_ref()
                         .map(|ann| render_type_annotation(ann, source, interner))
-                        .map(|ty| rewrite_local_class_refs(&ty, class_aliases))
+                        .map(|ty| {
+                            rewrite_local_class_refs_with_type_params(
+                                &ty,
+                                class_aliases,
+                                &method_type_param_set,
+                            )
+                        })
                         .unwrap_or_else(|| "void".to_string());
                     let key = if is_identifier(&method_name) {
                         method_name
@@ -736,9 +793,15 @@ fn synthesize_class_aliases(
                 _ => {}
             }
         }
+        let generic_suffix = if class_type_params.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", class_type_params.join(", "))
+        };
         out.push_str(&format!(
-            "type {} = {{ {} }};\n",
+            "type {}{} = {{ {} }};\n",
             alias_name,
+            generic_suffix,
             members.join(", ")
         ));
     }
@@ -811,6 +874,16 @@ fn function_type_expr(
     interner: &Interner,
     class_aliases: &HashMap<String, String>,
 ) -> String {
+    let function_type_params: HashSet<String> = func
+        .type_params
+        .as_ref()
+        .map(|params| {
+            params
+                .iter()
+                .map(|param| interner.resolve(param.name.name).to_string())
+                .collect()
+        })
+        .unwrap_or_default();
     let params = func
         .params
         .iter()
@@ -824,7 +897,13 @@ fn function_type_expr(
                 .type_annotation
                 .as_ref()
                 .map(|ann| render_type_annotation(ann, source, interner))
-                .map(|ty| rewrite_local_class_refs(&ty, class_aliases))
+                .map(|ty| {
+                    rewrite_local_class_refs_with_type_params(
+                        &ty,
+                        class_aliases,
+                        &function_type_params,
+                    )
+                })
                 .unwrap_or_else(|| "unknown".to_string());
             let maybe = if param.is_rest {
                 format!("...{}", name)
@@ -841,7 +920,9 @@ fn function_type_expr(
         .return_type
         .as_ref()
         .map(|ann| render_type_annotation(ann, source, interner))
-        .map(|ty| rewrite_local_class_refs(&ty, class_aliases))
+        .map(|ty| {
+            rewrite_local_class_refs_with_type_params(&ty, class_aliases, &function_type_params)
+        })
         .unwrap_or_else(|| "void".to_string());
     format!("({}) => {}", params, ret)
 }
@@ -1053,6 +1134,13 @@ fn append_source_segment(output: &mut String, source: &str, cursor: &mut usize, 
     let start = next_start.min(source.len());
     if *cursor < start {
         output.push_str(&source[*cursor..start]);
+    }
+}
+
+fn const_binding_with_optional_type(name: &str, value_expr: &str, ty: Option<&str>) -> String {
+    match ty.filter(|ty| *ty != "unknown") {
+        Some(ty) => format!("const {}: {} = {};\n", name, ty, value_expr),
+        None => format!("const {} = {};\n", name, value_expr),
     }
 }
 
@@ -1346,6 +1434,15 @@ fn render_type_expr(
 }
 
 fn rewrite_local_class_refs(type_expr: &str, class_aliases: &HashMap<String, String>) -> String {
+    let no_type_params = HashSet::new();
+    rewrite_local_class_refs_with_type_params(type_expr, class_aliases, &no_type_params)
+}
+
+fn rewrite_local_class_refs_with_type_params(
+    type_expr: &str,
+    class_aliases: &HashMap<String, String>,
+    in_scope_type_params: &HashSet<String>,
+) -> String {
     if class_aliases.is_empty() {
         return type_expr.to_string();
     }
@@ -1358,6 +1455,8 @@ fn rewrite_local_class_refs(type_expr: &str, class_aliases: &HashMap<String, Str
             if !token.is_empty() {
                 if let Some(alias) = class_aliases.get(&token) {
                     result.push_str(alias);
+                } else if in_scope_type_params.contains(&token) {
+                    result.push_str(&token);
                 } else if looks_like_class_identifier(&token)
                     && !is_known_global_class(&token)
                     && !token.starts_with("__t_")
@@ -1374,6 +1473,8 @@ fn rewrite_local_class_refs(type_expr: &str, class_aliases: &HashMap<String, Str
     if !token.is_empty() {
         if let Some(alias) = class_aliases.get(&token) {
             result.push_str(alias);
+        } else if in_scope_type_params.contains(&token) {
+            result.push_str(&token);
         } else if looks_like_class_identifier(&token)
             && !is_known_global_class(&token)
             && !token.starts_with("__t_")

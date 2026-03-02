@@ -4,7 +4,7 @@
 
 use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -18,6 +18,22 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("raya-cli-{}-{}", prefix, ts));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
+}
+
+fn test_timing_enabled() -> bool {
+    std::env::var_os("RAYA_TEST_TIMING").is_some()
+}
+
+fn test_timing_log(test_name: &str, phase: &str, elapsed: std::time::Duration) {
+    if test_timing_enabled() {
+        eprintln!(
+            "[timing][{}][pid={}] {}: {:.3?}",
+            test_name,
+            std::process::id(),
+            phase,
+            elapsed
+        );
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -655,19 +671,62 @@ fn test_session_reset_clears_state() {
 
 #[test]
 fn test_session_format_value_primitives() {
-    let mut session = Session::new(&RuntimeOptions::default());
+    let test_start = Instant::now();
+    test_timing_log(
+        "test_session_format_value_primitives",
+        "start",
+        test_start.elapsed(),
+    );
 
+    let t = Instant::now();
+    let mut session = Session::new(&RuntimeOptions::default());
+    test_timing_log(
+        "test_session_format_value_primitives",
+        "Session::new",
+        t.elapsed(),
+    );
+
+    let t = Instant::now();
     let val = session.eval("return 42;").unwrap();
+    test_timing_log(
+        "test_session_format_value_primitives",
+        "eval return 42",
+        t.elapsed(),
+    );
     assert_eq!(session.format_value(&val), "42");
 
+    let t = Instant::now();
     let val = session.eval("return true;").unwrap();
+    test_timing_log(
+        "test_session_format_value_primitives",
+        "eval return true",
+        t.elapsed(),
+    );
     assert_eq!(session.format_value(&val), "true");
 
+    let t = Instant::now();
     let val = session.eval("return null;").unwrap();
+    test_timing_log(
+        "test_session_format_value_primitives",
+        "eval return null",
+        t.elapsed(),
+    );
     assert_eq!(session.format_value(&val), "null");
 
+    let t = Instant::now();
     let val = session.eval("return 3.14;").unwrap();
+    test_timing_log(
+        "test_session_format_value_primitives",
+        "eval return 3.14",
+        t.elapsed(),
+    );
     assert_eq!(session.format_value(&val), "3.14");
+
+    test_timing_log(
+        "test_session_format_value_primitives",
+        "total",
+        test_start.elapsed(),
+    );
 }
 
 #[test]
@@ -694,8 +753,22 @@ fn test_session_multiple_evals() {
 
 #[test]
 fn test_session_repl_complex_stateful_flow() {
-    let mut session = Session::new(&RuntimeOptions::default());
+    let test_start = Instant::now();
+    test_timing_log(
+        "test_session_repl_complex_stateful_flow",
+        "start",
+        test_start.elapsed(),
+    );
 
+    let t = Instant::now();
+    let mut session = Session::new(&RuntimeOptions::default());
+    test_timing_log(
+        "test_session_repl_complex_stateful_flow",
+        "Session::new",
+        t.elapsed(),
+    );
+
+    let t = Instant::now();
     session
         .eval(
             r#"
@@ -706,16 +779,39 @@ function addToBase(x: number): number {
 "#,
         )
         .expect("setup failed");
+    test_timing_log(
+        "test_session_repl_complex_stateful_flow",
+        "setup eval",
+        t.elapsed(),
+    );
 
+    let t = Instant::now();
     let v1 = session
         .eval("return addToBase(1);")
         .expect("call #1 failed");
+    test_timing_log(
+        "test_session_repl_complex_stateful_flow",
+        "call #1",
+        t.elapsed(),
+    );
+    let t = Instant::now();
     let v2 = session
         .eval("return addToBase(5);")
         .expect("call #2 failed");
+    test_timing_log(
+        "test_session_repl_complex_stateful_flow",
+        "call #2",
+        t.elapsed(),
+    );
+    let t = Instant::now();
     let v3 = session
         .eval("return addToBase(0);")
         .expect("call #3 failed");
+    test_timing_log(
+        "test_session_repl_complex_stateful_flow",
+        "call #3",
+        t.elapsed(),
+    );
 
     assert_eq!(
         v1.as_i32().or_else(|| v1.as_f64().map(|n| n as i32)),
@@ -728,6 +824,11 @@ function addToBase(x: number): number {
     assert_eq!(
         v3.as_i32().or_else(|| v3.as_f64().map(|n| n as i32)),
         Some(10)
+    );
+    test_timing_log(
+        "test_session_repl_complex_stateful_flow",
+        "total",
+        test_start.elapsed(),
     );
 }
 
@@ -753,8 +854,22 @@ fn test_session_repl_error_recovery_then_continue() {
 
 #[test]
 fn test_session_repl_waitall_and_imported_io_method_calls() {
-    let mut session = Session::new(&RuntimeOptions::default());
+    let test_start = Instant::now();
+    test_timing_log(
+        "test_session_repl_waitall_and_imported_io_method_calls",
+        "start",
+        test_start.elapsed(),
+    );
 
+    let t = Instant::now();
+    let mut session = Session::new(&RuntimeOptions::default());
+    test_timing_log(
+        "test_session_repl_waitall_and_imported_io_method_calls",
+        "Session::new",
+        t.elapsed(),
+    );
+
+    let t = Instant::now();
     let value = session
         .eval(
             r#"
@@ -774,11 +889,21 @@ return main();
 "#,
         )
         .expect("session eval io+waitall program failed");
+    test_timing_log(
+        "test_session_repl_waitall_and_imported_io_method_calls",
+        "program eval",
+        t.elapsed(),
+    );
 
     assert!(
         value.as_i32() == Some(3) || value.as_f64() == Some(3.0),
         "Expected 3, got {:?}",
         value
+    );
+    test_timing_log(
+        "test_session_repl_waitall_and_imported_io_method_calls",
+        "total",
+        test_start.elapsed(),
     );
 }
 

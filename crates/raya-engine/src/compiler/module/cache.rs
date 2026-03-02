@@ -199,6 +199,9 @@ mod tests {
             metadata: crate::compiler::bytecode::Metadata {
                 name: "test".to_string(),
                 source_file: None,
+                generic_templates: vec![],
+                template_symbol_table: vec![],
+                mono_debug_map: vec![],
             },
             native_functions: vec![],
             jit_hints: vec![],

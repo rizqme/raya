@@ -204,10 +204,13 @@ impl<'a> Interpreter<'a> {
                     if let Some(awaited_id) = first_incomplete {
                         let tasks_guard = self.tasks.read();
                         if let Some(awaited_task) = tasks_guard.get(&awaited_id) {
-                            awaited_task.add_waiter(task.id());
+                            if awaited_task.add_waiter_if_incomplete(task.id()) {
+                                drop(tasks_guard);
+                                return OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id));
+                            }
                         }
                         drop(tasks_guard);
-                        return OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id));
+                        return OpcodeResult::Continue;
                     }
 
                     return OpcodeResult::Continue;
@@ -257,8 +260,30 @@ impl<'a> Interpreter<'a> {
                         }
                         _ => {
                             // Not done yet - register as waiter and suspend
-                            awaited_task.add_waiter(task.id());
-                            OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id))
+                            if awaited_task.add_waiter_if_incomplete(task.id()) {
+                                OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id))
+                            } else {
+                                match awaited_task.state() {
+                                    TaskState::Completed => {
+                                        let result = awaited_task.result().unwrap_or(Value::null());
+                                        if let Err(e) = stack.push(result) {
+                                            return OpcodeResult::Error(e);
+                                        }
+                                        OpcodeResult::Continue
+                                    }
+                                    TaskState::Failed => {
+                                        awaited_task.mark_rejection_observed();
+                                        if let Some(exc) = awaited_task.current_exception() {
+                                            task.set_exception(exc);
+                                        }
+                                        OpcodeResult::Error(VmError::RuntimeError(format!(
+                                            "Awaited task {:?} failed",
+                                            awaited_id
+                                        )))
+                                    }
+                                    _ => OpcodeResult::Continue,
+                                }
+                            }
                         }
                     }
                 } else {
@@ -401,10 +426,13 @@ impl<'a> Interpreter<'a> {
                     if let Some(awaited_id) = first_incomplete {
                         let tasks_guard = self.tasks.read();
                         if let Some(awaited_task) = tasks_guard.get(&awaited_id) {
-                            awaited_task.add_waiter(task.id());
+                            if awaited_task.add_waiter_if_incomplete(task.id()) {
+                                drop(tasks_guard);
+                                return OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id));
+                            }
                         }
                         drop(tasks_guard);
-                        OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id))
+                        OpcodeResult::Continue
                     } else {
                         // Shouldn't happen
                         OpcodeResult::Continue

@@ -115,6 +115,9 @@ mod tests {
             metadata: Metadata {
                 name: "test".to_string(),
                 source_file: None,
+                generic_templates: vec![],
+                template_symbol_table: vec![],
+                mono_debug_map: vec![],
             },
             exports: vec![],
             imports: vec![],

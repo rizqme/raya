@@ -132,5 +132,9 @@ panic = "abort"
 [profile.dev]
 debug = 1
 
+[profile.test]
+inherits = "release"
+panic = "unwind"
+
 [profile.bench]
 inherits = "release"

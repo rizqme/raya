@@ -522,6 +522,22 @@ impl Task {
         lifecycle.rejection_observed = true;
     }
 
+    /// Add a waiter only if this task has not already reached a terminal state.
+    ///
+    /// Returns `true` when the waiter was registered, `false` when the task was
+    /// already `Completed` or `Failed` (so no suspension should occur).
+    pub fn add_waiter_if_incomplete(&self, waiter_id: TaskId) -> bool {
+        let mut lifecycle = self.lifecycle.lock();
+        match lifecycle.state {
+            TaskState::Completed | TaskState::Failed => false,
+            _ => {
+                lifecycle.waiters.push(waiter_id);
+                lifecycle.rejection_observed = true;
+                true
+            }
+        }
+    }
+
     /// Take all waiting tasks (used when task completes)
     pub fn take_waiters(&self) -> Vec<TaskId> {
         std::mem::take(&mut self.lifecycle.lock().waiters)
@@ -1100,6 +1116,20 @@ mod tests {
         // After taking, should be empty
         let empty_waiters = task.take_waiters();
         assert_eq!(empty_waiters.len(), 0);
+    }
+
+    #[test]
+    fn test_add_waiter_if_incomplete_rejects_terminal_tasks() {
+        let module = create_test_module();
+        let task = Task::new(0, module.clone(), None);
+        let waiter = TaskId::new();
+
+        assert!(task.add_waiter_if_incomplete(waiter));
+        assert_eq!(task.waiter_count(), 1);
+
+        task.complete(Value::null());
+        assert!(!task.add_waiter_if_incomplete(TaskId::new()));
+        assert_eq!(task.waiter_count(), 1);
     }
 
     #[test]

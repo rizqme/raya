@@ -41,6 +41,9 @@ fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module 
         metadata: Metadata {
             name: "test_module".to_string(),
             source_file: None,
+            generic_templates: vec![],
+            template_symbol_table: vec![],
+            mono_debug_map: vec![],
         },
         exports: vec![],
         imports: vec![],

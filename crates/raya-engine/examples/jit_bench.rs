@@ -91,6 +91,9 @@ fn make_module(name: &str, functions: Vec<Function>) -> Module {
         metadata: Metadata {
             name: name.to_string(),
             source_file: None,
+            generic_templates: vec![],
+            template_symbol_table: vec![],
+            mono_debug_map: vec![],
         },
         exports: vec![],
         imports: vec![],

@@ -31,7 +31,10 @@ pub fn execute(
     });
     let out_dir = PathBuf::from(&out_dir);
 
-    let options = CompileOptions { sourcemap };
+    let options = CompileOptions {
+        sourcemap,
+        ..Default::default()
+    };
 
     // Collect .raya files from input paths
     let source_files = collect_raya_files(&files)?;

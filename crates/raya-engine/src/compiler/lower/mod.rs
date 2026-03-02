@@ -812,8 +812,18 @@ pub(super) fn is_module_wrapper_function_name(name: &str) -> bool {
         || name.starts_with("__raya_entry_main_")
 }
 
+fn module_wrapper_alias_tag(name: &str) -> Option<String> {
+    if let Some(tag) = name.strip_prefix("__std_module_") {
+        return Some(tag.to_string());
+    }
+    if let Some(module_id) = name.strip_prefix("__raya_mod_init_") {
+        return Some(format!("m{}", module_id));
+    }
+    None
+}
+
 /// Visitor that pre-registers class declarations inside nested statement trees.
-/// Carries std-prelude wrapper context (`__std_module_<tag>`) to build exact alias mappings.
+/// Carries wrapper context (`__std_module_<tag>`, `__raya_mod_init_<id>`) to build exact alias mappings.
 struct NestedClassRegistrar<'l, 'a> {
     lowerer: &'l mut Lowerer<'a>,
     std_wrapper_tag: Option<String>,
@@ -828,8 +838,8 @@ impl Visitor for NestedClassRegistrar<'_, '_> {
     fn visit_function_decl(&mut self, decl: &ast::FunctionDecl) {
         let prev = self.std_wrapper_tag.clone();
         let fn_name = self.lowerer.interner.resolve(decl.name.name);
-        if let Some(tag) = fn_name.strip_prefix("__std_module_") {
-            self.std_wrapper_tag = Some(tag.to_string());
+        if let Some(tag) = module_wrapper_alias_tag(fn_name) {
+            self.std_wrapper_tag = Some(tag);
         }
         walk_function_decl(self, decl);
         self.std_wrapper_tag = prev;
@@ -1267,11 +1277,7 @@ impl<'a> Lowerer<'a> {
             match stmt {
                 Statement::FunctionDecl(func) => {
                     self.register_function_decl(func);
-                    let std_tag = self
-                        .interner
-                        .resolve(func.name.name)
-                        .strip_prefix("__std_module_")
-                        .map(str::to_string);
+                    let std_tag = module_wrapper_alias_tag(self.interner.resolve(func.name.name));
                     self.register_nested_classes_in_block(&func.body.statements, std_tag);
                 }
                 Statement::ClassDecl(class) => {
@@ -1428,9 +1434,18 @@ impl<'a> Lowerer<'a> {
                         if let Some(call_expr) = call_expr {
                             if let ast::Expression::Identifier(func_ident) = &*call_expr.callee {
                                 let func_name = self.interner.resolve(func_ident.name).to_string();
-                                if let Some(tag) = func_name.strip_prefix("__std_module_") {
-                                    let alias_name = cast_alias_name
-                                        .unwrap_or_else(|| format!("__std_exports_type_{}", tag));
+                                let inferred_alias = if let Some(tag) =
+                                    func_name.strip_prefix("__std_module_")
+                                {
+                                    Some(format!("__std_exports_type_{}", tag))
+                                } else if let Some(module_id) =
+                                    func_name.strip_prefix("__raya_mod_init_")
+                                {
+                                    Some(format!("__raya_mod_exports_type_{}", module_id))
+                                } else {
+                                    None
+                                };
+                                if let Some(alias_name) = cast_alias_name.or(inferred_alias) {
                                     if let Some(fields) =
                                         self.type_alias_object_fields.get(&alias_name).cloned()
                                     {
@@ -2251,6 +2266,15 @@ impl<'a> Lowerer<'a> {
 
         // Create function with fixed parameter count only
         let mut ir_func = IrFunction::new(name, params, return_ty);
+        if let Some(type_params) = &func.type_params {
+            ir_func.type_param_ids = type_params
+                .iter()
+                .filter_map(|tp| {
+                    let param_name = self.interner.resolve(tp.name.name);
+                    self.type_ctx.lookup_named_type(param_name)
+                })
+                .collect();
+        }
         if self.emit_sourcemap {
             ir_func.source_span = func.span;
         }
@@ -2635,6 +2659,26 @@ impl<'a> Lowerer<'a> {
 
                     // Create function with mangled name
                     let mut ir_func = IrFunction::new(&full_name, params, return_ty);
+                    let mut type_param_ids = Vec::new();
+                    if let Some(class_type_params) = &class.type_params {
+                        for tp in class_type_params {
+                            let param_name = self.interner.resolve(tp.name.name);
+                            if let Some(id) = self.type_ctx.lookup_named_type(param_name) {
+                                type_param_ids.push(id);
+                            }
+                        }
+                    }
+                    if let Some(method_type_params) = &method.type_params {
+                        for tp in method_type_params {
+                            let param_name = self.interner.resolve(tp.name.name);
+                            if let Some(id) = self.type_ctx.lookup_named_type(param_name) {
+                                if !type_param_ids.contains(&id) {
+                                    type_param_ids.push(id);
+                                }
+                            }
+                        }
+                    }
+                    ir_func.type_param_ids = type_param_ids;
                     if self.emit_sourcemap {
                         ir_func.source_span = method.span;
                     }
@@ -2834,6 +2878,15 @@ impl<'a> Lowerer<'a> {
 
                 // Create function with mangled name
                 let mut ir_func = IrFunction::new(&full_name, params, return_ty);
+                if let Some(class_type_params) = &class.type_params {
+                    ir_func.type_param_ids = class_type_params
+                        .iter()
+                        .filter_map(|tp| {
+                            let param_name = self.interner.resolve(tp.name.name);
+                            self.type_ctx.lookup_named_type(param_name)
+                        })
+                        .collect();
+                }
                 if self.emit_sourcemap {
                     ir_func.source_span = ctor.span;
                 }
@@ -4496,6 +4549,43 @@ mod class_identity_tests {
         assert_ne!(
             alpha, beta,
             "wrapper aliases must map to distinct class ids"
+        );
+    }
+
+    #[test]
+    fn raya_module_alias_mapping_is_exact_per_module_context() {
+        let source = r#"
+            function __raya_mod_init_1() {
+                class EnvNamespace {}
+                return { "__default": new EnvNamespace() };
+            }
+
+            function __raya_mod_init_2() {
+                class EnvNamespace {}
+                return { "__default": new EnvNamespace() };
+            }
+        "#;
+
+        let parser = Parser::new(source).expect("lexer error");
+        let (module, interner) = parser.parse().expect("parse error");
+        let type_ctx = TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        let _ir = lowerer.lower_module(&module);
+        assert!(
+            lowerer.errors().is_empty(),
+            "unexpected lowerer errors: {:?}",
+            lowerer.errors()
+        );
+
+        let m1 = lowerer
+            .class_id_from_type_name("__t_m1_EnvNamespace")
+            .expect("module 1 alias should resolve");
+        let m2 = lowerer
+            .class_id_from_type_name("__t_m2_EnvNamespace")
+            .expect("module 2 alias should resolve");
+        assert_ne!(
+            m1, m2,
+            "module aliases must map to distinct class ids"
         );
     }
 

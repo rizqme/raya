@@ -8,7 +8,7 @@ use thiserror::Error;
 pub const MAGIC: [u8; 4] = *b"RAYA";
 
 /// Current bytecode version
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Module encoding/decoding errors
 #[derive(Debug, Error)]
@@ -754,6 +754,37 @@ pub struct Metadata {
     pub name: String,
     /// Source file path
     pub source_file: Option<String>,
+    /// Generic template metadata emitted by library builds.
+    pub generic_templates: Vec<GenericTemplateInfo>,
+    /// Maps template IDs to symbol names.
+    pub template_symbol_table: Vec<TemplateSymbolEntry>,
+    /// Debug mapping from specialized symbols back to template + concrete args.
+    pub mono_debug_map: Vec<MonoDebugEntry>,
+}
+
+/// Generic template metadata entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GenericTemplateInfo {
+    pub template_id: String,
+    pub symbol: String,
+    pub type_params: Vec<String>,
+    pub constraints: Vec<String>,
+    pub body_fingerprint: String,
+}
+
+/// Template ID to symbol binding entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TemplateSymbolEntry {
+    pub template_id: String,
+    pub symbol: String,
+}
+
+/// Monomorphization debug map entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MonoDebugEntry {
+    pub specialized_symbol: String,
+    pub template_id: String,
+    pub concrete_args: Vec<String>,
 }
 
 impl Metadata {
@@ -774,6 +805,21 @@ impl Metadata {
                 writer.emit_u8(0); // no source file
             }
         }
+
+        writer.emit_u32(self.generic_templates.len() as u32);
+        for template in &self.generic_templates {
+            template.encode(writer);
+        }
+
+        writer.emit_u32(self.template_symbol_table.len() as u32);
+        for entry in &self.template_symbol_table {
+            entry.encode(writer);
+        }
+
+        writer.emit_u32(self.mono_debug_map.len() as u32);
+        for entry in &self.mono_debug_map {
+            entry.encode(writer);
+        }
     }
 
     /// Decode metadata from binary
@@ -789,7 +835,130 @@ impl Metadata {
             None
         };
 
-        Ok(Self { name, source_file })
+        let generic_templates_len = reader.read_u32()? as usize;
+        let mut generic_templates = Vec::with_capacity(generic_templates_len);
+        for _ in 0..generic_templates_len {
+            generic_templates.push(GenericTemplateInfo::decode(reader)?);
+        }
+
+        let template_symbol_table_len = reader.read_u32()? as usize;
+        let mut template_symbol_table = Vec::with_capacity(template_symbol_table_len);
+        for _ in 0..template_symbol_table_len {
+            template_symbol_table.push(TemplateSymbolEntry::decode(reader)?);
+        }
+
+        let mono_debug_map_len = reader.read_u32()? as usize;
+        let mut mono_debug_map = Vec::with_capacity(mono_debug_map_len);
+        for _ in 0..mono_debug_map_len {
+            mono_debug_map.push(MonoDebugEntry::decode(reader)?);
+        }
+
+        Ok(Self {
+            name,
+            source_file,
+            generic_templates,
+            template_symbol_table,
+            mono_debug_map,
+        })
+    }
+}
+
+impl GenericTemplateInfo {
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        writer.emit_u32(self.template_id.len() as u32);
+        writer.buffer.extend_from_slice(self.template_id.as_bytes());
+        writer.emit_u32(self.symbol.len() as u32);
+        writer.buffer.extend_from_slice(self.symbol.as_bytes());
+
+        writer.emit_u32(self.type_params.len() as u32);
+        for param in &self.type_params {
+            writer.emit_u32(param.len() as u32);
+            writer.buffer.extend_from_slice(param.as_bytes());
+        }
+
+        writer.emit_u32(self.constraints.len() as u32);
+        for constraint in &self.constraints {
+            writer.emit_u32(constraint.len() as u32);
+            writer.buffer.extend_from_slice(constraint.as_bytes());
+        }
+
+        writer.emit_u32(self.body_fingerprint.len() as u32);
+        writer
+            .buffer
+            .extend_from_slice(self.body_fingerprint.as_bytes());
+    }
+
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        let template_id = reader.read_string()?;
+        let symbol = reader.read_string()?;
+
+        let type_params_len = reader.read_u32()? as usize;
+        let mut type_params = Vec::with_capacity(type_params_len);
+        for _ in 0..type_params_len {
+            type_params.push(reader.read_string()?);
+        }
+
+        let constraints_len = reader.read_u32()? as usize;
+        let mut constraints = Vec::with_capacity(constraints_len);
+        for _ in 0..constraints_len {
+            constraints.push(reader.read_string()?);
+        }
+
+        let body_fingerprint = reader.read_string()?;
+        Ok(Self {
+            template_id,
+            symbol,
+            type_params,
+            constraints,
+            body_fingerprint,
+        })
+    }
+}
+
+impl TemplateSymbolEntry {
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        writer.emit_u32(self.template_id.len() as u32);
+        writer.buffer.extend_from_slice(self.template_id.as_bytes());
+        writer.emit_u32(self.symbol.len() as u32);
+        writer.buffer.extend_from_slice(self.symbol.as_bytes());
+    }
+
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            template_id: reader.read_string()?,
+            symbol: reader.read_string()?,
+        })
+    }
+}
+
+impl MonoDebugEntry {
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        writer.emit_u32(self.specialized_symbol.len() as u32);
+        writer
+            .buffer
+            .extend_from_slice(self.specialized_symbol.as_bytes());
+        writer.emit_u32(self.template_id.len() as u32);
+        writer.buffer.extend_from_slice(self.template_id.as_bytes());
+        writer.emit_u32(self.concrete_args.len() as u32);
+        for arg in &self.concrete_args {
+            writer.emit_u32(arg.len() as u32);
+            writer.buffer.extend_from_slice(arg.as_bytes());
+        }
+    }
+
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        let specialized_symbol = reader.read_string()?;
+        let template_id = reader.read_string()?;
+        let arg_len = reader.read_u32()? as usize;
+        let mut concrete_args = Vec::with_capacity(arg_len);
+        for _ in 0..arg_len {
+            concrete_args.push(reader.read_string()?);
+        }
+        Ok(Self {
+            specialized_symbol,
+            template_id,
+            concrete_args,
+        })
     }
 }
 
@@ -933,6 +1102,9 @@ impl Module {
             metadata: Metadata {
                 name,
                 source_file: None,
+                generic_templates: Vec::new(),
+                template_symbol_table: Vec::new(),
+                mono_debug_map: Vec::new(),
             },
             exports: Vec::new(),
             imports: Vec::new(),
