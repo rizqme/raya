@@ -752,9 +752,12 @@ impl<'a> TypeChecker<'a> {
     /// Returns the check result containing inferred types and capture information.
     /// Inferred types should be applied to the symbol table using `update_type`.
     pub fn check_module(mut self, module: &Module) -> Result<CheckResult, Vec<CheckError>> {
+        // Mirror binder module scope so top-level resolution is local->global.
+        self.enter_scope();
         for stmt in &module.statements {
             self.check_stmt(stmt);
         }
+        self.exit_scope();
 
         if let Some(offset) = self.suppress_errors_before {
             self.errors.retain(|e| e.span().end > offset);
@@ -1769,7 +1772,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Try to extract an instanceof guard from a condition expression.
     /// Returns (variable_name, class_type_id) if the condition is `var instanceof ClassName`.
-    fn try_extract_instanceof_guard(&self, expr: &Expression) -> Option<(String, TypeId)> {
+    fn try_extract_instanceof_guard(&mut self, expr: &Expression) -> Option<(String, TypeId)> {
         let instanceof = match expr {
             Expression::InstanceOf(inst) => inst,
             _ => return None,
@@ -1786,9 +1789,39 @@ impl<'a> TypeChecker<'a> {
             }
             _ => return None,
         };
-        // Look up the class type in the symbol table
-        let class_sym = self.symbols.resolve(&class_name)?;
-        Some((var_name, class_sym.ty))
+
+        // Prefer named type resolution so narrowing uses the actual class type.
+        if let Some(class_ty) = self.type_ctx.lookup_named_type(&class_name) {
+            if matches!(
+                self.type_ctx.get(class_ty),
+                Some(crate::parser::types::Type::Class(_))
+            ) {
+                return Some((var_name, class_ty));
+            }
+        }
+
+        // Fallback to direct type-annotation resolution.
+        let class_ty = self.resolve_type_annotation(&instanceof.type_name);
+        if matches!(
+            self.type_ctx.get(class_ty),
+            Some(crate::parser::types::Type::Class(_))
+        ) {
+            return Some((var_name, class_ty));
+        }
+
+        // Last-resort symbol lookup (for partially bound modules).
+        let class_sym = self
+            .symbols
+            .resolve_from_scope(&class_name, self.current_scope)
+            .or_else(|| self.symbols.resolve(&class_name))?;
+        if matches!(
+            self.type_ctx.get(class_sym.ty),
+            Some(crate::parser::types::Type::Class(_))
+        ) {
+            Some((var_name, class_sym.ty))
+        } else {
+            None
+        }
     }
 
     /// Returns true if the statement definitely exits the current control-flow path

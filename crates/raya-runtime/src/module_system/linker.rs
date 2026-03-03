@@ -212,7 +212,10 @@ fn transform_library_module(
                                     Some(&ty),
                                 ));
                             }
-                            if ty != "unknown" && looks_like_class_identifier(&local) {
+                            if ty != "unknown"
+                                && looks_like_class_identifier(&local)
+                                && local != ty
+                            {
                                 body.push_str(&format!("type {} = {};\n", local, ty));
                             }
                             imported_binding_types.insert(local.clone(), ty.clone());
@@ -235,7 +238,10 @@ fn transform_library_module(
                                 &value_expr,
                                 Some(&ty),
                             ));
-                            if ty != "unknown" && looks_like_class_identifier(&local_name) {
+                            if ty != "unknown"
+                                && looks_like_class_identifier(&local_name)
+                                && local_name != ty
+                            {
                                 body.push_str(&format!("type {} = {};\n", local_name, ty));
                             }
                             imported_binding_types.insert(local_name.clone(), ty.clone());
@@ -438,11 +444,8 @@ fn transform_library_module(
                     .get(value)
                     .is_some_and(|alias_name| alias_name == ty);
                 let typed_value = if ty.starts_with("__t_") {
-                    if is_local_class_constructor_export {
-                        value.clone()
-                    } else {
-                        format!("({} as {})", value, ty)
-                    }
+                    let _ = is_local_class_constructor_export;
+                    format!("({} as {})", value, ty)
                 } else {
                     value.clone()
                 };
@@ -562,7 +565,10 @@ fn transform_entry_module(
                                     Some(&ty),
                                 ));
                             }
-                            if ty != "unknown" && looks_like_class_identifier(&local) {
+                            if ty != "unknown"
+                                && looks_like_class_identifier(&local)
+                                && local != ty
+                            {
                                 body.push_str(&format!("type {} = {};\n", local, ty));
                             }
                         }
@@ -582,7 +588,10 @@ fn transform_entry_module(
                                 &value_expr,
                                 Some(&ty),
                             ));
-                            if ty != "unknown" && looks_like_class_identifier(&local_name) {
+                            if ty != "unknown"
+                                && looks_like_class_identifier(&local_name)
+                                && local_name != ty
+                            {
                                 body.push_str(&format!("type {} = {};\n", local_name, ty));
                             }
                         }

@@ -1458,9 +1458,8 @@ impl<'a> Lowerer<'a> {
             // Promise<T> is represented by a raw task handle internally.
             // Intercept promise-like methods before object dispatch.
             let object_ty = self.get_expr_type(&member.object);
-            let inferred_is_promise_class = self
-                .infer_class_id(&member.object)
-                .is_some_and(|cid| {
+            let inferred_is_promise_class =
+                self.infer_class_id(&member.object).is_some_and(|cid| {
                     self.class_map
                         .iter()
                         .any(|(&sym, &id)| id == cid && self.interner.resolve(sym) == "Promise")
@@ -2974,7 +2973,8 @@ impl<'a> Lowerer<'a> {
                 elem_ty,
             });
             if let Some(layout) = element_layout {
-                self.register_array_element_object_fields.insert(dest.id, layout);
+                self.register_array_element_object_fields
+                    .insert(dest.id, layout);
             }
             dest
         }
@@ -5146,7 +5146,15 @@ impl<'a> Lowerer<'a> {
 
         match &type_ann.ty {
             Type::Reference(type_ref) => {
-                self.class_id_from_type_name(self.interner.resolve(type_ref.name.name))
+                let type_name = self.interner.resolve(type_ref.name.name);
+                // Internal linker aliases (`__t_*`) model structural instance shapes.
+                // Treat casts to these aliases as compile-time only (no runtime class cast),
+                // otherwise exported class constructor values trigger invalid runtime Cast.
+                if type_name.starts_with("__t_") {
+                    None
+                } else {
+                    self.class_id_from_type_name(type_name)
+                }
             }
             _ => None,
         }
@@ -5590,7 +5598,7 @@ impl<'a> Lowerer<'a> {
                 self.variable_class_map
                     .get(&ident.name)
                     .copied()
-                    .or_else(|| self.class_map.get(&ident.name).copied())
+                    .or_else(|| self.class_id_from_type_name(self.interner.resolve(ident.name)))
                     .or_else(|| {
                         self.variable_object_type_aliases
                             .get(&ident.name)
@@ -5629,11 +5637,8 @@ impl<'a> Lowerer<'a> {
                         }
                         // Otherwise, check if we have a type name we can look up
                         if let Some(ref type_name) = field.type_name {
-                            // Look up the class by name
-                            for (&sym, &cid) in &self.class_map {
-                                if self.interner.resolve(sym) == type_name {
-                                    return Some(cid);
-                                }
+                            if let Some(cid) = self.class_id_from_type_name(type_name) {
+                                return Some(cid);
                             }
                         }
                         break;
@@ -5694,7 +5699,7 @@ impl<'a> Lowerer<'a> {
             // New expression: return the class being instantiated
             Expression::New(new_expr) => {
                 if let Expression::Identifier(ident) = &*new_expr.callee {
-                    return self.class_map.get(&ident.name).copied();
+                    return self.class_id_from_type_name(self.interner.resolve(ident.name));
                 }
                 self.class_id_from_type_id(self.get_expr_type(expr))
             }
@@ -5747,6 +5752,29 @@ impl<'a> Lowerer<'a> {
 
         if let Some(&cid) = self.type_alias_object_class_map.get(&ty_id) {
             return Some(cid);
+        }
+        // Some checker paths materialize structural object TypeIds that are equivalent
+        // to a named wrapper alias (e.g. __t_m0_TcpStream). Resolve those back to class IDs.
+        if !self.type_alias_class_map.is_empty() {
+            let mut subtype_ctx =
+                crate::parser::types::subtyping::SubtypingContext::new(self.type_ctx);
+            for (alias_name, &cid) in &self.type_alias_class_map {
+                let alias_ty = self
+                    .type_alias_resolved_type_map
+                    .get(alias_name)
+                    .copied()
+                    .filter(|ty| *ty != UNRESOLVED)
+                    .or_else(|| self.type_ctx.lookup_named_type(alias_name));
+                let Some(alias_ty) = alias_ty else {
+                    continue;
+                };
+                if ty_id == alias_ty
+                    || (subtype_ctx.is_subtype(ty_id, alias_ty)
+                        && subtype_ctx.is_subtype(alias_ty, ty_id))
+                {
+                    return Some(cid);
+                }
+            }
         }
 
         let ty = self.type_ctx.get(ty_id)?;

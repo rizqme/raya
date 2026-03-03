@@ -130,3 +130,33 @@ fn test_class_identifier_alias_value_is_not_null() {
         false,
     );
 }
+
+#[test]
+fn test_module_scope_import_shadowing_rejected() {
+    let result = compile_with_builtins(
+        r#"
+        import env from "std:env";
+        const env = 1;
+        return env;
+        "#,
+    );
+    assert!(
+        result.is_err(),
+        "module-scope shadowing of import binding must be rejected"
+    );
+}
+
+#[test]
+fn test_inner_scope_can_shadow_import_binding() {
+    expect_bool_with_builtins(
+        r#"
+        import env from "std:env";
+        function f(): number {
+            const env = 1;
+            return env;
+        }
+        return f() == 1;
+        "#,
+        true,
+    );
+}

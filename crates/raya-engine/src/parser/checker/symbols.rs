@@ -69,6 +69,8 @@ pub struct ScopeId(pub u32);
 pub enum ScopeKind {
     /// Global scope
     Global,
+    /// Module (file) scope
+    Module,
     /// Function scope
     Function,
     /// Block scope
@@ -153,52 +155,61 @@ impl SymbolTable {
     /// Define a symbol in the current scope
     ///
     /// Returns an error if a symbol with the same name already exists in this
-    /// scope, unless root-scope shadowing is allowed.
+    /// scope, unless legacy root-scope cross-kind shadowing is allowed.
     pub fn define(&mut self, mut symbol: Symbol) -> Result<(), DuplicateSymbolError> {
-        let scope = &mut self.scopes[self.current_scope.0 as usize];
+        self.define_in_scope(self.current_scope, symbol)
+    }
 
-        // Check for duplicate
-        if let Some(existing) = scope.symbols.get(&symbol.name) {
-            // Allow shadowing of imported symbols.
-            // At root scope, also allow cross-kind shadowing so user variables
-            // can shadow prelude helper functions/classes.
-            let allow_root_cross_kind_shadow =
-                self.current_scope.0 == 0 && existing.kind != symbol.kind;
-            if !existing.flags.is_imported && !allow_root_cross_kind_shadow {
+    /// Define a symbol in a specific scope
+    ///
+    /// Returns an error if a symbol with the same name already exists in that scope,
+    /// unless the existing symbol is imported in a non-module scope.
+    pub fn define_in_scope(
+        &mut self,
+        scope_id: ScopeId,
+        mut symbol: Symbol,
+    ) -> Result<(), DuplicateSymbolError> {
+        let (scope_kind, existing, parent) = {
+            let scope = &self.scopes[scope_id.0 as usize];
+            (
+                scope.kind,
+                scope.symbols.get(&symbol.name).cloned(),
+                scope.parent,
+            )
+        };
+
+        if let Some(existing) = existing {
+            // TypeScript semantics: module-scope imports cannot be shadowed
+            // by any module-scope declaration (including cross-kind).
+            if scope_kind == ScopeKind::Module
+                && (existing.flags.is_imported || symbol.flags.is_imported)
+            {
                 return Err(DuplicateSymbolError {
                     name: symbol.name.clone(),
                     original: existing.span,
                     duplicate: symbol.span,
                 });
             }
-        }
 
-        // Set the scope ID
-        symbol.scope_id = self.current_scope;
-
-        // Insert symbol
-        scope.symbols.insert(symbol.name.clone(), symbol);
-        Ok(())
-    }
-
-    /// Define a symbol in a specific scope
-    ///
-    /// Returns an error if a symbol with the same name already exists in that scope,
-    /// unless the existing symbol is imported (allowing user code to shadow imports).
-    pub fn define_in_scope(
-        &mut self,
-        scope_id: ScopeId,
-        mut symbol: Symbol,
-    ) -> Result<(), DuplicateSymbolError> {
-        let scope = &mut self.scopes[scope_id.0 as usize];
-
-        // Check for duplicate
-        if let Some(existing) = scope.symbols.get(&symbol.name) {
-            // Allow shadowing of imported symbols
-            if !existing.flags.is_imported {
+            let allow_cross_kind_shadow =
+                matches!(scope_kind, ScopeKind::Global | ScopeKind::Module)
+                    && existing.kind != symbol.kind;
+            if !allow_cross_kind_shadow {
                 return Err(DuplicateSymbolError {
                     name: symbol.name.clone(),
                     original: existing.span,
+                    duplicate: symbol.span,
+                });
+            }
+        } else if scope_kind == ScopeKind::Module && !symbol.flags.is_imported {
+            // Compatibility path: some pipelines inject imported bindings into
+            // parent/global scope. Treat those as module imports for shadowing checks.
+            if let Some(imported_span) =
+                self.find_imported_symbol_in_ancestor_chain(parent, &symbol.name)
+            {
+                return Err(DuplicateSymbolError {
+                    name: symbol.name.clone(),
+                    original: imported_span,
                     duplicate: symbol.span,
                 });
             }
@@ -208,8 +219,27 @@ impl SymbolTable {
         symbol.scope_id = scope_id;
 
         // Insert symbol
-        scope.symbols.insert(symbol.name.clone(), symbol);
+        self.scopes[scope_id.0 as usize]
+            .symbols
+            .insert(symbol.name.clone(), symbol);
         Ok(())
+    }
+
+    fn find_imported_symbol_in_ancestor_chain(
+        &self,
+        mut scope_id: Option<ScopeId>,
+        name: &str,
+    ) -> Option<Span> {
+        while let Some(id) = scope_id {
+            let scope = self.scopes.get(id.0 as usize)?;
+            if let Some(sym) = scope.symbols.get(name) {
+                if sym.flags.is_imported {
+                    return Some(sym.span);
+                }
+            }
+            scope_id = scope.parent;
+        }
+        None
     }
 
     /// Resolve a symbol by name, walking up the scope chain
@@ -331,7 +361,6 @@ impl SymbolTable {
     /// Define a symbol as imported (in the global scope)
     ///
     /// This is used to inject symbols from imported modules.
-    /// Imported symbols can be shadowed by user-defined symbols.
     pub fn define_imported(&mut self, mut symbol: Symbol) -> Result<(), DuplicateSymbolError> {
         symbol.flags.is_imported = true;
         self.define_in_scope(ScopeId(0), symbol)
@@ -564,13 +593,14 @@ mod tests {
     }
 
     #[test]
-    fn test_shadow_imported_symbol() {
+    fn test_no_shadow_imported_symbol_in_same_scope() {
         let mut table = SymbolTable::new();
         let mut ctx = TypeContext::new();
         let num_ty = ctx.number_type();
         let str_ty = ctx.string_type();
+        table.push_scope(ScopeKind::Module);
 
-        // Define imported symbol in global scope
+        // Define imported symbol in module scope
         let imported = Symbol {
             name: "logger".to_string(),
             kind: SymbolKind::Variable,
@@ -579,26 +609,25 @@ mod tests {
                 is_imported: true,
                 ..SymbolFlags::default()
             },
-            scope_id: ScopeId(0),
+            scope_id: ScopeId(1),
             span: Span::new(0, 0, 0, 0),
             referenced: false,
         };
-        table.define_imported(imported).unwrap();
+        table.define(imported).unwrap();
 
-        // User-defined symbol with same name should shadow the import
+        // User-defined symbol with same name in the same scope should be rejected.
         let user_sym = Symbol {
             name: "logger".to_string(),
             kind: SymbolKind::Variable,
             ty: str_ty,
             flags: SymbolFlags::default(),
-            scope_id: ScopeId(0),
+            scope_id: ScopeId(1),
             span: Span::new(10, 20, 1, 10),
             referenced: false,
         };
-        table.define(user_sym).unwrap();
-
-        // Should resolve to user-defined symbol (string type)
-        let resolved = table.resolve("logger").unwrap();
-        assert_eq!(resolved.ty, str_ty);
+        let result = table.define(user_sym);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.name, "logger");
     }
 }

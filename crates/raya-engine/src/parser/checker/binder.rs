@@ -5,7 +5,7 @@
 
 use super::builtins::BuiltinSignatures;
 use super::error::BindError;
-use super::symbols::{ScopeKind, Symbol, SymbolFlags, SymbolKind, SymbolTable};
+use super::symbols::{ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind, SymbolTable};
 use super::{CheckerPolicy, TypeSystemMode};
 use crate::parser::ast::*;
 use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type};
@@ -46,6 +46,14 @@ enum BinderFallbackReason {
 }
 
 impl<'a> Binder<'a> {
+    fn has_symbol_in_current_scope(&self, name: &str) -> bool {
+        self.symbols.current().symbols.contains_key(name)
+    }
+
+    fn symbol_in_scope(&self, scope_id: ScopeId, name: &str) -> Option<Symbol> {
+        self.symbols.get_scope(scope_id).symbols.get(name).cloned()
+    }
+
     /// Create a new binder
     pub fn new(type_ctx: &'a mut TypeContext, interner: &'a Interner) -> Self {
         Binder {
@@ -1428,6 +1436,8 @@ impl<'a> Binder<'a> {
     /// 2. Main pass: full binding with type resolution
     pub fn bind_module(mut self, module: &Module) -> Result<SymbolTable, Vec<BindError>> {
         let mut errors = Vec::new();
+        // All file-level declarations live in a module scope under global (builtins).
+        self.symbols.push_scope(ScopeKind::Module);
 
         // Pre-pass: collect all top-level declarations for forward references
         for stmt in &module.statements {
@@ -1442,6 +1452,7 @@ impl<'a> Binder<'a> {
                 errors.push(err);
             }
         }
+        self.symbols.pop_scope();
 
         if errors.is_empty() {
             Ok(self.symbols)
@@ -1525,9 +1536,9 @@ impl<'a> Binder<'a> {
     fn prepass_class(&mut self, class: &ClassDecl) -> Result<(), BindError> {
         let class_name = self.resolve(class.name.name);
 
-        // If a symbol with this name already exists (from builtins or forward declaration),
-        // skip re-registration. Duplicate detection happens in bind_class.
-        if self.symbols.resolve(&class_name).is_some() {
+        // Skip only when the declaration already exists in THIS scope.
+        // Module/local scopes may intentionally shadow global builtins.
+        if self.has_symbol_in_current_scope(&class_name) {
             return Ok(());
         }
 
@@ -1579,9 +1590,8 @@ impl<'a> Binder<'a> {
     fn prepass_function(&mut self, func: &FunctionDecl) -> Result<(), BindError> {
         let func_name = self.resolve(func.name.name);
 
-        // If a symbol with this name already exists (from builtins or forward declaration),
-        // skip re-registration. Duplicate detection happens in bind_function.
-        if self.symbols.resolve(&func_name).is_some() {
+        // Skip only when this scope already has the declaration.
+        if self.has_symbol_in_current_scope(&func_name) {
             return Ok(());
         }
 
@@ -1617,8 +1627,8 @@ impl<'a> Binder<'a> {
     fn prepass_type_alias(&mut self, alias: &TypeAliasDecl) -> Result<(), BindError> {
         let alias_name = self.resolve(alias.name.name);
 
-        // If a symbol with this name already exists, skip re-registration.
-        if self.symbols.resolve(&alias_name).is_some() {
+        // Skip only when this scope already has the declaration.
+        if self.has_symbol_in_current_scope(&alias_name) {
             return Ok(());
         }
 
@@ -2235,8 +2245,18 @@ impl<'a> Binder<'a> {
 
         // Define function symbol in parent scope (so it can be called recursively).
         // If pre-registered by pre-pass, replace it so span/flags match the active declaration.
-        if self.symbols.resolve(&func_name).is_some() {
-            self.symbols.replace_in_scope(parent_scope_id, symbol);
+        if let Some(existing) = self.symbol_in_scope(parent_scope_id, &func_name) {
+            if existing.kind == SymbolKind::Function && !existing.flags.is_imported {
+                self.symbols.replace_in_scope(parent_scope_id, symbol);
+            } else {
+                self.symbols
+                    .define_in_scope(parent_scope_id, symbol)
+                    .map_err(|err| BindError::DuplicateSymbol {
+                        name: err.name,
+                        original: err.original,
+                        duplicate: err.duplicate,
+                    })?;
+            }
         } else {
             self.symbols
                 .define_in_scope(parent_scope_id, symbol)
@@ -2357,10 +2377,28 @@ impl<'a> Binder<'a> {
 
         // If the class was already registered by the pre-pass, replace it;
         // otherwise define it now (handles non-top-level classes)
-        if self.symbols.resolve(&class_name).is_some() {
-            self.symbols.replace_in_scope(
-                class_definition_scope,
-                Symbol {
+        if let Some(existing) = self.symbol_in_scope(class_definition_scope, &class_name) {
+            if existing.kind == SymbolKind::Class && !existing.flags.is_imported {
+                self.symbols.replace_in_scope(
+                    class_definition_scope,
+                    Symbol {
+                        name: class_name.clone(),
+                        kind: SymbolKind::Class,
+                        ty: class_ty,
+                        flags: SymbolFlags {
+                            is_exported: false,
+                            is_const: true,
+                            is_async: false,
+                            is_readonly: false,
+                            is_imported: false,
+                        },
+                        scope_id: class_definition_scope,
+                        span: class.name.span,
+                        referenced: false,
+                    },
+                );
+            } else {
+                let symbol = Symbol {
                     name: class_name.clone(),
                     kind: SymbolKind::Class,
                     ty: class_ty,
@@ -2374,8 +2412,15 @@ impl<'a> Binder<'a> {
                     scope_id: class_definition_scope,
                     span: class.name.span,
                     referenced: false,
-                },
-            );
+                };
+                self.symbols
+                    .define(symbol)
+                    .map_err(|err| BindError::DuplicateSymbol {
+                        name: err.name,
+                        original: err.original,
+                        duplicate: err.duplicate,
+                    })?;
+            }
         } else {
             let symbol = Symbol {
                 name: class_name.clone(),
@@ -2901,19 +2946,29 @@ impl<'a> Binder<'a> {
         // self-referential type aliases work: during resolution above, any
         // reference to this alias resolved to the placeholder TypeId, and
         // replace_type() mutates it in-place so all references see the update.
-        if let Some(existing) = self.symbols.resolve(&alias_name) {
-            let placeholder_ty = existing.ty;
-            // Copy the resolved type's data into the placeholder TypeId
-            if let Some(resolved_type) = self.type_ctx.get(ty).cloned() {
-                self.type_ctx.replace_type(placeholder_ty, resolved_type);
+        if let Some(existing) = self.symbol_in_scope(definition_scope, &alias_name) {
+            if existing.kind == SymbolKind::TypeAlias && !existing.flags.is_imported {
+                let placeholder_ty = existing.ty;
+                // Copy the resolved type's data into the placeholder TypeId
+                if let Some(resolved_type) = self.type_ctx.get(ty).cloned() {
+                    self.type_ctx.replace_type(placeholder_ty, resolved_type);
+                }
+                // Keep symbol pointing to placeholder_ty (which now has real data)
+                let symbol = Symbol {
+                    ty: placeholder_ty,
+                    ..symbol
+                };
+                self.symbols.replace_in_scope(definition_scope, symbol);
+                Ok(())
+            } else {
+                self.symbols
+                    .define(symbol)
+                    .map_err(|err| BindError::DuplicateSymbol {
+                        name: err.name,
+                        original: err.original,
+                        duplicate: err.duplicate,
+                    })
             }
-            // Keep symbol pointing to placeholder_ty (which now has real data)
-            let symbol = Symbol {
-                ty: placeholder_ty,
-                ..symbol
-            };
-            self.symbols.replace_in_scope(definition_scope, symbol);
-            Ok(())
         } else {
             self.symbols
                 .define(symbol)

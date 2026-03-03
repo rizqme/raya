@@ -127,9 +127,9 @@ impl Scheduler {
         let io_worker_count = std::env::var("RAYA_IO_THREADS")
             .ok()
             .and_then(|s| s.parse().ok())
-            // Keep defaults proportional: single-worker VMs should not spawn
-            // a 4-thread IO pool.
-            .unwrap_or_else(|| actual_worker_count.clamp(1, 4));
+            // Keep defaults proportional, but avoid single-IO-worker head-of-line
+            // deadlocks (e.g. accept/readAll waiting on each other).
+            .unwrap_or_else(|| actual_worker_count.clamp(2, 4));
 
         let reactor = Reactor::new(actual_worker_count, io_worker_count, shared_state.clone());
 

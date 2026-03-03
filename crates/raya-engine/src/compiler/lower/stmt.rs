@@ -126,18 +126,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn class_id_by_name(&self, class_name: &str) -> Option<crate::compiler::ir::ClassId> {
-        if let Some(sym) = self.interner.lookup(class_name) {
-            if let Some(&id) = self.class_map.get(&sym) {
-                return Some(id);
-            }
-        }
-        self.class_map.iter().find_map(|(&sym, &id)| {
-            if self.interner.resolve(sym) == class_name {
-                Some(id)
-            } else {
-                None
-            }
-        })
+        self.class_id_from_type_name(class_name)
     }
 
     /// Lower a statement
@@ -851,15 +840,16 @@ impl<'a> Lowerer<'a> {
                     .map(|(idx, prop)| (prop.name.clone(), idx))
                     .collect(),
             ),
-            Type::Reference(reference) => self
-                .type_alias_object_fields
-                .get(&reference.name)
-                .map(|fields| {
-                    fields
-                        .iter()
-                        .map(|(name, idx, _)| (name.clone(), *idx as usize))
-                        .collect()
-                }),
+            Type::Reference(reference) => {
+                self.type_alias_object_fields
+                    .get(&reference.name)
+                    .map(|fields| {
+                        fields
+                            .iter()
+                            .map(|(name, idx, _)| (name.clone(), *idx as usize))
+                            .collect()
+                    })
+            }
             Type::Class(_) => {
                 let class_id = self.class_id_from_type_id(value_ty)?;
                 let mut fields = self.get_all_fields(class_id);
@@ -916,11 +906,9 @@ impl<'a> Lowerer<'a> {
                     .find(|field| self.interner.resolve(field.name) == property_name)
                     .map(|field| field.ty)
             }
-            Type::TypeVar(tv) => tv
-                .constraint
-                .and_then(|constraint| {
-                    self.object_property_type_from_value_type(constraint, property_name)
-                }),
+            Type::TypeVar(tv) => tv.constraint.and_then(|constraint| {
+                self.object_property_type_from_value_type(constraint, property_name)
+            }),
             Type::Generic(generic) => {
                 self.object_property_type_from_value_type(generic.base, property_name)
             }
@@ -944,7 +932,10 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn array_element_object_layout_from_type(&self, value_ty: TypeId) -> Option<Vec<(String, usize)>> {
+    fn array_element_object_layout_from_type(
+        &self,
+        value_ty: TypeId,
+    ) -> Option<Vec<(String, usize)>> {
         use crate::parser::types::Type;
 
         match self.type_ctx.get(value_ty)? {
@@ -1125,7 +1116,8 @@ impl<'a> Lowerer<'a> {
                                 index: idx_reg,
                             });
                             if let Some(layout) = &element_layout_hint {
-                                self.register_object_fields.insert(elem_reg.id, layout.clone());
+                                self.register_object_fields
+                                    .insert(elem_reg.id, layout.clone());
                             }
                             self.bind_pattern(&elem.pattern, elem_reg);
                         }
@@ -1224,7 +1216,8 @@ impl<'a> Lowerer<'a> {
                         let Some(field_index) = layout
                             .iter()
                             .find(|(name, _)| name == &prop_name)
-                            .map(|(_, idx)| *idx as u16) else {
+                            .map(|(_, idx)| *idx as u16)
+                        else {
                             if let Some(default_expr) = &property.default {
                                 let default_val = self.lower_expr(default_expr);
                                 self.bind_pattern(&property.value, default_val);
@@ -1445,6 +1438,128 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+
+        if !self.variable_object_type_aliases.contains_key(&name) {
+            if let ast::Expression::Await(await_expr) = init {
+                if let ast::Expression::Identifier(task_ident) = &*await_expr.argument {
+                    if let Some(alias_name) =
+                        self.task_result_type_aliases.get(&task_ident.name).cloned()
+                    {
+                        self.variable_object_type_aliases.insert(name, alias_name);
+                    }
+                }
+            }
+        }
+
+        // Fallback: infer alias directly from the expression type (covers await/async-call
+        // assignments where there is no direct function return-alias metadata on initializer AST).
+        if !self.variable_object_type_aliases.contains_key(&name) {
+            let init_ty = self.get_expr_type(init);
+            if let Some(alias_name) = self.find_object_alias_for_type_id(init_ty) {
+                self.variable_object_type_aliases.insert(name, alias_name);
+            }
+        }
+    }
+
+    fn track_task_result_alias_from_initializer(
+        &mut self,
+        name: crate::parser::Symbol,
+        init: &ast::Expression,
+    ) {
+        let alias = match init {
+            ast::Expression::AsyncCall(async_call) => {
+                self.find_return_alias_for_callee(&async_call.callee, &async_call.arguments)
+            }
+            _ => None,
+        };
+        if let Some(alias_name) = alias {
+            self.task_result_type_aliases.insert(name, alias_name);
+        } else {
+            self.task_result_type_aliases.remove(&name);
+        }
+    }
+
+    fn find_return_alias_for_callee(
+        &self,
+        callee: &ast::Expression,
+        _args: &[ast::Expression],
+    ) -> Option<String> {
+        let class_name_from_id = |class_id: crate::compiler::ir::ClassId| {
+            self.class_map.iter().find_map(|(&sym, &cid)| {
+                (cid == class_id).then_some(self.interner.resolve(sym).to_string())
+            })
+        };
+
+        let direct = match callee {
+            ast::Expression::Identifier(ident) => self
+                .function_return_type_alias_map
+                .get(&ident.name)
+                .filter(|name| {
+                    self.type_alias_object_fields.contains_key(*name)
+                        || self.class_id_from_type_name(name).is_some()
+                })
+                .cloned()
+                .or_else(|| {
+                    self.function_return_class_map
+                        .get(&ident.name)
+                        .and_then(|cid| class_name_from_id(*cid))
+                }),
+            ast::Expression::Member(member) => {
+                let class_id = self.infer_class_id(&member.object);
+                class_id.and_then(|cid| {
+                    self.method_return_type_alias_map
+                        .get(&(cid, member.property.name))
+                        .filter(|name| {
+                            self.type_alias_object_fields.contains_key(*name)
+                                || self.class_id_from_type_name(name).is_some()
+                        })
+                        .cloned()
+                        .or_else(|| {
+                            self.method_return_class_map
+                                .get(&(cid, member.property.name))
+                                .and_then(|ret_cid| class_name_from_id(*ret_cid))
+                        })
+                })
+            }
+            _ => None,
+        };
+        if direct.is_some() {
+            return direct;
+        }
+
+        // Fallback: use checker function type of the callee expression.
+        let callee_ty = self.get_expr_type(callee);
+        if let Some(crate::parser::types::ty::Type::Function(func_ty)) = self.type_ctx.get(callee_ty)
+        {
+            return self.find_object_alias_for_type_id(func_ty.return_type);
+        }
+        None
+    }
+
+    fn find_object_alias_for_type_id(&self, ty: TypeId) -> Option<String> {
+        if ty == super::UNRESOLVED {
+            return None;
+        }
+
+        let mut subtype_ctx = crate::parser::types::subtyping::SubtypingContext::new(self.type_ctx);
+        for alias_name in self.type_alias_object_fields.keys() {
+            let alias_ty = self
+                .type_alias_resolved_type_map
+                .get(alias_name)
+                .copied()
+                .filter(|candidate| *candidate != super::UNRESOLVED)
+                .or_else(|| self.type_ctx.lookup_named_type(alias_name));
+            let Some(alias_ty) = alias_ty else {
+                continue;
+            };
+            if ty == alias_ty
+                || (subtype_ctx.is_subtype(ty, alias_ty)
+                    && subtype_ctx.is_subtype(alias_ty, ty))
+            {
+                return Some(alias_name.clone());
+            }
+        }
+        None
     }
 
     fn lower_var_decl(&mut self, decl: &ast::VariableDecl) {
@@ -1470,6 +1585,7 @@ impl<'a> Lowerer<'a> {
         self.variable_object_fields.remove(&name);
         self.variable_nested_object_fields.remove(&name);
         self.variable_object_type_aliases.remove(&name);
+        self.task_result_type_aliases.remove(&name);
         self.callable_symbol_hints.remove(&name);
 
         // Re-populate object field layout for __std_exports_<tag> variables.
@@ -1597,6 +1713,7 @@ impl<'a> Lowerer<'a> {
                     if let Some(class_id) = self.infer_class_id(init) {
                         self.variable_class_map.insert(name, class_id);
                     }
+                    self.track_task_result_alias_from_initializer(name, init);
                     self.track_variable_object_alias_from_initializer(name, init);
 
                     // Track bound method variables (e.g., `let f = obj.method`)
@@ -1724,6 +1841,7 @@ impl<'a> Lowerer<'a> {
             if let Some(class_id) = self.infer_class_id(init) {
                 self.variable_class_map.insert(name, class_id);
             }
+            self.track_task_result_alias_from_initializer(name, init);
             self.track_variable_object_alias_from_initializer(name, init);
 
             // Track bound method variables (e.g., `let f = obj.method`)
@@ -1955,6 +2073,16 @@ impl<'a> Lowerer<'a> {
             index: local_idx,
             value: closure_reg,
         });
+
+        // Async function declarations lowered through the closure path still need
+        // closure-locals metadata so call lowering emits SpawnClosure, not CallClosure.
+        if func_decl.is_async {
+            if let Some(func_id) = preassigned_func_id.or(self.last_arrow_func_id) {
+                if self.async_closures.contains(&func_id) {
+                    self.closure_locals.insert(local_idx, func_id);
+                }
+            }
+        }
     }
 
     fn lower_return(&mut self, ret: &ast::ReturnStatement) {

@@ -508,6 +508,9 @@ pub struct Lowerer<'a> {
     /// Alias name backing object-typed variables (identifier -> type alias name).
     /// Used to prefer declaration-order alias field indices over checker-internal object order.
     variable_object_type_aliases: FxHashMap<Symbol, String>,
+    /// For variables holding async-call Task results, tracks the awaited value alias type.
+    /// Example: `const t = async listener.accept()` records `t -> "__t_m0_TcpStream"`.
+    task_result_type_aliases: FxHashMap<Symbol, String>,
     /// Optional filter for object spread field names in the current lowering context.
     /// When set (e.g., typed object literal initializer), spread only copies fields in this set.
     object_spread_target_filter: Option<FxHashSet<String>>,
@@ -1025,6 +1028,7 @@ impl<'a> Lowerer<'a> {
             variable_object_fields: FxHashMap::default(),
             variable_nested_object_fields: FxHashMap::default(),
             variable_object_type_aliases: FxHashMap::default(),
+            task_result_type_aliases: FxHashMap::default(),
             object_spread_target_filter: None,
             native_function_table: Vec::new(),
             native_function_map: FxHashMap::default(),
@@ -1297,6 +1301,7 @@ impl<'a> Lowerer<'a> {
         // First pass: collect function and class declarations
         for raw_stmt in &module.statements {
             let stmt = Self::unwrap_export(raw_stmt);
+            self.set_span(stmt.span());
             match stmt {
                 Statement::FunctionDecl(func) => {
                     self.register_function_decl(func);
@@ -1362,6 +1367,28 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        // Second chance: resolve object-wrapper alias TypeIds after classes/functions are
+        // fully registered. During the first pass many wrapper aliases are temporarily
+        // unresolved; keeping them unresolved breaks class-dispatch recovery later.
+        for raw_stmt in &module.statements {
+            let stmt = Self::unwrap_export(raw_stmt);
+            self.set_span(stmt.span());
+            if let Statement::TypeAliasDecl(type_alias) = stmt {
+                let alias_name = self.interner.resolve(type_alias.name.name).to_string();
+                if !self.type_alias_object_fields.contains_key(&alias_name) {
+                    continue;
+                }
+                let resolved = self.resolve_type_annotation(&type_alias.type_annotation);
+                if resolved != UNRESOLVED {
+                    self.type_alias_resolved_type_map
+                        .insert(alias_name.clone(), resolved);
+                } else if let Some(named) = self.type_ctx.lookup_named_type(&alias_name) {
+                    self.type_alias_resolved_type_map
+                        .insert(alias_name.clone(), named);
+                }
+            }
+        }
+
         // Reconcile synthesized wrapper aliases after first-pass registration.
         // Type aliases can appear before the wrapper function/class declaration in
         // linked sources, so populate alias->class type bridges once both sides exist.
@@ -1382,6 +1409,7 @@ impl<'a> Lowerer<'a> {
         // `const math = new Math()`) can resolve the correct class type for method dispatch.
         for raw_stmt in &module.statements {
             let stmt = Self::unwrap_export(raw_stmt);
+            self.set_span(stmt.span());
             if let Statement::VariableDecl(decl) = stmt {
                 if let Pattern::Identifier(ident) = &decl.pattern {
                     let name = ident.name;
@@ -1398,7 +1426,9 @@ impl<'a> Lowerer<'a> {
                             if let ast::Expression::New(new_expr) = init {
                                 if let ast::Expression::Identifier(class_ident) = &*new_expr.callee
                                 {
-                                    if let Some(&class_id) = self.class_map.get(&class_ident.name) {
+                                    if let Some(class_id) = self.class_id_from_type_name(
+                                        self.interner.resolve(class_ident.name),
+                                    ) {
                                         self.variable_class_map.insert(name, class_id);
                                         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                             eprintln!(
@@ -1526,6 +1556,7 @@ impl<'a> Lowerer<'a> {
         // This ensures function indices match the pre-assigned IDs used in Call instructions.
         for raw_stmt in &module.statements {
             let stmt = Self::unwrap_export(raw_stmt);
+            self.set_span(stmt.span());
             match stmt {
                 Statement::FunctionDecl(func) => {
                     // Use declaration-scoped function IDs so duplicate names across
@@ -4224,7 +4255,12 @@ impl<'a> Lowerer<'a> {
                 .filter(|(span_start, _)| *span_start <= pos)
                 .max_by_key(|(span_start, _)| *span_start)
                 .map(|(_, cid)| *cid)
-                .or_else(|| entries.iter().min_by_key(|(span_start, _)| *span_start).map(|(_, cid)| *cid))
+                .or_else(|| {
+                    entries
+                        .iter()
+                        .min_by_key(|(span_start, _)| *span_start)
+                        .map(|(_, cid)| *cid)
+                })
         };
 
         // 1) Exact class name lookup.
@@ -4360,10 +4396,9 @@ impl<'a> Lowerer<'a> {
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, elem_member)| match elem_member {
-                    ast::ObjectTypeMember::Property(elem_prop) => Some((
-                        self.interner.resolve(elem_prop.name.name).to_string(),
-                        idx,
-                    )),
+                    ast::ObjectTypeMember::Property(elem_prop) => {
+                        Some((self.interner.resolve(elem_prop.name.name).to_string(), idx))
+                    }
                     ast::ObjectTypeMember::Method(_) => None,
                 })
                 .collect();
