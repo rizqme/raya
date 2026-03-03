@@ -82,6 +82,27 @@ impl<'a> Visitor for ArrowBodyVarRefCollector<'a> {
     }
 }
 
+/// Builds a fallback index for expression types keyed by source span.
+///
+/// The primary `expr_types` map is pointer-based (AST node identity). Some
+/// lowering paths clone expressions (e.g. decorators), which invalidates pointer
+/// lookups. Span lookup recovers type info for those cloned nodes.
+struct ExprTypeSpanCollector<'a> {
+    expr_types: &'a FxHashMap<usize, TypeId>,
+    by_span: &'a mut FxHashMap<(usize, usize), TypeId>,
+}
+
+impl<'a> Visitor for ExprTypeSpanCollector<'a> {
+    fn visit_expression(&mut self, expr: &Expression) {
+        let expr_id = expr as *const _ as usize;
+        if let Some(ty) = self.expr_types.get(&expr_id).copied() {
+            let span = expr.span();
+            self.by_span.entry((span.start, span.end)).or_insert(ty);
+        }
+        walk_expression(self, expr);
+    }
+}
+
 /// JSX compilation options (passed from manifest or CLI)
 #[derive(Debug, Clone)]
 pub struct JsxOptions {
@@ -178,6 +199,10 @@ struct StaticMethodInfo {
 struct DecoratorInfo {
     /// The decorator expression (e.g., `@Injectable` or `@Controller("/api")`)
     expression: Expression,
+    /// Type checker result for the original decorator expression.
+    /// We store this because `expression` is cloned and pointer-based expr-type
+    /// lookup (`get_expr_type`) would otherwise lose the original mapping.
+    expr_type: TypeId,
 }
 
 /// Target of a decorator (used during code generation)
@@ -477,6 +502,8 @@ pub struct Lowerer<'a> {
     closure_globals: FxHashMap<u16, FunctionId>,
     /// Expression types from type checker (maps expr ptr to TypeId)
     expr_types: FxHashMap<usize, TypeId>,
+    /// Fallback expression types keyed by source span `(start, end)`.
+    expr_types_by_span: FxHashMap<(usize, usize), TypeId>,
     /// Type map for module-level globals (preserves initializer types through LoadGlobal)
     global_type_map: FxHashMap<u16, TypeId>,
     /// Enclosing std-wrapper locals exported to dedicated globals for the next class lowering.
@@ -1017,6 +1044,7 @@ impl<'a> Lowerer<'a> {
             closure_locals: FxHashMap::default(),
             closure_globals: FxHashMap::default(),
             expr_types,
+            expr_types_by_span: FxHashMap::default(),
             global_type_map: FxHashMap::default(),
             pending_class_method_env_globals: None,
             current_method_env_globals: None,
@@ -1122,11 +1150,32 @@ impl<'a> Lowerer<'a> {
         self.constant_map.get(&name)
     }
 
+    /// Build a span-keyed fallback index for expression typing.
+    fn build_expr_type_span_index(&mut self, module: &ast::Module) {
+        self.expr_types_by_span.clear();
+        let mut collector = ExprTypeSpanCollector {
+            expr_types: &self.expr_types,
+            by_span: &mut self.expr_types_by_span,
+        };
+        for stmt in &module.statements {
+            walk_statement(&mut collector, stmt);
+        }
+    }
+
     /// Get the TypeId for an expression from the type checker's expr_types map.
     /// Falls back to UNRESOLVED if not found (compiler couldn't determine type).
     fn get_expr_type(&self, expr: &Expression) -> TypeId {
         let expr_id = expr as *const _ as usize;
-        self.expr_types.get(&expr_id).copied().unwrap_or(UNRESOLVED)
+        self.expr_types
+            .get(&expr_id)
+            .copied()
+            .or_else(|| {
+                let span = expr.span();
+                self.expr_types_by_span
+                    .get(&(span.start, span.end))
+                    .copied()
+            })
+            .unwrap_or(UNRESOLVED)
     }
 
     /// Normalize a TypeId for dispatch purposes.
@@ -1165,6 +1214,7 @@ impl<'a> Lowerer<'a> {
     /// Lower an AST module to IR
     pub fn lower_module(&mut self, module: &ast::Module) -> IrModule {
         let mut ir_module = IrModule::new("main");
+        self.build_expr_type_span_index(module);
 
         // Pre-pass: collect module-level const declarations (for constant folding)
         // These need to be processed before classes/functions so they're available
@@ -2213,6 +2263,7 @@ impl<'a> Lowerer<'a> {
             .iter()
             .map(|d| DecoratorInfo {
                 expression: d.expression.clone(),
+                expr_type: self.get_expr_type(&d.expression),
             })
             .collect();
 
@@ -2227,6 +2278,7 @@ impl<'a> Lowerer<'a> {
                             .iter()
                             .map(|d| DecoratorInfo {
                                 expression: d.expression.clone(),
+                                expr_type: self.get_expr_type(&d.expression),
                             })
                             .collect(),
                     });
@@ -2252,6 +2304,7 @@ impl<'a> Lowerer<'a> {
                             .iter()
                             .map(|d| DecoratorInfo {
                                 expression: d.expression.clone(),
+                                expr_type: self.get_expr_type(&d.expression),
                             })
                             .collect(),
                     });
@@ -2274,6 +2327,7 @@ impl<'a> Lowerer<'a> {
                                     .iter()
                                     .map(|d| DecoratorInfo {
                                         expression: d.expression.clone(),
+                                        expr_type: self.get_expr_type(&d.expression),
                                     })
                                     .collect(),
                             });
@@ -2291,6 +2345,7 @@ impl<'a> Lowerer<'a> {
                                     .iter()
                                     .map(|d| DecoratorInfo {
                                         expression: d.expression.clone(),
+                                        expr_type: self.get_expr_type(&d.expression),
                                     })
                                     .collect(),
                             });
@@ -3688,7 +3743,7 @@ impl<'a> Lowerer<'a> {
                             method_name: param_dec.method_name.clone(),
                             param_index: param_dec.param_index,
                         },
-                        &dec_info.expression,
+                        dec_info,
                         REGISTER_PARAMETER_DECORATOR,
                     );
                 }
@@ -3704,7 +3759,7 @@ impl<'a> Lowerer<'a> {
                             class_name: class_name.clone(),
                             field_name: field_name.clone(),
                         },
-                        &dec_info.expression,
+                        dec_info,
                         REGISTER_FIELD_DECORATOR,
                     );
                 }
@@ -3720,7 +3775,7 @@ impl<'a> Lowerer<'a> {
                             class_name: class_name.clone(),
                             method_name: method_name.clone(),
                         },
-                        &dec_info.expression,
+                        dec_info,
                         REGISTER_METHOD_DECORATOR,
                     );
                 }
@@ -3733,7 +3788,7 @@ impl<'a> Lowerer<'a> {
                         class_id: class_id_val,
                         class_name: class_name.clone(),
                     },
-                    &dec_info.expression,
+                    dec_info,
                     REGISTER_CLASS_DECORATOR,
                 );
             }
@@ -3744,9 +3799,10 @@ impl<'a> Lowerer<'a> {
     fn emit_decorator_call(
         &mut self,
         target: DecoratorTarget,
-        decorator_expr: &Expression,
+        dec_info: &DecoratorInfo,
         registration_native_id: u16,
     ) {
+        let decorator_expr = &dec_info.expression;
         // Get decorator name for registration
         let decorator_name = self.get_decorator_name(decorator_expr);
 
@@ -3840,7 +3896,11 @@ impl<'a> Lowerer<'a> {
         } else if let Expression::Call(_) = decorator_expr {
             // Case 2: Factory call - lower the factory call, then CallClosure on the result
             // The factory returns a closure that is the actual decorator
-            let decorator_ty = self.get_expr_type(decorator_expr);
+            let decorator_ty = if dec_info.expr_type != UNRESOLVED {
+                dec_info.expr_type
+            } else {
+                self.get_expr_type(decorator_expr)
+            };
             let decorator_ty_raw = decorator_ty.as_u32();
             if !self.type_is_callable(decorator_ty) {
                 self.errors
@@ -3861,7 +3921,11 @@ impl<'a> Lowerer<'a> {
             });
         } else {
             // Case 3: Local variable or other expression - lower and use CallClosure
-            let decorator_ty = self.get_expr_type(decorator_expr);
+            let decorator_ty = if dec_info.expr_type != UNRESOLVED {
+                dec_info.expr_type
+            } else {
+                self.get_expr_type(decorator_expr)
+            };
             let decorator_ty_raw = decorator_ty.as_u32();
             if !self.type_is_callable(decorator_ty) {
                 self.errors

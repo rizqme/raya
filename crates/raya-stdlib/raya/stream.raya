@@ -146,6 +146,12 @@ class ReadableStream<T> {
         dst.close();
     }
 
+    pipeThrough<O>(transform: TransformStream<T, O>): ReadableStream<O> {
+        const writable = transform.getWritable();
+        this.pipe(writable);
+        return transform.getReadable();
+    }
+
     collect(): T[] {
         let result: T[] = [];
         let val = this.ch.tryReceive();

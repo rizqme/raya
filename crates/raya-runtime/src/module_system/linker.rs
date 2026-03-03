@@ -630,10 +630,15 @@ fn transform_entry_module(
 
     let mut code = String::new();
     code.push_str(&format!("// entry module: {}\n", node.display_name));
+    // Execute the entry in its own lexical scope so pre-imported builtins live
+    // in an outer "global" scope and can be shadowed by module imports/locals.
+    code.push_str(&format!("function __raya_entry_{}(): unknown {{\n", module_id));
     code.push_str(&body);
-    if !code.ends_with('\n') {
+    if !body.ends_with('\n') {
         code.push('\n');
     }
+    code.push_str("}\n");
+    code.push_str(&format!("return __raya_entry_{}();\n", module_id));
     Ok(code)
 }
 
