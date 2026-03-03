@@ -840,6 +840,141 @@ impl<'a> Lowerer<'a> {
 
     /// Bind a destructuring pattern to a value register.
     /// Recursively handles nested array/object patterns.
+    fn object_layout_from_type(&self, value_ty: TypeId) -> Option<Vec<(String, usize)>> {
+        use crate::parser::types::Type;
+
+        match self.type_ctx.get(value_ty)? {
+            Type::Object(obj) => Some(
+                obj.properties
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, prop)| (prop.name.clone(), idx))
+                    .collect(),
+            ),
+            Type::Reference(reference) => self
+                .type_alias_object_fields
+                .get(&reference.name)
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .map(|(name, idx, _)| (name.clone(), *idx as usize))
+                        .collect()
+                }),
+            Type::Class(_) => {
+                let class_id = self.class_id_from_type_id(value_ty)?;
+                let mut fields = self.get_all_fields(class_id);
+                fields.sort_by_key(|f| f.index);
+                Some(
+                    fields
+                        .into_iter()
+                        .map(|f| (self.interner.resolve(f.name).to_string(), f.index as usize))
+                        .collect(),
+                )
+            }
+            Type::TypeVar(tv) => tv
+                .constraint
+                .and_then(|constraint| self.object_layout_from_type(constraint)),
+            Type::Generic(generic) => self.object_layout_from_type(generic.base),
+            Type::Union(union) => {
+                let mut found: Option<Vec<(String, usize)>> = None;
+                for member in &union.members {
+                    let Some(layout) = self.object_layout_from_type(*member) else {
+                        continue;
+                    };
+                    match &found {
+                        None => found = Some(layout),
+                        Some(existing) if *existing == layout => {}
+                        Some(_) => return None,
+                    }
+                }
+                found
+            }
+            _ => None,
+        }
+    }
+
+    fn object_property_type_from_value_type(
+        &self,
+        value_ty: TypeId,
+        property_name: &str,
+    ) -> Option<TypeId> {
+        use crate::parser::types::Type;
+
+        match self.type_ctx.get(value_ty)? {
+            Type::Object(obj) => obj
+                .properties
+                .iter()
+                .find(|prop| prop.name == property_name)
+                .map(|prop| prop.ty),
+            Type::Reference(reference) => self
+                .type_alias_field_lookup(&reference.name, property_name)
+                .map(|(_, ty)| ty),
+            Type::Class(_) => {
+                let class_id = self.class_id_from_type_id(value_ty)?;
+                self.get_all_fields(class_id)
+                    .into_iter()
+                    .find(|field| self.interner.resolve(field.name) == property_name)
+                    .map(|field| field.ty)
+            }
+            Type::TypeVar(tv) => tv
+                .constraint
+                .and_then(|constraint| {
+                    self.object_property_type_from_value_type(constraint, property_name)
+                }),
+            Type::Generic(generic) => {
+                self.object_property_type_from_value_type(generic.base, property_name)
+            }
+            Type::Union(union) => {
+                let mut found: Option<TypeId> = None;
+                for member in &union.members {
+                    let Some(member_ty) =
+                        self.object_property_type_from_value_type(*member, property_name)
+                    else {
+                        continue;
+                    };
+                    match found {
+                        None => found = Some(member_ty),
+                        Some(existing) if existing == member_ty => {}
+                        Some(_) => return None,
+                    }
+                }
+                found
+            }
+            _ => None,
+        }
+    }
+
+    fn array_element_object_layout_from_type(&self, value_ty: TypeId) -> Option<Vec<(String, usize)>> {
+        use crate::parser::types::Type;
+
+        match self.type_ctx.get(value_ty)? {
+            Type::Array(arr) => self.object_layout_from_type(arr.element),
+            Type::Tuple(tuple) => tuple
+                .elements
+                .first()
+                .and_then(|elem_ty| self.object_layout_from_type(*elem_ty)),
+            Type::TypeVar(tv) => tv
+                .constraint
+                .and_then(|constraint| self.array_element_object_layout_from_type(constraint)),
+            Type::Generic(generic) => self.array_element_object_layout_from_type(generic.base),
+            Type::Union(union) => {
+                let mut found: Option<Vec<(String, usize)>> = None;
+                for member in &union.members {
+                    let Some(layout) = self.array_element_object_layout_from_type(*member) else {
+                        continue;
+                    };
+                    match &found {
+                        None => found = Some(layout),
+                        Some(existing) if *existing == layout => {}
+                        Some(_) => return None,
+                    }
+                }
+                found
+            }
+            _ => None,
+        }
+    }
+
     pub fn bind_pattern(&mut self, pattern: &ast::Pattern, value_reg: Register) {
         match pattern {
             ast::Pattern::Identifier(ident) => {
@@ -896,6 +1031,11 @@ impl<'a> Lowerer<'a> {
                 }
             }
             ast::Pattern::Array(array_pat) => {
+                let element_layout_hint = self
+                    .register_array_element_object_fields
+                    .get(&value_reg.id)
+                    .cloned()
+                    .or_else(|| self.array_element_object_layout_from_type(value_reg.ty));
                 for (i, elem_opt) in array_pat.elements.iter().enumerate() {
                     if let Some(elem) = elem_opt {
                         if let Some(default_expr) = &elem.default {
@@ -984,6 +1124,9 @@ impl<'a> Lowerer<'a> {
                                 array: value_reg.clone(),
                                 index: idx_reg,
                             });
+                            if let Some(layout) = &element_layout_hint {
+                                self.register_object_fields.insert(elem_reg.id, layout.clone());
+                            }
                             self.bind_pattern(&elem.pattern, elem_reg);
                         }
                     }
@@ -1072,14 +1215,16 @@ impl<'a> Lowerer<'a> {
 
                 for property in &obj_pat.properties {
                     let prop_name = self.interner.resolve(property.key.name).to_string();
+                    let inferred_field_ty = self
+                        .object_property_type_from_value_type(value_reg.ty, &prop_name)
+                        .unwrap_or(TypeId::new(0));
 
                     let field_reg = if let Some(ref layout) = field_layout {
                         // Statically known layout: use direct field slot when present.
-                        let field_index = layout
+                        let Some(field_index) = layout
                             .iter()
                             .find(|(name, _)| name == &prop_name)
-                            .map(|(_, idx)| *idx as u16);
-                        if field_index.is_none() {
+                            .map(|(_, idx)| *idx as u16) else {
                             if let Some(default_expr) = &property.default {
                                 let default_val = self.lower_expr(default_expr);
                                 self.bind_pattern(&property.value, default_val);
@@ -1088,14 +1233,29 @@ impl<'a> Lowerer<'a> {
                                 self.bind_pattern(&property.value, null_reg);
                             }
                             continue;
-                        }
-                        let loaded = self.alloc_register(TypeId::new(0));
+                        };
+                        let loaded = self.alloc_register(inferred_field_ty);
                         self.emit(IrInstr::LoadField {
                             dest: loaded.clone(),
                             object: value_reg.clone(),
-                            field: field_index.unwrap(),
+                            field: field_index,
                             optional: false,
                         });
+                        if let Some(nested_layout) = self
+                            .register_nested_object_fields
+                            .get(&(value_reg.id, field_index))
+                            .cloned()
+                        {
+                            self.register_object_fields.insert(loaded.id, nested_layout);
+                        }
+                        if let Some(elem_layout) = self
+                            .register_nested_array_element_object_fields
+                            .get(&(value_reg.id, field_index))
+                            .cloned()
+                        {
+                            self.register_array_element_object_fields
+                                .insert(loaded.id, elem_layout);
+                        }
                         loaded
                     } else {
                         // Dynamic layout: read by property name instead of positional slot fallback.
@@ -1104,7 +1264,7 @@ impl<'a> Lowerer<'a> {
                             dest: key_reg.clone(),
                             value: IrValue::Constant(IrConstant::String(prop_name.clone())),
                         });
-                        let loaded = self.alloc_register(TypeId::new(0));
+                        let loaded = self.alloc_register(inferred_field_ty);
                         self.emit(IrInstr::NativeCall {
                             dest: Some(loaded.clone()),
                             native_id: crate::compiler::native_id::REFLECT_GET,

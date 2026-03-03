@@ -363,8 +363,16 @@ pub struct Lowerer<'a> {
     async_functions: FxHashSet<FunctionId>,
     /// Class name to ID mapping (last class registered with a given name wins)
     class_map: FxHashMap<Symbol, ClassId>,
+    /// Class declarations by symbol in source order: (span_start, class_id).
+    /// Used for position-aware class resolution so later declarations do not
+    /// retroactively rewrite earlier code's type bindings.
+    class_decl_history: FxHashMap<Symbol, Vec<(usize, ClassId)>>,
     /// Exact synthesized type alias (`__t_*`) to class ID mapping
     type_alias_class_map: FxHashMap<String, ClassId>,
+    /// Expanded object TypeId for synthesized `__t_*` aliases -> class ID.
+    /// This lets lowered dispatch recover nominal class semantics even when
+    /// checker-expanded aliases lose their reference wrapper.
+    type_alias_object_class_map: FxHashMap<TypeId, ClassId>,
     /// Class info (fields, initializers) for lowering `new` expressions
     class_info_map: FxHashMap<ClassId, ClassInfo>,
     /// Per-declaration class ID (keyed by span start position, survives name collisions)
@@ -379,6 +387,8 @@ pub struct Lowerer<'a> {
     next_class_id: u32,
     /// Type alias name to ID mapping
     type_alias_map: FxHashMap<Symbol, TypeAliasId>,
+    /// Resolved checker TypeId for object-capable type aliases (alias name -> TypeId)
+    type_alias_resolved_type_map: FxHashMap<String, TypeId>,
     /// Object-layout fields for type aliases (alias name -> ordered fields)
     type_alias_object_fields: FxHashMap<String, Vec<(String, u16, TypeId)>>,
     /// Next type alias ID
@@ -483,6 +493,12 @@ pub struct Lowerer<'a> {
     /// Nested object field layouts for concrete object fields.
     /// Maps (object register id, field index) -> nested field layout of the stored value.
     register_nested_object_fields: FxHashMap<(RegisterId, u16), Vec<(String, usize)>>,
+    /// Object-layout hint for array elements.
+    /// Maps array register id -> element object field layout.
+    register_array_element_object_fields: FxHashMap<RegisterId, Vec<(String, usize)>>,
+    /// Nested array element object layout for concrete object fields.
+    /// Maps (object register id, field index) -> array element object layout.
+    register_nested_array_element_object_fields: FxHashMap<(RegisterId, u16), Vec<(String, usize)>>,
     /// Object field layout for local variables holding decoded objects
     /// Maps variable name → Vec<(field_name, field_index)>
     variable_object_fields: FxHashMap<Symbol, Vec<(String, usize)>>,
@@ -947,7 +963,9 @@ impl<'a> Lowerer<'a> {
             function_decl_ids: FxHashMap::default(),
             async_functions: FxHashSet::default(),
             class_map: FxHashMap::default(),
+            class_decl_history: FxHashMap::default(),
             type_alias_class_map: FxHashMap::default(),
+            type_alias_object_class_map: FxHashMap::default(),
             class_info_map: FxHashMap::default(),
             class_decl_ids: FxHashMap::default(),
             lowered_class_ids: FxHashSet::default(),
@@ -955,6 +973,7 @@ impl<'a> Lowerer<'a> {
             next_function_id: 0,
             next_class_id: 0,
             type_alias_map: FxHashMap::default(),
+            type_alias_resolved_type_map: FxHashMap::default(),
             type_alias_object_fields: FxHashMap::default(),
             next_type_alias_id: 0,
             pending_label: None,
@@ -1001,6 +1020,8 @@ impl<'a> Lowerer<'a> {
             constant_map: FxHashMap::default(),
             register_object_fields: FxHashMap::default(),
             register_nested_object_fields: FxHashMap::default(),
+            register_array_element_object_fields: FxHashMap::default(),
+            register_nested_array_element_object_fields: FxHashMap::default(),
             variable_object_fields: FxHashMap::default(),
             variable_nested_object_fields: FxHashMap::default(),
             variable_object_type_aliases: FxHashMap::default(),
@@ -1319,6 +1340,12 @@ impl<'a> Lowerer<'a> {
                         }
                         self.type_alias_object_fields
                             .insert(alias_name.clone(), fields);
+                        let alias_ty = self.resolve_type_annotation(&type_alias.type_annotation);
+                        self.type_alias_resolved_type_map
+                            .insert(alias_name.clone(), alias_ty);
+                        if let Some(&class_id) = self.type_alias_class_map.get(&alias_name) {
+                            self.populate_alias_object_class_map(&alias_name, class_id);
+                        }
                         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                             if let Some(stored) = self.type_alias_object_fields.get(&alias_name) {
                                 let summary = stored
@@ -1332,6 +1359,20 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // Reconcile synthesized wrapper aliases after first-pass registration.
+        // Type aliases can appear before the wrapper function/class declaration in
+        // linked sources, so populate alias->class type bridges once both sides exist.
+        let alias_class_pairs: Vec<(String, ClassId)> = self
+            .type_alias_class_map
+            .iter()
+            .map(|(alias, &cid)| (alias.clone(), cid))
+            .collect();
+        for (alias_name, class_id) in alias_class_pairs {
+            if self.type_alias_object_fields.contains_key(&alias_name) {
+                self.populate_alias_object_class_map(&alias_name, class_id);
             }
         }
 
@@ -1454,15 +1495,17 @@ impl<'a> Lowerer<'a> {
                                             .iter()
                                             .map(|(n, idx, _)| (n.clone(), *idx as usize))
                                             .collect();
-                                        eprintln!(
-                                            "[lower] __std_exports prepass: '{}' -> alias='{}' fields=[{}]",
-                                            self.interner.resolve(name),
-                                            alias_name,
-                                            field_layout.iter().map(|(n,i)| format!("{}:{}", n, i)).collect::<Vec<_>>().join(", ")
-                                        );
+                                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                            eprintln!(
+                                                "[lower] __std_exports prepass: '{}' -> alias='{}' fields=[{}]",
+                                                self.interner.resolve(name),
+                                                alias_name,
+                                                field_layout.iter().map(|(n,i)| format!("{}:{}", n, i)).collect::<Vec<_>>().join(", ")
+                                            );
+                                        }
                                         self.variable_object_fields.insert(name, field_layout);
                                         self.variable_object_type_aliases.insert(name, alias_name);
-                                    } else {
+                                    } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                         eprintln!(
                                             "[lower] __std_exports prepass: '{}' -> alias='{}' NOT FOUND in type_alias_object_fields",
                                             self.interner.resolve(name),
@@ -1791,6 +1834,10 @@ impl<'a> Lowerer<'a> {
 
         // Track per-declaration class ID (survives name collisions)
         self.class_decl_ids.insert(class.span.start, class_id);
+        self.class_decl_history
+            .entry(class.name.name)
+            .or_default()
+            .push((class.span.start, class_id));
 
         // Insert into class_map (last class with a given name wins for name-based lookups)
         self.class_map.insert(class.name.name, class_id);
@@ -2278,6 +2325,8 @@ impl<'a> Lowerer<'a> {
         self.callable_symbol_hints.clear();
         self.register_object_fields.clear();
         self.register_nested_object_fields.clear();
+        self.register_array_element_object_fields.clear();
+        self.register_nested_array_element_object_fields.clear();
         // IMPORTANT: If there are destructuring parameters, start local allocation AFTER parameter slots
         // to avoid destructured variables overwriting parameter values
         if has_destructuring_params {
@@ -2331,7 +2380,7 @@ impl<'a> Lowerer<'a> {
         // Track parameters with destructuring patterns for later binding
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
 
-        for param in &func.params {
+        for (decl_param_idx, param) in func.params.iter().enumerate() {
             // Skip rest parameters - they're handled separately
             if param.is_rest {
                 // Extract rest parameter info for later processing
@@ -2375,7 +2424,7 @@ impl<'a> Lowerer<'a> {
                 }
             } else {
                 // Destructuring pattern: track for later binding after entry block
-                destructure_params.push((params.len(), &param.pattern, reg.clone()));
+                destructure_params.push((decl_param_idx, &param.pattern, reg.clone()));
             }
             params.push(reg);
         }
@@ -2422,6 +2471,14 @@ impl<'a> Lowerer<'a> {
                     if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
                         self.register_object_fields
                             .insert(value_reg.id, field_layout);
+                    }
+                    if let Some(nested_array_layouts) =
+                        self.extract_array_element_object_layouts_from_type(type_ann)
+                    {
+                        for (field_idx, layout) in nested_array_layouts {
+                            self.register_nested_array_element_object_fields
+                                .insert((value_reg.id, field_idx), layout);
+                        }
                     }
                 }
             }
@@ -2701,7 +2758,7 @@ impl<'a> Lowerer<'a> {
                     // Add explicit parameters (excluding rest parameters)
                     let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
 
-                    for param in &method.params {
+                    for (decl_param_idx, param) in method.params.iter().enumerate() {
                         // Skip rest parameters - they're handled separately
                         if param.is_rest {
                             // Extract rest parameter info for later processing
@@ -2746,7 +2803,7 @@ impl<'a> Lowerer<'a> {
                             }
                         } else {
                             // Destructuring pattern: track for later binding after entry block
-                            destructure_params.push((params.len(), &param.pattern, reg.clone()));
+                            destructure_params.push((decl_param_idx, &param.pattern, reg.clone()));
                         }
                         params.push(reg);
                     }
@@ -2806,6 +2863,14 @@ impl<'a> Lowerer<'a> {
                                 {
                                     self.register_object_fields
                                         .insert(value_reg.id, field_layout);
+                                }
+                                if let Some(nested_array_layouts) =
+                                    self.extract_array_element_object_layouts_from_type(type_ann)
+                                {
+                                    for (field_idx, layout) in nested_array_layouts {
+                                        self.register_nested_array_element_object_fields
+                                            .insert((value_reg.id, field_idx), layout);
+                                    }
                                 }
                             }
                         }
@@ -2935,7 +3000,7 @@ impl<'a> Lowerer<'a> {
                 // Add explicit parameters from constructor
                 let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
 
-                for param in &ctor.params {
+                for (decl_param_idx, param) in ctor.params.iter().enumerate() {
                     let ty = param
                         .type_annotation
                         .as_ref()
@@ -2959,7 +3024,7 @@ impl<'a> Lowerer<'a> {
                         }
                     } else {
                         // Destructuring pattern: track for later binding after entry block
-                        destructure_params.push((params.len(), &param.pattern, reg.clone()));
+                        destructure_params.push((decl_param_idx, &param.pattern, reg.clone()));
                     }
                     params.push(reg);
                 }
@@ -3013,6 +3078,14 @@ impl<'a> Lowerer<'a> {
                             {
                                 self.register_object_fields
                                     .insert(value_reg.id, field_layout);
+                            }
+                            if let Some(nested_array_layouts) =
+                                self.extract_array_element_object_layouts_from_type(type_ann)
+                            {
+                                for (field_idx, layout) in nested_array_layouts {
+                                    self.register_nested_array_element_object_fields
+                                        .insert((value_reg.id, field_idx), layout);
+                                }
                             }
                         }
                     }
@@ -3917,7 +3990,11 @@ impl<'a> Lowerer<'a> {
 
     /// Resolve a type annotation to a TypeId
     fn resolve_type_annotation(&self, ty: &ast::TypeAnnotation) -> TypeId {
-        use crate::parser::types::ty::{PrimitiveType as TyPrim, Type as TyType};
+        use crate::parser::types::ty::{
+            ArrayType as TyArray, FunctionType as TyFunction, ObjectType as TyObject,
+            PrimitiveType as TyPrim, PropertySignature as TyProperty, TupleType as TyTuple,
+            Type as TyType,
+        };
 
         match &ty.ty {
             ast::Type::Primitive(prim) => {
@@ -3941,12 +4018,106 @@ impl<'a> Lowerer<'a> {
                 }
                 self.type_ctx.lookup_named_type(name).unwrap_or(UNRESOLVED)
             }
-            // Array types: string[], number[], T[]
-            // Tuple types: [string, number] — arrays at runtime
-            ast::Type::Array(_) | ast::Type::Tuple(_) => self
-                .type_ctx
-                .lookup_named_type("Array")
-                .unwrap_or(UNRESOLVED),
+            ast::Type::Array(array) => {
+                let elem_ty = self.resolve_type_annotation(&array.element_type);
+                self.type_ctx
+                    .lookup(&TyType::Array(TyArray { element: elem_ty }))
+                    .or_else(|| self.type_ctx.lookup_named_type("Array"))
+                    .unwrap_or(UNRESOLVED)
+            }
+            ast::Type::Tuple(tuple) => {
+                let elements = tuple
+                    .element_types
+                    .iter()
+                    .map(|elem| self.resolve_type_annotation(elem))
+                    .collect::<Vec<_>>();
+                self.type_ctx
+                    .lookup(&TyType::Tuple(TyTuple { elements }))
+                    .or_else(|| self.type_ctx.lookup_named_type("Array"))
+                    .unwrap_or(UNRESOLVED)
+            }
+            ast::Type::Function(func) => {
+                let mut params = Vec::with_capacity(func.params.len());
+                let mut rest_param = None;
+                let mut min_params = 0usize;
+                for param in &func.params {
+                    let param_ty = self.resolve_type_annotation(&param.ty);
+                    if param.is_rest {
+                        rest_param = Some(param_ty);
+                    } else {
+                        if !param.optional {
+                            min_params += 1;
+                        }
+                        params.push(param_ty);
+                    }
+                }
+                let return_ty = self.resolve_type_annotation(&func.return_type);
+                self.type_ctx
+                    .lookup(&TyType::Function(TyFunction {
+                        params,
+                        return_type: return_ty,
+                        is_async: false,
+                        min_params,
+                        rest_param,
+                    }))
+                    .unwrap_or(UNRESOLVED)
+            }
+            ast::Type::Object(obj) => {
+                let mut properties = Vec::with_capacity(obj.members.len());
+                for member in &obj.members {
+                    match member {
+                        ast::ObjectTypeMember::Property(prop) => {
+                            properties.push(TyProperty {
+                                name: self.interner.resolve(prop.name.name).to_string(),
+                                ty: self.resolve_type_annotation(&prop.ty),
+                                optional: prop.optional,
+                                readonly: prop.readonly,
+                                visibility: ast::Visibility::Public,
+                            });
+                        }
+                        ast::ObjectTypeMember::Method(method) => {
+                            let mut params = Vec::with_capacity(method.params.len());
+                            let mut rest_param = None;
+                            let mut min_params = 0usize;
+                            for param in &method.params {
+                                let param_ty = self.resolve_type_annotation(&param.ty);
+                                if param.is_rest {
+                                    rest_param = Some(param_ty);
+                                } else {
+                                    if !param.optional {
+                                        min_params += 1;
+                                    }
+                                    params.push(param_ty);
+                                }
+                            }
+                            let return_ty = self.resolve_type_annotation(&method.return_type);
+                            let method_ty = self
+                                .type_ctx
+                                .lookup(&TyType::Function(TyFunction {
+                                    params,
+                                    return_type: return_ty,
+                                    is_async: false,
+                                    min_params,
+                                    rest_param,
+                                }))
+                                .unwrap_or(UNRESOLVED);
+                            properties.push(TyProperty {
+                                name: self.interner.resolve(method.name.name).to_string(),
+                                ty: method_ty,
+                                optional: false,
+                                readonly: false,
+                                visibility: ast::Visibility::Public,
+                            });
+                        }
+                    }
+                }
+                self.type_ctx
+                    .lookup(&TyType::Object(TyObject {
+                        properties,
+                        index_signature: None,
+                    }))
+                    .unwrap_or(UNRESOLVED)
+            }
             // Union types: resolve to dominant non-null member
             ast::Type::Union(union) => {
                 let null_id = self.type_ctx.lookup(&TyType::Primitive(TyPrim::Null));
@@ -4043,10 +4214,35 @@ impl<'a> Lowerer<'a> {
     /// Supports direct class names and synthesized std-prelude aliases:
     /// `__t_<module>_<ClassName>`.
     pub(super) fn class_id_from_type_name(&self, type_name: &str) -> Option<ClassId> {
+        let pick_scoped = |entries: &Vec<(usize, ClassId)>| -> Option<ClassId> {
+            if entries.is_empty() {
+                return None;
+            }
+            let pos = self.current_span.start;
+            entries
+                .iter()
+                .filter(|(span_start, _)| *span_start <= pos)
+                .max_by_key(|(span_start, _)| *span_start)
+                .map(|(_, cid)| *cid)
+                .or_else(|| entries.iter().min_by_key(|(span_start, _)| *span_start).map(|(_, cid)| *cid))
+        };
+
         // 1) Exact class name lookup.
         if let Some(sym) = self.interner.lookup(type_name) {
+            if let Some(entries) = self.class_decl_history.get(&sym) {
+                if let Some(cid) = pick_scoped(entries) {
+                    return Some(cid);
+                }
+            }
             if let Some(&cid) = self.class_map.get(&sym) {
                 return Some(cid);
+            }
+        }
+        for (&sym, entries) in &self.class_decl_history {
+            if self.interner.resolve(sym) == type_name {
+                if let Some(cid) = pick_scoped(entries) {
+                    return Some(cid);
+                }
             }
         }
         for (&sym, &cid) in &self.class_map {
@@ -4061,6 +4257,37 @@ impl<'a> Lowerer<'a> {
         }
 
         None
+    }
+
+    fn populate_alias_object_class_map(&mut self, alias_name: &str, class_id: ClassId) {
+        // Prefer type IDs resolved from explicit type-alias declarations; fall back
+        // to named type lookup when available.
+        let alias_ty = self
+            .type_alias_resolved_type_map
+            .get(alias_name)
+            .copied()
+            .or_else(|| self.type_ctx.lookup_named_type(alias_name))
+            .unwrap_or(UNRESOLVED);
+        if alias_ty == UNRESOLVED {
+            return;
+        }
+
+        self.type_alias_object_class_map.insert(alias_ty, class_id);
+
+        // Some checker paths materialize structurally equivalent object/interface
+        // TypeIds distinct from the named alias type. Pre-populate those equivalent
+        // TypeIds so class dispatch works for alias-backed wrapper values.
+        let mut subtype_ctx = crate::parser::types::subtyping::SubtypingContext::new(self.type_ctx);
+        for raw_ty in 0..self.type_ctx.len() {
+            let candidate_ty = TypeId::new(raw_ty as u32);
+            if subtype_ctx.is_subtype(candidate_ty, alias_ty)
+                && subtype_ctx.is_subtype(alias_ty, candidate_ty)
+            {
+                self.type_alias_object_class_map
+                    .entry(candidate_ty)
+                    .or_insert(class_id);
+            }
+        }
     }
 
     pub(super) fn type_alias_field_lookup(
@@ -4105,6 +4332,50 @@ impl<'a> Lowerer<'a> {
                 }
             }
             _ => None,
+        }
+    }
+
+    fn extract_array_element_object_layouts_from_type(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+    ) -> Option<FxHashMap<u16, Vec<(String, usize)>>> {
+        let ast::Type::Object(obj_type) = &type_ann.ty else {
+            return None;
+        };
+
+        let mut layouts: FxHashMap<u16, Vec<(String, usize)>> = FxHashMap::default();
+        for (member_idx, member) in obj_type.members.iter().enumerate() {
+            let ast::ObjectTypeMember::Property(prop) = member else {
+                continue;
+            };
+            let ast::Type::Array(arr_ty) = &prop.ty.ty else {
+                continue;
+            };
+            let ast::Type::Object(elem_obj) = &arr_ty.element_type.ty else {
+                continue;
+            };
+
+            let elem_layout: Vec<(String, usize)> = elem_obj
+                .members
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, elem_member)| match elem_member {
+                    ast::ObjectTypeMember::Property(elem_prop) => Some((
+                        self.interner.resolve(elem_prop.name.name).to_string(),
+                        idx,
+                    )),
+                    ast::ObjectTypeMember::Method(_) => None,
+                })
+                .collect();
+            if !elem_layout.is_empty() {
+                layouts.insert(member_idx as u16, elem_layout);
+            }
+        }
+
+        if layouts.is_empty() {
+            None
+        } else {
+            Some(layouts)
         }
     }
 

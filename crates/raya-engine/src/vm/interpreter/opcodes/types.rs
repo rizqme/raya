@@ -10,6 +10,7 @@ use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 const CAST_KIND_MASK_FLAG: u16 = 0x8000;
@@ -65,6 +66,22 @@ fn value_kind_mask(value: Value) -> u16 {
     0
 }
 
+fn object_ptr_checked(value: Value) -> Option<NonNull<Object>> {
+    if !value.is_ptr() {
+        return None;
+    }
+    let ptr = unsafe { value.as_ptr::<u8>() }?;
+    let header = unsafe {
+        let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
+        &*(hp as *const GcHeader)
+    };
+    if header.type_id() == std::any::TypeId::of::<Object>() {
+        unsafe { value.as_ptr::<Object>() }
+    } else {
+        None
+    }
+}
+
 impl<'a> Interpreter<'a> {
     pub(in crate::vm::interpreter) fn exec_type_ops(
         &mut self,
@@ -87,7 +104,7 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let result = if obj_val.is_ptr() {
-                    if let Some(obj_ptr) = unsafe { obj_val.as_ptr::<Object>() } {
+                    if let Some(obj_ptr) = object_ptr_checked(obj_val) {
                         let obj = unsafe { &*obj_ptr.as_ptr() };
                         let classes = self.classes.read();
                         let mut current_class_id = Some(obj.class_id);
@@ -179,7 +196,7 @@ impl<'a> Interpreter<'a> {
                                 required_fields
                             )));
                         }
-                        let Some(object_ptr) = (unsafe { obj_val.as_ptr::<Object>() }) else {
+                        let Some(object_ptr) = object_ptr_checked(obj_val) else {
                             return OpcodeResult::Error(VmError::TypeError(format!(
                                 "Cannot cast non-object value to object with {} required fields",
                                 required_fields
@@ -302,7 +319,7 @@ impl<'a> Interpreter<'a> {
 
                 // Check if object is an instance of the target class
                 let valid_cast = if obj_val.is_ptr() {
-                    if let Some(obj_ptr) = unsafe { obj_val.as_ptr::<Object>() } {
+                    if let Some(obj_ptr) = object_ptr_checked(obj_val) {
                         let obj = unsafe { &*obj_ptr.as_ptr() };
                         let classes = self.classes.read();
                         let mut current_class_id = Some(obj.class_id);
@@ -342,7 +359,7 @@ impl<'a> Interpreter<'a> {
                             .unwrap_or_else(|| "<unknown>".to_string())
                     };
                     let (actual_id, actual_name) =
-                        if let Some(obj_ptr) = unsafe { obj_val.as_ptr::<Object>() } {
+                        if let Some(obj_ptr) = object_ptr_checked(obj_val) {
                             let obj = unsafe { &*obj_ptr.as_ptr() };
                             let class_id = obj.class_id;
                             let class_name = {

@@ -354,14 +354,17 @@ impl<'a> SubtypingContext<'a> {
             // { x: T, y: U } <: { x: T } (width)
             // { x: S } <: { x: T } if S <: T (depth)
             (Type::Object(o1), Type::Object(o2)) => {
-                // All properties in o2 must be in o1 with subtypes
+                // All required properties in o2 must be in o1 with compatible variance.
+                // Optional properties in o2 may be absent in o1.
                 o2.properties.iter().all(|p2| {
-                    o1.properties.iter().any(|p1| {
-                        p1.name == p2.name
-                            && p1.optional == p2.optional
-                            && (!p2.readonly || p1.readonly) // readonly in sup => readonly in sub
-                            && self.is_subtype(p1.ty, p2.ty)
-                    })
+                    match o1.properties.iter().find(|p1| p1.name == p2.name) {
+                        Some(p1) => {
+                            (p2.optional || !p1.optional)
+                                && (!p2.readonly || p1.readonly) // readonly in sup => readonly in sub
+                                && self.is_subtype(p1.ty, p2.ty)
+                        }
+                        None => p2.optional,
+                    }
                 })
             }
 
@@ -447,12 +450,14 @@ impl<'a> SubtypingContext<'a> {
             (Type::Interface(i1), Type::Interface(i2)) => {
                 // Check properties
                 let props_match = i2.properties.iter().all(|p2| {
-                    i1.properties.iter().any(|p1| {
-                        p1.name == p2.name
-                            && p1.optional == p2.optional
-                            && (!p2.readonly || p1.readonly)
-                            && self.is_subtype(p1.ty, p2.ty)
-                    })
+                    match i1.properties.iter().find(|p1| p1.name == p2.name) {
+                        Some(p1) => {
+                            (p2.optional || !p1.optional)
+                                && (!p2.readonly || p1.readonly)
+                                && self.is_subtype(p1.ty, p2.ty)
+                        }
+                        None => p2.optional,
+                    }
                 });
 
                 // Check methods

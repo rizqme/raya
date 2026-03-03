@@ -4293,18 +4293,8 @@ impl<'a> TypeChecker<'a> {
             return self.type_ctx.any_type();
         }
 
-        // Non-awaitable operand is a compile-time type error.
-        self.errors.push(CheckError::TypeMismatch {
-            expected: "Promise<T> or Promise<T>[]".to_string(),
-            actual: self.format_type(arg_ty),
-            span: await_expr.span,
-            note: None,
-        });
-        self.fallback_type(
-            await_expr.span,
-            FallbackReason::RecoverableUnsupportedExpr,
-            "await-non-task",
-        )
+        // JS-compatible await semantics: non-Promise values resolve immediately.
+        arg_ty
     }
 
     /// Try to check a compiler intrinsic call (__OPCODE_* or __NATIVE_CALL)
@@ -6540,10 +6530,6 @@ impl<'a> TypeChecker<'a> {
                 }
                 // Note: Date and Buffer are now normal classes, looked up from symbol table
 
-                if let Some(named_ty) = self.type_ctx.lookup_named_type(&name) {
-                    return named_ty;
-                }
-
                 // Check method-level type parameters (e.g. K, U from generic methods)
                 if let Some(&type_var) = self.method_type_params.get(&name) {
                     return type_var;
@@ -6567,6 +6553,8 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     symbol.ty
+                } else if let Some(named_ty) = self.type_ctx.lookup_named_type(&name) {
+                    named_ty
                 } else {
                     // Type not found - return unknown
                     self.type_ctx.unknown_type()

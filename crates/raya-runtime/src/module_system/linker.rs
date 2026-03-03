@@ -621,14 +621,10 @@ fn transform_entry_module(
 
     let mut code = String::new();
     code.push_str(&format!("// entry module: {}\n", node.display_name));
-    code.push_str(&format!(
-        "function __raya_entry_main_{}(): unknown {{\n",
-        module_id
-    ));
     code.push_str(&body);
-    code.push_str("return null;\n");
-    code.push_str("}\n");
-    code.push_str(&format!("return __raya_entry_main_{}();\n", module_id));
+    if !code.ends_with('\n') {
+        code.push('\n');
+    }
     Ok(code)
 }
 

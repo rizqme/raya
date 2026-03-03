@@ -68,7 +68,7 @@ impl<'a> Lowerer<'a> {
             Expression::Member(member) => self.lower_member(member),
             Expression::Index(index) => self.lower_index(index, expr),
             Expression::Array(array) => self.lower_array(array, expr),
-            Expression::Object(object) => self.lower_object(object),
+            Expression::Object(object) => self.lower_object(object, expr),
             Expression::Assignment(assign) => self.lower_assignment(assign),
             Expression::Conditional(cond) => self.lower_conditional(cond),
             Expression::Arrow(arrow) => self.lower_arrow(arrow),
@@ -1458,11 +1458,19 @@ impl<'a> Lowerer<'a> {
             // Promise<T> is represented by a raw task handle internally.
             // Intercept promise-like methods before object dispatch.
             let object_ty = self.get_expr_type(&member.object);
+            let inferred_is_promise_class = self
+                .infer_class_id(&member.object)
+                .is_some_and(|cid| {
+                    self.class_map
+                        .iter()
+                        .any(|(&sym, &id)| id == cid && self.interner.resolve(sym) == "Promise")
+                });
             let is_promise_like = self.type_ctx.is_task_type(object_ty)
                 || matches!(
                     self.type_ctx.get(object_ty),
                     Some(crate::parser::types::Type::Class(class)) if class.name == "Promise"
-                );
+                )
+                || inferred_is_promise_class;
             if is_promise_like {
                 let task_reg = self.lower_expr(&member.object);
                 match method_name {
@@ -2313,7 +2321,7 @@ impl<'a> Lowerer<'a> {
                 callee_ty_raw == UNKNOWN_TYPE_ID
             );
         }
-        if !self.type_is_callable(callee_ty) {
+        if !self.type_is_callable(callee_ty) && !self.expression_is_callable_hint(&call.callee) {
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
                     message: format!(
@@ -2681,7 +2689,7 @@ impl<'a> Lowerer<'a> {
                                 })
                             || has_type_proven_field
                     }
-                    _ => has_register_layout,
+                    _ => has_register_layout || has_type_proven_field,
                 }
             };
 
@@ -2934,12 +2942,40 @@ impl<'a> Lowerer<'a> {
                 .first()
                 .map(|r| r.ty)
                 .unwrap_or(TypeId::new(NUMBER_TYPE_ID));
+            let element_layout = if elements.is_empty() {
+                None
+            } else {
+                let mut expected: Option<Vec<(String, usize)>> = None;
+                let mut consistent = true;
+                for reg in &elements {
+                    let Some(layout) = self.register_object_fields.get(&reg.id).cloned() else {
+                        consistent = false;
+                        break;
+                    };
+                    match &expected {
+                        None => expected = Some(layout),
+                        Some(existing) if *existing == layout => {}
+                        Some(_) => {
+                            consistent = false;
+                            break;
+                        }
+                    }
+                }
+                if consistent {
+                    expected
+                } else {
+                    None
+                }
+            };
             let dest = self.alloc_register(array_ty);
             self.emit(IrInstr::ArrayLiteral {
                 dest: dest.clone(),
                 elements,
                 elem_ty,
             });
+            if let Some(layout) = element_layout {
+                self.register_array_element_object_fields.insert(dest.id, layout);
+            }
             dest
         }
     }
@@ -3025,8 +3061,14 @@ impl<'a> Lowerer<'a> {
         self.spread_source_fields_from_type(spread_ty)
     }
 
-    fn lower_object(&mut self, object: &ast::ObjectExpression) -> Register {
-        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+    fn lower_object(&mut self, object: &ast::ObjectExpression, full_expr: &Expression) -> Register {
+        let checker_ty = self.get_expr_type(full_expr);
+        let object_ty = if checker_ty.as_u32() == UNRESOLVED_TYPE_ID {
+            TypeId::new(NUMBER_TYPE_ID)
+        } else {
+            checker_ty
+        };
+        let dest = self.alloc_register(object_ty);
         let mut field_names = Vec::<String>::new();
         let mut field_index_map = FxHashMap::<String, usize>::default();
 
@@ -3088,6 +3130,14 @@ impl<'a> Lowerer<'a> {
                         self.register_nested_object_fields
                             .insert((dest.id, field_index as u16), nested_layout);
                     }
+                    if let Some(elem_layout) = self
+                        .register_array_element_object_fields
+                        .get(&value.id)
+                        .cloned()
+                    {
+                        self.register_nested_array_element_object_fields
+                            .insert((dest.id, field_index as u16), elem_layout);
+                    }
                     self.emit(IrInstr::StoreField {
                         object: dest.clone(),
                         field: field_index as u16,
@@ -3126,6 +3176,14 @@ impl<'a> Lowerer<'a> {
                         {
                             self.register_nested_object_fields
                                 .insert((dest.id, dest_idx as u16), nested_layout);
+                        }
+                        if let Some(elem_layout) = self
+                            .register_nested_array_element_object_fields
+                            .get(&(spread_reg.id, src_field_idx))
+                            .cloned()
+                        {
+                            self.register_nested_array_element_object_fields
+                                .insert((dest.id, dest_idx as u16), elem_layout);
                         }
                         self.emit(IrInstr::StoreField {
                             object: dest.clone(),
@@ -4005,7 +4063,7 @@ impl<'a> Lowerer<'a> {
         // Track parameters with destructuring patterns for later binding
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
 
-        for param in &arrow.params {
+        for (decl_param_idx, param) in arrow.params.iter().enumerate() {
             // Skip rest parameters - they're handled separately
             if param.is_rest {
                 // Extract rest parameter info for later processing
@@ -4049,6 +4107,7 @@ impl<'a> Lowerer<'a> {
                     if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
                         self.variable_class_map.insert(ident.name, class_id);
                     }
+                    self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                     if self.type_annotation_is_callable(type_ann) {
                         self.callable_local_hints.insert(local_idx);
                         self.callable_symbol_hints.insert(ident.name);
@@ -4056,7 +4115,7 @@ impl<'a> Lowerer<'a> {
                 }
             } else {
                 // Destructuring pattern: track for later binding after entry block
-                destructure_params.push((params.len(), &param.pattern, reg.clone()));
+                destructure_params.push((decl_param_idx, &param.pattern, reg.clone()));
             }
             params.push(reg);
         }
@@ -4094,6 +4153,14 @@ impl<'a> Lowerer<'a> {
                     if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
                         self.register_object_fields
                             .insert(value_reg.id, field_layout);
+                    }
+                    if let Some(nested_array_layouts) =
+                        self.extract_array_element_object_layouts_from_type(type_ann)
+                    {
+                        for (field_idx, layout) in nested_array_layouts {
+                            self.register_nested_array_element_object_fields
+                                .insert((value_reg.id, field_idx), layout);
+                        }
                     }
                 }
             }
@@ -4661,6 +4728,23 @@ impl<'a> Lowerer<'a> {
                 tasks: task_or_array,
             });
             return dest;
+        }
+
+        let checker_is_task = matches!(
+            self.type_ctx.get(expr_type),
+            Some(crate::parser::types::ty::Type::Task(_))
+        );
+        let lowered_is_task = matches!(
+            self.type_ctx.get(task_or_array.ty),
+            Some(crate::parser::types::ty::Type::Task(_))
+        );
+        let checker_is_promise_class = matches!(
+            self.type_ctx.get(expr_type),
+            Some(crate::parser::types::ty::Type::Class(class)) if class.name == "Promise"
+        );
+        // JS-compatible await semantics: non-awaitables resolve immediately.
+        if !(checker_is_task || lowered_is_task || checker_is_promise_class) {
+            return task_or_array;
         }
 
         // Extract the result type from Task<T>
@@ -5660,6 +5744,10 @@ impl<'a> Lowerer<'a> {
 
     pub(super) fn class_id_from_type_id(&self, ty_id: TypeId) -> Option<ClassId> {
         use crate::parser::types::ty::Type;
+
+        if let Some(&cid) = self.type_alias_object_class_map.get(&ty_id) {
+            return Some(cid);
+        }
 
         let ty = self.type_ctx.get(ty_id)?;
         match ty {
