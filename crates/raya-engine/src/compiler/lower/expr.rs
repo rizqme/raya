@@ -442,6 +442,39 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
+        // Nested class method environment bridge:
+        // std-wrapper class methods can reference enclosing wrapper locals.
+        if let Some(env_globals) = &self.current_method_env_globals {
+            if let Some(binding) = env_globals.get(&ident.name).copied() {
+                let ty = self
+                    .global_type_map
+                    .get(&binding.global_idx)
+                    .copied()
+                    .unwrap_or(UNRESOLVED);
+                let dest = if binding.is_refcell {
+                    let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::LoadGlobal {
+                        dest: refcell_reg.clone(),
+                        index: binding.global_idx,
+                    });
+                    let value_reg = self.alloc_register(ty);
+                    self.emit(IrInstr::LoadRefCell {
+                        dest: value_reg.clone(),
+                        refcell: refcell_reg,
+                    });
+                    value_reg
+                } else {
+                    let value_reg = self.alloc_register(ty);
+                    self.emit(IrInstr::LoadGlobal {
+                        dest: value_reg.clone(),
+                        index: binding.global_idx,
+                    });
+                    value_reg
+                };
+                return dest;
+            }
+        }
+
         // Check if this is a named function used as a value (function reference)
         if let Some(&func_id) = self.function_map.get(&ident.name) {
             let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
@@ -451,24 +484,6 @@ impl<'a> Lowerer<'a> {
                 captures: vec![],
             });
             return dest;
-        }
-
-        // Nested class method environment bridge:
-        // std-wrapper class methods can reference enclosing wrapper locals.
-        if let Some(env_globals) = &self.current_method_env_globals {
-            if let Some(&global_idx) = env_globals.get(&ident.name) {
-                let ty = self
-                    .global_type_map
-                    .get(&global_idx)
-                    .copied()
-                    .unwrap_or(UNRESOLVED);
-                let dest = self.alloc_register(ty);
-                self.emit(IrInstr::LoadGlobal {
-                    dest: dest.clone(),
-                    index: global_idx,
-                });
-                return dest;
-            }
         }
 
         // Class identifiers may legitimately appear in value position
@@ -739,6 +754,28 @@ impl<'a> Lowerer<'a> {
                     index: global_idx,
                     value: new_value.clone(),
                 });
+            } else if let Some(binding) = self
+                .current_method_env_globals
+                .as_ref()
+                .and_then(|m| m.get(&ident.name))
+                .copied()
+            {
+                if binding.is_refcell {
+                    let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::LoadGlobal {
+                        dest: refcell_reg.clone(),
+                        index: binding.global_idx,
+                    });
+                    self.emit(IrInstr::StoreRefCell {
+                        refcell: refcell_reg,
+                        value: new_value.clone(),
+                    });
+                } else {
+                    self.emit(IrInstr::StoreGlobal {
+                        index: binding.global_idx,
+                        value: new_value.clone(),
+                    });
+                }
             }
         }
 
@@ -1089,7 +1126,15 @@ impl<'a> Lowerer<'a> {
 
             // Check if it's a direct function call. Prefer closure/capture paths when
             // the identifier is locally bound or captured so lexical environments stay intact.
-            if !self.local_map.contains_key(&ident.name) && !is_captured && !is_ancestor {
+            if !self.local_map.contains_key(&ident.name)
+                && !is_captured
+                && !is_ancestor
+                && !self.module_var_globals.contains_key(&ident.name)
+                && !self
+                    .current_method_env_globals
+                    .as_ref()
+                    .is_some_and(|m| m.contains_key(&ident.name))
+            {
                 if let Some(&func_id) = self.function_map.get(&ident.name) {
                     if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                         eprintln!(
@@ -3257,6 +3302,29 @@ impl<'a> Lowerer<'a> {
                             index: global_idx,
                             value: rhs,
                         });
+                    } else if let Some(binding) = self
+                        .current_method_env_globals
+                        .as_ref()
+                        .and_then(|m| m.get(&ident.name))
+                        .copied()
+                    {
+                        assigned_symbol = true;
+                        if binding.is_refcell {
+                            let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                            self.emit(IrInstr::LoadGlobal {
+                                dest: refcell_reg.clone(),
+                                index: binding.global_idx,
+                            });
+                            self.emit(IrInstr::StoreRefCell {
+                                refcell: refcell_reg,
+                                value: rhs,
+                            });
+                        } else {
+                            self.emit(IrInstr::StoreGlobal {
+                                index: binding.global_idx,
+                                value: rhs,
+                            });
+                        }
                     } else if let Some(idx) =
                         self.captures.iter().position(|c| c.symbol == ident.name)
                     {
@@ -3317,6 +3385,29 @@ impl<'a> Lowerer<'a> {
                                 index: global_idx,
                                 value: rhs,
                             });
+                        } else if let Some(binding) = self
+                            .current_method_env_globals
+                            .as_ref()
+                            .and_then(|m| m.get(&ident.name))
+                            .copied()
+                        {
+                            assigned_symbol = true;
+                            if binding.is_refcell {
+                                let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                                self.emit(IrInstr::LoadGlobal {
+                                    dest: refcell_reg.clone(),
+                                    index: binding.global_idx,
+                                });
+                                self.emit(IrInstr::StoreRefCell {
+                                    refcell: refcell_reg,
+                                    value: rhs,
+                                });
+                            } else {
+                                self.emit(IrInstr::StoreGlobal {
+                                    index: binding.global_idx,
+                                    value: rhs,
+                                });
+                            }
                         }
                     }
 
@@ -3616,6 +3707,29 @@ impl<'a> Lowerer<'a> {
                             index: global_idx,
                             value: value.clone(),
                         });
+                    } else if let Some(binding) = self
+                        .current_method_env_globals
+                        .as_ref()
+                        .and_then(|m| m.get(&ident.name))
+                        .copied()
+                    {
+                        assigned_symbol = true;
+                        if binding.is_refcell {
+                            let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                            self.emit(IrInstr::LoadGlobal {
+                                dest: refcell_reg.clone(),
+                                index: binding.global_idx,
+                            });
+                            self.emit(IrInstr::StoreRefCell {
+                                refcell: refcell_reg,
+                                value: value.clone(),
+                            });
+                        } else {
+                            self.emit(IrInstr::StoreGlobal {
+                                index: binding.global_idx,
+                                value: value.clone(),
+                            });
+                        }
                     }
                 } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
                     assigned_symbol = true;
@@ -3624,6 +3738,29 @@ impl<'a> Lowerer<'a> {
                         index: global_idx,
                         value: value.clone(),
                     });
+                } else if let Some(binding) = self
+                    .current_method_env_globals
+                    .as_ref()
+                    .and_then(|m| m.get(&ident.name))
+                    .copied()
+                {
+                    assigned_symbol = true;
+                    if binding.is_refcell {
+                        let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                        self.emit(IrInstr::LoadGlobal {
+                            dest: refcell_reg.clone(),
+                            index: binding.global_idx,
+                        });
+                        self.emit(IrInstr::StoreRefCell {
+                            refcell: refcell_reg,
+                            value: value.clone(),
+                        });
+                    } else {
+                        self.emit(IrInstr::StoreGlobal {
+                            index: binding.global_idx,
+                            value: value.clone(),
+                        });
+                    }
                 }
 
                 // Keep callable-hint state in sync for identifier reassignments.
@@ -4364,6 +4501,10 @@ impl<'a> Lowerer<'a> {
                                 ty: cap.ty,
                                 is_refcell,
                             });
+                            // Keep lazy-capture index allocation monotonic.
+                            // Without this, subsequent direct captures in the same function
+                            // can reuse slot 0 and alias unrelated captured symbols.
+                            self.next_capture_slot = self.next_capture_slot.max(idx + 1);
                             idx
                         };
 

@@ -21,7 +21,7 @@ enum ForOfIterableKind {
 impl<'a> Lowerer<'a> {
     fn materialize_current_locals_for_method_env(
         &mut self,
-    ) -> FxHashMap<crate::parser::Symbol, u16> {
+    ) -> FxHashMap<crate::parser::Symbol, super::MethodEnvBinding> {
         let mut env_globals = FxHashMap::default();
         let locals: Vec<(crate::parser::Symbol, u16)> =
             self.local_map.iter().map(|(s, i)| (*s, *i)).collect();
@@ -44,7 +44,13 @@ impl<'a> Lowerer<'a> {
                 index: global_idx,
                 value: local_val,
             });
-            env_globals.insert(sym, global_idx);
+            env_globals.insert(
+                sym,
+                super::MethodEnvBinding {
+                    global_idx,
+                    is_refcell: self.refcell_registers.contains_key(&local_idx),
+                },
+            );
         }
 
         env_globals

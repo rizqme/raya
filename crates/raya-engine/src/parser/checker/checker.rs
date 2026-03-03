@@ -197,6 +197,8 @@ pub struct TypeChecker<'a> {
     policy: CheckerPolicy,
     /// True while checking the left-hand side of an assignment expression.
     in_assignment_lhs: bool,
+    /// Nesting depth of source-level async function/method/arrow contexts.
+    async_context_depth: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +242,7 @@ impl<'a> TypeChecker<'a> {
             mode: TypeSystemMode::Raya,
             policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
             in_assignment_lhs: false,
+            async_context_depth: 0,
         }
     }
 
@@ -1092,6 +1095,9 @@ impl<'a> TypeChecker<'a> {
         // Set current function return type
         let prev_return_ty = self.current_function_return_type;
         self.current_function_return_type = Some(return_ty);
+        if func.is_async {
+            self.async_context_depth += 1;
+        }
 
         // Enter function scope (mirrors binder's push_scope for function)
         self.enter_scope();
@@ -1106,6 +1112,10 @@ impl<'a> TypeChecker<'a> {
         // Check body
         for stmt in &func.body.statements {
             self.check_stmt(stmt);
+        }
+
+        if func.is_async {
+            self.async_context_depth -= 1;
         }
 
         // Exit function scope
@@ -1374,11 +1384,17 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         self.current_function_return_type = Some(return_ty);
+                        if method.is_async {
+                            self.async_context_depth += 1;
+                        }
 
                         for stmt in &body.statements {
                             self.check_stmt(stmt);
                         }
 
+                        if method.is_async {
+                            self.async_context_depth -= 1;
+                        }
                         self.current_function_return_type = prev_return_ty;
                         self.method_type_params.clear();
                         self.exit_scope();
@@ -3738,6 +3754,9 @@ impl<'a> TypeChecker<'a> {
         // that the binder never visited. Increment arrow_depth to make enter_scope/
         // exit_scope no-ops, keeping the checker's scope IDs in sync with the binder.
         self.arrow_depth += 1;
+        if arrow.is_async {
+            self.async_context_depth += 1;
+        }
 
         let return_ty = match &arrow.body {
             crate::parser::ast::ArrowBody::Expression(expr) => {
@@ -3805,6 +3824,9 @@ impl<'a> TypeChecker<'a> {
             }
         };
 
+        if arrow.is_async {
+            self.async_context_depth -= 1;
+        }
         self.arrow_depth -= 1;
 
         // Restore type environment
@@ -4324,6 +4346,16 @@ impl<'a> TypeChecker<'a> {
         // Dynamic-anyish is allowed through in compatibility modes.
         if self.allows_dynamic_any() && self.type_is_dynamic_anyish(arg_ty) {
             return self.type_ctx.any_type();
+        }
+
+        // In strict async contexts, await only accepts Promise-like values.
+        // Keep top-level/sync await JS-compatible so `await 42` resolves immediately.
+        if self.is_strict_mode() && self.async_context_depth > 0 {
+            self.errors.push(CheckError::ConstraintViolation {
+                message: "`await` expects Promise<T> or Promise<T>[]".to_string(),
+                span: await_expr.span,
+            });
+            return self.type_ctx.unknown_type();
         }
 
         // JS-compatible await semantics: non-Promise values resolve immediately.

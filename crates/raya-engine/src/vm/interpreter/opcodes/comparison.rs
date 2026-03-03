@@ -18,14 +18,25 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             Opcode::Ieq => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a == b)) {
+                let result = if a.is_f64() || b.is_f64() {
+                    let fa = a
+                        .as_f64()
+                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fb = b
+                        .as_f64()
+                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    fa == fb
+                } else {
+                    a.as_i32().unwrap_or(0) == b.as_i32().unwrap_or(0)
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -33,14 +44,25 @@ impl<'a> Interpreter<'a> {
 
             Opcode::Ine => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a != b)) {
+                let result = if a.is_f64() || b.is_f64() {
+                    let fa = a
+                        .as_f64()
+                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fb = b
+                        .as_f64()
+                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    fa != fb
+                } else {
+                    a.as_i32().unwrap_or(0) != b.as_i32().unwrap_or(0)
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -48,14 +70,25 @@ impl<'a> Interpreter<'a> {
 
             Opcode::Ilt => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a < b)) {
+                let result = if a.is_f64() || b.is_f64() {
+                    let fa = a
+                        .as_f64()
+                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fb = b
+                        .as_f64()
+                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    fa < fb
+                } else {
+                    a.as_i32().unwrap_or(0) < b.as_i32().unwrap_or(0)
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -63,14 +96,25 @@ impl<'a> Interpreter<'a> {
 
             Opcode::Ile => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a <= b)) {
+                let result = if a.is_f64() || b.is_f64() {
+                    let fa = a
+                        .as_f64()
+                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fb = b
+                        .as_f64()
+                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    fa <= fb
+                } else {
+                    a.as_i32().unwrap_or(0) <= b.as_i32().unwrap_or(0)
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -78,14 +122,25 @@ impl<'a> Interpreter<'a> {
 
             Opcode::Igt => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a > b)) {
+                let result = if a.is_f64() || b.is_f64() {
+                    let fa = a
+                        .as_f64()
+                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fb = b
+                        .as_f64()
+                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    fa > fb
+                } else {
+                    a.as_i32().unwrap_or(0) > b.as_i32().unwrap_or(0)
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -93,14 +148,25 @@ impl<'a> Interpreter<'a> {
 
             Opcode::Ige => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a >= b)) {
+                let result = if a.is_f64() || b.is_f64() {
+                    let fa = a
+                        .as_f64()
+                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fb = b
+                        .as_f64()
+                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    fa >= fb
+                } else {
+                    a.as_i32().unwrap_or(0) >= b.as_i32().unwrap_or(0)
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue

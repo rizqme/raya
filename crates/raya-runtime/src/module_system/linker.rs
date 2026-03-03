@@ -183,6 +183,7 @@ fn transform_library_module(
                     "const {}: {} = {};\n",
                     dep_binding, dep_meta.export_type_name, dep_meta.export_var_name
                 ));
+                let mut emitted_type_aliases: HashSet<String> = HashSet::new();
 
                 for spec in &import.specifiers {
                     match spec {
@@ -217,6 +218,7 @@ fn transform_library_module(
                                 && local != ty
                             {
                                 body.push_str(&format!("type {} = {};\n", local, ty));
+                                emitted_type_aliases.insert(local.clone());
                             }
                             imported_binding_types.insert(local.clone(), ty.clone());
                             local_value_types.entry(local).or_insert(ty);
@@ -243,6 +245,7 @@ fn transform_library_module(
                                 && local_name != ty
                             {
                                 body.push_str(&format!("type {} = {};\n", local_name, ty));
+                                emitted_type_aliases.insert(local_name.clone());
                             }
                             imported_binding_types.insert(local_name.clone(), ty.clone());
                             local_value_types.entry(local_name).or_insert(ty);
@@ -257,6 +260,19 @@ fn transform_library_module(
                                 .or_insert(dep_meta.export_type_name.clone());
                         }
                     }
+                }
+                for (exported_name, ty) in &dep_meta.export_types {
+                    if exported_name == "default"
+                        || ty == "unknown"
+                        || exported_name == ty
+                        || !is_identifier(exported_name)
+                        || !(looks_like_class_identifier(ty) || ty.starts_with("__t_"))
+                        || emitted_type_aliases.contains(exported_name)
+                    {
+                        continue;
+                    }
+                    body.push_str(&format!("type {} = {};\n", exported_name, ty));
+                    emitted_type_aliases.insert(exported_name.clone());
                 }
                 cursor = span.end;
             }
@@ -537,6 +553,7 @@ fn transform_entry_module(
                     "const {}: {} = {};\n",
                     dep_binding, dep_meta.export_type_name, dep_meta.export_var_name
                 ));
+                let mut emitted_type_aliases: HashSet<String> = HashSet::new();
                 for spec in &import.specifiers {
                     match spec {
                         ImportSpecifier::Named { name, alias } => {
@@ -570,6 +587,7 @@ fn transform_entry_module(
                                 && local != ty
                             {
                                 body.push_str(&format!("type {} = {};\n", local, ty));
+                                emitted_type_aliases.insert(local.clone());
                             }
                         }
                         ImportSpecifier::Default(local) => {
@@ -593,6 +611,7 @@ fn transform_entry_module(
                                 && local_name != ty
                             {
                                 body.push_str(&format!("type {} = {};\n", local_name, ty));
+                                emitted_type_aliases.insert(local_name.clone());
                             }
                         }
                         ImportSpecifier::Namespace(alias) => {
@@ -600,6 +619,19 @@ fn transform_entry_module(
                             body.push_str(&format!("const {} = {};\n", local_name, dep_binding));
                         }
                     }
+                }
+                for (exported_name, ty) in &dep_meta.export_types {
+                    if exported_name == "default"
+                        || ty == "unknown"
+                        || exported_name == ty
+                        || !is_identifier(exported_name)
+                        || !(looks_like_class_identifier(ty) || ty.starts_with("__t_"))
+                        || emitted_type_aliases.contains(exported_name)
+                    {
+                        continue;
+                    }
+                    body.push_str(&format!("type {} = {};\n", exported_name, ty));
+                    emitted_type_aliases.insert(exported_name.clone());
                 }
                 cursor = cursor.max(span.end.min(node.source.len()));
             }
@@ -883,6 +915,7 @@ fn collect_local_value_types(
     class_aliases: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let mut out = HashMap::new();
+    let no_import_types: HashMap<String, String> = HashMap::new();
     for stmt in statements {
         match stmt {
             Statement::FunctionDecl(func) => {
@@ -901,7 +934,14 @@ fn collect_local_value_types(
                 out.insert(name, ty);
             }
             Statement::VariableDecl(decl) => {
-                let ty = infer_variable_decl_type(decl, source, interner, class_aliases);
+                let ty = infer_variable_decl_type(
+                    decl,
+                    source,
+                    interner,
+                    class_aliases,
+                    &out,
+                    &no_import_types,
+                );
                 for name in pattern_names(&decl.pattern, interner) {
                     out.insert(name, ty.clone());
                 }
@@ -923,7 +963,14 @@ fn collect_local_value_types(
                     out.insert(name, ty);
                 }
                 Statement::VariableDecl(decl) => {
-                    let ty = infer_variable_decl_type(decl, source, interner, class_aliases);
+                    let ty = infer_variable_decl_type(
+                        decl,
+                        source,
+                        interner,
+                        class_aliases,
+                        &out,
+                        &no_import_types,
+                    );
                     for name in pattern_names(&decl.pattern, interner) {
                         out.insert(name, ty.clone());
                     }
@@ -1000,25 +1047,24 @@ fn infer_variable_decl_type(
     source: &str,
     interner: &Interner,
     class_aliases: &HashMap<String, String>,
+    local_value_types: &HashMap<String, String>,
+    imported_binding_types: &HashMap<String, String>,
 ) -> String {
     if let Some(ann) = &decl.type_annotation {
         let ty = render_type_annotation(ann, source, interner);
         return rewrite_local_class_refs(&ty, class_aliases);
     }
     if let Some(init) = &decl.initializer {
-        let src = init.span().slice(source).trim();
-        if let Some(rest) = src.strip_prefix("new ") {
-            let class_name = rest
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect::<String>();
-            if !class_name.is_empty() {
-                if let Some(alias) = class_aliases.get(&class_name) {
-                    return alias.clone();
-                }
-                return "unknown".to_string();
-            }
-        }
+        let src = init.span().slice(source);
+        return infer_expression_type(
+            src,
+            init,
+            source,
+            interner,
+            local_value_types,
+            imported_binding_types,
+            class_aliases,
+        );
     }
     "unknown".to_string()
 }
@@ -1033,6 +1079,11 @@ fn infer_expression_type(
     class_aliases: &HashMap<String, String>,
 ) -> String {
     match expression {
+        Expression::IntLiteral(_) => return "number".to_string(),
+        Expression::FloatLiteral(_) => return "number".to_string(),
+        Expression::StringLiteral(_) => return "string".to_string(),
+        Expression::BooleanLiteral(_) => return "boolean".to_string(),
+        Expression::NullLiteral(_) => return "null".to_string(),
         Expression::Identifier(id) => {
             let name = interner.resolve(id.name).to_string();
             if let Some(ty) = local_value_types.get(&name) {

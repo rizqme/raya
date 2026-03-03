@@ -195,14 +195,16 @@ pub const NODE_COMPAT_ONLY_SYMBOLS: &[CompatSymbol] = &[
 ];
 
 pub fn find_first_node_compat_symbol_usage(source: &str) -> Option<SymbolMatch> {
+    let masked = mask_non_code_regions(source);
+    let source_for_scan = masked.as_str();
     let mut best: Option<SymbolMatch> = None;
     let mut best_offset = usize::MAX;
 
     for sym in NODE_COMPAT_ONLY_SYMBOLS {
-        if is_shadowed_in_source(source, root_symbol(sym.symbol)) {
+        if is_shadowed_in_source(source_for_scan, root_symbol(sym.symbol)) {
             continue;
         }
-        if let Some(offset) = find_token_occurrence(source, sym.symbol) {
+        if let Some(offset) = find_token_occurrence(source_for_scan, sym.symbol) {
             if offset < best_offset {
                 best_offset = offset;
                 let line = source[..offset].bytes().filter(|&b| b == b'\n').count() + 1;
@@ -285,6 +287,123 @@ fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+fn mask_non_code_regions(source: &str) -> String {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Code,
+        SingleQuote,
+        DoubleQuote,
+        Backtick,
+        LineComment,
+        BlockComment,
+    }
+
+    let bytes = source.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0usize;
+    let mut state = State::Code;
+    let mut escaped = false;
+
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        match state {
+            State::Code => {
+                if ch == '/' && i + 1 < bytes.len() {
+                    let next = bytes[i + 1] as char;
+                    if next == '/' {
+                        out.push(' ');
+                        out.push(' ');
+                        i += 2;
+                        state = State::LineComment;
+                        continue;
+                    }
+                    if next == '*' {
+                        out.push(' ');
+                        out.push(' ');
+                        i += 2;
+                        state = State::BlockComment;
+                        continue;
+                    }
+                }
+                match ch {
+                    '\'' => {
+                        out.push(' ');
+                        i += 1;
+                        state = State::SingleQuote;
+                    }
+                    '"' => {
+                        out.push(' ');
+                        i += 1;
+                        state = State::DoubleQuote;
+                    }
+                    '`' => {
+                        out.push(' ');
+                        i += 1;
+                        state = State::Backtick;
+                    }
+                    _ => {
+                        out.push(ch);
+                        i += 1;
+                    }
+                }
+            }
+            State::SingleQuote | State::DoubleQuote | State::Backtick => {
+                let quote = match state {
+                    State::SingleQuote => '\'',
+                    State::DoubleQuote => '"',
+                    State::Backtick => '`',
+                    _ => unreachable!(),
+                };
+                if ch == '\n' {
+                    out.push('\n');
+                    escaped = false;
+                    i += 1;
+                    continue;
+                }
+                if escaped {
+                    out.push(' ');
+                    escaped = false;
+                    i += 1;
+                    continue;
+                }
+                if ch == '\\' {
+                    out.push(' ');
+                    escaped = true;
+                    i += 1;
+                    continue;
+                }
+                out.push(' ');
+                i += 1;
+                if ch == quote {
+                    state = State::Code;
+                }
+            }
+            State::LineComment => {
+                if ch == '\n' {
+                    out.push('\n');
+                    state = State::Code;
+                } else {
+                    out.push(' ');
+                }
+                i += 1;
+            }
+            State::BlockComment => {
+                if ch == '*' && i + 1 < bytes.len() && bytes[i + 1] as char == '/' {
+                    out.push(' ');
+                    out.push(' ');
+                    i += 2;
+                    state = State::Code;
+                } else {
+                    out.push(if ch == '\n' { '\n' } else { ' ' });
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +433,13 @@ mod tests {
     #[test]
     fn ignores_member_access_for_unqualified_symbol() {
         let src = "class C { eval(x: string): number { return 1; } } const c = new C(); return c.eval(\"x\");";
+        let m = find_first_node_compat_symbol_usage(src);
+        assert!(m.is_none());
+    }
+
+    #[test]
+    fn ignores_string_literal_occurrences() {
+        let src = "const p = \"eval\"; return p.length;";
         let m = find_first_node_compat_symbol_usage(src);
         assert!(m.is_none());
     }

@@ -16,7 +16,7 @@ use crate::vm::{VmError, VmResult};
 /// The result uses native heap types:
 /// - null → `Value::null()`
 /// - bool → `Value::bool(b)`
-/// - number → `Value::i32(n)` for integers, `Value::f64(n)` otherwise
+/// - number → `Value::f64(n)` (JSON numbers are floating-point)
 /// - string → `GcPtr<RayaString>` → `Value`
 /// - array → `GcPtr<Array>` with elements as `Value` → `Value`
 /// - object → `GcPtr<DynObject>` with props as `Value` → `Value`
@@ -123,10 +123,7 @@ impl<'a> Parser<'a> {
             )));
         }
 
-        let mut is_float = false;
-
         if self.pos < self.bytes.len() && self.bytes[self.pos] == b'.' {
-            is_float = true;
             self.pos += 1;
             if self.pos >= self.bytes.len() || !self.bytes[self.pos].is_ascii_digit() {
                 return Err(VmError::RuntimeError(
@@ -141,7 +138,6 @@ impl<'a> Parser<'a> {
         if self.pos < self.bytes.len()
             && (self.bytes[self.pos] == b'e' || self.bytes[self.pos] == b'E')
         {
-            is_float = true;
             self.pos += 1;
             if self.pos < self.bytes.len()
                 && (self.bytes[self.pos] == b'+' || self.bytes[self.pos] == b'-')
@@ -162,13 +158,7 @@ impl<'a> Parser<'a> {
         let n = num_str
             .parse::<f64>()
             .map_err(|_| VmError::RuntimeError(format!("Invalid number: {}", num_str)))?;
-
-        // Represent integers as i32 when possible (faster VM operations)
-        if !is_float && n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
-            Ok(Value::i32(n as i32))
-        } else {
-            Ok(Value::f64(n))
-        }
+        Ok(Value::f64(n))
     }
 
     /// Parse a JSON string and return it as a VM `Value` (allocates RayaString).
@@ -449,7 +439,7 @@ mod tests {
     fn test_parse_number_integer() {
         let mut gc = GarbageCollector::default();
         let result = parse("42", &mut gc).unwrap();
-        assert_eq!(result.as_i32(), Some(42));
+        assert_eq!(result.as_f64(), Some(42.0));
     }
 
     #[test]
@@ -489,9 +479,9 @@ mod tests {
             JSView::Arr(ptr) => {
                 let arr = unsafe { &*ptr };
                 assert_eq!(arr.len(), 3);
-                assert_eq!(arr.get(0).and_then(|v| v.as_i32()), Some(1));
-                assert_eq!(arr.get(1).and_then(|v| v.as_i32()), Some(2));
-                assert_eq!(arr.get(2).and_then(|v| v.as_i32()), Some(3));
+                assert_eq!(arr.get(0).and_then(|v| v.as_f64()), Some(1.0));
+                assert_eq!(arr.get(1).and_then(|v| v.as_f64()), Some(2.0));
+                assert_eq!(arr.get(2).and_then(|v| v.as_f64()), Some(3.0));
             }
             _ => panic!("Expected array"),
         }
@@ -515,7 +505,7 @@ mod tests {
             JSView::Dyn(ptr) => {
                 let obj = unsafe { &*ptr };
                 assert!(obj.has("name"));
-                assert_eq!(obj.get("age").and_then(|v| v.as_i32()), Some(30));
+                assert_eq!(obj.get("age").and_then(|v| v.as_f64()), Some(30.0));
             }
             _ => panic!("Expected DynObject"),
         }
@@ -554,7 +544,7 @@ mod tests {
                     }
                     _ => panic!("Expected DynObject for user"),
                 }
-                assert_eq!(obj.get("count").and_then(|v| v.as_i32()), Some(42));
+                assert_eq!(obj.get("count").and_then(|v| v.as_f64()), Some(42.0));
             }
             _ => panic!("Expected DynObject"),
         }

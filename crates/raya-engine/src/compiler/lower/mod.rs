@@ -194,6 +194,15 @@ struct StaticMethodInfo {
     func_id: FunctionId,
 }
 
+/// Materialized outer-scope binding for class-method environment bridging.
+#[derive(Clone, Copy)]
+struct MethodEnvBinding {
+    /// Dedicated global slot used by method lowering.
+    global_idx: u16,
+    /// Whether the bridged value is a RefCell pointer.
+    is_refcell: bool,
+}
+
 /// Information about a decorator application
 #[derive(Clone)]
 struct DecoratorInfo {
@@ -508,9 +517,9 @@ pub struct Lowerer<'a> {
     global_type_map: FxHashMap<u16, TypeId>,
     /// Enclosing std-wrapper locals exported to dedicated globals for the next class lowering.
     /// Populated by stmt lowering right before lowering a nested class declaration.
-    pending_class_method_env_globals: Option<FxHashMap<Symbol, u16>>,
+    pending_class_method_env_globals: Option<FxHashMap<Symbol, MethodEnvBinding>>,
     /// Active class-method environment globals while lowering a class's methods.
-    current_method_env_globals: Option<FxHashMap<Symbol, u16>>,
+    current_method_env_globals: Option<FxHashMap<Symbol, MethodEnvBinding>>,
     /// Compile-time constant values (for constant folding)
     /// Maps symbol to its constant value (only for literals)
     constant_map: FxHashMap<Symbol, ConstantValue>,
@@ -1911,6 +1920,11 @@ impl<'a> Lowerer<'a> {
         class: &ast::ClassDecl,
         std_wrapper_tag: Option<&str>,
     ) {
+        // Resolve type-name references (method returns/field types) in this class's
+        // lexical source position so shadowing picks the right class declaration.
+        let saved_span = self.current_span;
+        self.current_span = class.span;
+
         let class_id = ClassId::new(self.next_class_id);
         self.next_class_id += 1;
 
@@ -2390,6 +2404,8 @@ impl<'a> Lowerer<'a> {
                 parameter_decorators,
             },
         );
+
+        self.current_span = saved_span;
     }
 
     /// Lower a function declaration
