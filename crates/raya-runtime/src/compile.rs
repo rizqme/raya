@@ -21,6 +21,8 @@ use crate::BuiltinMode;
 
 const BUILTIN_PRELUDE_BEGIN_MARKER: &str = "// __raya_builtin_prelude_begin";
 const BUILTIN_PRELUDE_END_MARKER: &str = "// __raya_builtin_prelude_end";
+const STD_PRELUDE_BEGIN_MARKER: &str = "// __raya_std_prelude_begin";
+const STD_PRELUDE_END_MARKER: &str = "// __raya_std_prelude_end";
 
 /// Checker behavior mode, independent from builtin API surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -707,23 +709,29 @@ fn source_has_linked_builtin_prelude(source: &str) -> bool {
 }
 
 fn find_linked_user_offset(source: &str) -> Option<usize> {
-    let end = source.find(BUILTIN_PRELUDE_END_MARKER)?;
-    let after_marker = end + BUILTIN_PRELUDE_END_MARKER.len();
-    // Consume one trailing newline if present.
-    if source.as_bytes().get(after_marker) == Some(&b'\n') {
-        Some(after_marker + 1)
+    let prelude_end_idx = if let Some(std_end) = source.find(STD_PRELUDE_END_MARKER) {
+        std_end + STD_PRELUDE_END_MARKER.len()
     } else {
-        Some(after_marker)
+        let builtin_end = source.find(BUILTIN_PRELUDE_END_MARKER)?;
+        builtin_end + BUILTIN_PRELUDE_END_MARKER.len()
+    };
+    // Consume one trailing newline if present.
+    if source.as_bytes().get(prelude_end_idx) == Some(&b'\n') {
+        Some(prelude_end_idx + 1)
+    } else {
+        Some(prelude_end_idx)
     }
 }
 
 fn mask_linked_builtin_prelude_body(source: &str) -> Cow<'_, str> {
-    if !source.contains(BUILTIN_PRELUDE_BEGIN_MARKER) {
+    if !source.contains(BUILTIN_PRELUDE_BEGIN_MARKER) && !source.contains(STD_PRELUDE_BEGIN_MARKER)
+    {
         return Cow::Borrowed(source);
     }
 
     let mut masked = String::with_capacity(source.len());
     let mut in_builtin_prelude_body = false;
+    let mut in_std_prelude_body = false;
     for line in source.split_inclusive('\n') {
         let trimmed = line.trim_start();
         if trimmed.starts_with(BUILTIN_PRELUDE_BEGIN_MARKER) {
@@ -736,8 +744,18 @@ fn mask_linked_builtin_prelude_body(source: &str) -> Cow<'_, str> {
             masked.push_str(line);
             continue;
         }
+        if trimmed.starts_with(STD_PRELUDE_BEGIN_MARKER) {
+            in_std_prelude_body = true;
+            masked.push_str(line);
+            continue;
+        }
+        if trimmed.starts_with(STD_PRELUDE_END_MARKER) {
+            in_std_prelude_body = false;
+            masked.push_str(line);
+            continue;
+        }
 
-        if in_builtin_prelude_body {
+        if in_builtin_prelude_body || in_std_prelude_body {
             if line.ends_with('\n') {
                 masked.push('\n');
             }

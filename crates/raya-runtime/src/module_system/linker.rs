@@ -13,6 +13,8 @@ use super::resolver::{ModuleKey, ModuleSpecifierKind};
 const INTERNAL_DEFAULT_EXPORT: &str = "__default";
 const BUILTIN_PRELUDE_BEGIN_MARKER: &str = "// __raya_builtin_prelude_begin";
 const BUILTIN_PRELUDE_END_MARKER: &str = "// __raya_builtin_prelude_end";
+const STD_PRELUDE_BEGIN_MARKER: &str = "// __raya_std_prelude_begin";
+const STD_PRELUDE_END_MARKER: &str = "// __raya_std_prelude_end";
 
 #[derive(Debug, Clone)]
 pub struct LinkedProgramSource {
@@ -36,6 +38,10 @@ impl ProgramLinkerV2 {
         builtin_mode: BuiltinMode,
     ) -> Result<LinkedProgramSource, RuntimeError> {
         let mut merged = String::new();
+        let has_std_dependencies = graph
+            .topological_order
+            .iter()
+            .any(|key| matches!(key, ModuleKey::Std(_)));
         merged.push_str("// module: __raya:builtins (pre-imported)\n");
         merged.push_str(BUILTIN_PRELUDE_BEGIN_MARKER);
         merged.push('\n');
@@ -45,6 +51,19 @@ impl ProgramLinkerV2 {
         }
         merged.push_str(BUILTIN_PRELUDE_END_MARKER);
         merged.push('\n');
+        // Preserve legacy "globals available without import" behavior for plain
+        // single-module programs, while avoiding collisions for linked std import graphs.
+        if !has_std_dependencies {
+            merged.push_str("// module: __raya:std-prelude (pre-imported)\n");
+            merged.push_str(STD_PRELUDE_BEGIN_MARKER);
+            merged.push('\n');
+            merged.push_str(builtins::std_sources());
+            if !merged.ends_with('\n') {
+                merged.push('\n');
+            }
+            merged.push_str(STD_PRELUDE_END_MARKER);
+            merged.push('\n');
+        }
 
         let mut metas: HashMap<ModuleKey, ModuleMeta> = HashMap::new();
         let mut module_ids: HashMap<ModuleKey, usize> = HashMap::new();

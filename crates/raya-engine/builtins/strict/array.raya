@@ -15,7 +15,7 @@ const LAST_INDEX_OF: number = 0x0110;
 const FILL: number = 0x0114;
 const FLAT: number = 0x0115;
 const SPLICE: number = 0x0117;
-const REFLECT_IS_ARRAY: number = 0x0D54;
+const ARRAY_IS_ARRAY: number = 0x0D54;
 
 class Array<T> {
     //@@opcode ArrayLen
@@ -26,7 +26,7 @@ class Array<T> {
     }
 
     static isArray(value: unknown): boolean {
-        return __NATIVE_CALL<boolean>(REFLECT_IS_ARRAY, value);
+        return __NATIVE_CALL<boolean>(ARRAY_IS_ARRAY, value);
     }
 
     // ── Atomic native operations ──────────────────────────────────────

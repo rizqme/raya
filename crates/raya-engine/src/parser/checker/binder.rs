@@ -1847,6 +1847,7 @@ impl<'a> Binder<'a> {
         pattern: &Pattern,
         ty: TypeId,
         is_const: bool,
+        is_imported: bool,
     ) -> Result<(), BindError> {
         match pattern {
             Pattern::Identifier(ident) => {
@@ -1870,7 +1871,7 @@ impl<'a> Binder<'a> {
                         is_const,
                         is_async: false,
                         is_readonly: false,
-                        is_imported: false,
+                        is_imported,
                     },
                     scope_id: current_scope,
                     span: ident.span,
@@ -1888,10 +1889,10 @@ impl<'a> Binder<'a> {
                 // Extract element type from array type annotation
                 let elem_ty = self.array_element_type_for_pattern(ty);
                 for elem in array_pat.elements.iter().flatten() {
-                    self.bind_pattern_names(&elem.pattern, elem_ty, is_const)?;
+                    self.bind_pattern_names(&elem.pattern, elem_ty, is_const, is_imported)?;
                 }
                 if let Some(rest) = &array_pat.rest {
-                    self.bind_pattern_names(rest, ty, is_const)?;
+                    self.bind_pattern_names(rest, ty, is_const, is_imported)?;
                 }
             }
             Pattern::Object(obj_pat) => {
@@ -1899,7 +1900,7 @@ impl<'a> Binder<'a> {
                 for prop in &obj_pat.properties {
                     let prop_name = self.resolve(prop.key.name);
                     let prop_ty = self.object_property_type_for_pattern(ty, &prop_name);
-                    self.bind_pattern_names(&prop.value, prop_ty, is_const)?;
+                    self.bind_pattern_names(&prop.value, prop_ty, is_const, is_imported)?;
                 }
                 if let Some(rest_ident) = &obj_pat.rest {
                     let name = self.resolve(rest_ident.name);
@@ -1912,7 +1913,7 @@ impl<'a> Binder<'a> {
                             is_const,
                             is_async: false,
                             is_readonly: false,
-                            is_imported: false,
+                            is_imported,
                         },
                         scope_id: self.symbols.current_scope_id(),
                         span: rest_ident.span,
@@ -1928,10 +1929,121 @@ impl<'a> Binder<'a> {
                 }
             }
             Pattern::Rest(rest_pat) => {
-                self.bind_pattern_names(&rest_pat.argument, ty, is_const)?;
+                self.bind_pattern_names(&rest_pat.argument, ty, is_const, is_imported)?;
             }
         }
         Ok(())
+    }
+
+    fn expression_uses_linker_dep_binding(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::Identifier(ident) => self.resolve(ident.name).starts_with("__raya_dep_"),
+            Expression::Array(arr) => arr.elements.iter().flatten().any(|elem| match elem {
+                crate::parser::ast::ArrayElement::Expression(e)
+                | crate::parser::ast::ArrayElement::Spread(e) => {
+                    self.expression_uses_linker_dep_binding(e)
+                }
+            }),
+            Expression::Object(obj) => obj.properties.iter().any(|prop| match prop {
+                crate::parser::ast::ObjectProperty::Property(p) => {
+                    self.expression_uses_linker_dep_binding(&p.value)
+                }
+                crate::parser::ast::ObjectProperty::Spread(s) => {
+                    self.expression_uses_linker_dep_binding(&s.argument)
+                }
+            }),
+            Expression::Unary(un) => self.expression_uses_linker_dep_binding(&un.operand),
+            Expression::Binary(bin) => {
+                self.expression_uses_linker_dep_binding(&bin.left)
+                    || self.expression_uses_linker_dep_binding(&bin.right)
+            }
+            Expression::Assignment(assign) => {
+                self.expression_uses_linker_dep_binding(&assign.left)
+                    || self.expression_uses_linker_dep_binding(&assign.right)
+            }
+            Expression::Logical(logical) => {
+                self.expression_uses_linker_dep_binding(&logical.left)
+                    || self.expression_uses_linker_dep_binding(&logical.right)
+            }
+            Expression::Conditional(cond) => {
+                self.expression_uses_linker_dep_binding(&cond.test)
+                    || self.expression_uses_linker_dep_binding(&cond.consequent)
+                    || self.expression_uses_linker_dep_binding(&cond.alternate)
+            }
+            Expression::Call(call) => {
+                self.expression_uses_linker_dep_binding(&call.callee)
+                    || call
+                        .arguments
+                        .iter()
+                        .any(|arg| self.expression_uses_linker_dep_binding(arg))
+            }
+            Expression::AsyncCall(call) => {
+                self.expression_uses_linker_dep_binding(&call.callee)
+                    || call
+                        .arguments
+                        .iter()
+                        .any(|arg| self.expression_uses_linker_dep_binding(arg))
+            }
+            Expression::Member(member) => self.expression_uses_linker_dep_binding(&member.object),
+            Expression::Index(index) => {
+                self.expression_uses_linker_dep_binding(&index.object)
+                    || self.expression_uses_linker_dep_binding(&index.index)
+            }
+            Expression::New(new_expr) => {
+                self.expression_uses_linker_dep_binding(&new_expr.callee)
+                    || new_expr
+                        .arguments
+                        .iter()
+                        .any(|arg| self.expression_uses_linker_dep_binding(arg))
+            }
+            Expression::Arrow(arrow) => match &arrow.body {
+                crate::parser::ast::ArrowBody::Expression(expr) => {
+                    self.expression_uses_linker_dep_binding(expr)
+                }
+                crate::parser::ast::ArrowBody::Block(_) => false,
+            },
+            Expression::Await(await_expr) => {
+                self.expression_uses_linker_dep_binding(&await_expr.argument)
+            }
+            Expression::Typeof(typeof_expr) => {
+                self.expression_uses_linker_dep_binding(&typeof_expr.argument)
+            }
+            Expression::Parenthesized(paren) => {
+                self.expression_uses_linker_dep_binding(&paren.expression)
+            }
+            Expression::InstanceOf(instanceof) => {
+                self.expression_uses_linker_dep_binding(&instanceof.object)
+            }
+            Expression::TypeCast(cast) => self.expression_uses_linker_dep_binding(&cast.object),
+            Expression::TemplateLiteral(tpl) => tpl.parts.iter().any(|part| match part {
+                crate::parser::ast::TemplatePart::Expression(expr) => {
+                    self.expression_uses_linker_dep_binding(expr)
+                }
+                crate::parser::ast::TemplatePart::String(_) => false,
+            }),
+            Expression::TaggedTemplate(tagged) => {
+                self.expression_uses_linker_dep_binding(&tagged.tag)
+                    || tagged.template.parts.iter().any(|part| match part {
+                        crate::parser::ast::TemplatePart::Expression(expr) => {
+                            self.expression_uses_linker_dep_binding(expr)
+                        }
+                        crate::parser::ast::TemplatePart::String(_) => false,
+                    })
+            }
+            Expression::DynamicImport(import_expr) => {
+                self.expression_uses_linker_dep_binding(&import_expr.source)
+            }
+            Expression::JsxElement(_)
+            | Expression::JsxFragment(_)
+            | Expression::IntLiteral(_)
+            | Expression::FloatLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+            | Expression::This(_)
+            | Expression::Super(_)
+            | Expression::RegexLiteral(_) => false,
+        }
     }
 
     /// Bind variable declaration
@@ -1943,7 +2055,11 @@ impl<'a> Binder<'a> {
         };
 
         let is_const = matches!(decl.kind, VariableKind::Const);
-        self.bind_pattern_names(&decl.pattern, ty, is_const)
+        let is_imported = decl
+            .initializer
+            .as_ref()
+            .is_some_and(|init| self.expression_uses_linker_dep_binding(init));
+        self.bind_pattern_names(&decl.pattern, ty, is_const, is_imported)
     }
 
     /// Bind function declaration
@@ -2684,7 +2800,7 @@ impl<'a> Binder<'a> {
                                 self.type_ctx.unknown_type()
                             };
                             // Method parameters are mutable (same semantics as function params)
-                            self.bind_pattern_names(&param.pattern, param_ty, false)?;
+                            self.bind_pattern_names(&param.pattern, param_ty, false, false)?;
                         }
 
                         for stmt in &body.statements {
@@ -2704,7 +2820,7 @@ impl<'a> Binder<'a> {
                             self.type_ctx.unknown_type()
                         };
                         // Constructor parameters are mutable
-                        self.bind_pattern_names(&param.pattern, param_ty, false)?;
+                        self.bind_pattern_names(&param.pattern, param_ty, false, false)?;
                     }
 
                     for stmt in &ctor.body.statements {
@@ -2924,7 +3040,7 @@ impl<'a> Binder<'a> {
                 let error_ty = self.inference_fallback_type();
 
                 // Bind all names in the pattern (handles destructuring)
-                self.bind_pattern_names(param, error_ty, true)?;
+                self.bind_pattern_names(param, error_ty, true, false)?;
             }
 
             // Bind catch body
