@@ -2057,6 +2057,17 @@ impl<'a> Lowerer<'a> {
             self.function_map.insert(func_decl.name.name, func_id);
         }
         let closure_reg = self.lower_arrow_with_preassigned_id(&arrow, preassigned_func_id);
+        if let Some(func_id) = preassigned_func_id.or(self.last_arrow_func_id) {
+            let declared_name = self.interner.resolve(func_decl.name.name).to_string();
+            if let Some((_, ir_func)) = self
+                .pending_arrow_functions
+                .iter_mut()
+                .find(|(id, _)| *id == func_id.as_u32())
+            {
+                // Preserve declared function names in stack traces/debug output.
+                ir_func.name = declared_name;
+            }
+        }
 
         // Std-prelude wrappers rely on sibling helper functions from class methods
         // (e.g., EnvNamespace.cwd() calling local `cwd()`), so expose wrapper-local

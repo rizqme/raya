@@ -858,6 +858,7 @@ pub(super) fn is_module_wrapper_function_name(name: &str) -> bool {
     name.starts_with("__std_module_")
         || name.starts_with("__raya_mod_init_")
         || name.starts_with("__raya_entry_main_")
+        || name.starts_with("__raya_entry_")
 }
 
 fn module_wrapper_alias_tag(name: &str) -> Option<String> {

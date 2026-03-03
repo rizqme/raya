@@ -105,4 +105,30 @@ export function random(): number {
     return __NATIVE_CALL<number>("math.random");
 }
 
-export default { PI, E, abs, sign, floor, ceil, round, trunc, min, max, pow, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, random };
+const math = {
+    PI,
+    E,
+    abs,
+    sign,
+    floor,
+    ceil,
+    round,
+    trunc,
+    min,
+    max,
+    pow,
+    sqrt,
+    sin,
+    cos,
+    tan,
+    asin,
+    acos,
+    atan,
+    atan2,
+    exp,
+    log,
+    log10,
+    random,
+};
+
+export default math;

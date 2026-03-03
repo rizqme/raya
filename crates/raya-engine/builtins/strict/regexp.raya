@@ -28,8 +28,8 @@ class RegExp {
         return __NATIVE_CALL<boolean>(TEST, this, str);
     }
 
-    exec(str: string): string | null {
-        return __NATIVE_CALL<string | null>(EXEC, this, str);
+    exec(str: string): (string | number)[] | null {
+        return __NATIVE_CALL<(string | number)[] | null>(EXEC, this, str);
     }
 
     execAll(str: string): string[] {

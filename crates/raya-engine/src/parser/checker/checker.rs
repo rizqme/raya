@@ -5729,10 +5729,13 @@ impl<'a> TypeChecker<'a> {
                 self.type_ctx
                     .function_type(vec![string_ty], boolean_ty, false),
             ),
-            // exec(str: string) -> string | null (simplified - returns matched string or null)
+            // exec(str: string) -> (string | number)[] | null
+            // Runtime returns [matchText, matchIndex, ...captureGroups].
             "exec" => {
                 let null_ty = self.type_ctx.null_type();
-                let result_ty = self.type_ctx.union_type(vec![string_ty, null_ty]);
+                let num_or_str = self.type_ctx.union_type(vec![string_ty, number_ty]);
+                let match_array_ty = self.type_ctx.array_type(num_or_str);
+                let result_ty = self.type_ctx.union_type(vec![match_array_ty, null_ty]);
                 Some(
                     self.type_ctx
                         .function_type(vec![string_ty], result_ty, false),

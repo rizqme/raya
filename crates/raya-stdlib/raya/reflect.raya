@@ -152,7 +152,7 @@ const REFLECT_IS_BOOTSTRAPPED: number = 0x0E28;
 // Reflect class
 // ============================================================================
 
-class Reflect {
+class __StdReflect {
 
     // ========================================================================
     // Phase 1: Metadata Operations
@@ -460,5 +460,5 @@ class Reflect {
     }
 }
 
-const reflect = new Reflect();
+const reflect = new __StdReflect();
 export default reflect;

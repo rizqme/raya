@@ -14,23 +14,23 @@ const E_UNIMPLEMENTED_BUILTIN_BEHAVIOR: string = "E_UNIMPLEMENTED_BUILTIN_BEHAVI
 type ErrorLike = Error | Object | string | number | boolean | null;
 type ErrorOptions = { cause?: ErrorLike };
 
-function createError(code: string, message: string, options: ErrorOptions | null = null): Error {
+function createError(code: string, message: string, options: Object | null = null): Error {
     let err = new Error(message, options);
     err.code = code;
     return err;
 }
 
-function createTypeError(code: string, message: string, options: ErrorOptions | null = null): TypeError {
+function createTypeError(code: string, message: string, options: Object | null = null): TypeError {
     let err = new TypeError(message);
     err.code = code;
-    err.cause = options == null ? null : options.cause;
+    err.cause = options == null ? null : options["cause"];
     return err;
 }
 
-function createRangeError(code: string, message: string, options: ErrorOptions | null = null): RangeError {
+function createRangeError(code: string, message: string, options: Object | null = null): RangeError {
     let err = new RangeError(message);
     err.code = code;
-    err.cause = options == null ? null : options.cause;
+    err.cause = options == null ? null : options["cause"];
     return err;
 }
 
@@ -44,11 +44,11 @@ class Error {
     public syscall: string;
     public path: string;
 
-    constructor(message: string = "", options: ErrorOptions | null = null) {
+    constructor(message: string = "", options: Object | null = null) {
         this.message = message;
         this.name = "Error";
         this.stack = "";
-        this.cause = options == null ? null : options.cause;
+        this.cause = options == null ? null : options["cause"];
         this.code = "";
         this.errno = 0;
         this.syscall = "";
@@ -115,7 +115,7 @@ class InternalError extends Error {
 class AggregateError extends Error {
     public errors: ErrorLike[];
 
-    constructor(errors: ErrorLike[], message: string = "", options: ErrorOptions | null = null) {
+    constructor(errors: ErrorLike[], message: string = "", options: Object | null = null) {
         super(message, options);
         this.name = "AggregateError";
         this.errors = errors;
@@ -126,7 +126,7 @@ class SuppressedError extends Error {
     public error: ErrorLike | null;
     public suppressed: ErrorLike | null;
 
-    constructor(error: ErrorLike | null, suppressed: ErrorLike | null, message: string = "", options: ErrorOptions | null = null) {
+    constructor(error: ErrorLike | null, suppressed: ErrorLike | null, message: string = "", options: Object | null = null) {
         super(message, options);
         this.name = "SuppressedError";
         this.error = error;

@@ -105,7 +105,8 @@ function String(value: PrimitiveCoercible): string {
         return (value as boolean) ? "true" : "false";
     }
     if (t == "number" || t == "int") {
-        return (value as number).toString();
+        // Avoid primitive method dispatch on numeric values.
+        return "" + (value as number);
     }
     return (value as Object).toString();
 }
