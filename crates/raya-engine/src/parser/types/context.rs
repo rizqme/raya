@@ -737,10 +737,19 @@ impl TypeContext {
                     .take(max_props)
                     .map(|p| {
                         let opt = if p.optional { "?" } else { "" };
-                        format!("{}{}: {}", p.name, opt, self.format_type_depth(p.ty, depth + 1))
+                        format!(
+                            "{}{}: {}",
+                            p.name,
+                            opt,
+                            self.format_type_depth(p.ty, depth + 1)
+                        )
                     })
                     .collect();
-                let ellipsis = if o.properties.len() > max_props { ", …" } else { "" };
+                let ellipsis = if o.properties.len() > max_props {
+                    ", …"
+                } else {
+                    ""
+                };
                 format!("{{ {}{} }}", props.join(", "), ellipsis)
             }
             Type::Class(c) => {
@@ -759,7 +768,11 @@ impl TypeContext {
             }
             Type::TypeVar(tv) => {
                 if let Some(c) = tv.constraint {
-                    format!("{} extends {}", tv.name, self.format_type_depth(c, depth + 1))
+                    format!(
+                        "{} extends {}",
+                        tv.name,
+                        self.format_type_depth(c, depth + 1)
+                    )
                 } else {
                     tv.name.clone()
                 }

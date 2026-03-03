@@ -1945,7 +1945,7 @@ impl<'a> Lowerer<'a> {
                     }
 
                     // Use virtual dispatch via vtable slot
-                    if let Some(&slot) = self.method_slot_map.get(&(class_id, method_name_symbol)) {
+                    if let Some(slot) = self.find_method_slot(class_id, method_name_symbol) {
                         self.emit(IrInstr::CallMethod {
                             dest: Some(dest.clone()),
                             object,
@@ -2002,9 +2002,7 @@ impl<'a> Lowerer<'a> {
                     );
 
                     return dest;
-                } else if let Some(&slot) =
-                    self.method_slot_map.get(&(class_id, method_name_symbol))
-                {
+                } else if let Some(slot) = self.find_method_slot(class_id, method_name_symbol) {
                     // Abstract method with vtable slot - use virtual dispatch.
                     // The actual implementation is provided by a derived class.
                     let object = self.lower_expr(&member.object);
@@ -2492,7 +2490,7 @@ impl<'a> Lowerer<'a> {
                     );
                 }
                 // Field not found — check if it's a method (bound method extraction)
-                if let Some(&slot) = self.method_slot_map.get(&(class_id, member.property.name)) {
+                if let Some(slot) = self.find_method_slot(class_id, member.property.name) {
                     if self.js_this_binding_compat {
                         if let Some(func_id) = self.find_method(class_id, member.property.name) {
                             let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
@@ -2518,49 +2516,52 @@ impl<'a> Lowerer<'a> {
         } else {
             let infer_field_from_expr_type = |this: &Self| {
                 let expr_ty = this.get_expr_type(&member.object);
-                this.type_ctx.get(expr_ty).and_then(|ty| {
-                    if let crate::parser::types::ty::Type::Object(obj) = ty {
-                        obj.properties.iter().enumerate().find_map(|(i, p)| {
-                            if p.name == prop_name {
-                                Some((i as u16, p.ty))
-                            } else {
-                                None
-                            }
-                        })
-                    } else if let crate::parser::types::ty::Type::Reference(reference) = ty {
-                        this.type_alias_field_lookup(&reference.name, prop_name)
-                    } else if let crate::parser::types::ty::Type::Union(union) = ty {
-                        // Search union members for the property
-                        for &member_id in &union.members {
-                            match this.type_ctx.get(member_id) {
-                                Some(crate::parser::types::ty::Type::Object(obj)) => {
-                                    if let Some(result) =
-                                        obj.properties.iter().enumerate().find_map(|(i, p)| {
-                                            if p.name == prop_name {
-                                                Some((i as u16, p.ty))
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                    {
-                                        return Some(result);
+                let mut stack = vec![expr_ty];
+                let mut visited: FxHashSet<TypeId> = FxHashSet::default();
+
+                while let Some(ty_id) = stack.pop() {
+                    if !visited.insert(ty_id) {
+                        continue;
+                    }
+                    let Some(ty) = this.type_ctx.get(ty_id) else {
+                        continue;
+                    };
+
+                    match ty {
+                        crate::parser::types::ty::Type::Object(obj) => {
+                            if let Some(result) =
+                                obj.properties.iter().enumerate().find_map(|(i, p)| {
+                                    if p.name == prop_name {
+                                        Some((i as u16, p.ty))
+                                    } else {
+                                        None
                                     }
-                                }
-                                Some(crate::parser::types::ty::Type::Reference(reference)) => {
-                                    if let Some(result) =
-                                        this.type_alias_field_lookup(&reference.name, prop_name)
-                                    {
-                                        return Some(result);
-                                    }
-                                }
-                                _ => {}
+                                })
+                            {
+                                return Some(result);
                             }
                         }
-                        None
-                    } else {
-                        None
+                        crate::parser::types::ty::Type::Reference(reference) => {
+                            if let Some(result) =
+                                this.type_alias_field_lookup(&reference.name, prop_name)
+                            {
+                                return Some(result);
+                            }
+                            if let Some(named_ty) = this.type_ctx.lookup_named_type(&reference.name)
+                            {
+                                stack.push(named_ty);
+                            }
+                        }
+                        crate::parser::types::ty::Type::Union(union) => {
+                            for &member_id in union.members.iter().rev() {
+                                stack.push(member_id);
+                            }
+                        }
+                        _ => {}
                     }
-                })
+                }
+
+                None
             };
 
             let alias_field_idx = match &*member.object {
@@ -2647,6 +2648,18 @@ impl<'a> Lowerer<'a> {
                 .register_object_fields
                 .get(&object.id)
                 .is_some_and(|fields| fields.iter().any(|(name, _)| name == prop_name));
+            let has_type_proven_field = field_ty != UNRESOLVED
+                && self
+                    .type_ctx
+                    .get(self.get_expr_type(&member.object))
+                    .is_some_and(|ty| {
+                        matches!(
+                            ty,
+                            crate::parser::types::ty::Type::Object(_)
+                                | crate::parser::types::ty::Type::Union(_)
+                                | crate::parser::types::ty::Type::Reference(_)
+                        )
+                    });
             let has_concrete_layout = if class_id.is_some() {
                 true
             } else {
@@ -2666,6 +2679,7 @@ impl<'a> Lowerer<'a> {
                                     alias.starts_with("__raya_mod_exports_type_")
                                         && self.type_alias_field_lookup(alias, prop_name).is_some()
                                 })
+                            || has_type_proven_field
                     }
                     _ => has_register_layout,
                 }
@@ -4519,6 +4533,63 @@ impl<'a> Lowerer<'a> {
                         );
                     }
                 }
+
+                return dest;
+            }
+
+            // Fallback for builtin error constructors in compilation modes where
+            // builtin classes are type-known but not lowered as concrete class IR.
+            if matches!(
+                name,
+                "Error"
+                    | "TypeError"
+                    | "RangeError"
+                    | "ReferenceError"
+                    | "SyntaxError"
+                    | "URIError"
+                    | "EvalError"
+                    | "AggregateError"
+                    | "ChannelClosedError"
+                    | "AssertionError"
+            ) {
+                let message = if let Some(arg0) = new_expr.arguments.first() {
+                    self.lower_expr(arg0)
+                } else {
+                    let reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                    self.emit(IrInstr::Assign {
+                        dest: reg.clone(),
+                        value: IrValue::Constant(IrConstant::String(String::new())),
+                    });
+                    reg
+                };
+
+                let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: name_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(name.to_string())),
+                });
+                let stack_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: stack_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(String::new())),
+                });
+                let cause_reg = self.lower_null_literal();
+
+                self.emit(IrInstr::ObjectLiteral {
+                    dest: dest.clone(),
+                    class: ClassId::new(0),
+                    fields: vec![(0, message), (1, name_reg), (2, stack_reg), (3, cause_reg)],
+                });
+
+                self.register_object_fields.insert(
+                    dest.id,
+                    vec![
+                        ("message".to_string(), 0),
+                        ("name".to_string(), 1),
+                        ("stack".to_string(), 2),
+                        ("cause".to_string(), 3),
+                    ],
+                );
 
                 return dest;
             }

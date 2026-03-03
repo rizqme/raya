@@ -24,41 +24,30 @@ fn test_net_tcp_echo_round_trip() {
             return net.listen("127.0.0.1", 0);
         }
 
-        async function serverTask(listener: TcpListener): Promise<boolean> {
-            const stream = listener.accept();
-            if (stream == null) {
-                listener.close();
-                return false;
-            }
-            const message = stream.readLine();
-            stream.writeText("echo:" + message + "\n");
-            stream.close();
-            listener.close();
-            return message == "ping";
-        }
-
-        async function clientTask(host: string, port: number): Promise<boolean> {
-            const stream = net.connect(host, port);
-            const remote = stream.remoteAddr();
-            stream.writeText("ping\n");
-            const response = stream.readLine();
-            stream.close();
-            return response == "echo:ping" && remote.length > 0;
-        }
-
         async function main(): Promise<boolean> {
             const listener = bindListener();
             const addr = listener.localAddr();
             const sep = addr.lastIndexOf(":");
             const port: number = JSON.parse(addr.slice(sep + 1));
-            const serverResult = serverTask(listener);
+            const acceptTask = async listener.accept();
             sleep(5);
-            const clientOk = await clientTask("127.0.0.1", port);
-            if (!clientOk) {
-                // Ensure accept() is unblocked on failure paths so test never hangs.
+            const client = net.connect("127.0.0.1", port);
+            const remote = client.remoteAddr();
+            client.writeText("ping\n");
+            const serverStream = await acceptTask;
+            if (serverStream == null) {
+                client.close();
                 listener.close();
+                return false;
             }
-            const serverOk = await serverResult;
+            const message = serverStream.readLine();
+            serverStream.writeText("echo:" + message + "\n");
+            serverStream.close();
+            listener.close();
+            const response = client.readLine();
+            client.close();
+            const clientOk = response == "echo:ping" && remote.length > 0;
+            const serverOk = message == "ping";
             return serverOk && clientOk;
         }
 
@@ -74,26 +63,13 @@ fn test_net_accept_returns_null_after_close() {
         r#"
         import net, { TcpListener } from "std:net";
 
-        async function acceptLoop(listener: TcpListener): Promise<number> {
-            let accepted: number = 0;
-            while (true) {
-                const stream = listener.accept();
-                if (stream == null) {
-                    break;
-                }
-                accepted = accepted + 1;
-                stream.close();
-            }
-            return accepted;
-        }
-
         async function main(): Promise<boolean> {
             const listener = net.listen("127.0.0.1", 0);
-            const loopTask = acceptLoop(listener);
+            const acceptTask = async listener.accept();
             sleep(10);
             listener.close();
-            const accepted = await loopTask;
-            return accepted == 0;
+            const stream = await acceptTask;
+            return stream == null;
         }
 
         return await main();
@@ -114,7 +90,7 @@ fn test_net_serve_exits_when_listener_closed() {
 
         async function main(): Promise<boolean> {
             const listener = net.listen("127.0.0.1", 0);
-            const serveTask = listener.serve(onConn);
+            const serveTask = async listener.serve(onConn);
             sleep(10);
             listener.close();
             await serveTask;

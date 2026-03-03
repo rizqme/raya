@@ -11,8 +11,8 @@
 #![allow(clippy::single_char_add_str)]
 
 use raya_engine::vm::gc::GarbageCollector;
-use raya_engine::vm::json::{parser, stringify};
 use raya_engine::vm::json::view::{js_classify, JSView};
+use raya_engine::vm::json::{parser, stringify};
 use raya_engine::vm::object::{Array, DynObject, RayaString};
 use raya_engine::vm::value::Value;
 
@@ -119,10 +119,7 @@ fn test_parse_and_access_properties() {
 
     // Test missing property (returns null)
     let missing = get_property(parsed, "missing");
-    assert!(
-        missing.is_null(),
-        "Missing property should be null"
-    );
+    assert!(missing.is_null(), "Missing property should be null");
 }
 
 #[test]
@@ -144,11 +141,31 @@ fn test_parse_and_access_array() {
     assert_eq!(arr.len(), 5, "Array should have 5 elements");
 
     // Test array indexing
-    assert_eq!(as_number(arr.get(0).unwrap()), Some(10.0), "arr[0] should be 10");
-    assert_eq!(as_number(arr.get(1).unwrap()), Some(20.0), "arr[1] should be 20");
-    assert_eq!(as_number(arr.get(2).unwrap()), Some(30.0), "arr[2] should be 30");
-    assert_eq!(as_number(arr.get(3).unwrap()), Some(40.0), "arr[3] should be 40");
-    assert_eq!(as_number(arr.get(4).unwrap()), Some(50.0), "arr[4] should be 50");
+    assert_eq!(
+        as_number(arr.get(0).unwrap()),
+        Some(10.0),
+        "arr[0] should be 10"
+    );
+    assert_eq!(
+        as_number(arr.get(1).unwrap()),
+        Some(20.0),
+        "arr[1] should be 20"
+    );
+    assert_eq!(
+        as_number(arr.get(2).unwrap()),
+        Some(30.0),
+        "arr[2] should be 30"
+    );
+    assert_eq!(
+        as_number(arr.get(3).unwrap()),
+        Some(40.0),
+        "arr[3] should be 40"
+    );
+    assert_eq!(
+        as_number(arr.get(4).unwrap()),
+        Some(50.0),
+        "arr[4] should be 50"
+    );
 }
 
 #[test]
@@ -183,7 +200,8 @@ fn test_parse_nested_structures() {
     let settings = get_property(user, "settings");
     assert!(is_object(settings), "settings should be an object");
 
-    let theme_data = get_string_data(get_property(settings, "theme")).expect("theme should be string");
+    let theme_data =
+        get_string_data(get_property(settings, "theme")).expect("theme should be string");
     assert_eq!(theme_data, "dark");
 
     let notifications = get_property(settings, "notifications");
@@ -203,7 +221,8 @@ fn test_parse_nested_structures() {
     let post1_id = get_property(post1, "id");
     assert_eq!(as_number(post1_id), Some(1.0));
 
-    let post1_title = get_string_data(get_property(post1, "title")).expect("title should be string");
+    let post1_title =
+        get_string_data(get_property(post1, "title")).expect("title should be string");
     assert_eq!(post1_title, "First Post");
 }
 
@@ -231,8 +250,10 @@ fn test_round_trip_parse_stringify() {
     let age2 = as_number(get_property(reparsed, "age"));
     assert_eq!(age1, age2);
 
-    let hobbies1_ptr = get_array_ptr(get_property(parsed, "hobbies")).expect("hobbies should be array");
-    let hobbies2_ptr = get_array_ptr(get_property(reparsed, "hobbies")).expect("hobbies should be array");
+    let hobbies1_ptr =
+        get_array_ptr(get_property(parsed, "hobbies")).expect("hobbies should be array");
+    let hobbies2_ptr =
+        get_array_ptr(get_property(reparsed, "hobbies")).expect("hobbies should be array");
     let hobbies1_arr = unsafe { &*hobbies1_ptr };
     let hobbies2_arr = unsafe { &*hobbies2_ptr };
     assert_eq!(hobbies1_arr.len(), hobbies2_arr.len());
@@ -284,15 +305,18 @@ fn test_parse_unicode_and_escapes() {
     let parsed = parser::parse(json, &mut gc).unwrap();
 
     // Test unicode
-    let unicode_data = get_string_data(get_property(parsed, "unicode")).expect("unicode should be string");
+    let unicode_data =
+        get_string_data(get_property(parsed, "unicode")).expect("unicode should be string");
     assert_eq!(unicode_data, "Hello 世界 🌍");
 
     // Test escapes
-    let escapes_data = get_string_data(get_property(parsed, "escapes")).expect("escapes should be string");
+    let escapes_data =
+        get_string_data(get_property(parsed, "escapes")).expect("escapes should be string");
     assert_eq!(escapes_data, "Line 1\nLine 2\tTabbed");
 
     // Test quotes
-    let quotes_data = get_string_data(get_property(parsed, "quotes")).expect("quotes should be string");
+    let quotes_data =
+        get_string_data(get_property(parsed, "quotes")).expect("quotes should be string");
     assert_eq!(quotes_data, "She said \"hello\"");
 }
 
@@ -385,7 +409,10 @@ fn test_stringify_preserves_types() {
     assert_eq!(stringify::stringify(str_val).unwrap(), r#""hello""#);
 
     // Empty array
-    let empty_arr = Array { type_id: 0, elements: vec![] };
+    let empty_arr = Array {
+        type_id: 0,
+        elements: vec![],
+    };
     let arr_ptr = gc.allocate(empty_arr);
     let arr_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) };
     assert_eq!(stringify::stringify(arr_val).unwrap(), "[]");
@@ -452,10 +479,7 @@ fn test_stringify_special_characters() {
     // Round trip to verify
     let reparsed = parser::parse(&stringified, &mut gc).unwrap();
     let reparsed_data = get_string_data(reparsed).expect("should be string");
-    assert_eq!(
-        reparsed_data,
-        "Line1\nLine2\tTab\rReturn\"Quote\\Backslash"
-    );
+    assert_eq!(reparsed_data, "Line1\nLine2\tTab\rReturn\"Quote\\Backslash");
 }
 
 // ============================================================================

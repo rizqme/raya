@@ -238,6 +238,7 @@ fn is_shadowed_in_source(source: &str, symbol_root: &str) -> bool {
 }
 
 fn find_token_occurrence(source: &str, token: &str) -> Option<usize> {
+    let is_qualified_symbol = token.contains('.');
     for (start, _) in source.match_indices(token) {
         let end = start + token.len();
 
@@ -262,6 +263,17 @@ fn find_token_occurrence(source: &str, token: &str) -> Option<usize> {
         };
 
         if left_ok && right_ok {
+            // Unqualified symbols like `eval` should only match as bare/global usage.
+            // Ignore member/property access forms such as `obj.eval(...)`.
+            if !is_qualified_symbol {
+                let prev_non_ws = source[..start]
+                    .chars()
+                    .rev()
+                    .find(|c| !c.is_ascii_whitespace());
+                if prev_non_ws == Some('.') {
+                    continue;
+                }
+            }
             return Some(start);
         }
     }
@@ -295,6 +307,13 @@ mod tests {
     #[test]
     fn allows_shadowed_compat_symbol() {
         let src = "function parseInt(v: string): number { return 1; } return parseInt(\"x\");";
+        let m = find_first_node_compat_symbol_usage(src);
+        assert!(m.is_none());
+    }
+
+    #[test]
+    fn ignores_member_access_for_unqualified_symbol() {
+        let src = "class C { eval(x: string): number { return 1; } } const c = new C(); return c.eval(\"x\");";
         let m = find_first_node_compat_symbol_usage(src);
         assert!(m.is_none());
     }

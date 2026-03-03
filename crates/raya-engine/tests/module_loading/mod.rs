@@ -2,8 +2,8 @@
 //!
 //! Tests the complete module loading pipeline from .ryb bytes to registered modules.
 
-use raya_engine::compiler::Opcode;
 use raya_engine::compiler::bytecode::VERSION;
+use raya_engine::compiler::Opcode;
 use raya_engine::compiler::{Function, Module};
 use raya_engine::vm::Vm;
 

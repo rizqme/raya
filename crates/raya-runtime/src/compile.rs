@@ -11,12 +11,16 @@ use raya_engine::parser::checker::{
 use raya_engine::parser::{Interner, LexError, ParseError, Parser, TypeContext};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::builtin_manifest;
 use crate::builtins;
 use crate::error::RuntimeError;
 use crate::BuiltinMode;
+
+const BUILTIN_PRELUDE_BEGIN_MARKER: &str = "// __raya_builtin_prelude_begin";
+const BUILTIN_PRELUDE_END_MARKER: &str = "// __raya_builtin_prelude_end";
 
 /// Checker behavior mode, independent from builtin API surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -271,8 +275,9 @@ pub fn compile_source_with_options_and_modes_and_ts_options(
 
 /// Compile already-linked module-graph source (Module System V2 path).
 ///
-/// This path prepends builtin class sources only and intentionally skips
-/// std-prelude rewriting/flattening.
+/// Linked source may already include an explicit builtin prelude injected by
+/// the module-system linker. If no linked prelude marker is present, this path
+/// falls back to legacy inline prelude injection (builtins + std sources).
 pub fn compile_graph_source_with_modes_and_ts_options(
     source: &str,
     builtin_mode: BuiltinMode,
@@ -290,8 +295,9 @@ pub fn compile_graph_source_with_modes_and_ts_options(
 
 /// Compile already-linked module-graph source with explicit compile options.
 ///
-/// This path prepends builtin class sources only and intentionally skips
-/// std-prelude rewriting/flattening.
+/// Linked source may already include an explicit builtin prelude injected by
+/// the module-system linker. If no linked prelude marker is present, this path
+/// falls back to legacy inline prelude injection (builtins + std sources).
 pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     source: &str,
     options: &CompileOptions,
@@ -303,9 +309,18 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
-    let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-    let user_offset = builtin_src.len() + 1;
-    let full_source = format!("{}\n{}", builtin_src, source);
+    let has_linked_builtin_prelude = source_has_linked_builtin_prelude(source);
+    let (full_source, user_offset) = if has_linked_builtin_prelude {
+        (
+            source.to_string(),
+            find_linked_user_offset(source).unwrap_or(0),
+        )
+    } else {
+        let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
+        let prelude = format!("{}\n{}", builtin_src, builtins::std_sources());
+        let user_offset = prelude.len() + 1;
+        (format!("{}\n{}", prelude, source), user_offset)
+    };
     if let Ok(path) = std::env::var("RAYA_DEBUG_DUMP_SOURCE") {
         let _ = std::fs::write(path, &full_source);
     }
@@ -327,8 +342,8 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     let mut binder = Binder::new(&mut type_ctx, &interner)
         .with_mode(type_system_mode(type_mode))
         .with_policy(policy);
-    let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
-    binder.register_builtins(&empty_sigs);
+    let builtin_sigs = raya_engine::builtins::to_checker_signatures();
+    binder.register_builtins(&builtin_sigs);
     binder.skip_top_level_duplicate_detection();
 
     let mut symbols = binder.bind_module(&ast).map_err(|errors| {
@@ -414,8 +429,9 @@ pub fn check_source_with_modes_and_ts_options(
 
 /// Type-check already-linked module-graph source (Module System V2 path).
 ///
-/// This path prepends builtin class sources only and intentionally skips
-/// std-prelude rewriting/flattening.
+/// Linked source may already include an explicit builtin prelude injected by
+/// the module-system linker. If no linked prelude marker is present, this path
+/// falls back to legacy inline prelude injection (builtins + std sources).
 pub fn check_graph_source_with_modes_and_ts_options(
     source: &str,
     builtin_mode: BuiltinMode,
@@ -426,9 +442,18 @@ pub fn check_graph_source_with_modes_and_ts_options(
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
-    let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-    let user_offset = builtin_src.len() + 1;
-    let full_source = format!("{}\n{}", builtin_src, source);
+    let has_linked_builtin_prelude = source_has_linked_builtin_prelude(source);
+    let (full_source, user_offset) = if has_linked_builtin_prelude {
+        (
+            source.to_string(),
+            find_linked_user_offset(source).unwrap_or(0),
+        )
+    } else {
+        let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
+        let prelude = format!("{}\n{}", builtin_src, builtins::std_sources());
+        let user_offset = prelude.len() + 1;
+        (format!("{}\n{}", prelude, source), user_offset)
+    };
     let prefix_lines = full_source[..user_offset]
         .bytes()
         .filter(|&b| b == b'\n')
@@ -447,8 +472,8 @@ pub fn check_graph_source_with_modes_and_ts_options(
     let mut binder = Binder::new(&mut type_ctx, &interner)
         .with_mode(type_system_mode(type_mode))
         .with_policy(policy);
-    let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
-    binder.register_builtins(&empty_sigs);
+    let builtin_sigs = raya_engine::builtins::to_checker_signatures();
+    binder.register_builtins(&builtin_sigs);
     binder.skip_top_level_duplicate_detection();
 
     let bind_result = binder.bind_module(&ast);
@@ -597,7 +622,10 @@ fn format_parse_errors(errors: &[ParseError], prefix_lines: usize) -> String {
 /// symbols to shadow builtins. This precheck still rejects duplicates that
 /// occur entirely within user code (e.g., repeated pasted REPL blocks).
 fn precheck_user_top_level_duplicates(source: &str) -> Result<(), RuntimeError> {
-    let parser = Parser::new(source).map_err(|errors| {
+    // Linked module source may include synthetic builtin prelude declarations.
+    // User declarations should be able to shadow these names.
+    let precheck_source = mask_linked_builtin_prelude_body(source);
+    let parser = Parser::new(precheck_source.as_ref()).map_err(|errors| {
         RuntimeError::Lex(
             errors
                 .iter()
@@ -658,7 +686,13 @@ fn precheck_node_compat_symbol_usage(
         return Ok(());
     }
 
-    if let Some(found) = builtin_manifest::find_first_node_compat_symbol_usage(source) {
+    // Linked module-graph source includes std module bodies. In strict mode we only
+    // enforce node-compat symbol usage against user-authored modules, not std internals.
+    let precheck_source = mask_linked_builtin_prelude_body(source);
+    let precheck_source = mask_linked_std_module_bodies(precheck_source.as_ref());
+    if let Some(found) =
+        builtin_manifest::find_first_node_compat_symbol_usage(precheck_source.as_ref())
+    {
         return Err(RuntimeError::TypeCheck(format!(
             "E_STRICT_NODE_COMPAT_SYMBOL: '{}' is node-compat-only (line {}). {}",
             found.symbol, found.line, found.hint
@@ -666,6 +700,80 @@ fn precheck_node_compat_symbol_usage(
     }
 
     Ok(())
+}
+
+fn source_has_linked_builtin_prelude(source: &str) -> bool {
+    source.contains(BUILTIN_PRELUDE_BEGIN_MARKER)
+}
+
+fn find_linked_user_offset(source: &str) -> Option<usize> {
+    let end = source.find(BUILTIN_PRELUDE_END_MARKER)?;
+    let after_marker = end + BUILTIN_PRELUDE_END_MARKER.len();
+    // Consume one trailing newline if present.
+    if source.as_bytes().get(after_marker) == Some(&b'\n') {
+        Some(after_marker + 1)
+    } else {
+        Some(after_marker)
+    }
+}
+
+fn mask_linked_builtin_prelude_body(source: &str) -> Cow<'_, str> {
+    if !source.contains(BUILTIN_PRELUDE_BEGIN_MARKER) {
+        return Cow::Borrowed(source);
+    }
+
+    let mut masked = String::with_capacity(source.len());
+    let mut in_builtin_prelude_body = false;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(BUILTIN_PRELUDE_BEGIN_MARKER) {
+            in_builtin_prelude_body = true;
+            masked.push_str(line);
+            continue;
+        }
+        if trimmed.starts_with(BUILTIN_PRELUDE_END_MARKER) {
+            in_builtin_prelude_body = false;
+            masked.push_str(line);
+            continue;
+        }
+
+        if in_builtin_prelude_body {
+            if line.ends_with('\n') {
+                masked.push('\n');
+            }
+        } else {
+            masked.push_str(line);
+        }
+    }
+
+    Cow::Owned(masked)
+}
+
+fn mask_linked_std_module_bodies(source: &str) -> Cow<'_, str> {
+    if !source.contains("// module: std:") {
+        return Cow::Borrowed(source);
+    }
+
+    let mut masked = String::with_capacity(source.len());
+    let mut in_std_module_body = false;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if let Some(module_name) = trimmed.strip_prefix("// module: ") {
+            in_std_module_body = module_name.trim().starts_with("std:");
+        } else if trimmed.starts_with("// entry module: ") {
+            in_std_module_body = false;
+        }
+
+        if in_std_module_body && !trimmed.starts_with("// module: ") {
+            if line.ends_with('\n') {
+                masked.push('\n');
+            }
+        } else {
+            masked.push_str(line);
+        }
+    }
+
+    Cow::Owned(masked)
 }
 
 #[cfg(test)]
@@ -852,6 +960,22 @@ mod tests {
         assert!(
             result.is_ok(),
             "combined std:encoding/std:url graph should compile in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_linked_program_allows_shadowing_builtin_names() {
+        let result = compile_source_with_mode(
+            r#"
+            import path from "node:path";
+            const Promise: number = 7;
+            return Promise + path.sep.length;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "linked module source should allow shadowing builtin names"
         );
     }
 

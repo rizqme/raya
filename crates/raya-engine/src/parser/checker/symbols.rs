@@ -153,18 +153,20 @@ impl SymbolTable {
     /// Define a symbol in the current scope
     ///
     /// Returns an error if a symbol with the same name already exists in this
-    /// scope, unless the existing symbol is imported.
+    /// scope, unless root-scope shadowing is allowed.
     pub fn define(&mut self, mut symbol: Symbol) -> Result<(), DuplicateSymbolError> {
         let scope = &mut self.scopes[self.current_scope.0 as usize];
 
         // Check for duplicate
         if let Some(existing) = scope.symbols.get(&symbol.name) {
-            // Allow shadowing of imported symbols.
-            // At root scope, also allow cross-kind shadowing so user variables
-            // can shadow prelude helper functions/classes.
-            let allow_root_cross_kind_shadow =
-                self.current_scope.0 == 0 && existing.kind != symbol.kind;
-            if !existing.flags.is_imported && !allow_root_cross_kind_shadow {
+            // Root scope behaves like pre-imported module bindings: later user
+            // declarations can shadow earlier injected/imported bindings.
+            // In nested scopes, keep strict duplicate detection except for
+            // explicitly imported symbols and variable rebinding.
+            let allow_root_shadow = self.current_scope.0 == 0;
+            let allow_variable_shadow =
+                existing.kind == SymbolKind::Variable && symbol.kind == SymbolKind::Variable;
+            if !existing.flags.is_imported && !allow_root_shadow && !allow_variable_shadow {
                 return Err(DuplicateSymbolError {
                     name: symbol.name.clone(),
                     original: existing.span,
@@ -195,7 +197,9 @@ impl SymbolTable {
         // Check for duplicate
         if let Some(existing) = scope.symbols.get(&symbol.name) {
             // Allow shadowing of imported symbols
-            if !existing.flags.is_imported {
+            let allow_variable_shadow =
+                existing.kind == SymbolKind::Variable && symbol.kind == SymbolKind::Variable;
+            if !existing.flags.is_imported && !allow_variable_shadow {
                 return Err(DuplicateSymbolError {
                     name: symbol.name.clone(),
                     original: existing.span,

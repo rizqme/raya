@@ -2317,7 +2317,9 @@ impl<'a> Interpreter<'a> {
                         // Extract each field from the parsed DynObject and store in typed Object
                         for (index, key) in field_keys.iter().enumerate() {
                             let field_value = match js_classify(json_val) {
-                                JSView::Dyn(ptr) => unsafe { (*ptr).get(key) }.unwrap_or(Value::null()),
+                                JSView::Dyn(ptr) => {
+                                    unsafe { (*ptr).get(key) }.unwrap_or(Value::null())
+                                }
                                 _ => Value::null(),
                             };
                             let _ = obj.set_field(index, field_value);
@@ -2363,7 +2365,11 @@ impl<'a> Interpreter<'a> {
                                 if let JSView::Dyn(dest_ptr) = js_classify(dest_val) {
                                     // Collect first to avoid aliasing issues
                                     let pairs: Vec<(String, Value)> = unsafe {
-                                        (*source_ptr).props.iter().map(|(k, v)| (k.clone(), *v)).collect()
+                                        (*source_ptr)
+                                            .props
+                                            .iter()
+                                            .map(|(k, v)| (k.clone(), *v))
+                                            .collect()
                                     };
                                     let dest_obj = unsafe { &mut *(dest_ptr as *mut DynObject) };
                                     for (key, val) in pairs {

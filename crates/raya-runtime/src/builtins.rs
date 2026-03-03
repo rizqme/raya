@@ -20,6 +20,10 @@ pub fn builtin_sources_for_mode(mode: BuiltinMode) -> &'static str {
 
 fn strict_builtin_sources() -> &'static str {
     concat!(
+        include_str!("../../raya-engine/builtins/strict/array.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/strict/regexp.raya"),
+        "\n",
         include_str!("../../raya-engine/builtins/strict/object.raya"),
         "\n",
         include_str!("../../raya-engine/builtins/strict/error.raya"),
@@ -53,6 +57,10 @@ fn strict_builtin_sources() -> &'static str {
 
 fn node_compat_builtin_sources() -> &'static str {
     concat!(
+        include_str!("../../raya-engine/builtins/strict/array.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/strict/regexp.raya"),
+        "\n",
         include_str!("../../raya-engine/builtins/node_compat/object.raya"),
         "\n",
         include_str!("../../raya-engine/builtins/node_compat/error.raya"),

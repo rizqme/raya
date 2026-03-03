@@ -27,42 +27,45 @@ fn parse_union_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError> {
         ));
     }
 
-    let start_span = parser.current_span();
+    // Ensure depth is decremented even if downstream parsing fails.
+    let result = (|| {
+        let start_span = parser.current_span();
 
-    // Allow optional leading pipe for discriminated union syntax:
-    // type X = | { kind: "a" } | { kind: "b" }
-    let has_leading_pipe = parser.check(&Token::Pipe);
-    if has_leading_pipe {
-        parser.advance(); // consume leading |
-    }
-
-    let first_type = parse_intersection_type(parser)?;
-
-    // Check if this is a union type
-    if has_leading_pipe || parser.check(&Token::Pipe) {
-        let mut types = vec![first_type];
-        let mut guard = super::guards::LoopGuard::new("union_types");
-
-        while parser.check(&Token::Pipe) {
-            guard.check()?;
-            parser.advance(); // consume |
-            let next_type = parse_intersection_type(parser)?;
-            types.push(next_type);
+        // Allow optional leading pipe for discriminated union syntax:
+        // type X = | { kind: "a" } | { kind: "b" }
+        let has_leading_pipe = parser.check(&Token::Pipe);
+        if has_leading_pipe {
+            parser.advance(); // consume leading |
         }
 
-        let end_span = types.last().unwrap().span;
-        let span = parser.combine_spans(&start_span, &end_span);
+        let first_type = parse_intersection_type(parser)?;
 
-        let result = TypeAnnotation {
-            ty: Type::Union(UnionType { types }),
-            span,
-        };
-        parser.depth -= 1;
-        Ok(result)
-    } else {
-        parser.depth -= 1;
-        Ok(first_type)
-    }
+        // Check if this is a union type
+        if has_leading_pipe || parser.check(&Token::Pipe) {
+            let mut types = vec![first_type];
+            let mut guard = super::guards::LoopGuard::new("union_types");
+
+            while parser.check(&Token::Pipe) {
+                guard.check()?;
+                parser.advance(); // consume |
+                let next_type = parse_intersection_type(parser)?;
+                types.push(next_type);
+            }
+
+            let end_span = types.last().unwrap().span;
+            let span = parser.combine_spans(&start_span, &end_span);
+
+            Ok(TypeAnnotation {
+                ty: Type::Union(UnionType { types }),
+                span,
+            })
+        } else {
+            Ok(first_type)
+        }
+    })();
+
+    parser.depth -= 1;
+    result
 }
 
 /// Parse an intersection type (A & B & C) or a single type

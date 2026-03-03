@@ -430,8 +430,10 @@ impl<'a> Interpreter<'a> {
                                                 .map(|f| {
                                                     let name = f.name.as_str();
                                                     name == prop_name
-                                                        || name.ends_with(&format!(".{}", prop_name))
-                                                        || name.ends_with(&format!("::{}", prop_name))
+                                                        || name
+                                                            .ends_with(&format!(".{}", prop_name))
+                                                        || name
+                                                            .ends_with(&format!("::{}", prop_name))
                                                 })
                                                 .unwrap_or(false)
                                         })
@@ -544,16 +546,21 @@ impl<'a> Interpreter<'a> {
                 };
                 let prop_name = match module.constants.get_string(prop_index) {
                     Some(s) => s.to_string(),
-                    None => return OpcodeResult::Error(VmError::RuntimeError(
-                        format!("Invalid constant index {} for DynDelete", prop_index)
-                    )),
+                    None => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Invalid constant index {} for DynDelete",
+                            prop_index
+                        )))
+                    }
                 };
                 let obj_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if let JSView::Dyn(ptr) = js_classify(obj_val) {
-                    unsafe { &mut *(ptr as *mut DynObject) }.props.remove(&prop_name);
+                    unsafe { &mut *(ptr as *mut DynObject) }
+                        .props
+                        .remove(&prop_name);
                 }
                 OpcodeResult::Continue
             }
@@ -575,15 +582,15 @@ impl<'a> Interpreter<'a> {
                 // Extract string key
                 let key_str = match js_classify(key_val) {
                     JSView::Str(ptr) => unsafe { &*ptr }.data.clone(),
-                    _ => return OpcodeResult::Error(VmError::TypeError(
-                        "DynGetKeyed key must be a string".to_string()
-                    )),
+                    _ => {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "DynGetKeyed key must be a string".to_string(),
+                        ))
+                    }
                 };
 
                 let result = match js_classify(obj_val) {
-                    JSView::Dyn(ptr) => {
-                        unsafe { (*ptr).get(&key_str) }.unwrap_or(Value::null())
-                    }
+                    JSView::Dyn(ptr) => unsafe { (*ptr).get(&key_str) }.unwrap_or(Value::null()),
                     JSView::Struct { ptr, class_id } => {
                         let obj = unsafe { &*ptr };
                         let class_metadata = self.class_metadata.read();
@@ -626,9 +633,11 @@ impl<'a> Interpreter<'a> {
 
                 let key_str = match js_classify(key_val) {
                     JSView::Str(ptr) => unsafe { &*ptr }.data.clone(),
-                    _ => return OpcodeResult::Error(VmError::TypeError(
-                        "DynSetKeyed key must be a string".to_string()
-                    )),
+                    _ => {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "DynSetKeyed key must be a string".to_string(),
+                        ))
+                    }
                 };
 
                 match js_classify(obj_val) {
@@ -652,9 +661,11 @@ impl<'a> Interpreter<'a> {
                             )));
                         }
                     }
-                    _ => return OpcodeResult::Error(VmError::TypeError(
-                        "DynSetKeyed target must be an object".to_string()
-                    )),
+                    _ => {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "DynSetKeyed target must be an object".to_string(),
+                        ))
+                    }
                 }
                 OpcodeResult::Continue
             }
@@ -664,9 +675,8 @@ impl<'a> Interpreter<'a> {
 
                 let dyn_obj = DynObject::new();
                 let gc_ptr = self.gc.lock().allocate(dyn_obj);
-                let val = unsafe {
-                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-                };
+                let val =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 if let Err(e) = stack.push(val) {
                     return OpcodeResult::Error(e);
                 }
@@ -685,20 +695,29 @@ impl<'a> Interpreter<'a> {
                 let keys: Vec<Value> = match js_classify(obj_val) {
                     JSView::Dyn(ptr) => {
                         let obj = unsafe { &*ptr };
-                        obj.props.keys().map(|k| {
-                            let raya_str = RayaString::new(k.clone());
-                            let gc_ptr = self.gc.lock().allocate(raya_str);
-                            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
-                        }).collect()
+                        obj.props
+                            .keys()
+                            .map(|k| {
+                                let raya_str = RayaString::new(k.clone());
+                                let gc_ptr = self.gc.lock().allocate(raya_str);
+                                unsafe {
+                                    Value::from_ptr(
+                                        std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
+                                    )
+                                }
+                            })
+                            .collect()
                     }
                     _ => vec![],
                 };
 
-                let arr = Array { type_id: 0, elements: keys };
-                let arr_ptr = self.gc.lock().allocate(arr);
-                let result = unsafe {
-                    Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap())
+                let arr = Array {
+                    type_id: 0,
+                    elements: keys,
                 };
+                let arr_ptr = self.gc.lock().allocate(arr);
+                let result =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) };
                 if let Err(e) = stack.push(result) {
                     return OpcodeResult::Error(e);
                 }
@@ -714,9 +733,12 @@ impl<'a> Interpreter<'a> {
                 };
                 let prop_name = match module.constants.get_string(prop_index) {
                     Some(s) => s.to_string(),
-                    None => return OpcodeResult::Error(VmError::RuntimeError(
-                        format!("Invalid constant index {} for DynHas", prop_index)
-                    )),
+                    None => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Invalid constant index {} for DynHas",
+                            prop_index
+                        )))
+                    }
                 };
                 let obj_val = match stack.pop() {
                     Ok(v) => v,

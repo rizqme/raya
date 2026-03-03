@@ -41,6 +41,13 @@ pub struct Parser {
     depth: usize,
 }
 
+/// Backtracking snapshot for speculative parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParserCheckpoint {
+    pos: usize,
+    depth: usize,
+}
+
 impl Parser {
     /// Create a new parser from source code.
     pub fn new(source: &str) -> Result<Self, Vec<crate::parser::lexer::LexError>> {
@@ -203,14 +210,18 @@ impl Parser {
 
     /// Save the current parser position for potential backtracking.
     #[inline(always)]
-    pub fn checkpoint(&self) -> usize {
-        self.pos
+    pub fn checkpoint(&self) -> ParserCheckpoint {
+        ParserCheckpoint {
+            pos: self.pos,
+            depth: self.depth,
+        }
     }
 
     /// Restore the parser to a previously saved position.
     #[inline(always)]
-    pub fn restore(&mut self, checkpoint: usize) {
-        self.pos = checkpoint;
+    pub fn restore(&mut self, checkpoint: ParserCheckpoint) {
+        self.pos = checkpoint.pos;
+        self.depth = checkpoint.depth;
     }
 
     /// Check if the current token matches the given kind.

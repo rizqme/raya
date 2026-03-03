@@ -1,4 +1,5 @@
 use crate::error::RuntimeError;
+use crate::{builtins, BuiltinMode};
 use raya_engine::parser::ast::{
     ClassDecl, ClassMember, ExportDecl, Expression, FunctionDecl, ImportSpecifier, ObjectProperty,
     Pattern, PropertyKey, Statement, VariableDecl,
@@ -10,6 +11,8 @@ use super::graph::{ProgramGraph, ProgramGraphNode};
 use super::resolver::{ModuleKey, ModuleSpecifierKind};
 
 const INTERNAL_DEFAULT_EXPORT: &str = "__default";
+const BUILTIN_PRELUDE_BEGIN_MARKER: &str = "// __raya_builtin_prelude_begin";
+const BUILTIN_PRELUDE_END_MARKER: &str = "// __raya_builtin_prelude_end";
 
 #[derive(Debug, Clone)]
 pub struct LinkedProgramSource {
@@ -28,8 +31,21 @@ struct ModuleMeta {
 pub struct ProgramLinkerV2;
 
 impl ProgramLinkerV2 {
-    pub fn link(graph: &ProgramGraph) -> Result<LinkedProgramSource, RuntimeError> {
+    pub fn link(
+        graph: &ProgramGraph,
+        builtin_mode: BuiltinMode,
+    ) -> Result<LinkedProgramSource, RuntimeError> {
         let mut merged = String::new();
+        merged.push_str("// module: __raya:builtins (pre-imported)\n");
+        merged.push_str(BUILTIN_PRELUDE_BEGIN_MARKER);
+        merged.push('\n');
+        merged.push_str(builtins::builtin_sources_for_mode(builtin_mode));
+        if !merged.ends_with('\n') {
+            merged.push('\n');
+        }
+        merged.push_str(BUILTIN_PRELUDE_END_MARKER);
+        merged.push('\n');
+
         let mut metas: HashMap<ModuleKey, ModuleMeta> = HashMap::new();
         let mut module_ids: HashMap<ModuleKey, usize> = HashMap::new();
         for (idx, key) in graph.topological_order.iter().enumerate() {
@@ -120,9 +136,12 @@ fn transform_library_module(
     let mut body = String::new();
     let mut default_counter = 0usize;
     let mut import_counter = 0usize;
+    let mut cursor = 0usize;
     let dep_map = dependency_map(node);
 
     for stmt in &ast.statements {
+        let span = stmt.span();
+        append_source_segment(&mut body, &node.source, &mut cursor, span.start);
         match stmt {
             Statement::ImportDecl(import) => {
                 let specifier = interner.resolve(import.source.value);
@@ -214,6 +233,7 @@ fn transform_library_module(
                         }
                     }
                 }
+                cursor = span.end;
             }
             Statement::ExportDecl(ExportDecl::Declaration(inner)) => {
                 body.push_str(inner.span().slice(&node.source));
@@ -226,6 +246,8 @@ fn transform_library_module(
                     export_types.insert(exported.clone(), ty);
                     export_values.insert(exported.clone(), exported);
                 }
+                // Keep any trailing punctuation/comments after the inner declaration.
+                cursor = inner.span().end;
             }
             Statement::ExportDecl(ExportDecl::Named {
                 specifiers, source, ..
@@ -291,6 +313,7 @@ fn transform_library_module(
                         export_values.insert(internal_export_name(&exported), local_name);
                     }
                 }
+                cursor = span.end;
             }
             Statement::ExportDecl(ExportDecl::All { source, .. }) => {
                 let specifier = interner.resolve(source.value);
@@ -321,6 +344,7 @@ fn transform_library_module(
                         ),
                     );
                 }
+                cursor = span.end;
             }
             Statement::ExportDecl(ExportDecl::Default { expression, .. }) => {
                 let expr_src = expression.span().slice(&node.source);
@@ -338,13 +362,14 @@ fn transform_library_module(
                 );
                 export_types.insert("default".to_string(), ty);
                 export_values.insert(INTERNAL_DEFAULT_EXPORT.to_string(), tmp);
+                cursor = span.end;
             }
             _ => {
-                body.push_str(stmt.span().slice(&node.source));
-                body.push('\n');
+                append_source_segment(&mut body, &node.source, &mut cursor, span.end);
             }
         }
     }
+    append_source_segment(&mut body, &node.source, &mut cursor, node.source.len());
 
     let export_type_name = format!("__raya_mod_exports_type_{}", module_id);
     let export_var_name = format!("__raya_mod_exports_{}", module_id);
@@ -390,8 +415,15 @@ fn transform_library_module(
             .filter_map(|(exported_name, ty)| {
                 let internal_name = internal_export_name(exported_name);
                 let value = export_values.get(&internal_name)?;
+                let is_local_class_constructor_export = class_aliases
+                    .get(value)
+                    .is_some_and(|alias_name| alias_name == ty);
                 let typed_value = if ty.starts_with("__t_") {
-                    format!("({} as {})", value, ty)
+                    if is_local_class_constructor_export {
+                        value.clone()
+                    } else {
+                        format!("({} as {})", value, ty)
+                    }
                 } else {
                     value.clone()
                 };
@@ -511,6 +543,9 @@ fn transform_entry_module(
                                     Some(&ty),
                                 ));
                             }
+                            if ty != "unknown" && looks_like_class_identifier(&local) {
+                                body.push_str(&format!("type {} = {};\n", local, ty));
+                            }
                         }
                         ImportSpecifier::Default(local) => {
                             let local_name = interner.resolve(local.name).to_string();
@@ -528,6 +563,9 @@ fn transform_entry_module(
                                 &value_expr,
                                 Some(&ty),
                             ));
+                            if ty != "unknown" && looks_like_class_identifier(&local_name) {
+                                body.push_str(&format!("type {} = {};\n", local_name, ty));
+                            }
                         }
                         ImportSpecifier::Namespace(alias) => {
                             let local_name = interner.resolve(alias.name).to_string();
@@ -1136,6 +1174,7 @@ fn append_source_segment(output: &mut String, source: &str, cursor: &mut usize, 
     if *cursor < start {
         output.push_str(&source[*cursor..start]);
     }
+    *cursor = start;
 }
 
 fn const_binding_with_optional_type(name: &str, value_expr: &str, ty: Option<&str>) -> String {

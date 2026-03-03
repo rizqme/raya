@@ -1660,9 +1660,7 @@ fn lift_instruction(
         }
         Opcode::DynHas => {
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::DynHas { dest });
+            func.block_mut(block).instrs.push(JitInstr::DynHas { dest });
             stack.push(dest);
         }
         Opcode::DynNewObject => {

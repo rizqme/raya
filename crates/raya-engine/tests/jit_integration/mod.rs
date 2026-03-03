@@ -1,4 +1,3 @@
-
 //! Comprehensive JIT end-to-end integration tests.
 //!
 //! Tests the full pipeline: bytecode → analysis → SSA IR → Cranelift → native execution.

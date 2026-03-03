@@ -390,11 +390,9 @@ impl<'a> Lowerer<'a> {
                 let symbol_iterator_sym = self.interner.lookup("Symbol.iterator");
                 let iterator_sym = self.interner.lookup("iterator");
                 let slot = match symbol_iterator_sym
-                    .and_then(|sym| self.method_slot_map.get(&(class_id, sym)).copied())
-                    .or_else(|| {
-                        iterator_sym
-                            .and_then(|sym| self.method_slot_map.get(&(class_id, sym)).copied())
-                    }) {
+                    .and_then(|sym| self.find_method_slot(class_id, sym))
+                    .or_else(|| iterator_sym.and_then(|sym| self.find_method_slot(class_id, sym)))
+                {
                     Some(slot) => slot,
                     None => {
                         self.errors
@@ -1368,14 +1366,12 @@ impl<'a> Lowerer<'a> {
                         .iter()
                         .enumerate()
                         .filter_map(|(idx, member)| match member {
-                            ast::ObjectTypeMember::Property(prop) => Some((
-                                self.interner.resolve(prop.name.name).to_string(),
-                                idx,
-                            )),
-                            ast::ObjectTypeMember::Method(method) => Some((
-                                self.interner.resolve(method.name.name).to_string(),
-                                idx,
-                            )),
+                            ast::ObjectTypeMember::Property(prop) => {
+                                Some((self.interner.resolve(prop.name.name).to_string(), idx))
+                            }
+                            ast::ObjectTypeMember::Method(method) => {
+                                Some((self.interner.resolve(method.name.name).to_string(), idx))
+                            }
                         })
                         .collect();
                     if !fields.is_empty() {
@@ -1450,8 +1446,8 @@ impl<'a> Lowerer<'a> {
                         };
                         if let Some(class_id) = self.infer_class_id(&member.object) {
                             if self
-                                .method_slot_map
-                                .contains_key(&(class_id, member.property.name))
+                                .find_method_slot(class_id, member.property.name)
+                                .is_some()
                             {
                                 self.bound_method_vars
                                     .insert(name, (class_id, member.property.name));
@@ -1577,8 +1573,8 @@ impl<'a> Lowerer<'a> {
                 };
                 if let Some(class_id) = self.infer_class_id(&member.object) {
                     if self
-                        .method_slot_map
-                        .contains_key(&(class_id, member.property.name))
+                        .find_method_slot(class_id, member.property.name)
+                        .is_some()
                     {
                         self.bound_method_vars
                             .insert(name, (class_id, member.property.name));

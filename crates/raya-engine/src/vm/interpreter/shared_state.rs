@@ -332,16 +332,15 @@ impl SharedVmState {
 /// Generic class TypeIds are serialised as "type#N" and parsed back here.
 fn reflect_type_name_to_id(type_name: &str) -> u32 {
     match type_name {
-        "number"  => 0,
-        "string"  => 1,
+        "number" => 0,
+        "string" => 1,
         "boolean" => 2,
-        "null"    => 3,
-        "void"    => 4,
-        "never"   => 5,
+        "null" => 3,
+        "void" => 4,
+        "never" => 5,
         "unknown" => 6,
-        "int"     => 16,
+        "int" => 16,
         s if s.starts_with("type#") => s[5..].parse().unwrap_or(0),
         _ => 0,
     }
 }
-

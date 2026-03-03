@@ -30,9 +30,22 @@ class Promise<T> {
     }
 
     //@@class_method
-    then<U>(onFulfilled: (value: T) => U): Promise<U> {
+    then<U>(
+        onFulfilled: (value: T) => U,
+        onRejected?: (reason: PromiseRejectionReason) => U
+    ): Promise<U> {
+        while (!this.isDone()) {
+            sleep(0);
+        }
+        if (__NATIVE_CALL<boolean>(PROMISE_IS_FAILED, this)) {
+            let reason = __NATIVE_CALL<PromiseRejectionReason>(PROMISE_GET_ERROR, this);
+            if (onRejected != null) {
+                return Promise.resolve(onRejected(reason));
+            }
+            throw reason;
+        }
         let value: T = __OPCODE_AWAIT(this);
-        return async onFulfilled(value);
+        return Promise.resolve(onFulfilled(value));
     }
 
     //@@class_method

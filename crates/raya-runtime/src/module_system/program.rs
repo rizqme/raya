@@ -33,7 +33,7 @@ pub struct ProgramCompiler {
 impl ProgramCompiler {
     pub fn compile_program_file(&self, path: &Path) -> Result<CompiledProgram, RuntimeError> {
         let graph = ProgramGraphBuilder::new().build(path)?;
-        let linked = ProgramLinkerV2::link(&graph)?;
+        let linked = ProgramLinkerV2::link(&graph, self.builtin_mode)?;
 
         self.enforce_dynamic_import_policy(&linked.source)?;
         if let Ok(path) = std::env::var("RAYA_DEBUG_DUMP_LINKED_SOURCE") {
@@ -81,7 +81,7 @@ impl ProgramCompiler {
 
     pub fn check_program_file(&self, path: &Path) -> Result<ProgramDiagnostics, RuntimeError> {
         let graph = ProgramGraphBuilder::new().build(path)?;
-        let linked = ProgramLinkerV2::link(&graph)?;
+        let linked = ProgramLinkerV2::link(&graph, self.builtin_mode)?;
 
         self.enforce_dynamic_import_policy(&linked.source)?;
         if let Ok(path) = std::env::var("RAYA_DEBUG_DUMP_LINKED_SOURCE") {
@@ -120,7 +120,7 @@ impl ProgramCompiler {
     ) -> Result<CompiledProgram, RuntimeError> {
         let graph = ProgramGraphBuilder::new()
             .build_from_source(virtual_entry_path.to_path_buf(), source.to_string())?;
-        let linked = ProgramLinkerV2::link(&graph)?;
+        let linked = ProgramLinkerV2::link(&graph, self.builtin_mode)?;
 
         self.enforce_dynamic_import_policy(&linked.source)?;
         if let Ok(path) = std::env::var("RAYA_DEBUG_DUMP_LINKED_SOURCE") {
@@ -163,7 +163,7 @@ impl ProgramCompiler {
     ) -> Result<ProgramDiagnostics, RuntimeError> {
         let graph = ProgramGraphBuilder::new()
             .build_from_source(virtual_entry_path.to_path_buf(), source.to_string())?;
-        let linked = ProgramLinkerV2::link(&graph)?;
+        let linked = ProgramLinkerV2::link(&graph, self.builtin_mode)?;
 
         self.enforce_dynamic_import_policy(&linked.source)?;
         if let Ok(path) = std::env::var("RAYA_DEBUG_DUMP_LINKED_SOURCE") {
@@ -290,8 +290,16 @@ mod tests {
         let graph = super::ProgramGraphBuilder::new()
             .build(&main_path)
             .expect("build graph");
-        let linked = super::ProgramLinkerV2::link(&graph).expect("link");
+        let linked = super::ProgramLinkerV2::link(&graph, BuiltinMode::RayaStrict).expect("link");
 
+        assert!(
+            linked.source.contains("// __raya_builtin_prelude_begin"),
+            "linked source should include explicit builtin prelude begin marker"
+        );
+        assert!(
+            linked.source.contains("// __raya_builtin_prelude_end"),
+            "linked source should include explicit builtin prelude end marker"
+        );
         assert!(
             linked.source.contains("type __t_m0_C<T> ="),
             "generic class alias should preserve arity: {}",

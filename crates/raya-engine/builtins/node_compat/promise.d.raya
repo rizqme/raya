@@ -10,7 +10,10 @@ export class Promise<T> {
     isDone(): boolean;
     isCancelled(): boolean;
 
-    then<U>(onFulfilled: (value: T) => U): Promise<U>;
+    then<U>(
+        onFulfilled: (value: T) => U,
+        onRejected?: (reason: PromiseRejectionReason) => U
+    ): Promise<U>;
     catch<U>(onRejected: (reason: PromiseRejectionReason) => U): Promise<T | U>;
     finally(onFinally: () => void): Promise<T>;
 

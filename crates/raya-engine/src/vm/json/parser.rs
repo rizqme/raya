@@ -290,7 +290,10 @@ impl<'a> Parser<'a> {
 
         if self.pos < self.bytes.len() && self.bytes[self.pos] == b']' {
             self.pos += 1;
-            let arr = Array { type_id: 0, elements };
+            let arr = Array {
+                type_id: 0,
+                elements,
+            };
             let arr_ptr = self.gc.allocate(arr);
             return Ok(unsafe {
                 Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap())
@@ -313,7 +316,10 @@ impl<'a> Parser<'a> {
                 }
                 b']' => {
                     self.pos += 1;
-                    let arr = Array { type_id: 0, elements };
+                    let arr = Array {
+                        type_id: 0,
+                        elements,
+                    };
                     let arr_ptr = self.gc.allocate(arr);
                     return Ok(unsafe {
                         Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap())

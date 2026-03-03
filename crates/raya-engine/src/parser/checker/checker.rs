@@ -5651,15 +5651,23 @@ impl<'a> TypeChecker<'a> {
             "isDone" => Some(self.type_ctx.function_type(vec![], bool_ty, false)),
             // isCancelled() -> boolean
             "isCancelled" => Some(self.type_ctx.function_type(vec![], bool_ty, false)),
-            // then<U>(onFulfilled: (value: T) => U) -> Promise<U>
+            // then<U>(onFulfilled: (value: T) => U, onRejected?: (reason) => U) -> Promise<U>
             "then" => {
                 let on_fulfilled_ty =
                     self.type_ctx
                         .function_type(vec![result_ty], unknown_ty, false);
-                Some(
+                // Use `never` for handler input to keep parameter position maximally permissive
+                // under contravariant function parameter checking.
+                let reason_ty = self.type_ctx.never_type();
+                let on_rejected_ty =
                     self.type_ctx
-                        .function_type(vec![on_fulfilled_ty], promise_unknown_ty, false),
-                )
+                        .function_type(vec![reason_ty], unknown_ty, false);
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![on_fulfilled_ty, on_rejected_ty],
+                    promise_unknown_ty,
+                    false,
+                    1,
+                ))
             }
             // catch<U>(onRejected: (reason: Object) => U) -> Promise<T | U>
             "catch" => {

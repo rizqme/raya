@@ -204,7 +204,11 @@ impl<'a> Compiler<'a> {
 
         // Dump annotated IR to stderr when RAYA_DEBUG_DUMP_IR is set
         if dump_ir {
-            dump_ir_module(&ir_module, self.source_text.as_deref(), Some(&self.type_ctx));
+            dump_ir_module(
+                &ir_module,
+                self.source_text.as_deref(),
+                Some(&self.type_ctx),
+            );
         }
 
         // Dump type table when RAYA_DEBUG_DUMP_TYPES is set
@@ -224,8 +228,8 @@ impl<'a> Compiler<'a> {
     /// 4. IR → Bytecode code generation
     pub fn compile_via_ir(&self, module: &ast::Module) -> CompileResult<Module> {
         let dump_bc = std::env::var("RAYA_DEBUG_DUMP_BYTECODE").is_ok();
-        let need_sourcemap = self.emit_sourcemap || dump_bc
-            || std::env::var("RAYA_DEBUG_DUMP_IR").is_ok();
+        let need_sourcemap =
+            self.emit_sourcemap || dump_bc || std::env::var("RAYA_DEBUG_DUMP_IR").is_ok();
 
         // Get optimized IR (sourcemap enabling and IR dump happen inside)
         let ir_module = self.compile_to_optimized_ir(module)?;
@@ -449,7 +453,13 @@ pub fn disassemble_function_annotated(
     while offset < code.len() {
         let opcode_byte = code[offset];
         if let Some(opcode) = Opcode::from_u8(opcode_byte) {
-            write!(output, "    {:04x}: {:<22}", offset, format!("{:?}", opcode)).unwrap();
+            write!(
+                output,
+                "    {:04x}: {:<22}",
+                offset,
+                format!("{:?}", opcode)
+            )
+            .unwrap();
             let instr_start_offset = offset;
             offset += 1;
 
@@ -502,7 +512,9 @@ pub fn disassemble_function_annotated(
 
             // Append source annotation if debug info is available
             if let Some(dbg) = debug_info {
-                if let Some(entry) = dbg.line_table.iter()
+                if let Some(entry) = dbg
+                    .line_table
+                    .iter()
                     .filter(|e| e.bytecode_offset as usize <= instr_start_offset)
                     .last()
                 {
@@ -548,7 +560,7 @@ fn annotate_type_ids(text: &str, type_ctx: &TypeContext) -> String {
         if chars[i] == 'r' && i + 1 < n && chars[i + 1].is_ascii_digit() {
             let r_start = i;
             i += 1; // skip 'r'
-            // Consume register-id digits
+                    // Consume register-id digits
             while i < n && chars[i].is_ascii_digit() {
                 i += 1;
             }
@@ -590,16 +602,19 @@ fn dump_ir_module(
     source_text: Option<&str>,
     type_ctx: Option<&TypeContext>,
 ) {
-    let source_lines: Vec<&str> = source_text
-        .map(|s| s.lines().collect())
-        .unwrap_or_default();
+    let source_lines: Vec<&str> = source_text.map(|s| s.lines().collect()).unwrap_or_default();
 
     eprintln!("\n╔═══════════════════════════════════════════════════════════════╗");
     eprintln!("║  RAYA_DEBUG_DUMP_IR — Annotated IR Module                     ║");
     eprintln!("╚═══════════════════════════════════════════════════════════════╝");
 
     for (func_idx, func) in ir_module.functions.iter().enumerate() {
-        eprintln!("\n─── fn{}: {} (params={}) ───", func_idx, func.name, func.params.len());
+        eprintln!(
+            "\n─── fn{}: {} (params={}) ───",
+            func_idx,
+            func.name,
+            func.params.len()
+        );
         for block in &func.blocks {
             let label = block.label.as_deref().unwrap_or("");
             if label.is_empty() {
@@ -619,16 +634,24 @@ fn dump_ir_module(
                     let span = &block.instruction_spans[i];
                     if span.line > 0 {
                         let line = span.line as usize;
-                        let src_snippet = if !source_lines.is_empty() && line <= source_lines.len() {
+                        let src_snippet = if !source_lines.is_empty() && line <= source_lines.len()
+                        {
                             let s = source_lines[line - 1].trim();
-                            if s.len() > 70 { &s[..70] } else { s }
+                            if s.len() > 70 {
+                                &s[..70]
+                            } else {
+                                s
+                            }
                         } else {
                             ""
                         };
                         if src_snippet.is_empty() {
                             eprintln!("    {:<60}  ; L{}:{}", ir_text, span.line, span.column);
                         } else {
-                            eprintln!("    {:<60}  ; L{}:{} | {}", ir_text, span.line, span.column, src_snippet);
+                            eprintln!(
+                                "    {:<60}  ; L{}:{} | {}",
+                                ir_text, span.line, span.column, src_snippet
+                            );
                         }
                     } else {
                         eprintln!("    {}", ir_text);
@@ -648,14 +671,27 @@ fn dump_ir_module(
                 let line = block.terminator_span.line as usize;
                 let src_snippet = if !source_lines.is_empty() && line <= source_lines.len() {
                     let s = source_lines[line - 1].trim();
-                    if s.len() > 70 { &s[..70] } else { s }
+                    if s.len() > 70 {
+                        &s[..70]
+                    } else {
+                        s
+                    }
                 } else {
                     ""
                 };
                 if src_snippet.is_empty() {
-                    eprintln!("    {:<60}  ; L{}:{}", term_text, block.terminator_span.line, block.terminator_span.column);
+                    eprintln!(
+                        "    {:<60}  ; L{}:{}",
+                        term_text, block.terminator_span.line, block.terminator_span.column
+                    );
                 } else {
-                    eprintln!("    {:<60}  ; L{}:{} | {}", term_text, block.terminator_span.line, block.terminator_span.column, src_snippet);
+                    eprintln!(
+                        "    {:<60}  ; L{}:{} | {}",
+                        term_text,
+                        block.terminator_span.line,
+                        block.terminator_span.column,
+                        src_snippet
+                    );
                 }
             } else {
                 eprintln!("    {}", term_text);
@@ -690,26 +726,24 @@ fn format_ir_instr_pretty(instr: &ir::IrInstr) -> String {
 ///
 /// Activated by the `RAYA_DEBUG_DUMP_BYTECODE` environment variable.
 fn dump_bytecode_module(module: &Module, source_text: Option<&str>) {
-    let source_lines: Vec<&str> = source_text
-        .map(|s| s.lines().collect())
-        .unwrap_or_default();
+    let source_lines: Vec<&str> = source_text.map(|s| s.lines().collect()).unwrap_or_default();
 
     eprintln!("\n╔═══════════════════════════════════════════════════════════════╗");
     eprintln!("║  RAYA_DEBUG_DUMP_BYTECODE — Annotated Bytecode                ║");
     eprintln!("╚═══════════════════════════════════════════════════════════════╝");
 
     for (i, func) in module.functions.iter().enumerate() {
-        let debug_info = module
-            .debug_info
-            .as_ref()
-            .and_then(|d| d.functions.get(i));
+        let debug_info = module.debug_info.as_ref().and_then(|d| d.functions.get(i));
         eprintln!(
             "\n─── fn{}: {} (locals={}, params={}, {} bytes) ───",
-            i, func.name, func.local_count, func.param_count, func.code.len()
+            i,
+            func.name,
+            func.local_count,
+            func.param_count,
+            func.code.len()
         );
         let disasm = disassemble_function_annotated(func, debug_info, &source_lines);
         eprint!("{}", disasm);
     }
     eprintln!();
 }
-

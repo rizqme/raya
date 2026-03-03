@@ -1436,17 +1436,16 @@ impl<'a> Lowerer<'a> {
                         if let Some(call_expr) = call_expr {
                             if let ast::Expression::Identifier(func_ident) = &*call_expr.callee {
                                 let func_name = self.interner.resolve(func_ident.name).to_string();
-                                let inferred_alias = if let Some(tag) =
-                                    func_name.strip_prefix("__std_module_")
-                                {
-                                    Some(format!("__std_exports_type_{}", tag))
-                                } else if let Some(module_id) =
-                                    func_name.strip_prefix("__raya_mod_init_")
-                                {
-                                    Some(format!("__raya_mod_exports_type_{}", module_id))
-                                } else {
-                                    None
-                                };
+                                let inferred_alias =
+                                    if let Some(tag) = func_name.strip_prefix("__std_module_") {
+                                        Some(format!("__std_exports_type_{}", tag))
+                                    } else if let Some(module_id) =
+                                        func_name.strip_prefix("__raya_mod_init_")
+                                    {
+                                        Some(format!("__raya_mod_exports_type_{}", module_id))
+                                    } else {
+                                        None
+                                    };
                                 if let Some(alias_name) = cast_alias_name.or(inferred_alias) {
                                     if let Some(fields) =
                                         self.type_alias_object_fields.get(&alias_name).cloned()
@@ -1486,8 +1485,15 @@ impl<'a> Lowerer<'a> {
             let stmt = Self::unwrap_export(raw_stmt);
             match stmt {
                 Statement::FunctionDecl(func) => {
-                    // Get the pre-assigned function ID
-                    let func_id = self.function_map.get(&func.name.name).copied().unwrap();
+                    // Use declaration-scoped function IDs so duplicate names across
+                    // linked std modules don't alias each other.
+                    let func_id = self.function_id_for_decl(func).unwrap_or_else(|| {
+                        panic!(
+                            "ICE: function '{}' at span {} was not pre-registered",
+                            self.interner.resolve(func.name.name),
+                            func.span.start
+                        )
+                    });
                     let ir_func = self.lower_function(func);
                     // Add to pending with pre-assigned ID (will be sorted later)
                     self.pending_arrow_functions
@@ -1558,6 +1564,101 @@ impl<'a> Lowerer<'a> {
 
         // Add ALL pending functions (including main and class methods) sorted by func_id
         // This ensures functions are added to the module in the order of their pre-assigned IDs
+        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+            let mut seen = FxHashSet::default();
+            for (id, _) in &self.pending_arrow_functions {
+                seen.insert(*id);
+            }
+            let mut missing = Vec::new();
+            for id in 0..self.next_function_id {
+                if !seen.contains(&id) {
+                    missing.push(id);
+                    if missing.len() >= 8 {
+                        break;
+                    }
+                }
+            }
+            if !missing.is_empty() {
+                eprintln!(
+                    "[lower] missing preassigned function ids (first {}): {:?}; next_function_id={}",
+                    missing.len(),
+                    missing,
+                    self.next_function_id
+                );
+                for miss in &missing {
+                    let mut labels = Vec::new();
+                    for (&sym, &fid) in &self.function_map {
+                        if fid.as_u32() == *miss {
+                            labels.push(format!("function_map:{}", self.interner.resolve(sym)));
+                        }
+                    }
+                    for (&span_start, &fid) in &self.function_decl_ids {
+                        if fid.as_u32() == *miss {
+                            labels.push(format!("function_decl_ids@{}", span_start));
+                        }
+                    }
+                    for (&(class_id, method_sym), &fid) in &self.method_map {
+                        if fid.as_u32() == *miss {
+                            let class_name = self
+                                .class_map
+                                .iter()
+                                .find_map(|(&sym, &id)| {
+                                    if id == class_id {
+                                        Some(self.interner.resolve(sym).to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_else(|| format!("class{}", class_id.as_u32()));
+                            labels.push(format!(
+                                "method_map:{}::{}",
+                                class_name,
+                                self.interner.resolve(method_sym)
+                            ));
+                        }
+                    }
+                    for (&(class_id, method_sym), &fid) in &self.static_method_map {
+                        if fid.as_u32() == *miss {
+                            let class_name = self
+                                .class_map
+                                .iter()
+                                .find_map(|(&sym, &id)| {
+                                    if id == class_id {
+                                        Some(self.interner.resolve(sym).to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_else(|| format!("class{}", class_id.as_u32()));
+                            labels.push(format!(
+                                "static_method_map:{}::{}",
+                                class_name,
+                                self.interner.resolve(method_sym)
+                            ));
+                        }
+                    }
+                    for (&class_id, info) in &self.class_info_map {
+                        if info.constructor.is_some_and(|fid| fid.as_u32() == *miss) {
+                            let class_name = self
+                                .class_map
+                                .iter()
+                                .find_map(|(&sym, &id)| {
+                                    if id == class_id {
+                                        Some(self.interner.resolve(sym).to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_else(|| format!("class{}", class_id.as_u32()));
+                            labels.push(format!("constructor:{}", class_name));
+                        }
+                    }
+                    if !labels.is_empty() {
+                        eprintln!("[lower] missing id {} labels: {}", miss, labels.join(", "));
+                    }
+                }
+            }
+        }
         self.pending_arrow_functions.sort_by_key(|(id, _)| *id);
         for (_id, func) in self.pending_arrow_functions.drain(..) {
             ir_module.add_function(func);
@@ -2120,6 +2221,20 @@ impl<'a> Lowerer<'a> {
                 }
                 _ => {}
             }
+        }
+
+        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+            let class_name = self.interner.resolve(class.name.name);
+            let ctor_dbg = constructor.map(|id| id.as_u32());
+            let first_method_dbg = methods.first().map(|m| m.func_id.as_u32());
+            eprintln!(
+                "[lower] register_class name={} class_id={} ctor={:?} first_method={:?} methods={}",
+                class_name,
+                class_id.as_u32(),
+                ctor_dbg,
+                first_method_dbg,
+                methods.len()
+            );
         }
 
         self.class_info_map.insert(
@@ -3271,6 +3386,20 @@ impl<'a> Lowerer<'a> {
                 .and_then(|info| info.parent_class);
         }
         None
+    }
+
+    /// Resolve a method slot for a class, falling back to inherited slots.
+    pub(super) fn find_method_slot(&self, class_id: ClassId, method_name: Symbol) -> Option<u16> {
+        self.method_slot_map
+            .get(&(class_id, method_name))
+            .copied()
+            .or_else(|| {
+                let parent = self
+                    .class_info_map
+                    .get(&class_id)
+                    .and_then(|info| info.parent_class);
+                self.find_parent_method_slot(parent, method_name)
+            })
     }
 
     /// Allocate a new basic block ID
@@ -4537,10 +4666,7 @@ mod class_identity_tests {
         let m2 = lowerer
             .class_id_from_type_name("__t_m2_EnvNamespace")
             .expect("module 2 alias should resolve");
-        assert_ne!(
-            m1, m2,
-            "module aliases must map to distinct class ids"
-        );
+        assert_ne!(m1, m2, "module aliases must map to distinct class ids");
     }
 
     #[test]
