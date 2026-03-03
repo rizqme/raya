@@ -108,13 +108,10 @@ class HttpServer {
 
     async serve(handler: (req: HttpRequest, server: HttpServer) => Promise<void>): Promise<void> {
         while (true) {
-            let req: HttpRequest | null = null;
+            let req: HttpRequest;
             try {
                 req = await async this.accept();
             } catch (_err) {
-                break;
-            }
-            if (req == null) {
                 break;
             }
             // Spawn-style behavior: invoking async handler starts a Promise immediately.
