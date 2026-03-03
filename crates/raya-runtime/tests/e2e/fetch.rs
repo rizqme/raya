@@ -12,7 +12,12 @@ fn test_fetch_get_request_and_response() {
         import { HttpServer } from "std:http";
 
         async function serverTask(server: HttpServer): Promise<boolean> {
-            const req = server.accept();
+            let req: HttpRequest;
+            try {
+                req = await async server.accept();
+            } catch (_err) {
+                return false;
+            }
             const methodOk = req.method() == "GET";
             const pathOk = req.path() == "/fetch";
             const queryOk = req.query() == "q=1";
@@ -47,7 +52,12 @@ fn test_fetch_post_with_extra_headers() {
         import { HttpServer } from "std:http";
 
         async function serverTask(server: HttpServer): Promise<boolean> {
-            const req = server.accept();
+            let req: HttpRequest;
+            try {
+                req = await async server.accept();
+            } catch (_err) {
+                return false;
+            }
             const methodOk = req.method() == "POST";
             const headerOk = req.header("x-api") == "true";
             const bodyOk = req.body() == "payload";

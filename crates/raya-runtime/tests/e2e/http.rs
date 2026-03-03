@@ -16,7 +16,12 @@ fn test_http_server_parses_and_responds() {
         }
 
         async function serverTask(server: HttpServer): Promise<boolean> {
-            const req = server.accept();
+            let req: HttpRequest;
+            try {
+                req = await async server.accept();
+            } catch (_err) {
+                return false;
+            }
             const methodOk = req.method() == "POST";
             const pathOk = req.path() == "/test";
             const queryOk = req.query() == "id=7";
@@ -69,7 +74,12 @@ fn test_http_server_custom_headers() {
         }
 
         async function serverTask(server: HttpServer): Promise<boolean> {
-            const req = server.accept();
+            let req: HttpRequest;
+            try {
+                req = await async server.accept();
+            } catch (_err) {
+                return false;
+            }
             const headerValue = req.header("x-test");
             server.respondWithHeaders(req._handle, 201, ["X-Test", "header-value"], "payload");
             server.close();
