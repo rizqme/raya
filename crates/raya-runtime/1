@@ -1,0 +1,1986 @@
+// module: __raya:builtins (pre-imported)
+// __raya_builtin_prelude_begin
+//@@builtin_primitive
+
+const ARRAY_NEW: number = 0x0116;
+const PUSH: number = 0x0100;
+const POP: number = 0x0101;
+const SHIFT: number = 0x0102;
+const UNSHIFT: number = 0x0103;
+const INDEX_OF: number = 0x0104;
+const INCLUDES: number = 0x0105;
+const SLICE: number = 0x0106;
+const CONCAT: number = 0x0107;
+const REVERSE: number = 0x0108;
+const JOIN: number = 0x0109;
+const LAST_INDEX_OF: number = 0x0110;
+const FILL: number = 0x0114;
+const FLAT: number = 0x0115;
+const SPLICE: number = 0x0117;
+const ARRAY_IS_ARRAY: number = 0x0D54;
+
+class Array<T> {
+    //@@opcode ArrayLen
+    length: number;
+
+    constructor() {
+        __NATIVE_CALL<void>(ARRAY_NEW, this);
+    }
+
+    static isArray(value: unknown): boolean {
+        return __NATIVE_CALL<boolean>(ARRAY_IS_ARRAY, value);
+    }
+
+    // ── Atomic native operations ──────────────────────────────────────
+
+    push(element: T): number {
+        return __NATIVE_CALL<number>(PUSH, this, element);
+    }
+
+    pop(): T {
+        return __NATIVE_CALL<T>(POP, this);
+    }
+
+    shift(): T {
+        return __NATIVE_CALL<T>(SHIFT, this);
+    }
+
+    unshift(element: T): number {
+        return __NATIVE_CALL<number>(UNSHIFT, this, element);
+    }
+
+    indexOf(element: T): number {
+        return __NATIVE_CALL<number>(INDEX_OF, this, element);
+    }
+
+    lastIndexOf(element: T): number {
+        return __NATIVE_CALL<number>(LAST_INDEX_OF, this, element);
+    }
+
+    includes(element: T): boolean {
+        return __NATIVE_CALL<boolean>(INCLUDES, this, element);
+    }
+
+    slice(start: number, end?: number): T[] {
+        return __NATIVE_CALL<T[]>(SLICE, this, start, end);
+    }
+
+    concat(other: T[]): T[] {
+        return __NATIVE_CALL<T[]>(CONCAT, this, other);
+    }
+
+    join(separator: string): string {
+        return __NATIVE_CALL<string>(JOIN, this, separator);
+    }
+
+    reverse(): T[] {
+        return __NATIVE_CALL<T[]>(REVERSE, this);
+    }
+
+    fill(value: T, start?: number, end?: number): T[] {
+        return __NATIVE_CALL<T[]>(FILL, this, value, start, end);
+    }
+
+    flat(): T[] {
+        return __NATIVE_CALL<T[]>(FLAT, this);
+    }
+
+    splice(start: number, deleteCount?: number): T[] {
+        return __NATIVE_CALL<T[]>(SPLICE, this, start, deleteCount);
+    }
+
+    // Iterator protocol hook (for-of lowering target)
+    iterator(): T[] {
+        return this;
+    }
+
+    // ── Callback methods — pure Raya loops, preemption-safe, JIT prewarm candidates ──
+
+    //@@class_method
+    forEach(fn: (element: T) => void): void {
+        for (let i = 0; i < this.length; i++) {
+            fn(this[i]);
+        }
+    }
+
+    //@@class_method
+    map<U>(fn: (element: T) => U): U[] {
+        let result: U[] = [];
+        for (let i = 0; i < this.length; i++) {
+            result.push(fn(this[i]));
+        }
+        return result;
+    }
+
+    //@@class_method
+    filter(predicate: (element: T) => boolean): T[] {
+        let result: T[] = [];
+        for (let i = 0; i < this.length; i++) {
+            if (predicate(this[i])) {
+                result.push(this[i]);
+            }
+        }
+        return result;
+    }
+
+    //@@class_method
+    find(predicate: (element: T) => boolean): T | null {
+        for (let i = 0; i < this.length; i++) {
+            if (predicate(this[i])) {
+                return this[i];
+            }
+        }
+        return null;
+    }
+
+    //@@class_method
+    findIndex(predicate: (element: T) => boolean): number {
+        for (let i = 0; i < this.length; i++) {
+            if (predicate(this[i])) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    //@@class_method
+    every(predicate: (element: T) => boolean): boolean {
+        for (let i = 0; i < this.length; i++) {
+            if (!predicate(this[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    //@@class_method
+    some(predicate: (element: T) => boolean): boolean {
+        for (let i = 0; i < this.length; i++) {
+            if (predicate(this[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    //@@class_method
+    reduce<U>(fn: (accumulator: U, element: T) => U, initial: U): U {
+        let acc: U = initial;
+        for (let i = 0; i < this.length; i++) {
+            acc = fn(acc, this[i]);
+        }
+        return acc;
+    }
+
+    //@@class_method
+    sort(compareFn: (a: T, b: T) => number): T[] {
+        for (let i = 1; i < this.length; i++) {
+            let key: T = this[i];
+            let j: number = i - 1;
+            while (j >= 0 && compareFn(this[j], key) > 0) {
+                this[j + 1] = this[j];
+                j = j - 1;
+            }
+            this[j + 1] = key;
+        }
+        return this;
+    }
+}
+
+//@@builtin_primitive
+
+const REGEXP_NEW: number = 0x0A00;
+const TEST: number = 0x0A01;
+const EXEC: number = 0x0A02;
+const EXEC_ALL: number = 0x0A03;
+const REGEXP_REPLACE: number = 0x0A04;
+const REGEXP_SPLIT: number = 0x0A06;
+
+// Used by replaceWith Raya loop to get all match data
+const REPLACE_MATCHES: number = 0x0A07;
+
+class RegExp {
+    source: string;
+    flags: string;
+    global: boolean;
+    ignoreCase: boolean;
+    multiline: boolean;
+    dotAll: boolean;
+    unicode: boolean;
+    lastIndex: number;
+
+    constructor(pattern: string, flags?: string) {
+        __NATIVE_CALL<void>(REGEXP_NEW, this, pattern, flags);
+    }
+
+    test(str: string): boolean {
+        return __NATIVE_CALL<boolean>(TEST, this, str);
+    }
+
+    exec(str: string): string | null {
+        return __NATIVE_CALL<string | null>(EXEC, this, str);
+    }
+
+    execAll(str: string): string[] {
+        return __NATIVE_CALL<string[]>(EXEC_ALL, this, str);
+    }
+
+    replace(str: string, replacement: string): string {
+        return __NATIVE_CALL<string>(REGEXP_REPLACE, this, str, replacement);
+    }
+
+    split(str: string, limit: number): string[] {
+        return __NATIVE_CALL<string[]>(REGEXP_SPLIT, this, str, limit);
+    }
+
+    //@@class_method
+    replaceWith(str: string, replacer: (match: string) => string): string {
+        let matches: (string | number)[][] = __NATIVE_CALL<(string | number)[][]>(REPLACE_MATCHES, this, str);
+        let result: string = "";
+        let lastIndex: int = 0;
+
+        for (let i = 0; i < matches.length; i++) {
+            let m: (string | number)[] = matches[i];
+            let matchText: string = m[0] as string;
+            let matchIndex: int = m[m.length - 1] as int;
+            result = result + str.substring(lastIndex, matchIndex) + replacer(matchText);
+            lastIndex = matchIndex + matchText.length;
+        }
+
+        result = result + str.substring(lastIndex, str.length);
+        return result;
+    }
+}
+
+// Object - Base class for all objects
+// This is a built-in type
+
+// Native call IDs (must match raya-core/src/builtin.rs)
+const OBJECT_HASH_CODE: number = 0x0002;
+const OBJECT_EQUALS: number = 0x0003;
+
+class Object {
+    // Get string representation of the object
+    // Default: "[object Object]" - subclasses can override
+    toString(): string {
+        return "[object Object]";
+    }
+
+    // Get hash code for this object (based on object identity)
+    // Default implementation returns the internal object ID
+    hashCode(): number {
+        return __NATIVE_CALL<number>(OBJECT_HASH_CODE, this);
+    }
+
+    // Check equality with another object (identity comparison)
+    // Default implementation compares by object identity
+    equals(other: Object): boolean {
+        return __NATIVE_CALL<boolean>(OBJECT_EQUALS, this, other);
+    }
+
+}
+
+// Error - Base error class and standard error types
+// These are built-in types for exception handling
+
+// Node-style error codes (subset)
+const ERR_INVALID_ARG_TYPE: string = "ERR_INVALID_ARG_TYPE";
+const ERR_INVALID_ARG_VALUE: string = "ERR_INVALID_ARG_VALUE";
+const ERR_OUT_OF_RANGE: string = "ERR_OUT_OF_RANGE";
+const ERR_BUFFER_OUT_OF_BOUNDS: string = "ERR_BUFFER_OUT_OF_BOUNDS";
+const ERR_MISSING_ARGS: string = "ERR_MISSING_ARGS";
+const ERR_INVALID_THIS: string = "ERR_INVALID_THIS";
+const ERR_NOT_IMPLEMENTED: string = "ERR_NOT_IMPLEMENTED";
+const E_UNIMPLEMENTED_BUILTIN_BEHAVIOR: string = "E_UNIMPLEMENTED_BUILTIN_BEHAVIOR";
+
+type ErrorLike = Error | string | number | boolean | null;
+type ErrorOptions = { cause?: ErrorLike };
+
+function createError(code: string, message: string, options: ErrorOptions | null = null): Error {
+    let err = new Error(message, options);
+    err.code = code;
+    return err;
+}
+
+function createTypeError(code: string, message: string, options: ErrorOptions | null = null): TypeError {
+    let err = new TypeError(message);
+    err.code = code;
+    err.cause = options == null ? null : options.cause;
+    return err;
+}
+
+function createRangeError(code: string, message: string, options: ErrorOptions | null = null): RangeError {
+    let err = new RangeError(message);
+    err.code = code;
+    err.cause = options == null ? null : options.cause;
+    return err;
+}
+
+class Error {
+    public message: string;
+    public name: string;
+    public stack: string;
+    public cause: ErrorLike | null;
+    public code: string;
+    public errno: number;
+    public syscall: string;
+    public path: string;
+
+    constructor(message: string = "", options: ErrorOptions | null = null) {
+        this.message = message;
+        this.name = "Error";
+        this.stack = "";
+        this.cause = options == null ? null : options.cause;
+        this.code = "";
+        this.errno = 0;
+        this.syscall = "";
+        this.path = "";
+    }
+
+    toString(): string {
+        if (this.message === "") {
+            return this.name;
+        }
+        return this.name + ": " + this.message;
+    }
+}
+
+class TypeError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "TypeError";
+    }
+}
+
+class RangeError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "RangeError";
+    }
+}
+
+class ReferenceError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "ReferenceError";
+    }
+}
+
+class SyntaxError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "SyntaxError";
+    }
+}
+
+class URIError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "URIError";
+    }
+}
+
+class EvalError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "EvalError";
+    }
+}
+
+class InternalError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "InternalError";
+    }
+}
+
+class AggregateError extends Error {
+    public errors: ErrorLike[];
+
+    constructor(errors: ErrorLike[], message: string = "", options: ErrorOptions | null = null) {
+        super(message, options);
+        this.name = "AggregateError";
+        this.errors = errors;
+    }
+}
+
+class SuppressedError extends Error {
+    public error: ErrorLike | null;
+    public suppressed: ErrorLike | null;
+
+    constructor(error: ErrorLike | null, suppressed: ErrorLike | null, message: string = "", options: ErrorOptions | null = null) {
+        super(message, options);
+        this.name = "SuppressedError";
+        this.error = error;
+        this.suppressed = suppressed;
+    }
+}
+
+class ChannelClosedError extends Error {
+    constructor(message: string = "cannot operate on closed channel") {
+        super(message);
+        this.name = "ChannelClosedError";
+    }
+}
+
+class AssertionError extends Error {
+    constructor(message: string = "assertion failed") {
+        super(message);
+        this.name = "AssertionError";
+    }
+}
+
+// Symbol - Unique identifier primitive-like object
+// Initial implementation provides API compatibility surface.
+
+class Symbol {
+    private key: string;
+
+    private constructor(key: string) {
+        this.key = key;
+    }
+
+    toString(): string {
+        return "Symbol(" + this.key + ")";
+    }
+
+    valueOf(): string {
+        return this.key;
+    }
+
+    static for(key: string): Symbol {
+        return new Symbol(key);
+    }
+
+    static keyFor(sym: Symbol): string {
+        return sym.key;
+    }
+
+    static iterator(): Symbol {
+        return new Symbol("Symbol.iterator");
+    }
+
+    static toStringTag(): Symbol {
+        return new Symbol("Symbol.toStringTag");
+    }
+}
+
+// Shared global helpers (strict + node-compat).
+// Pragmatic URI encoding/decoding subset.
+
+const Infinity: number = 1.0 / 0.0;
+const NaN: number = 0.0 / 0.0;
+const undefined = null;
+const __GLOBAL_NUM_DIGITS: string = "0123456789";
+
+type PrimitiveCoercible = Object | string | number | boolean | null;
+
+function Boolean(value: PrimitiveCoercible): boolean {
+    if (value == null) {
+        return false;
+    }
+    let t = typeof value;
+    if (t == "boolean") {
+        return value as boolean;
+    }
+    if (t == "number" || t == "int") {
+        let n = value as number;
+        return n != 0.0 && n == n;
+    }
+    if (t == "string") {
+        return (value as string).length > 0;
+    }
+    return true;
+}
+
+function Number(value: PrimitiveCoercible): number {
+    if (value == null) {
+        return 0.0;
+    }
+    let t = typeof value;
+    if (t == "number" || t == "int") {
+        return value as number;
+    }
+    if (t == "boolean") {
+        return (value as boolean) ? 1.0 : 0.0;
+    }
+    if (t != "string") {
+        return NaN;
+    }
+
+    let s = (value as string).trim();
+    if (s.length == 0) {
+        return 0.0;
+    }
+
+    let i = 0;
+    let sign = 1.0;
+    if (s.charAt(0) == "+") {
+        i = 1;
+    } else if (s.charAt(0) == "-") {
+        i = 1;
+        sign = -1.0;
+    }
+
+    let intPart = 0.0;
+    let hasInt = false;
+    while (i < s.length) {
+        let ch = s.charAt(i);
+        let d = __GLOBAL_NUM_DIGITS.indexOf(ch);
+        if (d < 0) {
+            break;
+        }
+        hasInt = true;
+        intPart = intPart * 10.0 + (d as number);
+        i = i + 1;
+    }
+
+    let fracPart = 0.0;
+    let scale = 1.0;
+    let hasFrac = false;
+    if (i < s.length && s.charAt(i) == ".") {
+        i = i + 1;
+        while (i < s.length) {
+            let ch = s.charAt(i);
+            let d = __GLOBAL_NUM_DIGITS.indexOf(ch);
+            if (d < 0) {
+                break;
+            }
+            hasFrac = true;
+            fracPart = fracPart * 10.0 + (d as number);
+            scale = scale * 10.0;
+            i = i + 1;
+        }
+    }
+
+    if (!hasInt && !hasFrac) {
+        return NaN;
+    }
+
+    return sign * (intPart + fracPart / scale);
+}
+
+function String(value: PrimitiveCoercible): string {
+    if (value == null) {
+        return "null";
+    }
+    let t = typeof value;
+    if (t == "string") {
+        return value as string;
+    }
+    if (t == "boolean") {
+        return (value as boolean) ? "true" : "false";
+    }
+    if (t == "number" || t == "int") {
+        return (value as number).toString();
+    }
+    return (value as Object).toString();
+}
+
+function encodeURI(input: string): string {
+    // Minimal safe subset: preserve URI separators, encode spaces and percent.
+    let out = input.split("%").join("%25");
+    return out.split(" ").join("%20");
+}
+
+function decodeURI(input: string): string {
+    // Reverse minimal subset in stable order.
+    let out = input.split("%20").join(" ");
+    return out.split("%25").join("%");
+}
+
+function encodeURIComponent(input: string): string {
+    // Pragmatic subset currently mirrors encodeURI behavior.
+    let out = input.split("%").join("%25");
+    return out.split(" ").join("%20");
+}
+
+function decodeURIComponent(input: string): string {
+    let out = input.split("%20").join(" ");
+    return out.split("%25").join("%");
+}
+
+// Map - Key-value dictionary with any key type
+// This is a built-in type using compiler intrinsics
+
+// Native call IDs (must match raya-core/src/builtin.rs)
+const MAP_NEW: number = 0x0800;
+const MAP_SIZE: number = 0x0801;
+const MAP_GET: number = 0x0802;
+const MAP_SET: number = 0x0803;
+const MAP_HAS: number = 0x0804;
+const MAP_DELETE: number = 0x0805;
+const MAP_CLEAR: number = 0x0806;
+const MAP_KEYS: number = 0x0807;
+const MAP_VALUES: number = 0x0808;
+const MAP_ENTRIES: number = 0x0809;
+const MAP_FOR_EACH: number = 0x080A;
+
+class Map<K, V> {
+    private mapPtr: number;
+    size: number;
+
+    constructor() {
+        this.mapPtr = __NATIVE_CALL<number>(MAP_NEW);
+        this.size = 0;
+    }
+
+    // Get value by key (returns null if not found)
+    get(key: K): V | null {
+        return __NATIVE_CALL<V | null>(MAP_GET, this.mapPtr, key);
+    }
+
+    // Set a key-value pair
+    set(key: K, value: V): void {
+        __NATIVE_CALL<void>(MAP_SET, this.mapPtr, key, value);
+        this.size = __NATIVE_CALL<number>(MAP_SIZE, this.mapPtr);
+    }
+
+    // Check if key exists
+    has(key: K): boolean {
+        return __NATIVE_CALL<boolean>(MAP_HAS, this.mapPtr, key);
+    }
+
+    // Delete a key (returns true if existed)
+    delete(key: K): boolean {
+        let deleted = __NATIVE_CALL<boolean>(MAP_DELETE, this.mapPtr, key);
+        this.size = __NATIVE_CALL<number>(MAP_SIZE, this.mapPtr);
+        return deleted;
+    }
+
+    // Remove all entries
+    clear(): void {
+        __NATIVE_CALL<void>(MAP_CLEAR, this.mapPtr);
+        this.size = 0;
+    }
+
+    // Get all keys as an array
+    keys(): K[] {
+        return __NATIVE_CALL<K[]>(MAP_KEYS, this.mapPtr);
+    }
+
+    // Get all values as an array
+    values(): V[] {
+        return __NATIVE_CALL<V[]>(MAP_VALUES, this.mapPtr);
+    }
+
+    // Get all entries as array of [key, value] tuples
+    entries(): [K, V][] {
+        return __NATIVE_CALL<[K, V][]>(MAP_ENTRIES, this.mapPtr);
+    }
+
+    // Iterator protocol hook (Node-compatible shape)
+    iterator(): [K, V][] {
+        return this.entries();
+    }
+
+    // Iterate over all entries
+    forEach(fn: (value: V, key: K) => void): void {
+        __NATIVE_CALL<void>(MAP_FOR_EACH, this.mapPtr, fn);
+    }
+}
+
+// Set - Collection of unique values
+// This is a built-in type using compiler intrinsics
+
+// Native call IDs (must match raya-core/src/builtin.rs)
+const SET_NEW: number = 0x0900;
+const SET_SIZE: number = 0x0901;
+const SET_ADD: number = 0x0902;
+const SET_HAS: number = 0x0903;
+const SET_DELETE: number = 0x0904;
+const SET_CLEAR: number = 0x0905;
+const SET_VALUES: number = 0x0906;
+const SET_FOR_EACH: number = 0x0907;
+const SET_UNION: number = 0x0908;
+const SET_INTERSECTION: number = 0x0909;
+const SET_DIFFERENCE: number = 0x090A;
+
+class Set<T> {
+    private setPtr: number;
+    size: number;
+
+    constructor() {
+        this.setPtr = __NATIVE_CALL<number>(SET_NEW);
+        this.size = 0;
+    }
+
+    // Add a value to the set
+    add(value: T): void {
+        __NATIVE_CALL<void>(SET_ADD, this.setPtr, value);
+        this.size = __NATIVE_CALL<number>(SET_SIZE, this.setPtr);
+    }
+
+    // Check if value exists
+    has(value: T): boolean {
+        return __NATIVE_CALL<boolean>(SET_HAS, this.setPtr, value);
+    }
+
+    // Delete a value (returns true if existed)
+    delete(value: T): boolean {
+        let deleted = __NATIVE_CALL<boolean>(SET_DELETE, this.setPtr, value);
+        this.size = __NATIVE_CALL<number>(SET_SIZE, this.setPtr);
+        return deleted;
+    }
+
+    // Remove all elements
+    clear(): void {
+        __NATIVE_CALL<void>(SET_CLEAR, this.setPtr);
+        this.size = 0;
+    }
+
+    // Get all values as an array
+    values(): T[] {
+        return __NATIVE_CALL<T[]>(SET_VALUES, this.setPtr);
+    }
+
+    // Node-compatible alias: Set.prototype.keys is the same as values
+    keys(): T[] {
+        return this.values();
+    }
+
+    // Node-compatible shape: entries are [value, value] pairs
+    entries(): [T, T][] {
+        let vals = this.values();
+        let result: [T, T][] = [];
+        let i = 0;
+        while (i < vals.length) {
+            result.push([vals[i], vals[i]]);
+            i = i + 1;
+        }
+        return result;
+    }
+
+    // Iterator protocol hook (Node-compatible shape)
+    iterator(): T[] {
+        return this.values();
+    }
+
+    // Iterate over all values
+    forEach(fn: (value: T) => void): void {
+        __NATIVE_CALL<void>(SET_FOR_EACH, this.setPtr, fn);
+    }
+
+    // Return a new set containing elements from both sets
+    union(other: Set<T>): Set<T> {
+        let result = new Set<T>();
+        result.setPtr = __NATIVE_CALL<number>(SET_UNION, this.setPtr, other.setPtr);
+        result.size = __NATIVE_CALL<number>(SET_SIZE, result.setPtr);
+        return result;
+    }
+
+    // Return a new set containing elements present in both sets
+    intersection(other: Set<T>): Set<T> {
+        let result = new Set<T>();
+        result.setPtr = __NATIVE_CALL<number>(SET_INTERSECTION, this.setPtr, other.setPtr);
+        result.size = __NATIVE_CALL<number>(SET_SIZE, result.setPtr);
+        return result;
+    }
+
+    // Return a new set containing elements in this set but not in other
+    difference(other: Set<T>): Set<T> {
+        let result = new Set<T>();
+        result.setPtr = __NATIVE_CALL<number>(SET_DIFFERENCE, this.setPtr, other.setPtr);
+        result.size = __NATIVE_CALL<number>(SET_SIZE, result.setPtr);
+        return result;
+    }
+}
+
+// Buffer - Raw binary data buffer
+// This is a built-in type using compiler intrinsics
+
+// Native call IDs (must match raya-core/src/builtin.rs)
+const BUFFER_NEW: number = 0x0700;
+const BUFFER_LENGTH: number = 0x0701;
+const BUFFER_GET_BYTE: number = 0x0702;
+const BUFFER_SET_BYTE: number = 0x0703;
+const BUFFER_GET_INT32: number = 0x0704;
+const BUFFER_SET_INT32: number = 0x0705;
+const BUFFER_GET_FLOAT64: number = 0x0706;
+const BUFFER_SET_FLOAT64: number = 0x0707;
+const BUFFER_SLICE: number = 0x0708;
+const BUFFER_COPY: number = 0x0709;
+const BUFFER_TO_STRING: number = 0x070A;
+const BUFFER_FROM_STRING: number = 0x070B;
+
+class Buffer {
+    private bufferPtr: number;
+    length: number;
+
+    constructor(size: number) {
+        this.bufferPtr = __NATIVE_CALL<number>(BUFFER_NEW, size);
+        this.length = __NATIVE_CALL<number>(BUFFER_LENGTH, this.bufferPtr);
+    }
+
+    // Read a single byte (0-255)
+    getByte(index: number): number {
+        return __NATIVE_CALL<number>(BUFFER_GET_BYTE, this.bufferPtr, index);
+    }
+
+    // Write a single byte (0-255)
+    setByte(index: number, value: number): void {
+        __NATIVE_CALL<void>(BUFFER_SET_BYTE, this.bufferPtr, index, value);
+    }
+
+    // Read a 32-bit signed integer (little-endian)
+    getInt32(index: number): number {
+        return __NATIVE_CALL<number>(BUFFER_GET_INT32, this.bufferPtr, index);
+    }
+
+    // Write a 32-bit signed integer (little-endian)
+    setInt32(index: number, value: number): void {
+        __NATIVE_CALL<void>(BUFFER_SET_INT32, this.bufferPtr, index, value);
+    }
+
+    // Read a 64-bit float (little-endian)
+    getFloat64(index: number): number {
+        return __NATIVE_CALL<number>(BUFFER_GET_FLOAT64, this.bufferPtr, index);
+    }
+
+    // Write a 64-bit float (little-endian)
+    setFloat64(index: number, value: number): void {
+        __NATIVE_CALL<void>(BUFFER_SET_FLOAT64, this.bufferPtr, index, value);
+    }
+
+    // Create a new buffer from a slice of this buffer
+    slice(start: number, end?: number): Buffer {
+        return __NATIVE_CALL<Buffer>(BUFFER_SLICE, this.bufferPtr, start, end);
+    }
+
+    // Copy bytes from this buffer to another
+    // Returns number of bytes copied
+    copy(target: Buffer, targetStart: number = 0, sourceStart: number = 0, sourceEnd?: number): number {
+        return __NATIVE_CALL<number>(BUFFER_COPY, this.bufferPtr, target.bufferPtr, targetStart, sourceStart, sourceEnd);
+    }
+
+    // Convert buffer to string using specified encoding
+    toString(encoding: string = "utf8"): string {
+        return __NATIVE_CALL<string>(BUFFER_TO_STRING, this.bufferPtr, encoding);
+    }
+
+    // Convert buffer to UTF-8 string (convenience method)
+    toUtf8String(): string {
+        return __NATIVE_CALL<string>(BUFFER_TO_STRING, this.bufferPtr, "utf8");
+    }
+}
+
+// Date - Date and time handling
+// This is a built-in type using compiler intrinsics
+
+// Native call IDs (must match raya-core/src/builtin.rs)
+const DATE_NOW: number = 0x0B00;
+const DATE_PARSE: number = 0x0B01;
+const DATE_GET_FULL_YEAR: number = 0x0B03;
+const DATE_GET_MONTH: number = 0x0B04;
+const DATE_GET_DATE: number = 0x0B05;
+const DATE_GET_DAY: number = 0x0B06;
+const DATE_GET_HOURS: number = 0x0B07;
+const DATE_GET_MINUTES: number = 0x0B08;
+const DATE_GET_SECONDS: number = 0x0B09;
+const DATE_GET_MILLISECONDS: number = 0x0B0A;
+const DATE_SET_FULL_YEAR: number = 0x0B11;
+const DATE_SET_MONTH: number = 0x0B12;
+const DATE_SET_DATE: number = 0x0B13;
+const DATE_SET_HOURS: number = 0x0B14;
+const DATE_SET_MINUTES: number = 0x0B15;
+const DATE_SET_SECONDS: number = 0x0B16;
+const DATE_SET_MILLISECONDS: number = 0x0B17;
+const DATE_TO_STRING: number = 0x0B20;
+const DATE_TO_ISO_STRING: number = 0x0B21;
+const DATE_TO_DATE_STRING: number = 0x0B22;
+const DATE_TO_TIME_STRING: number = 0x0B23;
+
+class Date {
+    private timestamp: number;
+
+    constructor() {
+        this.timestamp = __NATIVE_CALL<number>(DATE_NOW);
+    }
+
+    // Get timestamp in milliseconds since Unix epoch
+    getTime(): number {
+        return this.timestamp;
+    }
+
+    // Get the four-digit year
+    getFullYear(): number {
+        return __NATIVE_CALL<number>(DATE_GET_FULL_YEAR, this.timestamp);
+    }
+
+    // Get the month (0-11)
+    getMonth(): number {
+        return __NATIVE_CALL<number>(DATE_GET_MONTH, this.timestamp);
+    }
+
+    // Get the day of month (1-31)
+    getDate(): number {
+        return __NATIVE_CALL<number>(DATE_GET_DATE, this.timestamp);
+    }
+
+    // Get the day of week (0=Sunday, 6=Saturday)
+    getDay(): number {
+        return __NATIVE_CALL<number>(DATE_GET_DAY, this.timestamp);
+    }
+
+    // Get the hours (0-23)
+    getHours(): number {
+        return __NATIVE_CALL<number>(DATE_GET_HOURS, this.timestamp);
+    }
+
+    // Get the minutes (0-59)
+    getMinutes(): number {
+        return __NATIVE_CALL<number>(DATE_GET_MINUTES, this.timestamp);
+    }
+
+    // Get the seconds (0-59)
+    getSeconds(): number {
+        return __NATIVE_CALL<number>(DATE_GET_SECONDS, this.timestamp);
+    }
+
+    // Get the milliseconds (0-999)
+    getMilliseconds(): number {
+        return __NATIVE_CALL<number>(DATE_GET_MILLISECONDS, this.timestamp);
+    }
+
+    // Set the timestamp directly
+    setTime(ms: number): void {
+        this.timestamp = ms;
+    }
+
+    // Set the year
+    setFullYear(year: number): void {
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_FULL_YEAR, this.timestamp, year);
+    }
+
+    // Set the month (0-11)
+    setMonth(month: number): void {
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_MONTH, this.timestamp, month);
+    }
+
+    // Set the day of month (1-31)
+    setDate(day: number): void {
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_DATE, this.timestamp, day);
+    }
+
+    // Set the hours (0-23)
+    setHours(hours: number): void {
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_HOURS, this.timestamp, hours);
+    }
+
+    // Set the minutes (0-59)
+    setMinutes(minutes: number): void {
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_MINUTES, this.timestamp, minutes);
+    }
+
+    // Set the seconds (0-59)
+    setSeconds(seconds: number): void {
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_SECONDS, this.timestamp, seconds);
+    }
+
+    // Set the milliseconds (0-999)
+    setMilliseconds(ms: number): void {
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_MILLISECONDS, this.timestamp, ms);
+    }
+
+    // Convert to human-readable string
+    toString(): string {
+        return __NATIVE_CALL<string>(DATE_TO_STRING, this.timestamp);
+    }
+
+    // Convert to ISO 8601 format (e.g., "2024-01-15T10:30:00.000Z")
+    toISOString(): string {
+        return __NATIVE_CALL<string>(DATE_TO_ISO_STRING, this.timestamp);
+    }
+
+    // Get just the date portion as string
+    toDateString(): string {
+        return __NATIVE_CALL<string>(DATE_TO_DATE_STRING, this.timestamp);
+    }
+
+    // Get just the time portion as string
+    toTimeString(): string {
+        return __NATIVE_CALL<string>(DATE_TO_TIME_STRING, this.timestamp);
+    }
+}
+
+// Channel - Inter-task communication primitive
+// This is a built-in type using compiler intrinsics
+
+// Native call IDs (must match raya-core/src/builtin.rs)
+const CHANNEL_NEW: number = 0x0400;
+const CHANNEL_SEND: number = 0x0401;
+const CHANNEL_RECEIVE: number = 0x0402;
+const CHANNEL_TRY_SEND: number = 0x0403;
+const CHANNEL_TRY_RECEIVE: number = 0x0404;
+const CHANNEL_CLOSE: number = 0x0405;
+const CHANNEL_IS_CLOSED: number = 0x0406;
+const CHANNEL_LENGTH: number = 0x0407;
+const CHANNEL_CAPACITY: number = 0x0408;
+
+class Channel<T> {
+    private channelId: number;
+
+    // Create a new channel with optional buffer capacity
+    // capacity = 0 means unbuffered (synchronous send/receive)
+    constructor(capacity: number) {
+        this.channelId = __NATIVE_CALL<number>(CHANNEL_NEW, capacity);
+    }
+
+    // Send a value to the channel (blocks if buffer full)
+    send(value: T): void {
+        __NATIVE_CALL<void>(CHANNEL_SEND, this.channelId, value);
+    }
+
+    // Receive a value from the channel (suspends task if empty, returns null if closed)
+    receive(): T {
+        return __NATIVE_CALL<T>(CHANNEL_RECEIVE, this.channelId);
+    }
+
+    // Try to send without blocking (returns true if sent)
+    trySend(value: T): boolean {
+        return __NATIVE_CALL<boolean>(CHANNEL_TRY_SEND, this.channelId, value);
+    }
+
+    // Try to receive without blocking (returns null if empty)
+    tryReceive(): T | null {
+        return __NATIVE_CALL<T | null>(CHANNEL_TRY_RECEIVE, this.channelId);
+    }
+
+    // Close the channel (no more sends allowed)
+    close(): void {
+        __NATIVE_CALL<void>(CHANNEL_CLOSE, this.channelId);
+    }
+
+    // Check if channel is closed
+    isClosed(): boolean {
+        return __NATIVE_CALL<boolean>(CHANNEL_IS_CLOSED, this.channelId);
+    }
+
+    // Get number of elements in buffer
+    length(): number {
+        return __NATIVE_CALL<number>(CHANNEL_LENGTH, this.channelId);
+    }
+
+    // Get buffer capacity
+    capacity(): number {
+        return __NATIVE_CALL<number>(CHANNEL_CAPACITY, this.channelId);
+    }
+}
+
+// Mutex - Mutual exclusion lock for thread-safe access
+// This is a built-in type using compiler intrinsics
+
+// Native call IDs (must match raya-core/src/builtin.rs)
+const MUTEX_TRY_LOCK: number = 0x0300;
+const MUTEX_IS_LOCKED: number = 0x0301;
+
+class Mutex {
+    private handle: number;
+
+    constructor() {
+        this.handle = __OPCODE_MUTEX_NEW();
+    }
+
+    // Acquire the lock (blocks until acquired)
+    lock(): void {
+        __OPCODE_MUTEX_LOCK(this.handle);
+    }
+
+    // Release the lock
+    unlock(): void {
+        __OPCODE_MUTEX_UNLOCK(this.handle);
+    }
+
+    // Try to acquire the lock without blocking
+    // Returns true if lock was acquired, false otherwise
+    tryLock(): boolean {
+        return __NATIVE_CALL<boolean>(MUTEX_TRY_LOCK, this.handle);
+    }
+
+    // Check if the mutex is currently locked
+    isLocked(): boolean {
+        return __NATIVE_CALL<boolean>(MUTEX_IS_LOCKED, this.handle);
+    }
+}
+
+//@@builtin_primitive
+
+// Promise - Represents an asynchronous computation (public async contract)
+// Internally backed by the runtime task scheduler.
+
+// Reuse native call IDs for internal task state checks.
+const PROMISE_IS_DONE: number = 0x0500;
+const PROMISE_IS_CANCELLED: number = 0x0501;
+const PROMISE_IS_FAILED: number = 0x0502;
+const PROMISE_GET_ERROR: number = 0x0503;
+
+type PromiseRejectionReason = Object | string | number | boolean | null;
+
+class Promise<T> {
+    // Internal cancellation support retained for existing runtime semantics.
+    cancel(): void {
+        try {
+            __OPCODE_TASK_CANCEL(this);
+        } catch (_e) {
+            // Cancellation is best-effort and should never throw to user code.
+        }
+    }
+
+    isDone(): boolean {
+        return __NATIVE_CALL<boolean>(PROMISE_IS_DONE, this);
+    }
+
+    isCancelled(): boolean {
+        return __NATIVE_CALL<boolean>(PROMISE_IS_CANCELLED, this);
+    }
+
+    //@@class_method
+    then<U>(
+        onFulfilled: (value: T) => U,
+        onRejected?: (reason: PromiseRejectionReason) => U
+    ): Promise<U> {
+        while (!this.isDone()) {
+            sleep(0);
+        }
+        if (__NATIVE_CALL<boolean>(PROMISE_IS_FAILED, this)) {
+            let reason = __NATIVE_CALL<PromiseRejectionReason>(PROMISE_GET_ERROR, this);
+            if (onRejected != null) {
+                return Promise.resolve(onRejected(reason));
+            }
+            throw reason;
+        }
+        let value: T = __OPCODE_AWAIT(this);
+        return Promise.resolve(onFulfilled(value));
+    }
+
+    //@@class_method
+    catch<U>(onRejected: (reason: PromiseRejectionReason) => U): Promise<T | U> {
+        while (!this.isDone()) {
+            sleep(0);
+        }
+        if (__NATIVE_CALL<boolean>(PROMISE_IS_FAILED, this)) {
+            let reason = __NATIVE_CALL<PromiseRejectionReason>(PROMISE_GET_ERROR, this);
+            return Promise.resolve(onRejected(reason));
+        }
+        let value: T = __OPCODE_AWAIT(this);
+        return Promise.resolve(value);
+    }
+
+    //@@class_method
+    finally(onFinally: () => void): Promise<T> {
+        let wrapped = async (): Promise<T> => {
+            try {
+                let value = await this;
+                onFinally();
+                return value;
+            } catch (reason) {
+                onFinally();
+                throw reason;
+            }
+        };
+        return wrapped();
+    }
+
+    static async resolve<U>(value: U): Promise<U> {
+        return value;
+    }
+
+    static async reject<U>(reason: PromiseRejectionReason): Promise<U> {
+        throw reason;
+    }
+
+    static async all<U>(values: Promise<U>[]): Promise<U[]> {
+        let results: U[] = [];
+        let i = 0;
+        while (i < values.length) {
+            results.push(await values[i]);
+            i = i + 1;
+        }
+        return results;
+    }
+
+    static async race<U>(values: Promise<U>[]): Promise<U> {
+        if (values.length === 0) {
+            throw "Promise.race requires at least one promise";
+        }
+        while (true) {
+            let i = 0;
+            while (i < values.length) {
+                const candidate = values[i];
+                if (__NATIVE_CALL<boolean>(PROMISE_IS_DONE, candidate)) {
+                    return await candidate;
+                }
+                i = i + 1;
+            }
+            sleep(0);
+        }
+    }
+}
+
+// EventEmitter - Node-like event emitter for strict and node-compat modes
+
+type EventMap = Record<PropertyKey, readonly unknown[]>;
+
+class EventEmitter<E extends EventMap> {
+    _listeners: Map<string, Object[]>;
+    _onceListeners: Map<string, Object[]>;
+    _maxListeners: number;
+
+    constructor() {
+        this._listeners = new Map<string, Object[]>();
+        this._onceListeners = new Map<string, Object[]>();
+        this._maxListeners = 10;
+    }
+
+    on<K extends keyof E>(event: K, listener: (...args: E[K]) => void): EventEmitter<E> {
+        let eventKey = event as string;
+        if (this._maxListeners > 0 && this.listenerCount(event) >= this._maxListeners) {
+            return this;
+        }
+
+        let group = this._listeners.get(eventKey);
+        if (group == null) {
+            group = [];
+            this._listeners.set(eventKey, group);
+        }
+        group.push(listener);
+        return this;
+    }
+
+    off<K extends keyof E>(event: K, listener: (...args: E[K]) => void): EventEmitter<E> {
+        let eventKey = event as string;
+        let group = this._listeners.get(eventKey);
+        if (group != null) {
+            let i = 0;
+            while (i < group.length) {
+                if (group[i] == listener) {
+                    group.splice(i, 1);
+                    break;
+                }
+                i = i + 1;
+            }
+
+            if (group.length == 0) {
+                this._listeners.delete(eventKey);
+            }
+        }
+
+        let onceGroup = this._onceListeners.get(eventKey);
+        if (onceGroup != null) {
+            let j = 0;
+            while (j < onceGroup.length) {
+                if (onceGroup[j] == listener) {
+                    onceGroup.splice(j, 1);
+                    break;
+                }
+                j = j + 1;
+            }
+
+            if (onceGroup.length == 0) {
+                this._onceListeners.delete(eventKey);
+            }
+        }
+
+        return this;
+    }
+
+    addListener<K extends keyof E>(
+        event: K,
+        listener: (...args: E[K]) => void,
+    ): EventEmitter<E> {
+        return this.on(event, listener);
+    }
+
+    removeListener<K extends keyof E>(
+        event: K,
+        listener: (...args: E[K]) => void,
+    ): EventEmitter<E> {
+        return this.off(event, listener);
+    }
+
+    once<K extends keyof E>(event: K, listener: (...args: E[K]) => void): EventEmitter<E> {
+        let eventKey = event as string;
+        if (this._maxListeners > 0 && this.listenerCount(event) >= this._maxListeners) {
+            return this;
+        }
+
+        let group = this._onceListeners.get(eventKey);
+        if (group == null) {
+            group = [];
+            this._onceListeners.set(eventKey, group);
+        }
+        group.push(listener);
+        return this;
+    }
+
+    emit<K extends keyof E>(event: K, ...args: E[K]): boolean {
+        let eventKey = event as string;
+        let group = this._listeners.get(eventKey);
+        let onceGroup = this._onceListeners.get(eventKey);
+        let hasNormal = group != null && group.length > 0;
+        let hasOnce = onceGroup != null && onceGroup.length > 0;
+        if (!hasNormal && !hasOnce) {
+            return false;
+        }
+
+        let payload = args[0];
+
+        if (hasNormal) {
+            // Snapshot listeners so `off` during emit does not skip callbacks.
+            if (group != null) {
+                let snapshot = group.slice(0, group.length);
+                let i = 0;
+                while (i < snapshot.length) {
+                    let fn = snapshot[i] as ((...items: E[K]) => void);
+                    fn(payload);
+                    i = i + 1;
+                }
+            }
+        }
+
+        if (hasOnce) {
+            if (onceGroup != null) {
+                let snapshotOnce = onceGroup.slice(0, onceGroup.length);
+                this._onceListeners.delete(eventKey);
+                let j = 0;
+                while (j < snapshotOnce.length) {
+                    let fn = snapshotOnce[j] as ((...items: E[K]) => void);
+                    fn(payload);
+                    j = j + 1;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    listenerCount(event: keyof E): number {
+        let eventKey = event as string;
+        let group = this._listeners.get(eventKey);
+        let onceGroup = this._onceListeners.get(eventKey);
+        let normalCount = group == null ? 0 : group.length;
+        let onceCount = onceGroup == null ? 0 : onceGroup.length;
+        return normalCount + onceCount;
+    }
+
+    listeners<K extends keyof E>(event: K): ((...args: E[K]) => void)[] {
+        let eventKey = event as string;
+        let out: ((...args: E[K]) => void)[] = [];
+
+        let group = this._listeners.get(eventKey);
+        if (group != null) {
+            let i = 0;
+            while (i < group.length) {
+                out.push(group[i] as ((...args: E[K]) => void));
+                i = i + 1;
+            }
+        }
+
+        let onceGroup = this._onceListeners.get(eventKey);
+        if (onceGroup != null) {
+            let j = 0;
+            while (j < onceGroup.length) {
+                out.push(onceGroup[j] as ((...args: E[K]) => void));
+                j = j + 1;
+            }
+        }
+
+        return out;
+    }
+
+    eventNames(): (keyof E)[] {
+        let names = this._listeners.keys();
+        let onceNames = this._onceListeners.keys();
+
+        let i = 0;
+        while (i < onceNames.length) {
+            if (!names.includes(onceNames[i])) {
+                names.push(onceNames[i]);
+            }
+            i = i + 1;
+        }
+
+        let out: (keyof E)[] = [];
+        let j = 0;
+        while (j < names.length) {
+            out.push(names[j] as keyof E);
+            j = j + 1;
+        }
+        return out;
+    }
+
+    setMaxListeners(n: number): EventEmitter<E> {
+        if (n < 0) {
+            this._maxListeners = 0;
+            return this;
+        }
+        this._maxListeners = n;
+        return this;
+    }
+
+    getMaxListeners(): number {
+        return this._maxListeners;
+    }
+
+    removeAllListeners(event: keyof E | null = null): EventEmitter<E> {
+        if (event == null) {
+            this._listeners.clear();
+            this._onceListeners.clear();
+            return this;
+        }
+
+        let eventKey = event as string;
+        this._listeners.delete(eventKey);
+        this._onceListeners.delete(eventKey);
+        return this;
+    }
+}
+
+// Iterator pragmatic subset (strict + node-compat).
+
+class IteratorResult<T> {
+    value: T | null;
+    done: boolean;
+
+    constructor(value: T | null, done: boolean) {
+        this.value = value;
+        this.done = done;
+    }
+}
+
+class Iterator<T> {
+    private _values: T[];
+    private _index: number;
+
+    constructor(values: T[]) {
+        this._values = values;
+        this._index = 0;
+    }
+
+    static fromArray<U>(values: U[]): Iterator<U> {
+        return new Iterator<U>(values);
+    }
+
+    next(): IteratorResult<T> {
+        if (this._index >= this._values.length) {
+            return new IteratorResult<T>(null, true);
+        }
+
+        let value = this._values[this._index];
+        this._index = this._index + 1;
+        return new IteratorResult<T>(value, false);
+    }
+
+    toArray(): T[] {
+        let out: T[] = [];
+        let i = this._index;
+        while (i < this._values.length) {
+            out.push(this._values[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+}
+
+// Temporal pragmatic subset.
+
+class TemporalInstant {
+    epochMilliseconds: number;
+
+    constructor(epochMilliseconds: number) {
+        this.epochMilliseconds = epochMilliseconds;
+    }
+
+    addMilliseconds(ms: number): TemporalInstant {
+        return new TemporalInstant(this.epochMilliseconds + ms);
+    }
+
+    toString(): string {
+        let d = new Date();
+        d.setTime(this.epochMilliseconds);
+        return d.toISOString();
+    }
+}
+
+class TemporalPlainDate {
+    year: number;
+    month: number;
+    day: number;
+
+    constructor(year: number, month: number, day: number) {
+        this.year = year;
+        this.month = month;
+        this.day = day;
+    }
+
+    toString(): string {
+        let y = this.year.toString();
+        let m = this.month.toString();
+        let d = this.day.toString();
+        if (this.month < 10) {
+            m = "0" + m;
+        }
+        if (this.day < 10) {
+            d = "0" + d;
+        }
+        return y + "-" + m + "-" + d;
+    }
+}
+
+class TemporalPlainTime {
+    hour: number;
+    minute: number;
+    second: number;
+    millisecond: number;
+
+    constructor(hour: number, minute: number, second: number, millisecond: number) {
+        this.hour = hour;
+        this.minute = minute;
+        this.second = second;
+        this.millisecond = millisecond;
+    }
+
+    toString(): string {
+        let h = this.hour.toString();
+        let m = this.minute.toString();
+        let s = this.second.toString();
+        let ms = this.millisecond.toString();
+
+        if (this.hour < 10) {
+            h = "0" + h;
+        }
+        if (this.minute < 10) {
+            m = "0" + m;
+        }
+        if (this.second < 10) {
+            s = "0" + s;
+        }
+
+        if (this.millisecond < 10) {
+            ms = "00" + ms;
+        } else if (this.millisecond < 100) {
+            ms = "0" + ms;
+        }
+
+        return h + ":" + m + ":" + s + "." + ms;
+    }
+}
+
+class TemporalZonedDateTime {
+    instant: TemporalInstant;
+    timeZone: string;
+
+    constructor(epochMilliseconds: number, timeZone: string) {
+        this.instant = new TemporalInstant(epochMilliseconds);
+        this.timeZone = timeZone;
+    }
+
+    toString(): string {
+        return this.instant.toString() + "[" + this.timeZone + "]";
+    }
+}
+
+class Temporal {
+    static Instant(epochMilliseconds: number): TemporalInstant {
+        return new TemporalInstant(epochMilliseconds);
+    }
+
+    static PlainDate(year: number, month: number, day: number): TemporalPlainDate {
+        return new TemporalPlainDate(year, month, day);
+    }
+
+    static PlainTime(hour: number, minute: number, second: number, millisecond: number): TemporalPlainTime {
+        return new TemporalPlainTime(hour, minute, second, millisecond);
+    }
+
+    static ZonedDateTime(epochMilliseconds: number, timeZone: string): TemporalZonedDateTime {
+        return new TemporalZonedDateTime(epochMilliseconds, timeZone);
+    }
+}
+
+// __raya_builtin_prelude_end
+// module: std:net
+type __t_m0_TcpListener = { _handle: number, accept: () => __t_m0_TcpStream | null, close: () => void, localAddr: () => string, serve: (handler: (stream: __t_m0_TcpStream) => Promise<void>) => Promise<void> };
+type __t_m0_TcpStream = { _handle: number, read: (size: number) => Buffer, readAll: () => Buffer, readLine: () => string, write: (data: Buffer) => number, writeText: (data: string) => number, close: () => void, remoteAddr: () => string, localAddr: () => string };
+type __t_m0_UdpSocket = { _handle: number, sendTo: (data: Buffer, addr: string) => number, sendText: (data: string, addr: string) => number, receive: (size: number) => Buffer, close: () => void, localAddr: () => string };
+type __t_m0_TlsStream = { _handle: number, read: (size: number) => Buffer, readAll: () => Buffer, readLine: () => string, write: (data: Buffer) => number, writeText: (data: string) => number, close: () => void, remoteAddr: () => string, localAddr: () => string };
+type __t_m0_Net = { listen: (host: string, port: number) => __t_m0_TcpListener, connect: (host: string, port: number) => __t_m0_TcpStream, connectTls: (host: string, port: number) => __t_m0_TlsStream, connectTlsWithCa: (host: string, port: number, caPem: string) => __t_m0_TlsStream, bindUdp: (host: string, port: number) => __t_m0_UdpSocket, serve: (host: string, port: number, handler: (stream: __t_m0_TcpStream) => Promise<void>) => Promise<void> };
+
+type __raya_mod_exports_type_0 = { TcpListener: __t_m0_TcpListener, TcpStream: __t_m0_TcpStream, TlsStream: __t_m0_TlsStream, UdpSocket: __t_m0_UdpSocket, __default: __t_m0_Net };
+function __raya_mod_init_0(): __raya_mod_exports_type_0 {
+// Net - Standard networking module
+// Usage: import net from "std:net";
+// Usage: import { TcpListener, TcpStream, UdpSocket } from "std:net";
+
+class TcpListener {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    accept(): TcpStream | null {
+        const h: number | null = __NATIVE_CALL<number | null>("net.tcpAccept", this._handle);
+        if (h == null) {
+            return null;
+        }
+        return new TcpStream(h);
+    }
+
+    close(): void {
+        __NATIVE_CALL("net.tcpListenerClose", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("net.tcpListenerAddr", this._handle);
+    }
+
+    async serve(handler: (stream: TcpStream) => Promise<void>): Promise<void> {
+        while (true) {
+            const acceptTask = async this.accept();
+            const stream = await acceptTask;
+            if (stream == null) {
+                break;
+            }
+            // Spawn-style behavior: invoking async handler starts a Promise immediately.
+            // We intentionally do not await to keep connection handling concurrent.
+            const _promise = handler(stream);
+        }
+    }
+}
+
+class TcpStream {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    read(size: number): Buffer {
+        return __NATIVE_CALL<Buffer>("net.tcpRead", this._handle, size);
+    }
+
+    readAll(): Buffer {
+        return __NATIVE_CALL<Buffer>("net.tcpReadAll", this._handle);
+    }
+
+    readLine(): string {
+        return __NATIVE_CALL<string>("net.tcpReadLine", this._handle);
+    }
+
+    write(data: Buffer): number {
+        return __NATIVE_CALL<number>("net.tcpWrite", this._handle, data);
+    }
+
+    writeText(data: string): number {
+        return __NATIVE_CALL<number>("net.tcpWriteText", this._handle, data);
+    }
+
+    close(): void {
+        __NATIVE_CALL("net.tcpStreamClose", this._handle);
+    }
+
+    remoteAddr(): string {
+        return __NATIVE_CALL<string>("net.tcpRemoteAddr", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("net.tcpLocalAddr", this._handle);
+    }
+}
+
+class UdpSocket {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    sendTo(data: Buffer, addr: string): number {
+        return __NATIVE_CALL<number>("net.udpSendTo", this._handle, data, addr);
+    }
+
+    sendText(data: string, addr: string): number {
+        return __NATIVE_CALL<number>("net.udpSendText", this._handle, data, addr);
+    }
+
+    receive(size: number): Buffer {
+        return __NATIVE_CALL<Buffer>("net.udpReceive", this._handle, size);
+    }
+
+    close(): void {
+        __NATIVE_CALL("net.udpClose", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("net.udpLocalAddr", this._handle);
+    }
+}
+
+class TlsStream {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    read(size: number): Buffer {
+        return __NATIVE_CALL<Buffer>("net.tlsRead", this._handle, size);
+    }
+
+    readAll(): Buffer {
+        return __NATIVE_CALL<Buffer>("net.tlsReadAll", this._handle);
+    }
+
+    readLine(): string {
+        return __NATIVE_CALL<string>("net.tlsReadLine", this._handle);
+    }
+
+    write(data: Buffer): number {
+        return __NATIVE_CALL<number>("net.tlsWrite", this._handle, data);
+    }
+
+    writeText(data: string): number {
+        return __NATIVE_CALL<number>("net.tlsWriteText", this._handle, data);
+    }
+
+    close(): void {
+        __NATIVE_CALL("net.tlsClose", this._handle);
+    }
+
+    remoteAddr(): string {
+        return __NATIVE_CALL<string>("net.tlsRemoteAddr", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("net.tlsLocalAddr", this._handle);
+    }
+}
+
+class Net {
+    listen(host: string, port: number): TcpListener {
+        const h: number = __NATIVE_CALL<number>("net.tcpListen", host, port);
+        return new TcpListener(h);
+    }
+
+    connect(host: string, port: number): TcpStream {
+        const h: number = __NATIVE_CALL<number>("net.tcpConnect", host, port);
+        return new TcpStream(h);
+    }
+
+    connectTls(host: string, port: number): TlsStream {
+        const h: number = __NATIVE_CALL<number>("net.tlsConnect", host, port);
+        return new TlsStream(h);
+    }
+
+    connectTlsWithCa(host: string, port: number, caPem: string): TlsStream {
+        const h: number = __NATIVE_CALL<number>("net.tlsConnectWithCa", host, port, caPem);
+        return new TlsStream(h);
+    }
+
+    bindUdp(host: string, port: number): UdpSocket {
+        const h: number = __NATIVE_CALL<number>("net.udpBind", host, port);
+        return new UdpSocket(h);
+    }
+
+    async serve(host: string, port: number, handler: (stream: TcpStream) => Promise<void>): Promise<void> {
+        const listener = this.listen(host, port);
+        await listener.serve(handler);
+    }
+}
+
+const net = new Net();
+const __raya_default_0_0 = net;
+;
+let __raya_exports: __raya_mod_exports_type_0 = { TcpListener: (TcpListener as __t_m0_TcpListener), TcpStream: (TcpStream as __t_m0_TcpStream), TlsStream: (TlsStream as __t_m0_TlsStream), UdpSocket: (UdpSocket as __t_m0_UdpSocket), __default: (__raya_default_0_0 as __t_m0_Net) };
+return __raya_exports;
+}
+const __raya_mod_exports_0: __raya_mod_exports_type_0 = __raya_mod_init_0();
+
+// module: std:http
+type __t_m1_HttpRequest = { _handle: number, method: () => string, path: () => string, query: () => string, header: (name: string) => string, headers: () => string[], body: () => string, bodyBytes: () => Buffer, url: () => string, remoteAddr: () => string };
+type __t_m1_HttpServer = { _handle: number, withTls: (host: string, port: number, certPem: string, keyPem: string) => __t_m1_HttpServer, accept: () => __t_m1_HttpRequest, respond: (reqHandle: number, status: number, body: string) => void, respondText: (req: __t_m1_HttpRequest, status: number, body: string) => void, respondBytes: (reqHandle: number, status: number, body: Buffer) => void, respondBuffer: (req: __t_m1_HttpRequest, status: number, body: Buffer) => void, respondWithHeaders: (reqHandle: number, status: number, headers: string[], body: string) => void, respondRequestWithHeaders: (req: __t_m1_HttpRequest, status: number, headers: string[], body: string) => void, close: () => void, localAddr: () => string, localPort: () => number, serve: (handler: (req: __t_m1_HttpRequest, server: __t_m1_HttpServer) => Promise<void>) => Promise<void> };
+
+type __raya_mod_exports_type_1 = { HttpRequest: __t_m1_HttpRequest, HttpServer: __t_m1_HttpServer };
+function __raya_mod_init_1(): __raya_mod_exports_type_1 {
+// Http - Standard HTTP server module
+// Usage: import { HttpServer, HttpRequest } from "std:http";
+
+class HttpRequest {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    method(): string {
+        return __NATIVE_CALL<string>("http.reqMethod", this._handle);
+    }
+
+    path(): string {
+        return __NATIVE_CALL<string>("http.reqPath", this._handle);
+    }
+
+    query(): string {
+        return __NATIVE_CALL<string>("http.reqQuery", this._handle);
+    }
+
+    header(name: string): string {
+        return __NATIVE_CALL<string>("http.reqHeader", this._handle, name);
+    }
+
+    headers(): string[] {
+        return __NATIVE_CALL<string[]>("http.reqHeaders", this._handle);
+    }
+
+    body(): string {
+        return __NATIVE_CALL<string>("http.reqBody", this._handle);
+    }
+
+    bodyBytes(): Buffer {
+        return __NATIVE_CALL<Buffer>("http.reqBodyBytes", this._handle);
+    }
+
+    url(): string {
+        return __NATIVE_CALL<string>("http.reqUrl", this._handle);
+    }
+
+    remoteAddr(): string {
+        return __NATIVE_CALL<string>("http.reqRemoteAddr", this._handle);
+    }
+}
+
+class HttpServer {
+    _handle: number;
+
+    constructor(host: string, port: number) {
+        this._handle = __NATIVE_CALL<number>("http.serverCreate", host, port);
+    }
+
+    static withTls(host: string, port: number, certPem: string, keyPem: string): HttpServer {
+        const h: number = __NATIVE_CALL<number>("http.serverCreateTls", host, port, certPem, keyPem);
+        // Construct with port 0 to get a valid object, then replace handle
+        // Note: serverCreate with port 0 will bind to an ephemeral port — we close it immediately
+        const server = new HttpServer("127.0.0.1", 0);
+        __NATIVE_CALL("http.serverClose", server._handle);
+        server._handle = h;
+        return server;
+    }
+
+    accept(): HttpRequest {
+        const h: number = __NATIVE_CALL<number>("http.serverAccept", this._handle);
+        if (h == 0) {
+            throw new Error("http server is closed");
+        }
+        return new HttpRequest(h);
+    }
+
+    respond(reqHandle: number, status: number, body: string): void {
+        __NATIVE_CALL("http.serverRespond", this._handle, reqHandle, status, body);
+    }
+
+    respondText(req: HttpRequest, status: number, body: string): void {
+        this.respond(req._handle, status, body);
+    }
+
+    respondBytes(reqHandle: number, status: number, body: Buffer): void {
+        __NATIVE_CALL("http.serverRespondBytes", this._handle, reqHandle, status, body);
+    }
+
+    respondBuffer(req: HttpRequest, status: number, body: Buffer): void {
+        this.respondBytes(req._handle, status, body);
+    }
+
+    respondWithHeaders(reqHandle: number, status: number, headers: string[], body: string): void {
+        __NATIVE_CALL("http.serverRespondHeaders", this._handle, reqHandle, status, headers, body);
+    }
+
+    respondRequestWithHeaders(req: HttpRequest, status: number, headers: string[], body: string): void {
+        this.respondWithHeaders(req._handle, status, headers, body);
+    }
+
+    close(): void {
+        __NATIVE_CALL("http.serverClose", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("http.serverAddr", this._handle);
+    }
+
+    localPort(): number {
+        return __NATIVE_CALL<number>("http.serverPort", this._handle);
+    }
+
+    async serve(handler: (req: HttpRequest, server: HttpServer) => Promise<void>): Promise<void> {
+        while (true) {
+            let req: HttpRequest;
+            try {
+                req = await async this.accept();
+            } catch (_err) {
+                break;
+            }
+            // Spawn-style behavior: invoking async handler starts a Promise immediately.
+            // We intentionally do not await to keep request handling concurrent.
+            const _promise = handler(req, this);
+        }
+    }
+}
+
+let __raya_exports: __raya_mod_exports_type_1 = { HttpRequest: (HttpRequest as __t_m1_HttpRequest), HttpServer: (HttpServer as __t_m1_HttpServer) };
+return __raya_exports;
+}
+const __raya_mod_exports_1: __raya_mod_exports_type_1 = __raya_mod_init_1();
+
+// entry module: /Users/rizqme/Workspace/raya-node-compat/crates/raya-runtime/__raya_inline_entry.raya
+
+        const __raya_dep_entry_2_0: __raya_mod_exports_type_0 = __raya_mod_exports_0;
+const net: __t_m0_Net = __raya_dep_entry_2_0.__default;
+;
+        const __raya_dep_entry_2_1: __raya_mod_exports_type_1 = __raya_mod_exports_1;
+const HttpServer: __t_m1_HttpServer = __raya_dep_entry_2_1.HttpServer;
+type HttpServer = __t_m1_HttpServer;
+const HttpRequest: __t_m1_HttpRequest = __raya_dep_entry_2_1.HttpRequest;
+type HttpRequest = __t_m1_HttpRequest;
+;
+
+        async function onRequest(req: HttpRequest, server: HttpServer): Promise<void> {
+            server.respondText(req, 200, "ok-from-serve");
+        }
+
+        async function serverTask(server: HttpServer): Promise<boolean> {
+            let req: HttpRequest;
+            try {
+                req = await async server.accept();
+            } catch (_err) {
+                return false;
+            }
+            const headerValue = req.header("x-test");
+            server.respondWithHeaders(req._handle, 201, ["X-Test", "header-value"], "payload");
+            server.close();
+            return headerValue == "header-value";
+        }
+
+        async function clientTask(): Promise<boolean> {
+            const stream = net.connect("127.0.0.1", 38182);
+            const request =
+                "GET /headers HTTP/1.1\r\n" +
+                "Host: 127.0.0.1\r\n" +
+                "x-test: header-value\r\n" +
+                "\r\n";
+            stream.writeText(request);
+            const response = stream.readAll().toUtf8String();
+            stream.close();
+            return response.includes("HTTP/1.1 201") && response.includes("X-Test: header-value");
+        }
+
+        async function main(): Promise<boolean> {
+            const server = new HttpServer("127.0.0.1", 38182);
+            const serverResult = serverTask(server);
+            sleep(5);
+            const clientOk = await clientTask();
+            const serverOk = await serverResult;
+            return clientOk && serverOk;
+        }
+
+        return await main();
+        

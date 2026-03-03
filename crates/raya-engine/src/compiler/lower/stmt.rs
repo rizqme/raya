@@ -1964,6 +1964,27 @@ impl<'a> Lowerer<'a> {
                 });
             }
         } else {
+            // No initializer: still honor type-annotation hints for later dispatch.
+            // Without this, `let x: SomeClass; ... x.method()` can lose class-based
+            // method lowering (especially across try/catch assignment paths).
+            if let Some(type_ann) = &decl.type_annotation {
+                if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
+                    self.variable_class_map.insert(name, class_id);
+                }
+                self.track_variable_object_alias_from_annotation(name, type_ann);
+                if let ast::Type::Array(arr_ty) = &type_ann.ty {
+                    if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
+                        if let Some(&class_id) = self.class_map.get(&elem_ref.name.name) {
+                            self.array_element_class_map.insert(name, class_id);
+                        }
+                    }
+                }
+                if self.type_annotation_is_callable(type_ann) {
+                    self.callable_local_hints.insert(local_idx);
+                    self.callable_symbol_hints.insert(name);
+                }
+            }
+
             // No initializer - get type from annotation or UNRESOLVED
             let ty = decl
                 .type_annotation

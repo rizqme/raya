@@ -1,9 +1,9 @@
 //! Unified Reactor — single control thread for scheduling + event loop
 //!
-//! The reactor merges the scheduler and event loop into one thread running a single loop.
-//! Two worker pools (VM + IO) do the actual work. The reactor is the sole decision-maker:
-//! it dispatches tasks to VM workers, handles IO submissions, manages timers, retries
-//! channel waiters, and checks preemption — all in one loop iteration.
+//! The reactor merges the scheduler and event loop into one thread running a single
+//! loop. It dispatches tasks to VM workers and handles async IO completions via a
+//! shared Tokio runtime, while also managing timers, channel waiters, and
+//! preemption.
 
 use crate::vm::abi::native_to_value;
 use crate::vm::interpreter::{ExecutionResult, Interpreter, PromiseMicrotask, SharedVmState};
@@ -16,11 +16,12 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::panic;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use tokio::runtime::{Builder, Runtime};
 
 const VM_WORKER_RECV_TIMEOUT: Duration = Duration::from_millis(5);
-const IO_WORKER_RECV_TIMEOUT: Duration = Duration::from_millis(10);
 const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 // ============================================================================
@@ -42,13 +43,6 @@ struct VmResult {
 pub struct IoSubmission {
     pub task_id: TaskId,
     pub request: IoRequest,
-}
-
-/// IO work sent from reactor to an IO worker
-#[allow(dead_code)]
-struct IoWork {
-    task_id: TaskId,
-    work: Box<dyn FnOnce() -> IoCompletion + Send>,
 }
 
 /// IO completion sent from an IO worker back to the reactor
@@ -103,7 +97,7 @@ impl Eq for SleepEntry {}
 pub struct Reactor {
     /// VM worker pool size
     vm_worker_count: usize,
-    /// IO worker pool size
+    /// Maximum Tokio blocking worker threads (used for io-style work like fs/process).
     io_worker_count: usize,
 
     /// Shared VM state
@@ -118,10 +112,11 @@ pub struct Reactor {
     /// Sender cloned into VM workers for IO submissions
     io_submit_tx: Option<Sender<IoSubmission>>,
 
-    /// Channel: reactor → IO workers
-    io_work_tx: Option<Sender<IoWork>>,
-    /// Channel: IO workers → reactor (completions)
+    /// Channel: Tokio IO completions → reactor.
     io_completion_rx: Option<Receiver<IoPoolCompletion>>,
+
+    /// Tokio runtime for asynchronous IO execution
+    tokio_runtime: Option<Arc<Runtime>>,
 
     /// Shutdown signal
     shutdown: Arc<AtomicBool>,
@@ -129,7 +124,6 @@ pub struct Reactor {
     /// Thread handles
     reactor_handle: Option<JoinHandle<()>>,
     vm_worker_handles: Vec<JoinHandle<()>>,
-    io_worker_handles: Vec<JoinHandle<()>>,
 
     /// Whether the reactor has been started
     started: bool,
@@ -150,12 +144,11 @@ impl Reactor {
             vm_result_rx: None,
             io_submit_rx: None,
             io_submit_tx: None,
-            io_work_tx: None,
             io_completion_rx: None,
+            tokio_runtime: None,
             shutdown: Arc::new(AtomicBool::new(false)),
             reactor_handle: None,
             vm_worker_handles: Vec::new(),
-            io_worker_handles: Vec::new(),
             started: false,
         }
     }
@@ -175,15 +168,31 @@ impl Reactor {
         let (vm_task_tx, vm_task_rx) = channel::bounded::<VmWork>(self.vm_worker_count);
         let (vm_result_tx, vm_result_rx) = channel::unbounded::<VmResult>();
         let (io_submit_tx, io_submit_rx) = channel::unbounded::<IoSubmission>();
-        let (io_work_tx, io_work_rx) = channel::unbounded::<IoWork>();
         let (io_completion_tx, io_completion_rx) = channel::unbounded::<IoPoolCompletion>();
 
         self.vm_task_tx = Some(vm_task_tx.clone());
         self.vm_result_rx = Some(vm_result_rx.clone());
         self.io_submit_rx = Some(io_submit_rx.clone());
         self.io_submit_tx = Some(io_submit_tx.clone());
-        self.io_work_tx = Some(io_work_tx.clone());
         self.io_completion_rx = Some(io_completion_rx.clone());
+
+        let tokio_runtime = match Builder::new_multi_thread()
+            .thread_name("raya-tokio-io")
+            .thread_stack_size(2 * 1024 * 1024)
+            .worker_threads(self.vm_worker_count.max(1))
+            .max_blocking_threads(self.io_worker_count.max(1))
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => Arc::new(runtime),
+            Err(e) => {
+                eprintln!(
+                    "[runtime] failed to initialize tokio runtime, using default runtime: {e}"
+                );
+                Arc::new(Runtime::new().expect("tokio runtime construction failed"))
+            }
+        };
+        self.tokio_runtime = Some(tokio_runtime.clone());
 
         // Store io_submit_tx in shared state so Interpreter can access it
         *self.shared_state.io_submit_tx.lock() = Some(io_submit_tx.clone());
@@ -207,24 +216,10 @@ impl Reactor {
             self.vm_worker_handles.push(handle);
         }
 
-        // --- Spawn IO workers ---
-        let io_count = self.io_worker_count;
-        for i in 0..io_count {
-            let rx = io_work_rx.clone();
-            let shutdown = shutdown.clone();
-
-            let handle = thread::Builder::new()
-                .name(format!("raya-io-worker-{}", i))
-                .spawn(move || {
-                    Self::io_worker_loop(rx, shutdown);
-                })
-                .expect("Failed to spawn IO worker thread");
-            self.io_worker_handles.push(handle);
-        }
-
         // --- Spawn reactor thread ---
         let shared_state = self.shared_state.clone();
         let vm_worker_count = self.vm_worker_count;
+        let tokio_runtime = tokio_runtime.clone();
         let shutdown_clone = shutdown.clone();
 
         let reactor_handle = thread::Builder::new()
@@ -235,9 +230,9 @@ impl Reactor {
                     vm_task_tx,
                     vm_result_rx,
                     io_submit_rx,
-                    io_work_tx,
                     io_completion_tx,
                     io_completion_rx,
+                    tokio_runtime,
                     vm_worker_count,
                     shutdown_clone,
                 );
@@ -266,8 +261,8 @@ impl Reactor {
 
         // Drop senders to unblock workers
         self.vm_task_tx.take();
-        self.io_work_tx.take();
         self.io_submit_tx.take();
+        self.tokio_runtime.take();
 
         // Clear shared io_submit_tx
         *self.shared_state.io_submit_tx.lock() = None;
@@ -275,11 +270,6 @@ impl Reactor {
         // Join VM workers (2s timeout)
         let timeout = Duration::from_secs(2);
         for handle in self.vm_worker_handles.drain(..) {
-            Self::join_with_timeout(handle, timeout);
-        }
-
-        // Join IO workers (2s timeout)
-        for handle in self.io_worker_handles.drain(..) {
             Self::join_with_timeout(handle, timeout);
         }
 
@@ -396,24 +386,6 @@ impl Reactor {
     }
 
     // ========================================================================
-    // IO Worker Loop
-    // ========================================================================
-
-    fn io_worker_loop(work_rx: Receiver<IoWork>, shutdown: Arc<AtomicBool>) {
-        while !shutdown.load(AtomicOrdering::Acquire) {
-            let work = match work_rx.recv_timeout(IO_WORKER_RECV_TIMEOUT) {
-                Ok(w) => w,
-                Err(channel::RecvTimeoutError::Timeout) => continue,
-                Err(channel::RecvTimeoutError::Disconnected) => break,
-            };
-
-            // Execute the blocking work and send completion
-            // The closure captures its own completion_tx
-            (work.work)();
-        }
-    }
-
-    // ========================================================================
     // Reactor Loop
     // ========================================================================
 
@@ -423,9 +395,9 @@ impl Reactor {
         vm_task_tx: Sender<VmWork>,
         vm_result_rx: Receiver<VmResult>,
         io_submit_rx: Receiver<IoSubmission>,
-        io_work_tx: Sender<IoWork>,
         io_completion_tx: Sender<IoPoolCompletion>,
         io_completion_rx: Receiver<IoPoolCompletion>,
+        tokio_runtime: Arc<Runtime>,
         vm_worker_count: usize,
         shutdown: Arc<AtomicBool>,
     ) {
@@ -464,7 +436,7 @@ impl Reactor {
                     Ok(sub) => {
                         Self::handle_io_submission(
                             sub,
-                            &io_work_tx,
+                            &tokio_runtime,
                             &io_completion_tx,
                             &shared_state,
                             &mut channel_waiters,
@@ -676,7 +648,7 @@ impl Reactor {
                     if let Ok(sub) = msg {
                         Self::handle_io_submission(
                             sub,
-                            &io_work_tx,
+                            &tokio_runtime,
                             &io_completion_tx,
                             &shared_state,
                             &mut channel_waiters,
@@ -829,7 +801,7 @@ impl Reactor {
 
     fn handle_io_submission(
         sub: IoSubmission,
-        io_work_tx: &Sender<IoWork>,
+        tokio_runtime: &Arc<Runtime>,
         io_completion_tx: &Sender<IoPoolCompletion>,
         shared_state: &Arc<SharedVmState>,
         channel_waiters: &mut Vec<ChannelWaiter>,
@@ -839,15 +811,15 @@ impl Reactor {
             IoRequest::BlockingWork { work } => {
                 let task_id = sub.task_id;
                 let tx = io_completion_tx.clone();
-                // Wrap the work so it sends the completion back
-                let _ = io_work_tx.send(IoWork {
+                Self::spawn_blocking_io(
+                    tokio_runtime,
                     task_id,
-                    work: Box::new(move || {
-                        let result = work();
-                        let _ = tx.send(IoPoolCompletion { task_id, result });
-                        IoCompletion::Primitive(raya_sdk::NativeValue::null()) // unused
-                    }),
-                });
+                    move || {
+                        panic::catch_unwind(panic::AssertUnwindSafe(work))
+                            .unwrap_or(IoCompletion::Error("io work panicked".to_string()))
+                    },
+                    tx,
+                );
             }
             IoRequest::ChannelReceive { channel } => {
                 let v = native_to_value(channel);
@@ -913,21 +885,33 @@ impl Reactor {
             | IoRequest::NetConnect { .. } => {
                 let task_id = sub.task_id;
                 let tx = io_completion_tx.clone();
-                let _ = io_work_tx.send(IoWork {
+                Self::spawn_blocking_io(
+                    tokio_runtime,
                     task_id,
-                    work: Box::new(move || {
-                        let result = IoCompletion::Error(
-                            "Non-blocking network IO not yet implemented".into(),
-                        );
-                        let _ = tx.send(IoPoolCompletion { task_id, result });
-                        IoCompletion::Primitive(raya_sdk::NativeValue::null())
-                    }),
-                });
+                    || {
+                        IoCompletion::Error(
+                            "Network IO request variants are handled in stdlib layer".into(),
+                        )
+                    },
+                    tx,
+                );
             }
             // Sleep is dispatched as BlockingWork (thread::sleep on IO pool).
             // No special reactor handling needed — the IO pool returns the completion.
             IoRequest::Sleep { .. } => unreachable!("Sleep should be dispatched as BlockingWork"),
         }
+    }
+
+    fn spawn_blocking_io(
+        tokio_runtime: &Arc<Runtime>,
+        task_id: TaskId,
+        work: impl FnOnce() -> IoCompletion + Send + 'static,
+        completion_tx: Sender<IoPoolCompletion>,
+    ) {
+        tokio_runtime.spawn_blocking(move || {
+            let result = work();
+            let _ = completion_tx.send(IoPoolCompletion { task_id, result });
+        });
     }
 
     fn handle_io_completion(
