@@ -75,7 +75,7 @@ impl<'a> Lowerer<'a> {
             Expression::Parenthesized(paren) => self.lower_expr(&paren.expression),
             Expression::Typeof(typeof_expr) => self.lower_typeof(typeof_expr),
             Expression::New(new_expr) => self.lower_new(new_expr),
-            Expression::Await(await_expr) => self.lower_await(await_expr),
+            Expression::Await(await_expr) => self.lower_await(await_expr, expr),
             Expression::Logical(logical) => self.lower_logical(logical),
             Expression::TemplateLiteral(template) => self.lower_template_literal(template),
             Expression::This(_) => self.lower_this(),
@@ -4810,102 +4810,123 @@ impl<'a> Lowerer<'a> {
         self.lower_unresolved_poison()
     }
 
-    fn lower_await(&mut self, await_expr: &ast::AwaitExpression) -> Register {
-        // Check if the argument is an array literal (await [task1, task2, ...])
-        if let Expression::Array(arr) = &*await_expr.argument {
-            // Lower all elements (each should be a Task)
-            // We only handle simple expressions (no spread, no holes)
-            let elements: Vec<Register> = arr
-                .elements
-                .iter()
-                .filter_map(|e| {
-                    match e {
-                        Some(ast::ArrayElement::Expression(expr)) => Some(self.lower_expr(expr)),
-                        _ => None, // Skip spread elements and holes for now
-                    }
-                })
-                .collect();
+    fn lower_await(
+        &mut self,
+        await_expr: &ast::AwaitExpression,
+        await_node: &Expression,
+    ) -> Register {
+        use crate::parser::types::ty::Type;
 
-            // Create the array of tasks - Task IDs are stored as u64 values
-            let task_ty = TypeId::new(TASK_TYPE_ID); // For type tracking
-            let tasks_array = self.alloc_register(task_ty);
-            self.emit(IrInstr::ArrayLiteral {
-                dest: tasks_array.clone(),
-                elements,
-                elem_ty: task_ty, // Element type is Task (u64 internally)
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Awaitability {
+            None,
+            Maybe,
+            Definite,
+        }
+
+        fn merge_awaitability(current: Awaitability, next: Awaitability) -> Awaitability {
+            match (current, next) {
+                (Awaitability::Definite, Awaitability::Definite) => Awaitability::Definite,
+                (Awaitability::None, Awaitability::None) => Awaitability::None,
+                (Awaitability::Maybe, _) | (_, Awaitability::Maybe) => Awaitability::Maybe,
+                _ => Awaitability::Maybe,
+            }
+        }
+
+        fn value_awaitability(type_ctx: &TC, ty: TypeId) -> Awaitability {
+            match type_ctx.get(ty) {
+                Some(Type::Task(_)) => Awaitability::Definite,
+                Some(Type::Class(class)) if class.name == "Promise" => Awaitability::Definite,
+                Some(Type::Union(union)) => union
+                    .members
+                    .iter()
+                    .copied()
+                    .fold(Awaitability::None, |acc, member| {
+                        merge_awaitability(acc, value_awaitability(type_ctx, member))
+                    }),
+                Some(Type::TypeVar(tv)) => {
+                    tv.constraint.map_or(Awaitability::Maybe, |constraint| {
+                        value_awaitability(type_ctx, constraint)
+                    })
+                }
+                Some(Type::Any) | Some(Type::Unknown) | Some(Type::JSObject) => Awaitability::Maybe,
+                None => Awaitability::Maybe,
+                _ => Awaitability::None,
+            }
+        }
+
+        fn array_awaitability(type_ctx: &TC, ty: TypeId) -> Option<Awaitability> {
+            match type_ctx.get(ty) {
+                Some(Type::Array(arr)) => Some(value_awaitability(type_ctx, arr.element)),
+                Some(Type::Tuple(tuple)) => Some(
+                    tuple
+                        .elements
+                        .iter()
+                        .copied()
+                        .fold(Awaitability::None, |acc, elem| {
+                            merge_awaitability(acc, value_awaitability(type_ctx, elem))
+                        }),
+                ),
+                _ => None,
+            }
+        }
+
+        // Lower the awaited expression first; decisions below are based on checker + lowered type.
+        let awaited_value = self.lower_expr(&await_expr.argument);
+        let checker_arg_ty = self.get_expr_type(&await_expr.argument);
+        let lowered_arg_ty = awaited_value.ty;
+
+        let checker_array_awaitability = array_awaitability(self.type_ctx, checker_arg_ty);
+        let lowered_array_awaitability = array_awaitability(self.type_ctx, lowered_arg_ty);
+
+        // Parallel await is an extension; only use it when element type is definitely awaitable.
+        if checker_array_awaitability == Some(Awaitability::Definite)
+            || lowered_array_awaitability == Some(Awaitability::Definite)
+        {
+            let result_ty = self.get_expr_type(await_node);
+            let dest = self.alloc_register(if result_ty == UNRESOLVED {
+                TypeId::new(super::ARRAY_TYPE_ID)
+            } else {
+                result_ty
             });
-
-            // Emit await_all instruction
-            // Result is an array (use generic ARRAY_TYPE_ID)
-            let dest = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
             self.emit(IrInstr::AwaitAll {
                 dest: dest.clone(),
-                tasks: tasks_array,
+                tasks: awaited_value,
             });
             return dest;
         }
 
-        // Lower the awaited expression
-        let task_or_array = self.lower_expr(&await_expr.argument);
-
-        // Check if the awaited value is an array - if so, use AwaitAll.
-        // Prefer checker type information, but fall back to lowered register type
-        // so await-all remains correct when checker inference is temporarily unresolved.
-        let expr_type = self.get_expr_type(&await_expr.argument);
-        let checker_is_array = matches!(
-            self.type_ctx.get(expr_type),
-            Some(crate::parser::types::ty::Type::Array(_))
-        );
-        let lowered_is_array = matches!(
-            self.type_ctx.get(task_or_array.ty),
-            Some(crate::parser::types::ty::Type::Array(_))
-        );
-        if checker_is_array || lowered_is_array {
-            // Awaiting an array variable - emit AwaitAll
-            // Result is an array (use generic ARRAY_TYPE_ID)
-            let dest = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
-            self.emit(IrInstr::AwaitAll {
-                dest: dest.clone(),
-                tasks: task_or_array,
-            });
-            return dest;
+        // Non-task arrays resolve immediately with no runtime WaitAll path.
+        if checker_array_awaitability.is_some() || lowered_array_awaitability.is_some() {
+            return awaited_value;
         }
 
-        let checker_is_task = matches!(
-            self.type_ctx.get(expr_type),
-            Some(crate::parser::types::ty::Type::Task(_))
-        );
-        let lowered_is_task = matches!(
-            self.type_ctx.get(task_or_array.ty),
-            Some(crate::parser::types::ty::Type::Task(_))
-        );
-        let checker_is_promise_class = matches!(
-            self.type_ctx.get(expr_type),
-            Some(crate::parser::types::ty::Type::Class(class)) if class.name == "Promise"
-        );
+        let checker_awaitability = value_awaitability(self.type_ctx, checker_arg_ty);
+        let lowered_awaitability = value_awaitability(self.type_ctx, lowered_arg_ty);
+        let should_emit_await = checker_awaitability != Awaitability::None
+            || lowered_awaitability != Awaitability::None;
+
         // JS-compatible await semantics: non-awaitables resolve immediately.
-        if !(checker_is_task || lowered_is_task || checker_is_promise_class) {
-            return task_or_array;
+        if !should_emit_await {
+            return awaited_value;
         }
 
-        // Extract the result type from Task<T>
-        let result_type = if let Some(crate::parser::types::ty::Type::Task(task_ty)) =
-            self.type_ctx.get(expr_type)
-        {
-            task_ty.result
-        } else if let Some(crate::parser::types::ty::Type::Task(task_ty)) =
-            self.type_ctx.get(task_or_array.ty)
-        {
-            task_ty.result
+        let result_ty = self.get_expr_type(await_node);
+        let dest = self.alloc_register(if result_ty == UNRESOLVED {
+            if let Some(Type::Task(task_ty)) = self.type_ctx.get(checker_arg_ty) {
+                task_ty.result
+            } else if let Some(Type::Task(task_ty)) = self.type_ctx.get(lowered_arg_ty) {
+                task_ty.result
+            } else {
+                UNRESOLVED
+            }
         } else {
-            UNRESOLVED
-        };
+            result_ty
+        });
 
-        // Emit await instruction for single task
-        let dest = self.alloc_register(result_type);
         self.emit(IrInstr::Await {
             dest: dest.clone(),
-            task: task_or_array,
+            task: awaited_value,
         });
         dest
     }

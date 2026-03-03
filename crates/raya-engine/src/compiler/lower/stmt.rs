@@ -1535,7 +1535,8 @@ impl<'a> Lowerer<'a> {
 
         // Fallback: use checker function type of the callee expression.
         let callee_ty = self.get_expr_type(callee);
-        if let Some(crate::parser::types::ty::Type::Function(func_ty)) = self.type_ctx.get(callee_ty)
+        if let Some(crate::parser::types::ty::Type::Function(func_ty)) =
+            self.type_ctx.get(callee_ty)
         {
             return self.find_object_alias_for_type_id(func_ty.return_type);
         }
@@ -1559,8 +1560,7 @@ impl<'a> Lowerer<'a> {
                 continue;
             };
             if ty == alias_ty
-                || (subtype_ctx.is_subtype(ty, alias_ty)
-                    && subtype_ctx.is_subtype(alias_ty, ty))
+                || (subtype_ctx.is_subtype(ty, alias_ty) && subtype_ctx.is_subtype(alias_ty, ty))
             {
                 return Some(alias_name.clone());
             }

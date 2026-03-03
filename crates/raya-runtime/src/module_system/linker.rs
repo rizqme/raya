@@ -213,9 +213,7 @@ fn transform_library_module(
                                     Some(&ty),
                                 ));
                             }
-                            if ty != "unknown"
-                                && looks_like_class_identifier(&local)
-                                && local != ty
+                            if ty != "unknown" && looks_like_class_identifier(&local) && local != ty
                             {
                                 body.push_str(&format!("type {} = {};\n", local, ty));
                                 emitted_type_aliases.insert(local.clone());
@@ -582,9 +580,7 @@ fn transform_entry_module(
                                     Some(&ty),
                                 ));
                             }
-                            if ty != "unknown"
-                                && looks_like_class_identifier(&local)
-                                && local != ty
+                            if ty != "unknown" && looks_like_class_identifier(&local) && local != ty
                             {
                                 body.push_str(&format!("type {} = {};\n", local, ty));
                                 emitted_type_aliases.insert(local.clone());
@@ -664,7 +660,10 @@ fn transform_entry_module(
     code.push_str(&format!("// entry module: {}\n", node.display_name));
     // Execute the entry in its own lexical scope so pre-imported builtins live
     // in an outer "global" scope and can be shadowed by module imports/locals.
-    code.push_str(&format!("function __raya_entry_{}(): unknown {{\n", module_id));
+    code.push_str(&format!(
+        "function __raya_entry_{}(): unknown {{\n",
+        module_id
+    ));
     code.push_str(&body);
     if !body.ends_with('\n') {
         code.push('\n');

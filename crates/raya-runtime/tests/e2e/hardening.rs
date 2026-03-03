@@ -116,25 +116,27 @@ fn test_strict_structural_function_member_call_succeeds() {
 }
 
 #[test]
-fn test_strict_await_non_task_compile_error() {
-    expect_compile_error(
-        "async function f() {
+fn test_await_non_task_in_async_resolves_immediately() {
+    expect_i32(
+        "async function f(): Promise<number> {
              let x: number = 1;
-             await x;
+             let y = await x;
+             return y + 1;
          }
-         return 0;",
-        "Promise<T> or Promise<T>[]",
+         return await f();",
+        2,
     );
 }
 
 #[test]
-fn test_strict_await_non_task_array_compile_error() {
-    expect_compile_error(
-        "async function f() {
+fn test_await_non_task_array_in_async_resolves_immediately() {
+    expect_i32(
+        "async function f(): Promise<number> {
              let xs: number[] = [1, 2];
-             await xs;
+             let ys = await xs;
+             return ys[0] + ys[1];
          }
-         return 0;",
-        "Promise<T> or Promise<T>[]",
+         return await f();",
+        3,
     );
 }
