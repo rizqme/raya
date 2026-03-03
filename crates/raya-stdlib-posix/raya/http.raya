@@ -108,12 +108,15 @@ class HttpServer {
 
     async serve(handler: (req: HttpRequest, server: HttpServer) => Promise<void>): Promise<void> {
         while (true) {
-            const reqHandle: number = __NATIVE_CALL<number>("http.serverAccept", this._handle);
-            if (reqHandle == 0) {
-                // Server closed (or closing): terminate serve loop without rejection.
+            let req: HttpRequest | null = null;
+            try {
+                req = await async this.accept();
+            } catch (_err) {
                 break;
             }
-            const req = new HttpRequest(reqHandle);
+            if (req == null) {
+                break;
+            }
             // Spawn-style behavior: invoking async handler starts a Promise immediately.
             // We intentionally do not await to keep request handling concurrent.
             const _promise = handler(req, this);
