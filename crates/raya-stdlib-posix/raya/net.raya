@@ -27,7 +27,8 @@ class TcpListener {
 
     async serve(handler: (stream: TcpStream) => Promise<void>): Promise<void> {
         while (true) {
-            const stream = this.accept();
+            const acceptTask = async this.accept();
+            const stream = await acceptTask;
             if (stream == null) {
                 break;
             }
