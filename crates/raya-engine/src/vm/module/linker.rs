@@ -6,6 +6,7 @@ use crate::compiler::{
     module_id_from_name, Export, Import, Module, ModuleId, SymbolId, SymbolScope, SymbolType,
     TypeSignatureHash,
 };
+use crate::parser::types::structural_signature_is_assignable;
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
@@ -221,19 +222,34 @@ impl ModuleLinker {
             }
 
             if import.type_symbol_id != export.type_symbol_id {
-                return Err(LinkError::TypeSignatureMismatch {
-                    symbol: import.symbol.clone(),
-                    expected_hash: import.type_symbol_id,
-                    actual_hash: export.type_symbol_id,
-                    expected_pretty: import
-                        .type_signature
-                        .clone()
-                        .unwrap_or_else(|| format!("hash:{:016x}", import.type_symbol_id)),
-                    actual_pretty: export
-                        .type_signature
-                        .clone()
-                        .unwrap_or_else(|| format!("hash:{:016x}", export.type_symbol_id)),
-                });
+                let signatures_assignable = match (
+                    import.type_signature.as_deref(),
+                    export.type_signature.as_deref(),
+                ) {
+                    (Some(expected), Some(actual)) => {
+                        structural_signature_is_assignable(expected, actual)
+                    }
+                    _ => false,
+                };
+                if signatures_assignable {
+                    // Structural compatibility allows assignable subset/superset forms
+                    // even when canonical hashes differ.
+                    // Keep symbol identity checks separate (symbol_id/module_id).
+                } else {
+                    return Err(LinkError::TypeSignatureMismatch {
+                        symbol: import.symbol.clone(),
+                        expected_hash: import.type_symbol_id,
+                        actual_hash: export.type_symbol_id,
+                        expected_pretty: import
+                            .type_signature
+                            .clone()
+                            .unwrap_or_else(|| format!("hash:{:016x}", import.type_symbol_id)),
+                        actual_pretty: export
+                            .type_signature
+                            .clone()
+                            .unwrap_or_else(|| format!("hash:{:016x}", export.type_symbol_id)),
+                    });
+                }
             }
         }
 
@@ -334,6 +350,7 @@ impl Default for ModuleLinker {
 mod tests {
     use super::*;
     use crate::compiler::{ConstantPool, Metadata};
+    use crate::parser::types::signature_hash;
 
     fn create_test_module(name: &str) -> Module {
         Module {
@@ -471,5 +488,112 @@ mod tests {
             result,
             Err(LinkError::MissingTypeSignature { .. })
         ));
+    }
+
+    #[test]
+    fn test_resolve_import_accepts_structural_object_subset() {
+        let mut linker = ModuleLinker::new();
+        let mut module = create_test_module("typed");
+        module.constants = ConstantPool::new();
+        module.exports.push(Export {
+            name: "v".to_string(),
+            symbol_type: SymbolType::Constant,
+            index: 0,
+            symbol_id: 11,
+            scope: SymbolScope::Module,
+            type_symbol_id: signature_hash(
+                "obj(prop:a:rw:req:number,prop:b:rw:req:string,prop:c:rw:req:string)",
+            ),
+            type_signature: Some(
+                "obj(prop:a:rw:req:number,prop:b:rw:req:string,prop:c:rw:req:string)"
+                    .to_string(),
+            ),
+        });
+        linker.add_module(Arc::new(module)).unwrap();
+
+        let module_id = module_id_from_name("typed");
+        let import = Import {
+            module_specifier: "typed".to_string(),
+            symbol: "v".to_string(),
+            alias: None,
+            module_id,
+            symbol_id: 11,
+            scope: SymbolScope::Module,
+            type_symbol_id: signature_hash("obj(prop:a:rw:req:number,prop:b:rw:req:string)"),
+            type_signature: Some("obj(prop:a:rw:req:number,prop:b:rw:req:string)".to_string()),
+            runtime_global_slot: None,
+        };
+
+        assert!(linker.resolve_import(&import, "main").is_ok());
+    }
+
+    #[test]
+    fn test_resolve_import_accepts_union_subset() {
+        let mut linker = ModuleLinker::new();
+        let mut module = create_test_module("typed");
+        module.exports.push(Export {
+            name: "v".to_string(),
+            symbol_type: SymbolType::Constant,
+            index: 0,
+            symbol_id: 12,
+            scope: SymbolScope::Module,
+            type_symbol_id: signature_hash("number"),
+            type_signature: Some("number".to_string()),
+        });
+        linker.add_module(Arc::new(module)).unwrap();
+
+        let module_id = module_id_from_name("typed");
+        let import = Import {
+            module_specifier: "typed".to_string(),
+            symbol: "v".to_string(),
+            alias: None,
+            module_id,
+            symbol_id: 12,
+            scope: SymbolScope::Module,
+            type_symbol_id: signature_hash("union(number|string)"),
+            type_signature: Some("union(number|string)".to_string()),
+            runtime_global_slot: None,
+        };
+
+        assert!(linker.resolve_import(&import, "main").is_ok());
+    }
+
+    #[test]
+    fn test_resolve_import_accepts_function_with_fewer_declared_params() {
+        let mut linker = ModuleLinker::new();
+        let mut module = create_test_module("typed");
+        module.functions.push(crate::compiler::Function {
+            name: "f".to_string(),
+            param_count: 1,
+            local_count: 1,
+            code: vec![],
+        });
+        module.exports.push(Export {
+            name: "f".to_string(),
+            symbol_type: SymbolType::Function,
+            index: 0,
+            symbol_id: 13,
+            scope: SymbolScope::Module,
+            type_symbol_id: signature_hash("fn(min=1,params=[number],rest=_,ret=number)"),
+            type_signature: Some("fn(min=1,params=[number],rest=_,ret=number)".to_string()),
+        });
+        linker.add_module(Arc::new(module)).unwrap();
+
+        let module_id = module_id_from_name("typed");
+        let import = Import {
+            module_specifier: "typed".to_string(),
+            symbol: "f".to_string(),
+            alias: None,
+            module_id,
+            symbol_id: 13,
+            scope: SymbolScope::Module,
+            type_symbol_id: signature_hash("fn(min=2,params=[number,number],rest=_,ret=number)"),
+            type_signature: Some(
+                "fn(min=2,params=[number,number],rest=_,ret=number)".to_string(),
+            ),
+            runtime_global_slot: None,
+        };
+
+        assert!(linker.resolve_import(&import, "main").is_ok());
     }
 }

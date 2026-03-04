@@ -5,6 +5,7 @@
 //! member declarations). Function parameter order and tuple order are preserved.
 
 use super::context::TypeContext;
+use super::subtyping::SubtypingContext;
 use super::ty::{PrimitiveType, Type, TypeId};
 use crate::parser::ast::Visibility;
 use sha2::{Digest, Sha256};
@@ -56,10 +57,47 @@ pub fn hydrate_type_from_canonical_signature(
     signature: &str,
     type_ctx: &mut TypeContext,
 ) -> TypeId {
+    try_hydrate_type_from_canonical_signature(signature, type_ctx)
+        .unwrap_or_else(|| type_ctx.any_type())
+}
+
+/// Attempt to intern a canonical structural signature into a `TypeContext`.
+///
+/// Returns `None` when the signature cannot be parsed.
+pub fn try_hydrate_type_from_canonical_signature(
+    signature: &str,
+    type_ctx: &mut TypeContext,
+) -> Option<TypeId> {
     let mut parser = SignatureHydrator::new(type_ctx);
-    parser
-        .parse_type(signature)
-        .unwrap_or_else(|| parser.type_ctx.any_type())
+    parser.parse_type(signature)
+}
+
+/// Check whether `actual_signature` can satisfy `expected_signature`.
+///
+/// Compatibility direction is structural assignability: `actual <: expected`.
+/// This allows structural subsets such as:
+/// - object width subtyping (`{a,b,c}` satisfies `{a,b}`)
+/// - union subset compatibility (`number` satisfies `number|string`)
+/// - relaxed callable arity where extra call args may be ignored by callees.
+pub fn structural_signature_is_assignable(
+    expected_signature: &str,
+    actual_signature: &str,
+) -> bool {
+    let mut type_ctx = TypeContext::new();
+    let Some(expected_ty) =
+        try_hydrate_type_from_canonical_signature(expected_signature, &mut type_ctx)
+    else {
+        return false;
+    };
+    let Some(actual_ty) =
+        try_hydrate_type_from_canonical_signature(actual_signature, &mut type_ctx)
+    else {
+        return false;
+    };
+
+    let mut subtyping =
+        SubtypingContext::new(&type_ctx).with_relaxed_function_call_arity(true);
+    subtyping.is_subtype(actual_ty, expected_ty)
 }
 
 struct Canonicalizer<'a> {
@@ -1191,5 +1229,27 @@ mod tests {
         let right = canonical_type_signature(right_fn, &right_ctx);
         assert_eq!(left.canonical, right.canonical);
         assert_eq!(left.hash, right.hash);
+    }
+
+    #[test]
+    fn structural_assignable_accepts_object_width_subtype() {
+        let expected = "obj(prop:a:rw:req:number,prop:b:rw:req:string)";
+        let actual = "obj(prop:a:rw:req:number,prop:b:rw:req:string,prop:c:rw:req:string)";
+        assert!(structural_signature_is_assignable(expected, actual));
+    }
+
+    #[test]
+    fn structural_assignable_accepts_union_subset() {
+        let expected = "union(number|string)";
+        let actual = "number";
+        assert!(structural_signature_is_assignable(expected, actual));
+        assert!(!structural_signature_is_assignable(actual, expected));
+    }
+
+    #[test]
+    fn structural_assignable_accepts_function_with_fewer_declared_args() {
+        let expected = "fn(min=2,params=[number,number],rest=_,ret=number)";
+        let actual = "fn(min=1,params=[number],rest=_,ret=number)";
+        assert!(structural_signature_is_assignable(expected, actual));
     }
 }

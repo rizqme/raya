@@ -31,6 +31,9 @@ pub struct SubtypingContext<'a> {
     active_pairs: FxHashSet<(u32, u32)>,
     /// Memoized subtype results to avoid re-walking the same structural graph.
     pair_cache: FxHashMap<(u32, u32), bool>,
+    /// Relax function arity compatibility to allow extra call arguments
+    /// being ignored by the callee (used for runtime/link-time call-shape checks).
+    relaxed_function_call_arity: bool,
 }
 
 impl<'a> SubtypingContext<'a> {
@@ -41,7 +44,16 @@ impl<'a> SubtypingContext<'a> {
             type_vars: FxHashMap::default(),
             active_pairs: FxHashSet::default(),
             pair_cache: FxHashMap::default(),
+            relaxed_function_call_arity: false,
         }
+    }
+
+    /// Allow compatibility checks where callees may ignore additional call arguments.
+    ///
+    /// This is intentionally disabled by default to keep checker-level subtyping strict.
+    pub fn with_relaxed_function_call_arity(mut self, enabled: bool) -> Self {
+        self.relaxed_function_call_arity = enabled;
+        self
     }
 
     /// Check if `sub` is a subtype of `sup` (sub <: sup)
@@ -270,7 +282,7 @@ impl<'a> SubtypingContext<'a> {
                     if min1 > min2 {
                         return false;
                     }
-                    if max1 < max2 {
+                    if !self.relaxed_function_call_arity && max1 < max2 {
                         return false;
                     }
                 }
@@ -294,8 +306,10 @@ impl<'a> SubtypingContext<'a> {
                         (ParamSlot::Wildcard, _) | (_, ParamSlot::Wildcard) => {}
                         (ParamSlot::Absent, ParamSlot::Absent) => {}
                         (ParamSlot::Absent, _) => {
-                            params_match = false;
-                            break;
+                            if !self.relaxed_function_call_arity {
+                                params_match = false;
+                                break;
+                            }
                         }
                         (_, ParamSlot::Absent) => {}
                         (ParamSlot::Ty(p1), ParamSlot::Ty(p2)) => {
@@ -750,5 +764,22 @@ mod tests {
 
         let mut sub_ctx = SubtypingContext::new(&ctx);
         assert!(!sub_ctx.is_subtype(async_fn, plain_callback));
+    }
+
+    #[test]
+    fn test_relaxed_function_subtyping_allows_ignored_extra_call_args() {
+        let mut ctx = TypeContext::new();
+        let num = ctx.number_type();
+
+        // actual export: (number) => number
+        let actual = ctx.function_type(vec![num], num, false);
+        // expected import contract: (number, number) => number
+        let expected = ctx.function_type(vec![num, num], num, false);
+
+        let mut strict = SubtypingContext::new(&ctx);
+        assert!(!strict.is_subtype(actual, expected));
+
+        let mut relaxed = SubtypingContext::new(&ctx).with_relaxed_function_call_arity(true);
+        assert!(relaxed.is_subtype(actual, expected));
     }
 }
