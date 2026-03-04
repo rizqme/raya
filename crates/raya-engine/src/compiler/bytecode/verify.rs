@@ -269,8 +269,6 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::StoreLocal
         | Opcode::LoadField
         | Opcode::StoreField
-        | Opcode::LoadFieldFast
-        | Opcode::StoreFieldFast
         | Opcode::OptionalField
         | Opcode::InitObject
         | Opcode::InitArray
@@ -443,8 +441,6 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::New => (0, 1),
         Opcode::LoadField => (1, 1),
         Opcode::StoreField => (2, 0),
-        Opcode::LoadFieldFast => (1, 1),
-        Opcode::StoreFieldFast => (2, 0),
         Opcode::ObjectLiteral => (0, 1),
         Opcode::InitObject => (0, 0), // Simplified
         Opcode::OptionalField => (1, 1),

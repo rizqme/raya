@@ -38,7 +38,7 @@ use crate::compiler::ir::instr::IrInstr;
 use crate::compiler::ir::{ClassId, FunctionId, IrModule};
 use crate::compiler::type_registry::TypeRegistry;
 use crate::parser::{Interner, TypeContext, TypeId};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use sha2::{Digest, Sha256};
 use std::hash::Hash;
 
@@ -264,6 +264,78 @@ pub fn monomorphize(
     monomorphizer.monomorphize(ir_module)
 }
 
+fn collect_structural_slot_names_from_type(
+    type_ctx: &TypeContext,
+    ty_id: TypeId,
+    names: &mut FxHashSet<String>,
+    visited: &mut FxHashSet<TypeId>,
+) -> bool {
+    if !visited.insert(ty_id) {
+        return false;
+    }
+    let Some(ty) = type_ctx.get(ty_id) else {
+        return false;
+    };
+
+    match ty {
+        crate::parser::types::Type::Object(obj) => {
+            names.extend(obj.properties.iter().map(|property| property.name.clone()));
+            true
+        }
+        crate::parser::types::Type::Interface(interface) => {
+            names.extend(
+                interface
+                    .properties
+                    .iter()
+                    .map(|property| property.name.clone()),
+            );
+            names.extend(interface.methods.iter().map(|method| method.name.clone()));
+            true
+        }
+        crate::parser::types::Type::Reference(reference) => type_ctx
+            .lookup_named_type(&reference.name)
+            .is_some_and(|named| {
+                collect_structural_slot_names_from_type(type_ctx, named, names, visited)
+            }),
+        crate::parser::types::Type::TypeVar(type_var) => {
+            type_var.constraint.is_some_and(|constraint| {
+                collect_structural_slot_names_from_type(type_ctx, constraint, names, visited)
+            }) || type_var.default.is_some_and(|default| {
+                collect_structural_slot_names_from_type(type_ctx, default, names, visited)
+            })
+        }
+        crate::parser::types::Type::Generic(generic) => {
+            collect_structural_slot_names_from_type(type_ctx, generic.base, names, visited)
+        }
+        crate::parser::types::Type::Union(union) => {
+            let mut any = false;
+            for &member in &union.members {
+                any |= collect_structural_slot_names_from_type(type_ctx, member, names, visited);
+            }
+            any
+        }
+        _ => false,
+    }
+}
+
+fn structural_slot_index_for_property(
+    type_ctx: &TypeContext,
+    ty_id: TypeId,
+    property: &str,
+) -> Option<u16> {
+    let mut names = FxHashSet::default();
+    let mut visited = FxHashSet::default();
+    if !collect_structural_slot_names_from_type(type_ctx, ty_id, &mut names, &mut visited) {
+        return None;
+    }
+
+    let mut names: Vec<String> = names.into_iter().collect();
+    names.sort_unstable();
+    names.dedup();
+    let idx = names.iter().position(|name| name == property)?;
+    u16::try_from(idx).ok()
+}
+
 /// Resolve any `LateBoundMember` instructions in the IR module.
 ///
 /// After monomorphization, TypeVar registers have been substituted with concrete types.
@@ -283,12 +355,24 @@ pub fn resolve_late_bound_members(
                     property,
                 } = instr
                 {
-                    let obj_ty = object.ty.as_u32();
+                    let obj_ty = object.ty;
                     let dispatch_ty = type_registry
-                        .normalize_type(obj_ty, type_ctx)
+                        .normalize_type(obj_ty.as_u32(), type_ctx)
                         .unwrap_or(crate::compiler::type_registry::UNRESOLVED_TYPE_ID);
 
                     if dispatch_ty == crate::compiler::type_registry::UNRESOLVED_TYPE_ID {
+                        if let Some(field) =
+                            structural_slot_index_for_property(type_ctx, obj_ty, property)
+                        {
+                            *instr = IrInstr::LoadField {
+                                dest: dest.clone(),
+                                object: object.clone(),
+                                field,
+                                optional: false,
+                            };
+                            continue;
+                        }
+
                         // Still unresolved after substitution: keep name-based dynamic lookup.
                         *instr = IrInstr::DynGetProp {
                             dest: dest.clone(),
@@ -318,6 +402,18 @@ pub fn resolve_late_bound_members(
                             }
                             _ => {}
                         }
+                    }
+
+                    if let Some(field) =
+                        structural_slot_index_for_property(type_ctx, obj_ty, property)
+                    {
+                        *instr = IrInstr::LoadField {
+                            dest: dest.clone(),
+                            object: object.clone(),
+                            field,
+                            optional: false,
+                        };
+                        continue;
                     }
 
                     // Conservative dynamic fallback: preserve property-name dispatch.
@@ -405,6 +501,13 @@ pub fn collect_mono_debug_map(ir_module: &IrModule) -> Vec<MonoDebugEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::ir::block::{BasicBlock, BasicBlockId, Terminator};
+    use crate::compiler::ir::function::IrFunction;
+    use crate::compiler::ir::instr::IrInstr;
+    use crate::compiler::ir::module::IrModule;
+    use crate::compiler::ir::value::{Register, RegisterId};
+    use crate::parser::ast::Visibility;
+    use crate::parser::types::ty::PropertySignature;
 
     #[test]
     fn test_mono_key_equality() {
@@ -450,5 +553,64 @@ mod tests {
             kind: InstantiationKind::Function(FunctionId::new(0)),
         });
         assert_eq!(ctx.pending.len(), 1);
+    }
+
+    fn make_reg(id: u32, ty_id: u32) -> Register {
+        Register::new(RegisterId::new(id), TypeId::new(ty_id))
+    }
+
+    #[test]
+    fn test_resolve_late_bound_member_uses_structural_load_field() {
+        let mut type_ctx = TypeContext::new();
+        let number_ty = TypeId::new(TypeContext::NUMBER_TYPE_ID);
+        let string_ty = TypeId::new(TypeContext::STRING_TYPE_ID);
+        let object_ty = type_ctx.object_type(vec![
+            PropertySignature {
+                name: "b".to_string(),
+                ty: string_ty,
+                optional: false,
+                readonly: false,
+                visibility: Visibility::Public,
+            },
+            PropertySignature {
+                name: "a".to_string(),
+                ty: number_ty,
+                optional: false,
+                readonly: false,
+                visibility: Visibility::Public,
+            },
+        ]);
+
+        let object = make_reg(0, object_ty.as_u32());
+        let dest = make_reg(1, number_ty.as_u32());
+        let mut block = BasicBlock::new(BasicBlockId::new(0));
+        block.add_instr(IrInstr::LateBoundMember {
+            dest: dest.clone(),
+            object: object.clone(),
+            property: "a".to_string(),
+        });
+        block.set_terminator(Terminator::Return(Some(dest.clone())));
+
+        let mut func = IrFunction::new("main", vec![], number_ty);
+        func.add_block(block);
+
+        let mut module = IrModule::new("test");
+        module.add_function(func);
+
+        let type_registry = TypeRegistry::new(&type_ctx);
+        resolve_late_bound_members(&mut module, &type_registry, &type_ctx);
+
+        match &module.functions[0].blocks[0].instructions[0] {
+            IrInstr::LoadField {
+                field, optional, ..
+            } => {
+                assert_eq!(
+                    *field, 0,
+                    "sorted structural layout should map 'a' to slot 0"
+                );
+                assert!(!optional);
+            }
+            other => panic!("expected LoadField after late-bound resolution, got {other:?}"),
+        }
     }
 }

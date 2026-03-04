@@ -354,18 +354,6 @@ impl BytecodeWriter {
         self.emit_u16(field_offset);
     }
 
-    /// Emit LOAD_FIELD_FAST instruction
-    pub fn emit_load_field_fast(&mut self, offset: u16) {
-        self.emit_opcode(Opcode::LoadFieldFast);
-        self.emit_u16(offset);
-    }
-
-    /// Emit STORE_FIELD_FAST instruction
-    pub fn emit_store_field_fast(&mut self, offset: u16) {
-        self.emit_opcode(Opcode::StoreFieldFast);
-        self.emit_u16(offset);
-    }
-
     /// Emit OBJECT_LITERAL instruction
     pub fn emit_object_literal(&mut self, type_index: u32, field_count: u16) {
         self.emit_opcode(Opcode::ObjectLiteral);

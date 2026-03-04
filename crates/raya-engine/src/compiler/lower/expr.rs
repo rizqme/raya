@@ -2174,13 +2174,12 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            let receiver_requires_late_bound = if let Expression::Identifier(obj_ident) =
-                &*member.object
-            {
-                self.late_bound_object_vars.contains(&obj_ident.name)
-            } else {
-                false
-            };
+            let receiver_requires_late_bound =
+                if let Expression::Identifier(obj_ident) = &*member.object {
+                    self.late_bound_object_vars.contains(&obj_ident.name)
+                } else {
+                    false
+                };
 
             // Imported-constructor objects (without local class metadata) must use
             // late-bound member lookup regardless of primitive checker fallbacks.
@@ -2625,52 +2624,11 @@ impl<'a> Lowerer<'a> {
         } else {
             let infer_field_from_expr_type = |this: &Self| {
                 let expr_ty = this.get_expr_type(&member.object);
-                let mut stack = vec![expr_ty];
-                let mut visited: FxHashSet<TypeId> = FxHashSet::default();
-
-                while let Some(ty_id) = stack.pop() {
-                    if !visited.insert(ty_id) {
-                        continue;
-                    }
-                    let Some(ty) = this.type_ctx.get(ty_id) else {
-                        continue;
-                    };
-
-                    match ty {
-                        crate::parser::types::ty::Type::Object(obj) => {
-                            if let Some(result) =
-                                obj.properties.iter().enumerate().find_map(|(i, p)| {
-                                    if p.name == prop_name {
-                                        Some((i as u16, p.ty))
-                                    } else {
-                                        None
-                                    }
-                                })
-                            {
-                                return Some(result);
-                            }
-                        }
-                        crate::parser::types::ty::Type::Reference(reference) => {
-                            if let Some(result) =
-                                this.type_alias_field_lookup(&reference.name, prop_name)
-                            {
-                                return Some(result);
-                            }
-                            if let Some(named_ty) = this.type_ctx.lookup_named_type(&reference.name)
-                            {
-                                stack.push(named_ty);
-                            }
-                        }
-                        crate::parser::types::ty::Type::Union(union) => {
-                            for &member_id in union.members.iter().rev() {
-                                stack.push(member_id);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                None
+                let slot = this.structural_slot_index_from_type(expr_ty, prop_name)?;
+                let field_ty = this
+                    .structural_field_type_from_type(expr_ty, prop_name)
+                    .unwrap_or(UNRESOLVED);
+                Some((slot, field_ty))
             };
 
             let alias_field_idx = match &*member.object {
@@ -2707,11 +2665,10 @@ impl<'a> Lowerer<'a> {
                 };
 
                 if let Some(idx) = obj_field_idx {
-                    if let Some((_, field_ty)) = infer_field_from_expr_type(self) {
-                        Some((idx, field_ty))
-                    } else {
-                        Some((idx, UNRESOLVED))
-                    }
+                    let field_ty = infer_field_from_expr_type(self)
+                        .map(|(_, field_ty)| field_ty)
+                        .unwrap_or(UNRESOLVED);
+                    Some((idx, field_ty))
                 } else {
                     // Fall back to type-based field resolution (for function parameters typed as object types)
                     infer_field_from_expr_type(self)
@@ -2753,45 +2710,28 @@ impl<'a> Lowerer<'a> {
             // Use direct field loads only when we have a proven concrete object layout.
             // Type-driven object/alias lookups are structural and may target class instances,
             // so they must use late-bound property access.
-            let imported_identifier = matches!(
-                &*member.object,
-                Expression::Identifier(ident) if self.import_bindings.contains(&ident.name)
-            );
             let has_register_layout = self
                 .register_object_fields
                 .get(&object.id)
                 .is_some_and(|fields| fields.iter().any(|(name, _)| name == prop_name));
-            let has_type_proven_field = field_ty != UNRESOLVED
-                && !imported_identifier
-                && self
-                    .type_ctx
-                    .get(self.get_expr_type(&member.object))
-                    .is_some_and(|ty| {
-                        matches!(
-                            ty,
-                            crate::parser::types::ty::Type::Object(_)
-                                | crate::parser::types::ty::Type::Union(_)
-                                | crate::parser::types::ty::Type::Reference(_)
-                        )
-                    });
-            let has_concrete_layout = if class_id.is_some() {
-                true
-            } else {
-                match &*member.object {
-                    Expression::Identifier(ident) if imported_identifier => false,
-                    Expression::Identifier(ident) => {
-                        has_register_layout
-                            || self
-                                .variable_object_fields
-                                .get(&ident.name)
-                                .is_some_and(|fields| {
-                                    fields.iter().any(|(name, _)| name == prop_name)
-                                })
-                            || has_type_proven_field
+            let has_type_slot = self
+                .structural_slot_index_from_type(self.get_expr_type(&member.object), prop_name)
+                .is_some();
+            let has_concrete_layout =
+                if class_id.is_some() {
+                    true
+                } else {
+                    match &*member.object {
+                        Expression::Identifier(ident) => {
+                            has_register_layout
+                                || self.variable_object_fields.get(&ident.name).is_some_and(
+                                    |fields| fields.iter().any(|(name, _)| name == prop_name),
+                                )
+                                || has_type_slot
+                        }
+                        _ => has_register_layout || has_type_slot,
                     }
-                    _ => has_register_layout || has_type_proven_field,
-                }
-            };
+                };
 
             let object_id = object.id;
             let dest = self.alloc_register(field_ty);
@@ -3097,15 +3037,203 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn canonical_object_slot_index(
+        &self,
+        obj: &crate::parser::types::ty::ObjectType,
+        prop_name: &str,
+    ) -> Option<u16> {
+        let mut names: Vec<&str> = obj.properties.iter().map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        let idx = names.iter().position(|name| *name == prop_name)?;
+        u16::try_from(idx).ok()
+    }
+
+    fn canonical_object_slot_layout(
+        &self,
+        obj: &crate::parser::types::ty::ObjectType,
+    ) -> Option<Vec<(String, u16)>> {
+        let mut names: Vec<String> = obj.properties.iter().map(|p| p.name.clone()).collect();
+        names.sort_unstable();
+        names.dedup();
+        let mut layout = Vec::with_capacity(names.len());
+        for (idx, name) in names.into_iter().enumerate() {
+            let slot = u16::try_from(idx).ok()?;
+            layout.push((name, slot));
+        }
+        Some(layout)
+    }
+
+    fn collect_structural_slot_names_from_type(
+        &self,
+        ty_id: TypeId,
+        names: &mut FxHashSet<String>,
+        visited: &mut FxHashSet<TypeId>,
+    ) -> bool {
+        if !visited.insert(ty_id) {
+            return false;
+        }
+        let Some(ty) = self.type_ctx.get(ty_id) else {
+            return false;
+        };
+        match ty {
+            crate::parser::types::Type::Object(obj) => {
+                names.extend(obj.properties.iter().map(|property| property.name.clone()));
+                true
+            }
+            crate::parser::types::Type::Interface(interface) => {
+                names.extend(
+                    interface
+                        .properties
+                        .iter()
+                        .map(|property| property.name.clone()),
+                );
+                names.extend(interface.methods.iter().map(|method| method.name.clone()));
+                true
+            }
+            crate::parser::types::Type::Reference(reference) => {
+                let mut found = false;
+                if let Some(fields) = self.type_alias_object_fields.get(&reference.name) {
+                    names.extend(fields.iter().map(|(name, _, _)| name.clone()));
+                    found = true;
+                }
+                if let Some(named_ty) = self.type_ctx.lookup_named_type(&reference.name) {
+                    found |= self.collect_structural_slot_names_from_type(named_ty, names, visited);
+                }
+                found
+            }
+            crate::parser::types::Type::TypeVar(type_var) => {
+                let mut found = false;
+                if let Some(constraint) = type_var.constraint {
+                    found |=
+                        self.collect_structural_slot_names_from_type(constraint, names, visited);
+                }
+                if let Some(default) = type_var.default {
+                    found |= self.collect_structural_slot_names_from_type(default, names, visited);
+                }
+                found
+            }
+            crate::parser::types::Type::Generic(generic) => {
+                self.collect_structural_slot_names_from_type(generic.base, names, visited)
+            }
+            crate::parser::types::Type::Union(union) => {
+                let mut found = false;
+                for &member in &union.members {
+                    found |= self.collect_structural_slot_names_from_type(member, names, visited);
+                }
+                found
+            }
+            _ => false,
+        }
+    }
+
+    fn structural_slot_layout_from_type(&self, ty_id: TypeId) -> Option<Vec<(String, u16)>> {
+        let mut names = FxHashSet::default();
+        let mut visited = FxHashSet::default();
+        if !self.collect_structural_slot_names_from_type(ty_id, &mut names, &mut visited) {
+            return None;
+        }
+        let mut names: Vec<String> = names.into_iter().collect();
+        names.sort_unstable();
+        names.dedup();
+        let mut layout = Vec::with_capacity(names.len());
+        for (idx, name) in names.into_iter().enumerate() {
+            let slot = u16::try_from(idx).ok()?;
+            layout.push((name, slot));
+        }
+        Some(layout)
+    }
+
+    fn structural_slot_index_from_type(&self, ty_id: TypeId, prop_name: &str) -> Option<u16> {
+        self.structural_slot_layout_from_type(ty_id)?
+            .into_iter()
+            .find(|(name, _)| name == prop_name)
+            .map(|(_, slot)| slot)
+    }
+
+    fn structural_field_type_from_type_inner(
+        &self,
+        ty_id: TypeId,
+        prop_name: &str,
+        visited: &mut FxHashSet<TypeId>,
+    ) -> Option<TypeId> {
+        if !visited.insert(ty_id) {
+            return None;
+        }
+        let Some(ty) = self.type_ctx.get(ty_id) else {
+            return None;
+        };
+        match ty {
+            crate::parser::types::Type::Object(obj) => obj
+                .properties
+                .iter()
+                .find(|property| property.name == prop_name)
+                .map(|property| property.ty),
+            crate::parser::types::Type::Interface(interface) => interface
+                .properties
+                .iter()
+                .find(|property| property.name == prop_name)
+                .map(|property| property.ty)
+                .or_else(|| {
+                    interface
+                        .methods
+                        .iter()
+                        .find(|method| method.name == prop_name)
+                        .map(|method| method.ty)
+                }),
+            crate::parser::types::Type::Reference(reference) => {
+                if let Some((_, field_ty)) =
+                    self.type_alias_field_lookup(&reference.name, prop_name)
+                {
+                    return Some(field_ty);
+                }
+                self.type_ctx
+                    .lookup_named_type(&reference.name)
+                    .and_then(|named| {
+                        self.structural_field_type_from_type_inner(named, prop_name, visited)
+                    })
+            }
+            crate::parser::types::Type::TypeVar(type_var) => type_var
+                .constraint
+                .and_then(|constraint| {
+                    self.structural_field_type_from_type_inner(constraint, prop_name, visited)
+                })
+                .or_else(|| {
+                    type_var.default.and_then(|default| {
+                        self.structural_field_type_from_type_inner(default, prop_name, visited)
+                    })
+                }),
+            crate::parser::types::Type::Generic(generic) => {
+                self.structural_field_type_from_type_inner(generic.base, prop_name, visited)
+            }
+            crate::parser::types::Type::Union(union) => {
+                let mut found = None;
+                for &member in &union.members {
+                    let Some(member_ty) =
+                        self.structural_field_type_from_type_inner(member, prop_name, visited)
+                    else {
+                        continue;
+                    };
+                    match found {
+                        None => found = Some(member_ty),
+                        Some(existing) if existing == member_ty => {}
+                        Some(_) => return Some(UNRESOLVED),
+                    }
+                }
+                found
+            }
+            _ => None,
+        }
+    }
+
+    fn structural_field_type_from_type(&self, ty_id: TypeId, prop_name: &str) -> Option<TypeId> {
+        let mut visited = FxHashSet::default();
+        self.structural_field_type_from_type_inner(ty_id, prop_name, &mut visited)
+    }
+
     fn spread_source_fields_from_type(&self, ty: TypeId) -> Option<Vec<(String, u16)>> {
         match self.type_ctx.get(ty)? {
-            crate::parser::types::Type::Object(obj) => Some(
-                obj.properties
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| (p.name.clone(), i as u16))
-                    .collect(),
-            ),
+            crate::parser::types::Type::Object(obj) => self.canonical_object_slot_layout(obj),
             crate::parser::types::Type::Class(_) => {
                 let class_id = self.class_id_from_type_id(ty)?;
                 Some(
@@ -3118,6 +3246,10 @@ impl<'a> Lowerer<'a> {
             crate::parser::types::Type::TypeVar(tv) => tv
                 .constraint
                 .and_then(|constraint| self.spread_source_fields_from_type(constraint)),
+            crate::parser::types::Type::Reference(_)
+            | crate::parser::types::Type::Interface(_)
+            | crate::parser::types::Type::Generic(_)
+            | crate::parser::types::Type::Union(_) => self.structural_slot_layout_from_type(ty),
             _ => None,
         }
     }
@@ -3205,6 +3337,37 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
+        }
+
+        if let Some(target_names) = self.object_literal_target_layout.clone() {
+            for name in target_names {
+                if !field_index_map.contains_key(&name) {
+                    let next_idx = field_names.len();
+                    field_names.push(name.clone());
+                    field_index_map.insert(name, next_idx);
+                }
+            }
+        }
+
+        // If checker type carries a structural/union layout, use it as the
+        // canonical slot space so all variants share stable slots.
+        if let Some(target_layout) = self.structural_slot_layout_from_type(checker_ty) {
+            for (name, _) in target_layout {
+                if !field_index_map.contains_key(&name) {
+                    let next_idx = field_names.len();
+                    field_names.push(name.clone());
+                    field_index_map.insert(name, next_idx);
+                }
+            }
+        }
+
+        // Canonicalize object literal slot layout by key so structural signatures
+        // map to stable runtime slots across modules.
+        field_names.sort_unstable();
+        field_names.dedup();
+        field_index_map.clear();
+        for (idx, name) in field_names.iter().enumerate() {
+            field_index_map.insert(name.clone(), idx);
         }
 
         let null_value = self.lower_null_literal();
@@ -3945,58 +4108,21 @@ impl<'a> Lowerer<'a> {
                                     .find(|(name, _)| name == &prop_name)
                                     .map(|(_, idx)| *idx as u16)
                             }),
-                        _ => None,
+                        _ => self
+                            .register_object_fields
+                            .get(&object.id)
+                            .and_then(|fields| {
+                                fields
+                                    .iter()
+                                    .find(|(name, _)| name == &prop_name)
+                                    .map(|(_, idx)| *idx as u16)
+                            }),
                     }
                     .or_else(|| {
-                        let expr_ty = self.get_expr_type(&member.object);
-                        self.type_ctx.get(expr_ty).and_then(|ty| match ty {
-                            crate::parser::types::ty::Type::Object(obj) => {
-                                obj.properties.iter().enumerate().find_map(|(i, p)| {
-                                    if p.name == prop_name {
-                                        Some(i as u16)
-                                    } else {
-                                        None
-                                    }
-                                })
-                            }
-                            crate::parser::types::ty::Type::Reference(reference) => self
-                                .type_alias_field_lookup(&reference.name, &prop_name)
-                                .map(|(idx, _)| idx),
-                            crate::parser::types::ty::Type::Union(union) => {
-                                for &member_id in &union.members {
-                                    match self.type_ctx.get(member_id) {
-                                        Some(crate::parser::types::ty::Type::Object(obj)) => {
-                                            if let Some(idx) =
-                                                obj.properties.iter().enumerate().find_map(
-                                                    |(i, p)| {
-                                                        if p.name == prop_name {
-                                                            Some(i as u16)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    },
-                                                )
-                                            {
-                                                return Some(idx);
-                                            }
-                                        }
-                                        Some(crate::parser::types::ty::Type::Reference(
-                                            reference,
-                                        )) => {
-                                            if let Some((idx, _)) = self.type_alias_field_lookup(
-                                                &reference.name,
-                                                &prop_name,
-                                            ) {
-                                                return Some(idx);
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                None
-                            }
-                            _ => None,
-                        })
+                        self.structural_slot_index_from_type(
+                            self.get_expr_type(&member.object),
+                            &prop_name,
+                        )
                     });
 
                     if let Some(field_idx) = resolved_field_idx {
@@ -5327,8 +5453,31 @@ impl<'a> Lowerer<'a> {
 
     /// Lower type cast expression: expr as TypeName
     fn lower_type_cast(&mut self, cast: &ast::TypeCastExpression) -> Register {
-        // Lower the object expression
+        // Lower the object expression. For object literals, use target-type
+        // structural layout as contextual slot space.
+        let prev_layout = self.object_literal_target_layout.clone();
+        if matches!(&*cast.object, Expression::Object(_)) {
+            let mut target_ty = self.resolve_type_annotation(&cast.target_type);
+            if target_ty == UNRESOLVED {
+                if let ast::Type::Reference(type_ref) = &cast.target_type.ty {
+                    let name = self.interner.resolve(type_ref.name.name);
+                    if let Some(named) = self.type_ctx.lookup_named_type(name) {
+                        target_ty = named;
+                    }
+                }
+            }
+            self.object_literal_target_layout = self
+                .structural_slot_layout_from_type(target_ty)
+                .map(|layout| {
+                    let mut names: Vec<String> = layout.into_iter().map(|(name, _)| name).collect();
+                    names.sort_unstable();
+                    names.dedup();
+                    names
+                });
+        }
         let object = self.lower_expr(&cast.object);
+        self.object_literal_target_layout = prev_layout;
+        let object_id = object.id;
 
         // Allocate register for the casted value. Type checker treats this expression
         // as target type; lowering keeps runtime value flow here.
@@ -5408,6 +5557,42 @@ impl<'a> Lowerer<'a> {
                 dest: dest.clone(),
                 value: IrValue::Register(object),
             });
+        }
+
+        // Preserve inferred object/array slot layouts across cast boundaries so
+        // subsequent member lowering can keep using slot-based access.
+        if let Some(fields) = self.register_object_fields.get(&object_id).cloned() {
+            self.register_object_fields.insert(dest.id, fields);
+        }
+        if let Some(fields) = self
+            .register_array_element_object_fields
+            .get(&object_id)
+            .cloned()
+        {
+            self.register_array_element_object_fields
+                .insert(dest.id, fields);
+        }
+        let nested_object_layouts: Vec<(u16, Vec<(String, usize)>)> = self
+            .register_nested_object_fields
+            .iter()
+            .filter_map(|(&(obj_reg, field_idx), layout)| {
+                (obj_reg == object_id).then_some((field_idx, layout.clone()))
+            })
+            .collect();
+        for (field_idx, layout) in nested_object_layouts {
+            self.register_nested_object_fields
+                .insert((dest.id, field_idx), layout);
+        }
+        let nested_array_layouts: Vec<(u16, Vec<(String, usize)>)> = self
+            .register_nested_array_element_object_fields
+            .iter()
+            .filter_map(|(&(obj_reg, field_idx), layout)| {
+                (obj_reg == object_id).then_some((field_idx, layout.clone()))
+            })
+            .collect();
+        for (field_idx, layout) in nested_array_layouts {
+            self.register_nested_array_element_object_fields
+                .insert((dest.id, field_idx), layout);
         }
 
         dest
@@ -5978,7 +6163,9 @@ impl<'a> Lowerer<'a> {
                         .get(&ident.name)
                         .copied()
                         .or_else(|| self.variable_class_map.get(&ident.name).copied())
-                        .or_else(|| self.class_id_from_type_name(self.interner.resolve(ident.name)));
+                        .or_else(|| {
+                            self.class_id_from_type_name(self.interner.resolve(ident.name))
+                        });
                 }
                 self.class_id_from_type_id(self.get_expr_type(expr))
             }

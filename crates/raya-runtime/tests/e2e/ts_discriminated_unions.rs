@@ -211,3 +211,37 @@ fn test_discriminated_union_nested() {
         42,
     );
 }
+
+#[test]
+fn test_discriminant_guard_reads_actual_discriminant_slot() {
+    expect_i32(
+        "type Result =
+             | { status: \"ok\"; value: number }
+             | { status: \"err\"; code: string };
+         function isOk(r: Result): number {
+             if (r.status == \"ok\") {
+                 return 1;
+             }
+             return 0;
+         }
+         let err: Result = { status: \"err\", code: \"ok\" };
+         return isOk(err);",
+        0,
+    );
+}
+
+#[test]
+fn test_union_structural_slot_layout_merges_fields() {
+    expect_i32(
+        "type A = { a: number; b: number; c: number };
+         type B = { b: number; c: number; d: number; e: number };
+         type U = A | B;
+         function sum(u: U): number {
+             return u.b + u.c;
+         }
+         let u1: U = { a: 1, b: 2, c: 3 };
+         let u2: U = { b: 4, c: 5, d: 6, e: 7 };
+         return sum(u1) + sum(u2);",
+        14,
+    );
+}

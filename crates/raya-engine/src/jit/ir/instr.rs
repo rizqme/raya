@@ -396,16 +396,6 @@ pub enum JitInstr {
         offset: u16,
         value: Reg,
     },
-    LoadFieldFast {
-        dest: Reg,
-        object: Reg,
-        offset: u16,
-    },
-    StoreFieldFast {
-        object: Reg,
-        offset: u16,
-        value: Reg,
-    },
     InstanceOf {
         dest: Reg,
         object: Reg,
@@ -810,7 +800,6 @@ impl JitInstr {
             | JitInstr::LoadStatic { dest, .. }
             | JitInstr::NewObject { dest, .. }
             | JitInstr::LoadField { dest, .. }
-            | JitInstr::LoadFieldFast { dest, .. }
             | JitInstr::InstanceOf { dest, .. }
             | JitInstr::Cast { dest, .. }
             | JitInstr::Typeof { dest, .. }
@@ -878,7 +867,6 @@ impl JitInstr {
             | JitInstr::StoreGlobal { .. }
             | JitInstr::StoreStatic { .. }
             | JitInstr::StoreField { .. }
-            | JitInstr::StoreFieldFast { .. }
             | JitInstr::StoreElem { .. }
             | JitInstr::ArrayPush { .. }
             | JitInstr::StoreCaptured { .. }
@@ -974,7 +962,6 @@ impl JitInstr {
             | JitInstr::LoadGlobal { .. }
             | JitInstr::LoadStatic { .. }
             | JitInstr::LoadField { .. }
-            | JitInstr::LoadFieldFast { .. }
             | JitInstr::LoadElem { .. }
             | JitInstr::ArrayLen { .. }
             | JitInstr::LoadCaptured { .. }

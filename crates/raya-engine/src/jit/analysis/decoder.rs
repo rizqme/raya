@@ -212,8 +212,6 @@ fn decode_operands(
         | Opcode::StoreLocal
         | Opcode::LoadField
         | Opcode::StoreField
-        | Opcode::LoadFieldFast
-        | Opcode::StoreFieldFast
         | Opcode::OptionalField
         | Opcode::ConstStr
         | Opcode::CloseVar

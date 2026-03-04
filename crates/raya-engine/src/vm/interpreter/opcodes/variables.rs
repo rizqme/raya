@@ -1,5 +1,5 @@
-use crate::compiler::Opcode;
 use crate::compiler::Module;
+use crate::compiler::Opcode;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::stack::Stack;

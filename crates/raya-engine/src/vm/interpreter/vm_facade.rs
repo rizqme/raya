@@ -620,7 +620,10 @@ impl Vm {
                     )));
                 }
 
-                if module_registry.get_by_checksum(&frame.module_checksum).is_none() {
+                if module_registry
+                    .get_by_checksum(&frame.module_checksum)
+                    .is_none()
+                {
                     return Err(VmError::RuntimeError(format!(
                         "Snapshot task {} frame {} references unknown module checksum {}",
                         stask.task_id.as_u64(),

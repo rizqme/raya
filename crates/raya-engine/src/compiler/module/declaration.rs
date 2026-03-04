@@ -147,7 +147,9 @@ impl DeclarationItem {
         match self {
             DeclarationItem::Function(func) => Some(interner.resolve(func.name.name).to_string()),
             DeclarationItem::Class(class) => Some(interner.resolve(class.name.name).to_string()),
-            DeclarationItem::TypeAlias(alias) => Some(interner.resolve(alias.name.name).to_string()),
+            DeclarationItem::TypeAlias(alias) => {
+                Some(interner.resolve(alias.name.name).to_string())
+            }
             DeclarationItem::Variable(var) => match &var.pattern {
                 Pattern::Identifier(ident) => Some(interner.resolve(ident.name).to_string()),
                 _ => None,
@@ -171,10 +173,11 @@ pub fn load_declaration_module(
         }
     })?;
 
-    let raw_source = fs::read_to_string(declaration_path).map_err(|e| DeclarationError::IoError {
-        path: declaration_path.to_path_buf(),
-        message: e.to_string(),
-    })?;
+    let raw_source =
+        fs::read_to_string(declaration_path).map_err(|e| DeclarationError::IoError {
+            path: declaration_path.to_path_buf(),
+            message: e.to_string(),
+        })?;
 
     if source_kind == DeclarationSourceKind::DTs {
         detect_unsupported_dts_syntax(declaration_path, &raw_source)?;
@@ -191,14 +194,16 @@ pub fn load_declaration_module(
             .join("; "),
     })?;
 
-    let (ast, interner) = parser.parse().map_err(|errors| DeclarationError::ParseError {
-        path: declaration_path.to_path_buf(),
-        message: errors
-            .iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("; "),
-    })?;
+    let (ast, interner) = parser
+        .parse()
+        .map_err(|errors| DeclarationError::ParseError {
+            path: declaration_path.to_path_buf(),
+            message: errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        })?;
 
     let exports = extract_declaration_exports(
         declaration_path,
@@ -286,7 +291,8 @@ fn materialize_declaration_stubs(source: &str) -> String {
         let mut normalized = line.to_string();
         let trimmed = normalized.trim();
 
-        let is_signature_like = trimmed.ends_with(';') && trimmed.contains('(') && trimmed.contains(')');
+        let is_signature_like =
+            trimmed.ends_with(';') && trimmed.contains('(') && trimmed.contains(')');
         if is_signature_like {
             let is_top_level_fn = trimmed.starts_with("export function ")
                 || trimmed.starts_with("function ")
@@ -381,12 +387,9 @@ fn extract_declaration_exports(
                             });
                         };
 
-                        if let Some(export) = export_from_item(
-                            local_item,
-                            &exported_name,
-                            interner,
-                            &locals,
-                        )? {
+                        if let Some(export) =
+                            export_from_item(local_item, &exported_name, interner, &locals)?
+                        {
                             explicit_exports.push(export);
                         }
                     }
@@ -400,8 +403,9 @@ fn extract_declaration_exports(
                         path: declaration_path.to_path_buf(),
                         line: source.span.line,
                         column: source.span.column,
-                        message: "Re-exports are not currently supported in declaration-only modules"
-                            .to_string(),
+                        message:
+                            "Re-exports are not currently supported in declaration-only modules"
+                                .to_string(),
                     });
                 }
                 ExportDecl::Default { expression, span } => {
@@ -617,14 +621,15 @@ impl<'a> DeclarationCanonicalizer<'a> {
                         if method.visibility != ast::Visibility::Public {
                             continue;
                         }
-                        let method_sig = this.with_type_params(method.type_params.as_deref(), |this| {
-                            this.canonical_callable_shape(
-                                &method.params,
-                                method.return_type.as_ref(),
-                                method.is_async,
-                                true,
-                            )
-                        });
+                        let method_sig =
+                            this.with_type_params(method.type_params.as_deref(), |this| {
+                                this.canonical_callable_shape(
+                                    &method.params,
+                                    method.return_type.as_ref(),
+                                    method.is_async,
+                                    true,
+                                )
+                            });
                         let prefix = if method.is_static {
                             "static_method"
                         } else {
@@ -644,7 +649,10 @@ impl<'a> DeclarationCanonicalizer<'a> {
             }
 
             if let Some(extends) = &class.extends {
-                members.insert(format!("extends:{}", this.canonical_type_annotation(extends)));
+                members.insert(format!(
+                    "extends:{}",
+                    this.canonical_type_annotation(extends)
+                ));
             }
 
             if !class.implements.is_empty() {
@@ -658,7 +666,10 @@ impl<'a> DeclarationCanonicalizer<'a> {
                 members.insert(format!("implements:[{}]", impls.join(",")));
             }
 
-            format!("class_pub({})", members.into_iter().collect::<Vec<_>>().join(","))
+            format!(
+                "class_pub({})",
+                members.into_iter().collect::<Vec<_>>().join(",")
+            )
         })
     }
 
@@ -743,7 +754,10 @@ impl<'a> DeclarationCanonicalizer<'a> {
             Type::NumberLiteral(value) => format!("numlit({:x})", value.to_bits()),
             Type::BooleanLiteral(value) => format!("boollit({})", if *value { "1" } else { "0" }),
             Type::Array(array) => {
-                format!("arr({})", self.canonical_type_annotation(&array.element_type))
+                format!(
+                    "arr({})",
+                    self.canonical_type_annotation(&array.element_type)
+                )
             }
             Type::Tuple(tuple) => format!(
                 "tuple({})",
@@ -942,7 +956,10 @@ impl<'a> DeclarationCanonicalizer<'a> {
 
         if let Some(DeclarationItem::TypeAlias(alias)) = self.locals.get(&name) {
             if self.alias_stack.insert(name.clone()) {
-                let canonical = format!("alias({})", self.canonical_type_annotation(&alias.type_annotation));
+                let canonical = format!(
+                    "alias({})",
+                    self.canonical_type_annotation(&alias.type_annotation)
+                );
                 self.alias_stack.remove(&name);
                 return canonical;
             }
@@ -1122,8 +1139,8 @@ mod tests {
 
         let from_draya = load_declaration_module(&draya, &module_identity, &virtual_path)
             .expect("load d.raya declaration");
-        let from_dts =
-            load_declaration_module(&dts, &module_identity, &virtual_path).expect("load d.ts declaration");
+        let from_dts = load_declaration_module(&dts, &module_identity, &virtual_path)
+            .expect("load d.ts declaration");
 
         for symbol in ["foo", "Box"] {
             let left = from_draya
@@ -1172,12 +1189,19 @@ mod tests {
         .expect("write b");
 
         let module_identity = temp.path().join("pair.raya").to_string_lossy().to_string();
-        let left = load_declaration_module(&a, &module_identity, &temp.path().join("a_virtual.raya"))
-            .expect("load a");
-        let right = load_declaration_module(&b, &module_identity, &temp.path().join("b_virtual.raya"))
-            .expect("load b");
+        let left =
+            load_declaration_module(&a, &module_identity, &temp.path().join("a_virtual.raya"))
+                .expect("load a");
+        let right =
+            load_declaration_module(&b, &module_identity, &temp.path().join("b_virtual.raya"))
+                .expect("load b");
 
-        let left_sig = &left.exports.symbols.get("Pair").expect("left pair").type_signature;
+        let left_sig = &left
+            .exports
+            .symbols
+            .get("Pair")
+            .expect("left pair")
+            .type_signature;
         let right_sig = &right
             .exports
             .symbols

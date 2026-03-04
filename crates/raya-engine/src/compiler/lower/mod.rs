@@ -557,6 +557,10 @@ pub struct Lowerer<'a> {
     /// Optional filter for object spread field names in the current lowering context.
     /// When set (e.g., typed object literal initializer), spread only copies fields in this set.
     object_spread_target_filter: Option<FxHashSet<String>>,
+    /// Optional canonical slot layout target for object literals in the current lowering context.
+    /// When set, `lower_object` materializes this full layout (missing fields as null)
+    /// to keep structural/union slot positions stable.
+    object_literal_target_layout: Option<Vec<String>>,
     /// Native function name table for ModuleNativeCall.
     /// Accumulates symbolic names during lowering; each name gets a module-local index.
     native_function_table: Vec<String>,
@@ -1078,6 +1082,7 @@ impl<'a> Lowerer<'a> {
             variable_object_type_aliases: FxHashMap::default(),
             task_result_type_aliases: FxHashMap::default(),
             object_spread_target_filter: None,
+            object_literal_target_layout: None,
             native_function_table: Vec::new(),
             native_function_map: FxHashMap::default(),
             jsx_options: None,
@@ -1402,28 +1407,97 @@ impl<'a> Lowerer<'a> {
                     self.next_type_alias_id += 1;
                     self.type_alias_map
                         .insert(type_alias.name.name, type_alias_id);
-                    if let ast::Type::Object(obj_type) = &type_alias.type_annotation.ty {
-                        let alias_name = self.interner.resolve(type_alias.name.name).to_string();
-                        let mut fields = Vec::new();
-                        let is_wrapper_alias = alias_name.starts_with("__t_");
-                        for (idx, member) in obj_type.members.iter().enumerate() {
-                            match member {
-                                ast::ObjectTypeMember::Property(prop) => fields.push((
-                                    self.interner.resolve(prop.name.name).to_string(),
-                                    idx as u16,
-                                    self.resolve_type_annotation(&prop.ty),
-                                )),
-                                ast::ObjectTypeMember::Method(method) => {
-                                    if !is_wrapper_alias {
-                                        fields.push((
-                                            self.interner.resolve(method.name.name).to_string(),
-                                            idx as u16,
-                                            UNRESOLVED,
+                    let alias_name = self.interner.resolve(type_alias.name.name).to_string();
+                    let is_wrapper_alias = alias_name.starts_with("__t_");
+
+                    let mut members: Vec<(String, TypeId, bool)> = Vec::new();
+                    match &type_alias.type_annotation.ty {
+                        ast::Type::Object(obj_type) => {
+                            for member in &obj_type.members {
+                                match member {
+                                    ast::ObjectTypeMember::Property(prop) => {
+                                        members.push((
+                                            self.interner.resolve(prop.name.name).to_string(),
+                                            self.resolve_type_annotation(&prop.ty),
+                                            false,
                                         ));
+                                    }
+                                    ast::ObjectTypeMember::Method(method) => {
+                                        if !is_wrapper_alias {
+                                            members.push((
+                                                self.interner.resolve(method.name.name).to_string(),
+                                                UNRESOLVED,
+                                                true,
+                                            ));
+                                        }
                                     }
                                 }
                             }
                         }
+                        ast::Type::Union(union_type) => {
+                            let mut names = FxHashSet::default();
+                            for member in &union_type.types {
+                                match &member.ty {
+                                    ast::Type::Object(obj_type) => {
+                                        for obj_member in &obj_type.members {
+                                            match obj_member {
+                                                ast::ObjectTypeMember::Property(prop) => {
+                                                    names.insert(
+                                                        self.interner
+                                                            .resolve(prop.name.name)
+                                                            .to_string(),
+                                                    );
+                                                }
+                                                ast::ObjectTypeMember::Method(method) => {
+                                                    if !is_wrapper_alias {
+                                                        names.insert(
+                                                            self.interner
+                                                                .resolve(method.name.name)
+                                                                .to_string(),
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    ast::Type::Reference(type_ref) => {
+                                        let ref_name =
+                                            self.interner.resolve(type_ref.name.name).to_string();
+                                        if let Some(ref_fields) =
+                                            self.type_alias_object_fields.get(&ref_name)
+                                        {
+                                            for (name, _, _) in ref_fields {
+                                                names.insert(name.clone());
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            members.extend(names.into_iter().map(|name| (name, UNRESOLVED, false)));
+                        }
+                        ast::Type::Reference(type_ref) => {
+                            let ref_name = self.interner.resolve(type_ref.name.name).to_string();
+                            if let Some(ref_fields) = self.type_alias_object_fields.get(&ref_name) {
+                                members.extend(
+                                    ref_fields
+                                        .iter()
+                                        .map(|(name, _, ty)| (name.clone(), *ty, false)),
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    if !members.is_empty() {
+                        // Canonical slot ABI for structural aliases:
+                        // declaration ordering should not affect runtime field slots.
+                        members.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
+                        let fields: Vec<(String, u16, TypeId)> = members
+                            .into_iter()
+                            .enumerate()
+                            .map(|(idx, (name, ty, _is_method))| (name, idx as u16, ty))
+                            .collect();
                         self.type_alias_object_fields
                             .insert(alias_name.clone(), fields);
                         let alias_ty = self.resolve_type_annotation(&type_alias.type_annotation);
@@ -4471,23 +4545,29 @@ impl<'a> Lowerer<'a> {
         &self,
         type_ann: &ast::TypeAnnotation,
     ) -> Option<Vec<(String, usize)>> {
-        let mut fields = Vec::new();
+        let mut names = Vec::new();
         match &type_ann.ty {
             ast::Type::Object(obj_type) => {
-                for (idx, member) in obj_type.members.iter().enumerate() {
+                for member in &obj_type.members {
                     match member {
                         ast::ObjectTypeMember::Property(prop) => {
-                            let name = self.interner.resolve(prop.name.name).to_string();
-                            fields.push((name, idx));
+                            names.push(self.interner.resolve(prop.name.name).to_string());
                         }
                         ast::ObjectTypeMember::Method(_) => {
                             // Methods don't contribute to destructuring field layout
                         }
                     }
                 }
-                if fields.is_empty() {
+                if names.is_empty() {
                     None
                 } else {
+                    names.sort_unstable();
+                    names.dedup();
+                    let fields: Vec<(String, usize)> = names
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, name)| (name, idx))
+                        .collect();
                     Some(fields)
                 }
             }
@@ -4503,9 +4583,31 @@ impl<'a> Lowerer<'a> {
             return None;
         };
 
+        let mut outer_names: Vec<String> = obj_type
+            .members
+            .iter()
+            .filter_map(|member| match member {
+                ast::ObjectTypeMember::Property(prop) => {
+                    Some(self.interner.resolve(prop.name.name).to_string())
+                }
+                ast::ObjectTypeMember::Method(_) => None,
+            })
+            .collect();
+        outer_names.sort_unstable();
+        outer_names.dedup();
+        let outer_index: FxHashMap<String, u16> = outer_names
+            .into_iter()
+            .enumerate()
+            .map(|(idx, name)| (name, idx as u16))
+            .collect();
+
         let mut layouts: FxHashMap<u16, Vec<(String, usize)>> = FxHashMap::default();
-        for (member_idx, member) in obj_type.members.iter().enumerate() {
+        for member in &obj_type.members {
             let ast::ObjectTypeMember::Property(prop) = member else {
+                continue;
+            };
+            let outer_name = self.interner.resolve(prop.name.name).to_string();
+            let Some(&member_idx) = outer_index.get(&outer_name) else {
                 continue;
             };
             let ast::Type::Array(arr_ty) = &prop.ty.ty else {
@@ -4515,19 +4617,25 @@ impl<'a> Lowerer<'a> {
                 continue;
             };
 
-            let elem_layout: Vec<(String, usize)> = elem_obj
+            let mut elem_names: Vec<String> = elem_obj
                 .members
                 .iter()
-                .enumerate()
-                .filter_map(|(idx, elem_member)| match elem_member {
+                .filter_map(|elem_member| match elem_member {
                     ast::ObjectTypeMember::Property(elem_prop) => {
-                        Some((self.interner.resolve(elem_prop.name.name).to_string(), idx))
+                        Some(self.interner.resolve(elem_prop.name.name).to_string())
                     }
                     ast::ObjectTypeMember::Method(_) => None,
                 })
                 .collect();
+            elem_names.sort_unstable();
+            elem_names.dedup();
+            let elem_layout: Vec<(String, usize)> = elem_names
+                .into_iter()
+                .enumerate()
+                .map(|(idx, name)| (name, idx))
+                .collect();
             if !elem_layout.is_empty() {
-                layouts.insert(member_idx as u16, elem_layout);
+                layouts.insert(member_idx, elem_layout);
             }
         }
 

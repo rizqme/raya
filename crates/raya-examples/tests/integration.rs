@@ -1,7 +1,7 @@
 //! raya-examples integration tests — single binary entry point.
 
-mod common;
 mod cli_http_e2e;
+mod common;
 mod fixture_fault_injection_e2e;
 mod fixture_pkg_workflow_e2e;
 mod fixture_tcp_chat_e2e;

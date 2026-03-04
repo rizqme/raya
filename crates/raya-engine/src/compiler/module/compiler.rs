@@ -23,9 +23,9 @@ use crate::parser::{Interner, Parser, Span, TypeContext};
 
 use super::cache::ModuleCache;
 use super::declaration::{
-    declaration_runtime_identity_path, load_declaration_module, specialization_template_from_symbol,
-    DeclarationError, DeclarationModule, DeclarationSourceKind, LateLinkRequirement,
-    LateLinkSymbolRequirement,
+    declaration_runtime_identity_path, load_declaration_module,
+    specialization_template_from_symbol, DeclarationError, DeclarationModule,
+    DeclarationSourceKind, LateLinkRequirement, LateLinkSymbolRequirement,
 };
 use super::exports::{ExportRegistry, ExportedSymbol, ModuleExports};
 use super::graph::{GraphError, ModuleGraph};
@@ -246,8 +246,9 @@ impl ModuleCompiler {
         }
 
         let virtual_path = Self::declaration_virtual_path(&module_identity);
-        let declaration = load_declaration_module(declaration_path, &module_identity, &virtual_path)
-            .map_err(|error| self.map_declaration_error(error))?;
+        let declaration =
+            load_declaration_module(declaration_path, &module_identity, &virtual_path)
+                .map_err(|error| self.map_declaration_error(error))?;
         self.virtual_sources
             .insert(virtual_path.clone(), declaration.normalized_source.clone());
         self.declaration_virtual_by_identity
@@ -262,7 +263,8 @@ impl ModuleCompiler {
                 module_specifiers: Vec::new(),
                 symbols: Vec::new(),
             });
-        self.declaration_modules.insert(virtual_path.clone(), declaration);
+        self.declaration_modules
+            .insert(virtual_path.clone(), declaration);
         Ok(virtual_path)
     }
 
@@ -271,12 +273,16 @@ impl ModuleCompiler {
         specifier: &str,
         from_path: &Path,
     ) -> ModuleCompileResult<Option<PathBuf>> {
-        if !(specifier.starts_with("./") || specifier.starts_with("../") || specifier.starts_with('/'))
+        if !(specifier.starts_with("./")
+            || specifier.starts_with("../")
+            || specifier.starts_with('/'))
         {
             return Ok(None);
         }
 
-        let from_dir = from_path.parent().ok_or_else(|| ModuleCompileError::Resolution(ResolveError::NoParentDirectory))?;
+        let from_dir = from_path
+            .parent()
+            .ok_or_else(|| ModuleCompileError::Resolution(ResolveError::NoParentDirectory))?;
         let base = if Path::new(specifier).is_absolute() {
             PathBuf::from(specifier)
         } else {
@@ -297,10 +303,13 @@ impl ModuleCompiler {
             if !candidate.is_file() {
                 continue;
             }
-            let canonical_decl = candidate.canonicalize().map_err(|e| ModuleCompileError::IoError {
-                path: candidate.clone(),
-                message: e.to_string(),
-            })?;
+            let canonical_decl =
+                candidate
+                    .canonicalize()
+                    .map_err(|e| ModuleCompileError::IoError {
+                        path: candidate.clone(),
+                        message: e.to_string(),
+                    })?;
             if DeclarationSourceKind::from_path(&canonical_decl).is_none() {
                 continue;
             }
@@ -327,11 +336,17 @@ impl ModuleCompiler {
             if !candidate.is_file() {
                 continue;
             }
-            let canonical_decl = candidate.canonicalize().map_err(|e| ModuleCompileError::IoError {
-                path: candidate.clone(),
-                message: e.to_string(),
-            })?;
-            let runtime_identity = binary_path.with_extension("raya").to_string_lossy().to_string();
+            let canonical_decl =
+                candidate
+                    .canonicalize()
+                    .map_err(|e| ModuleCompileError::IoError {
+                        path: candidate.clone(),
+                        message: e.to_string(),
+                    })?;
+            let runtime_identity = binary_path
+                .with_extension("raya")
+                .to_string_lossy()
+                .to_string();
             let virtual_path =
                 self.ensure_declaration_virtual_module(&canonical_decl, runtime_identity)?;
             return Ok(Some(virtual_path));
@@ -341,9 +356,15 @@ impl ModuleCompiler {
 
     fn map_declaration_error(&self, error: DeclarationError) -> ModuleCompileError {
         match error {
-            DeclarationError::IoError { path, message } => ModuleCompileError::IoError { path, message },
-            DeclarationError::LexError { path, message } => ModuleCompileError::LexError { path, message },
-            DeclarationError::ParseError { path, message } => ModuleCompileError::ParseError { path, message },
+            DeclarationError::IoError { path, message } => {
+                ModuleCompileError::IoError { path, message }
+            }
+            DeclarationError::LexError { path, message } => {
+                ModuleCompileError::LexError { path, message }
+            }
+            DeclarationError::ParseError { path, message } => {
+                ModuleCompileError::ParseError { path, message }
+            }
             DeclarationError::UnsupportedTsSyntax {
                 path,
                 line,
@@ -626,10 +647,11 @@ impl ModuleCompiler {
         }
 
         let encoded = bytecode.encode();
-        let decoded = BytecodeModule::decode(&encoded).map_err(|e| ModuleCompileError::TypeError {
-            path: path.to_path_buf(),
-            message: format!("Failed to finalize declaration placeholder module checksum: {e}"),
-        })?;
+        let decoded =
+            BytecodeModule::decode(&encoded).map_err(|e| ModuleCompileError::TypeError {
+                path: path.to_path_buf(),
+                message: format!("Failed to finalize declaration placeholder module checksum: {e}"),
+            })?;
 
         Ok((decoded, declaration_module.exports.clone()))
     }
@@ -745,7 +767,12 @@ impl ModuleCompiler {
         for ((scope_id, name), ty) in check_result.inferred_types {
             symbols.update_type(ScopeId(scope_id), &name, ty);
         }
-        Self::apply_default_export_type_overrides(&ast, &mut symbols, &interner, &check_result.expr_types);
+        Self::apply_default_export_type_overrides(
+            &ast,
+            &mut symbols,
+            &interner,
+            &check_result.expr_types,
+        );
 
         let module_name = self.module_identity(path);
         // Extract exports for dependent modules
@@ -946,7 +973,11 @@ impl ModuleCompiler {
         }
     }
 
-    fn collect_pattern_binding_names(pattern: &Pattern, interner: &Interner, out: &mut Vec<String>) {
+    fn collect_pattern_binding_names(
+        pattern: &Pattern,
+        interner: &Interner,
+        out: &mut Vec<String>,
+    ) {
         match pattern {
             Pattern::Identifier(ident) => out.push(interner.resolve(ident.name).to_string()),
             Pattern::Array(array) => {
@@ -1033,17 +1064,17 @@ impl ModuleCompiler {
         exported: &ExportedSymbol,
     ) {
         let module_id = module_id_from_name(module_identity);
-        let requirement = self
-            .late_link_requirements
-            .entry(module_id)
-            .or_insert(LateLinkRequirement {
-                module_identity: module_identity.to_string(),
-                module_id,
-                declaration_path: PathBuf::new(),
-                source_kind: super::declaration::DeclarationSourceKind::DRaya,
-                module_specifiers: Vec::new(),
-                symbols: Vec::new(),
-            });
+        let requirement =
+            self.late_link_requirements
+                .entry(module_id)
+                .or_insert(LateLinkRequirement {
+                    module_identity: module_identity.to_string(),
+                    module_id,
+                    declaration_path: PathBuf::new(),
+                    source_kind: super::declaration::DeclarationSourceKind::DRaya,
+                    module_specifiers: Vec::new(),
+                    symbols: Vec::new(),
+                });
 
         if !module_specifier.is_empty()
             && !requirement
@@ -1058,9 +1089,8 @@ impl ModuleCompiler {
 
         let symbol_type = match exported.kind {
             crate::parser::checker::SymbolKind::Function => SymbolType::Function,
-            crate::parser::checker::SymbolKind::Class | crate::parser::checker::SymbolKind::Interface => {
-                SymbolType::Class
-            }
+            crate::parser::checker::SymbolKind::Class
+            | crate::parser::checker::SymbolKind::Interface => SymbolType::Class,
             crate::parser::checker::SymbolKind::Variable
             | crate::parser::checker::SymbolKind::EnumMember => SymbolType::Constant,
             _ => return,
@@ -1831,7 +1861,10 @@ mod tests {
 
         let late_links = compiler.late_link_requirements();
         assert_eq!(late_links.len(), 1);
-        assert!(late_links[0].symbols.iter().any(|symbol| symbol.symbol == "foo"));
+        assert!(late_links[0]
+            .symbols
+            .iter()
+            .any(|symbol| symbol.symbol == "foo"));
     }
 
     #[test]
@@ -1889,10 +1922,7 @@ mod tests {
             .iter()
             .find(|import| import.module_specifier == "./dep" && import.symbol == "foo")
             .expect("foo import");
-        let type_signature = foo_import
-            .type_signature
-            .as_ref()
-            .expect("type signature");
+        let type_signature = foo_import.type_signature.as_ref().expect("type signature");
         assert!(
             type_signature.contains("number"),
             "expected .d.raya function signature, got: {}",

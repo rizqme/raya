@@ -113,8 +113,6 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::StoreLocal
         | Opcode::LoadField
         | Opcode::StoreField
-        | Opcode::LoadFieldFast
-        | Opcode::StoreFieldFast
         | Opcode::OptionalField
         | Opcode::ConstStr
         | Opcode::CloseVar

@@ -443,7 +443,8 @@ impl<'a> Interpreter<'a> {
                             let (func_id, method_module) =
                                 classes.get_class(class_id).map_or((None, None), |class| {
                                     let method_module = class.module.clone();
-                                    let search_module = method_module.as_ref().map_or(module, |m| m);
+                                    let search_module =
+                                        method_module.as_ref().map_or(module, |m| m);
                                     let func_id = method_slot
                                         .and_then(|slot| class.vtable.get_method(slot))
                                         .or_else(|| {
@@ -454,16 +455,14 @@ impl<'a> Interpreter<'a> {
                                                     .map(|f| {
                                                         let name = f.name.as_str();
                                                         name == prop_name
-                                                            || name
-                                                                .ends_with(&format!(
-                                                                    ".{}",
-                                                                    prop_name
-                                                                ))
-                                                            || name
-                                                                .ends_with(&format!(
-                                                                    "::{}",
-                                                                    prop_name
-                                                                ))
+                                                            || name.ends_with(&format!(
+                                                                ".{}",
+                                                                prop_name
+                                                            ))
+                                                            || name.ends_with(&format!(
+                                                                "::{}",
+                                                                prop_name
+                                                            ))
                                                     })
                                                     .unwrap_or(false)
                                             })

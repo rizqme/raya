@@ -20,9 +20,9 @@ pub use discriminant::{Discriminant, DiscriminantError, DiscriminantInference};
 pub use error::TypeError;
 pub use generics::GenericContext;
 pub use signature::{
-    canonical_type_signature, signature_hash, type_signature_hash, type_signature_string,
-    hydrate_type_from_canonical_signature, structural_signature_is_assignable,
-    try_hydrate_type_from_canonical_signature, CanonicalTypeSignature,
+    canonical_type_signature, hydrate_type_from_canonical_signature, signature_hash,
+    structural_signature_is_assignable, try_hydrate_type_from_canonical_signature,
+    type_signature_hash, type_signature_string, CanonicalTypeSignature,
 };
 pub use subtyping::SubtypingContext;
 pub use ty::{PrimitiveType, Type, TypeId};

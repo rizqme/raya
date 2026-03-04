@@ -223,16 +223,6 @@ impl fmt::Display for JitInstr {
                 offset,
                 value,
             } => write!(f, "store.field {}.{}, {}", object, offset, value),
-            JitInstr::LoadFieldFast {
-                dest,
-                object,
-                offset,
-            } => write!(f, "{} = load.field.fast {}.{}", dest, object, offset),
-            JitInstr::StoreFieldFast {
-                object,
-                offset,
-                value,
-            } => write!(f, "store.field.fast {}.{}, {}", object, offset, value),
             JitInstr::InstanceOf {
                 dest,
                 object,

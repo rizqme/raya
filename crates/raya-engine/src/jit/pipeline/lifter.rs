@@ -979,29 +979,6 @@ fn lift_instruction(
                 });
             }
         }
-        Opcode::LoadFieldFast => {
-            if let Operands::U16(offset) = instr.operands {
-                let object = stack.pop(instr.offset)?;
-                let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::LoadFieldFast {
-                    dest,
-                    object,
-                    offset,
-                });
-                stack.push(dest);
-            }
-        }
-        Opcode::StoreFieldFast => {
-            if let Operands::U16(offset) = instr.operands {
-                let value = stack.pop(instr.offset)?;
-                let object = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::StoreFieldFast {
-                    object,
-                    offset,
-                    value,
-                });
-            }
-        }
         Opcode::OptionalField => {
             if let Operands::U16(offset) = instr.operands {
                 let object = stack.pop(instr.offset)?;

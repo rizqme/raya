@@ -51,11 +51,13 @@ pub use module_system::{CompiledProgram, ProgramDiagnostics};
 pub use session::Session;
 
 use raya_engine::compiler::module::{LateLinkRequirement, LateLinkSymbolRequirement};
-use raya_engine::compiler::{module_id_from_name, SymbolType};
+use raya_engine::compiler::{module_id_from_name, Import, SymbolType};
+use raya_engine::parser::types::{try_hydrate_type_from_canonical_signature, Type, TypeContext};
 use raya_engine::parser::Interner;
+use raya_engine::vm::json::JSView;
 use raya_engine::vm::module::{ModuleLinker, ResolvedSymbol};
 use raya_engine::vm::object::{Closure, RayaString};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -616,12 +618,15 @@ impl Runtime {
                         module.metadata.name, import.module_specifier
                     )));
                 }
-                let dep_module = linker.get_module_by_id(import.module_id).cloned().ok_or_else(|| {
-                    RuntimeError::Dependency(format!(
-                        "Module '{}' references unresolved dependency module ID {} ('{}')",
-                        module.metadata.name, import.module_id, import.module_specifier
-                    ))
-                })?;
+                let dep_module = linker
+                    .get_module_by_id(import.module_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        RuntimeError::Dependency(format!(
+                            "Module '{}' references unresolved dependency module ID {} ('{}')",
+                            module.metadata.name, import.module_id, import.module_specifier
+                        ))
+                    })?;
                 visit(dep_module, linker, marks, ordered)?;
             }
 
@@ -760,7 +765,13 @@ impl Runtime {
                 .shared_state()
                 .resolve_global_slot(module, local_global_slot);
 
-            let value = Self::materialize_import_value(vm, import.symbol.as_str(), resolved_symbol)?;
+            let value = Self::materialize_import_value(
+                vm,
+                module,
+                import,
+                import.symbol.as_str(),
+                resolved_symbol,
+            )?;
             let mut globals = vm.shared_state().globals_by_index.write();
             if global_slot >= globals.len() {
                 globals.resize(global_slot + 1, Value::null());
@@ -773,6 +784,8 @@ impl Runtime {
 
     fn materialize_import_value(
         vm: &mut raya_engine::vm::Vm,
+        consumer_module: &Module,
+        import: &Import,
         import_symbol: &str,
         resolved: &ResolvedSymbol,
     ) -> Result<Value, RuntimeError> {
@@ -786,7 +799,16 @@ impl Runtime {
                 let gc_ptr = vm.shared_state().gc.lock().allocate(closure);
                 Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
             }
-            SymbolType::Constant => Self::materialize_constant_export(vm, resolved),
+            SymbolType::Constant => {
+                let value = Self::materialize_constant_export(vm, resolved)?;
+                Self::register_structural_constant_slot_view(
+                    vm,
+                    consumer_module,
+                    value,
+                    import,
+                    resolved,
+                )
+            }
             SymbolType::Class => {
                 let class_id = vm
                     .shared_state()
@@ -818,7 +840,13 @@ impl Runtime {
         {
             if index < layout.global_len {
                 let global_slot = layout.global_base + index;
-                if let Some(value) = vm.shared_state().globals_by_index.read().get(global_slot).copied() {
+                if let Some(value) = vm
+                    .shared_state()
+                    .globals_by_index
+                    .read()
+                    .get(global_slot)
+                    .copied()
+                {
                     return Ok(value);
                 }
             }
@@ -865,6 +893,135 @@ impl Runtime {
             "Constant export index {} is out of range in module '{}'",
             index, resolved.module.metadata.name
         )))
+    }
+
+    fn register_structural_constant_slot_view(
+        vm: &mut raya_engine::vm::Vm,
+        consumer_module: &Module,
+        value: Value,
+        import: &Import,
+        resolved: &ResolvedSymbol,
+    ) -> Result<Value, RuntimeError> {
+        if import.type_symbol_id == resolved.export.type_symbol_id {
+            return Ok(value);
+        }
+        let Some(expected_sig) = import.type_signature.as_deref() else {
+            return Ok(value);
+        };
+        let Some(actual_sig) = resolved.export.type_signature.as_deref() else {
+            return Ok(value);
+        };
+        let Some(slot_map) = Self::structural_slot_map(expected_sig, actual_sig) else {
+            return Ok(value);
+        };
+        if slot_map.is_empty() {
+            return Ok(value);
+        }
+
+        let JSView::Struct { ptr, class_id } = raya_engine::vm::json::js_classify(value) else {
+            return Ok(value);
+        };
+        // Structural slot views currently target plain object-namespace values.
+        if class_id != 0 {
+            return Ok(value);
+        }
+
+        let source = unsafe { &*ptr };
+        vm.shared_state().register_structural_slot_view(
+            consumer_module,
+            source.object_id,
+            slot_map,
+        );
+        Ok(value)
+    }
+
+    fn collect_structural_field_names(
+        type_ctx: &TypeContext,
+        ty: raya_engine::parser::TypeId,
+        out: &mut BTreeSet<String>,
+    ) -> bool {
+        let Some(ty) = type_ctx.get(ty) else {
+            return false;
+        };
+        match ty {
+            Type::Object(obj) => {
+                out.extend(obj.properties.iter().map(|property| property.name.clone()));
+                true
+            }
+            Type::Interface(interface) => {
+                out.extend(
+                    interface
+                        .properties
+                        .iter()
+                        .map(|property| property.name.clone()),
+                );
+                out.extend(interface.methods.iter().map(|method| method.name.clone()));
+                true
+            }
+            Type::Class(class) => {
+                out.extend(
+                    class
+                        .properties
+                        .iter()
+                        .map(|property| property.name.clone()),
+                );
+                out.extend(class.methods.iter().map(|method| method.name.clone()));
+                true
+            }
+            Type::Union(union) => {
+                let mut any_object_like = false;
+                for &member in &union.members {
+                    any_object_like |= Self::collect_structural_field_names(type_ctx, member, out);
+                }
+                any_object_like
+            }
+            Type::TypeVar(type_var) => {
+                type_var.constraint.is_some_and(|constraint| {
+                    Self::collect_structural_field_names(type_ctx, constraint, out)
+                }) || type_var.default.is_some_and(|default| {
+                    Self::collect_structural_field_names(type_ctx, default, out)
+                })
+            }
+            Type::Reference(reference) => type_ctx
+                .lookup_named_type(&reference.name)
+                .is_some_and(|named| Self::collect_structural_field_names(type_ctx, named, out)),
+            Type::Generic(generic) => {
+                Self::collect_structural_field_names(type_ctx, generic.base, out)
+            }
+            _ => false,
+        }
+    }
+
+    fn structural_slot_layout(
+        type_ctx: &TypeContext,
+        ty: raya_engine::parser::TypeId,
+    ) -> Option<Vec<String>> {
+        let mut fields = BTreeSet::new();
+        if !Self::collect_structural_field_names(type_ctx, ty, &mut fields) {
+            return None;
+        }
+        Some(fields.into_iter().collect())
+    }
+
+    fn structural_slot_map(expected_sig: &str, actual_sig: &str) -> Option<Vec<Option<usize>>> {
+        let mut type_ctx = TypeContext::new();
+        let expected_ty = try_hydrate_type_from_canonical_signature(expected_sig, &mut type_ctx)?;
+        let actual_ty = try_hydrate_type_from_canonical_signature(actual_sig, &mut type_ctx)?;
+        let expected_layout = Self::structural_slot_layout(&type_ctx, expected_ty)?;
+        let actual_layout = Self::structural_slot_layout(&type_ctx, actual_ty)?;
+
+        let actual_index: HashMap<&str, usize> = actual_layout
+            .iter()
+            .enumerate()
+            .map(|(idx, name)| (name.as_str(), idx))
+            .collect();
+
+        let mut slot_map = Vec::with_capacity(expected_layout.len());
+        for expected_field in &expected_layout {
+            slot_map.push(actual_index.get(expected_field.as_str()).copied());
+        }
+
+        Some(slot_map)
     }
 
     fn maybe_enable_jit(&self, vm: &mut raya_engine::vm::Vm) {
@@ -979,7 +1136,10 @@ impl Runtime {
             if !candidate.exists() {
                 continue;
             }
-            let extension = candidate.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+            let extension = candidate
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("");
             let loaded = match extension {
                 "ryb" => self.load_bytecode(candidate),
                 "raya" => self.compile_file(candidate),
@@ -1083,15 +1243,15 @@ impl Runtime {
                 .next_back()
                 .filter(|segment| !segment.is_empty())
                 .unwrap_or(specifier);
+            add_expanded(&mut candidates, &mut seen, &entry_dir.join(fallback_name));
             add_expanded(
                 &mut candidates,
                 &mut seen,
-                &entry_dir.join(fallback_name),
-            );
-            add_expanded(
-                &mut candidates,
-                &mut seen,
-                &entry_dir.join(".raya").join("packages").join(fallback_name).join("lib"),
+                &entry_dir
+                    .join(".raya")
+                    .join("packages")
+                    .join(fallback_name)
+                    .join("lib"),
             );
             if let Some(home) = dirs::home_dir() {
                 add_expanded(
@@ -1138,7 +1298,11 @@ impl Runtime {
         module: &Module,
         symbol: &LateLinkSymbolRequirement,
     ) -> Result<(), RuntimeError> {
-        let Some(exported) = module.exports.iter().find(|export| export.symbol_id == symbol.symbol_id) else {
+        let Some(exported) = module
+            .exports
+            .iter()
+            .find(|export| export.symbol_id == symbol.symbol_id)
+        else {
             return Err(RuntimeError::Dependency(format!(
                 "Late-link symbol '{}' (id {}) missing from module '{}'",
                 symbol.symbol, symbol.symbol_id, requirement.module_identity
@@ -1204,7 +1368,8 @@ impl Runtime {
                     .template_symbol_table
                     .iter()
                     .any(|entry| entry.symbol == *template);
-                let has_template_export = module.exports.iter().any(|entry| entry.name == *template);
+                let has_template_export =
+                    module.exports.iter().any(|entry| entry.name == *template);
                 if !(has_template_symbol || has_template_export) {
                     return Err(RuntimeError::Dependency(format!(
                         "Late-link specialization contract missing template symbol '{}' for '{}'",
@@ -1290,5 +1455,33 @@ impl Runtime {
         })?;
 
         self.load_bytecode_bytes(&bytes)
+    }
+}
+
+#[cfg(test)]
+mod structural_slot_tests {
+    use super::Runtime;
+
+    #[test]
+    fn structural_slot_map_maps_subset_by_member_name() {
+        let expected = "obj(prop:a:rw:req:number,prop:c:rw:req:string)";
+        let actual = "obj(prop:a:rw:req:number,prop:b:rw:req:boolean,prop:c:rw:req:string)";
+        let slot_map = Runtime::structural_slot_map(expected, actual).expect("slot map expected");
+        assert_eq!(slot_map, vec![Some(0), Some(2)]);
+    }
+
+    #[test]
+    fn structural_slot_map_returns_none_for_non_object_signatures() {
+        let expected = "fn(min=1,params=[number],rest=_,ret=number)";
+        let actual = "fn(min=1,params=[number],rest=_,ret=number)";
+        assert!(Runtime::structural_slot_map(expected, actual).is_none());
+    }
+
+    #[test]
+    fn structural_slot_map_unions_merge_into_shared_layout_with_missing_slots() {
+        let expected = "union(obj(prop:a:rw:req:number,prop:b:rw:req:number,prop:c:rw:req:number)|obj(prop:b:rw:req:number,prop:c:rw:req:number,prop:d:rw:req:number,prop:e:rw:req:number))";
+        let actual = "obj(prop:a:rw:req:number,prop:b:rw:req:number,prop:c:rw:req:number)";
+        let slot_map = Runtime::structural_slot_map(expected, actual).expect("slot map expected");
+        assert_eq!(slot_map, vec![Some(0), Some(1), Some(2), None, None]);
     }
 }

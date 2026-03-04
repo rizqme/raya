@@ -505,8 +505,7 @@ mod tests {
                 "obj(prop:a:rw:req:number,prop:b:rw:req:string,prop:c:rw:req:string)",
             ),
             type_signature: Some(
-                "obj(prop:a:rw:req:number,prop:b:rw:req:string,prop:c:rw:req:string)"
-                    .to_string(),
+                "obj(prop:a:rw:req:number,prop:b:rw:req:string,prop:c:rw:req:string)".to_string(),
             ),
         });
         linker.add_module(Arc::new(module)).unwrap();
@@ -588,9 +587,7 @@ mod tests {
             symbol_id: 13,
             scope: SymbolScope::Module,
             type_symbol_id: signature_hash("fn(min=2,params=[number,number],rest=_,ret=number)"),
-            type_signature: Some(
-                "fn(min=2,params=[number,number],rest=_,ret=number)".to_string(),
-            ),
+            type_signature: Some("fn(min=2,params=[number,number],rest=_,ret=number)".to_string()),
             runtime_global_slot: None,
         };
 

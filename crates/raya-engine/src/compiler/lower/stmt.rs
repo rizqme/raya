@@ -386,54 +386,55 @@ impl<'a> Lowerer<'a> {
                     });
                     iter_array
                 } else {
-                let class_id = match self.class_id_by_name(class_name) {
-                    Some(id) => id,
-                    None => {
-                        let mut known: Vec<String> = self
-                            .class_map
-                            .keys()
-                            .map(|sym| self.interner.resolve(*sym).to_string())
-                            .collect();
-                        known.sort();
-                        known.dedup();
-                        self.errors
-                            .push(crate::compiler::CompileError::InternalError {
-                                message: format!(
+                    let class_id = match self.class_id_by_name(class_name) {
+                        Some(id) => id,
+                        None => {
+                            let mut known: Vec<String> = self
+                                .class_map
+                                .keys()
+                                .map(|sym| self.interner.resolve(*sym).to_string())
+                                .collect();
+                            known.sort();
+                            known.dedup();
+                            self.errors
+                                .push(crate::compiler::CompileError::InternalError {
+                                    message: format!(
                                     "for-of iterable class '{}' not registered (known classes: {})",
                                     class_name,
                                     known.join(", ")
                                 ),
-                            });
-                        return;
-                    }
-                };
-                let symbol_iterator_sym = self.interner.lookup("Symbol.iterator");
-                let iterator_sym = self.interner.lookup("iterator");
-                let slot = match symbol_iterator_sym
-                    .and_then(|sym| self.find_method_slot(class_id, sym))
-                    .or_else(|| iterator_sym.and_then(|sym| self.find_method_slot(class_id, sym)))
-                {
-                    Some(slot) => slot,
-                    None => {
-                        self.errors
+                                });
+                            return;
+                        }
+                    };
+                    let symbol_iterator_sym = self.interner.lookup("Symbol.iterator");
+                    let iterator_sym = self.interner.lookup("iterator");
+                    let slot = match symbol_iterator_sym
+                        .and_then(|sym| self.find_method_slot(class_id, sym))
+                        .or_else(|| {
+                            iterator_sym.and_then(|sym| self.find_method_slot(class_id, sym))
+                        }) {
+                        Some(slot) => slot,
+                        None => {
+                            self.errors
                             .push(crate::compiler::CompileError::InternalError {
                                 message: format!(
                                     "for-of iterator method not found on {} (expected Symbol.iterator/iterator)",
                                     class_name
                                 ),
                             });
-                        return;
-                    }
-                };
-                let iter_array = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::CallMethod {
-                    dest: Some(iter_array.clone()),
-                    object: source_reg,
-                    method: slot,
-                    args: vec![],
-                    optional: false,
-                });
-                iter_array
+                            return;
+                        }
+                    };
+                    let iter_array = self.alloc_register(UNRESOLVED);
+                    self.emit(IrInstr::CallMethod {
+                        dest: Some(iter_array.clone()),
+                        object: source_reg,
+                        method: slot,
+                        args: vec![],
+                        optional: false,
+                    });
+                    iter_array
                 }
             }
         };
@@ -865,23 +866,36 @@ impl<'a> Lowerer<'a> {
         use crate::parser::types::Type;
 
         match self.type_ctx.get(value_ty)? {
-            Type::Object(obj) => Some(
-                obj.properties
+            Type::Object(obj) => {
+                let mut names: Vec<String> = obj
+                    .properties
                     .iter()
-                    .enumerate()
-                    .map(|(idx, prop)| (prop.name.clone(), idx))
-                    .collect(),
-            ),
-            Type::Reference(reference) => {
-                self.type_alias_object_fields
-                    .get(&reference.name)
-                    .map(|fields| {
-                        fields
-                            .iter()
-                            .map(|(name, idx, _)| (name.clone(), *idx as usize))
-                            .collect()
-                    })
+                    .map(|prop| prop.name.clone())
+                    .collect();
+                names.sort_unstable();
+                names.dedup();
+                Some(
+                    names
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, name)| (name, idx))
+                        .collect(),
+                )
             }
+            Type::Reference(reference) => self
+                .type_alias_object_fields
+                .get(&reference.name)
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .map(|(name, idx, _)| (name.clone(), *idx as usize))
+                        .collect()
+                })
+                .or_else(|| {
+                    self.type_ctx
+                        .lookup_named_type(&reference.name)
+                        .and_then(|named| self.object_layout_from_type(named))
+                }),
             Type::Class(_) => {
                 let class_id = self.class_id_from_type_id(value_ty)?;
                 let mut fields = self.get_all_fields(class_id);
@@ -898,18 +912,28 @@ impl<'a> Lowerer<'a> {
                 .and_then(|constraint| self.object_layout_from_type(constraint)),
             Type::Generic(generic) => self.object_layout_from_type(generic.base),
             Type::Union(union) => {
-                let mut found: Option<Vec<(String, usize)>> = None;
+                let mut merged_names: FxHashSet<String> = FxHashSet::default();
+                let mut found = false;
                 for member in &union.members {
                     let Some(layout) = self.object_layout_from_type(*member) else {
                         continue;
                     };
-                    match &found {
-                        None => found = Some(layout),
-                        Some(existing) if *existing == layout => {}
-                        Some(_) => return None,
-                    }
+                    found = true;
+                    merged_names.extend(layout.into_iter().map(|(name, _)| name));
                 }
-                found
+                if !found {
+                    return None;
+                }
+                let mut names: Vec<String> = merged_names.into_iter().collect();
+                names.sort_unstable();
+                names.dedup();
+                Some(
+                    names
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, name)| (name, idx))
+                        .collect(),
+                )
             }
             _ => None,
         }
@@ -930,7 +954,14 @@ impl<'a> Lowerer<'a> {
                 .map(|prop| prop.ty),
             Type::Reference(reference) => self
                 .type_alias_field_lookup(&reference.name, property_name)
-                .map(|(_, ty)| ty),
+                .map(|(_, ty)| ty)
+                .or_else(|| {
+                    self.type_ctx
+                        .lookup_named_type(&reference.name)
+                        .and_then(|named| {
+                            self.object_property_type_from_value_type(named, property_name)
+                        })
+                }),
             Type::Class(_) => {
                 let class_id = self.class_id_from_type_id(value_ty)?;
                 self.get_all_fields(class_id)
@@ -1378,18 +1409,15 @@ impl<'a> Lowerer<'a> {
                 .constraint
                 .and_then(|constraint| self.collect_spread_target_fields_from_type(constraint)),
             crate::parser::types::Type::Union(union) => {
-                let mut iter = union.members.iter();
-                let first = iter
-                    .next()
-                    .and_then(|member| self.collect_spread_target_fields_from_type(*member))?;
-                let common = iter.fold(first, |acc, member| {
+                let mut merged: FxHashSet<String> = FxHashSet::default();
+                let mut found = false;
+                for member in &union.members {
                     if let Some(fields) = self.collect_spread_target_fields_from_type(*member) {
-                        acc.intersection(&fields).cloned().collect()
-                    } else {
-                        FxHashSet::default()
+                        found = true;
+                        merged.extend(fields);
                     }
-                });
-                Some(common)
+                }
+                found.then_some(merged)
             }
             _ => None,
         }
@@ -1409,14 +1437,46 @@ impl<'a> Lowerer<'a> {
         type_ann: Option<&ast::TypeAnnotation>,
     ) -> Register {
         let prev_filter = self.object_spread_target_filter.clone();
+        let prev_layout = self.object_literal_target_layout.clone();
         if matches!(expr, ast::Expression::Object(_)) {
             self.object_spread_target_filter =
                 type_ann.and_then(|ann| self.object_spread_filter_from_annotation(ann));
+            self.object_literal_target_layout = type_ann.and_then(|ann| {
+                let mut resolved_ty = self.resolve_type_annotation(ann);
+                let mut layout_from_alias: Option<Vec<(String, usize)>> = None;
+                if resolved_ty == super::UNRESOLVED {
+                    if let ast::Type::Reference(type_ref) = &ann.ty {
+                        let name = self.interner.resolve(type_ref.name.name);
+                        if let Some(fields) = self.type_alias_object_fields.get(name) {
+                            layout_from_alias = Some(
+                                fields
+                                    .iter()
+                                    .map(|(field_name, idx, _)| (field_name.clone(), *idx as usize))
+                                    .collect(),
+                            );
+                        }
+                        if let Some(named) = self.type_ctx.lookup_named_type(name) {
+                            resolved_ty = named;
+                        }
+                    }
+                }
+                layout_from_alias
+                    .or_else(|| self.object_layout_from_type(resolved_ty))
+                    .map(|layout| {
+                        let mut names: Vec<String> =
+                            layout.into_iter().map(|(name, _)| name).collect();
+                        names.sort_unstable();
+                        names.dedup();
+                        names
+                    })
+            });
         } else {
             self.object_spread_target_filter = None;
+            self.object_literal_target_layout = None;
         }
         let value = self.lower_expr(expr);
         self.object_spread_target_filter = prev_filter;
+        self.object_literal_target_layout = prev_layout;
         value
     }
 
@@ -1455,6 +1515,13 @@ impl<'a> Lowerer<'a> {
             }
             _ => (None, None),
         };
+
+        if let Some(alias_name) = cast_alias_name.as_ref() {
+            if self.type_alias_object_fields.contains_key(alias_name) {
+                self.variable_object_type_aliases
+                    .insert(name, alias_name.clone());
+            }
+        }
 
         if let Some(call) = call {
             if let ast::Expression::Identifier(func_ident) = &*call.callee {
@@ -1670,20 +1737,26 @@ impl<'a> Lowerer<'a> {
         if !self.variable_object_fields.contains_key(&name) {
             if let Some(type_ann) = &decl.type_annotation {
                 if let ast::Type::Object(obj_type) = &type_ann.ty {
-                    let fields: Vec<(String, usize)> = obj_type
+                    let mut member_names: Vec<String> = obj_type
                         .members
                         .iter()
-                        .enumerate()
-                        .filter_map(|(idx, member)| match member {
+                        .filter_map(|member| match member {
                             ast::ObjectTypeMember::Property(prop) => {
-                                Some((self.interner.resolve(prop.name.name).to_string(), idx))
+                                Some(self.interner.resolve(prop.name.name).to_string())
                             }
                             ast::ObjectTypeMember::Method(method) => {
-                                Some((self.interner.resolve(method.name.name).to_string(), idx))
+                                Some(self.interner.resolve(method.name.name).to_string())
                             }
                         })
                         .collect();
-                    if !fields.is_empty() {
+                    if !member_names.is_empty() {
+                        member_names.sort_unstable();
+                        member_names.dedup();
+                        let fields: Vec<(String, usize)> = member_names
+                            .into_iter()
+                            .enumerate()
+                            .map(|(idx, name)| (name, idx))
+                            .collect();
                         self.variable_object_fields.insert(name, fields);
                     }
                 }
@@ -1742,7 +1815,9 @@ impl<'a> Lowerer<'a> {
                                 .get(&ident.name)
                                 .copied()
                                 .or_else(|| self.variable_class_map.get(&ident.name).copied())
-                                .or_else(|| self.class_id_from_type_name(self.interner.resolve(ident.name)));
+                                .or_else(|| {
+                                    self.class_id_from_type_name(self.interner.resolve(ident.name))
+                                });
                             if let Some(class_id) = class_id {
                                 self.variable_class_map.insert(name, class_id);
                                 self.late_bound_object_vars.remove(&name);
@@ -1817,6 +1892,17 @@ impl<'a> Lowerer<'a> {
                                 .insert(name, nested_fields);
                         }
                     }
+                    if !self.variable_object_fields.contains_key(&name) {
+                        if let Some(alias_name) = self.variable_object_type_aliases.get(&name) {
+                            if let Some(fields) = self.type_alias_object_fields.get(alias_name) {
+                                let field_layout: Vec<(String, usize)> = fields
+                                    .iter()
+                                    .map(|(n, idx, _)| (n.clone(), *idx as usize))
+                                    .collect();
+                                self.variable_object_fields.insert(name, field_layout);
+                            }
+                        }
+                    }
 
                     self.emit(IrInstr::StoreGlobal {
                         index: global_idx,
@@ -1883,7 +1969,9 @@ impl<'a> Lowerer<'a> {
                         .get(&ident.name)
                         .copied()
                         .or_else(|| self.variable_class_map.get(&ident.name).copied())
-                        .or_else(|| self.class_id_from_type_name(self.interner.resolve(ident.name)));
+                        .or_else(|| {
+                            self.class_id_from_type_name(self.interner.resolve(ident.name))
+                        });
                     if let Some(class_id) = class_id {
                         self.variable_class_map.insert(name, class_id);
                         self.late_bound_object_vars.remove(&name);
@@ -1954,6 +2042,17 @@ impl<'a> Lowerer<'a> {
                 if !nested_fields.is_empty() {
                     self.variable_nested_object_fields
                         .insert(name, nested_fields);
+                }
+            }
+            if !self.variable_object_fields.contains_key(&name) {
+                if let Some(alias_name) = self.variable_object_type_aliases.get(&name) {
+                    if let Some(fields) = self.type_alias_object_fields.get(alias_name) {
+                        let field_layout: Vec<(String, usize)> = fields
+                            .iter()
+                            .map(|(n, idx, _)| (n.clone(), *idx as usize))
+                            .collect();
+                        self.variable_object_fields.insert(name, field_layout);
+                    }
                 }
             }
 

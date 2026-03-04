@@ -234,10 +234,7 @@ pub enum Opcode {
     LoadField = 0xB1,
     /// Store object field: pop value, pop object (operand: u16 fieldOffset)
     StoreField = 0xB2,
-    /// Load field at known offset (optimized) (operand: u16 offset)
-    LoadFieldFast = 0xB3,
-    /// Store field at known offset (optimized) (operand: u16 offset)
-    StoreFieldFast = 0xB4,
+    // 0xB3, 0xB4 were LOAD_FIELD_FAST/STORE_FIELD_FAST (removed; reserved).
     /// Create object literal (operands: u32 typeIndex, u16 fieldCount)
     ObjectLiteral = 0xB5,
     /// Initialize object fields: pop N values (operand: u16 count)
@@ -510,8 +507,6 @@ impl Opcode {
             0xB0 => Some(Self::New),
             0xB1 => Some(Self::LoadField),
             0xB2 => Some(Self::StoreField),
-            0xB3 => Some(Self::LoadFieldFast),
-            0xB4 => Some(Self::StoreFieldFast),
             0xB5 => Some(Self::ObjectLiteral),
             0xB6 => Some(Self::InitObject),
             0xB7 => Some(Self::OptionalField),
@@ -689,8 +684,6 @@ impl Opcode {
             Self::New => "NEW",
             Self::LoadField => "LOAD_FIELD",
             Self::StoreField => "STORE_FIELD",
-            Self::LoadFieldFast => "LOAD_FIELD_FAST",
-            Self::StoreFieldFast => "STORE_FIELD_FAST",
             Self::ObjectLiteral => "OBJECT_LITERAL",
             Self::InitObject => "INIT_OBJECT",
             Self::OptionalField => "OPTIONAL_FIELD",
@@ -844,6 +837,8 @@ mod tests {
         // Test that unassigned opcodes return None
         assert_eq!(Opcode::from_u8(0xFE), Some(Opcode::ModuleNativeCall));
         assert_eq!(Opcode::from_u8(0xFF), None); // Unassigned
+        assert_eq!(Opcode::from_u8(0xB3), None); // Removed LOAD_FIELD_FAST
+        assert_eq!(Opcode::from_u8(0xB4), None); // Removed STORE_FIELD_FAST
                                                  // Test that assigned opcodes return correct values
         assert_eq!(
             Opcode::from_u8(Opcode::NewChannel.to_u8()),
@@ -1034,8 +1029,6 @@ mod tests {
             Opcode::New,
             Opcode::LoadField,
             Opcode::StoreField,
-            Opcode::LoadFieldFast,
-            Opcode::StoreFieldFast,
             Opcode::ObjectLiteral,
             Opcode::InitObject,
             Opcode::OptionalField,

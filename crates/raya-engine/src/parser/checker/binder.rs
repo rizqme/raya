@@ -237,10 +237,11 @@ impl<'a> Binder<'a> {
             .collect();
         let any_ty = self.type_ctx.any_type();
         let callable_any = self.type_ctx.function_type(vec![], any_ty, false);
-        self.type_ctx.intern(Type::Object(crate::parser::types::ty::ObjectType {
-            properties,
-            index_signature: Some(("[key]".to_string(), callable_any)),
-        }))
+        self.type_ctx
+            .intern(Type::Object(crate::parser::types::ty::ObjectType {
+                properties,
+                index_signature: Some(("[key]".to_string(), callable_any)),
+            }))
     }
 
     /// Format a type ID for diagnostics/debugging.
@@ -3279,7 +3280,8 @@ impl<'a> Binder<'a> {
                     .iter()
                     .map(|&p| self.substitute_type_vars_inner(p, subs, cache, active))
                     .collect();
-                let new_ret = self.substitute_type_vars_inner(func.return_type, subs, cache, active);
+                let new_ret =
+                    self.substitute_type_vars_inner(func.return_type, subs, cache, active);
                 self.type_ctx
                     .function_type(new_params, new_ret, func.is_async)
             }

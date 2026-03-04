@@ -95,8 +95,7 @@ pub fn structural_signature_is_assignable(
         return false;
     };
 
-    let mut subtyping =
-        SubtypingContext::new(&type_ctx).with_relaxed_function_call_arity(true);
+    let mut subtyping = SubtypingContext::new(&type_ctx).with_relaxed_function_call_arity(true);
     subtyping.is_subtype(actual_ty, expected_ty)
 }
 
@@ -332,7 +331,11 @@ impl<'a> Canonicalizer<'a> {
                 let method_sig = this.with_alpha_params(&method.type_params, |this| {
                     this.canonicalize_type(method.ty)
                 });
-                members.insert(format!("inst_method:{}:{}", escape(&method.name), method_sig));
+                members.insert(format!(
+                    "inst_method:{}:{}",
+                    escape(&method.name),
+                    method_sig
+                ));
             }
 
             for property in &class_ty.static_properties {
@@ -357,7 +360,11 @@ impl<'a> Canonicalizer<'a> {
                 let method_sig = this.with_alpha_params(&method.type_params, |this| {
                     this.canonicalize_type(method.ty)
                 });
-                members.insert(format!("static_method:{}:{}", escape(&method.name), method_sig));
+                members.insert(format!(
+                    "static_method:{}:{}",
+                    escape(&method.name),
+                    method_sig
+                ));
             }
 
             if let Some(parent) = class_ty.extends {
@@ -375,7 +382,10 @@ impl<'a> Canonicalizer<'a> {
                 members.insert(format!("implements:[{}]", impls.join(",")));
             }
 
-            format!("class_pub({})", members.into_iter().collect::<Vec<_>>().join(","))
+            format!(
+                "class_pub({})",
+                members.into_iter().collect::<Vec<_>>().join(",")
+            )
         })
     }
 
@@ -436,7 +446,10 @@ impl<'a> Canonicalizer<'a> {
             .default
             .map(|default| self.canonicalize_type(default))
             .unwrap_or_else(|| "_".to_string());
-        format!("tv({};extends={};default={})", canonical_name, constraint, default)
+        format!(
+            "tv({};extends={};default={})",
+            canonical_name, constraint, default
+        )
     }
 
     fn with_alpha_params<F>(&mut self, params: &[String], f: F) -> String
@@ -932,13 +945,16 @@ impl<'a> SignatureHydrator<'a> {
         }
 
         let interface_name = format!("__imported_interface_{:016x}", signature_hash(inner));
-        Some(self.type_ctx.intern(Type::Interface(super::ty::InterfaceType {
-            name: interface_name,
-            type_params: Vec::new(),
-            properties,
-            methods,
-            extends,
-        })))
+        Some(
+            self.type_ctx
+                .intern(Type::Interface(super::ty::InterfaceType {
+                    name: interface_name,
+                    type_params: Vec::new(),
+                    properties,
+                    methods,
+                    extends,
+                })),
+        )
     }
 
     fn parse_generic(&mut self, inner: &str) -> Option<TypeId> {
@@ -954,10 +970,10 @@ impl<'a> SignatureHydrator<'a> {
                 type_args.push(self.parse_type(&part)?);
             }
         }
-        Some(self.type_ctx.intern(Type::Generic(super::ty::GenericType {
-            base,
-            type_args,
-        })))
+        Some(
+            self.type_ctx
+                .intern(Type::Generic(super::ty::GenericType { base, type_args })),
+        )
     }
 
     fn parse_reference(&mut self, inner: &str) -> Option<TypeId> {
@@ -990,10 +1006,13 @@ impl<'a> SignatureHydrator<'a> {
             }
         }
 
-        Some(self.type_ctx.intern(Type::Reference(super::ty::TypeReference {
-            name,
-            type_args,
-        })))
+        Some(
+            self.type_ctx
+                .intern(Type::Reference(super::ty::TypeReference {
+                    name,
+                    type_args,
+                })),
+        )
     }
 
     fn parse_type_var(&mut self, inner: &str) -> Option<TypeId> {
@@ -1144,13 +1163,14 @@ mod tests {
         };
 
         assert!(class_ty.methods.iter().any(|method| method.name == "foo"));
-        assert!(class_ty.properties.iter().any(|property| property.name == "x"));
-        assert!(
-            class_ty
-                .static_methods
-                .iter()
-                .any(|method| method.name == "build")
-        );
+        assert!(class_ty
+            .properties
+            .iter()
+            .any(|property| property.name == "x"));
+        assert!(class_ty
+            .static_methods
+            .iter()
+            .any(|method| method.name == "build"));
     }
 
     #[test]

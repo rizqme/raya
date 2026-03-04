@@ -536,8 +536,7 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
             used.insert(*value);
         }
 
-        JitInstr::StoreField { object, value, .. }
-        | JitInstr::StoreFieldFast { object, value, .. } => {
+        JitInstr::StoreField { object, value, .. } => {
             used.insert(*object);
             used.insert(*value);
         }
@@ -552,7 +551,6 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
         }
 
         JitInstr::LoadField { object, .. }
-        | JitInstr::LoadFieldFast { object, .. }
         | JitInstr::OptionalField { object, .. }
         | JitInstr::ArrayLen { array: object, .. }
         | JitInstr::ArrayPop { array: object, .. }

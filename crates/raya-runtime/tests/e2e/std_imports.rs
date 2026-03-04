@@ -160,3 +160,60 @@ fn test_inner_scope_can_shadow_import_binding() {
         true,
     );
 }
+
+#[test]
+fn test_default_import_identity_preserved_across_bindings() {
+    expect_bool_with_builtins(
+        r#"
+        import math from "std:math";
+        import mathAgain from "std:math";
+        return math == mathAgain;
+        "#,
+        true,
+    );
+}
+
+#[test]
+fn test_default_import_cast_preserves_identity() {
+    expect_bool_with_builtins(
+        r#"
+        import math from "std:math";
+        type MathLike = { PI: number; floor: (x: number) => number };
+        const casted = (math as MathLike);
+        return casted == math;
+        "#,
+        true,
+    );
+}
+
+#[test]
+fn test_union_cast_of_import_preserves_identity() {
+    expect_bool_with_builtins(
+        r#"
+        import math from "std:math";
+        type MathLike = { PI: number; floor: (x: number) => number };
+        type AltLike = { PI: number; ceil: (x: number) => number };
+        type MathUnion = MathLike | AltLike;
+        const unioned = (math as MathUnion);
+        const narrowed = (unioned as MathLike);
+        return narrowed == math;
+        "#,
+        true,
+    );
+}
+
+#[test]
+fn test_discriminated_union_cast_preserves_identity() {
+    expect_bool_with_builtins(
+        r#"
+        type Circle = { kind: "circle"; area: () => number };
+        type Square = { kind: "square"; area: () => number };
+        type Shape = Circle | Square;
+        const circle = { kind: "circle", area: () => 42 };
+        const shape = (circle as Shape);
+        const narrowed = (shape as Circle);
+        return narrowed == circle && narrowed.area() == 42;
+        "#,
+        true,
+    );
+}

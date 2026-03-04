@@ -156,6 +156,10 @@ pub struct SharedVmState {
     /// Per-module runtime layouts (globals/classes/natives/init state).
     pub module_layouts: RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
 
+    /// Structural slot translation views for imported objects.
+    /// Key: (consumer module checksum, object_id), Value: expected-slot -> actual-slot map.
+    pub structural_slot_views: RwLock<FxHashMap<([u8; 32], u64), Vec<Option<usize>>>>,
+
     /// Debug state for debugger coordination (None = no debugger attached)
     pub debug_state: Mutex<Option<Arc<super::debug_state::DebugState>>>,
 
@@ -232,6 +236,7 @@ impl SharedVmState {
             native_registry: RwLock::new(NativeFunctionRegistry::new()),
             module_registry: RwLock::new(ModuleRegistry::new()),
             module_layouts: RwLock::new(FxHashMap::default()),
+            structural_slot_views: RwLock::new(FxHashMap::default()),
             debug_state: Mutex::new(None),
             max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,
             preempt_threshold_ms: crate::vm::defaults::DEFAULT_PREEMPT_THRESHOLD_MS,
@@ -305,8 +310,8 @@ impl SharedVmState {
                     ip += 4.min(code.len().saturating_sub(ip));
                 }
                 _ => {
-                    let operand_len = crate::compiler::codegen::emit::opcode_size(opcode)
-                        .saturating_sub(1);
+                    let operand_len =
+                        crate::compiler::codegen::emit::opcode_size(opcode).saturating_sub(1);
                     ip += operand_len.min(code.len().saturating_sub(ip));
                 }
             }
@@ -329,7 +334,16 @@ impl SharedVmState {
         self.module_layouts
             .read()
             .get(&module.checksum)
-            .map(|layout| layout.class_base + local_class_id)
+            .map(|layout| {
+                // Module-local class IDs are rebased only for classes declared
+                // in the module's own class table. Manually-authored bytecode
+                // may still use global IDs directly (legacy tests/harnesses).
+                if local_class_id < layout.class_len {
+                    layout.class_base + local_class_id
+                } else {
+                    local_class_id
+                }
+            })
             .unwrap_or(local_class_id)
     }
 
@@ -340,6 +354,29 @@ impl SharedVmState {
             .get(&module.checksum)
             .map(|layout| layout.resolved_natives.clone())
             .unwrap_or_else(|| self.resolved_natives.read().clone())
+    }
+
+    /// Register a structural slot view for object access in `module`.
+    /// The map translates consumer slot indices into provider slot indices.
+    pub fn register_structural_slot_view(
+        &self,
+        module: &Module,
+        object_id: u64,
+        slot_map: Vec<Option<usize>>,
+    ) {
+        if slot_map.is_empty() {
+            return;
+        }
+        let is_identity = slot_map
+            .iter()
+            .enumerate()
+            .all(|(expected, actual)| actual.is_some_and(|mapped| mapped == expected));
+        let key = (module.checksum, object_id);
+        if is_identity {
+            self.structural_slot_views.write().remove(&key);
+            return;
+        }
+        self.structural_slot_views.write().insert(key, slot_map);
     }
 
     /// Mark a module as initialized.
@@ -417,7 +454,9 @@ impl SharedVmState {
             // from class defs so imported-class dynamic member calls remain callable.
             let mut class_meta = ClassMetadata::new();
 
-            if let Some(class_reflection) = module.reflection.as_ref().and_then(|r| r.classes.get(i)) {
+            if let Some(class_reflection) =
+                module.reflection.as_ref().and_then(|r| r.classes.get(i))
+            {
                 for (field_index, field) in class_reflection.fields.iter().enumerate() {
                     if field.is_static {
                         class_meta.add_static_field(field.name.clone(), field_index);
@@ -427,11 +466,13 @@ impl SharedVmState {
                     }
                 }
 
-                for (method_index, method_name) in class_reflection.method_names.iter().enumerate() {
+                for (method_index, method_name) in class_reflection.method_names.iter().enumerate()
+                {
                     class_meta.add_method(method_name.clone(), method_index);
                 }
 
-                for (static_index, static_name) in class_reflection.static_field_names.iter().enumerate()
+                for (static_index, static_name) in
+                    class_reflection.static_field_names.iter().enumerate()
                 {
                     class_meta.add_static_field(static_name.clone(), static_index);
                 }

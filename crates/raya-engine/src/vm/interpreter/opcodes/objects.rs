@@ -1,7 +1,7 @@
-//! Object opcode handlers: New, LoadField, StoreField, OptionalField, LoadFieldFast, StoreFieldFast, ObjectLiteral, InitObject, BindMethod
+//! Object opcode handlers: New, LoadField, StoreField, OptionalField, ObjectLiteral, InitObject, BindMethod
 
-use crate::compiler::Opcode;
 use crate::compiler::Module;
+use crate::compiler::Opcode;
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
@@ -333,6 +333,14 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                let Some(field_offset) =
+                    self.remap_structural_slot_index(module, obj, field_offset)
+                else {
+                    if let Err(e) = stack.push(Value::null()) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                };
                 if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
                     if let Some(getter) = self.descriptor_accessor(actual_obj, &field_name, "get") {
                         match self.callable_frame_for_value(
@@ -396,6 +404,13 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
+                let Some(field_offset) =
+                    self.remap_structural_slot_index(module, obj, field_offset)
+                else {
+                    return OpcodeResult::Error(VmError::TypeError(
+                        "Cannot write field not present in structural slot view".to_string(),
+                    ));
+                };
                 if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
                     if let Some(setter) = self.descriptor_accessor(actual_obj, &field_name, "set") {
                         match self.callable_frame_for_value(
@@ -468,133 +483,17 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                let Some(field_offset) =
+                    self.remap_structural_slot_index(module, obj, field_offset)
+                else {
+                    if let Err(e) = stack.push(Value::null()) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                };
                 let value = obj.get_field(field_offset).unwrap_or(Value::null());
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
-                }
-                OpcodeResult::Continue
-            }
-
-            Opcode::LoadFieldFast => {
-                let field_offset = match Self::read_u8(code, ip) {
-                    Ok(v) => v as usize,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-                let obj_val = match stack.pop() {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-
-                let obj_val = match Self::ensure_object_receiver(obj_val, "field access") {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-
-                // Check if the object is a proxy - if so, unwrap to target
-                let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
-
-                let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
-                let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
-                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
-                    if let Some(getter) = self.descriptor_accessor(actual_obj, &field_name, "get") {
-                        match self.callable_frame_for_value(
-                            getter,
-                            stack,
-                            &[],
-                            ReturnAction::PushReturnValue,
-                        ) {
-                            Ok(Some(frame)) => return frame,
-                            Ok(None) => {
-                                return OpcodeResult::Error(VmError::TypeError(format!(
-                                    "Property '{}' getter is not callable",
-                                    field_name
-                                )));
-                            }
-                            Err(e) => return OpcodeResult::Error(e),
-                        }
-                    }
-                }
-                let value = obj.get_field(field_offset).unwrap_or(Value::null());
-                if std::env::var("RAYA_DEBUG_FIELD_TRACE").is_ok() {
-                    eprintln!(
-                        "[field-trace] LoadFieldFast[{}] class_id={} field_count={} => {:?} (is_ptr={})",
-                        field_offset,
-                        obj.class_id,
-                        obj.field_count(),
-                        value,
-                        value.is_ptr()
-                    );
-                }
-                if let Err(e) = stack.push(value) {
-                    return OpcodeResult::Error(e);
-                }
-                OpcodeResult::Continue
-            }
-
-            Opcode::StoreFieldFast => {
-                let field_offset = match Self::read_u8(code, ip) {
-                    Ok(v) => v as usize,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-                let value = match stack.pop() {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-                let obj_val = match stack.pop() {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-
-                let obj_val = match Self::ensure_object_receiver(obj_val, "field access") {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-
-                // Check if the object is a proxy - if so, unwrap to target
-                let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
-
-                let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
-                let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
-                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
-                    if let Some(setter) = self.descriptor_accessor(actual_obj, &field_name, "set") {
-                        match self.callable_frame_for_value(
-                            setter,
-                            stack,
-                            &[value],
-                            ReturnAction::Discard,
-                        ) {
-                            Ok(Some(frame)) => return frame,
-                            Ok(None) => {
-                                return OpcodeResult::Error(VmError::TypeError(format!(
-                                    "Property '{}' setter is not callable",
-                                    field_name
-                                )));
-                            }
-                            Err(e) => return OpcodeResult::Error(e),
-                        }
-                    }
-                    if self
-                        .descriptor_accessor(actual_obj, &field_name, "get")
-                        .is_some()
-                        && !self.is_field_writable(actual_obj, &field_name)
-                    {
-                        return OpcodeResult::Error(VmError::TypeError(format!(
-                            "Cannot set property '{}' which has only a getter",
-                            field_name
-                        )));
-                    }
-                    if !self.is_field_writable(actual_obj, &field_name) {
-                        return OpcodeResult::Error(VmError::TypeError(format!(
-                            "Cannot assign to non-writable property '{}'",
-                            field_name
-                        )));
-                    }
-                }
-                if let Err(e) = obj.set_field(field_offset, value) {
-                    return OpcodeResult::Error(VmError::RuntimeError(e));
-                }
-                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
-                    self.sync_descriptor_value(actual_obj, &field_name, value);
                 }
                 OpcodeResult::Continue
             }

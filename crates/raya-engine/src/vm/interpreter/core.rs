@@ -246,9 +246,11 @@ pub struct Interpreter<'a> {
 
     /// Per-module runtime layouts (global slot base, class base, native table, init state).
     pub(in crate::vm::interpreter) module_layouts:
-        &'a RwLock<
-            FxHashMap<[u8; 32], crate::vm::interpreter::shared_state::ModuleRuntimeLayout>,
-        >,
+        &'a RwLock<FxHashMap<[u8; 32], crate::vm::interpreter::shared_state::ModuleRuntimeLayout>>,
+
+    /// Structural slot translation views for imported objects.
+    pub(in crate::vm::interpreter) structural_slot_views:
+        &'a RwLock<FxHashMap<([u8; 32], u64), Vec<Option<usize>>>>,
 
     /// IO submission sender for NativeCallResult::Suspend (None in tests without reactor)
     pub(in crate::vm::interpreter) io_submit_tx:
@@ -329,7 +331,13 @@ impl<'a> Interpreter<'a> {
         self.module_layouts
             .read()
             .get(&module.checksum)
-            .map(|layout| layout.class_base + local_class_id)
+            .map(|layout| {
+                if local_class_id < layout.class_len {
+                    layout.class_base + local_class_id
+                } else {
+                    local_class_id
+                }
+            })
             .unwrap_or(local_class_id)
     }
 
@@ -343,6 +351,26 @@ impl<'a> Interpreter<'a> {
             .get(&module.checksum)
             .map(|layout| layout.resolved_natives.clone())
             .unwrap_or_else(|| self.resolved_natives.read().clone())
+    }
+
+    #[inline]
+    pub(in crate::vm::interpreter) fn remap_structural_slot_index(
+        &self,
+        module: &Module,
+        object: &Object,
+        expected_slot: usize,
+    ) -> Option<usize> {
+        if let Some(slot_map) = self
+            .structural_slot_views
+            .read()
+            .get(&(module.checksum, object.object_id))
+        {
+            return slot_map
+                .get(expected_slot)
+                .copied()
+                .unwrap_or(Some(expected_slot));
+        }
+        Some(expected_slot)
     }
 
     #[inline]
@@ -452,6 +480,7 @@ impl<'a> Interpreter<'a> {
         module_layouts: &'a RwLock<
             FxHashMap<[u8; 32], crate::vm::interpreter::shared_state::ModuleRuntimeLayout>,
         >,
+        structural_slot_views: &'a RwLock<FxHashMap<([u8; 32], u64), Vec<Option<usize>>>>,
         io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
         max_preemptions: u32,
         stack_pool: &'a crate::vm::scheduler::StackPool,
@@ -469,6 +498,7 @@ impl<'a> Interpreter<'a> {
             native_handler,
             resolved_natives,
             module_layouts,
+            structural_slot_views,
             io_submit_tx,
             max_preemptions,
             stack_pool,
@@ -1454,8 +1484,6 @@ impl<'a> Interpreter<'a> {
             | Opcode::LoadField
             | Opcode::StoreField
             | Opcode::OptionalField
-            | Opcode::LoadFieldFast
-            | Opcode::StoreFieldFast
             | Opcode::ObjectLiteral
             | Opcode::InitObject
             | Opcode::BindMethod => self.exec_object_ops(stack, ip, code, module, opcode),
