@@ -8,7 +8,27 @@ use thiserror::Error;
 pub const MAGIC: [u8; 4] = *b"RAYA";
 
 /// Current bytecode version
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 6;
+
+/// Stable module ID derived from canonical module identity.
+pub type ModuleId = u64;
+/// Stable symbol ID used for value linkage.
+pub type SymbolId = u64;
+/// Stable symbol ID used for type linkage.
+pub type TypeSymbolId = u64;
+/// Stable structural signature hash used for type compatibility.
+pub type TypeSignatureHash = TypeSymbolId;
+
+/// Symbol scope for disambiguation across global/module/local contexts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolScope {
+    /// Builtins/runtime-global symbols.
+    Global,
+    /// Module-level declarations/exports.
+    Module,
+    /// Lexically local declarations.
+    Local,
+}
 
 /// Module encoding/decoding errors
 #[derive(Debug, Error)]
@@ -55,6 +75,14 @@ pub struct Export {
     pub symbol_type: SymbolType,
     /// Index into functions/classes/constants array
     pub index: usize,
+    /// Stable ID used for symbol-based linking.
+    pub symbol_id: SymbolId,
+    /// Scope where this symbol is defined.
+    pub scope: SymbolScope,
+    /// Stable type symbol ID for signature/type compatibility checks.
+    pub type_symbol_id: TypeSymbolId,
+    /// Optional canonical structural signature string (for diagnostics).
+    pub type_signature: Option<String>,
 }
 
 /// Imported symbol/module dependency
@@ -66,8 +94,18 @@ pub struct Import {
     pub symbol: String,
     /// Optional alias (for `import { foo as bar }`)
     pub alias: Option<String>,
-    /// Version constraint (for semver resolution, e.g., "^1.2.0")
-    pub version_constraint: Option<String>,
+    /// Stable target module ID resolved at compile/link time.
+    pub module_id: ModuleId,
+    /// Stable target symbol ID.
+    pub symbol_id: SymbolId,
+    /// Scope hint for the expected imported symbol.
+    pub scope: SymbolScope,
+    /// Stable expected type symbol ID.
+    pub type_symbol_id: TypeSymbolId,
+    /// Optional canonical structural signature string (for diagnostics).
+    pub type_signature: Option<String>,
+    /// Module-local runtime global slot to hydrate (if applicable).
+    pub runtime_global_slot: Option<u32>,
 }
 
 /// JIT compilation hint for a function, computed at compile time
@@ -983,8 +1021,87 @@ impl SymbolType {
     }
 }
 
+impl SymbolScope {
+    fn to_u8(self) -> u8 {
+        match self {
+            SymbolScope::Global => 0,
+            SymbolScope::Module => 1,
+            SymbolScope::Local => 2,
+        }
+    }
+
+    fn from_u8(value: u8) -> Result<Self, DecodeError> {
+        match value {
+            0 => Ok(SymbolScope::Global),
+            1 => Ok(SymbolScope::Module),
+            2 => Ok(SymbolScope::Local),
+            _ => Err(DecodeError::InvalidOpcode(value, 0)),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            SymbolScope::Global => "global",
+            SymbolScope::Module => "module",
+            SymbolScope::Local => "local",
+        }
+    }
+}
+
+fn stable_id(parts: &[&str]) -> u64 {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update([0x1f]);
+    }
+    let digest = hasher.finalize();
+    u64::from_le_bytes([
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+    ])
+}
+
+pub fn module_id_from_name(name: &str) -> ModuleId {
+    stable_id(&["module", name])
+}
+
+fn extract_module_name(specifier: &str) -> &str {
+    if let Some(stripped) = specifier.strip_prefix('@') {
+        if let Some(at_pos) = stripped.find('@') {
+            return &specifier[..at_pos + 1];
+        }
+        return specifier;
+    }
+
+    if let Some(at_pos) = specifier.find('@') {
+        return &specifier[..at_pos];
+    }
+
+    specifier
+}
+
+fn symbol_id_for_name(module_name: &str, scope: SymbolScope, name: &str) -> SymbolId {
+    stable_id(&["symbol", module_name, scope.as_str(), name])
+}
+
+/// Derive a deterministic symbol ID for a module-scoped symbol name.
+pub fn symbol_id_from_name(module_name: &str, scope: SymbolScope, name: &str) -> SymbolId {
+    symbol_id_for_name(module_name, scope, name)
+}
+
+fn export_symbol_id(
+    module_name: &str,
+    scope: SymbolScope,
+    _symbol_type: &SymbolType,
+    name: &str,
+    _index: usize,
+) -> SymbolId {
+    symbol_id_for_name(module_name, scope, name)
+}
+
 impl Export {
-    /// Encode export to binary
+    /// Encode export to binary.
     fn encode(&self, writer: &mut BytecodeWriter) {
         // Write name
         writer.emit_u32(self.name.len() as u32);
@@ -995,9 +1112,24 @@ impl Export {
 
         // Write index
         writer.emit_u32(self.index as u32);
+
+        // Write symbol IDs and scope
+        writer.emit_u64(self.symbol_id);
+        writer.emit_u8(self.scope.to_u8());
+        writer.emit_u64(self.type_symbol_id);
+
+        // Write canonical structural type signature (optional)
+        match &self.type_signature {
+            Some(signature) => {
+                writer.emit_u8(1);
+                writer.emit_u32(signature.len() as u32);
+                writer.buffer.extend_from_slice(signature.as_bytes());
+            }
+            None => writer.emit_u8(0),
+        }
     }
 
-    /// Decode export from binary
+    /// Decode export from binary.
     fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
         // Read name
         let name = reader.read_string()?;
@@ -1008,16 +1140,31 @@ impl Export {
         // Read index
         let index = reader.read_u32()? as usize;
 
+        // Read symbol IDs and scope
+        let symbol_id = reader.read_u64()?;
+        let scope = SymbolScope::from_u8(reader.read_u8()?)?;
+        let type_symbol_id = reader.read_u64()?;
+        let has_signature = reader.read_u8()? != 0;
+        let type_signature = if has_signature {
+            Some(reader.read_string()?)
+        } else {
+            None
+        };
+
         Ok(Self {
             name,
             symbol_type,
             index,
+            symbol_id,
+            scope,
+            type_symbol_id,
+            type_signature,
         })
     }
 }
 
 impl Import {
-    /// Encode import to binary
+    /// Encode import to binary format.
     fn encode(&self, writer: &mut BytecodeWriter) {
         // Write module specifier
         writer.emit_u32(self.module_specifier.len() as u32);
@@ -1041,20 +1188,32 @@ impl Import {
             }
         }
 
-        // Write version constraint (optional)
-        match &self.version_constraint {
-            Some(constraint) => {
-                writer.emit_u8(1); // has constraint
-                writer.emit_u32(constraint.len() as u32);
-                writer.buffer.extend_from_slice(constraint.as_bytes());
+        // Write module/symbol IDs and scope
+        writer.emit_u64(self.module_id);
+        writer.emit_u64(self.symbol_id);
+        writer.emit_u8(self.scope.to_u8());
+        writer.emit_u64(self.type_symbol_id);
+
+        // Write canonical structural type signature (optional)
+        match &self.type_signature {
+            Some(signature) => {
+                writer.emit_u8(1);
+                writer.emit_u32(signature.len() as u32);
+                writer.buffer.extend_from_slice(signature.as_bytes());
             }
-            None => {
-                writer.emit_u8(0); // no constraint
+            None => writer.emit_u8(0),
+        }
+
+        match self.runtime_global_slot {
+            Some(slot) => {
+                writer.emit_u8(1);
+                writer.emit_u32(slot);
             }
+            None => writer.emit_u8(0),
         }
     }
 
-    /// Decode import from binary
+    /// Decode import from binary.
     fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
         // Read module specifier
         let module_specifier = reader.read_string()?;
@@ -1070,10 +1229,20 @@ impl Import {
             None
         };
 
-        // Read version constraint
-        let has_constraint = reader.read_u8()? != 0;
-        let version_constraint = if has_constraint {
+        // Read module/symbol IDs and scope
+        let module_id = reader.read_u64()?;
+        let symbol_id = reader.read_u64()?;
+        let scope = SymbolScope::from_u8(reader.read_u8()?)?;
+        let type_symbol_id = reader.read_u64()?;
+        let has_signature = reader.read_u8()? != 0;
+        let type_signature = if has_signature {
             Some(reader.read_string()?)
+        } else {
+            None
+        };
+        let has_runtime_slot = reader.read_u8()? != 0;
+        let runtime_global_slot = if has_runtime_slot {
+            Some(reader.read_u32()?)
         } else {
             None
         };
@@ -1082,7 +1251,12 @@ impl Import {
             module_specifier,
             symbol,
             alias,
-            version_constraint,
+            module_id,
+            symbol_id,
+            scope,
+            type_symbol_id,
+            type_signature,
+            runtime_global_slot,
         })
     }
 }
@@ -1202,13 +1376,28 @@ impl Module {
         // Encode exports
         writer.emit_u32(self.exports.len() as u32);
         for export in &self.exports {
-            export.encode(&mut writer);
+            let mut normalized = export.clone();
+            if normalized.symbol_id == 0 {
+                normalized.symbol_id = export_symbol_id(
+                    &self.metadata.name,
+                    normalized.scope,
+                    &normalized.symbol_type,
+                    &normalized.name,
+                    normalized.index,
+                );
+            }
+            normalized.encode(&mut writer);
         }
 
         // Encode imports
         writer.emit_u32(self.imports.len() as u32);
         for import in &self.imports {
-            import.encode(&mut writer);
+            let mut normalized = import.clone();
+            if normalized.module_id == 0 {
+                let module_name = extract_module_name(&normalized.module_specifier);
+                normalized.module_id = module_id_from_name(module_name);
+            }
+            normalized.encode(&mut writer);
         }
 
         // Encode metadata
@@ -1836,5 +2025,40 @@ mod tests {
         let bytes = module.encode();
         let decoded = Module::decode(&bytes).unwrap();
         assert!(decoded.jit_hints.is_empty());
+    }
+
+    #[test]
+    fn test_import_metadata_roundtrip_structural_link_fields() {
+        let mut module = Module::new("entry".to_string());
+        module.imports.push(Import {
+            module_specifier: "./dep".to_string(),
+            symbol: "foo".to_string(),
+            alias: Some("fooAlias".to_string()),
+            module_id: 42,
+            symbol_id: 99,
+            scope: SymbolScope::Module,
+            type_symbol_id: 1234,
+            type_signature: Some("fn(min=1,params=[number],rest=_,ret=number)".to_string()),
+            runtime_global_slot: Some(7),
+        });
+
+        let bytes = module.encode();
+        let decoded = Module::decode(&bytes).unwrap();
+        assert_eq!(decoded.version, VERSION);
+        assert_eq!(decoded.imports.len(), 1);
+
+        let import = &decoded.imports[0];
+        assert_eq!(import.module_specifier, "./dep");
+        assert_eq!(import.symbol, "foo");
+        assert_eq!(import.alias.as_deref(), Some("fooAlias"));
+        assert_eq!(import.module_id, 42);
+        assert_eq!(import.symbol_id, 99);
+        assert_eq!(import.scope, SymbolScope::Module);
+        assert_eq!(import.type_symbol_id, 1234);
+        assert_eq!(
+            import.type_signature.as_deref(),
+            Some("fn(min=1,params=[number],rest=_,ret=number)")
+        );
+        assert_eq!(import.runtime_global_slot, Some(7));
     }
 }

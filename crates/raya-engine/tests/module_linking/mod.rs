@@ -2,7 +2,10 @@
 //!
 //! Tests the ModuleLinker for resolving imports to exports.
 
-use raya_engine::compiler::{ConstantPool, Export, Function, Import, Metadata, Module, SymbolType};
+use raya_engine::compiler::{
+    module_id_from_name, ConstantPool, Export, Function, Import, Metadata, Module, ModuleId,
+    SymbolScope, SymbolType,
+};
 use raya_engine::vm::module::{LinkError, ModuleLinker};
 use std::sync::Arc;
 
@@ -31,6 +34,55 @@ fn create_module(name: &str) -> Module {
     }
 }
 
+fn test_symbol_id(module_id: ModuleId, symbol: &str, index: usize) -> u64 {
+    let mut acc = module_id ^ ((index as u64) << 32) ^ 0x9E37_79B9_7F4A_7C15;
+    for b in symbol.bytes() {
+        acc = acc.rotate_left(5) ^ u64::from(b);
+    }
+    acc
+}
+
+fn make_export(module_name: &str, symbol: &str, index: usize) -> Export {
+    let module_id = module_id_from_name(module_name);
+    let symbol_id = test_symbol_id(module_id, symbol, index);
+    Export {
+        name: symbol.to_string(),
+        symbol_type: SymbolType::Function,
+        index,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
+    }
+}
+
+fn make_import(module_specifier: &str, symbol: &str, index: usize) -> Import {
+    let module_name = if let Some(stripped) = module_specifier.strip_prefix('@') {
+        if let Some(at_pos) = stripped.find('@') {
+            &module_specifier[..at_pos + 1]
+        } else {
+            module_specifier
+        }
+    } else if let Some(at_pos) = module_specifier.find('@') {
+        &module_specifier[..at_pos]
+    } else {
+        module_specifier
+    };
+    let module_id = module_id_from_name(module_name);
+    let symbol_id = test_symbol_id(module_id, symbol, index);
+    Import {
+        module_specifier: module_specifier.to_string(),
+        symbol: symbol.to_string(),
+        alias: None,
+        module_id,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
+        runtime_global_slot: None,
+    }
+}
+
 #[test]
 fn test_link_simple_import() {
     let mut linker = ModuleLinker::new();
@@ -43,21 +95,12 @@ fn test_link_simple_import() {
         local_count: 0,
         code: vec![],
     });
-    logging.exports.push(Export {
-        name: "info".to_string(),
-        symbol_type: SymbolType::Function,
-        index: 0,
-    });
+    logging.exports.push(make_export("logging", "info", 0));
 
     linker.add_module(Arc::new(logging)).unwrap();
 
     // Create a main module that imports logging.info
-    let import = Import {
-        module_specifier: "logging".to_string(),
-        symbol: "info".to_string(),
-        alias: None,
-        version_constraint: None,
-    };
+    let import = make_import("logging", "info", 0);
 
     let resolved = linker.resolve_import(&import, "main").unwrap();
     assert_eq!(resolved.export.name, "info");
@@ -77,21 +120,12 @@ fn test_link_with_version_specifier() {
         local_count: 0,
         code: vec![],
     });
-    utils.exports.push(Export {
-        name: "helper".to_string(),
-        symbol_type: SymbolType::Function,
-        index: 0,
-    });
+    utils.exports.push(make_export("utils", "helper", 0));
 
     linker.add_module(Arc::new(utils)).unwrap();
 
     // Import with version specifier (linker strips version for now)
-    let import = Import {
-        module_specifier: "utils@1.2.3".to_string(),
-        symbol: "helper".to_string(),
-        alias: None,
-        version_constraint: Some("1.2.3".to_string()),
-    };
+    let import = make_import("utils@1.2.3", "helper", 0);
 
     let resolved = linker.resolve_import(&import, "main").unwrap();
     assert_eq!(resolved.export.name, "helper");
@@ -109,21 +143,14 @@ fn test_link_scoped_package() {
         local_count: 0,
         code: vec![],
     });
-    org_package.exports.push(Export {
-        name: "doWork".to_string(),
-        symbol_type: SymbolType::Function,
-        index: 0,
-    });
+    org_package
+        .exports
+        .push(make_export("@org/package", "doWork", 0));
 
     linker.add_module(Arc::new(org_package)).unwrap();
 
     // Import from scoped package with version
-    let import = Import {
-        module_specifier: "@org/package@^2.0.0".to_string(),
-        symbol: "doWork".to_string(),
-        alias: None,
-        version_constraint: Some("^2.0.0".to_string()),
-    };
+    let import = make_import("@org/package@^2.0.0", "doWork", 0);
 
     let resolved = linker.resolve_import(&import, "main").unwrap();
     assert_eq!(resolved.export.name, "doWork");
@@ -134,15 +161,10 @@ fn test_link_scoped_package() {
 fn test_link_module_not_found() {
     let linker = ModuleLinker::new();
 
-    let import = Import {
-        module_specifier: "missing".to_string(),
-        symbol: "foo".to_string(),
-        alias: None,
-        version_constraint: None,
-    };
+    let import = make_import("missing", "foo", 0);
 
     let result = linker.resolve_import(&import, "main");
-    assert!(matches!(result, Err(LinkError::ModuleNotFound(_))));
+    assert!(matches!(result, Err(LinkError::ModuleIdNotFound(_))));
 }
 
 #[test]
@@ -152,12 +174,7 @@ fn test_link_symbol_not_found() {
     let logging = create_module("logging");
     linker.add_module(Arc::new(logging)).unwrap();
 
-    let import = Import {
-        module_specifier: "logging".to_string(),
-        symbol: "debug".to_string(), // Not exported
-        alias: None,
-        version_constraint: None,
-    };
+    let import = make_import("logging", "debug", 0); // Not exported
 
     let result = linker.resolve_import(&import, "main");
     assert!(matches!(result, Err(LinkError::SymbolNotFound { .. })));
@@ -181,33 +198,15 @@ fn test_link_multiple_imports() {
         local_count: 0,
         code: vec![],
     });
-    utils.exports.push(Export {
-        name: "add".to_string(),
-        symbol_type: SymbolType::Function,
-        index: 0,
-    });
-    utils.exports.push(Export {
-        name: "multiply".to_string(),
-        symbol_type: SymbolType::Function,
-        index: 1,
-    });
+    utils.exports.push(make_export("utils", "add", 0));
+    utils.exports.push(make_export("utils", "multiply", 1));
 
     linker.add_module(Arc::new(utils)).unwrap();
 
     // Create main module with multiple imports
     let mut main = create_module("main");
-    main.imports.push(Import {
-        module_specifier: "utils".to_string(),
-        symbol: "add".to_string(),
-        alias: None,
-        version_constraint: None,
-    });
-    main.imports.push(Import {
-        module_specifier: "utils".to_string(),
-        symbol: "multiply".to_string(),
-        alias: None,
-        version_constraint: None,
-    });
+    main.imports.push(make_import("utils", "add", 0));
+    main.imports.push(make_import("utils", "multiply", 1));
 
     let resolved = linker.link_module(&main).unwrap();
     assert_eq!(resolved.len(), 2);
@@ -226,22 +225,202 @@ fn test_link_with_alias() {
         local_count: 0,
         code: vec![],
     });
-    utils.exports.push(Export {
-        name: "log".to_string(),
-        symbol_type: SymbolType::Function,
-        index: 0,
-    });
+    utils.exports.push(make_export("utils", "log", 0));
 
     linker.add_module(Arc::new(utils)).unwrap();
 
     // Import with alias
-    let import = Import {
-        module_specifier: "utils".to_string(),
-        symbol: "log".to_string(),
-        alias: Some("print".to_string()),
-        version_constraint: None,
-    };
+    let mut import = make_import("utils", "log", 0);
+    import.alias = Some("print".to_string());
 
     let resolved = linker.resolve_import(&import, "main").unwrap();
     assert_eq!(resolved.export.name, "log"); // Original name in export
+}
+
+#[test]
+fn test_link_prefers_symbol_id_over_name() {
+    let mut linker = ModuleLinker::new();
+
+    // Two exports intentionally share the same textual name.
+    let mut dup = create_module("dup_mod");
+    dup.functions.push(Function {
+        name: "f0".to_string(),
+        param_count: 0,
+        local_count: 0,
+        code: vec![],
+    });
+    dup.functions.push(Function {
+        name: "f1".to_string(),
+        param_count: 0,
+        local_count: 0,
+        code: vec![],
+    });
+    let module_id = module_id_from_name("dup_mod");
+    let symbol_id_0 = test_symbol_id(module_id, "dup", 0);
+    let symbol_id_1 = test_symbol_id(module_id, "dup", 1);
+    dup.exports.push(Export {
+        name: "dup".to_string(),
+        symbol_type: SymbolType::Function,
+        index: 0,
+        symbol_id: symbol_id_0,
+        scope: SymbolScope::Module,
+        type_symbol_id: symbol_id_0 ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
+    });
+    dup.exports.push(Export {
+        name: "dup".to_string(),
+        symbol_type: SymbolType::Function,
+        index: 1,
+        symbol_id: symbol_id_1,
+        scope: SymbolScope::Module,
+        type_symbol_id: symbol_id_1 ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
+    });
+
+    linker.add_module(Arc::new(dup)).unwrap();
+
+    // Import by explicit symbol ID should resolve index 1 despite name collision.
+    let import = Import {
+        module_specifier: "dup_mod".to_string(),
+        symbol: "dup".to_string(),
+        alias: None,
+        module_id,
+        symbol_id: symbol_id_1,
+        scope: SymbolScope::Module,
+        type_symbol_id: symbol_id_1 ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
+        runtime_global_slot: None,
+    };
+
+    let resolved = linker.resolve_import(&import, "main").unwrap();
+    assert_eq!(resolved.index, 1);
+}
+
+#[test]
+fn test_link_type_symbol_mismatch() {
+    let mut linker = ModuleLinker::new();
+    let mut typed = create_module("typed");
+    typed.functions.push(Function {
+        name: "fn1".to_string(),
+        param_count: 0,
+        local_count: 0,
+        code: vec![],
+    });
+    let module_id = module_id_from_name("typed");
+    let symbol_id = test_symbol_id(module_id, "value", 0);
+    typed.exports.push(Export {
+        name: "value".to_string(),
+        symbol_type: SymbolType::Function,
+        index: 0,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: 1001,
+        type_signature: Some("fn(min=0,params=[],rest=_,ret=number)".to_string()),
+    });
+    linker.add_module(Arc::new(typed)).unwrap();
+
+    let import = Import {
+        module_specifier: "typed".to_string(),
+        symbol: "value".to_string(),
+        alias: None,
+        module_id,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: 2002,
+        type_signature: Some("fn(min=1,params=[number],rest=_,ret=number)".to_string()),
+        runtime_global_slot: None,
+    };
+    let result = linker.resolve_import(&import, "main");
+    assert!(matches!(
+        result,
+        Err(LinkError::TypeSignatureMismatch {
+            expected_hash: 2002,
+            actual_hash: 1001,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn test_link_scope_mismatch() {
+    let mut linker = ModuleLinker::new();
+    let mut scoped = create_module("scoped");
+    scoped.functions.push(Function {
+        name: "global_like".to_string(),
+        param_count: 0,
+        local_count: 0,
+        code: vec![],
+    });
+
+    let module_id = module_id_from_name("scoped");
+    let symbol_id = test_symbol_id(module_id, "global_like", 0);
+    scoped.exports.push(Export {
+        name: "global_like".to_string(),
+        symbol_type: SymbolType::Function,
+        index: 0,
+        symbol_id,
+        scope: SymbolScope::Global,
+        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
+    });
+    linker.add_module(Arc::new(scoped)).unwrap();
+
+    let import = Import {
+        module_specifier: "scoped".to_string(),
+        symbol: "global_like".to_string(),
+        alias: None,
+        module_id,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
+        runtime_global_slot: None,
+    };
+
+    let result = linker.resolve_import(&import, "main");
+    assert!(matches!(result, Err(LinkError::ScopeMismatch { .. })));
+}
+
+#[test]
+fn test_add_module_rejects_duplicate_symbol_ids() {
+    let mut linker = ModuleLinker::new();
+    let mut module = create_module("dup_ids");
+    module.functions.push(Function {
+        name: "f0".to_string(),
+        param_count: 0,
+        local_count: 0,
+        code: vec![],
+    });
+    module.functions.push(Function {
+        name: "f1".to_string(),
+        param_count: 0,
+        local_count: 0,
+        code: vec![],
+    });
+
+    let module_id = module_id_from_name("dup_ids");
+    let symbol_id = test_symbol_id(module_id, "same", 0);
+    module.exports.push(Export {
+        name: "same_a".to_string(),
+        symbol_type: SymbolType::Function,
+        index: 0,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
+    });
+    module.exports.push(Export {
+        name: "same_b".to_string(),
+        symbol_type: SymbolType::Function,
+        index: 1,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
+    });
+
+    let result = linker.add_module(Arc::new(module));
+    assert!(result.is_err());
+    let message = result.err().unwrap();
+    assert!(message.contains("duplicate symbol id"));
 }

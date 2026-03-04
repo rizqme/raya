@@ -79,6 +79,11 @@ impl BytecodeWriter {
         self.buffer.extend_from_slice(&value.to_le_bytes());
     }
 
+    /// Emit a 64-bit unsigned integer (little-endian)
+    pub fn emit_u64(&mut self, value: u64) {
+        self.buffer.extend_from_slice(&value.to_le_bytes());
+    }
+
     /// Emit a 32-bit signed integer (little-endian)
     pub fn emit_i32(&mut self, value: i32) {
         self.buffer.extend_from_slice(&value.to_le_bytes());

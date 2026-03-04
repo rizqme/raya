@@ -1,6 +1,7 @@
 //! Object opcode handlers: New, LoadField, StoreField, OptionalField, LoadFieldFast, StoreFieldFast, ObjectLiteral, InitObject, BindMethod
 
 use crate::compiler::Opcode;
+use crate::compiler::Module;
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
@@ -38,10 +39,13 @@ impl<'a> Interpreter<'a> {
                 arg_count: args.len() + 1,
                 is_closure: false,
                 closure_val: None,
+                module: bm.module.clone(),
                 return_action,
             }));
         }
         if header.type_id() == std::any::TypeId::of::<Closure>() {
+            let closure_module =
+                unsafe { &*callable.as_ptr::<Closure>().unwrap().as_ptr() }.module();
             for arg in args {
                 stack.push(*arg)?;
             }
@@ -50,6 +54,7 @@ impl<'a> Interpreter<'a> {
                 arg_count: args.len(),
                 is_closure: true,
                 closure_val: Some(callable),
+                module: closure_module,
                 return_action,
             }));
         }
@@ -272,15 +277,17 @@ impl<'a> Interpreter<'a> {
         stack: &mut Stack,
         ip: &mut usize,
         code: &[u8],
+        module: &Module,
         opcode: Opcode,
     ) -> OpcodeResult {
         match opcode {
             Opcode::New => {
                 self.safepoint.poll();
-                let class_index = match Self::read_u16(code, ip) {
+                let local_class_index = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                let class_index = self.resolve_class_id(module, local_class_index);
 
                 let classes = self.classes.read();
                 let class = match classes.get_class(class_index) {
@@ -594,10 +601,11 @@ impl<'a> Interpreter<'a> {
 
             Opcode::ObjectLiteral => {
                 self.safepoint.poll();
-                let class_index = match Self::read_u16(code, ip) {
+                let local_class_index = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                let class_index = self.resolve_class_id(module, local_class_index);
                 let field_count = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
@@ -675,11 +683,13 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
+                let method_module = class.module.clone();
                 drop(classes);
 
                 let bm = BoundMethod {
                     receiver: obj_val,
                     func_id,
+                    module: method_module,
                 };
                 let gc_ptr = self.gc.lock().allocate(bm);
                 let value =

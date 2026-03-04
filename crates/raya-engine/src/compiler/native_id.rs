@@ -15,6 +15,8 @@ pub const OBJECT_EQUAL: u16 = 0x0003;
 pub const OBJECT_DEFINE_PROPERTY: u16 = 0x0004;
 pub const OBJECT_GET_OWN_PROPERTY_DESCRIPTOR: u16 = 0x0005;
 pub const OBJECT_DEFINE_PROPERTIES: u16 = 0x0006;
+/// construct(classId, ...args) for class IDs loaded at runtime (e.g., imported classes)
+pub const OBJECT_CONSTRUCT_DYNAMIC_CLASS: u16 = 0x0007;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -505,6 +507,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_DEFINE_PROPERTY => "Object.defineProperty",
         OBJECT_GET_OWN_PROPERTY_DESCRIPTOR => "Object.getOwnPropertyDescriptor",
         OBJECT_DEFINE_PROPERTIES => "Object.defineProperties",
+        OBJECT_CONSTRUCT_DYNAMIC_CLASS => "Object.constructDynamicClass",
 
         // Array
         ARRAY_PUSH => "Array.push",

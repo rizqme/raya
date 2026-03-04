@@ -1,6 +1,4 @@
-mod common;
-
-use common::*;
+use crate::common::*;
 use raya_examples::tcp_chat_entry;
 
 #[test]

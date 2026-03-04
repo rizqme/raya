@@ -2,22 +2,39 @@
 //!
 //! Orchestrates compilation of multiple Raya source files with import resolution.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::compiler::bytecode::Module as BytecodeModule;
-use crate::compiler::{CompileError, Compiler};
-use crate::parser::ast::{ImportSpecifier, Module as AstModule, Statement};
-use crate::parser::checker::{Binder, ScopeId, Symbol, SymbolFlags, TypeChecker};
+use crate::compiler::bytecode::{Function as BytecodeFunction, Module as BytecodeModule, Opcode};
+use crate::compiler::{
+    module_id_from_name, symbol_id_from_name, CompileError, Compiler, Export, Import, SymbolScope,
+    SymbolType,
+};
+use crate::parser::ast::{
+    ExportDecl, Expression, ImportSpecifier, Module as AstModule, Pattern, Statement,
+};
+use crate::parser::checker::{
+    Binder, ScopeId, ScopeKind, Symbol, SymbolFlags, TypeChecker, TypeSystemMode,
+};
 use crate::parser::{Interner, Parser, Span, TypeContext};
 
 use super::cache::ModuleCache;
+use super::declaration::{
+    declaration_runtime_identity_path, load_declaration_module, specialization_template_from_symbol,
+    DeclarationError, DeclarationModule, DeclarationSourceKind, LateLinkRequirement,
+    LateLinkSymbolRequirement,
+};
 use super::exports::{ExportRegistry, ExportedSymbol, ModuleExports};
 use super::graph::{GraphError, ModuleGraph};
 use super::resolver::{ModuleResolver, ResolveError};
+use super::std_modules::StdModuleRegistry;
+
+const BUILTIN_PRELUDE_BEGIN_MARKER: &str = "// __raya_builtin_prelude_begin";
+const BUILTIN_PRELUDE_END_MARKER: &str = "// __raya_builtin_prelude_end";
+const STD_PRELUDE_END_MARKER: &str = "// __raya_std_prelude_end";
 
 /// Errors that can occur during multi-module compilation
 #[derive(Debug, Error)]
@@ -67,6 +84,8 @@ pub struct CompiledModule {
     pub bytecode: BytecodeModule,
     /// Paths to modules this module imports
     pub imports: Vec<PathBuf>,
+    /// Whether this module is a declaration-only placeholder.
+    pub declaration_only: bool,
 }
 
 /// Multi-module compiler
@@ -89,9 +108,56 @@ pub struct ModuleCompiler {
     exports: ExportRegistry,
     /// JSX compilation options (None = JSX disabled)
     jsx_options: Option<crate::compiler::lower::JsxOptions>,
+    /// Embedded std/node module source registry.
+    std_modules: StdModuleRegistry,
+    /// Virtual source files materialized for std/node imports.
+    virtual_sources: HashMap<PathBuf, String>,
+    /// Virtual declaration modules keyed by virtual path.
+    declaration_modules: HashMap<PathBuf, DeclarationModule>,
+    /// Stable module identity -> virtual declaration path.
+    declaration_virtual_by_identity: HashMap<String, PathBuf>,
+    /// Late-link requirements collected from declaration-backed imports.
+    late_link_requirements: HashMap<u64, LateLinkRequirement>,
+    /// Checker mode (Raya strict or JS-like compatibility).
+    checker_mode: TypeSystemMode,
 }
 
 impl ModuleCompiler {
+    fn apply_default_export_type_overrides(
+        ast: &AstModule,
+        symbols: &mut crate::parser::checker::SymbolTable,
+        interner: &Interner,
+        expr_types: &rustc_hash::FxHashMap<usize, crate::parser::TypeId>,
+    ) {
+        for stmt in &ast.statements {
+            let Statement::ExportDecl(ExportDecl::Default { expression, .. }) = stmt else {
+                continue;
+            };
+
+            let resolved_ty = match expression.as_ref() {
+                Expression::Identifier(ident) => {
+                    let name = interner.resolve(ident.name).to_string();
+                    symbols.resolve(&name).map(|sym| sym.ty).or_else(|| {
+                        let expr_id = expression.as_ref() as *const _ as usize;
+                        expr_types.get(&expr_id).copied()
+                    })
+                }
+                _ => {
+                    let expr_id = expression.as_ref() as *const _ as usize;
+                    expr_types.get(&expr_id).copied()
+                }
+            };
+
+            let Some(default_symbol) = symbols.resolve("default") else {
+                continue;
+            };
+
+            if let Some(default_ty) = resolved_ty {
+                symbols.update_type(default_symbol.scope_id, "default", default_ty);
+            }
+        }
+    }
+
     /// Create a new module compiler
     pub fn new(project_root: PathBuf) -> Self {
         Self {
@@ -100,6 +166,12 @@ impl ModuleCompiler {
             cache: ModuleCache::new(),
             exports: ExportRegistry::new(),
             jsx_options: None,
+            std_modules: StdModuleRegistry::new(),
+            virtual_sources: HashMap::new(),
+            declaration_modules: HashMap::new(),
+            declaration_virtual_by_identity: HashMap::new(),
+            late_link_requirements: HashMap::new(),
+            checker_mode: TypeSystemMode::Raya,
         }
     }
 
@@ -112,6 +184,12 @@ impl ModuleCompiler {
             cache: ModuleCache::new(),
             exports: ExportRegistry::new(),
             jsx_options: None,
+            std_modules: StdModuleRegistry::new(),
+            virtual_sources: HashMap::new(),
+            declaration_modules: HashMap::new(),
+            declaration_virtual_by_identity: HashMap::new(),
+            late_link_requirements: HashMap::new(),
+            checker_mode: TypeSystemMode::Raya,
         })
     }
 
@@ -119,6 +197,238 @@ impl ModuleCompiler {
     pub fn with_jsx(mut self, options: crate::compiler::lower::JsxOptions) -> Self {
         self.jsx_options = Some(options);
         self
+    }
+
+    /// Configure checker mode for graph compilation.
+    pub fn with_checker_mode(mut self, mode: TypeSystemMode) -> Self {
+        self.checker_mode = mode;
+        self
+    }
+
+    fn std_virtual_path(canonical_name: &str) -> PathBuf {
+        let encoded = canonical_name.replace('/', "__");
+        PathBuf::from(format!("__raya_std__/{}.raya", encoded))
+    }
+
+    fn declaration_virtual_path(module_identity: &str) -> PathBuf {
+        let module_id = module_id_from_name(module_identity);
+        PathBuf::from(format!("__raya_decl__/{}.raya", module_id))
+    }
+
+    fn is_virtual_module(&self, path: &Path) -> bool {
+        self.virtual_sources.contains_key(path) || self.declaration_modules.contains_key(path)
+    }
+
+    fn read_module_source(&self, path: &Path) -> ModuleCompileResult<String> {
+        if let Some(source) = self.virtual_sources.get(path) {
+            return Ok(source.clone());
+        }
+        fs::read_to_string(path).map_err(|e| ModuleCompileError::IoError {
+            path: path.to_path_buf(),
+            message: e.to_string(),
+        })
+    }
+
+    fn module_identity(&self, path: &Path) -> String {
+        self.declaration_modules
+            .get(path)
+            .map(|decl| decl.module_identity.clone())
+            .unwrap_or_else(|| path.to_string_lossy().to_string())
+    }
+
+    fn ensure_declaration_virtual_module(
+        &mut self,
+        declaration_path: &Path,
+        module_identity: String,
+    ) -> ModuleCompileResult<PathBuf> {
+        if let Some(existing) = self.declaration_virtual_by_identity.get(&module_identity) {
+            return Ok(existing.clone());
+        }
+
+        let virtual_path = Self::declaration_virtual_path(&module_identity);
+        let declaration = load_declaration_module(declaration_path, &module_identity, &virtual_path)
+            .map_err(|error| self.map_declaration_error(error))?;
+        self.virtual_sources
+            .insert(virtual_path.clone(), declaration.normalized_source.clone());
+        self.declaration_virtual_by_identity
+            .insert(module_identity.clone(), virtual_path.clone());
+        self.late_link_requirements
+            .entry(module_id_from_name(&module_identity))
+            .or_insert(LateLinkRequirement {
+                module_identity: module_identity.clone(),
+                module_id: module_id_from_name(&module_identity),
+                declaration_path: declaration.declaration_path.clone(),
+                source_kind: declaration.source_kind,
+                module_specifiers: Vec::new(),
+                symbols: Vec::new(),
+            });
+        self.declaration_modules.insert(virtual_path.clone(), declaration);
+        Ok(virtual_path)
+    }
+
+    fn resolve_local_declaration_module(
+        &mut self,
+        specifier: &str,
+        from_path: &Path,
+    ) -> ModuleCompileResult<Option<PathBuf>> {
+        if !(specifier.starts_with("./") || specifier.starts_with("../") || specifier.starts_with('/'))
+        {
+            return Ok(None);
+        }
+
+        let from_dir = from_path.parent().ok_or_else(|| ModuleCompileError::Resolution(ResolveError::NoParentDirectory))?;
+        let base = if Path::new(specifier).is_absolute() {
+            PathBuf::from(specifier)
+        } else {
+            from_dir.join(specifier)
+        };
+
+        let mut candidates = Vec::new();
+        if base.extension().is_some() {
+            candidates.push(base.clone());
+        } else {
+            candidates.push(base.with_extension("d.raya"));
+            candidates.push(base.with_extension("d.ts"));
+            candidates.push(base.join("index.d.raya"));
+            candidates.push(base.join("index.d.ts"));
+        }
+
+        for candidate in candidates {
+            if !candidate.is_file() {
+                continue;
+            }
+            let canonical_decl = candidate.canonicalize().map_err(|e| ModuleCompileError::IoError {
+                path: candidate.clone(),
+                message: e.to_string(),
+            })?;
+            if DeclarationSourceKind::from_path(&canonical_decl).is_none() {
+                continue;
+            }
+            let runtime_identity_path = declaration_runtime_identity_path(&canonical_decl)
+                .unwrap_or_else(|| canonical_decl.clone());
+            let module_identity = runtime_identity_path.to_string_lossy().to_string();
+            let virtual_path =
+                self.ensure_declaration_virtual_module(&canonical_decl, module_identity)?;
+            return Ok(Some(virtual_path));
+        }
+
+        Ok(None)
+    }
+
+    fn resolve_binary_declaration_module(
+        &mut self,
+        binary_path: &Path,
+    ) -> ModuleCompileResult<Option<PathBuf>> {
+        let Some(parent) = binary_path.parent() else {
+            return Ok(None);
+        };
+        let candidates = [parent.join("module.d.raya"), parent.join("module.d.ts")];
+        for candidate in candidates {
+            if !candidate.is_file() {
+                continue;
+            }
+            let canonical_decl = candidate.canonicalize().map_err(|e| ModuleCompileError::IoError {
+                path: candidate.clone(),
+                message: e.to_string(),
+            })?;
+            let runtime_identity = binary_path.with_extension("raya").to_string_lossy().to_string();
+            let virtual_path =
+                self.ensure_declaration_virtual_module(&canonical_decl, runtime_identity)?;
+            return Ok(Some(virtual_path));
+        }
+        Ok(None)
+    }
+
+    fn map_declaration_error(&self, error: DeclarationError) -> ModuleCompileError {
+        match error {
+            DeclarationError::IoError { path, message } => ModuleCompileError::IoError { path, message },
+            DeclarationError::LexError { path, message } => ModuleCompileError::LexError { path, message },
+            DeclarationError::ParseError { path, message } => ModuleCompileError::ParseError { path, message },
+            DeclarationError::UnsupportedTsSyntax {
+                path,
+                line,
+                column,
+                snippet,
+            } => ModuleCompileError::TypeError {
+                path,
+                message: format!(
+                    "Unsupported .d.ts syntax at line {}, column {}: {}",
+                    line, column, snippet
+                ),
+            },
+            DeclarationError::InvalidDeclaration {
+                path,
+                line,
+                column,
+                message,
+            } => ModuleCompileError::TypeError {
+                path,
+                message: format!(
+                    "Invalid declaration at line {}, column {}: {}",
+                    line, column, message
+                ),
+            },
+        }
+    }
+
+    fn resolve_import_path(
+        &mut self,
+        specifier: &str,
+        from_path: &Path,
+    ) -> ModuleCompileResult<Option<PathBuf>> {
+        if let Some((canonical_name, source)) = self.std_modules.resolve_specifier(specifier) {
+            let virtual_path = Self::std_virtual_path(&canonical_name);
+            self.virtual_sources
+                .entry(virtual_path.clone())
+                .or_insert_with(|| source.to_string());
+            return Ok(Some(virtual_path));
+        }
+
+        if StdModuleRegistry::is_std_import(specifier) {
+            return Err(ModuleCompileError::Resolution(ResolveError::StdModule(
+                specifier.to_string(),
+            )));
+        }
+
+        match self.resolver.resolve(specifier, from_path) {
+            Ok(resolved) => {
+                if resolved
+                    .path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext == "ryb")
+                    .unwrap_or(false)
+                {
+                    if let Some(virtual_path) =
+                        self.resolve_binary_declaration_module(&resolved.path)?
+                    {
+                        return Ok(Some(virtual_path));
+                    }
+                    return Err(ModuleCompileError::TypeError {
+                        path: from_path.to_path_buf(),
+                        message: format!(
+                            "Import '{}' resolved to bytecode '{}' without declaration file (.d.raya/.d.ts)",
+                            specifier,
+                            resolved.path.display()
+                        ),
+                    });
+                }
+                Ok(Some(resolved.path))
+            }
+            Err(ResolveError::PackageNotSupported(_)) | Err(ResolveError::UrlNotLocked(_)) => {
+                Ok(None)
+            }
+            Err(error @ ResolveError::ModuleNotFound { .. }) => {
+                if let Some(declaration_path) =
+                    self.resolve_local_declaration_module(specifier, from_path)?
+                {
+                    Ok(Some(declaration_path))
+                } else {
+                    Err(ModuleCompileError::Resolution(error))
+                }
+            }
+            Err(error) => Err(ModuleCompileError::Resolution(error)),
+        }
     }
 
     /// Compile a single entry point and all its dependencies
@@ -146,15 +456,32 @@ impl ModuleCompiler {
         // Compile each module in order, tracking exports for cross-module resolution
         let mut compiled = Vec::new();
         for path in order {
-            // Check cache first
-            if let Some(cached) = self.cache.get(&path) {
+            if let Some(declaration_module) = self.declaration_modules.get(&path).cloned() {
+                let (bytecode, module_exports) =
+                    self.compile_declaration_placeholder(&path, &declaration_module)?;
+                self.exports.register(module_exports);
                 let node = self.graph.get(&path).unwrap();
                 compiled.push(CompiledModule {
                     path: path.clone(),
-                    bytecode: cached.bytecode.clone(),
+                    bytecode,
                     imports: node.imports.clone(),
+                    declaration_only: true,
                 });
                 continue;
+            }
+
+            // Check cache first
+            if !self.is_virtual_module(&path) {
+                if let Some(cached) = self.cache.get(&path) {
+                    let node = self.graph.get(&path).unwrap();
+                    compiled.push(CompiledModule {
+                        path: path.clone(),
+                        bytecode: cached.bytecode.clone(),
+                        imports: node.imports.clone(),
+                        declaration_only: false,
+                    });
+                    continue;
+                }
             }
 
             // Compile the module with cross-module symbol resolution
@@ -164,13 +491,16 @@ impl ModuleCompiler {
             self.exports.register(module_exports);
 
             // Cache the bytecode
-            self.cache.insert(path.clone(), bytecode.clone());
+            if !self.is_virtual_module(&path) {
+                self.cache.insert(path.clone(), bytecode.clone());
+            }
 
             let node = self.graph.get(&path).unwrap();
             compiled.push(CompiledModule {
                 path: path.clone(),
                 bytecode,
                 imports: node.imports.clone(),
+                declaration_only: false,
             });
         }
 
@@ -192,37 +522,116 @@ impl ModuleCompiler {
             self.graph.add_module(path.clone());
 
             // Parse the module to find imports
-            let source = fs::read_to_string(&path).map_err(|e| ModuleCompileError::IoError {
-                path: path.clone(),
-                message: e.to_string(),
-            })?;
+            let source = self.read_module_source(&path)?;
 
             let imports = self.extract_imports(&source, &path)?;
 
             // Resolve and add each import
             for import_specifier in imports {
-                match self.resolver.resolve(&import_specifier, &path) {
-                    Ok(resolved) => {
-                        self.graph
-                            .add_dependency(path.clone(), resolved.path.clone());
-                        if !visited.contains(&resolved.path) {
-                            to_visit.push(resolved.path);
-                        }
+                if let Some(resolved_path) = self.resolve_import_path(&import_specifier, &path)? {
+                    self.graph
+                        .add_dependency(path.clone(), resolved_path.clone());
+                    if !visited.contains(&resolved_path) {
+                        to_visit.push(resolved_path);
                     }
-                    Err(ResolveError::PackageNotSupported(_)) => {
-                        // Package imports are not yet supported, skip for now
-                        // In Phase 4, we'll handle these
-                    }
-                    Err(ResolveError::UrlNotLocked(_)) => {
-                        // URL not locked yet - skip during dependency graph building
-                        // The import will be handled when the lockfile has the URL entry
-                    }
-                    Err(e) => return Err(e.into()),
                 }
             }
         }
 
         Ok(())
+    }
+
+    fn compile_declaration_placeholder(
+        &self,
+        path: &Path,
+        declaration_module: &DeclarationModule,
+    ) -> ModuleCompileResult<(BytecodeModule, ModuleExports)> {
+        let mut bytecode = BytecodeModule::new(declaration_module.module_identity.clone());
+
+        let mut function_exports = Vec::new();
+        let mut class_exports = Vec::new();
+        let mut constant_exports = Vec::new();
+
+        for exported in declaration_module.exports.symbols.values() {
+            let symbol_type = match exported.kind {
+                crate::parser::checker::SymbolKind::Function => SymbolType::Function,
+                crate::parser::checker::SymbolKind::Class
+                | crate::parser::checker::SymbolKind::Interface => SymbolType::Class,
+                crate::parser::checker::SymbolKind::Variable
+                | crate::parser::checker::SymbolKind::EnumMember => SymbolType::Constant,
+                _ => continue,
+            };
+
+            match symbol_type {
+                SymbolType::Function => function_exports.push(exported),
+                SymbolType::Class => class_exports.push(exported),
+                SymbolType::Constant => constant_exports.push(exported),
+            }
+        }
+
+        function_exports.sort_by(|a, b| a.name.cmp(&b.name));
+        class_exports.sort_by(|a, b| a.name.cmp(&b.name));
+        constant_exports.sort_by(|a, b| a.name.cmp(&b.name));
+
+        for exported in function_exports {
+            let function_index = bytecode.functions.len();
+            bytecode.functions.push(BytecodeFunction {
+                name: format!("__decl_stub_{}", exported.name),
+                param_count: 0,
+                local_count: 0,
+                code: vec![Opcode::ConstNull.to_u8(), Opcode::Return.to_u8()],
+            });
+            bytecode.exports.push(Export {
+                name: exported.name.clone(),
+                symbol_type: SymbolType::Function,
+                index: function_index,
+                symbol_id: exported.symbol_id,
+                scope: exported.scope,
+                type_symbol_id: exported.type_symbol_id,
+                type_signature: Some(exported.type_signature.clone()),
+            });
+        }
+
+        for exported in class_exports {
+            let class_index = bytecode.classes.len();
+            bytecode.classes.push(crate::compiler::ClassDef {
+                name: exported.name.clone(),
+                field_count: 0,
+                parent_id: None,
+                methods: Vec::new(),
+            });
+            bytecode.exports.push(Export {
+                name: exported.name.clone(),
+                symbol_type: SymbolType::Class,
+                index: class_index,
+                symbol_id: exported.symbol_id,
+                scope: exported.scope,
+                type_symbol_id: exported.type_symbol_id,
+                type_signature: Some(exported.type_signature.clone()),
+            });
+        }
+
+        for exported in constant_exports {
+            let index = bytecode.constants.integers.len();
+            bytecode.constants.integers.push(0);
+            bytecode.exports.push(Export {
+                name: exported.name.clone(),
+                symbol_type: SymbolType::Constant,
+                index,
+                symbol_id: exported.symbol_id,
+                scope: exported.scope,
+                type_symbol_id: exported.type_symbol_id,
+                type_signature: Some(exported.type_signature.clone()),
+            });
+        }
+
+        let encoded = bytecode.encode();
+        let decoded = BytecodeModule::decode(&encoded).map_err(|e| ModuleCompileError::TypeError {
+            path: path.to_path_buf(),
+            message: format!("Failed to finalize declaration placeholder module checksum: {e}"),
+        })?;
+
+        Ok((decoded, declaration_module.exports.clone()))
     }
 
     /// Extract import specifiers from source code
@@ -239,9 +648,20 @@ impl ModuleCompiler {
 
         let mut imports = Vec::new();
         for stmt in &ast.statements {
-            if let Statement::ImportDecl(import) = stmt {
-                let specifier = interner.resolve(import.source.value).to_string();
-                imports.push(specifier);
+            match stmt {
+                Statement::ImportDecl(import) => {
+                    let specifier = interner.resolve(import.source.value).to_string();
+                    imports.push(specifier);
+                }
+                Statement::ExportDecl(ExportDecl::Named {
+                    source: Some(source),
+                    ..
+                })
+                | Statement::ExportDecl(ExportDecl::All { source, .. }) => {
+                    let specifier = interner.resolve(source.value).to_string();
+                    imports.push(specifier);
+                }
+                _ => {}
             }
         }
 
@@ -252,14 +672,12 @@ impl ModuleCompiler {
     ///
     /// Returns the bytecode and the module's exports for use by dependent modules.
     fn compile_single_with_exports(
-        &self,
+        &mut self,
         path: &PathBuf,
     ) -> ModuleCompileResult<(BytecodeModule, ModuleExports)> {
         // Read source
-        let source = fs::read_to_string(path).map_err(|e| ModuleCompileError::IoError {
-            path: path.clone(),
-            message: e.to_string(),
-        })?;
+        let source = self.read_module_source(path)?;
+        let linked_user_offset = find_linked_user_offset(&source);
 
         // Parse
         let parser = Parser::new(&source).map_err(|e| ModuleCompileError::LexError {
@@ -274,11 +692,14 @@ impl ModuleCompiler {
 
         // Bind
         let mut type_ctx = TypeContext::new();
-        let mut binder = Binder::new(&mut type_ctx, &interner);
+        let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(self.checker_mode);
 
         // Register builtin type signatures
         let builtin_sigs = crate::builtins::to_checker_signatures();
         binder.register_builtins(&builtin_sigs);
+        if linked_user_offset.is_some() {
+            binder.skip_top_level_duplicate_detection();
+        }
 
         // Inject imported symbols from the export registry
         self.inject_imports(&ast, path, &mut binder, &interner)?;
@@ -290,8 +711,28 @@ impl ModuleCompiler {
                 message: format!("Binding error: {:?}", e),
             })?;
 
+        if std::env::var("RAYA_DEBUG_IMPORT_TYPES").is_ok() {
+            for scope in [ScopeId(0), ScopeId(1)] {
+                if let Some(sym) = symbols.resolve_from_scope("process", scope) {
+                    eprintln!(
+                        "[module-compiler] post-bind symbol 'process' scope={} kind={:?} imported={} ty='{}'",
+                        scope.0,
+                        sym.kind,
+                        sym.flags.is_imported,
+                        type_ctx.format_type(sym.ty)
+                    );
+                }
+            }
+        }
+
         // Type check
-        let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
+        let mut checker =
+            TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(self.checker_mode);
+        if let Some(offset) = linked_user_offset {
+            checker = checker
+                .with_skip_class_bodies_before(offset)
+                .with_suppress_errors_before(offset);
+        }
         let check_result =
             checker
                 .check_module(&ast)
@@ -304,9 +745,11 @@ impl ModuleCompiler {
         for ((scope_id, name), ty) in check_result.inferred_types {
             symbols.update_type(ScopeId(scope_id), &name, ty);
         }
+        Self::apply_default_export_type_overrides(&ast, &mut symbols, &interner, &check_result.expr_types);
 
+        let module_name = self.module_identity(path);
         // Extract exports for dependent modules
-        let module_exports = self.extract_exports(path, &symbols);
+        let module_exports = self.extract_exports(path, &module_name, &symbols, &type_ctx);
 
         // Compile
         let mut compiler =
@@ -314,21 +757,30 @@ impl ModuleCompiler {
         if let Some(ref jsx_opts) = self.jsx_options {
             compiler = compiler.with_jsx(jsx_opts.clone());
         }
+        compiler = compiler.with_module_identity(module_name.clone());
+        compiler = compiler.with_emit_generic_templates(true);
 
-        let bytecode =
+        let mut bytecode =
             compiler
                 .compile_via_ir(&ast)
                 .map_err(|e| ModuleCompileError::CompileError {
                     path: path.clone(),
                     source: e,
                 })?;
+        bytecode.metadata.name = module_name;
+        self.populate_link_tables(&mut bytecode, path, &ast, &interner, &module_exports)?;
+        let encoded = bytecode.encode();
+        bytecode = BytecodeModule::decode(&encoded).map_err(|e| ModuleCompileError::TypeError {
+            path: path.clone(),
+            message: format!("Failed to finalize module checksum: {e}"),
+        })?;
 
         Ok((bytecode, module_exports))
     }
 
     /// Inject symbols from imported modules into the binder
     fn inject_imports(
-        &self,
+        &mut self,
         ast: &AstModule,
         current_path: &Path,
         binder: &mut Binder<'_>,
@@ -339,15 +791,13 @@ impl ModuleCompiler {
                 let specifier = interner.resolve(import.source.value).to_string();
 
                 // Resolve the import path
-                let resolved = match self.resolver.resolve(&specifier, current_path) {
-                    Ok(r) => r,
-                    Err(ResolveError::PackageNotSupported(_))
-                    | Err(ResolveError::UrlNotLocked(_)) => continue,
-                    Err(e) => return Err(e.into()),
+                let Some(resolved_path) = self.resolve_import_path(&specifier, current_path)?
+                else {
+                    continue;
                 };
 
                 // Get exports from the imported module
-                let module_exports = match self.exports.get(&resolved.path) {
+                let module_exports = match self.exports.get(&resolved_path) {
                     Some(exports) => exports,
                     None => continue, // Module not yet compiled (shouldn't happen with topo order)
                 };
@@ -363,10 +813,12 @@ impl ModuleCompiler {
                                 .unwrap_or_else(|| import_name.clone());
 
                             if let Some(exported) = module_exports.get(&import_name) {
+                                let imported_ty = binder
+                                    .hydrate_imported_signature_type(&exported.type_signature);
                                 let symbol = Symbol {
                                     name: local_name,
                                     kind: exported.kind,
-                                    ty: exported.ty,
+                                    ty: imported_ty,
                                     flags: SymbolFlags {
                                         is_exported: false,
                                         is_const: exported.is_const,
@@ -391,10 +843,30 @@ impl ModuleCompiler {
                             // import foo from "./module" - look for default export
                             let local_name = interner.resolve(local.name).to_string();
                             if let Some(exported) = module_exports.get("default") {
+                                let mut imported_ty = binder
+                                    .hydrate_imported_signature_type(&exported.type_signature);
+                                if std::env::var("RAYA_DEBUG_IMPORT_TYPES").is_ok() {
+                                    eprintln!(
+                                        "[module-compiler] default import '{}' from '{}' signature='{}' hydrated='{}'",
+                                        local_name,
+                                        specifier,
+                                        exported.type_signature,
+                                        binder.format_type_id(imported_ty)
+                                    );
+                                }
+                                if binder.needs_import_namespace_fallback(imported_ty) {
+                                    return Err(ModuleCompileError::TypeError {
+                                        path: current_path.to_path_buf(),
+                                        message: format!(
+                                            "Unresolved structural type signature for default import '{}.default' (local '{}'). Raya strict forbids dynamic fallback.",
+                                            specifier, local_name
+                                        ),
+                                    });
+                                }
                                 let symbol = Symbol {
                                     name: local_name,
                                     kind: exported.kind,
-                                    ty: exported.ty,
+                                    ty: imported_ty,
                                     flags: SymbolFlags {
                                         is_exported: false,
                                         is_const: exported.is_const,
@@ -406,7 +878,19 @@ impl ModuleCompiler {
                                     span: Span::new(0, 0, 0, 0),
                                     referenced: false,
                                 };
-                                let _ = binder.define_imported(symbol);
+                                let import_name = symbol.name.clone();
+                                let import_kind = symbol.kind;
+                                let import_ty = symbol.ty;
+                                let define_result = binder.define_imported(symbol);
+                                if std::env::var("RAYA_DEBUG_IMPORT_TYPES").is_ok() {
+                                    eprintln!(
+                                        "[module-compiler] define default import '{}' kind={:?} ty='{}' result={}",
+                                        import_name,
+                                        import_kind,
+                                        binder.format_type_id(import_ty),
+                                        if define_result.is_ok() { "ok" } else { "err" }
+                                    );
+                                }
                             }
                         }
                     }
@@ -421,15 +905,441 @@ impl ModuleCompiler {
     fn extract_exports(
         &self,
         path: &Path,
+        module_name: &str,
         symbols: &crate::parser::checker::SymbolTable,
+        type_ctx: &TypeContext,
     ) -> ModuleExports {
-        let mut exports = ModuleExports::new(path.to_path_buf());
+        let mut exports = ModuleExports::new(path.to_path_buf(), module_name.to_string());
 
         for symbol in symbols.get_exported_symbols() {
-            exports.add_symbol(ExportedSymbol::from_symbol(symbol));
+            let scope_kind = symbols.get_scope(symbol.scope_id).kind;
+            let scope = Self::scope_kind_to_symbol_scope(scope_kind);
+            exports.add_symbol(ExportedSymbol::from_symbol(
+                symbol,
+                module_name,
+                scope,
+                type_ctx,
+            ));
         }
 
         exports
+    }
+
+    fn scope_kind_to_symbol_scope(kind: ScopeKind) -> SymbolScope {
+        match kind {
+            ScopeKind::Global => SymbolScope::Global,
+            ScopeKind::Module => SymbolScope::Module,
+            ScopeKind::Function | ScopeKind::Block | ScopeKind::Class | ScopeKind::Loop => {
+                SymbolScope::Local
+            }
+        }
+    }
+
+    fn import_local_binding_name(specifier: &ImportSpecifier, interner: &Interner) -> String {
+        match specifier {
+            ImportSpecifier::Named { name, alias } => alias
+                .as_ref()
+                .map(|a| interner.resolve(a.name).to_string())
+                .unwrap_or_else(|| interner.resolve(name.name).to_string()),
+            ImportSpecifier::Default(local) => interner.resolve(local.name).to_string(),
+            ImportSpecifier::Namespace(alias) => interner.resolve(alias.name).to_string(),
+        }
+    }
+
+    fn collect_pattern_binding_names(pattern: &Pattern, interner: &Interner, out: &mut Vec<String>) {
+        match pattern {
+            Pattern::Identifier(ident) => out.push(interner.resolve(ident.name).to_string()),
+            Pattern::Array(array) => {
+                for element in &array.elements {
+                    if let Some(element) = element {
+                        Self::collect_pattern_binding_names(&element.pattern, interner, out);
+                    }
+                }
+                if let Some(rest) = &array.rest {
+                    Self::collect_pattern_binding_names(rest, interner, out);
+                }
+            }
+            Pattern::Object(object) => {
+                for property in &object.properties {
+                    Self::collect_pattern_binding_names(&property.value, interner, out);
+                }
+                if let Some(rest) = &object.rest {
+                    out.push(interner.resolve(rest.name).to_string());
+                }
+            }
+            Pattern::Rest(rest) => {
+                Self::collect_pattern_binding_names(&rest.argument, interner, out);
+            }
+        }
+    }
+
+    fn top_level_declaration_stmt<'a>(stmt: &'a Statement) -> Option<&'a Statement> {
+        match stmt {
+            Statement::ExportDecl(ExportDecl::Declaration(inner)) => Some(inner.as_ref()),
+            _ => Some(stmt),
+        }
+    }
+
+    fn collect_module_global_slots(ast: &AstModule, interner: &Interner) -> HashMap<String, u32> {
+        let mut slots = HashMap::new();
+        let mut next_slot = 0u32;
+
+        // Match lowerer's first reservation pass (imports + export-default) in source order.
+        for stmt in &ast.statements {
+            if let Statement::ImportDecl(import_decl) = stmt {
+                for spec in &import_decl.specifiers {
+                    let local = Self::import_local_binding_name(spec, interner);
+                    slots.entry(local).or_insert_with(|| {
+                        let slot = next_slot;
+                        next_slot = next_slot.saturating_add(1);
+                        slot
+                    });
+                }
+            }
+            if matches!(stmt, Statement::ExportDecl(ExportDecl::Default { .. })) {
+                slots.entry("default".to_string()).or_insert_with(|| {
+                    let slot = next_slot;
+                    next_slot = next_slot.saturating_add(1);
+                    slot
+                });
+            }
+        }
+
+        // Then reserve module-level variable declaration bindings.
+        for stmt in &ast.statements {
+            let Some(stmt) = Self::top_level_declaration_stmt(stmt) else {
+                continue;
+            };
+            if let Statement::VariableDecl(variable) = stmt {
+                let mut names = Vec::new();
+                Self::collect_pattern_binding_names(&variable.pattern, interner, &mut names);
+                for name in names {
+                    slots.entry(name).or_insert_with(|| {
+                        let slot = next_slot;
+                        next_slot = next_slot.saturating_add(1);
+                        slot
+                    });
+                }
+            }
+        }
+
+        slots
+    }
+
+    fn record_late_link_symbol_requirement(
+        &mut self,
+        module_identity: &str,
+        module_specifier: &str,
+        exported: &ExportedSymbol,
+    ) {
+        let module_id = module_id_from_name(module_identity);
+        let requirement = self
+            .late_link_requirements
+            .entry(module_id)
+            .or_insert(LateLinkRequirement {
+                module_identity: module_identity.to_string(),
+                module_id,
+                declaration_path: PathBuf::new(),
+                source_kind: super::declaration::DeclarationSourceKind::DRaya,
+                module_specifiers: Vec::new(),
+                symbols: Vec::new(),
+            });
+
+        if !module_specifier.is_empty()
+            && !requirement
+                .module_specifiers
+                .iter()
+                .any(|existing| existing == module_specifier)
+        {
+            requirement
+                .module_specifiers
+                .push(module_specifier.to_string());
+        }
+
+        let symbol_type = match exported.kind {
+            crate::parser::checker::SymbolKind::Function => SymbolType::Function,
+            crate::parser::checker::SymbolKind::Class | crate::parser::checker::SymbolKind::Interface => {
+                SymbolType::Class
+            }
+            crate::parser::checker::SymbolKind::Variable
+            | crate::parser::checker::SymbolKind::EnumMember => SymbolType::Constant,
+            _ => return,
+        };
+
+        if requirement
+            .symbols
+            .iter()
+            .any(|symbol| symbol.symbol_id == exported.symbol_id)
+        {
+            return;
+        }
+
+        requirement.symbols.push(LateLinkSymbolRequirement {
+            symbol: exported.name.clone(),
+            symbol_id: exported.symbol_id,
+            scope: exported.scope,
+            symbol_type,
+            type_symbol_id: exported.type_symbol_id,
+            type_signature: exported.type_signature.clone(),
+            specialization_template: specialization_template_from_symbol(&exported.name),
+        });
+    }
+
+    fn populate_link_tables(
+        &mut self,
+        bytecode: &mut BytecodeModule,
+        current_path: &Path,
+        ast: &AstModule,
+        interner: &Interner,
+        module_exports: &ModuleExports,
+    ) -> ModuleCompileResult<()> {
+        bytecode.exports.clear();
+        bytecode.imports.clear();
+
+        let module_global_slots = Self::collect_module_global_slots(ast, interner);
+
+        // Export table: map exported symbols to runtime bytecode indices where available.
+        for exported in module_exports.symbols.values() {
+            let symbol_type = match exported.kind {
+                crate::parser::checker::SymbolKind::Function => Some(SymbolType::Function),
+                crate::parser::checker::SymbolKind::Class
+                | crate::parser::checker::SymbolKind::Interface => Some(SymbolType::Class),
+                crate::parser::checker::SymbolKind::Variable
+                | crate::parser::checker::SymbolKind::EnumMember => Some(SymbolType::Constant),
+                _ => None,
+            };
+            let Some(symbol_type) = symbol_type else {
+                continue;
+            };
+
+            let index = match symbol_type {
+                SymbolType::Function => bytecode
+                    .functions
+                    .iter()
+                    .position(|f| f.name == exported.local_name),
+                SymbolType::Class => bytecode
+                    .classes
+                    .iter()
+                    .position(|c| c.name == exported.local_name),
+                SymbolType::Constant => module_global_slots
+                    .get(&exported.local_name)
+                    .copied()
+                    .map(|slot| slot as usize),
+            };
+            let Some(index) = index else {
+                continue;
+            };
+
+            bytecode.exports.push(Export {
+                name: exported.name.clone(),
+                symbol_type,
+                index,
+                symbol_id: exported.symbol_id,
+                scope: exported.scope,
+                type_symbol_id: exported.type_symbol_id,
+                type_signature: Some(exported.type_signature.clone()),
+            });
+        }
+
+        // Import table: capture named/default imports with deterministic target IDs.
+        for stmt in &ast.statements {
+            match stmt {
+                Statement::ImportDecl(import_decl) => {
+                    let specifier = interner.resolve(import_decl.source.value).to_string();
+                    let Some(resolved_path) = self.resolve_import_path(&specifier, current_path)?
+                    else {
+                        continue;
+                    };
+                    let target_module_name = self.module_identity(&resolved_path);
+                    let target_module_id = module_id_from_name(&target_module_name);
+                    let target_exports = self.exports.get(&resolved_path).cloned();
+                    let declaration_target = self.declaration_modules.contains_key(&resolved_path);
+
+                    for spec in &import_decl.specifiers {
+                        match spec {
+                            ImportSpecifier::Named { name, alias } => {
+                                let import_name = interner.resolve(name.name).to_string();
+                                let alias_name =
+                                    alias.as_ref().map(|a| interner.resolve(a.name).to_string());
+                                let local_name =
+                                    alias_name.clone().unwrap_or_else(|| import_name.clone());
+                                let exported = target_exports
+                                    .as_ref()
+                                    .and_then(|e| e.get(&import_name))
+                                    .ok_or_else(|| ModuleCompileError::TypeError {
+                                        path: current_path.to_path_buf(),
+                                        message: format!(
+                                            "Unresolved import '{}.{}' while emitting binary link metadata",
+                                            target_module_name, import_name
+                                        ),
+                                    })?
+                                    .clone();
+                                if declaration_target {
+                                    self.record_late_link_symbol_requirement(
+                                        &target_module_name,
+                                        &specifier,
+                                        &exported,
+                                    );
+                                }
+                                bytecode.imports.push(Import {
+                                    module_specifier: specifier.clone(),
+                                    symbol: import_name,
+                                    alias: alias_name,
+                                    module_id: target_module_id,
+                                    symbol_id: exported.symbol_id,
+                                    scope: SymbolScope::Module,
+                                    type_symbol_id: exported.type_symbol_id,
+                                    type_signature: Some(exported.type_signature.clone()),
+                                    runtime_global_slot: module_global_slots
+                                        .get(&local_name)
+                                        .copied()
+                                        .map(|slot| slot as u32),
+                                });
+                            }
+                            ImportSpecifier::Default(local) => {
+                                let local_name = interner.resolve(local.name).to_string();
+                                let default_name = "default".to_string();
+                                let exported = target_exports
+                                    .as_ref()
+                                    .and_then(|e| e.get("default"))
+                                    .ok_or_else(|| ModuleCompileError::TypeError {
+                                        path: current_path.to_path_buf(),
+                                        message: format!(
+                                            "Unresolved default import '{}.default' while emitting binary link metadata",
+                                            target_module_name
+                                        ),
+                                    })?
+                                    .clone();
+                                if declaration_target {
+                                    self.record_late_link_symbol_requirement(
+                                        &target_module_name,
+                                        &specifier,
+                                        &exported,
+                                    );
+                                }
+                                bytecode.imports.push(Import {
+                                    module_specifier: specifier.clone(),
+                                    symbol: default_name,
+                                    alias: Some(local_name),
+                                    module_id: target_module_id,
+                                    symbol_id: exported.symbol_id,
+                                    scope: SymbolScope::Module,
+                                    type_symbol_id: exported.type_symbol_id,
+                                    type_signature: Some(exported.type_signature.clone()),
+                                    runtime_global_slot: module_global_slots
+                                        .get(interner.resolve(local.name))
+                                        .copied()
+                                        .map(|slot| slot as u32),
+                                });
+                            }
+                            ImportSpecifier::Namespace(alias) => {
+                                // Namespace imports are modeled as default namespace binding for now.
+                                let alias_name = interner.resolve(alias.name).to_string();
+                                let namespace_symbol = "*".to_string();
+                                bytecode.imports.push(Import {
+                                    module_specifier: specifier.clone(),
+                                    symbol: namespace_symbol.clone(),
+                                    alias: Some(alias_name),
+                                    module_id: target_module_id,
+                                    symbol_id: symbol_id_from_name(
+                                        &target_module_name,
+                                        SymbolScope::Module,
+                                        &namespace_symbol,
+                                    ),
+                                    scope: SymbolScope::Module,
+                                    type_symbol_id: 0,
+                                    type_signature: None,
+                                    runtime_global_slot: module_global_slots
+                                        .get(interner.resolve(alias.name))
+                                        .copied()
+                                        .map(|slot| slot as u32),
+                                });
+                            }
+                        }
+                    }
+                }
+                Statement::ExportDecl(ExportDecl::Named {
+                    specifiers,
+                    source: Some(source),
+                    ..
+                }) => {
+                    let specifier = interner.resolve(source.value).to_string();
+                    let Some(resolved_path) = self.resolve_import_path(&specifier, current_path)?
+                    else {
+                        continue;
+                    };
+                    let target_module_name = self.module_identity(&resolved_path);
+                    let target_module_id = module_id_from_name(&target_module_name);
+                    let target_exports = self.exports.get(&resolved_path).cloned();
+                    let declaration_target = self.declaration_modules.contains_key(&resolved_path);
+
+                    for spec in specifiers {
+                        let import_name = interner.resolve(spec.name.name).to_string();
+                        let alias_name = spec
+                            .alias
+                            .as_ref()
+                            .map(|a| interner.resolve(a.name).to_string());
+                        let exported = target_exports
+                            .as_ref()
+                            .and_then(|e| e.get(&import_name))
+                            .ok_or_else(|| ModuleCompileError::TypeError {
+                                path: current_path.to_path_buf(),
+                                message: format!(
+                                    "Unresolved re-export '{}.{}' while emitting binary link metadata",
+                                    target_module_name, import_name
+                                ),
+                            })?
+                            .clone();
+                        if declaration_target {
+                            self.record_late_link_symbol_requirement(
+                                &target_module_name,
+                                &specifier,
+                                &exported,
+                            );
+                        }
+                        bytecode.imports.push(Import {
+                            module_specifier: specifier.clone(),
+                            symbol: import_name,
+                            alias: alias_name,
+                            module_id: target_module_id,
+                            symbol_id: exported.symbol_id,
+                            scope: SymbolScope::Module,
+                            type_symbol_id: exported.type_symbol_id,
+                            type_signature: Some(exported.type_signature.clone()),
+                            runtime_global_slot: None,
+                        });
+                    }
+                }
+                Statement::ExportDecl(ExportDecl::All { source, .. }) => {
+                    let specifier = interner.resolve(source.value).to_string();
+                    let Some(resolved_path) = self.resolve_import_path(&specifier, current_path)?
+                    else {
+                        continue;
+                    };
+                    let target_module_name = self.module_identity(&resolved_path);
+                    let target_module_id = module_id_from_name(&target_module_name);
+                    let namespace_symbol = "*".to_string();
+                    bytecode.imports.push(Import {
+                        module_specifier: specifier,
+                        symbol: namespace_symbol.clone(),
+                        alias: None,
+                        module_id: target_module_id,
+                        symbol_id: symbol_id_from_name(
+                            &target_module_name,
+                            SymbolScope::Module,
+                            &namespace_symbol,
+                        ),
+                        scope: SymbolScope::Module,
+                        type_symbol_id: 0,
+                        type_signature: None,
+                        runtime_global_slot: None,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
     }
 
     /// Get the module resolver
@@ -457,11 +1367,52 @@ impl ModuleCompiler {
         self.graph = ModuleGraph::new();
         self.cache.clear();
         self.exports = ExportRegistry::new();
+        self.virtual_sources.clear();
+        self.declaration_modules.clear();
+        self.declaration_virtual_by_identity.clear();
+        self.late_link_requirements.clear();
     }
 
     /// Get the export registry
     pub fn exports(&self) -> &ExportRegistry {
         &self.exports
+    }
+
+    /// Get unresolved late-link requirements collected from declaration-backed imports.
+    pub fn late_link_requirements(&self) -> Vec<LateLinkRequirement> {
+        let mut requirements = self
+            .late_link_requirements
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        requirements.sort_by_key(|req| req.module_id);
+        for requirement in &mut requirements {
+            requirement.module_specifiers.sort();
+            requirement.module_specifiers.dedup();
+            requirement
+                .symbols
+                .sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
+        }
+        requirements
+    }
+}
+
+fn find_linked_user_offset(source: &str) -> Option<usize> {
+    if !source.contains(BUILTIN_PRELUDE_BEGIN_MARKER) {
+        return None;
+    }
+
+    let prelude_end_idx = if let Some(std_end) = source.find(STD_PRELUDE_END_MARKER) {
+        std_end + STD_PRELUDE_END_MARKER.len()
+    } else {
+        let builtin_end = source.find(BUILTIN_PRELUDE_END_MARKER)?;
+        builtin_end + BUILTIN_PRELUDE_END_MARKER.len()
+    };
+
+    if source.as_bytes().get(prelude_end_idx) == Some(&b'\n') {
+        Some(prelude_end_idx + 1)
+    } else {
+        Some(prelude_end_idx)
     }
 }
 
@@ -517,9 +1468,194 @@ mod tests {
 
         // utils should be first (dependency)
         assert_eq!(compiled[0].path, utils_path.canonicalize().unwrap());
+        assert!(!compiled[0].bytecode.metadata.name.is_empty());
 
         // main should be second
         assert_eq!(compiled[1].path, main_path.canonicalize().unwrap());
+        assert!(
+            !compiled[1].bytecode.imports.is_empty(),
+            "entry module should emit import metadata"
+        );
+        assert!(compiled[1].bytecode.imports[0].module_id != 0);
+        assert!(compiled[1].bytecode.imports[0].symbol_id != 0);
+    }
+
+    #[test]
+    fn test_import_metadata_emits_runtime_global_slot() {
+        let temp_dir = create_test_project();
+        let main_path = temp_dir.path().join("main.raya");
+        let utils_path = temp_dir.path().join("utils.raya");
+
+        fs::write(
+            &utils_path,
+            "export function inc(x: number): number { return x + 1; }",
+        )
+        .unwrap();
+        fs::write(
+            &main_path,
+            r#"
+            import { inc as plusOne } from "./utils";
+            return plusOne(1);
+            "#,
+        )
+        .unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let compiled = compiler.compile(&main_path).expect("compile");
+        let entry = compiled
+            .iter()
+            .find(|module| module.path == main_path.canonicalize().unwrap())
+            .expect("entry module");
+        let import = entry
+            .bytecode
+            .imports
+            .iter()
+            .find(|import| import.module_specifier == "./utils" && import.symbol == "inc")
+            .expect("inc import");
+
+        assert_eq!(import.runtime_global_slot, Some(0));
+    }
+
+    #[test]
+    fn test_constant_exports_are_emitted_in_link_table() {
+        let temp_dir = create_test_project();
+        let utils_path = temp_dir.path().join("utils.raya");
+
+        fs::write(&utils_path, "export const answer: number = 42;").unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let compiled = compiler.compile(&utils_path).expect("compile");
+        let utils = compiled
+            .iter()
+            .find(|module| module.path == utils_path.canonicalize().unwrap())
+            .expect("utils module");
+        let export = utils
+            .bytecode
+            .exports
+            .iter()
+            .find(|export| export.name == "answer")
+            .expect("constant export");
+
+        assert_eq!(export.symbol_type, SymbolType::Constant);
+        assert!(export.type_symbol_id != 0);
+    }
+
+    #[test]
+    fn test_default_export_expression_emits_link_table_entry() {
+        let temp_dir = create_test_project();
+        let utils_path = temp_dir.path().join("utils.raya");
+
+        fs::write(&utils_path, "export default { answer: 42 };").unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let compiled = compiler.compile(&utils_path).expect("compile");
+        let utils = compiled
+            .iter()
+            .find(|module| module.path == utils_path.canonicalize().unwrap())
+            .expect("utils module");
+        let export = utils
+            .bytecode
+            .exports
+            .iter()
+            .find(|export| export.name == "default")
+            .expect("default export");
+
+        assert_eq!(export.symbol_type, SymbolType::Constant);
+        assert_eq!(export.index, 0);
+        assert!(export.type_symbol_id != 0);
+    }
+
+    #[test]
+    fn test_binary_module_compiler_supports_std_and_node_imports() {
+        let temp_dir = create_test_project();
+        let main_path = temp_dir.path().join("main.raya");
+
+        fs::write(
+            &main_path,
+            r#"
+            import { join } from "std:path";
+            import { ParsedPath } from "node:path";
+            let p = join;
+            let np = ParsedPath;
+            return 1;
+            "#,
+        )
+        .unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let compiled = compiler.compile(&main_path).expect("compile");
+
+        assert!(
+            compiled.len() >= 3,
+            "expected entry + std + node-linked modules, got {}",
+            compiled.len()
+        );
+    }
+
+    #[test]
+    fn test_binary_module_compiler_supports_std_default_import() {
+        let temp_dir = create_test_project();
+        let main_path = temp_dir.path().join("main.raya");
+
+        fs::write(
+            &main_path,
+            r#"
+            import path from "std:path";
+            let p = path;
+            return 1;
+            "#,
+        )
+        .unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let compiled = compiler.compile(&main_path).expect("compile");
+        let entry = compiled
+            .iter()
+            .find(|module| module.path == main_path.canonicalize().unwrap())
+            .expect("entry module");
+
+        assert!(entry
+            .bytecode
+            .imports
+            .iter()
+            .any(|import| import.module_specifier == "std:path" && import.symbol == "default"));
+    }
+
+    #[test]
+    fn test_strict_default_import_rejects_unknown_signature_without_dynamic_fallback() {
+        let temp_dir = create_test_project();
+        let main_path = temp_dir.path().join("main.raya");
+        let dep_decl_path = temp_dir.path().join("dep.d.raya");
+
+        fs::write(
+            &main_path,
+            r#"
+            import dep from "./dep";
+            return dep;
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            &dep_decl_path,
+            "export const dep: unknown = null; export default dep;",
+        )
+        .unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let result = compiler.compile(&main_path);
+
+        match result {
+            Err(ModuleCompileError::TypeError { message, .. }) => {
+                assert!(
+                    message.contains("Raya strict forbids dynamic fallback"),
+                    "expected strict no-fallback diagnostic, got: {message}"
+                );
+            }
+            other => panic!(
+                "expected TypeError for unknown default import signature, got: {:?}",
+                other
+            ),
+        }
     }
 
     #[test]
@@ -528,10 +1664,7 @@ mod tests {
         let main_path = temp_dir.path().join("main.raya");
         let utils_path = temp_dir.path().join("utils.raya");
 
-        // Test importing a function symbol
-        // Note: Function calling across modules requires TypeContext merging
-        // which is tracked as a follow-up issue. For now, we verify the symbol
-        // is imported (even if calling it doesn't work due to type mismatch).
+        // Test importing and calling a function symbol.
         fs::write(
             &utils_path,
             r#"export function add(a: number, b: number): number {
@@ -542,7 +1675,7 @@ mod tests {
         fs::write(
             &main_path,
             r#"import { add } from "./utils";
-               let x: number = 42;"#, // Reference add but don't call it
+               let x: number = add(1, 2);"#,
         )
         .unwrap();
 
@@ -662,6 +1795,182 @@ mod tests {
         let result = compiler.compile(&main_path);
 
         assert!(matches!(result, Err(ModuleCompileError::Resolution(_))));
+    }
+
+    #[test]
+    fn test_declaration_import_uses_d_raya_when_source_missing() {
+        let temp_dir = create_test_project();
+        let main_path = temp_dir.path().join("main.raya");
+        let dep_decl_path = temp_dir.path().join("dep.d.raya");
+
+        fs::write(
+            &main_path,
+            r#"
+            import { foo } from "./dep";
+            let x: number = 1;
+            "#,
+        )
+        .unwrap();
+        fs::write(&dep_decl_path, "export function foo(a: number): number;").unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let compiled = compiler.compile(&main_path).expect("compile");
+        let entry = compiled
+            .iter()
+            .find(|module| module.path == main_path.canonicalize().unwrap())
+            .expect("entry");
+        assert!(compiled.iter().any(|module| module.declaration_only));
+        assert!(
+            entry
+                .bytecode
+                .imports
+                .iter()
+                .any(|import| import.module_specifier == "./dep" && import.symbol == "foo"),
+            "entry import metadata should include declaration-backed import"
+        );
+
+        let late_links = compiler.late_link_requirements();
+        assert_eq!(late_links.len(), 1);
+        assert!(late_links[0].symbols.iter().any(|symbol| symbol.symbol == "foo"));
+    }
+
+    #[test]
+    fn test_declaration_import_falls_back_to_d_ts() {
+        let temp_dir = create_test_project();
+        let main_path = temp_dir.path().join("main.raya");
+        let dep_decl_path = temp_dir.path().join("dep.d.ts");
+
+        fs::write(
+            &main_path,
+            r#"
+            import { foo } from "./dep";
+            let x: number = 1;
+            "#,
+        )
+        .unwrap();
+        fs::write(&dep_decl_path, "export function foo(a: string): string;").unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let compiled = compiler.compile(&main_path).expect("compile");
+        assert!(compiled.iter().any(|module| module.declaration_only));
+
+        let late_links = compiler.late_link_requirements();
+        assert_eq!(late_links.len(), 1);
+        assert_eq!(late_links[0].source_kind, DeclarationSourceKind::DTs);
+    }
+
+    #[test]
+    fn test_declaration_import_prefers_d_raya_over_d_ts() {
+        let temp_dir = create_test_project();
+        let main_path = temp_dir.path().join("main.raya");
+        let dep_d_raya = temp_dir.path().join("dep.d.raya");
+        let dep_d_ts = temp_dir.path().join("dep.d.ts");
+
+        fs::write(
+            &main_path,
+            r#"
+            import { foo } from "./dep";
+            let x: number = 1;
+            "#,
+        )
+        .unwrap();
+        fs::write(&dep_d_raya, "export function foo(a: number): number;").unwrap();
+        fs::write(&dep_d_ts, "export function foo(a: string): string;").unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let compiled = compiler.compile(&main_path).expect("compile");
+        let entry = compiled
+            .iter()
+            .find(|module| module.path == main_path.canonicalize().unwrap())
+            .expect("entry");
+        let foo_import = entry
+            .bytecode
+            .imports
+            .iter()
+            .find(|import| import.module_specifier == "./dep" && import.symbol == "foo")
+            .expect("foo import");
+        let type_signature = foo_import
+            .type_signature
+            .as_ref()
+            .expect("type signature");
+        assert!(
+            type_signature.contains("number"),
+            "expected .d.raya function signature, got: {}",
+            type_signature
+        );
+
+        let late_links = compiler.late_link_requirements();
+        assert_eq!(late_links.len(), 1);
+        assert_eq!(late_links[0].source_kind, DeclarationSourceKind::DRaya);
+    }
+
+    #[test]
+    fn test_unsupported_d_ts_syntax_reports_deterministic_diagnostic() {
+        let temp_dir = create_test_project();
+        let main_path = temp_dir.path().join("main.raya");
+        let dep_decl_path = temp_dir.path().join("dep.d.ts");
+
+        fs::write(
+            &main_path,
+            r#"
+            import { Mode } from "./dep";
+            return 1;
+            "#,
+        )
+        .unwrap();
+        fs::write(&dep_decl_path, "export enum Mode { A, B }").unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let err = compiler.compile(&main_path).unwrap_err();
+        let message = format!("{err}");
+        assert!(
+            message.contains("Unsupported .d.ts syntax at line 1"),
+            "unexpected diagnostic: {}",
+            message
+        );
+    }
+
+    #[test]
+    fn test_reexport_dependency_is_discovered_and_recorded() {
+        let temp_dir = create_test_project();
+        let main_path = temp_dir.path().join("main.raya");
+        let a_path = temp_dir.path().join("a.raya");
+        let b_path = temp_dir.path().join("b.raya");
+
+        fs::write(&b_path, "export let value: number = 42;").unwrap();
+        fs::write(&a_path, r#"export * from "./b";"#).unwrap();
+        fs::write(
+            &main_path,
+            r#"
+            import { value } from "./a";
+            let x: number = 0;
+            "#,
+        )
+        .unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let result = compiler.compile(&main_path);
+
+        assert!(result.is_ok(), "Compilation failed: {:?}", result.err());
+        let compiled = result.unwrap();
+        assert_eq!(
+            compiled.len(),
+            3,
+            "re-export edge should include ./b module"
+        );
+
+        let a_module = compiled
+            .iter()
+            .find(|m| m.path == a_path.canonicalize().unwrap())
+            .expect("missing a.raya module");
+        assert!(
+            a_module
+                .bytecode
+                .imports
+                .iter()
+                .any(|import| import.module_specifier == "./b" && import.symbol == "*"),
+            "re-exporting module should emit import metadata for export * source"
+        );
     }
 
     #[test]

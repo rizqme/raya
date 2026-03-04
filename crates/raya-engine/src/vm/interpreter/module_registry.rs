@@ -3,7 +3,7 @@
 //! The ModuleRegistry maintains a mapping of loaded modules by both name and checksum,
 //! enabling deduplication and efficient module lookups.
 
-use crate::compiler::Module;
+use crate::compiler::{module_id_from_name, Module, ModuleId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -12,6 +12,8 @@ use std::sync::Arc;
 pub struct ModuleRegistry {
     /// Modules indexed by name
     by_name: HashMap<String, Arc<Module>>,
+    /// Modules indexed by stable module ID.
+    by_id: HashMap<ModuleId, Arc<Module>>,
     /// Modules indexed by SHA-256 checksum (for deduplication)
     by_checksum: HashMap<[u8; 32], Arc<Module>>,
 }
@@ -21,6 +23,7 @@ impl ModuleRegistry {
     pub fn new() -> Self {
         Self {
             by_name: HashMap::new(),
+            by_id: HashMap::new(),
             by_checksum: HashMap::new(),
         }
     }
@@ -45,9 +48,11 @@ impl ModuleRegistry {
         }
 
         let name = module.metadata.name.clone();
+        let module_id = module_id_from_name(&name);
 
         // Register by both name and checksum
         self.by_name.insert(name, module.clone());
+        self.by_id.insert(module_id, module.clone());
         self.by_checksum.insert(checksum, module);
 
         Ok(())
@@ -63,6 +68,11 @@ impl ModuleRegistry {
     /// * `None` - Module not found
     pub fn get_by_name(&self, name: &str) -> Option<&Arc<Module>> {
         self.by_name.get(name)
+    }
+
+    /// Get a module by stable module ID.
+    pub fn get_by_id(&self, module_id: ModuleId) -> Option<&Arc<Module>> {
+        self.by_id.get(&module_id)
     }
 
     /// Get a module by SHA-256 checksum

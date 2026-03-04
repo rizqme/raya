@@ -5,8 +5,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::compiler::{
+    module_id_from_name, symbol_id_from_name, ModuleId, SymbolId, SymbolScope, SymbolType,
+    TypeSymbolId,
+};
 use crate::parser::checker::{Symbol, SymbolKind};
-use crate::parser::types::TypeId;
+use crate::parser::types::{canonical_type_signature, TypeContext, TypeId};
 use crate::parser::Span;
 
 /// An exported symbol from a module
@@ -24,11 +28,43 @@ pub struct ExportedSymbol {
     pub is_const: bool,
     /// Whether this is an async function
     pub is_async: bool,
+    /// Module identity string used for deterministic symbol IDs.
+    pub module_name: String,
+    /// Stable module ID.
+    pub module_id: ModuleId,
+    /// Stable symbol ID.
+    pub symbol_id: SymbolId,
+    /// Stable type symbol ID.
+    pub type_symbol_id: TypeSymbolId,
+    /// Canonical structural signature string for deterministic diagnostics.
+    pub type_signature: String,
+    /// Export symbol scope class.
+    pub scope: SymbolScope,
 }
 
 impl ExportedSymbol {
+    fn symbol_type_for_kind(kind: SymbolKind) -> SymbolType {
+        match kind {
+            SymbolKind::Function => SymbolType::Function,
+            SymbolKind::Class | SymbolKind::Interface => SymbolType::Class,
+            SymbolKind::Variable
+            | SymbolKind::TypeAlias
+            | SymbolKind::TypeParameter
+            | SymbolKind::EnumMember => SymbolType::Constant,
+        }
+    }
+
     /// Create an ExportedSymbol from a Symbol
-    pub fn from_symbol(symbol: &Symbol) -> Self {
+    pub fn from_symbol(
+        symbol: &Symbol,
+        module_name: &str,
+        scope: SymbolScope,
+        type_ctx: &TypeContext,
+    ) -> Self {
+        let module_id = module_id_from_name(module_name);
+        let symbol_id = symbol_id_from_name(module_name, scope, &symbol.name);
+        let structural_sig = canonical_type_signature(symbol.ty, type_ctx);
+        let symbol_type = Self::symbol_type_for_kind(symbol.kind);
         Self {
             name: symbol.name.clone(),
             local_name: symbol.name.clone(),
@@ -36,11 +72,27 @@ impl ExportedSymbol {
             ty: symbol.ty,
             is_const: symbol.flags.is_const,
             is_async: symbol.flags.is_async,
+            module_name: module_name.to_string(),
+            module_id,
+            symbol_id,
+            type_symbol_id: structural_sig.hash,
+            type_signature: structural_sig.canonical,
+            scope,
         }
     }
 
     /// Create with an alias
-    pub fn with_alias(symbol: &Symbol, alias: String) -> Self {
+    pub fn with_alias(
+        symbol: &Symbol,
+        alias: String,
+        module_name: &str,
+        scope: SymbolScope,
+        type_ctx: &TypeContext,
+    ) -> Self {
+        let module_id = module_id_from_name(module_name);
+        let symbol_id = symbol_id_from_name(module_name, scope, &alias);
+        let structural_sig = canonical_type_signature(symbol.ty, type_ctx);
+        let symbol_type = Self::symbol_type_for_kind(symbol.kind);
         Self {
             name: alias,
             local_name: symbol.name.clone(),
@@ -48,6 +100,12 @@ impl ExportedSymbol {
             ty: symbol.ty,
             is_const: symbol.flags.is_const,
             is_async: symbol.flags.is_async,
+            module_name: module_name.to_string(),
+            module_id,
+            symbol_id,
+            type_symbol_id: structural_sig.hash,
+            type_signature: structural_sig.canonical,
+            scope,
         }
     }
 
@@ -76,6 +134,8 @@ impl ExportedSymbol {
 pub struct ModuleExports {
     /// Path to the module
     pub path: PathBuf,
+    /// Canonical module identity string for symbol ID derivation.
+    pub module_name: String,
     /// Exported symbols by name
     pub symbols: HashMap<String, ExportedSymbol>,
     /// Re-exported modules (export * from "./other")
@@ -84,9 +144,10 @@ pub struct ModuleExports {
 
 impl ModuleExports {
     /// Create new empty module exports
-    pub fn new(path: PathBuf) -> Self {
+    pub fn new(path: PathBuf, module_name: String) -> Self {
         Self {
             path,
+            module_name,
             symbols: HashMap::new(),
             reexports: Vec::new(),
         }
@@ -180,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_module_exports() {
-        let mut exports = ModuleExports::new(PathBuf::from("/test.raya"));
+        let mut exports = ModuleExports::new(PathBuf::from("/test.raya"), "/test.raya".to_string());
 
         let symbol = ExportedSymbol {
             name: "foo".to_string(),
@@ -189,6 +250,12 @@ mod tests {
             ty: TypeId(1),
             is_const: false,
             is_async: false,
+            module_name: "/test.raya".to_string(),
+            module_id: module_id_from_name("/test.raya"),
+            symbol_id: symbol_id_from_name("/test.raya", SymbolScope::Module, "foo"),
+            type_symbol_id: 101,
+            type_signature: "fn(min=0,params=[],rest=_,ret=number)".to_string(),
+            scope: SymbolScope::Module,
         };
 
         exports.add_symbol(symbol);
@@ -205,7 +272,8 @@ mod tests {
     fn test_export_registry() {
         let mut registry = ExportRegistry::new();
 
-        let mut exports = ModuleExports::new(PathBuf::from("/utils.raya"));
+        let mut exports =
+            ModuleExports::new(PathBuf::from("/utils.raya"), "/utils.raya".to_string());
         exports.add_symbol(ExportedSymbol {
             name: "helper".to_string(),
             local_name: "helper".to_string(),
@@ -213,6 +281,12 @@ mod tests {
             ty: TypeId(2),
             is_const: false,
             is_async: false,
+            module_name: "/utils.raya".to_string(),
+            module_id: module_id_from_name("/utils.raya"),
+            symbol_id: symbol_id_from_name("/utils.raya", SymbolScope::Module, "helper"),
+            type_symbol_id: 102,
+            type_signature: "fn(min=0,params=[],rest=_,ret=number)".to_string(),
+            scope: SymbolScope::Module,
         });
 
         registry.register(exports);
@@ -233,6 +307,12 @@ mod tests {
             ty: TypeId(5),
             is_const: false,
             is_async: true,
+            module_name: "/m.raya".to_string(),
+            module_id: module_id_from_name("/m.raya"),
+            symbol_id: symbol_id_from_name("/m.raya", SymbolScope::Module, "myFunc"),
+            type_symbol_id: 103,
+            type_signature: "fn(min=0,params=[],rest=_,ret=number)".to_string(),
+            scope: SymbolScope::Module,
         };
 
         let imported = exported.to_import_symbol(ScopeId(0));

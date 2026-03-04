@@ -279,13 +279,18 @@ impl Vm {
         module: &Module,
         allow_user_main_fallback: bool,
     ) -> VmResult<Value> {
+        // Ensure module identity checksum is materialized for runtime bookkeeping
+        // (module registry, per-frame snapshot identity, JIT module mapping).
+        let runtime_module = Self::ensure_runtime_module_identity(module)?;
+        let module = runtime_module.as_ref();
+
         // Validate module
         module.validate().map_err(VmError::RuntimeError)?;
 
         // Register module: classes, native linkage, and module registry
         self.scheduler
             .shared_state()
-            .register_module(Arc::new(module.clone()))
+            .register_module(runtime_module.clone())
             .map_err(VmError::RuntimeError)?;
 
         // JIT: start background thread and submit prewarm candidates (non-blocking)
@@ -312,7 +317,7 @@ impl Vm {
 
                 let candidates = Self::collect_prewarm_candidates(module, config);
                 if !candidates.is_empty() {
-                    let module_arc = Arc::new(module.clone());
+                    let module_arc = runtime_module.clone();
                     let profile = self
                         .scheduler
                         .shared_state()
@@ -374,6 +379,18 @@ impl Vm {
         }
 
         Ok(result)
+    }
+
+    fn ensure_runtime_module_identity(module: &Module) -> VmResult<Arc<Module>> {
+        if module.checksum.iter().any(|byte| *byte != 0) {
+            return Ok(Arc::new(module.clone()));
+        }
+
+        // Round-trip through bytecode encoding to materialize checksum deterministically.
+        let encoded = module.encode();
+        let finalized = Module::decode(&encoded)
+            .map_err(|error| VmError::InvalidBinaryFormat(format!("{}", error)))?;
+        Ok(Arc::new(finalized))
     }
 
     fn function_calls_target(module: &Module, caller_fn_id: usize, target_fn_id: usize) -> bool {
@@ -561,28 +578,63 @@ impl Vm {
     /// Apply a parsed snapshot to this VM.
     fn apply_snapshot(&mut self, reader: SnapshotReader) -> VmResult<()> {
         let shared = self.scheduler.shared_state();
+        let module_registry = shared.module_registry.read();
 
         // Restore tasks: look up each task's module from the registry
         let serialized_tasks = reader.tasks();
         let mut tasks_map = shared.tasks.write();
 
+        let checksum_is_set = |checksum: &[u8; 32]| checksum.iter().any(|b| *b != 0);
+        let format_checksum = |checksum: &[u8; 32]| -> String {
+            checksum
+                .iter()
+                .map(|byte| format!("{:02x}", byte))
+                .collect::<String>()
+        };
+
         for stask in serialized_tasks {
-            // Resolve the module for this task. The module must have been loaded
-            // beforehand. We use function_index == 0 heuristic: use first registered module.
-            // TODO: when snapshot includes module name/checksum per task, look up precisely.
-            let module = shared
-                .module_registry
-                .read()
-                .all_modules()
-                .first()
+            if !checksum_is_set(&stask.module_checksum) {
+                return Err(VmError::RuntimeError(format!(
+                    "Snapshot task {} is missing module identity checksum",
+                    stask.task_id.as_u64()
+                )));
+            }
+
+            let module = module_registry
+                .get_by_checksum(&stask.module_checksum)
                 .cloned()
                 .ok_or_else(|| {
-                    VmError::RuntimeError(
-                        "No modules loaded — load modules before restoring snapshot".to_string(),
-                    )
+                    VmError::RuntimeError(format!(
+                        "Snapshot task {} references unknown module checksum {}",
+                        stask.task_id.as_u64(),
+                        format_checksum(&stask.module_checksum)
+                    ))
                 })?;
 
-            let task = Arc::new(Task::from_serialized(stask.clone(), module));
+            for frame in &stask.frames {
+                if !checksum_is_set(&frame.module_checksum) {
+                    return Err(VmError::RuntimeError(format!(
+                        "Snapshot task {} has frame {} without module checksum",
+                        stask.task_id.as_u64(),
+                        frame.function_index
+                    )));
+                }
+
+                if module_registry.get_by_checksum(&frame.module_checksum).is_none() {
+                    return Err(VmError::RuntimeError(format!(
+                        "Snapshot task {} frame {} references unknown module checksum {}",
+                        stask.task_id.as_u64(),
+                        frame.function_index,
+                        format_checksum(&frame.module_checksum)
+                    )));
+                }
+            }
+
+            let task = Arc::new(Task::from_serialized_with_lookup(
+                stask.clone(),
+                module,
+                |checksum| module_registry.get_by_checksum(checksum).cloned(),
+            ));
             tasks_map.insert(task.id(), task);
         }
 
@@ -1117,7 +1169,10 @@ mod tests {
             local_count: 0,
             code: vec![Opcode::Return as u8],
         });
-        let module = Arc::new(module);
+        let module = {
+            let bytes = module.encode();
+            Arc::new(Module::decode(&bytes).expect("decode checksummed module"))
+        };
 
         // Register the module
         vm.shared_state().register_module(module.clone()).unwrap();
@@ -1162,7 +1217,10 @@ mod tests {
             local_count: 0,
             code: vec![Opcode::Return as u8],
         });
-        let module = Arc::new(module);
+        let module = {
+            let bytes = module.encode();
+            Arc::new(Module::decode(&bytes).expect("decode checksummed module"))
+        };
 
         vm.shared_state().register_module(module.clone()).unwrap();
 
@@ -1205,7 +1263,10 @@ mod tests {
             local_count: 0,
             code: vec![Opcode::Return as u8],
         });
-        let module = Arc::new(module);
+        let module = {
+            let bytes = module.encode();
+            Arc::new(Module::decode(&bytes).expect("decode checksummed module"))
+        };
         vm_with_task
             .shared_state()
             .register_module(module.clone())
@@ -1226,7 +1287,7 @@ mod tests {
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("No modules loaded"));
+            .contains("unknown module checksum"));
 
         // Empty snapshot restore should succeed (no tasks to resolve)
         let mut vm_empty2 = Vm::new();

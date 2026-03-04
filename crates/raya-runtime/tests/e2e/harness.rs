@@ -68,7 +68,7 @@ pub type E2EResult<T> = Result<T, E2EError>;
 
 /// Compile Raya source code to bytecode
 pub fn compile(source: &str) -> E2EResult<(Module, Interner)> {
-    compile_internal(source)
+    compile_via_binary_linker(source, BuiltinMode::RayaStrict)
 }
 
 /// Compile Raya source code with builtin classes included
@@ -76,57 +76,50 @@ pub fn compile(source: &str) -> E2EResult<(Module, Interner)> {
 /// Uses the production runtime module pipeline (Module System V2), with no
 /// std-prelude/source-rewrite fallback path.
 pub fn compile_with_builtins(source: &str) -> E2EResult<(Module, Interner)> {
+    compile_via_binary_linker(source, BuiltinMode::RayaStrict)
+}
+
+fn compile_via_binary_linker(source: &str, mode: BuiltinMode) -> E2EResult<(Module, Interner)> {
     let runtime = raya_runtime::Runtime::with_options(raya_runtime::RuntimeOptions {
-        builtin_mode: BuiltinMode::RayaStrict,
+        builtin_mode: mode,
+        no_jit: true,
         ..Default::default()
     });
     let compiled = runtime
         .compile(source)
         .map_err(|e| E2EError::TypeCheck(e.to_string()))?;
-    Ok((compiled.module().clone(), Interner::new()))
+    let interner = parse_interner(source)?;
+    Ok((compiled.module().clone(), interner))
 }
 
-/// Internal compile function
-fn compile_internal(source: &str) -> E2EResult<(Module, Interner)> {
-    // Parse
+fn parse_interner(source: &str) -> E2EResult<Interner> {
     let parser = Parser::new(source).map_err(|e| E2EError::Lex(format!("{:?}", e)))?;
-    let (ast, interner) = parser
+    let (_ast, interner) = parser
         .parse()
         .map_err(|e| E2EError::Parse(format!("{:?}", e)))?;
+    Ok(interner)
+}
 
-    // Bind (creates symbol table)
-    let mut type_ctx = TypeContext::new();
-    let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(TypeSystemMode::Raya);
+fn compile_program_with_mode(
+    source: &str,
+    mode: BuiltinMode,
+) -> E2EResult<(raya_runtime::Runtime, raya_runtime::CompiledProgram)> {
+    let runtime = raya_runtime::Runtime::with_options(raya_runtime::RuntimeOptions {
+        builtin_mode: mode,
+        no_jit: true,
+        ..Default::default()
+    });
+    let program = runtime
+        .compile_program_source(source)
+        .map_err(|e| E2EError::TypeCheck(e.to_string()))?;
+    Ok((runtime, program))
+}
 
-    // Register type signatures from precompiled builtins.
-    let builtin_sigs = raya_engine::builtins::to_checker_signatures();
-    binder.register_builtins(&builtin_sigs);
-
-    let mut symbols = binder
-        .bind_module(&ast)
-        .map_err(|e| E2EError::TypeCheck(format!("Binding error: {:?}", e)))?;
-
-    // Type check
-    let checker =
-        TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(TypeSystemMode::Raya);
-    let check_result = checker
-        .check_module(&ast)
-        .map_err(|e| E2EError::TypeCheck(format!("{:?}", e)))?;
-
-    // Apply inferred types to symbol table
-    for ((scope_id, name), ty) in check_result.inferred_types {
-        symbols.update_type(raya_engine::parser::checker::ScopeId(scope_id), &name, ty);
+fn map_runtime_error(error: raya_runtime::RuntimeError) -> E2EError {
+    match error {
+        raya_runtime::RuntimeError::Vm(vm_error) => E2EError::Vm(vm_error),
+        other => E2EError::TypeCheck(other.to_string()),
     }
-
-    // Note: check_result.captures contains closure capture info for future use
-
-    // Compile via IR pipeline with expression types from type checker
-    let compiler = Compiler::new(type_ctx, &interner)
-        .with_expr_types(check_result.expr_types)
-        .with_js_this_binding_compat(true);
-    let bytecode = compiler.compile_via_ir(&ast).map_err(E2EError::Compile)?;
-
-    Ok((bytecode, interner))
 }
 
 /// Compile and execute Raya source code, returning the result
@@ -134,11 +127,12 @@ fn compile_internal(source: &str) -> E2EResult<(Module, Interner)> {
 /// The source code should have a `main` function that returns a value,
 /// or use a `return` statement at the top level.
 pub fn compile_and_run(source: &str) -> E2EResult<Value> {
-    let (module, _interner) = compile(source)?;
-
-    // Use single worker to avoid resource contention during parallel test execution
+    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+    // Use single worker to avoid resource contention during parallel test execution.
     let mut vm = Vm::with_worker_count(1);
-    let value = vm.execute(&module).map_err(E2EError::Vm)?;
+    let value = runtime
+        .execute_program_with_vm(&program, &mut vm)
+        .map_err(map_runtime_error)?;
     keep_vm_alive(vm);
     Ok(value)
 }
@@ -147,19 +141,21 @@ pub fn compile_and_run(source: &str) -> E2EResult<Value> {
 ///
 /// Use this for tests that use Map, Set, Buffer, Date, Channel, Logger, etc.
 pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
-    let (module, _interner) = compile_with_builtins(source)?;
+    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
 
-    // Use single worker with StdNativeHandler for stdlib support (logger, etc.)
+    // Use single worker with StdNativeHandler for stdlib support (logger, etc.).
     let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
 
-    // Register symbolic native functions for ModuleNativeCall dispatch
+    // Register symbolic native functions for ModuleNativeCall dispatch.
     {
         let mut registry = vm.native_registry().write();
         raya_stdlib::register_stdlib(&mut registry);
         raya_stdlib_posix::register_posix(&mut registry);
     }
 
-    let value = vm.execute(&module).map_err(E2EError::Vm)?;
+    let value = runtime
+        .execute_program_with_vm(&program, &mut vm)
+        .map_err(map_runtime_error)?;
     keep_vm_alive(vm);
     Ok(value)
 }
@@ -174,14 +170,7 @@ pub fn compile_and_run_runtime(source: &str) -> E2EResult<Value> {
 /// Compile and execute using the production runtime compile pipeline with an
 /// explicit builtin compatibility mode.
 pub fn compile_and_run_runtime_with_mode(source: &str, mode: BuiltinMode) -> E2EResult<Value> {
-    let runtime = raya_runtime::Runtime::with_options(raya_runtime::RuntimeOptions {
-        builtin_mode: mode,
-        ..Default::default()
-    });
-    let compiled = runtime
-        .compile(source)
-        .map_err(|e| E2EError::TypeCheck(e.to_string()))?;
-    let module = compiled.module().clone();
+    let (runtime, program) = compile_program_with_mode(source, mode)?;
 
     let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
     {
@@ -190,7 +179,9 @@ pub fn compile_and_run_runtime_with_mode(source: &str, mode: BuiltinMode) -> E2E
         raya_stdlib_posix::register_posix(&mut registry);
     }
 
-    let value = vm.execute(&module).map_err(E2EError::Vm)?;
+    let value = runtime
+        .execute_program_with_vm(&program, &mut vm)
+        .map_err(map_runtime_error)?;
     keep_vm_alive(vm);
     Ok(value)
 }
@@ -881,9 +872,11 @@ fn compile_and_run_multiworker_with_timeout(
 
     std::thread::spawn(move || {
         let result: E2EResult<Value> = (|| {
-            let (module, _interner) = compile(&src)?;
+            let (runtime, program) = compile_program_with_mode(&src, BuiltinMode::RayaStrict)?;
             let mut vm = Vm::with_worker_count(worker_count);
-            let value = vm.execute(&module).map_err(E2EError::Vm)?;
+            let value = runtime
+                .execute_program_with_vm(&program, &mut vm)
+                .map_err(map_runtime_error)?;
             keep_vm_alive(vm);
             Ok(value)
         })();
@@ -912,18 +905,20 @@ fn compile_and_run_multiworker_with_builtins_timeout(
 
     std::thread::spawn(move || {
         let result: E2EResult<Value> = (|| {
-            let (module, _interner) = compile_with_builtins(&src)?;
+            let (runtime, program) = compile_program_with_mode(&src, BuiltinMode::RayaStrict)?;
 
             let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
 
-            // Register symbolic native functions for ModuleNativeCall dispatch
+            // Register symbolic native functions for ModuleNativeCall dispatch.
             {
                 let mut registry = vm.native_registry().write();
                 raya_stdlib::register_stdlib(&mut registry);
                 raya_stdlib_posix::register_posix(&mut registry);
             }
 
-            let value = vm.execute(&module).map_err(E2EError::Vm)?;
+            let value = runtime
+                .execute_program_with_vm(&program, &mut vm)
+                .map_err(map_runtime_error)?;
             keep_vm_alive(vm);
             Ok(value)
         })();

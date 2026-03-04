@@ -78,6 +78,7 @@ impl<'a> Interpreter<'a> {
                                     arg_count,
                                     is_closure: false,
                                     closure_val: None,
+                                    module: None,
                                     return_action: ReturnAction::PushReturnValue,
                                 };
                             }
@@ -130,6 +131,7 @@ impl<'a> Interpreter<'a> {
                             arg_count: arg_count + 1, // +1 for receiver
                             is_closure: false,
                             closure_val: None,
+                            module: bm.module.clone(),
                             return_action: ReturnAction::PushReturnValue,
                         }
                     } else {
@@ -143,12 +145,14 @@ impl<'a> Interpreter<'a> {
                         let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
                         let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
                         let closure_func_id = closure.func_id();
+                        let closure_module = closure.module();
 
                         OpcodeResult::PushFrame {
                             func_id: closure_func_id,
                             arg_count,
                             is_closure: true,
                             closure_val: Some(closure_val),
+                            module: closure_module,
                             return_action: ReturnAction::PushReturnValue,
                         }
                     }
@@ -170,6 +174,7 @@ impl<'a> Interpreter<'a> {
                         arg_count,
                         is_closure: false,
                         closure_val: None,
+                        module: None,
                         return_action: ReturnAction::PushReturnValue,
                     }
                 }
@@ -480,6 +485,7 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
+                let method_module = class.module.clone();
                 drop(classes);
 
                 // Frame-based method call: receiver + args are already on the stack
@@ -488,16 +494,18 @@ impl<'a> Interpreter<'a> {
                     arg_count: arg_count + 1, // +1 for receiver (this)
                     is_closure: false,
                     closure_val: None,
+                    module: method_module,
                     return_action: ReturnAction::PushReturnValue,
                 }
             }
 
             Opcode::CallConstructor => {
                 self.safepoint.poll();
-                let class_index = match Self::read_u16(code, ip) {
+                let local_class_index = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                let class_index = self.resolve_class_id(module, local_class_index);
                 let arg_count = match Self::read_u8(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
@@ -526,6 +534,7 @@ impl<'a> Interpreter<'a> {
                 };
                 let field_count = class.field_count;
                 let constructor_id = class.get_constructor();
+                let constructor_module = class.module.clone();
                 drop(classes);
 
                 // Create the object
@@ -561,15 +570,17 @@ impl<'a> Interpreter<'a> {
                     arg_count: arg_count + 1, // +1 for receiver (this)
                     is_closure: false,
                     closure_val: None,
+                    module: constructor_module,
                     return_action: ReturnAction::PushObject(obj_val),
                 }
             }
 
             Opcode::CallSuper => {
-                let class_index = match Self::read_u16(code, ip) {
+                let local_class_index = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                let class_index = self.resolve_class_id(module, local_class_index);
                 let arg_count = match Self::read_u8(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
@@ -612,6 +623,7 @@ impl<'a> Interpreter<'a> {
                         return OpcodeResult::Continue;
                     }
                 };
+                let parent_module = parent_class.module.clone();
                 drop(classes);
 
                 // Frame-based super call: discard return value (constructor void)
@@ -620,6 +632,7 @@ impl<'a> Interpreter<'a> {
                     arg_count: arg_count + 1, // +1 for receiver (this)
                     is_closure: false,
                     closure_val: None,
+                    module: parent_module,
                     return_action: ReturnAction::Discard,
                 }
             }

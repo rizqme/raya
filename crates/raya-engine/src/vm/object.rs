@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// Global counter for generating unique object IDs
 static NEXT_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
@@ -126,6 +127,8 @@ pub struct Class {
     pub static_fields: Vec<Value>,
     /// Constructor function ID (None if no explicit constructor)
     pub constructor_id: Option<usize>,
+    /// Optional defining module for method/constructor function IDs.
+    pub module: Option<Arc<crate::compiler::Module>>,
 }
 
 impl Class {
@@ -139,6 +142,7 @@ impl Class {
             vtable: VTable::new(),
             static_fields: Vec::new(),
             constructor_id: None,
+            module: None,
         }
     }
 
@@ -152,6 +156,7 @@ impl Class {
             vtable: VTable::new(),
             static_fields: Vec::new(),
             constructor_id: None,
+            module: None,
         }
     }
 
@@ -170,6 +175,7 @@ impl Class {
             vtable: VTable::new(),
             static_fields: vec![Value::null(); static_field_count],
             constructor_id: None,
+            module: None,
         }
     }
 
@@ -384,17 +390,41 @@ pub struct Closure {
     pub func_id: usize,
     /// Captured variable values
     pub captures: Vec<Value>,
+    /// Optional explicit module binding for cross-module calls.
+    pub module: Option<Arc<crate::compiler::Module>>,
 }
 
 impl Closure {
     /// Create a new closure with captured variables
     pub fn new(func_id: usize, captures: Vec<Value>) -> Self {
-        Self { func_id, captures }
+        Self {
+            func_id,
+            captures,
+            module: None,
+        }
+    }
+
+    /// Create a closure bound to a specific module.
+    pub fn with_module(
+        func_id: usize,
+        captures: Vec<Value>,
+        module: Arc<crate::compiler::Module>,
+    ) -> Self {
+        Self {
+            func_id,
+            captures,
+            module: Some(module),
+        }
     }
 
     /// Get the function ID
     pub fn func_id(&self) -> usize {
         self.func_id
+    }
+
+    /// Get the optional module binding.
+    pub fn module(&self) -> Option<Arc<crate::compiler::Module>> {
+        self.module.clone()
     }
 
     /// Get a captured variable by index
@@ -432,6 +462,8 @@ pub struct BoundMethod {
     pub receiver: Value,
     /// Function ID of the method (resolved from vtable at bind time)
     pub func_id: usize,
+    /// Optional explicit module binding for cross-module method dispatch.
+    pub module: Option<Arc<crate::compiler::Module>>,
 }
 
 /// RefCell - A heap-allocated mutable cell for capture-by-reference semantics

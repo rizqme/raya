@@ -4,6 +4,7 @@
 //! worker threads executing tasks concurrently.
 
 use crate::compiler::Module;
+use crate::compiler::Opcode;
 use crate::vm::gc::GarbageCollector;
 use crate::vm::interpreter::{ClassRegistry, ModuleRegistry, SafepointCoordinator};
 use crate::vm::native_handler::{NativeHandler, NoopNativeHandler};
@@ -25,6 +26,25 @@ use std::sync::Arc;
 pub enum PromiseMicrotask {
     /// Report a task rejection if still unhandled at checkpoint drain time.
     ReportUnhandledRejection(TaskId),
+}
+
+/// Runtime layout assigned to a registered module.
+#[derive(Debug, Clone)]
+pub struct ModuleRuntimeLayout {
+    /// Module identity checksum.
+    pub checksum: [u8; 32],
+    /// Module-local global slots are rebased to this absolute start index.
+    pub global_base: usize,
+    /// Number of module-local global slots reserved.
+    pub global_len: usize,
+    /// Module-local class IDs are rebased by this absolute base.
+    pub class_base: usize,
+    /// Number of classes registered from this module.
+    pub class_len: usize,
+    /// Resolved native function dispatch table for this module.
+    pub resolved_natives: ResolvedNatives,
+    /// Whether module-level init has been executed in this VM.
+    pub initialized: bool,
 }
 
 #[cfg(feature = "jit")]
@@ -133,6 +153,9 @@ pub struct SharedVmState {
     /// Module registry for loaded bytecode modules
     pub module_registry: RwLock<ModuleRegistry>,
 
+    /// Per-module runtime layouts (globals/classes/natives/init state).
+    pub module_layouts: RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
+
     /// Debug state for debugger coordination (None = no debugger attached)
     pub debug_state: Mutex<Option<Arc<super::debug_state::DebugState>>>,
 
@@ -208,6 +231,7 @@ impl SharedVmState {
             resolved_natives: RwLock::new(ResolvedNatives::empty()),
             native_registry: RwLock::new(NativeFunctionRegistry::new()),
             module_registry: RwLock::new(ModuleRegistry::new()),
+            module_layouts: RwLock::new(FxHashMap::default()),
             debug_state: Mutex::new(None),
             max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,
             preempt_threshold_ms: crate::vm::defaults::DEFAULT_PREEMPT_THRESHOLD_MS,
@@ -239,28 +263,129 @@ impl SharedVmState {
         Ok(())
     }
 
+    fn resolve_module_natives(&self, module: &Module) -> Result<ResolvedNatives, String> {
+        if module.native_functions.is_empty() {
+            return Ok(ResolvedNatives::empty());
+        }
+        let registry = self.native_registry.read();
+        ResolvedNatives::link(&module.native_functions, &registry)
+    }
+
+    fn module_global_slot_count(module: &Module) -> usize {
+        module
+            .functions
+            .iter()
+            .map(Self::function_global_slot_count)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn function_global_slot_count(function: &crate::compiler::Function) -> usize {
+        let code = &function.code;
+        let mut ip = 0usize;
+        let mut max_slot = 0usize;
+
+        while ip < code.len() {
+            let op = code[ip];
+            ip += 1;
+            let Some(opcode) = Opcode::from_u8(op) else {
+                continue;
+            };
+            match opcode {
+                Opcode::LoadGlobal | Opcode::StoreGlobal => {
+                    if ip + 4 <= code.len() {
+                        let slot = u32::from_le_bytes([
+                            code[ip],
+                            code[ip + 1],
+                            code[ip + 2],
+                            code[ip + 3],
+                        ]) as usize;
+                        max_slot = max_slot.max(slot + 1);
+                    }
+                    ip += 4.min(code.len().saturating_sub(ip));
+                }
+                _ => {
+                    let operand_len = crate::compiler::codegen::emit::opcode_size(opcode)
+                        .saturating_sub(1);
+                    ip += operand_len.min(code.len().saturating_sub(ip));
+                }
+            }
+        }
+
+        max_slot
+    }
+
+    /// Resolve the absolute global slot for a module-local global index.
+    pub fn resolve_global_slot(&self, module: &Module, local_slot: usize) -> usize {
+        self.module_layouts
+            .read()
+            .get(&module.checksum)
+            .map(|layout| layout.global_base + local_slot)
+            .unwrap_or(local_slot)
+    }
+
+    /// Resolve the absolute class ID for a module-local class ID.
+    pub fn resolve_class_id(&self, module: &Module, local_class_id: usize) -> usize {
+        self.module_layouts
+            .read()
+            .get(&module.checksum)
+            .map(|layout| layout.class_base + local_class_id)
+            .unwrap_or(local_class_id)
+    }
+
+    /// Fetch resolved native table for a module checksum.
+    pub fn resolved_natives_for_module(&self, module: &Module) -> ResolvedNatives {
+        self.module_layouts
+            .read()
+            .get(&module.checksum)
+            .map(|layout| layout.resolved_natives.clone())
+            .unwrap_or_else(|| self.resolved_natives.read().clone())
+    }
+
+    /// Mark a module as initialized.
+    pub fn mark_module_initialized(&self, module: &Module) {
+        if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
+            layout.initialized = true;
+        }
+    }
+
+    /// Check whether module top-level init has executed.
+    pub fn is_module_initialized(&self, module: &Module) -> bool {
+        self.module_layouts
+            .read()
+            .get(&module.checksum)
+            .map(|layout| layout.initialized)
+            .unwrap_or(false)
+    }
+
     /// Register classes from a module
-    pub fn register_classes(&self, module: &Module) {
+    pub fn register_classes(&self, module: &Arc<Module>, class_base: usize) {
         let mut classes = self.classes.write();
         let mut class_metadata_registry = self.class_metadata.write();
         for (i, class_def) in module.classes.iter().enumerate() {
+            let global_class_id = class_base + i;
             let mut class = if let Some(parent_id) = class_def.parent_id {
                 let mut c = crate::vm::object::Class::with_parent(
-                    i,
+                    global_class_id,
                     class_def.name.clone(),
                     class_def.field_count,
-                    parent_id as usize,
+                    class_base + parent_id as usize,
                 );
                 // Inherit parent vtable entries
-                if let Some(parent) = classes.get_class(parent_id as usize) {
+                if let Some(parent) = classes.get_class(class_base + parent_id as usize) {
                     for &method_id in &parent.vtable.methods {
                         c.add_method(method_id);
                     }
                 }
                 c
             } else {
-                crate::vm::object::Class::new(i, class_def.name.clone(), class_def.field_count)
+                crate::vm::object::Class::new(
+                    global_class_id,
+                    class_def.name.clone(),
+                    class_def.field_count,
+                )
             };
+            class.module = Some(module.clone());
 
             // Pre-size vtable to accommodate all slots (including gaps from abstract methods)
             if let Some(max_slot) = class_def.methods.iter().map(|m| m.slot + 1).max() {
@@ -274,15 +399,25 @@ impl SharedVmState {
                 class.vtable.methods[method.slot] = method.function_id;
             }
 
+            // Constructors are lowered as dedicated functions named
+            // "<ClassName>::constructor" (not regular vtable methods).
+            let constructor_name = format!("{}::constructor", class_def.name);
+            if let Some(constructor_id) = module
+                .functions
+                .iter()
+                .position(|function| function.name == constructor_name)
+            {
+                class.set_constructor(constructor_id);
+            }
+
             classes.register_class(class);
 
-            // Populate reflection metadata for runtime field/method lookups.
-            // Reflection data is always emitted by codegen for bytecode modules.
-            if let Some(class_reflection) =
-                module.reflection.as_ref().and_then(|r| r.classes.get(i))
-            {
-                let mut class_meta = ClassMetadata::new();
+            // Populate runtime metadata for dynamic property lookups.
+            // Prefer rich reflection data when present, and always seed method slot names
+            // from class defs so imported-class dynamic member calls remain callable.
+            let mut class_meta = ClassMetadata::new();
 
+            if let Some(class_reflection) = module.reflection.as_ref().and_then(|r| r.classes.get(i)) {
                 for (field_index, field) in class_reflection.fields.iter().enumerate() {
                     if field.is_static {
                         class_meta.add_static_field(field.name.clone(), field_index);
@@ -292,18 +427,27 @@ impl SharedVmState {
                     }
                 }
 
-                for (method_index, method_name) in class_reflection.method_names.iter().enumerate()
-                {
+                for (method_index, method_name) in class_reflection.method_names.iter().enumerate() {
                     class_meta.add_method(method_name.clone(), method_index);
                 }
 
-                for (static_index, static_name) in
-                    class_reflection.static_field_names.iter().enumerate()
+                for (static_index, static_name) in class_reflection.static_field_names.iter().enumerate()
                 {
                     class_meta.add_static_field(static_name.clone(), static_index);
                 }
+            }
 
-                class_metadata_registry.register(i, class_meta);
+            for method in &class_def.methods {
+                if !class_meta.has_method(&method.name) {
+                    class_meta.add_method(method.name.clone(), method.slot);
+                }
+            }
+
+            if !class_meta.method_names.is_empty()
+                || !class_meta.field_names.is_empty()
+                || !class_meta.static_field_names.is_empty()
+            {
+                class_metadata_registry.register(global_class_id, class_meta);
             }
         }
     }
@@ -312,14 +456,46 @@ impl SharedVmState {
     ///
     /// This is the canonical way to make a module available for execution.
     pub fn register_module(&self, module: Arc<Module>) -> Result<(), String> {
+        if self.module_layouts.read().contains_key(&module.checksum) {
+            // Already registered in this VM.
+            return Ok(());
+        }
+
         // Register in module registry (deduplicates by checksum)
         self.module_registry.write().register(module.clone())?;
 
-        // Register classes from the module
-        self.register_classes(&module);
+        // Allocate globals/class ID ranges and resolve module-native table.
+        let global_len = Self::module_global_slot_count(&module);
+        let global_base = {
+            let mut globals = self.globals_by_index.write();
+            let base = globals.len();
+            if global_len > 0 {
+                globals.resize(base + global_len, Value::null());
+            }
+            base
+        };
+        let class_base = self.classes.read().next_class_id();
+        let class_len = module.classes.len();
+        let resolved_natives = self.resolve_module_natives(&module)?;
 
-        // Link native function table
-        self.link_module_natives(&module)?;
+        self.module_layouts.write().insert(
+            module.checksum,
+            ModuleRuntimeLayout {
+                checksum: module.checksum,
+                global_base,
+                global_len,
+                class_base,
+                class_len,
+                resolved_natives: resolved_natives.clone(),
+                initialized: false,
+            },
+        );
+
+        // Register classes from the module (rebased to global class IDs).
+        self.register_classes(&module, class_base);
+
+        // Preserve legacy global table for call-sites that still read it directly.
+        *self.resolved_natives.write() = resolved_natives;
 
         Ok(())
     }

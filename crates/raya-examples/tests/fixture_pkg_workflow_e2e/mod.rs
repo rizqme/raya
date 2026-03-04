@@ -1,6 +1,4 @@
-mod common;
-
-use common::*;
+use crate::common::*;
 use raya_examples::pkg_workflow_entry;
 
 #[test]

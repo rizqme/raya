@@ -16,6 +16,9 @@ pub struct SerializedTask {
     /// Function index being executed
     pub function_index: usize,
 
+    /// Checksum of the module owning the active task frame.
+    pub module_checksum: [u8; 32],
+
     /// Instruction pointer
     pub ip: usize,
 
@@ -42,6 +45,7 @@ impl SerializedTask {
             task_id,
             state: TaskState::Created,
             function_index,
+            module_checksum: [0; 32],
             ip: 0,
             frames: Vec::new(),
             stack: Vec::new(),
@@ -61,6 +65,9 @@ impl SerializedTask {
 
         // Write function index
         writer.write_all(&(self.function_index as u64).to_le_bytes())?;
+
+        // Write module checksum
+        writer.write_all(&self.module_checksum)?;
 
         // Write instruction pointer
         writer.write_all(&(self.ip as u64).to_le_bytes())?;
@@ -150,6 +157,10 @@ impl SerializedTask {
         reader.read_exact(&mut buf)?;
         let function_index = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
+        // Read module checksum
+        let mut module_checksum = [0u8; 32];
+        reader.read_exact(&mut module_checksum)?;
+
         // Read instruction pointer
         reader.read_exact(&mut buf)?;
         let ip = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
@@ -206,6 +217,7 @@ impl SerializedTask {
             task_id,
             state,
             function_index,
+            module_checksum,
             ip,
             frames,
             stack,
@@ -222,6 +234,9 @@ pub struct SerializedFrame {
     /// Function being executed
     pub function_index: usize,
 
+    /// Checksum of the module that owns this frame's function.
+    pub module_checksum: [u8; 32],
+
     /// Return instruction pointer
     pub return_ip: usize,
 
@@ -237,6 +252,7 @@ impl SerializedFrame {
     pub fn new(function_index: usize) -> Self {
         Self {
             function_index,
+            module_checksum: [0; 32],
             return_ip: 0,
             base_pointer: 0,
             locals: Vec::new(),
@@ -246,6 +262,7 @@ impl SerializedFrame {
     /// Encode call frame to writer
     pub fn encode(&self, writer: &mut impl Write) -> std::io::Result<()> {
         writer.write_all(&(self.function_index as u64).to_le_bytes())?;
+        writer.write_all(&self.module_checksum)?;
         writer.write_all(&(self.return_ip as u64).to_le_bytes())?;
         writer.write_all(&(self.base_pointer as u64).to_le_bytes())?;
         writer.write_all(&(self.locals.len() as u64).to_le_bytes())?;
@@ -266,6 +283,9 @@ impl SerializedFrame {
         reader.read_exact(&mut buf)?;
         let function_index = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
+        let mut module_checksum = [0u8; 32];
+        reader.read_exact(&mut module_checksum)?;
+
         reader.read_exact(&mut buf)?;
         let return_ip = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
@@ -282,6 +302,7 @@ impl SerializedFrame {
 
         Ok(Self {
             function_index,
+            module_checksum,
             return_ip,
             base_pointer,
             locals,
@@ -376,6 +397,7 @@ mod tests {
         task.ip = 100;
         task.stack.push(Value::i32(42));
         task.stack.push(Value::bool(true));
+        task.module_checksum[0] = 7;
 
         let mut buf = Vec::new();
         task.encode(&mut buf).unwrap();
@@ -384,6 +406,7 @@ mod tests {
         assert_eq!(decoded.task_id.as_u64(), 42);
         assert_eq!(decoded.state, TaskState::Running);
         assert_eq!(decoded.function_index, 10);
+        assert_eq!(decoded.module_checksum[0], 7);
         assert_eq!(decoded.ip, 100);
         assert_eq!(decoded.stack.len(), 2);
     }
@@ -395,12 +418,14 @@ mod tests {
         frame.base_pointer = 10;
         frame.locals.push(Value::i32(100));
         frame.locals.push(Value::null());
+        frame.module_checksum[0] = 11;
 
         let mut buf = Vec::new();
         frame.encode(&mut buf).unwrap();
 
         let decoded = SerializedFrame::decode(&mut &buf[..], false).unwrap();
         assert_eq!(decoded.function_index, 5);
+        assert_eq!(decoded.module_checksum[0], 11);
         assert_eq!(decoded.return_ip, 50);
         assert_eq!(decoded.base_pointer, 10);
         assert_eq!(decoded.locals.len(), 2);

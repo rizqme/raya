@@ -12,9 +12,11 @@ pub mod verify;
 pub use constants::ConstantPool;
 pub use encoder::{BytecodeReader, BytecodeWriter, DecodeError};
 pub use module::{
-    flags, ClassDebugInfo, ClassDef, ClassReflectionData, DebugInfo, Export, FieldReflectionData,
-    Function, FunctionDebugInfo, GenericTemplateInfo, Import, JitHint, LineEntry, Metadata, Method,
-    Module, ModuleError, MonoDebugEntry, ReflectionData, SymbolType, TemplateSymbolEntry, VERSION,
+    flags, module_id_from_name, symbol_id_from_name, ClassDebugInfo, ClassDef, ClassReflectionData,
+    DebugInfo, Export, FieldReflectionData, Function, FunctionDebugInfo, GenericTemplateInfo,
+    Import, JitHint, LineEntry, Metadata, Method, Module, ModuleError, ModuleId, MonoDebugEntry,
+    ReflectionData, SymbolId, SymbolScope, SymbolType, TemplateSymbolEntry, TypeSignatureHash,
+    TypeSymbolId, VERSION,
 };
 pub use opcode::Opcode;
 pub use verify::{verify_module, VerifyError};

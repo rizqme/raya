@@ -1,6 +1,4 @@
-mod common;
-
-use common::*;
+use crate::common::*;
 use raya_examples::fault_injection_entry;
 
 #[test]

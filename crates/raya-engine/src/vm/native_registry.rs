@@ -11,6 +11,7 @@ pub use raya_sdk::{NativeFunctionRegistry, NativeHandlerFn as NativeFn};
 /// Built at load time by resolving each name in the module's `native_functions`
 /// table to a handler from the `NativeFunctionRegistry`. After linking, dispatch
 /// is a direct indexed call into a Vec — no hash lookup at runtime.
+#[derive(Clone)]
 pub struct ResolvedNatives {
     handlers: Vec<NativeFn>,
 }

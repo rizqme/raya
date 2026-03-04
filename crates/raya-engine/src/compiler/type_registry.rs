@@ -268,6 +268,20 @@ impl TypeRegistry {
                     );
                 }
             }
+
+            // Register constructor native IDs for builtin classes that are lowered
+            // without concrete class IR declarations in per-module compilation.
+            let constructor_id = match type_name {
+                "Map" => Some(map::NEW),
+                "Set" => Some(set::NEW),
+                "Buffer" => Some(buffer::NEW),
+                // Date values are represented as timestamps; constructor maps to NOW.
+                "Date" => Some(date::NOW),
+                _ => None,
+            };
+            if let Some(native_id) = constructor_id {
+                self.constructors.insert(type_name.to_string(), native_id);
+            }
         }
 
         // Promise chaining methods are implemented as compiled Raya class methods.

@@ -334,6 +334,7 @@ impl Reactor {
                 &state.class_metadata,
                 &state.native_handler,
                 &state.resolved_natives,
+                &state.module_layouts,
                 Some(&io_submit_tx),
                 state.max_preemptions,
                 &state.stack_pool,

@@ -1,4 +1,5 @@
 use crate::compiler::Opcode;
+use crate::compiler::Module;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::stack::Stack;
@@ -11,6 +12,7 @@ impl<'a> Interpreter<'a> {
         stack: &mut Stack,
         ip: &mut usize,
         code: &[u8],
+        module: &Module,
         locals_base: usize,
         opcode: Opcode,
         arg_count: usize, // Current function's arg count (for rest parameters)
@@ -124,10 +126,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::LoadGlobal => {
-                let index = match Self::read_u32(code, ip) {
+                let local_index = match Self::read_u32(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                let index = self.resolve_global_slot(module, local_index);
                 let globals = self.globals_by_index.read();
                 let value = globals.get(index).copied().unwrap_or(Value::null());
                 drop(globals);
@@ -138,10 +141,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::StoreGlobal => {
-                let index = match Self::read_u32(code, ip) {
+                let local_index = match Self::read_u32(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                let index = self.resolve_global_slot(module, local_index);
                 let value = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),

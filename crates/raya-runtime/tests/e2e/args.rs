@@ -261,6 +261,7 @@ fn test_zero_plus_one_less_than_three_smoke() {
 fn test_args_without_import_smoke() {
     expect_bool_with_builtins(
         r#"
+        import { ArgParser } from "std:args";
         const parser = new ArgParser();
         parser.string("output", "desc");
         const res = parser.parse(["--output", "x"]);
@@ -274,6 +275,7 @@ fn test_args_without_import_smoke() {
 fn test_args_without_import_debug_pairs() {
     expect_string_with_builtins(
         r#"
+        import { ArgParser } from "std:args";
         const parser = new ArgParser();
         parser.string("output", "desc");
         const res = parser.parse(["--output", "x"]);
@@ -292,6 +294,7 @@ fn test_args_without_import_debug_pairs() {
 fn test_argresult_present_push_smoke() {
     expect_i32_with_builtins(
         r#"
+        import { ArgResult } from "std:args";
         const r = new ArgResult();
         r._present.push("x");
         return r._present.length;
@@ -304,6 +307,7 @@ fn test_argresult_present_push_smoke() {
 fn test_argparser_alias_assignment_smoke() {
     expect_string_with_builtins(
         r#"
+        import { ArgParser } from "std:args";
         const p = new ArgParser();
         p.string("output", "desc");
         p.boolean("verbose", "desc");
@@ -318,6 +322,7 @@ fn test_argparser_alias_assignment_smoke() {
 fn test_argparser_resolve_alias_smoke() {
     expect_string_with_builtins(
         r#"
+        import { ArgParser } from "std:args";
         const p = new ArgParser();
         p.boolean("verbose", "desc");
         p.alias("verbose", "v");
@@ -331,6 +336,7 @@ fn test_argparser_resolve_alias_smoke() {
 fn test_argparser_alias_direct_compare_smoke() {
     expect_bool_with_builtins(
         r#"
+        import { ArgParser } from "std:args";
         const p = new ArgParser();
         p.boolean("verbose", "desc");
         p.alias("verbose", "v");
@@ -344,6 +350,7 @@ fn test_argparser_alias_direct_compare_smoke() {
 fn test_argparser_boolean_defaultvalue_smoke() {
     expect_string_with_builtins(
         r#"
+        import { ArgParser } from "std:args";
         const p = new ArgParser();
         p.boolean("verbose", "desc");
         return p._defs[0].defaultValue;
@@ -356,6 +363,7 @@ fn test_argparser_boolean_defaultvalue_smoke() {
 fn test_argparser_defs_growth_smoke() {
     expect_i32_with_builtins(
         r#"
+        import { ArgParser } from "std:args";
         const p = new ArgParser();
         p.string("output", "desc");
         p.boolean("verbose", "desc");
@@ -398,6 +406,7 @@ fn test_custom_parser_like_class_defs_growth_smoke() {
 fn test_argresult_positionals_length_smoke() {
     expect_i32_with_builtins(
         r#"
+        import { ArgResult } from "std:args";
         const r = new ArgResult();
         return r.positionals().length;
     "#,

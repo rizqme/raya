@@ -2174,6 +2174,40 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
+            let receiver_requires_late_bound = if let Expression::Identifier(obj_ident) =
+                &*member.object
+            {
+                self.late_bound_object_vars.contains(&obj_ident.name)
+            } else {
+                false
+            };
+
+            // Imported-constructor objects (without local class metadata) must use
+            // late-bound member lookup regardless of primitive checker fallbacks.
+            if class_id.is_none() && receiver_requires_late_bound {
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    if let Expression::Identifier(obj_ident) = &*member.object {
+                        eprintln!(
+                            "[lower] late-bound member call '{}.{}(...)' via late_bound_object_vars",
+                            self.interner.resolve(obj_ident.name),
+                            method_name
+                        );
+                    }
+                }
+                let closure = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::LateBoundMember {
+                    dest: closure.clone(),
+                    object,
+                    property: method_name.to_string(),
+                });
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest.clone()),
+                    closure,
+                    args,
+                });
+                return dest;
+            }
+
             // For no-arg calls like length(), check registry properties (opcode dispatch)
             if args.is_empty() && obj_type_id != UNRESOLVED_TYPE_ID {
                 if let Some(crate::compiler::type_registry::DispatchAction::Opcode(kind)) =
@@ -2243,13 +2277,36 @@ impl<'a> Lowerer<'a> {
             };
 
             if let Some(method_id) = method_id {
-                self.emit(IrInstr::CallMethod {
-                    dest: Some(dest.clone()),
-                    object,
-                    method: method_id,
-                    args,
-                    optional: member.optional,
-                });
+                // Some builtin method IDs are implemented only through NativeCall
+                // handlers (map/set/channel/buffer/date/mutex). Lower these to
+                // NativeCall(receiver, ...args) to avoid object-vtable dispatch on
+                // non-object handle representations.
+                let use_native_dispatch = !member.optional
+                    && (crate::vm::builtin::is_map_method(method_id)
+                        || crate::vm::builtin::is_set_method(method_id)
+                        || crate::vm::builtin::is_channel_method(method_id)
+                        || crate::vm::builtin::is_buffer_method(method_id)
+                        || crate::vm::builtin::is_date_method(method_id)
+                        || crate::vm::builtin::is_mutex_method(method_id));
+
+                if use_native_dispatch {
+                    let mut native_args = Vec::with_capacity(args.len() + 1);
+                    native_args.push(object);
+                    native_args.extend(args);
+                    self.emit(IrInstr::NativeCall {
+                        dest: Some(dest.clone()),
+                        native_id: method_id,
+                        args: native_args,
+                    });
+                } else {
+                    self.emit(IrInstr::CallMethod {
+                        dest: Some(dest.clone()),
+                        object,
+                        method: method_id,
+                        args,
+                        optional: member.optional,
+                    });
+                }
 
                 // Propagate return type for builtin methods so subsequent operations
                 // use the correct typed opcodes (e.g., Iadd vs Fadd, Seq vs Feq).
@@ -2696,11 +2753,16 @@ impl<'a> Lowerer<'a> {
             // Use direct field loads only when we have a proven concrete object layout.
             // Type-driven object/alias lookups are structural and may target class instances,
             // so they must use late-bound property access.
+            let imported_identifier = matches!(
+                &*member.object,
+                Expression::Identifier(ident) if self.import_bindings.contains(&ident.name)
+            );
             let has_register_layout = self
                 .register_object_fields
                 .get(&object.id)
                 .is_some_and(|fields| fields.iter().any(|(name, _)| name == prop_name));
             let has_type_proven_field = field_ty != UNRESOLVED
+                && !imported_identifier
                 && self
                     .type_ctx
                     .get(self.get_expr_type(&member.object))
@@ -2716,6 +2778,7 @@ impl<'a> Lowerer<'a> {
                 true
             } else {
                 match &*member.object {
+                    Expression::Identifier(ident) if imported_identifier => false,
                     Expression::Identifier(ident) => {
                         has_register_layout
                             || self
@@ -2723,13 +2786,6 @@ impl<'a> Lowerer<'a> {
                                 .get(&ident.name)
                                 .is_some_and(|fields| {
                                     fields.iter().any(|(name, _)| name == prop_name)
-                                })
-                            || self
-                                .variable_object_type_aliases
-                                .get(&ident.name)
-                                .is_some_and(|alias| {
-                                    alias.starts_with("__raya_mod_exports_type_")
-                                        && self.type_alias_field_lookup(alias, prop_name).is_some()
                                 })
                             || has_type_proven_field
                     }
@@ -4568,7 +4624,9 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_new(&mut self, new_expr: &ast::NewExpression) -> Register {
-        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+        // Constructor results are object-like by default. Keep unresolved until a
+        // concrete class/type path assigns a precise type.
+        let dest = self.alloc_register(UNRESOLVED);
 
         if let Expression::Identifier(ident) = &*new_expr.callee {
             // Handle built-in primitive constructors
@@ -4654,6 +4712,22 @@ impl<'a> Lowerer<'a> {
                     args,
                 });
                 return regexp_dest;
+            }
+
+            if name == TC::CHANNEL_TYPE_NAME {
+                // Builtin Channel is type-known but may not be lowered as a concrete class
+                // in per-module compilation. Lower constructor directly to opcode IR.
+                let channel_dest = self.alloc_register(TypeId::new(CHANNEL_TYPE_ID));
+                let capacity = if let Some(first_arg) = new_expr.arguments.first() {
+                    self.lower_expr(first_arg)
+                } else {
+                    self.emit_i32_const(0)
+                };
+                self.emit(IrInstr::NewChannel {
+                    dest: channel_dest.clone(),
+                    capacity,
+                });
+                return channel_dest;
             }
 
             // Look up class ID from known class symbols or class-typed aliases.
@@ -4745,6 +4819,27 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
+            // Builtin class constructors (Map/Set/Buffer/Date/etc.) are resolved via
+            // native constructor IDs in the type registry when no concrete class IR
+            // declaration exists in this module.
+            if let Some(native_id) = self.type_registry.constructor_native_id(name) {
+                let ctor_ty = self
+                    .type_ctx
+                    .lookup_named_type(name)
+                    .unwrap_or(TypeId::new(UNRESOLVED_TYPE_ID));
+                let ctor_dest = self.alloc_register(ctor_ty);
+                let mut args = Vec::with_capacity(new_expr.arguments.len());
+                for arg in &new_expr.arguments {
+                    args.push(self.lower_expr(arg));
+                }
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(ctor_dest.clone()),
+                    native_id,
+                    args,
+                });
+                return ctor_dest;
+            }
+
             // Fallback for builtin error constructors in compilation modes where
             // builtin classes are type-known but not lowered as concrete class IR.
             if matches!(
@@ -4799,6 +4894,23 @@ impl<'a> Lowerer<'a> {
                     ],
                 );
 
+                return dest;
+            }
+
+            if self.import_bindings.contains(&ident.name) {
+                // Imported class identifiers are hydrated at runtime as numeric class IDs.
+                // Use a dynamic constructor native path for `new ImportedClass(...)`.
+                let class_id = self.lower_expr(&new_expr.callee);
+                let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
+                native_args.push(class_id);
+                for arg in &new_expr.arguments {
+                    native_args.push(self.lower_expr(arg));
+                }
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
+                    args: native_args,
+                });
                 return dest;
             }
         }
@@ -5861,7 +5973,12 @@ impl<'a> Lowerer<'a> {
             // New expression: return the class being instantiated
             Expression::New(new_expr) => {
                 if let Expression::Identifier(ident) = &*new_expr.callee {
-                    return self.class_id_from_type_name(self.interner.resolve(ident.name));
+                    return self
+                        .class_map
+                        .get(&ident.name)
+                        .copied()
+                        .or_else(|| self.variable_class_map.get(&ident.name).copied())
+                        .or_else(|| self.class_id_from_type_name(self.interner.resolve(ident.name)));
                 }
                 self.class_id_from_type_id(self.get_expr_type(expr))
             }

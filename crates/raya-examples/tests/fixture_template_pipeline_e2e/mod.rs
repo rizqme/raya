@@ -1,6 +1,4 @@
-mod common;
-
-use common::*;
+use crate::common::*;
 use raya_examples::template_pipeline_entry;
 
 #[test]

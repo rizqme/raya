@@ -244,6 +244,12 @@ pub struct Interpreter<'a> {
     pub(in crate::vm::interpreter) resolved_natives:
         &'a RwLock<crate::vm::native_registry::ResolvedNatives>,
 
+    /// Per-module runtime layouts (global slot base, class base, native table, init state).
+    pub(in crate::vm::interpreter) module_layouts:
+        &'a RwLock<
+            FxHashMap<[u8; 32], crate::vm::interpreter::shared_state::ModuleRuntimeLayout>,
+        >,
+
     /// IO submission sender for NativeCallResult::Suspend (None in tests without reactor)
     pub(in crate::vm::interpreter) io_submit_tx:
         Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
@@ -301,6 +307,44 @@ pub struct Interpreter<'a> {
 }
 
 impl<'a> Interpreter<'a> {
+    #[inline]
+    pub(in crate::vm::interpreter) fn resolve_global_slot(
+        &self,
+        module: &Module,
+        local_slot: usize,
+    ) -> usize {
+        self.module_layouts
+            .read()
+            .get(&module.checksum)
+            .map(|layout| layout.global_base + local_slot)
+            .unwrap_or(local_slot)
+    }
+
+    #[inline]
+    pub(in crate::vm::interpreter) fn resolve_class_id(
+        &self,
+        module: &Module,
+        local_class_id: usize,
+    ) -> usize {
+        self.module_layouts
+            .read()
+            .get(&module.checksum)
+            .map(|layout| layout.class_base + local_class_id)
+            .unwrap_or(local_class_id)
+    }
+
+    #[inline]
+    pub(in crate::vm::interpreter) fn module_resolved_natives(
+        &self,
+        module: &Module,
+    ) -> crate::vm::native_registry::ResolvedNatives {
+        self.module_layouts
+            .read()
+            .get(&module.checksum)
+            .map(|layout| layout.resolved_natives.clone())
+            .unwrap_or_else(|| self.resolved_natives.read().clone())
+    }
+
     #[inline]
     fn format_exception_value(exception: Value) -> String {
         if exception.is_null() {
@@ -379,6 +423,18 @@ impl<'a> Interpreter<'a> {
         Some(vals)
     }
 
+    #[cfg(feature = "jit")]
+    #[inline]
+    fn refresh_jit_module_context(&mut self, module: &Arc<Module>) -> Option<u64> {
+        let jit_module_id = self
+            .code_cache
+            .as_ref()
+            .and_then(|cache| cache.module_id(&module.checksum));
+        self.current_module_for_profiling = Some(module.clone());
+        self.current_module_id_for_profiling = jit_module_id;
+        jit_module_id
+    }
+
     /// Create a new task interpreter
     #[allow(clippy::too_many_arguments)] // Interpreter borrows many VM subsystems; a config struct would just move the problem.
     pub fn new(
@@ -393,6 +449,9 @@ impl<'a> Interpreter<'a> {
         class_metadata: &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
         native_handler: &'a Arc<dyn NativeHandler>,
         resolved_natives: &'a RwLock<crate::vm::native_registry::ResolvedNatives>,
+        module_layouts: &'a RwLock<
+            FxHashMap<[u8; 32], crate::vm::interpreter::shared_state::ModuleRuntimeLayout>,
+        >,
         io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
         max_preemptions: u32,
         stack_pool: &'a crate::vm::scheduler::StackPool,
@@ -409,6 +468,7 @@ impl<'a> Interpreter<'a> {
             class_metadata,
             native_handler,
             resolved_natives,
+            module_layouts,
             io_submit_tx,
             max_preemptions,
             stack_pool,
@@ -510,14 +570,11 @@ impl<'a> Interpreter<'a> {
     /// function calls push a CallFrame and continue in the same loop. This allows
     /// suspension (channel operations, await, sleep) to work at any call depth.
     pub fn run(&mut self, task: &Arc<Task>) -> ExecutionResult {
-        let module = task.module();
+        let mut module = task.current_module();
 
-        // JIT: look up the module_id for this module's checksum (cached for the run)
+        // JIT: track module ID and profiling module context for the current frame module.
         #[cfg(feature = "jit")]
-        let jit_module_id: Option<u64> = self
-            .code_cache
-            .as_ref()
-            .and_then(|cache| cache.module_id(&module.checksum));
+        let mut jit_module_id: Option<u64> = self.refresh_jit_module_context(&module);
 
         // Restore execution state (supports suspend/resume)
         let mut current_func_id = task.current_func_id();
@@ -527,13 +584,11 @@ impl<'a> Interpreter<'a> {
         #[cfg(feature = "jit")]
         {
             self.current_func_id_for_profiling = current_func_id;
-            self.current_module_for_profiling = Some(module.clone());
-            self.current_module_id_for_profiling = jit_module_id;
         }
         self.profiler_func_id = current_func_id;
 
-        let function = match module.functions.get(current_func_id) {
-            Some(f) => f,
+        let entry_local_count = match module.functions.get(current_func_id) {
+            Some(f) => f.local_count,
             None => {
                 return ExecutionResult::Failed(VmError::RuntimeError(format!(
                     "Function {} not found",
@@ -544,7 +599,7 @@ impl<'a> Interpreter<'a> {
 
         let mut stack_guard = task.stack().lock().unwrap();
         let mut ip = task.ip();
-        let mut code: &[u8] = &function.code;
+        let mut code: &[u8] = &module.functions[current_func_id].code;
         let mut locals_base = task.current_locals_base();
         let mut current_arg_count = 0usize; // Track current function's arg count (for rest parameters)
 
@@ -607,10 +662,13 @@ impl<'a> Interpreter<'a> {
                     if frame.is_closure {
                         task.pop_closure();
                     }
+                    module = frame.module;
+                    task.set_current_module(module.clone());
                     current_func_id = frame.func_id;
                     #[cfg(feature = "jit")]
                     {
                         self.current_func_id_for_profiling = current_func_id;
+                        jit_module_id = self.refresh_jit_module_context(&module);
                     }
                     code = &module.functions[frame.func_id].code;
                     ip = frame.ip;
@@ -635,7 +693,7 @@ impl<'a> Interpreter<'a> {
         if ip == 0 && stack_guard.depth() == 0 && frames.is_empty() {
             task.push_call_frame(current_func_id);
 
-            for _ in 0..function.local_count {
+            for _ in 0..entry_local_count {
                 if let Err(e) = stack_guard.push(Value::null()) {
                     return ExecutionResult::Failed(e);
                 }
@@ -643,7 +701,7 @@ impl<'a> Interpreter<'a> {
 
             let initial_args = task.take_initial_args();
             for (i, arg) in initial_args.into_iter().enumerate() {
-                if i < function.local_count {
+                if i < entry_local_count {
                     if let Err(e) = stack_guard.set_at(i, arg) {
                         return ExecutionResult::Failed(e);
                     }
@@ -657,6 +715,7 @@ impl<'a> Interpreter<'a> {
                 task.set_ip(ip);
                 task.set_current_func_id(current_func_id);
                 task.set_current_locals_base(locals_base);
+                task.set_current_module(module.clone());
                 task.save_execution_frames(frames);
             };
         }
@@ -679,10 +738,13 @@ impl<'a> Interpreter<'a> {
                     }
 
                     // Restore caller's state
+                    module = frame.module;
+                    task.set_current_module(module.clone());
                     current_func_id = frame.func_id;
                     #[cfg(feature = "jit")]
                     {
                         self.current_func_id_for_profiling = current_func_id;
+                        jit_module_id = self.refresh_jit_module_context(&module);
                     }
                     self.profiler_func_id = current_func_id;
                     code = &module.functions[frame.func_id].code;
@@ -718,9 +780,10 @@ impl<'a> Interpreter<'a> {
                 .swap(false, std::sync::atomic::Ordering::AcqRel)
             {
                 let bytecode_offset = ip as u32;
-                let current_line = self.lookup_line(module, current_func_id, bytecode_offset);
+                let current_line =
+                    self.lookup_line(module.as_ref(), current_func_id, bytecode_offset);
                 let info = self.build_pause_info(
-                    module,
+                    module.as_ref(),
                     current_func_id,
                     bytecode_offset,
                     current_line,
@@ -798,13 +861,39 @@ impl<'a> Interpreter<'a> {
 
             ip += 1;
 
+            if std::env::var("RAYA_DEBUG_OPCODE_TRACE").is_ok()
+                && matches!(
+                    opcode,
+                    Opcode::Call
+                        | Opcode::DynGet
+                        | Opcode::LoadField
+                        | Opcode::CallMethod
+                        | Opcode::NativeCall
+                )
+            {
+                let func_name = module
+                    .functions
+                    .get(current_func_id)
+                    .map(|f| f.name.as_str())
+                    .unwrap_or("<unknown>");
+                eprintln!(
+                    "[optrace] module={} {}#{} ip={} opcode={:?}",
+                    module.metadata.name,
+                    func_name,
+                    current_func_id,
+                    ip - 1,
+                    opcode
+                );
+            }
+
             // Debug check: test breakpoints, step modes, and debugger statements
             // when a debugger is attached. The fast path (no debugger) is a single
             // atomic relaxed load.
             if let Some(ref ds) = self.debug_state {
                 if ds.active.load(std::sync::atomic::Ordering::Relaxed) {
                     let bytecode_offset = (ip - 1) as u32;
-                    let current_line = self.lookup_line(module, current_func_id, bytecode_offset);
+                    let current_line =
+                        self.lookup_line(module.as_ref(), current_func_id, bytecode_offset);
 
                     // Check for `debugger;` statement first
                     let pause_reason = if opcode == Opcode::Debugger {
@@ -823,7 +912,7 @@ impl<'a> Interpreter<'a> {
                             ds.increment_hit_count(*bp_id);
                         }
                         let info = self.build_pause_info(
-                            module,
+                            module.as_ref(),
                             current_func_id,
                             bytecode_offset,
                             current_line,
@@ -840,7 +929,7 @@ impl<'a> Interpreter<'a> {
                 &mut stack_guard,
                 &mut ip,
                 code,
-                module,
+                module.as_ref(),
                 opcode,
                 locals_base,
                 frames.len(),
@@ -865,18 +954,23 @@ impl<'a> Interpreter<'a> {
                     arg_count,
                     is_closure,
                     closure_val,
+                    module: callee_module,
                     return_action,
                 } => {
+                    let callee_module = callee_module.unwrap_or_else(|| module.clone());
+
                     #[cfg(feature = "jit")]
                     let mut forced_callee_ip: Option<usize> = None;
                     #[cfg(feature = "jit")]
                     let mut forced_callee_extra_locals: Option<Vec<u64>> = None;
                     #[cfg(feature = "jit")]
                     let mut forced_callee_operand_values: Option<Vec<Value>> = None;
+                    #[cfg(feature = "jit")]
+                    let jit_can_use_fast_path = Arc::ptr_eq(&callee_module, &module);
 
                     // JIT profiling: record call and check if function should be compiled
                     #[cfg(feature = "jit")]
-                    if !is_closure {
+                    if !is_closure && jit_can_use_fast_path {
                         if let Some(ref profile) = self.module_profile {
                             let count = profile.record_call(func_id);
                             if let Some(ref telemetry) = self.jit_telemetry {
@@ -887,7 +981,7 @@ impl<'a> Interpreter<'a> {
                             // Check compilation policy periodically to amortize overhead
                             if count & crate::vm::defaults::JIT_POLICY_CHECK_MASK == 0 {
                                 if let Some(mid) = jit_module_id {
-                                    self.maybe_request_compilation(func_id, task.module(), mid);
+                                    self.maybe_request_compilation(func_id, &module, mid);
                                 }
                             }
                         }
@@ -896,7 +990,7 @@ impl<'a> Interpreter<'a> {
                     // JIT fast path: dispatch to native code if available
                     // Only for non-closure, non-constructor calls (pure function calls)
                     #[cfg(feature = "jit")]
-                    if !is_closure {
+                    if !is_closure && jit_can_use_fast_path {
                         if let (Some(cache), Some(mid)) = (&self.code_cache, jit_module_id) {
                             if let Some(jit_fn) = cache.get(mid, func_id as u32) {
                                 if let Some(ref telemetry) = self.jit_telemetry {
@@ -1060,7 +1154,7 @@ impl<'a> Interpreter<'a> {
                     }
 
                     // Validate function index
-                    let new_func = match module.functions.get(func_id) {
+                    let new_func = match callee_module.functions.get(func_id) {
                         Some(f) => f,
                         None => {
                             return ExecutionResult::Failed(VmError::RuntimeError(format!(
@@ -1073,6 +1167,7 @@ impl<'a> Interpreter<'a> {
 
                     // Save caller's frame
                     frames.push(ExecutionFrame {
+                        module: module.clone(),
                         func_id: current_func_id,
                         ip,
                         locals_base,
@@ -1130,10 +1225,13 @@ impl<'a> Interpreter<'a> {
                     }
 
                     // Switch to callee's code
+                    module = callee_module;
+                    task.set_current_module(module.clone());
                     current_func_id = func_id;
                     #[cfg(feature = "jit")]
                     {
                         self.current_func_id_for_profiling = current_func_id;
+                        jit_module_id = self.refresh_jit_module_context(&module);
                     }
                     self.profiler_func_id = current_func_id;
                     code = &module.functions[func_id].code;
@@ -1206,10 +1304,13 @@ impl<'a> Interpreter<'a> {
                             }
                             // Restore caller's context — don't clean stack here,
                             // the exception handler's stack_size will handle unwinding
+                            module = frame.module;
+                            task.set_current_module(module.clone());
                             current_func_id = frame.func_id;
                             #[cfg(feature = "jit")]
                             {
                                 self.current_func_id_for_profiling = current_func_id;
+                                jit_module_id = self.refresh_jit_module_context(&module);
                             }
                             code = &module.functions[frame.func_id].code;
                             ip = frame.ip;
@@ -1277,7 +1378,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::LoadArgLocal
             | Opcode::LoadGlobal
             | Opcode::StoreGlobal => {
-                self.exec_variable_ops(stack, ip, code, locals_base, opcode, arg_count)
+                self.exec_variable_ops(stack, ip, code, module, locals_base, opcode, arg_count)
             }
 
             // =========================================================
@@ -1357,7 +1458,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::StoreFieldFast
             | Opcode::ObjectLiteral
             | Opcode::InitObject
-            | Opcode::BindMethod => self.exec_object_ops(stack, ip, code, opcode),
+            | Opcode::BindMethod => self.exec_object_ops(stack, ip, code, module, opcode),
 
             // =========================================================
             // Array Operations

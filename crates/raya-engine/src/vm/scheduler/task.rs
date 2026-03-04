@@ -19,6 +19,7 @@ use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
 use parking_lot::Condvar as ParkingCondvar;
 use parking_lot::Mutex as ParkingMutex;
+use parking_lot::RwLock as ParkingRwLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
@@ -180,6 +181,9 @@ pub struct Task {
     /// Module containing the function
     module: Arc<crate::compiler::Module>,
 
+    /// Currently executing module (changes for cross-module call frames)
+    current_module: ParkingRwLock<Arc<crate::compiler::Module>>,
+
     /// Parent task (if spawned from another Task)
     parent: Option<TaskId>,
 
@@ -249,6 +253,7 @@ impl Task {
         Self {
             id: TaskId::new(),
             function_id,
+            current_module: ParkingRwLock::new(module.clone()),
             module,
             parent,
 
@@ -311,6 +316,16 @@ impl Task {
     /// Get the module
     pub fn module(&self) -> &Arc<crate::compiler::Module> {
         &self.module
+    }
+
+    /// Get the currently executing module.
+    pub fn current_module(&self) -> Arc<crate::compiler::Module> {
+        self.current_module.read().clone()
+    }
+
+    /// Set the currently executing module.
+    pub fn set_current_module(&self, module: Arc<crate::compiler::Module>) {
+        *self.current_module.write() = module;
     }
 
     /// Get the parent task ID (if any)
@@ -839,12 +854,14 @@ impl Task {
         let ip = self.ip.load(Ordering::Relaxed);
         let stack_values = self.stack.lock().unwrap().as_slice().to_vec();
         let execution_frames = self.calls.lock().execution_frames.clone();
+        let current_module = self.current_module();
 
         // Map ExecutionFrame -> SerializedFrame
         let frames: Vec<SerializedFrame> = execution_frames
             .iter()
             .map(|ef| SerializedFrame {
                 function_index: ef.func_id,
+                module_checksum: ef.module.checksum,
                 return_ip: ef.ip,
                 base_pointer: ef.locals_base,
                 locals: Vec::new(),
@@ -871,6 +888,7 @@ impl Task {
             task_id: self.id,
             state,
             function_index: self.function_id,
+            module_checksum: current_module.checksum,
             ip,
             frames,
             stack: stack_values,
@@ -880,20 +898,46 @@ impl Task {
         }
     }
 
-    /// Restore a task from a `SerializedTask` and a module reference.
+    /// Restore a task from a `SerializedTask` and a fallback module reference.
     ///
-    /// The module must be the same module that was active when the snapshot was taken.
     /// Runtime-transient state (preemption counters, start_time, waiters, etc.) is
     /// reset to defaults — only persistent execution state is restored.
     pub fn from_serialized(
         serialized: SerializedTask,
         module: Arc<crate::compiler::Module>,
     ) -> Self {
+        Self::from_serialized_with_lookup(serialized, module, |_| None)
+    }
+
+    /// Restore a task from serialized state while resolving modules by checksum.
+    pub fn from_serialized_with_lookup<F>(
+        serialized: SerializedTask,
+        fallback_module: Arc<crate::compiler::Module>,
+        mut resolve_module: F,
+    ) -> Self
+    where
+        F: FnMut(&[u8; 32]) -> Option<Arc<crate::compiler::Module>>,
+    {
+        fn checksum_is_set(checksum: &[u8; 32]) -> bool {
+            checksum.iter().any(|b| *b != 0)
+        }
+
+        let task_module = if checksum_is_set(&serialized.module_checksum) {
+            resolve_module(&serialized.module_checksum).unwrap_or_else(|| fallback_module.clone())
+        } else {
+            fallback_module.clone()
+        };
+
         // Map SerializedFrame -> ExecutionFrame
         let execution_frames: Vec<ExecutionFrame> = serialized
             .frames
             .iter()
             .map(|sf| ExecutionFrame {
+                module: if checksum_is_set(&sf.module_checksum) {
+                    resolve_module(&sf.module_checksum).unwrap_or_else(|| task_module.clone())
+                } else {
+                    task_module.clone()
+                },
                 func_id: sf.function_index,
                 ip: sf.return_ip,
                 locals_base: sf.base_pointer,
@@ -928,7 +972,8 @@ impl Task {
         Self {
             id: serialized.task_id,
             function_id: serialized.function_index,
-            module,
+            current_module: ParkingRwLock::new(task_module.clone()),
+            module: task_module,
             parent: serialized.parent,
 
             ip: AtomicUsize::new(serialized.ip),
@@ -1008,8 +1053,8 @@ mod tests {
     use super::*;
     use crate::compiler::{Function, Module, Opcode};
 
-    fn create_test_module() -> Arc<Module> {
-        let mut module = Module::new("test".to_string());
+    fn create_test_module_named(name: &str) -> Arc<Module> {
+        let mut module = Module::new(name.to_string());
         module.functions.push(Function {
             name: "test_fn".to_string(),
             param_count: 0,
@@ -1017,6 +1062,10 @@ mod tests {
             code: vec![Opcode::Return as u8],
         });
         Arc::new(module)
+    }
+
+    fn create_test_module() -> Arc<Module> {
+        create_test_module_named("test")
     }
 
     #[test]
@@ -1287,6 +1336,7 @@ mod tests {
         assert_eq!(serialized.task_id, task.id());
         assert_eq!(serialized.state, TaskState::Running);
         assert_eq!(serialized.function_index, 0);
+        assert_eq!(serialized.module_checksum, module.checksum);
         assert_eq!(serialized.ip, 42);
         assert_eq!(serialized.stack.len(), 2);
         assert_eq!(serialized.stack[0], Value::i32(10));
@@ -1348,6 +1398,7 @@ mod tests {
 
         let frames = vec![
             ExecutionFrame {
+                module: module.clone(),
                 func_id: 0,
                 ip: 10,
                 locals_base: 0,
@@ -1356,6 +1407,7 @@ mod tests {
                 arg_count: 0,
             },
             ExecutionFrame {
+                module: module.clone(),
                 func_id: 1,
                 ip: 25,
                 locals_base: 5,
@@ -1370,11 +1422,55 @@ mod tests {
 
         assert_eq!(serialized.frames.len(), 2);
         assert_eq!(serialized.frames[0].function_index, 0);
+        assert_eq!(serialized.frames[0].module_checksum, module.checksum);
         assert_eq!(serialized.frames[0].return_ip, 10);
         assert_eq!(serialized.frames[0].base_pointer, 0);
         assert_eq!(serialized.frames[1].function_index, 1);
+        assert_eq!(serialized.frames[1].module_checksum, module.checksum);
         assert_eq!(serialized.frames[1].return_ip, 25);
         assert_eq!(serialized.frames[1].base_pointer, 5);
+    }
+
+    #[test]
+    fn test_task_from_serialized_with_lookup_resolves_frame_modules() {
+        let module_a = create_test_module_named("module_a");
+        let module_b = create_test_module_named("module_b");
+
+        let mut serialized = SerializedTask::new(TaskId::from_u64(777), 0);
+        serialized.module_checksum = module_a.checksum;
+        serialized.frames = vec![
+            SerializedFrame {
+                function_index: 0,
+                module_checksum: module_a.checksum,
+                return_ip: 4,
+                base_pointer: 0,
+                locals: Vec::new(),
+            },
+            SerializedFrame {
+                function_index: 0,
+                module_checksum: module_b.checksum,
+                return_ip: 9,
+                base_pointer: 0,
+                locals: Vec::new(),
+            },
+        ];
+
+        let restored =
+            Task::from_serialized_with_lookup(serialized, module_a.clone(), |checksum| {
+                if checksum == &module_a.checksum {
+                    Some(module_a.clone())
+                } else if checksum == &module_b.checksum {
+                    Some(module_b.clone())
+                } else {
+                    None
+                }
+            });
+
+        assert_eq!(restored.current_module().checksum, module_a.checksum);
+        let frames = restored.get_execution_frames();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].module.checksum, module_a.checksum);
+        assert_eq!(frames[1].module.checksum, module_b.checksum);
     }
 
     #[test]
@@ -1411,6 +1507,7 @@ mod tests {
         task.stack().lock().unwrap().push(Value::i32(100)).unwrap();
         task.stack().lock().unwrap().push(Value::null()).unwrap();
         task.save_execution_frames(vec![ExecutionFrame {
+            module: module.clone(),
             func_id: 0,
             ip: 20,
             locals_base: 0,

@@ -217,3 +217,14 @@ class TransformStream<I, O> {
 }
 
 export { ReadableStream, WritableStream, TransformStream, ReadableController, WritableController, TransformController };
+
+const stream = {
+    ReadableStream,
+    WritableStream,
+    TransformStream,
+    ReadableController,
+    WritableController,
+    TransformController,
+};
+
+export default stream;

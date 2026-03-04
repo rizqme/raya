@@ -10,7 +10,7 @@ use crate::compiler::native_id::{
 use crate::compiler::{Module, Opcode};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set};
 use crate::vm::gc::GcHeader;
-use crate::vm::interpreter::execution::OpcodeResult;
+use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
     Array, BoundMethod, Buffer, ChannelObject, Closure, DateObject, MapObject, Object, RayaString,
@@ -235,6 +235,88 @@ impl<'a> Interpreter<'a> {
 
                 // Execute native call - handle channel operations specially for suspension
                 match native_id {
+                    id if id == crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "dynamic class construction requires class ID as first argument"
+                                    .to_string(),
+                            ));
+                        }
+
+                        let class_id = args[0]
+                            .as_i32()
+                            .map(|value| value as usize)
+                            .or_else(|| {
+                                args[0].as_f64().and_then(|value| {
+                                    if value.is_finite()
+                                        && value >= 0.0
+                                        && value.fract() == 0.0
+                                        && value <= usize::MAX as f64
+                                    {
+                                        Some(value as usize)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .ok_or_else(|| {
+                                VmError::TypeError(
+                                    "dynamic class construction expects numeric class ID"
+                                        .to_string(),
+                                )
+                            });
+
+                        let class_id = match class_id {
+                            Ok(id) => id,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+
+                        let classes = self.classes.read();
+                        let class = match classes.get_class(class_id) {
+                            Some(class) => class,
+                            None => {
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Invalid class ID for dynamic construction: {}",
+                                    class_id
+                                )))
+                            }
+                        };
+                        let field_count = class.field_count;
+                        let constructor_id = class.get_constructor();
+                        let constructor_module = class.module.clone();
+                        drop(classes);
+
+                        let obj = Object::new(class_id, field_count);
+                        let gc_ptr = self.gc.lock().allocate(obj);
+                        let obj_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
+
+                        if let Some(constructor_id) = constructor_id {
+                            if let Err(error) = stack.push(obj_val) {
+                                return OpcodeResult::Error(error);
+                            }
+                            for arg in args.iter().skip(1).copied() {
+                                if let Err(error) = stack.push(arg) {
+                                    return OpcodeResult::Error(error);
+                                }
+                            }
+                            return OpcodeResult::PushFrame {
+                                func_id: constructor_id,
+                                arg_count: args.len(),
+                                is_closure: false,
+                                closure_val: None,
+                                module: constructor_module,
+                                return_action: ReturnAction::PushObject(obj_val),
+                            };
+                        }
+
+                        if let Err(error) = stack.push(obj_val) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     CHANNEL_NEW => {
                         // Create a new channel with given capacity
                         let capacity = args[0].as_i32().unwrap_or(0) as usize;
@@ -2443,8 +2525,8 @@ impl<'a> Interpreter<'a> {
                 let native_args: Vec<raya_sdk::NativeValue> =
                     args.iter().map(|v| value_to_native(*v)).collect();
 
-                // Dispatch via resolved natives table (read lock - uncontended, nearly free)
-                let resolved = self.resolved_natives.read();
+                // Dispatch via module-local resolved native table.
+                let resolved = self.module_resolved_natives(module);
                 match resolved.call(local_idx, &ctx, &native_args) {
                     NativeCallResult::Value(val) => {
                         if let Err(e) = stack.push(native_to_value(val)) {

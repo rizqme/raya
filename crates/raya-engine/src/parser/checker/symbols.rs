@@ -347,13 +347,15 @@ impl SymbolTable {
         }
     }
 
-    /// Get all exported symbols from the global scope
+    /// Get all exported symbols from module/global scopes.
     ///
-    /// Returns symbols that have `is_exported = true`.
+    /// Returns symbols that have `is_exported = true` and are declared at
+    /// module/global level (not nested local scopes).
     pub fn get_exported_symbols(&self) -> Vec<&Symbol> {
-        self.scopes[0]
-            .symbols
-            .values()
+        self.scopes
+            .iter()
+            .filter(|scope| matches!(scope.kind, ScopeKind::Global | ScopeKind::Module))
+            .flat_map(|scope| scope.symbols.values())
             .filter(|s| s.flags.is_exported)
             .collect()
     }
@@ -363,7 +365,9 @@ impl SymbolTable {
     /// This is used to inject symbols from imported modules.
     pub fn define_imported(&mut self, mut symbol: Symbol) -> Result<(), DuplicateSymbolError> {
         symbol.flags.is_imported = true;
-        self.define_in_scope(ScopeId(0), symbol)
+        symbol.scope_id = ScopeId(0);
+        self.scopes[0].symbols.insert(symbol.name.clone(), symbol);
+        Ok(())
     }
 
     /// Mark a symbol as referenced by name, searching from a specific scope

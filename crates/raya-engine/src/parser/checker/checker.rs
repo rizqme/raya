@@ -858,6 +858,12 @@ impl<'a> TypeChecker<'a> {
             Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => {
                 self.check_stmt(inner_stmt)
             }
+            Statement::ExportDecl(ExportDecl::Default { expression, .. }) => {
+                let default_ty = self.check_expr(expression);
+                self.inferred_var_types
+                    .insert((self.current_scope.0, "default".to_string()), default_ty);
+                self.type_env.set("default".to_string(), default_ty);
+            }
             _ => {}
         }
     }
@@ -4877,6 +4883,9 @@ impl<'a> TypeChecker<'a> {
                 if prop.name == property_name {
                     return prop.ty;
                 }
+            }
+            if let Some((_, sig_ty)) = obj.index_signature {
+                return sig_ty;
             }
         }
 

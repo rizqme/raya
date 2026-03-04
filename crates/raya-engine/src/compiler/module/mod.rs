@@ -11,6 +11,7 @@
 
 mod cache;
 mod compiler;
+mod declaration;
 mod exports;
 mod graph;
 mod resolver;
@@ -25,6 +26,11 @@ pub const NODE_MODULE_PREFIX: &str = "node:";
 
 pub use cache::ModuleCache;
 pub use compiler::{CompiledModule, ModuleCompileError, ModuleCompiler};
+pub use declaration::{
+    declaration_runtime_identity_path, load_declaration_module, specialization_template_from_symbol,
+    DeclarationError, DeclarationModule, DeclarationSourceKind, LateLinkRequirement,
+    LateLinkSymbolRequirement,
+};
 pub use exports::{ExportRegistry, ExportedSymbol, ModuleExports};
 pub use graph::{ModuleGraph, ModuleNode};
 pub use resolver::{

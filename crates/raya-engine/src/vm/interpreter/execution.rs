@@ -6,6 +6,7 @@
 use crate::vm::scheduler::SuspendReason;
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use std::sync::Arc;
 
 /// Result of executing a task
 ///
@@ -90,6 +91,9 @@ pub enum OpcodeResult {
         arg_count: usize,
         is_closure: bool,
         closure_val: Option<Value>,
+        /// Target module for the callee.
+        /// `None` means continue in the current module.
+        module: Option<Arc<crate::compiler::Module>>,
         return_action: ReturnAction,
     },
 }
@@ -112,6 +116,8 @@ pub enum ReturnAction {
 /// returns, the frame is popped and execution resumes in the caller.
 #[derive(Debug, Clone)]
 pub struct ExecutionFrame {
+    /// Module containing `func_id`
+    pub module: Arc<crate::compiler::Module>,
     /// Function index of the caller (to restore code reference)
     pub func_id: usize,
     /// Saved instruction pointer (points past the Call instruction)

@@ -52,6 +52,7 @@ const NODE_STD_ALIASES: [(&str, &str); 38] = [
 /// Standard library modules use the `std:` namespace prefix and are
 /// resolved by looking up their embedded source code rather than
 /// going through the file system or package resolution.
+#[derive(Debug)]
 pub struct StdModuleRegistry {
     /// Map from module name (without `std:` prefix) to source code
     modules: HashMap<&'static str, &'static str>,

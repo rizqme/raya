@@ -40,7 +40,7 @@ impl<'a> Interpreter<'a> {
                 }
                 captures.reverse();
 
-                let closure = Closure::new(func_index, captures);
+                let closure = Closure::with_module(func_index, captures, task.current_module());
                 let gc_ptr = self.gc.lock().allocate(closure);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };

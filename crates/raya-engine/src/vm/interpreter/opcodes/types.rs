@@ -94,10 +94,11 @@ impl<'a> Interpreter<'a> {
     ) -> OpcodeResult {
         match opcode {
             Opcode::InstanceOf => {
-                let class_index = match Self::read_u16(code, ip) {
+                let local_class_index = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                let class_index = self.resolve_class_id(module, local_class_index);
                 let obj_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
@@ -135,7 +136,7 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Cast => {
-                let cast_target = match Self::read_u16(code, ip) {
+                let cast_target_raw = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -146,7 +147,7 @@ impl<'a> Interpreter<'a> {
                 if std::env::var("RAYA_DEBUG_VM_CALLS").is_ok() {
                     eprintln!(
                         "[cast] target={} obj_raw=0x{:016X} is_null={} is_ptr={} is_i32={}",
-                        cast_target,
+                        cast_target_raw,
                         obj_val.raw(),
                         obj_val.is_null(),
                         obj_val.is_ptr(),
@@ -154,7 +155,7 @@ impl<'a> Interpreter<'a> {
                     );
                 }
 
-                let cast_target = cast_target as u16;
+                let cast_target = cast_target_raw as u16;
 
                 // Kind-mask casts validate primitive/structural categories at runtime.
                 if (cast_target & CAST_KIND_MASK_FLAG) != 0 {
@@ -317,6 +318,9 @@ impl<'a> Interpreter<'a> {
                     return OpcodeResult::Continue;
                 }
 
+                // Class-cast target is encoded as module-local class ID.
+                let cast_target_class = self.resolve_class_id(module, cast_target as usize);
+
                 // Check if object is an instance of the target class
                 let valid_cast = if obj_val.is_ptr() {
                     if let Some(obj_ptr) = object_ptr_checked(obj_val) {
@@ -325,7 +329,7 @@ impl<'a> Interpreter<'a> {
                         let mut current_class_id = Some(obj.class_id);
                         let mut matches = false;
                         while let Some(cid) = current_class_id {
-                            if cid == cast_target as usize {
+                            if cid == cast_target_class {
                                 matches = true;
                                 break;
                             }
@@ -354,7 +358,7 @@ impl<'a> Interpreter<'a> {
                     let target_name = {
                         let classes = self.classes.read();
                         classes
-                            .get_class(cast_target as usize)
+                            .get_class(cast_target_class)
                             .map(|c| c.name.clone())
                             .unwrap_or_else(|| "<unknown>".to_string())
                     };
@@ -381,7 +385,7 @@ impl<'a> Interpreter<'a> {
                         .unwrap_or("<unknown>");
                     OpcodeResult::Error(VmError::TypeError(format!(
                         "Cannot cast object(class_id={}, class_name={}) to class index {} ({}) in {}#{}",
-                        actual_id, actual_name, cast_target, target_name, current_func_name, current_func_id
+                        actual_id, actual_name, cast_target_class, target_name, current_func_name, current_func_id
                     )))
                 }
             }
@@ -436,31 +440,42 @@ impl<'a> Interpreter<'a> {
                             obj.get_field(index).unwrap_or(Value::null())
                         } else {
                             let classes = self.classes.read();
-                            let func_id = classes.get_class(class_id).and_then(|class| {
-                                method_slot
-                                    .and_then(|slot| class.vtable.get_method(slot))
-                                    .or_else(|| {
-                                        class.vtable.methods.iter().copied().find(|fid| {
-                                            module
-                                                .functions
-                                                .get(*fid)
-                                                .map(|f| {
-                                                    let name = f.name.as_str();
-                                                    name == prop_name
-                                                        || name
-                                                            .ends_with(&format!(".{}", prop_name))
-                                                        || name
-                                                            .ends_with(&format!("::{}", prop_name))
-                                                })
-                                                .unwrap_or(false)
-                                        })
-                                    })
-                            });
+                            let (func_id, method_module) =
+                                classes.get_class(class_id).map_or((None, None), |class| {
+                                    let method_module = class.module.clone();
+                                    let search_module = method_module.as_ref().map_or(module, |m| m);
+                                    let func_id = method_slot
+                                        .and_then(|slot| class.vtable.get_method(slot))
+                                        .or_else(|| {
+                                            class.vtable.methods.iter().copied().find(|fid| {
+                                                search_module
+                                                    .functions
+                                                    .get(*fid)
+                                                    .map(|f| {
+                                                        let name = f.name.as_str();
+                                                        name == prop_name
+                                                            || name
+                                                                .ends_with(&format!(
+                                                                    ".{}",
+                                                                    prop_name
+                                                                ))
+                                                            || name
+                                                                .ends_with(&format!(
+                                                                    "::{}",
+                                                                    prop_name
+                                                                ))
+                                                    })
+                                                    .unwrap_or(false)
+                                            })
+                                        });
+                                    (func_id, method_module)
+                                });
                             drop(classes);
                             if let Some(func_id) = func_id {
                                 let gc_ptr = self.gc.lock().allocate(BoundMethod {
                                     receiver: obj_val,
                                     func_id,
+                                    module: method_module,
                                 });
                                 unsafe {
                                     Value::from_ptr(
@@ -468,15 +483,50 @@ impl<'a> Interpreter<'a> {
                                     )
                                 }
                             } else {
+                                if std::env::var("RAYA_DEBUG_DYNGET").is_ok() {
+                                    let class_name = {
+                                        let classes = self.classes.read();
+                                        classes
+                                            .get_class(class_id)
+                                            .map(|class| class.name.clone())
+                                            .unwrap_or_else(|| "<unknown>".to_string())
+                                    };
+                                    let metadata_methods = {
+                                        let class_metadata = self.class_metadata.read();
+                                        class_metadata
+                                            .get(class_id)
+                                            .map(|meta| {
+                                                meta.method_names
+                                                    .iter()
+                                                    .filter(|name| !name.is_empty())
+                                                    .cloned()
+                                                    .collect::<Vec<_>>()
+                                            })
+                                            .unwrap_or_default()
+                                    };
+                                    eprintln!(
+                                        "[dynget] unresolved struct member '{}.{}' class_id={} metadata_methods={:?}",
+                                        class_name, prop_name, class_id, metadata_methods
+                                    );
+                                }
                                 Value::null()
                             }
                         }
                     }
                     JSView::Dyn(ptr) => {
                         // DynObject: hashmap lookup
-                        unsafe { (*ptr).get(&prop_name) }.unwrap_or(Value::null())
+                        let value = unsafe { (*ptr).get(&prop_name) }.unwrap_or(Value::null());
+                        if value.is_null() && std::env::var("RAYA_DEBUG_DYNGET").is_ok() {
+                            eprintln!("[dynget] unresolved dyn member '.{}'", prop_name);
+                        }
+                        value
                     }
-                    _ => Value::null(),
+                    _ => {
+                        if std::env::var("RAYA_DEBUG_DYNGET").is_ok() {
+                            eprintln!("[dynget] unresolved non-object member '.{}'", prop_name);
+                        }
+                        Value::null()
+                    }
                 };
 
                 if let Err(e) = stack.push(result) {
@@ -806,10 +856,11 @@ impl<'a> Interpreter<'a> {
             // Static Fields
             // =========================================================
             Opcode::LoadStatic => {
-                let class_index = match Self::read_u16(code, ip) {
+                let local_class_index = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                let class_index = self.resolve_class_id(module, local_class_index);
                 let field_offset = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
@@ -838,10 +889,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::StoreStatic => {
-                let class_index = match Self::read_u16(code, ip) {
+                let local_class_index = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                let class_index = self.resolve_class_id(module, local_class_index);
                 let field_offset = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),

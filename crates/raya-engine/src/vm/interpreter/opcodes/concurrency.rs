@@ -43,7 +43,7 @@ impl<'a> Interpreter<'a> {
 
                 let new_task = Arc::new(Task::with_args(
                     func_index,
-                    task.module().clone(),
+                    task.current_module(),
                     Some(task.id()),
                     args,
                 ));
@@ -86,9 +86,10 @@ impl<'a> Interpreter<'a> {
 
                 // Don't prepend captures to args - the closure body uses LoadCaptured
                 // which reads from the Closure object via task.current_closure()
+                let target_module = closure.module().unwrap_or_else(|| task.current_module());
                 let new_task = Arc::new(Task::with_args(
                     closure.func_id,
-                    task.module().clone(),
+                    target_module,
                     Some(task.id()),
                     args,
                 ));

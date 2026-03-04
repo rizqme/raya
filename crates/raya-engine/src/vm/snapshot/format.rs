@@ -28,7 +28,7 @@ use std::io::{Read, Write};
 pub const SNAPSHOT_MAGIC: u64 = 0x0000005941594152;
 
 /// Current snapshot format version
-pub const SNAPSHOT_VERSION: u32 = 1;
+pub const SNAPSHOT_VERSION: u32 = 2;
 
 /// Endianness marker - should read as 0x01020304 in native byte order
 pub const ENDIANNESS_MARKER: u32 = 0x01020304;

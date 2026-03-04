@@ -250,8 +250,16 @@ impl<'a> Lowerer<'a> {
                 match export {
                     ast::ExportDecl::Declaration(inner) => self.lower_stmt(inner),
                     ast::ExportDecl::Default { expression, .. } => {
-                        // Lower as expression statement (side effects only)
-                        self.lower_expr(expression);
+                        // Materialize default exports into a module-global slot so
+                        // binary export metadata can reference a concrete runtime index.
+                        let default_value = self.lower_expr(expression);
+                        if let Some(global_idx) = self.default_export_global {
+                            self.global_type_map.insert(global_idx, default_value.ty);
+                            self.emit(IrInstr::StoreGlobal {
+                                index: global_idx,
+                                value: default_value,
+                            });
+                        }
                     }
                     _ => {} // Named/All exports are module-level metadata only
                 }
@@ -361,6 +369,23 @@ impl<'a> Lowerer<'a> {
                         return;
                     }
                 };
+                if class_name == "Map" {
+                    let iter_array = self.alloc_register(UNRESOLVED);
+                    self.emit(IrInstr::NativeCall {
+                        dest: Some(iter_array.clone()),
+                        native_id: crate::compiler::native_id::MAP_ENTRIES,
+                        args: vec![source_reg],
+                    });
+                    iter_array
+                } else if class_name == "Set" {
+                    let iter_array = self.alloc_register(UNRESOLVED);
+                    self.emit(IrInstr::NativeCall {
+                        dest: Some(iter_array.clone()),
+                        native_id: crate::compiler::native_id::SET_VALUES,
+                        args: vec![source_reg],
+                    });
+                    iter_array
+                } else {
                 let class_id = match self.class_id_by_name(class_name) {
                     Some(id) => id,
                     None => {
@@ -409,6 +434,7 @@ impl<'a> Lowerer<'a> {
                     optional: false,
                 });
                 iter_array
+                }
             }
         };
 
@@ -1593,6 +1619,7 @@ impl<'a> Lowerer<'a> {
         self.variable_object_type_aliases.remove(&name);
         self.task_result_type_aliases.remove(&name);
         self.callable_symbol_hints.remove(&name);
+        self.late_bound_object_vars.remove(&name);
 
         // Re-populate object field layout for __std_exports_<tag> variables.
         // These are declared as `const __std_exports_<tag> = __std_module_<tag>()`.
@@ -1686,6 +1713,7 @@ impl<'a> Lowerer<'a> {
                     if let Some(type_ann) = &decl.type_annotation {
                         if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
                             self.variable_class_map.insert(name, class_id);
+                            self.late_bound_object_vars.remove(&name);
                         }
                         self.track_variable_object_alias_from_annotation(name, type_ann);
                         if let ast::Type::Array(arr_ty) = &type_ann.ty {
@@ -1709,8 +1737,17 @@ impl<'a> Lowerer<'a> {
                     // Always override stale mappings from previous scopes/methods.
                     if let ast::Expression::New(new_expr) = init {
                         if let ast::Expression::Identifier(ident) = &*new_expr.callee {
-                            if let Some(&class_id) = self.class_map.get(&ident.name) {
+                            let class_id = self
+                                .class_map
+                                .get(&ident.name)
+                                .copied()
+                                .or_else(|| self.variable_class_map.get(&ident.name).copied())
+                                .or_else(|| self.class_id_from_type_name(self.interner.resolve(ident.name)));
+                            if let Some(class_id) = class_id {
                                 self.variable_class_map.insert(name, class_id);
+                                self.late_bound_object_vars.remove(&name);
+                            } else if self.import_bindings.contains(&ident.name) {
+                                self.late_bound_object_vars.insert(name);
                             }
                         }
                     }
@@ -1718,6 +1755,7 @@ impl<'a> Lowerer<'a> {
                     // Infer class type from method call return types
                     if let Some(class_id) = self.infer_class_id(init) {
                         self.variable_class_map.insert(name, class_id);
+                        self.late_bound_object_vars.remove(&name);
                     }
                     self.track_task_result_alias_from_initializer(name, init);
                     self.track_variable_object_alias_from_initializer(name, init);
@@ -1752,9 +1790,12 @@ impl<'a> Lowerer<'a> {
                     // This is critical for imported/default-exported factories where
                     // pre-lowering AST inference may miss the concrete class, but
                     // the checker/lowered register type is already precise.
-                    if !self.variable_class_map.contains_key(&name) {
+                    if !self.variable_class_map.contains_key(&name)
+                        && !self.late_bound_object_vars.contains(&name)
+                    {
                         if let Some(class_id) = self.class_id_from_type_id(value.ty) {
                             self.variable_class_map.insert(name, class_id);
+                            self.late_bound_object_vars.remove(&name);
                         }
                     }
 
@@ -1811,6 +1852,7 @@ impl<'a> Lowerer<'a> {
             if let Some(type_ann) = &decl.type_annotation {
                 if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
                     self.variable_class_map.insert(name, class_id);
+                    self.late_bound_object_vars.remove(&name);
                 }
                 self.track_variable_object_alias_from_annotation(name, type_ann);
                 // Track array element class type (e.g., `let items: Item[] = [...]`)
@@ -1836,8 +1878,17 @@ impl<'a> Lowerer<'a> {
             // Always override stale mappings from previous scopes/methods.
             if let ast::Expression::New(new_expr) = init {
                 if let ast::Expression::Identifier(ident) = &*new_expr.callee {
-                    if let Some(&class_id) = self.class_map.get(&ident.name) {
+                    let class_id = self
+                        .class_map
+                        .get(&ident.name)
+                        .copied()
+                        .or_else(|| self.variable_class_map.get(&ident.name).copied())
+                        .or_else(|| self.class_id_from_type_name(self.interner.resolve(ident.name)));
+                    if let Some(class_id) = class_id {
                         self.variable_class_map.insert(name, class_id);
+                        self.late_bound_object_vars.remove(&name);
+                    } else if self.import_bindings.contains(&ident.name) {
+                        self.late_bound_object_vars.insert(name);
                     }
                 }
             }
@@ -1846,6 +1897,7 @@ impl<'a> Lowerer<'a> {
             // e.g., `let output = source.pipeThrough(x)` → infer ReadableStream from return type
             if let Some(class_id) = self.infer_class_id(init) {
                 self.variable_class_map.insert(name, class_id);
+                self.late_bound_object_vars.remove(&name);
             }
             self.track_task_result_alias_from_initializer(name, init);
             self.track_variable_object_alias_from_initializer(name, init);
@@ -1879,9 +1931,12 @@ impl<'a> Lowerer<'a> {
             // Fallback class capture from lowered value type.
             // Helps preserve receiver typing for chained calls on values returned
             // from imports/factories when AST-only inference was inconclusive.
-            if !self.variable_class_map.contains_key(&name) {
+            if !self.variable_class_map.contains_key(&name)
+                && !self.late_bound_object_vars.contains(&name)
+            {
                 if let Some(class_id) = self.class_id_from_type_id(value.ty) {
                     self.variable_class_map.insert(name, class_id);
+                    self.late_bound_object_vars.remove(&name);
                 }
             }
 

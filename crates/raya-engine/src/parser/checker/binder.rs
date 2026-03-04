@@ -8,6 +8,7 @@ use super::error::BindError;
 use super::symbols::{ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind, SymbolTable};
 use super::{CheckerPolicy, TypeSystemMode};
 use crate::parser::ast::*;
+use crate::parser::types::hydrate_type_from_canonical_signature;
 use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type};
 use crate::parser::types::{TypeContext, TypeId};
 use crate::parser::Interner;
@@ -192,6 +193,59 @@ impl<'a> Binder<'a> {
         symbol: Symbol,
     ) -> Result<(), super::symbols::DuplicateSymbolError> {
         self.symbols.define_imported(symbol)
+    }
+
+    /// Hydrate a canonical structural signature into this module's `TypeContext`.
+    pub fn hydrate_imported_signature_type(&mut self, signature: &str) -> TypeId {
+        hydrate_type_from_canonical_signature(signature, self.type_ctx)
+    }
+
+    /// Check whether a type ID currently resolves to `unknown`.
+    pub fn is_unknown_type_id(&self, ty: TypeId) -> bool {
+        matches!(self.type_ctx.get(ty), Some(Type::Unknown))
+    }
+
+    /// Returns true when imported signature hydration produced a type that is
+    /// not directly actionable for value-member calls in strict mode.
+    pub fn needs_import_namespace_fallback(&self, ty: TypeId) -> bool {
+        matches!(
+            self.type_ctx.get(ty),
+            Some(Type::Unknown) | Some(Type::Reference(_))
+        )
+    }
+
+    /// Return the canonical `any` type ID.
+    pub fn any_type_id(&mut self) -> TypeId {
+        self.type_ctx.any_type()
+    }
+
+    /// Build an object type from named members for import namespace fallbacks.
+    ///
+    /// Adds a callable string index-signature fallback so unresolved members on
+    /// namespace defaults (for legacy/default-export object modules) still type
+    /// as callable-any instead of hard-failing.
+    pub fn object_type_from_members(&mut self, members: Vec<(String, TypeId)>) -> TypeId {
+        let properties = members
+            .into_iter()
+            .map(|(name, ty)| PropertySignature {
+                name,
+                ty,
+                optional: false,
+                readonly: true,
+                visibility: crate::parser::ast::Visibility::Public,
+            })
+            .collect();
+        let any_ty = self.type_ctx.any_type();
+        let callable_any = self.type_ctx.function_type(vec![], any_ty, false);
+        self.type_ctx.intern(Type::Object(crate::parser::types::ty::ObjectType {
+            properties,
+            index_signature: Some(("[key]".to_string(), callable_any)),
+        }))
+    }
+
+    /// Format a type ID for diagnostics/debugging.
+    pub fn format_type_id(&self, ty: TypeId) -> String {
+        self.type_ctx.format_type(ty)
     }
 
     /// Register compiler intrinsics like __NATIVE_CALL and __OPCODE_CHANNEL_NEW
@@ -3165,8 +3219,31 @@ impl<'a> Binder<'a> {
         ty: TypeId,
         subs: &std::collections::HashMap<String, TypeId>,
     ) -> TypeId {
+        let mut cache = std::collections::HashMap::new();
+        let mut active = std::collections::HashSet::new();
+        self.substitute_type_vars_inner(ty, subs, &mut cache, &mut active)
+    }
+
+    fn substitute_type_vars_inner(
+        &mut self,
+        ty: TypeId,
+        subs: &std::collections::HashMap<String, TypeId>,
+        cache: &mut std::collections::HashMap<TypeId, TypeId>,
+        active: &mut std::collections::HashSet<TypeId>,
+    ) -> TypeId {
+        if let Some(cached) = cache.get(&ty).copied() {
+            return cached;
+        }
+
+        // Guard against recursive generic shapes like A<T> -> B<T> -> A<T>.
+        // Returning the original TypeId preserves a finite graph and prevents
+        // stack overflows during substitution.
+        if !active.insert(ty) {
+            return ty;
+        }
+
         let type_info = self.type_ctx.get(ty).cloned();
-        match type_info {
+        let result = match type_info {
             Some(Type::TypeVar(tv)) => {
                 if let Some(&sub) = subs.get(&tv.name) {
                     sub
@@ -3180,7 +3257,7 @@ impl<'a> Binder<'a> {
                     .iter()
                     .map(|p| PropertySignature {
                         name: p.name.clone(),
-                        ty: self.substitute_type_vars(p.ty, subs),
+                        ty: self.substitute_type_vars_inner(p.ty, subs, cache, active),
                         optional: p.optional,
                         readonly: p.readonly,
                         visibility: p.visibility,
@@ -3192,7 +3269,7 @@ impl<'a> Binder<'a> {
                 let new_members: Vec<_> = union
                     .members
                     .iter()
-                    .map(|&m| self.substitute_type_vars(m, subs))
+                    .map(|&m| self.substitute_type_vars_inner(m, subs, cache, active))
                     .collect();
                 self.type_ctx.union_type(new_members)
             }
@@ -3200,14 +3277,14 @@ impl<'a> Binder<'a> {
                 let new_params: Vec<_> = func
                     .params
                     .iter()
-                    .map(|&p| self.substitute_type_vars(p, subs))
+                    .map(|&p| self.substitute_type_vars_inner(p, subs, cache, active))
                     .collect();
-                let new_ret = self.substitute_type_vars(func.return_type, subs);
+                let new_ret = self.substitute_type_vars_inner(func.return_type, subs, cache, active);
                 self.type_ctx
                     .function_type(new_params, new_ret, func.is_async)
             }
             Some(Type::Array(arr)) => {
-                let new_elem = self.substitute_type_vars(arr.element, subs);
+                let new_elem = self.substitute_type_vars_inner(arr.element, subs, cache, active);
                 self.type_ctx.array_type(new_elem)
             }
             Some(Type::Class(class)) => {
@@ -3216,7 +3293,7 @@ impl<'a> Binder<'a> {
                     .iter()
                     .map(|p| PropertySignature {
                         name: p.name.clone(),
-                        ty: self.substitute_type_vars(p.ty, subs),
+                        ty: self.substitute_type_vars_inner(p.ty, subs, cache, active),
                         optional: p.optional,
                         readonly: p.readonly,
                         visibility: p.visibility,
@@ -3227,12 +3304,14 @@ impl<'a> Binder<'a> {
                     .iter()
                     .map(|m| MethodSignature {
                         name: m.name.clone(),
-                        ty: self.substitute_type_vars(m.ty, subs),
+                        ty: self.substitute_type_vars_inner(m.ty, subs, cache, active),
                         type_params: m.type_params.clone(),
                         visibility: m.visibility,
                     })
                     .collect();
-                let new_extends = class.extends.map(|e| self.substitute_type_vars(e, subs));
+                let new_extends = class
+                    .extends
+                    .map(|e| self.substitute_type_vars_inner(e, subs, cache, active));
                 let new_class = ClassType {
                     name: class.name.clone(),
                     type_params: vec![], // Specialized class has no type params
@@ -3247,7 +3326,11 @@ impl<'a> Binder<'a> {
                 self.type_ctx.intern(Type::Class(new_class))
             }
             _ => ty,
-        }
+        };
+
+        active.remove(&ty);
+        cache.insert(ty, result);
+        result
     }
 
     /// Resolve type to TypeId

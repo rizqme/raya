@@ -424,11 +424,13 @@ impl<'a> Interpreter<'a> {
                                 )));
                             }
                         };
+                        let method_module = class.module.clone();
                         drop(classes);
 
                         let bm = BoundMethod {
                             receiver: target,
                             func_id,
+                            module: method_module,
                         };
                         let gc_ptr = self.gc.lock().allocate(bm);
                         unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }

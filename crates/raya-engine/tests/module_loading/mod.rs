@@ -4,7 +4,9 @@
 
 use raya_engine::compiler::bytecode::VERSION;
 use raya_engine::compiler::Opcode;
-use raya_engine::compiler::{Function, Module};
+use raya_engine::compiler::{
+    module_id_from_name, Function, Import, Module, ModuleId, SymbolScope, SymbolType,
+};
 use raya_engine::vm::Vm;
 
 /// Helper to create a simple test module
@@ -21,6 +23,14 @@ fn create_test_module(name: &str) -> Module {
     module.functions.push(func);
 
     module
+}
+
+fn test_symbol_id(module_id: ModuleId, symbol: &str, index: usize) -> u64 {
+    let mut acc = module_id ^ ((index as u64) << 32) ^ 0x517C_C1B7_2722_0A95;
+    for b in symbol.bytes() {
+        acc = acc.rotate_left(7) ^ u64::from(b);
+    }
+    acc
 }
 
 #[test]
@@ -134,7 +144,7 @@ fn test_invalid_magic_number() {
 
 #[test]
 fn test_module_with_exports() {
-    use raya_engine::compiler::{Export, SymbolType};
+    use raya_engine::compiler::Export;
 
     // Create a VM
     let mut vm = Vm::new();
@@ -143,10 +153,16 @@ fn test_module_with_exports() {
     let mut module = create_test_module("exported_module");
 
     // Add an export
+    let module_id = module_id_from_name("exported_module");
+    let symbol_id = test_symbol_id(module_id, "test_func", 0);
     module.exports.push(Export {
         name: "test_func".to_string(),
         symbol_type: SymbolType::Function,
         index: 0,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
     });
 
     let bytes = module.encode();
@@ -162,8 +178,6 @@ fn test_module_with_exports() {
 
 #[test]
 fn test_module_with_imports() {
-    use raya_engine::compiler::Import;
-
     // Create a VM
     let mut vm = Vm::new();
 
@@ -171,11 +185,18 @@ fn test_module_with_imports() {
     let mut module = create_test_module("importing_module");
 
     // Add an import
+    let module_id = module_id_from_name("other_module");
+    let symbol_id = test_symbol_id(module_id, "some_function", 0);
     module.imports.push(Import {
         module_specifier: "other_module@1.0.0".to_string(),
         symbol: "some_function".to_string(),
         alias: None,
-        version_constraint: Some("^1.0.0".to_string()),
+        module_id,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
+        runtime_global_slot: None,
     });
 
     let bytes = module.encode();
@@ -664,6 +685,11 @@ fn test_e2e_exports_survive_encode_decode() {
         name: "add".to_string(),
         symbol_type: SymbolType::Function,
         index: 0,
+        symbol_id: test_symbol_id(module_id_from_name("export_mod"), "add", 0),
+        scope: SymbolScope::Module,
+        type_symbol_id: test_symbol_id(module_id_from_name("export_mod"), "add", 0)
+            ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
     });
 
     // Encode → decode round-trip
@@ -687,8 +713,6 @@ fn test_e2e_exports_survive_encode_decode() {
 
 #[test]
 fn test_e2e_imports_survive_encode_decode() {
-    use raya_engine::compiler::Import;
-
     let mut module = Module::new("import_mod".to_string());
     module.functions.push(Function {
         name: "main".to_string(),
@@ -697,11 +721,18 @@ fn test_e2e_imports_survive_encode_decode() {
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
     });
 
+    let module_id = module_id_from_name("math");
+    let symbol_id = test_symbol_id(module_id, "sqrt", 0);
     module.imports.push(Import {
         module_specifier: "math@2.0.0".to_string(),
         symbol: "sqrt".to_string(),
         alias: Some("squareRoot".to_string()),
-        version_constraint: Some("^2.0.0".to_string()),
+        module_id,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        type_signature: None,
+        runtime_global_slot: None,
     });
 
     let bytes = module.encode();
@@ -711,10 +742,6 @@ fn test_e2e_imports_survive_encode_decode() {
     assert_eq!(decoded.imports[0].module_specifier, "math@2.0.0");
     assert_eq!(decoded.imports[0].symbol, "sqrt");
     assert_eq!(decoded.imports[0].alias.as_deref(), Some("squareRoot"));
-    assert_eq!(
-        decoded.imports[0].version_constraint.as_deref(),
-        Some("^2.0.0")
-    );
 }
 
 // =============================================================================

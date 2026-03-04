@@ -38,8 +38,10 @@ pub use module_builder::ModuleBuilder;
 
 // Re-export bytecode types for convenience
 pub use bytecode::{
-    verify_module, BytecodeReader, BytecodeWriter, ClassDef, ConstantPool, DecodeError, Export,
-    Function, Import, Metadata, Method, Module, ModuleError, Opcode, SymbolType, VerifyError,
+    module_id_from_name, symbol_id_from_name, verify_module, BytecodeReader, BytecodeWriter,
+    ClassDef, ConstantPool, DecodeError, Export, Function, Import, Metadata, Method, Module,
+    ModuleError, ModuleId, Opcode, SymbolId, SymbolScope, SymbolType, TypeSignatureHash,
+    TypeSymbolId, VerifyError,
 };
 
 use crate::parser::ast;
@@ -47,6 +49,7 @@ use crate::parser::Interner;
 use crate::parser::TypeContext;
 use crate::parser::TypeId;
 use rustc_hash::FxHashMap;
+use std::collections::HashSet;
 
 /// Monomorphization strategy for compilation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -74,6 +77,8 @@ pub struct Compiler<'a> {
     emit_generic_templates: bool,
     /// Monomorphization mode for IR pipeline.
     monomorphization_mode: MonomorphizationMode,
+    /// Stable module identity used for metadata and symbol ID derivation.
+    module_identity: Option<String>,
     /// Original source text for debug dumps (enables source-annotated IR/bytecode output)
     source_text: Option<String>,
 }
@@ -89,6 +94,7 @@ impl<'a> Compiler<'a> {
             js_this_binding_compat: false,
             emit_generic_templates: false,
             monomorphization_mode: MonomorphizationMode::ConsumerLink,
+            module_identity: None,
             source_text: None,
         }
     }
@@ -138,6 +144,12 @@ impl<'a> Compiler<'a> {
         self
     }
 
+    /// Set stable module identity used in output metadata and symbol ID derivation.
+    pub fn with_module_identity(mut self, module_identity: impl Into<String>) -> Self {
+        self.module_identity = Some(module_identity.into());
+        self
+    }
+
     /// Compile a module into bytecode
     pub fn compile(&mut self, module: &ast::Module) -> CompileResult<Module> {
         let mut codegen = CodeGenerator::new(&self.type_ctx, self.interner);
@@ -153,7 +165,11 @@ impl<'a> Compiler<'a> {
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
-        lowerer.lower_module(module)
+        let mut ir_module = lowerer.lower_module(module);
+        if let Some(module_identity) = &self.module_identity {
+            ir_module.name = module_identity.clone();
+        }
+        ir_module
     }
 
     /// Compile a module to IR with monomorphization
@@ -177,6 +193,9 @@ impl<'a> Compiler<'a> {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
         let mut ir_module = lowerer.lower_module(module);
+        if let Some(module_identity) = &self.module_identity {
+            ir_module.name = module_identity.clone();
+        }
 
         // Check for lowerer errors (e.g., unresolved types at dispatch points)
         if let Some(err) = lowerer.errors().first() {
@@ -236,6 +255,9 @@ impl<'a> Compiler<'a> {
 
         // Generate bytecode from IR
         let mut bytecode_module = codegen::generate(&ir_module, need_sourcemap)?;
+        if let Some(module_identity) = &self.module_identity {
+            bytecode_module.metadata.name = module_identity.clone();
+        }
         if self.emit_generic_templates {
             bytecode_module.metadata.generic_templates =
                 monomorphize::collect_generic_templates(&ir_module);
@@ -244,6 +266,7 @@ impl<'a> Compiler<'a> {
             bytecode_module.metadata.mono_debug_map =
                 monomorphize::collect_mono_debug_map(&ir_module);
         }
+        populate_symbol_link_metadata(&mut bytecode_module, module, self.interner);
 
         // Dump annotated bytecode to stderr when RAYA_DEBUG_DUMP_BYTECODE is set
         if dump_bc {
@@ -285,6 +308,9 @@ impl<'a> Compiler<'a> {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
         let mut ir_module = lowerer.lower_module(module);
+        if let Some(module_identity) = &self.module_identity {
+            ir_module.name = module_identity.clone();
+        }
 
         // Check for lowerer errors
         if let Some(err) = lowerer.errors().first() {
@@ -336,6 +362,9 @@ impl<'a> Compiler<'a> {
 
         // Step 4: Generate bytecode
         let mut bytecode_module = codegen::generate(&ir_module, self.emit_sourcemap)?;
+        if let Some(module_identity) = &self.module_identity {
+            bytecode_module.metadata.name = module_identity.clone();
+        }
         if self.emit_generic_templates {
             bytecode_module.metadata.generic_templates =
                 monomorphize::collect_generic_templates(&ir_module);
@@ -344,6 +373,7 @@ impl<'a> Compiler<'a> {
             bytecode_module.metadata.mono_debug_map =
                 monomorphize::collect_mono_debug_map(&ir_module);
         }
+        populate_symbol_link_metadata(&mut bytecode_module, module, self.interner);
 
         writeln!(debug, "=== Generated Bytecode ===").unwrap();
         for (i, func) in bytecode_module.functions.iter().enumerate() {
@@ -360,6 +390,301 @@ impl<'a> Compiler<'a> {
 
         Ok((bytecode_module, debug))
     }
+}
+
+#[derive(Debug, Clone)]
+struct ExportBinding {
+    exported_name: String,
+    local_name: String,
+}
+
+fn module_name_from_specifier(specifier: &str) -> &str {
+    if let Some(stripped) = specifier.strip_prefix('@') {
+        if let Some(at_pos) = stripped.find('@') {
+            return &specifier[..at_pos + 1];
+        }
+        return specifier;
+    }
+
+    if let Some(at_pos) = specifier.find('@') {
+        return &specifier[..at_pos];
+    }
+
+    specifier
+}
+
+fn collect_pattern_identifiers(pattern: &ast::Pattern, interner: &Interner, out: &mut Vec<String>) {
+    // Use an explicit stack instead of recursion to avoid stack overflows on
+    // deeply nested generated destructuring patterns.
+    let mut stack = vec![pattern];
+    while let Some(current) = stack.pop() {
+        match current {
+            ast::Pattern::Identifier(ident) => out.push(interner.resolve(ident.name).to_string()),
+            ast::Pattern::Array(array) => {
+                if let Some(rest) = &array.rest {
+                    stack.push(rest);
+                }
+                for element in array.elements.iter().rev() {
+                    if let Some(element) = element {
+                        stack.push(&element.pattern);
+                    }
+                }
+            }
+            ast::Pattern::Object(object) => {
+                if let Some(rest) = &object.rest {
+                    out.push(interner.resolve(rest.name).to_string());
+                }
+                for property in object.properties.iter().rev() {
+                    stack.push(&property.value);
+                }
+            }
+            ast::Pattern::Rest(rest) => stack.push(&rest.argument),
+        }
+    }
+}
+
+fn collect_export_bindings_from_declaration(
+    statement: &ast::Statement,
+    interner: &Interner,
+    out: &mut Vec<ExportBinding>,
+) {
+    match statement {
+        ast::Statement::FunctionDecl(function) => {
+            let name = interner.resolve(function.name.name).to_string();
+            out.push(ExportBinding {
+                exported_name: name.clone(),
+                local_name: name,
+            });
+        }
+        ast::Statement::ClassDecl(class) => {
+            let name = interner.resolve(class.name.name).to_string();
+            out.push(ExportBinding {
+                exported_name: name.clone(),
+                local_name: name,
+            });
+        }
+        ast::Statement::VariableDecl(variable) => {
+            let mut names = Vec::new();
+            collect_pattern_identifiers(&variable.pattern, interner, &mut names);
+            for name in names {
+                out.push(ExportBinding {
+                    exported_name: name.clone(),
+                    local_name: name,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn populate_symbol_link_metadata(
+    bytecode_module: &mut Module,
+    module: &ast::Module,
+    interner: &Interner,
+) {
+    bytecode_module.exports.clear();
+    bytecode_module.imports.clear();
+
+    if bytecode_module.metadata.name.is_empty() {
+        bytecode_module.metadata.name = "main".to_string();
+    }
+    let module_name = bytecode_module.metadata.name.clone();
+
+    let mut exports = Vec::new();
+    let mut imports = Vec::new();
+
+    for statement in &module.statements {
+        match statement {
+            ast::Statement::ImportDecl(import_decl) => {
+                let module_specifier = interner.resolve(import_decl.source.value).to_string();
+                let target_module_name = module_name_from_specifier(&module_specifier);
+                let target_module_id = module_id_from_name(target_module_name);
+
+                for specifier in &import_decl.specifiers {
+                    match specifier {
+                        ast::ImportSpecifier::Named { name, alias } => {
+                            let symbol = interner.resolve(name.name).to_string();
+                            let alias = alias
+                                .as_ref()
+                                .map(|ident| interner.resolve(ident.name).to_string());
+                            imports.push(Import {
+                                module_specifier: module_specifier.clone(),
+                                symbol: symbol.clone(),
+                                alias,
+                                module_id: target_module_id,
+                                symbol_id: symbol_id_from_name(
+                                    target_module_name,
+                                    SymbolScope::Module,
+                                    &symbol,
+                                ),
+                                scope: SymbolScope::Module,
+                                type_symbol_id: 0,
+                                type_signature: None,
+                                runtime_global_slot: None,
+                            });
+                        }
+                        ast::ImportSpecifier::Default(local) => {
+                            let symbol = "default".to_string();
+                            imports.push(Import {
+                                module_specifier: module_specifier.clone(),
+                                symbol: symbol.clone(),
+                                alias: Some(interner.resolve(local.name).to_string()),
+                                module_id: target_module_id,
+                                symbol_id: symbol_id_from_name(
+                                    target_module_name,
+                                    SymbolScope::Module,
+                                    &symbol,
+                                ),
+                                scope: SymbolScope::Module,
+                                type_symbol_id: 0,
+                                type_signature: None,
+                                runtime_global_slot: None,
+                            });
+                        }
+                        ast::ImportSpecifier::Namespace(alias) => {
+                            let symbol = "*".to_string();
+                            imports.push(Import {
+                                module_specifier: module_specifier.clone(),
+                                symbol: symbol.clone(),
+                                alias: Some(interner.resolve(alias.name).to_string()),
+                                module_id: target_module_id,
+                                symbol_id: symbol_id_from_name(
+                                    target_module_name,
+                                    SymbolScope::Module,
+                                    &symbol,
+                                ),
+                                scope: SymbolScope::Module,
+                                type_symbol_id: 0,
+                                type_signature: None,
+                                runtime_global_slot: None,
+                            });
+                        }
+                    }
+                }
+            }
+            ast::Statement::ExportDecl(export_decl) => match export_decl {
+                ast::ExportDecl::Declaration(inner_statement) => {
+                    collect_export_bindings_from_declaration(
+                        inner_statement,
+                        interner,
+                        &mut exports,
+                    );
+                }
+                ast::ExportDecl::Named {
+                    specifiers, source, ..
+                } => {
+                    if source.is_none() {
+                        for specifier in specifiers {
+                            let local_name = interner.resolve(specifier.name.name).to_string();
+                            let exported_name = specifier
+                                .alias
+                                .as_ref()
+                                .map(|ident| interner.resolve(ident.name).to_string())
+                                .unwrap_or_else(|| local_name.clone());
+                            exports.push(ExportBinding {
+                                exported_name,
+                                local_name,
+                            });
+                        }
+                    } else if let Some(source) = source {
+                        let module_specifier = interner.resolve(source.value).to_string();
+                        let target_module_name = module_name_from_specifier(&module_specifier);
+                        let target_module_id = module_id_from_name(target_module_name);
+                        for specifier in specifiers {
+                            let symbol = interner.resolve(specifier.name.name).to_string();
+                            let alias = specifier
+                                .alias
+                                .as_ref()
+                                .map(|ident| interner.resolve(ident.name).to_string());
+                            imports.push(Import {
+                                module_specifier: module_specifier.clone(),
+                                symbol: symbol.clone(),
+                                alias,
+                                module_id: target_module_id,
+                                symbol_id: symbol_id_from_name(
+                                    target_module_name,
+                                    SymbolScope::Module,
+                                    &symbol,
+                                ),
+                                scope: SymbolScope::Module,
+                                type_symbol_id: 0,
+                                type_signature: None,
+                                runtime_global_slot: None,
+                            });
+                        }
+                    }
+                }
+                ast::ExportDecl::All { source, .. } => {
+                    let module_specifier = interner.resolve(source.value).to_string();
+                    let target_module_name =
+                        module_name_from_specifier(&module_specifier).to_string();
+                    let target_module_id = module_id_from_name(&target_module_name);
+                    let symbol = "*".to_string();
+                    imports.push(Import {
+                        module_specifier,
+                        symbol: symbol.clone(),
+                        alias: None,
+                        module_id: target_module_id,
+                        symbol_id: symbol_id_from_name(
+                            &target_module_name,
+                            SymbolScope::Module,
+                            &symbol,
+                        ),
+                        scope: SymbolScope::Module,
+                        type_symbol_id: 0,
+                        type_signature: None,
+                        runtime_global_slot: None,
+                    });
+                }
+                ast::ExportDecl::Default { expression, .. } => {
+                    if let ast::Expression::Identifier(identifier) = expression.as_ref() {
+                        exports.push(ExportBinding {
+                            exported_name: "default".to_string(),
+                            local_name: interner.resolve(identifier.name).to_string(),
+                        });
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+
+    let mut seen_export_symbol_ids = HashSet::new();
+    for export in exports {
+        let (symbol_type, index) = if let Some(index) = bytecode_module
+            .functions
+            .iter()
+            .position(|function| function.name == export.local_name)
+        {
+            (SymbolType::Function, index)
+        } else if let Some(index) = bytecode_module
+            .classes
+            .iter()
+            .position(|class| class.name == export.local_name)
+        {
+            (SymbolType::Class, index)
+        } else {
+            continue;
+        };
+
+        let symbol_id =
+            symbol_id_from_name(&module_name, SymbolScope::Module, &export.exported_name);
+        if !seen_export_symbol_ids.insert(symbol_id) {
+            continue;
+        }
+
+        bytecode_module.exports.push(Export {
+            name: export.exported_name,
+            symbol_type: symbol_type.clone(),
+            index,
+            symbol_id,
+            scope: SymbolScope::Module,
+            type_symbol_id: 0,
+            type_signature: None,
+        });
+    }
+
+    bytecode_module.imports = imports;
 }
 
 /// Disassemble a function's bytecode into human-readable form
@@ -746,4 +1071,111 @@ fn dump_bytecode_module(module: &Module, source_text: Option<&str>) {
         eprint!("{}", disasm);
     }
     eprintln!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Parser;
+
+    fn compile_source(source: &str, module_identity: Option<&str>) -> Module {
+        let parser = Parser::new(source).expect("lexer failure");
+        let (ast, interner) = parser.parse().expect("parse failure");
+
+        let compiler = if let Some(module_identity) = module_identity {
+            Compiler::new(TypeContext::new(), &interner).with_module_identity(module_identity)
+        } else {
+            Compiler::new(TypeContext::new(), &interner)
+        };
+
+        compiler
+            .compile_via_ir(&ast)
+            .expect("compile_via_ir should succeed")
+    }
+
+    #[test]
+    fn test_compile_via_ir_populates_symbol_link_tables() {
+        let source = r#"
+            export function foo(): number { return 1; }
+            export class MyClass {}
+            import { depFn as localDepFn } from "./dep";
+            import depDefault from "pkg@1.2.3";
+            import * as ns from "@org/pkg@^2.0.0";
+        "#;
+
+        let module = compile_source(source, None);
+        let module_name = module.metadata.name.clone();
+
+        assert!(
+            module.exports.iter().any(|export| {
+                export.name == "foo"
+                    && export.symbol_type == SymbolType::Function
+                    && export.symbol_id
+                        == symbol_id_from_name(&module_name, SymbolScope::Module, "foo")
+                    && export.type_symbol_id == 0
+            }),
+            "expected function export metadata for foo"
+        );
+
+        assert!(
+            module.exports.iter().any(|export| {
+                export.name == "MyClass"
+                    && export.symbol_type == SymbolType::Class
+                    && export.symbol_id
+                        == symbol_id_from_name(&module_name, SymbolScope::Module, "MyClass")
+                    && export.type_symbol_id == 0
+            }),
+            "expected class export metadata for MyClass"
+        );
+
+        let dep_import = module
+            .imports
+            .iter()
+            .find(|import| import.module_specifier == "./dep" && import.symbol == "depFn")
+            .expect("missing ./dep import");
+        assert_eq!(dep_import.module_id, module_id_from_name("./dep"));
+        assert_eq!(
+            dep_import.symbol_id,
+            symbol_id_from_name("./dep", SymbolScope::Module, "depFn")
+        );
+        assert_eq!(dep_import.scope, SymbolScope::Module);
+        assert_eq!(dep_import.alias.as_deref(), Some("localDepFn"));
+
+        let pkg_import = module
+            .imports
+            .iter()
+            .find(|import| import.module_specifier == "pkg@1.2.3" && import.symbol == "default")
+            .expect("missing package default import");
+        assert_eq!(pkg_import.module_id, module_id_from_name("pkg"));
+        assert_eq!(
+            pkg_import.symbol_id,
+            symbol_id_from_name("pkg", SymbolScope::Module, "default")
+        );
+        assert_eq!(pkg_import.alias.as_deref(), Some("depDefault"));
+
+        let scoped_import = module
+            .imports
+            .iter()
+            .find(|import| import.module_specifier == "@org/pkg@^2.0.0" && import.symbol == "*")
+            .expect("missing scoped namespace import");
+        assert_eq!(scoped_import.module_id, module_id_from_name("@org/pkg"));
+        assert_eq!(
+            scoped_import.symbol_id,
+            symbol_id_from_name("@org/pkg", SymbolScope::Module, "*")
+        );
+        assert_eq!(scoped_import.alias.as_deref(), Some("ns"));
+    }
+
+    #[test]
+    fn test_compile_via_ir_uses_module_identity_for_symbol_ids() {
+        let source = r#"export function foo(): number { return 1; }"#;
+        let identity = "/project/src/main.raya";
+        let module = compile_source(source, Some(identity));
+
+        assert_eq!(module.metadata.name, identity);
+        assert!(module.exports.iter().any(|export| {
+            export.name == "foo"
+                && export.symbol_id == symbol_id_from_name(identity, SymbolScope::Module, "foo")
+        }));
+    }
 }

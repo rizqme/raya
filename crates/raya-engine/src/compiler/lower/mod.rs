@@ -495,6 +495,13 @@ pub struct Lowerer<'a> {
     /// Module-level variable name to global index mapping.
     /// Variables stored as globals so both main and module-level functions can access them.
     module_var_globals: FxHashMap<Symbol, u16>,
+    /// Import-local binding symbols, used for import-specific lowering diagnostics.
+    import_bindings: FxHashSet<Symbol>,
+    /// Variables initialized from imported class constructors where no local
+    /// class metadata is available. These require late-bound member dispatch.
+    late_bound_object_vars: FxHashSet<Symbol>,
+    /// Synthetic global slot for `export default <expr>` materialization.
+    default_export_global: Option<u16>,
     /// Depth counter: 0 = module top-level, >0 = inside function declaration.
     /// Used to prevent `let x = ...` inside functions from hijacking module globals.
     function_depth: u32,
@@ -1048,6 +1055,9 @@ impl<'a> Lowerer<'a> {
             bound_method_vars: FxHashMap::default(),
             next_global_index: 0,
             module_var_globals: FxHashMap::default(),
+            import_bindings: FxHashSet::default(),
+            late_bound_object_vars: FxHashSet::default(),
+            default_export_global: None,
             function_depth: 0,
             block_depth: 0,
             async_closures: FxHashSet::default(),
@@ -1272,6 +1282,17 @@ impl<'a> Lowerer<'a> {
                                 self.next_global_index += 1;
                                 global_index
                             });
+                        self.import_bindings.insert(local_name);
+                    }
+                }
+
+                // `export default <expr>` must materialize in a stable global slot so
+                // binary export tables can reference it as a constant export.
+                if matches!(raw_stmt, Statement::ExportDecl(ExportDecl::Default { .. })) {
+                    if self.default_export_global.is_none() {
+                        let global_index = self.next_global_index;
+                        self.next_global_index += 1;
+                        self.default_export_global = Some(global_index);
                     }
                 }
             }
@@ -1477,6 +1498,7 @@ impl<'a> Lowerer<'a> {
                     if let Some(type_ann) = &decl.type_annotation {
                         if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
                             self.variable_class_map.insert(name, class_id);
+                            self.late_bound_object_vars.remove(&name);
                         }
                     }
                     // Track class type from new expression (e.g., `const math = new Math()`)
@@ -1486,15 +1508,35 @@ impl<'a> Lowerer<'a> {
                             if let ast::Expression::New(new_expr) = init {
                                 if let ast::Expression::Identifier(class_ident) = &*new_expr.callee
                                 {
-                                    if let Some(class_id) = self.class_id_from_type_name(
-                                        self.interner.resolve(class_ident.name),
-                                    ) {
+                                    let class_id = self
+                                        .class_map
+                                        .get(&class_ident.name)
+                                        .copied()
+                                        .or_else(|| {
+                                            self.variable_class_map.get(&class_ident.name).copied()
+                                        })
+                                        .or_else(|| {
+                                            self.class_id_from_type_name(
+                                                self.interner.resolve(class_ident.name),
+                                            )
+                                        });
+                                    if let Some(class_id) = class_id {
                                         self.variable_class_map.insert(name, class_id);
+                                        self.late_bound_object_vars.remove(&name);
                                         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                             eprintln!(
                                                 "[lower] variable_class_map: '{}' = class_id({}) (from new {}())",
                                                 self.interner.resolve(name),
                                                 class_id.as_u32(),
+                                                self.interner.resolve(class_ident.name)
+                                            );
+                                        }
+                                    } else if self.import_bindings.contains(&class_ident.name) {
+                                        self.late_bound_object_vars.insert(name);
+                                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                                            eprintln!(
+                                                "[lower] late_bound_object_vars: '{}' marked (from new imported {}())",
+                                                self.interner.resolve(name),
                                                 self.interner.resolve(class_ident.name)
                                             );
                                         }
@@ -1513,6 +1555,7 @@ impl<'a> Lowerer<'a> {
                                     self.try_extract_class_from_type(&cast.target_type)
                                 {
                                     self.variable_class_map.insert(name, class_id);
+                                    self.late_bound_object_vars.remove(&name);
                                     if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                         eprintln!(
                                             "[lower] variable_class_map: '{}' = class_id({}) (from cast)",
