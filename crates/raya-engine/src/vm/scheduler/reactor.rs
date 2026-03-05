@@ -343,6 +343,7 @@ impl Reactor {
                 &state.resolved_natives,
                 &state.module_layouts,
                 &state.structural_slot_views,
+                &state.structural_object_shapes,
                 Some(&io_submit_tx),
                 state.max_preemptions,
                 &state.stack_pool,

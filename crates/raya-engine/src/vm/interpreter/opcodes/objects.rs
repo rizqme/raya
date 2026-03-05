@@ -224,6 +224,17 @@ impl<'a> Interpreter<'a> {
         if from_metadata.is_some() {
             return from_metadata;
         }
+        if obj.class_id == 0 {
+            if let Some(name) = self
+                .structural_object_shapes
+                .read()
+                .get(&obj.object_id)
+                .and_then(|names| names.get(field_offset))
+                .cloned()
+            {
+                return Some(name);
+            }
+        }
         let classes = self.classes.read();
         let class_name = classes.get_class(obj.class_id)?.name.as_str();
         if class_name == "Object" && obj.field_count() <= 4 {
@@ -247,6 +258,16 @@ impl<'a> Interpreter<'a> {
             .and_then(|meta| meta.get_field_index(field_name));
         if from_metadata.is_some() {
             return from_metadata;
+        }
+        if obj.class_id == 0 {
+            if let Some(index) = self
+                .structural_object_shapes
+                .read()
+                .get(&obj.object_id)
+                .and_then(|names| names.iter().position(|name| name == field_name))
+            {
+                return Some(index);
+            }
         }
         let classes = self.classes.read();
         let class_name = classes.get_class(obj.class_id)?.name.as_str();

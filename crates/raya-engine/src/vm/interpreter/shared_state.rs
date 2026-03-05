@@ -173,6 +173,11 @@ pub struct SharedVmState {
     pub structural_slot_views:
         RwLock<FxHashMap<([u8; 32], usize, u64), Vec<StructuralSlotBinding>>>,
 
+    /// Structural object shapes keyed by object_id.
+    /// Stores canonical slot names for dynamic object-literal carriers (class_id=0)
+    /// so expected structural views can be remapped by name across call boundaries.
+    pub structural_object_shapes: RwLock<FxHashMap<u64, Vec<String>>>,
+
     /// Debug state for debugger coordination (None = no debugger attached)
     pub debug_state: Mutex<Option<Arc<super::debug_state::DebugState>>>,
 
@@ -250,6 +255,7 @@ impl SharedVmState {
             module_registry: RwLock::new(ModuleRegistry::new()),
             module_layouts: RwLock::new(FxHashMap::default()),
             structural_slot_views: RwLock::new(FxHashMap::default()),
+            structural_object_shapes: RwLock::new(FxHashMap::default()),
             debug_state: Mutex::new(None),
             max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,
             preempt_threshold_ms: crate::vm::defaults::DEFAULT_PREEMPT_THRESHOLD_MS,

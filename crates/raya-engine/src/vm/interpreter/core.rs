@@ -256,6 +256,8 @@ pub struct Interpreter<'a> {
                 Vec<crate::vm::interpreter::shared_state::StructuralSlotBinding>,
             >,
         >,
+    /// Canonical structural shapes for dynamic object-literal carriers (class_id=0).
+    pub(in crate::vm::interpreter) structural_object_shapes: &'a RwLock<FxHashMap<u64, Vec<String>>>,
 
     /// IO submission sender for NativeCallResult::Suspend (None in tests without reactor)
     pub(in crate::vm::interpreter) io_submit_tx:
@@ -365,17 +367,33 @@ impl<'a> Interpreter<'a> {
         object: &Object,
         expected_slot: usize,
     ) -> crate::vm::interpreter::shared_state::StructuralSlotBinding {
+        let debug_structural = std::env::var("RAYA_DEBUG_STRUCTURAL_VIEW").is_ok();
         let views = self.structural_slot_views.read();
         if let Some(slot_map) = views
             .get(&(module.checksum, self.profiler_func_id, object.object_id))
             .or_else(|| views.get(&(module.checksum, usize::MAX, object.object_id)))
         {
+            if debug_structural {
+                eprintln!(
+                    "[structural-view] remap hit func={} obj={} expected_slot={} map_len={}",
+                    self.profiler_func_id,
+                    object.object_id,
+                    expected_slot,
+                    slot_map.len()
+                );
+            }
             return slot_map
                 .get(expected_slot)
                 .copied()
                 .unwrap_or(crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(
                     expected_slot,
                 ));
+        }
+        if debug_structural {
+            eprintln!(
+                "[structural-view] remap miss func={} obj={} expected_slot={}",
+                self.profiler_func_id, object.object_id, expected_slot
+            );
         }
         crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(expected_slot)
     }
@@ -493,6 +511,7 @@ impl<'a> Interpreter<'a> {
                 Vec<crate::vm::interpreter::shared_state::StructuralSlotBinding>,
             >,
         >,
+        structural_object_shapes: &'a RwLock<FxHashMap<u64, Vec<String>>>,
         io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
         max_preemptions: u32,
         stack_pool: &'a crate::vm::scheduler::StackPool,
@@ -511,6 +530,7 @@ impl<'a> Interpreter<'a> {
             resolved_natives,
             module_layouts,
             structural_slot_views,
+            structural_object_shapes,
             io_submit_tx,
             max_preemptions,
             stack_pool,

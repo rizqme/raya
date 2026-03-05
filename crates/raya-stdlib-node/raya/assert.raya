@@ -1,7 +1,7 @@
 // node:assert - Node.js-compatible assertion module
 // Usage: import assert from "node:assert";
 
-class AssertionError extends Error {
+class NodeAssertionError extends Error {
     actual: string;
     expected: string;
     operator: string;
@@ -17,41 +17,41 @@ class AssertionError extends Error {
 class Assert {
     fail(message?: string): void {
         const msg = message != null ? message : "assertion failed";
-        throw new AssertionError(msg, "", "", "fail");
+        throw new NodeAssertionError(msg, "", "", "fail");
     }
 
     ok(value: unknown, message?: string): void {
         if (!value) {
             const msg = message != null ? message : "expected truthy value";
-            throw new AssertionError(msg, String(value), "truthy", "ok");
+            throw new NodeAssertionError(msg, String(value), "truthy", "ok");
         }
     }
 
     equal(actual: unknown, expected: unknown, message?: string): void {
         if (actual != expected) {
             const msg = message != null ? message : "expected " + String(actual) + " == " + String(expected);
-            throw new AssertionError(msg, String(actual), String(expected), "==");
+            throw new NodeAssertionError(msg, String(actual), String(expected), "==");
         }
     }
 
     strictEqual(actual: unknown, expected: unknown, message?: string): void {
         if (actual != expected) {
             const msg = message != null ? message : "expected " + String(actual) + " === " + String(expected);
-            throw new AssertionError(msg, String(actual), String(expected), "===");
+            throw new NodeAssertionError(msg, String(actual), String(expected), "===");
         }
     }
 
     notEqual(actual: unknown, expected: unknown, message?: string): void {
         if (actual == expected) {
             const msg = message != null ? message : "expected " + String(actual) + " != " + String(expected);
-            throw new AssertionError(msg, String(actual), String(expected), "!=");
+            throw new NodeAssertionError(msg, String(actual), String(expected), "!=");
         }
     }
 
     notStrictEqual(actual: unknown, expected: unknown, message?: string): void {
         if (actual == expected) {
             const msg = message != null ? message : "expected " + String(actual) + " !== " + String(expected);
-            throw new AssertionError(msg, String(actual), String(expected), "!==");
+            throw new NodeAssertionError(msg, String(actual), String(expected), "!==");
         }
     }
 
@@ -60,7 +60,7 @@ class Assert {
         const expectedStr = JSON.stringify(expected);
         if (actualStr != expectedStr) {
             const msg = message != null ? message : "deep strict equal failed";
-            throw new AssertionError(msg, actualStr, expectedStr, "deepStrictEqual");
+            throw new NodeAssertionError(msg, actualStr, expectedStr, "deepStrictEqual");
         }
     }
 
@@ -86,11 +86,11 @@ class Assert {
 
     ifError(value: unknown): void {
         if (value != null && value != false && value != 0 && value != "") {
-            throw new AssertionError("ifError: " + String(value), String(value), "falsy", "ifError");
+            throw new NodeAssertionError("ifError: " + String(value), String(value), "falsy", "ifError");
         }
     }
 }
 
 const assert = new Assert();
-export { AssertionError };
+export { NodeAssertionError };
 export default assert;

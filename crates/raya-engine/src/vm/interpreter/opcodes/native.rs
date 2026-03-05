@@ -630,50 +630,95 @@ impl<'a> Interpreter<'a> {
                             return OpcodeResult::Continue;
                         };
                         let object = unsafe { &*object_ptr.as_ptr() };
+                        let debug_structural = std::env::var("RAYA_DEBUG_STRUCTURAL_VIEW").is_ok();
                         let class_metadata = self.class_metadata.read();
-                        let class_meta = class_metadata.get(object.class_id);
+                        let class_meta = class_metadata.get(object.class_id).cloned();
+                        drop(class_metadata);
                         let class_name = {
                             let classes = self.classes.read();
                             classes
                                 .get_class(object.class_id)
                                 .map(|class| class.name.clone())
                         };
-                        let use_identity_slots = class_meta.is_none();
-                        let slot_map: Vec<StructuralSlotBinding> = expected_names
-                            .iter()
-                            .enumerate()
-                            .map(|(expected_idx, name)| {
-                                if use_identity_slots {
-                                    return StructuralSlotBinding::Field(expected_idx);
-                                }
-                                class_meta
-                                    .and_then(|meta| {
-                                        meta.get_field_index(name).and_then(|index| {
+                        let slot_map: Vec<StructuralSlotBinding> = if let Some(class_meta) = class_meta
+                        {
+                            expected_names
+                                .iter()
+                                .map(|name| {
+                                    class_meta
+                                        .get_field_index(name)
+                                        .and_then(|index| {
                                             (index < object.field_count())
                                                 .then_some(StructuralSlotBinding::Field(index))
                                         })
-                                    })
-                                    .or_else(|| {
-                                        class_meta.and_then(|meta| {
-                                            meta.get_method_index(name)
+                                        .or_else(|| {
+                                            class_meta
+                                                .get_method_index(name)
                                                 .map(StructuralSlotBinding::Method)
                                         })
-                                    })
-                                    .or_else(|| {
-                                        class_name.as_ref().and_then(|class_name| {
-                                            Self::builtin_field_index_for_class_name_native(
-                                                class_name,
-                                                name,
-                                            )
-                                            .map(StructuralSlotBinding::Field)
+                                        .or_else(|| {
+                                            class_name.as_ref().and_then(|class_name| {
+                                                Self::builtin_field_index_for_class_name_native(
+                                                    class_name,
+                                                    name,
+                                                )
+                                                .map(StructuralSlotBinding::Field)
+                                            })
                                         })
-                                    })
-                                    .unwrap_or(StructuralSlotBinding::Missing)
-                            })
-                            .collect();
-                        drop(class_metadata);
+                                        .unwrap_or(StructuralSlotBinding::Missing)
+                                })
+                                .collect()
+                        } else {
+                            // Dynamic object-literal carriers (class_id=0) do not have class
+                            // metadata. Track canonical field names per object and remap by name.
+                            let mut shapes = self.structural_object_shapes.write();
+                            let actual_names = shapes
+                                .entry(object.object_id)
+                                .or_insert_with(|| expected_names.clone());
+                            if debug_structural {
+                                eprintln!(
+                                    "[structural-view] seed/remap object_id={} expected=[{}] actual=[{}]",
+                                    object.object_id,
+                                    expected_names.join(","),
+                                    actual_names.join(",")
+                                );
+                            }
+                            expected_names
+                                .iter()
+                                .map(|name| {
+                                    actual_names
+                                        .iter()
+                                        .position(|actual| actual == name)
+                                        .map(StructuralSlotBinding::Field)
+                                        .unwrap_or(StructuralSlotBinding::Missing)
+                                })
+                                .collect()
+                        };
 
                         let key = (module.checksum, self.profiler_func_id, object.object_id);
+                        if debug_structural {
+                            let slot_desc = slot_map
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, binding)| match binding {
+                                    StructuralSlotBinding::Field(field) => {
+                                        format!("{idx}->f{field}")
+                                    }
+                                    StructuralSlotBinding::Method(method) => {
+                                        format!("{idx}->m{method}")
+                                    }
+                                    StructuralSlotBinding::Missing => format!("{idx}->missing"),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(",");
+                            eprintln!(
+                                "[structural-view] install key=(func={},obj={}) class_id={} map=[{}]",
+                                self.profiler_func_id,
+                                object.object_id,
+                                object.class_id,
+                                slot_desc
+                            );
+                        }
                         let is_identity = slot_map.iter().enumerate().all(|(expected, binding)| {
                             matches!(binding, StructuralSlotBinding::Field(actual) if *actual == expected)
                         });

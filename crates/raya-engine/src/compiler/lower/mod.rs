@@ -4760,19 +4760,22 @@ impl<'a> Lowerer<'a> {
     /// Emits:
     /// `__registerStructuralView(object, ["memberA", "memberB", ...])`
     /// where member names are canonicalized (sorted + deduped) from the expected type.
-    fn emit_structural_slot_registration_for_type(&mut self, object: Register, expected_ty: TypeId) {
-        if expected_ty == UNRESOLVED {
+    fn emit_structural_slot_registration_for_names(
+        &mut self,
+        object: Register,
+        mut names: Vec<String>,
+    ) {
+        if names.is_empty() {
             return;
         }
-        let Some(layout) = self.structural_slot_layout_from_type(expected_ty) else {
-            return;
-        };
-        if layout.is_empty() {
+        names.sort_unstable();
+        names.dedup();
+        if names.is_empty() {
             return;
         }
 
-        let mut name_regs = Vec::with_capacity(layout.len());
-        for (name, _) in layout {
+        let mut name_regs = Vec::with_capacity(names.len());
+        for name in names {
             let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             self.emit(IrInstr::Assign {
                 dest: name_reg.clone(),
@@ -4793,6 +4796,31 @@ impl<'a> Lowerer<'a> {
             native_id: crate::compiler::native_id::OBJECT_REGISTER_STRUCTURAL_VIEW,
             args: vec![object, names_array],
         });
+    }
+
+    fn emit_structural_slot_registration_for_type(&mut self, object: Register, expected_ty: TypeId) {
+        if expected_ty == UNRESOLVED {
+            return;
+        }
+        let Some(layout) = self.structural_slot_layout_from_type(expected_ty) else {
+            return;
+        };
+        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+            eprintln!(
+                "[lower] registerStructuralView reg={} expected_ty={} layout=[{}]",
+                object.id,
+                self.type_ctx.format_type(expected_ty),
+                layout
+                    .iter()
+                    .map(|(name, idx)| format!("{name}:{idx}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
+        self.emit_structural_slot_registration_for_names(
+            object,
+            layout.into_iter().map(|(name, _)| name).collect(),
+        );
     }
 
     /// Resolve a type annotation for structural-slot registration.

@@ -2941,9 +2941,6 @@ impl<'a> Lowerer<'a> {
                 .register_object_fields
                 .get(&object.id)
                 .is_some_and(|fields| fields.iter().any(|(name, _)| name == prop_name));
-            let has_type_slot = self
-                .structural_slot_index_from_type(self.get_expr_type(&member.object), prop_name)
-                .is_some();
             let has_concrete_layout =
                 if class_id.is_some() {
                     true
@@ -2954,9 +2951,8 @@ impl<'a> Lowerer<'a> {
                                 || self.variable_object_fields.get(&ident.name).is_some_and(
                                     |fields| fields.iter().any(|(name, _)| name == prop_name),
                                 )
-                                || has_type_slot
                         }
-                        _ => has_register_layout || has_type_slot,
+                        _ => has_register_layout,
                     }
                 };
 
@@ -2979,6 +2975,7 @@ impl<'a> Lowerer<'a> {
                     field: field_index,
                     optional: member.optional,
                 });
+                self.emit_structural_slot_registration_for_type(dest.clone(), field_ty);
                 if let Some(nested_layout) = self
                     .register_nested_object_fields
                     .get(&(object_id, field_index))
@@ -3308,6 +3305,25 @@ impl<'a> Lowerer<'a> {
                 names.extend(obj.properties.iter().map(|property| property.name.clone()));
                 true
             }
+            crate::parser::types::Type::Class(class) => {
+                let mut found = false;
+                for property in &class.properties {
+                    if property.visibility == crate::parser::ast::Visibility::Public {
+                        names.insert(property.name.clone());
+                        found = true;
+                    }
+                }
+                for method in &class.methods {
+                    if method.visibility == crate::parser::ast::Visibility::Public {
+                        names.insert(method.name.clone());
+                        found = true;
+                    }
+                }
+                if let Some(parent) = class.extends {
+                    found |= self.collect_structural_slot_names_from_type(parent, names, visited);
+                }
+                found
+            }
             crate::parser::types::Type::Interface(interface) => {
                 names.extend(
                     interface
@@ -3316,7 +3332,11 @@ impl<'a> Lowerer<'a> {
                         .map(|property| property.name.clone()),
                 );
                 names.extend(interface.methods.iter().map(|method| method.name.clone()));
-                true
+                let mut found = true;
+                for &parent in &interface.extends {
+                    found |= self.collect_structural_slot_names_from_type(parent, names, visited);
+                }
+                found
             }
             crate::parser::types::Type::Reference(reference) => {
                 let mut found = false;
@@ -3399,6 +3419,29 @@ impl<'a> Lowerer<'a> {
                 .iter()
                 .find(|property| property.name == prop_name)
                 .map(|property| property.ty),
+            crate::parser::types::Type::Class(class) => class
+                .properties
+                .iter()
+                .find(|property| {
+                    property.name == prop_name
+                        && property.visibility == crate::parser::ast::Visibility::Public
+                })
+                .map(|property| property.ty)
+                .or_else(|| {
+                    class
+                        .methods
+                        .iter()
+                        .find(|method| {
+                            method.name == prop_name
+                                && method.visibility == crate::parser::ast::Visibility::Public
+                        })
+                        .map(|method| method.ty)
+                })
+                .or_else(|| {
+                    class.extends.and_then(|parent| {
+                        self.structural_field_type_from_type_inner(parent, prop_name, visited)
+                    })
+                }),
             crate::parser::types::Type::Interface(interface) => interface
                 .properties
                 .iter()
@@ -3410,6 +3453,16 @@ impl<'a> Lowerer<'a> {
                         .iter()
                         .find(|method| method.name == prop_name)
                         .map(|method| method.ty)
+                })
+                .or_else(|| {
+                    for &parent in &interface.extends {
+                        if let Some(ty) =
+                            self.structural_field_type_from_type_inner(parent, prop_name, visited)
+                        {
+                            return Some(ty);
+                        }
+                    }
+                    None
                 }),
             crate::parser::types::Type::Reference(reference) => {
                 if let Some((_, field_ty)) =
@@ -3568,6 +3621,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+        let literal_field_names = field_names.clone();
 
         if let Some(target_names) = self.object_literal_target_layout.clone() {
             for name in target_names {
@@ -3695,6 +3749,7 @@ impl<'a> Lowerer<'a> {
             .map(|(idx, name)| (name.clone(), idx))
             .collect();
         self.register_object_fields.insert(dest.id, field_layout);
+        self.emit_structural_slot_registration_for_names(dest.clone(), literal_field_names);
 
         dest
     }
@@ -3946,26 +4001,16 @@ impl<'a> Lowerer<'a> {
                             value: rhs,
                         });
                     } else {
-                        if allow_dynamic_any_write {
-                            let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                            self.emit(IrInstr::Assign {
-                                dest: prop_reg.clone(),
-                                value: IrValue::Constant(IrConstant::String(prop_name.to_string())),
-                            });
-                            self.emit(IrInstr::NativeCall {
-                                dest: None,
-                                native_id: crate::compiler::native_id::REFLECT_SET,
-                                args: vec![object, prop_reg, rhs],
-                            });
-                        } else {
-                            self.errors
-                                .push(crate::compiler::CompileError::InternalError {
-                                    message: format!(
-                                        "unresolved member assignment '.{}': no class field, object layout, or JSON receiver",
-                                        prop_name
-                                    ),
-                                });
-                        }
+                        let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: prop_reg.clone(),
+                            value: IrValue::Constant(IrConstant::String(prop_name.to_string())),
+                        });
+                        self.emit(IrInstr::NativeCall {
+                            dest: None,
+                            native_id: crate::compiler::native_id::REFLECT_SET,
+                            args: vec![object, prop_reg, rhs],
+                        });
                     }
                 }
                 Expression::Index(index) => {
@@ -4347,13 +4392,7 @@ impl<'a> Lowerer<'a> {
                                     .find(|(name, _)| name == &prop_name)
                                     .map(|(_, idx)| *idx as u16)
                             }),
-                    }
-                    .or_else(|| {
-                        self.structural_slot_index_from_type(
-                            self.get_expr_type(&member.object),
-                            &prop_name,
-                        )
-                    });
+                    };
 
                     if let Some(field_idx) = resolved_field_idx {
                         self.emit(IrInstr::StoreField {
@@ -4368,26 +4407,16 @@ impl<'a> Lowerer<'a> {
                             value: value.clone(),
                         });
                     } else {
-                        if allow_dynamic_any_write {
-                            let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                            self.emit(IrInstr::Assign {
-                                dest: prop_reg.clone(),
-                                value: IrValue::Constant(IrConstant::String(prop_name.clone())),
-                            });
-                            self.emit(IrInstr::NativeCall {
-                                dest: None,
-                                native_id: crate::compiler::native_id::REFLECT_SET,
-                                args: vec![object, prop_reg, value.clone()],
-                            });
-                        } else {
-                            self.errors
-                                .push(crate::compiler::CompileError::InternalError {
-                                    message: format!(
-                                        "unresolved member assignment '.{}': no class field, object layout, or JSON receiver",
-                                        prop_name
-                                    ),
-                                });
-                        }
+                        let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: prop_reg.clone(),
+                            value: IrValue::Constant(IrConstant::String(prop_name.clone())),
+                        });
+                        self.emit(IrInstr::NativeCall {
+                            dest: None,
+                            native_id: crate::compiler::native_id::REFLECT_SET,
+                            args: vec![object, prop_reg, value.clone()],
+                        });
                     }
                 }
             }
