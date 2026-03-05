@@ -42,7 +42,7 @@ fn test_http_server_parses_and_responds() {
                 "\r\n" +
                 "payload";
             stream.writeText(request);
-            const response = stream.readAll().toUtf8String();
+            const response = stream.readAll().toString("utf8");
             stream.close();
             return response.includes("HTTP/1.1 200 OK") && response.includes("server-ok");
         }
@@ -94,7 +94,7 @@ fn test_http_server_custom_headers() {
                 "x-test: header-value\r\n" +
                 "\r\n";
             stream.writeText(request);
-            const response = stream.readAll().toUtf8String();
+            const response = stream.readAll().toString("utf8");
             stream.close();
             return response.includes("HTTP/1.1 201") && response.includes("X-Test: header-value");
         }
@@ -132,7 +132,7 @@ fn test_http_server_serve_task_cancel() {
                 "Host: 127.0.0.1\r\n" +
                 "\r\n";
             stream.writeText(request);
-            const response = stream.readAll().toUtf8String();
+            const response = stream.readAll().toString("utf8");
             stream.close();
             return response.includes("HTTP/1.1 200 OK") && response.includes("ok-from-serve");
         }

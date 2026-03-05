@@ -385,9 +385,7 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 let regexp_val = args[0];
-                let handle = regexp_val
-                    .as_u64()
-                    .ok_or_else(|| VmError::TypeError("Expected RegExp argument".to_string()))?;
+                let handle = self.regexp_handle_from_value(regexp_val)?;
                 let re_ptr = handle as *const RegExpObject;
                 if re_ptr.is_null() {
                     return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
@@ -452,9 +450,7 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 let regexp_val = args[0];
-                let handle = regexp_val
-                    .as_u64()
-                    .ok_or_else(|| VmError::TypeError("Expected RegExp argument".to_string()))?;
+                let handle = self.regexp_handle_from_value(regexp_val)?;
                 let re_ptr = handle as *const RegExpObject;
                 if re_ptr.is_null() {
                     return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
@@ -499,9 +495,7 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 let regexp_val = args[0];
-                let handle = regexp_val
-                    .as_u64()
-                    .ok_or_else(|| VmError::TypeError("Expected RegExp argument".to_string()))?;
+                let handle = self.regexp_handle_from_value(regexp_val)?;
                 let re_ptr = handle as *const RegExpObject;
                 if re_ptr.is_null() {
                     return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
@@ -521,9 +515,7 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 let regexp_val = args[0];
-                let handle = regexp_val
-                    .as_u64()
-                    .ok_or_else(|| VmError::TypeError("Expected RegExp argument".to_string()))?;
+                let handle = self.regexp_handle_from_value(regexp_val)?;
                 let re_ptr = handle as *const RegExpObject;
                 if re_ptr.is_null() {
                     return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
@@ -559,9 +551,7 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 let regexp_val = args[0];
-                let handle = regexp_val
-                    .as_u64()
-                    .ok_or_else(|| VmError::TypeError("Expected RegExp argument".to_string()))?;
+                let handle = self.regexp_handle_from_value(regexp_val)?;
                 let re_ptr = handle as *const RegExpObject;
                 if re_ptr.is_null() {
                     return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));

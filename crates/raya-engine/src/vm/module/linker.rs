@@ -26,6 +26,14 @@ pub enum LinkError {
     #[error("Module ID not found: {0}")]
     ModuleIdNotFound(ModuleId),
 
+    /// Import missing required module ID metadata.
+    #[error("Import '{module_specifier}' is missing required module ID metadata")]
+    MissingModuleId { module_specifier: String },
+
+    /// Import missing required symbol ID metadata.
+    #[error("Import '{module}::{symbol}' is missing required symbol ID metadata")]
+    MissingSymbolId { module: String, symbol: String },
+
     /// Type mismatch (expected function, got class, etc.)
     #[error("Symbol '{symbol}' has wrong type: expected {expected:?}, got {actual:?}")]
     TypeMismatch {
@@ -170,10 +178,10 @@ impl ModuleLinker {
         import: &Import,
         _current_module: &str,
     ) -> Result<ResolvedSymbol, LinkError> {
-        // Resolve module by stable ID (fallback derives ID from import specifier).
-        let module_name = Self::extract_module_name(&import.module_specifier);
         let target_module_id = if import.module_id == 0 {
-            module_id_from_name(&module_name)
+            return Err(LinkError::MissingModuleId {
+                module_specifier: import.module_specifier.clone(),
+            });
         } else {
             import.module_id
         };
@@ -183,10 +191,26 @@ impl ModuleLinker {
             .get(&target_module_id)
             .ok_or(LinkError::ModuleIdNotFound(target_module_id))?;
 
+        if import.symbol == "*" {
+            return Ok(ResolvedSymbol {
+                module: module.clone(),
+                export: Export {
+                    name: "*".to_string(),
+                    symbol_type: SymbolType::Constant,
+                    index: 0,
+                    symbol_id: 0,
+                    scope: import.scope,
+                    type_symbol_id: 0,
+                    type_signature: None,
+                },
+                index: 0,
+            });
+        }
+
         // Resolve export by symbol ID. Name is debug-only.
         let target_symbol_id: SymbolId = if import.symbol_id == 0 {
-            return Err(LinkError::SymbolNotFound {
-                module: module_name,
+            return Err(LinkError::MissingSymbolId {
+                module: module.metadata.name.clone(),
                 symbol: import.symbol.clone(),
             });
         } else {

@@ -3,7 +3,8 @@
 //! Implements the subtyping relation T <: U (T is a subtype of U).
 
 use super::context::TypeContext;
-use super::ty::{FunctionType, GenericType, PrimitiveType, Type, TypeId};
+use super::ty::{FunctionType, GenericType, PrimitiveType, Type, TypeId, TypeReference};
+use crate::parser::ast::Visibility;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 fn jsobject_generic_inner(type_ctx: &TypeContext, generic: &GenericType) -> Option<TypeId> {
@@ -391,48 +392,123 @@ impl<'a> SubtypingContext<'a> {
                         return true;
                     }
                     // For required properties, check class properties
-                    c.properties.iter().any(|cp| {
-                        cp.name == op.name
-                            && !cp.optional // Class property must not be optional for required target
-                            && (!op.readonly || cp.readonly)
-                            && self.is_subtype(cp.ty, op.ty)
-                    })
+                    c.properties
+                        .iter()
+                        .filter(|cp| cp.visibility == Visibility::Public)
+                        .any(|cp| {
+                            cp.name == op.name
+                                && !cp.optional // Class property must not be optional for required target
+                                && (!op.readonly || cp.readonly)
+                                && self.is_subtype(cp.ty, op.ty)
+                        })
                     // Also check class methods (methods are stored separately from properties)
-                    || c.methods.iter().any(|cm| {
-                        cm.name == op.name && self.is_subtype(cm.ty, op.ty)
-                    })
+                    || c.methods
+                        .iter()
+                        .filter(|cm| cm.visibility == Visibility::Public)
+                        .any(|cm| cm.name == op.name && self.is_subtype(cm.ty, op.ty))
                 })
             }
 
             // Object <: Object-like Class (structural)
             // Optional properties in the class don't need to exist in the object
-            (Type::Object(o), Type::Class(c)) => c.properties.iter().all(|cp| {
-                // If the class property is optional, the object doesn't need to have it
-                if cp.optional {
-                    return true;
-                }
-                // For required class properties, the object must have them
-                o.properties.iter().any(|op| {
-                    op.name == cp.name
-                        && !op.optional // Object property must not be optional for required class
-                        && self.is_subtype(op.ty, cp.ty)
-                })
-            }),
+            (Type::Object(o), Type::Class(c)) => c
+                .properties
+                .iter()
+                .filter(|cp| cp.visibility == Visibility::Public)
+                .all(|cp| {
+                    // If the class property is optional, the object doesn't need to have it
+                    if cp.optional {
+                        return true;
+                    }
+                    // For required class properties, the object must have them
+                    o.properties.iter().any(|op| {
+                        op.name == cp.name
+                            && !op.optional // Object property must not be optional for required class
+                            && self.is_subtype(op.ty, cp.ty)
+                    })
+                }),
 
-            // Class subtyping (nominal): only through extends/implements
+            // Class subtyping (structural public surface):
+            // width/depth compatibility on instance + static members.
+            // Fallback to extends/implements chain for explicit nominal ancestry.
             (Type::Class(c1), Type::Class(c2)) => {
                 if c1.name == c2.name {
                     return true;
                 }
 
-                // Check if c1 extends c2
+                let props_match = c2
+                    .properties
+                    .iter()
+                    .filter(|p2| p2.visibility == Visibility::Public)
+                    .all(
+                        |p2| match c1
+                            .properties
+                            .iter()
+                            .filter(|p1| p1.visibility == Visibility::Public)
+                            .find(|p1| p1.name == p2.name)
+                        {
+                            Some(p1) => {
+                                (p2.optional || !p1.optional)
+                                    && (!p2.readonly || p1.readonly)
+                                    && self.is_subtype(p1.ty, p2.ty)
+                            }
+                            None => p2.optional,
+                        },
+                    );
+
+                let methods_match = c2
+                    .methods
+                    .iter()
+                    .filter(|m2| m2.visibility == Visibility::Public)
+                    .all(|m2| {
+                        c1.methods
+                            .iter()
+                            .filter(|m1| m1.visibility == Visibility::Public)
+                            .any(|m1| m1.name == m2.name && self.is_subtype(m1.ty, m2.ty))
+                    });
+
+                let static_props_match = c2
+                    .static_properties
+                    .iter()
+                    .filter(|p2| p2.visibility == Visibility::Public)
+                    .all(|p2| {
+                        match c1
+                            .static_properties
+                            .iter()
+                            .filter(|p1| p1.visibility == Visibility::Public)
+                            .find(|p1| p1.name == p2.name)
+                        {
+                            Some(p1) => {
+                                (p2.optional || !p1.optional)
+                                    && (!p2.readonly || p1.readonly)
+                                    && self.is_subtype(p1.ty, p2.ty)
+                            }
+                            None => p2.optional,
+                        }
+                    });
+
+                let static_methods_match = c2
+                    .static_methods
+                    .iter()
+                    .filter(|m2| m2.visibility == Visibility::Public)
+                    .all(|m2| {
+                        c1.static_methods
+                            .iter()
+                            .filter(|m1| m1.visibility == Visibility::Public)
+                            .any(|m1| m1.name == m2.name && self.is_subtype(m1.ty, m2.ty))
+                    });
+
+                if props_match && methods_match && static_props_match && static_methods_match {
+                    return true;
+                }
+
+                // Check explicit ancestry
                 if let Some(parent) = c1.extends {
                     if self.is_subtype(parent, sup) {
                         return true;
                     }
                 }
 
-                // Check if c1 implements c2
                 c1.implements
                     .iter()
                     .any(|&impl_id| self.is_subtype(impl_id, sup))
@@ -447,15 +523,19 @@ impl<'a> SubtypingContext<'a> {
                         return true;
                     }
                     // For required properties, check class properties
-                    c.properties.iter().any(|cp| {
-                        cp.name == ip.name
-                            && !cp.optional // Class property must not be optional for required interface
-                            && (!ip.readonly || cp.readonly)
-                            && self.is_subtype(cp.ty, ip.ty)
-                    })
+                    c.properties
+                        .iter()
+                        .filter(|cp| cp.visibility == Visibility::Public)
+                        .any(|cp| {
+                            cp.name == ip.name
+                                && !cp.optional // Class property must not be optional for required interface
+                                && (!ip.readonly || cp.readonly)
+                                && self.is_subtype(cp.ty, ip.ty)
+                        })
                 }) && i.methods.iter().all(|im| {
                     c.methods
                         .iter()
+                        .filter(|cm| cm.visibility == Visibility::Public)
                         .any(|cm| cm.name == im.name && self.is_subtype(cm.ty, im.ty))
                 })
             }
@@ -522,24 +602,34 @@ impl<'a> SubtypingContext<'a> {
                     .all(|(&a1, &a2)| a1 == a2)
             }
 
-            // Reference types
+            // Reference types are symbolic type names. Resolve them to named types when possible.
             (Type::Reference(r1), Type::Reference(r2)) => {
-                if r1.name != r2.name {
-                    return false;
-                }
-
-                // Check type arguments if present
-                match (&r1.type_args, &r2.type_args) {
-                    (Some(args1), Some(args2)) => {
-                        if args1.len() != args2.len() {
-                            return false;
+                if r1.name == r2.name {
+                    match (&r1.type_args, &r2.type_args) {
+                        (Some(args1), Some(args2)) => {
+                            if args1.len() != args2.len() {
+                                false
+                            } else {
+                                args1.iter().zip(args2.iter()).all(|(&a1, &a2)| {
+                                    // Structural equality on type args.
+                                    self.is_subtype(a1, a2) && self.is_subtype(a2, a1)
+                                })
+                            }
                         }
-                        args1.iter().zip(args2).all(|(&a1, &a2)| a1 == a2)
+                        // Unspecified args are treated as compatible with specialized references.
+                        (None, None) | (Some(_), None) | (None, Some(_)) => true,
                     }
-                    (None, None) => true,
-                    _ => false,
+                } else if let (Some(left), Some(right)) = (
+                    self.resolve_named_type_ref(r1),
+                    self.resolve_named_type_ref(r2),
+                ) {
+                    self.is_subtype(left, right)
+                } else {
+                    false
                 }
             }
+            (Type::Reference(reference), _) => self.reference_subtype_of(reference, sup),
+            (_, Type::Reference(reference)) => self.subtype_of_reference(sub, reference),
 
             // No other subtyping relationships
             _ => false,
@@ -563,6 +653,30 @@ impl<'a> SubtypingContext<'a> {
             (Type::Mutex, Type::Class(c)) => c.name == "Mutex",
             _ => false,
         }
+    }
+
+    fn resolve_named_type_ref(&self, reference: &TypeReference) -> Option<TypeId> {
+        self.type_ctx.lookup_named_type(&reference.name)
+    }
+
+    fn reference_subtype_of(&mut self, reference: &TypeReference, sup: TypeId) -> bool {
+        if let Some(named_ty) = self.resolve_named_type_ref(reference) {
+            return self.is_subtype(named_ty, sup);
+        }
+        false
+    }
+
+    fn subtype_of_reference(&mut self, sub: TypeId, reference: &TypeReference) -> bool {
+        if let Some(Type::Class(sub_class)) = self.type_ctx.get(sub) {
+            if sub_class.name == reference.name {
+                return true;
+            }
+        }
+
+        if let Some(named_ty) = self.resolve_named_type_ref(reference) {
+            return self.is_subtype(sub, named_ty);
+        }
+        false
     }
 
     /// Add a type variable substitution

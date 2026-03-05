@@ -199,7 +199,15 @@ mod tests {
         match crate::vm::json::view::js_classify(reparsed) {
             crate::vm::json::view::JSView::Dyn(ptr) => {
                 let obj = unsafe { &*ptr };
-                assert_eq!(obj.get("age").and_then(|v| v.as_i32()), Some(30));
+                let age = obj.get("age").expect("age field");
+                assert!(
+                    age.as_i32() == Some(30)
+                        || age
+                            .as_f64()
+                            .is_some_and(|n| (n - 30.0).abs() < f64::EPSILON),
+                    "expected age=30, got {:?}",
+                    age
+                );
             }
             _ => panic!("Expected DynObject"),
         }

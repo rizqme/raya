@@ -17,7 +17,7 @@ use crate::parser::ast::{
     ExportDecl, Expression, ImportSpecifier, Module as AstModule, Pattern, Statement,
 };
 use crate::parser::checker::{
-    Binder, ScopeId, ScopeKind, Symbol, SymbolFlags, TypeChecker, TypeSystemMode,
+    Binder, ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind, TypeChecker, TypeSystemMode,
 };
 use crate::parser::{Interner, Parser, Span, TypeContext};
 
@@ -35,6 +35,105 @@ use super::std_modules::StdModuleRegistry;
 const BUILTIN_PRELUDE_BEGIN_MARKER: &str = "// __raya_builtin_prelude_begin";
 const BUILTIN_PRELUDE_END_MARKER: &str = "// __raya_builtin_prelude_end";
 const STD_PRELUDE_END_MARKER: &str = "// __raya_std_prelude_end";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BuiltinSurfaceMode {
+    #[default]
+    RayaStrict,
+    NodeCompat,
+}
+
+fn strict_builtin_prelude() -> &'static str {
+    concat!(
+        include_str!("../../../builtins/strict/array.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/regexp.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/object.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/error.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/symbol.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/globals.shared.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/map.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/set.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/buffer.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/date.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/channel.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/mutex.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/promise.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/event_emitter.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/iterator.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/temporal.raya"),
+        "\n",
+    )
+}
+
+fn node_compat_builtin_prelude() -> &'static str {
+    concat!(
+        include_str!("../../../builtins/strict/array.raya"),
+        "\n",
+        include_str!("../../../builtins/strict/regexp.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/object.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/error.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/symbol.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/globals.shared.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/map.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/set.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/buffer.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/date.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/channel.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/mutex.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/promise.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/event_emitter.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/iterator.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/temporal.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/typedarray.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/atomics.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/dataview.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/globals.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/function_families.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/disposal.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/intl.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/weak_collections.raya"),
+        "\n",
+        include_str!("../../../builtins/node_compat/weak_refs.raya"),
+        "\n",
+    )
+}
 
 /// Errors that can occur during multi-module compilation
 #[derive(Debug, Error)]
@@ -120,6 +219,8 @@ pub struct ModuleCompiler {
     late_link_requirements: HashMap<u64, LateLinkRequirement>,
     /// Checker mode (Raya strict or JS-like compatibility).
     checker_mode: TypeSystemMode,
+    /// Builtin prelude surface mode for module compilation.
+    builtin_surface_mode: BuiltinSurfaceMode,
 }
 
 impl ModuleCompiler {
@@ -172,6 +273,7 @@ impl ModuleCompiler {
             declaration_virtual_by_identity: HashMap::new(),
             late_link_requirements: HashMap::new(),
             checker_mode: TypeSystemMode::Raya,
+            builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
         }
     }
 
@@ -190,6 +292,7 @@ impl ModuleCompiler {
             declaration_virtual_by_identity: HashMap::new(),
             late_link_requirements: HashMap::new(),
             checker_mode: TypeSystemMode::Raya,
+            builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
         })
     }
 
@@ -202,6 +305,12 @@ impl ModuleCompiler {
     /// Configure checker mode for graph compilation.
     pub fn with_checker_mode(mut self, mode: TypeSystemMode) -> Self {
         self.checker_mode = mode;
+        self
+    }
+
+    /// Configure builtin surface mode for graph compilation.
+    pub fn with_builtin_surface_mode(mut self, mode: BuiltinSurfaceMode) -> Self {
+        self.builtin_surface_mode = mode;
         self
     }
 
@@ -227,6 +336,29 @@ impl ModuleCompiler {
             path: path.to_path_buf(),
             message: e.to_string(),
         })
+    }
+
+    fn inject_builtin_prelude_if_missing(&self, source: &str) -> String {
+        if source.contains(BUILTIN_PRELUDE_BEGIN_MARKER) {
+            return source.to_string();
+        }
+
+        let prelude = match self.builtin_surface_mode {
+            BuiltinSurfaceMode::RayaStrict => strict_builtin_prelude(),
+            BuiltinSurfaceMode::NodeCompat => node_compat_builtin_prelude(),
+        };
+
+        let mut linked = String::new();
+        linked.push_str(BUILTIN_PRELUDE_BEGIN_MARKER);
+        linked.push('\n');
+        linked.push_str(prelude);
+        if !linked.ends_with('\n') {
+            linked.push('\n');
+        }
+        linked.push_str(BUILTIN_PRELUDE_END_MARKER);
+        linked.push('\n');
+        linked.push_str(source);
+        linked
     }
 
     fn module_identity(&self, path: &Path) -> String {
@@ -405,6 +537,23 @@ impl ModuleCompiler {
             return Ok(Some(virtual_path));
         }
 
+        if StdModuleRegistry::is_node_import(specifier)
+            && !StdModuleRegistry::is_supported_node_import(specifier)
+        {
+            let mut supported = StdModuleRegistry::supported_node_module_names()
+                .map(|name| format!("node:{name}"))
+                .collect::<Vec<_>>();
+            supported.sort();
+            return Err(ModuleCompileError::TypeError {
+                path: from_path.to_path_buf(),
+                message: format!(
+                    "Unsupported node module import '{}'. Supported node modules: {}",
+                    specifier,
+                    supported.join(", ")
+                ),
+            });
+        }
+
         if StdModuleRegistry::is_std_import(specifier) {
             return Err(ModuleCompileError::Resolution(ResolveError::StdModule(
                 specifier.to_string(),
@@ -506,7 +655,19 @@ impl ModuleCompiler {
             }
 
             // Compile the module with cross-module symbol resolution
-            let (bytecode, module_exports) = self.compile_single_with_exports(&path)?;
+            let (bytecode, mut module_exports) = self.compile_single_with_exports(&path)?;
+
+            // Record `export * from "..."` chains so import resolution can
+            // follow re-exported symbols transitively through ExportRegistry.
+            for import in &bytecode.imports {
+                if import.symbol == "*" && import.alias.is_none() {
+                    if let Some(reexport_path) =
+                        self.resolve_import_path(&import.module_specifier, &path)?
+                    {
+                        module_exports.add_reexport(reexport_path);
+                    }
+                }
+            }
 
             // Register exports for dependent modules
             self.exports.register(module_exports);
@@ -698,7 +859,7 @@ impl ModuleCompiler {
         path: &PathBuf,
     ) -> ModuleCompileResult<(BytecodeModule, ModuleExports)> {
         // Read source
-        let source = self.read_module_source(path)?;
+        let source = self.inject_builtin_prelude_if_missing(&self.read_module_source(path)?);
         let linked_user_offset = find_linked_user_offset(&source);
 
         // Parse
@@ -716,15 +877,11 @@ impl ModuleCompiler {
         let mut type_ctx = TypeContext::new();
         let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(self.checker_mode);
 
-        // Register builtin type signatures
         let builtin_sigs = crate::builtins::to_checker_signatures();
         binder.register_builtins(&builtin_sigs);
-        if linked_user_offset.is_some() {
-            binder.skip_top_level_duplicate_detection();
-        }
 
         // Inject imported symbols from the export registry
-        self.inject_imports(&ast, path, &mut binder, &interner)?;
+        self.inject_imports(&ast, path, &mut binder, &interner, linked_user_offset)?;
 
         let mut symbols = binder
             .bind_module(&ast)
@@ -779,8 +936,9 @@ impl ModuleCompiler {
         let module_exports = self.extract_exports(path, &module_name, &symbols, &type_ctx);
 
         // Compile
-        let mut compiler =
-            Compiler::new(type_ctx, &interner).with_expr_types(check_result.expr_types);
+        let mut compiler = Compiler::new(type_ctx, &interner)
+            .with_expr_types(check_result.expr_types)
+            .with_type_annotation_types(check_result.type_annotation_types);
         if let Some(ref jsx_opts) = self.jsx_options {
             compiler = compiler.with_jsx(jsx_opts.clone());
         }
@@ -812,6 +970,7 @@ impl ModuleCompiler {
         current_path: &Path,
         binder: &mut Binder<'_>,
         interner: &Interner,
+        linked_user_offset: Option<usize>,
     ) -> ModuleCompileResult<()> {
         for stmt in &ast.statements {
             if let Statement::ImportDecl(import) = stmt {
@@ -823,11 +982,10 @@ impl ModuleCompiler {
                     continue;
                 };
 
-                // Get exports from the imported module
-                let module_exports = match self.exports.get(&resolved_path) {
-                    Some(exports) => exports,
-                    None => continue, // Module not yet compiled (shouldn't happen with topo order)
-                };
+                // Imported module not yet compiled (shouldn't happen with topo order).
+                if !self.exports.has_module(&resolved_path) {
+                    continue;
+                }
 
                 // Inject each imported specifier
                 for spec in &import.specifiers {
@@ -838,10 +996,40 @@ impl ModuleCompiler {
                                 .as_ref()
                                 .map(|a| interner.resolve(a.name).to_string())
                                 .unwrap_or_else(|| import_name.clone());
+                            if linked_user_offset.is_some_and(|offset| {
+                                Self::has_top_level_declaration_before_offset(
+                                    ast,
+                                    interner,
+                                    &local_name,
+                                    offset,
+                                )
+                            }) {
+                                continue;
+                            }
 
-                            if let Some(exported) = module_exports.get(&import_name) {
+                            if let Some(exported) =
+                                self.exports.resolve_symbol(&resolved_path, &import_name)
+                            {
                                 let imported_ty = binder
                                     .hydrate_imported_signature_type(&exported.type_signature);
+                                if std::env::var("RAYA_DEBUG_IMPORT_TYPES").is_ok() {
+                                    eprintln!(
+                                        "[module-compiler] named import '{} as {}' from '{}' kind={:?} signature='{}' hydrated='{}'",
+                                        import_name,
+                                        local_name,
+                                        specifier,
+                                        exported.kind,
+                                        exported.type_signature,
+                                        binder.format_type_id(imported_ty)
+                                    );
+                                }
+                                if matches!(
+                                    exported.kind,
+                                    SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeAlias
+                                ) {
+                                    binder.register_imported_named_type(&import_name, imported_ty);
+                                    binder.register_imported_named_type(&local_name, imported_ty);
+                                }
                                 let symbol = Symbol {
                                     name: local_name,
                                     kind: exported.kind,
@@ -862,16 +1050,75 @@ impl ModuleCompiler {
                             }
                         }
                         ImportSpecifier::Namespace(alias) => {
-                            // import * as utils - create a namespace object
-                            // For now, we skip namespace imports
-                            let _ = alias; // Suppress unused warning
+                            // import * as ns from "./module" - create a structural namespace object.
+                            let local_name = interner.resolve(alias.name).to_string();
+                            if linked_user_offset.is_some_and(|offset| {
+                                Self::has_top_level_declaration_before_offset(
+                                    ast,
+                                    interner,
+                                    &local_name,
+                                    offset,
+                                )
+                            }) {
+                                continue;
+                            }
+                            let mut members = Vec::new();
+                            if let Some(module_exports) = self.exports.get(&resolved_path) {
+                                let mut export_names =
+                                    module_exports.symbols.keys().cloned().collect::<Vec<_>>();
+                                export_names.sort();
+                                for export_name in export_names {
+                                    if let Some(exported) = module_exports.symbols.get(&export_name)
+                                    {
+                                        let member_ty = binder.hydrate_imported_signature_type(
+                                            &exported.type_signature,
+                                        );
+                                        members.push((export_name, member_ty));
+                                    }
+                                }
+                            }
+                            let namespace_ty = binder.object_type_from_members(members);
+                            let symbol = Symbol {
+                                name: local_name,
+                                kind: SymbolKind::Variable,
+                                ty: namespace_ty,
+                                flags: SymbolFlags {
+                                    is_exported: false,
+                                    is_const: true,
+                                    is_async: false,
+                                    is_readonly: true,
+                                    is_imported: false,
+                                },
+                                scope_id: ScopeId(0),
+                                span: Span::new(0, 0, 0, 0),
+                                referenced: false,
+                            };
+                            let _ = binder.define_imported(symbol);
                         }
                         ImportSpecifier::Default(local) => {
                             // import foo from "./module" - look for default export
                             let local_name = interner.resolve(local.name).to_string();
-                            if let Some(exported) = module_exports.get("default") {
-                                let mut imported_ty = binder
+                            if linked_user_offset.is_some_and(|offset| {
+                                Self::has_top_level_declaration_before_offset(
+                                    ast,
+                                    interner,
+                                    &local_name,
+                                    offset,
+                                )
+                            }) {
+                                continue;
+                            }
+                            if let Some(exported) =
+                                self.exports.resolve_symbol(&resolved_path, "default")
+                            {
+                                let imported_ty = binder
                                     .hydrate_imported_signature_type(&exported.type_signature);
+                                if matches!(
+                                    exported.kind,
+                                    SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeAlias
+                                ) {
+                                    binder.register_imported_named_type(&local_name, imported_ty);
+                                }
                                 if std::env::var("RAYA_DEBUG_IMPORT_TYPES").is_ok() {
                                     eprintln!(
                                         "[module-compiler] default import '{}' from '{}' signature='{}' hydrated='{}'",
@@ -1009,6 +1256,43 @@ impl ModuleCompiler {
             Statement::ExportDecl(ExportDecl::Declaration(inner)) => Some(inner.as_ref()),
             _ => Some(stmt),
         }
+    }
+
+    fn has_top_level_declaration_before_offset(
+        ast: &AstModule,
+        interner: &Interner,
+        name: &str,
+        offset: usize,
+    ) -> bool {
+        for stmt in &ast.statements {
+            if stmt.span().start >= offset {
+                continue;
+            }
+            let Some(stmt) = Self::top_level_declaration_stmt(stmt) else {
+                continue;
+            };
+            match stmt {
+                Statement::FunctionDecl(function) => {
+                    if interner.resolve(function.name.name) == name {
+                        return true;
+                    }
+                }
+                Statement::ClassDecl(class) => {
+                    if interner.resolve(class.name.name) == name {
+                        return true;
+                    }
+                }
+                Statement::VariableDecl(variable) => {
+                    let mut names = Vec::new();
+                    Self::collect_pattern_binding_names(&variable.pattern, interner, &mut names);
+                    if names.iter().any(|candidate| candidate == name) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     fn collect_module_global_slots(ast: &AstModule, interner: &Interner) -> HashMap<String, u32> {
@@ -1182,7 +1466,6 @@ impl ModuleCompiler {
                     };
                     let target_module_name = self.module_identity(&resolved_path);
                     let target_module_id = module_id_from_name(&target_module_name);
-                    let target_exports = self.exports.get(&resolved_path).cloned();
                     let declaration_target = self.declaration_modules.contains_key(&resolved_path);
 
                     for spec in &import_decl.specifiers {
@@ -1193,9 +1476,9 @@ impl ModuleCompiler {
                                     alias.as_ref().map(|a| interner.resolve(a.name).to_string());
                                 let local_name =
                                     alias_name.clone().unwrap_or_else(|| import_name.clone());
-                                let exported = target_exports
-                                    .as_ref()
-                                    .and_then(|e| e.get(&import_name))
+                                let exported = self
+                                    .exports
+                                    .resolve_symbol(&resolved_path, &import_name)
                                     .ok_or_else(|| ModuleCompileError::TypeError {
                                         path: current_path.to_path_buf(),
                                         message: format!(
@@ -1229,9 +1512,9 @@ impl ModuleCompiler {
                             ImportSpecifier::Default(local) => {
                                 let local_name = interner.resolve(local.name).to_string();
                                 let default_name = "default".to_string();
-                                let exported = target_exports
-                                    .as_ref()
-                                    .and_then(|e| e.get("default"))
+                                let exported = self
+                                    .exports
+                                    .resolve_symbol(&resolved_path, "default")
                                     .ok_or_else(|| ModuleCompileError::TypeError {
                                         path: current_path.to_path_buf(),
                                         message: format!(
@@ -1263,7 +1546,6 @@ impl ModuleCompiler {
                                 });
                             }
                             ImportSpecifier::Namespace(alias) => {
-                                // Namespace imports are modeled as default namespace binding for now.
                                 let alias_name = interner.resolve(alias.name).to_string();
                                 let namespace_symbol = "*".to_string();
                                 bytecode.imports.push(Import {
@@ -1271,11 +1553,8 @@ impl ModuleCompiler {
                                     symbol: namespace_symbol.clone(),
                                     alias: Some(alias_name),
                                     module_id: target_module_id,
-                                    symbol_id: symbol_id_from_name(
-                                        &target_module_name,
-                                        SymbolScope::Module,
-                                        &namespace_symbol,
-                                    ),
+                                    // Namespace imports are resolved by module_id at link/hydration time.
+                                    symbol_id: 0,
                                     scope: SymbolScope::Module,
                                     type_symbol_id: 0,
                                     type_signature: None,
@@ -1300,7 +1579,6 @@ impl ModuleCompiler {
                     };
                     let target_module_name = self.module_identity(&resolved_path);
                     let target_module_id = module_id_from_name(&target_module_name);
-                    let target_exports = self.exports.get(&resolved_path).cloned();
                     let declaration_target = self.declaration_modules.contains_key(&resolved_path);
 
                     for spec in specifiers {
@@ -1309,9 +1587,9 @@ impl ModuleCompiler {
                             .alias
                             .as_ref()
                             .map(|a| interner.resolve(a.name).to_string());
-                        let exported = target_exports
-                            .as_ref()
-                            .and_then(|e| e.get(&import_name))
+                        let exported = self
+                            .exports
+                            .resolve_symbol(&resolved_path, &import_name)
                             .ok_or_else(|| ModuleCompileError::TypeError {
                                 path: current_path.to_path_buf(),
                                 message: format!(

@@ -156,6 +156,14 @@ impl TypeRegistry {
 
         let builtin_types: &[(&str, &[(&str, u16)])] = &[
             (
+                "Object",
+                &[
+                    ("toString", crate::compiler::native_id::OBJECT_TO_STRING),
+                    ("hashCode", crate::compiler::native_id::OBJECT_HASH_CODE),
+                    ("equals", crate::compiler::native_id::OBJECT_EQUAL),
+                ],
+            ),
+            (
                 "Map",
                 &[
                     ("get", map::GET),
@@ -252,14 +260,12 @@ impl TypeRegistry {
         ];
 
         for &(type_name, methods) in builtin_types {
-            let tid = if type_name == "Promise" {
-                TypeContext::TASK_TYPE_ID
-            } else if let Some(id) = type_ctx.lookup_named_type(type_name) {
-                id.as_u32()
-            } else {
+            let type_ids = dispatch_type_ids_for_name(type_name, type_ctx);
+            if type_ids.is_empty() {
                 continue;
-            };
-            {
+            }
+
+            for &tid in &type_ids {
                 let meths = self.method_dispatch.entry(tid).or_default();
                 for &(method_name, native_id) in methods {
                     meths.insert(
@@ -267,11 +273,28 @@ impl TypeRegistry {
                         DispatchAction::NativeCall(native_id),
                     );
                 }
+
+                // Property-style native getters for handle-backed builtins in no-prelude mode.
+                // These mirror class fields that previously came from injected builtin classes.
+                let property_natives: &[(&str, u16)] = match type_name {
+                    "Buffer" => &[("length", buffer::LENGTH)],
+                    "Map" => &[("size", map::SIZE)],
+                    "Set" => &[("size", set::SIZE)],
+                    "Channel" => &[("length", channel::LENGTH), ("capacity", channel::CAPACITY)],
+                    _ => &[],
+                };
+                if !property_natives.is_empty() {
+                    let props = self.property_dispatch.entry(tid).or_default();
+                    for &(prop_name, native_id) in property_natives {
+                        props.insert(prop_name.to_string(), DispatchAction::NativeCall(native_id));
+                    }
+                }
             }
 
             // Register constructor native IDs for builtin classes that are lowered
             // without concrete class IR declarations in per-module compilation.
             let constructor_id = match type_name {
+                "Object" => Some(crate::compiler::native_id::OBJECT_NEW),
                 "Map" => Some(map::NEW),
                 "Set" => Some(set::NEW),
                 "Buffer" => Some(buffer::NEW),
@@ -283,6 +306,12 @@ impl TypeRegistry {
                 self.constructors.insert(type_name.to_string(), native_id);
             }
         }
+
+        // Object constructor must exist in no-prelude mode even when Object is not
+        // materialized as a concrete class in the current module type context.
+        self.constructors
+            .entry("Object".to_string())
+            .or_insert(crate::compiler::native_id::OBJECT_NEW);
 
         // Promise chaining methods are implemented as compiled Raya class methods.
         let meths = self
@@ -352,11 +381,8 @@ impl TypeRegistry {
                 );
             }
         } else {
-            // Look up TypeId for this type
-            let type_id = type_ctx.lookup_named_type(type_name);
-            if let Some(id) = type_id {
-                let tid = id.as_u32();
-
+            let type_ids = dispatch_type_ids_for_name(type_name, type_ctx);
+            for tid in type_ids {
                 // Properties
                 if !opcode_props.is_empty() {
                     let props = self.property_dispatch.entry(tid).or_default();
@@ -624,6 +650,43 @@ fn lookup_or_unresolved(type_ctx: &TypeContext, name: &str) -> u32 {
         .lookup_named_type(name)
         .map(|id| id.as_u32())
         .unwrap_or(UNRESOLVED_TYPE_ID)
+}
+
+fn canonical_dispatch_type_id(type_name: &str) -> Option<u32> {
+    match type_name {
+        "number" => Some(TypeContext::NUMBER_TYPE_ID),
+        "string" => Some(TypeContext::STRING_TYPE_ID),
+        "boolean" => Some(TypeContext::BOOLEAN_TYPE_ID),
+        "null" => Some(TypeContext::NULL_TYPE_ID),
+        "void" => Some(TypeContext::VOID_TYPE_ID),
+        "never" => Some(TypeContext::NEVER_TYPE_ID),
+        "unknown" => Some(TypeContext::UNKNOWN_TYPE_ID),
+        "Mutex" => Some(TypeContext::MUTEX_TYPE_ID),
+        "RegExp" => Some(TypeContext::REGEXP_TYPE_ID),
+        "Date" => Some(TypeContext::DATE_TYPE_ID),
+        "Buffer" => Some(TypeContext::BUFFER_TYPE_ID),
+        "Promise" => Some(TypeContext::TASK_TYPE_ID),
+        "Channel" => Some(TypeContext::CHANNEL_TYPE_ID),
+        "Map" => Some(TypeContext::MAP_TYPE_ID),
+        "Set" => Some(TypeContext::SET_TYPE_ID),
+        "Json" => Some(TypeContext::JSON_TYPE_ID),
+        "int" => Some(TypeContext::INT_TYPE_ID),
+        "Array" => Some(TypeContext::ARRAY_TYPE_ID),
+        _ => None,
+    }
+}
+
+fn dispatch_type_ids_for_name(type_name: &str, type_ctx: &TypeContext) -> Vec<u32> {
+    let mut ids = Vec::new();
+    if let Some(canonical) = canonical_dispatch_type_id(type_name) {
+        ids.push(canonical);
+    }
+    if let Some(named) = type_ctx.lookup_named_type(type_name).map(|id| id.as_u32()) {
+        if !ids.contains(&named) {
+            ids.push(named);
+        }
+    }
+    ids
 }
 
 // ============================================================================

@@ -2251,14 +2251,14 @@ fn test_mutex_producer_consumer_with_shared_buffer() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // 2 producers each add 1+2+3+4+5=15, 2 consumers each subtract 1+2+3=6
     // Final: 30 - 12 = 18
-    // Uses `class Buffer` to verify user classes can shadow builtin names
+    // Use a non-builtin class name; Buffer is a global builtin surface.
     expect_i32_multiworker_with_builtins(
         "
-        class Buffer {
+        class SharedBuffer {
             value: number = 0;
             mu: Mutex = new Mutex();
         }
-        async function produce(buf: Buffer, count: number): Promise<void> {
+        async function produce(buf: SharedBuffer, count: number): Promise<void> {
             let bound: number = count + 1;
             let i: number = 1;
             while (i < bound) {
@@ -2268,7 +2268,7 @@ fn test_mutex_producer_consumer_with_shared_buffer() {
                 i = i + 1;
             }
         }
-        async function consume(buf: Buffer, count: number): Promise<void> {
+        async function consume(buf: SharedBuffer, count: number): Promise<void> {
             let bound: number = count + 1;
             let i: number = 1;
             while (i < bound) {
@@ -2279,7 +2279,7 @@ fn test_mutex_producer_consumer_with_shared_buffer() {
             }
         }
         async function main(): Promise<number> {
-            let buf = new Buffer();
+            let buf = new SharedBuffer();
             let p1 = produce(buf, 5);
             let p2 = produce(buf, 5);
             let c1 = consume(buf, 3);

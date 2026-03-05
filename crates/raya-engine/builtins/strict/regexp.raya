@@ -11,6 +11,7 @@ const REGEXP_SPLIT: number = 0x0A06;
 const REPLACE_MATCHES: number = 0x0A07;
 
 class RegExp {
+    private regexpPtr: number;
     source: string;
     flags: string;
     global: boolean;
@@ -21,32 +22,45 @@ class RegExp {
     lastIndex: number;
 
     constructor(pattern: string, flags?: string) {
-        __NATIVE_CALL<void>(REGEXP_NEW, this, pattern, flags);
+        let normalizedFlags = flags;
+        if (normalizedFlags == null) {
+            normalizedFlags = "";
+        }
+
+        this.regexpPtr = __NATIVE_CALL<number>(REGEXP_NEW, pattern, normalizedFlags);
+        this.source = pattern;
+        this.flags = normalizedFlags;
+        this.global = normalizedFlags.includes("g");
+        this.ignoreCase = normalizedFlags.includes("i");
+        this.multiline = normalizedFlags.includes("m");
+        this.dotAll = normalizedFlags.includes("s");
+        this.unicode = normalizedFlags.includes("u");
+        this.lastIndex = 0;
     }
 
     test(str: string): boolean {
-        return __NATIVE_CALL<boolean>(TEST, this, str);
+        return __NATIVE_CALL<boolean>(TEST, this.regexpPtr, str);
     }
 
     exec(str: string): (string | number)[] | null {
-        return __NATIVE_CALL<(string | number)[] | null>(EXEC, this, str);
+        return __NATIVE_CALL<(string | number)[] | null>(EXEC, this.regexpPtr, str);
     }
 
     execAll(str: string): string[] {
-        return __NATIVE_CALL<string[]>(EXEC_ALL, this, str);
+        return __NATIVE_CALL<string[]>(EXEC_ALL, this.regexpPtr, str);
     }
 
     replace(str: string, replacement: string): string {
-        return __NATIVE_CALL<string>(REGEXP_REPLACE, this, str, replacement);
+        return __NATIVE_CALL<string>(REGEXP_REPLACE, this.regexpPtr, str, replacement);
     }
 
     split(str: string, limit: number): string[] {
-        return __NATIVE_CALL<string[]>(REGEXP_SPLIT, this, str, limit);
+        return __NATIVE_CALL<string[]>(REGEXP_SPLIT, this.regexpPtr, str, limit);
     }
 
     //@@class_method
     replaceWith(str: string, replacer: (match: string) => string): string {
-        let matches: (string | number)[][] = __NATIVE_CALL<(string | number)[][]>(REPLACE_MATCHES, this, str);
+        let matches: (string | number)[][] = __NATIVE_CALL<(string | number)[][]>(REPLACE_MATCHES, this.regexpPtr, str);
         let result: string = "";
         let lastIndex: int = 0;
 

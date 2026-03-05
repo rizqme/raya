@@ -47,6 +47,17 @@ pub struct ModuleRuntimeLayout {
     pub initialized: bool,
 }
 
+/// Structural slot binding for cross-type field/method access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuralSlotBinding {
+    /// Expected slot maps to a concrete object field slot.
+    Field(usize),
+    /// Expected slot maps to a class vtable method slot.
+    Method(usize),
+    /// Expected slot is not present on the provider type.
+    Missing,
+}
+
 #[cfg(feature = "jit")]
 #[derive(Default)]
 pub struct JitTelemetry {
@@ -156,9 +167,11 @@ pub struct SharedVmState {
     /// Per-module runtime layouts (globals/classes/natives/init state).
     pub module_layouts: RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
 
-    /// Structural slot translation views for imported objects.
-    /// Key: (consumer module checksum, object_id), Value: expected-slot -> actual-slot map.
-    pub structural_slot_views: RwLock<FxHashMap<([u8; 32], u64), Vec<Option<usize>>>>,
+    /// Structural slot translation views for imported/structural objects.
+    /// Key: (consumer module checksum, consumer function id, object_id),
+    /// Value: expected-slot -> provider binding.
+    pub structural_slot_views:
+        RwLock<FxHashMap<([u8; 32], usize, u64), Vec<StructuralSlotBinding>>>,
 
     /// Debug state for debugger coordination (None = no debugger attached)
     pub debug_state: Mutex<Option<Arc<super::debug_state::DebugState>>>,
@@ -361,8 +374,9 @@ impl SharedVmState {
     pub fn register_structural_slot_view(
         &self,
         module: &Module,
+        consumer_func_id: usize,
         object_id: u64,
-        slot_map: Vec<Option<usize>>,
+        slot_map: Vec<StructuralSlotBinding>,
     ) {
         if slot_map.is_empty() {
             return;
@@ -370,8 +384,10 @@ impl SharedVmState {
         let is_identity = slot_map
             .iter()
             .enumerate()
-            .all(|(expected, actual)| actual.is_some_and(|mapped| mapped == expected));
-        let key = (module.checksum, object_id);
+            .all(|(expected, binding)| {
+                matches!(binding, StructuralSlotBinding::Field(mapped) if *mapped == expected)
+            });
+        let key = (module.checksum, consumer_func_id, object_id);
         if is_identity {
             self.structural_slot_views.write().remove(&key);
             return;
@@ -479,7 +495,16 @@ impl SharedVmState {
             }
 
             for method in &class_def.methods {
-                if !class_meta.has_method(&method.name) {
+                let plain_name = method
+                    .name
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(method.name.as_str())
+                    .to_string();
+                if !class_meta.has_method(&plain_name) {
+                    class_meta.add_method(plain_name.clone(), method.slot);
+                }
+                if plain_name != method.name && !class_meta.has_method(&method.name) {
                     class_meta.add_method(method.name.clone(), method.slot);
                 }
             }

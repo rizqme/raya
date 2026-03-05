@@ -188,6 +188,29 @@ impl<'a> GenericContext<'a> {
                 }
             }
 
+            Type::Reference(reference) => {
+                let Some(args) = reference.type_args else {
+                    return Ok(ty);
+                };
+                let mut substituted_args = Vec::with_capacity(args.len());
+                let mut changed = false;
+                for arg in args {
+                    let substituted = self.apply_substitution(arg)?;
+                    if substituted != arg {
+                        changed = true;
+                    }
+                    substituted_args.push(substituted);
+                }
+                if !changed {
+                    Ok(ty)
+                } else {
+                    Ok(self.type_ctx.intern(Type::Reference(super::ty::TypeReference {
+                        name: reference.name,
+                        type_args: Some(substituted_args),
+                    })))
+                }
+            }
+
             // Other types don't contain type variables
             _ => Ok(ty),
         }

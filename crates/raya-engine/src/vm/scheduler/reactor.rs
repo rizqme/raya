@@ -7,7 +7,7 @@
 
 use crate::vm::abi::native_to_value;
 use crate::vm::interpreter::{ExecutionResult, Interpreter, PromiseMicrotask, SharedVmState};
-use crate::vm::object::{Buffer, ChannelObject, Object, RayaString};
+use crate::vm::object::{Buffer, ChannelObject, Class, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::value::Value;
 use crossbeam::channel::{self, Receiver, Sender, TryRecvError, TrySendError};
@@ -269,32 +269,39 @@ impl Reactor {
 
         // Join VM workers (2s timeout)
         let timeout = Duration::from_secs(2);
+        let mut all_threads_joined = true;
         for handle in self.vm_worker_handles.drain(..) {
-            Self::join_with_timeout(handle, timeout);
+            all_threads_joined &= Self::join_with_timeout(handle, timeout);
         }
 
         // Join reactor thread
         if let Some(handle) = self.reactor_handle.take() {
-            Self::join_with_timeout(handle, timeout);
+            all_threads_joined &= Self::join_with_timeout(handle, timeout);
         }
 
         self.started = false;
 
-        // Clear task registry
-        self.shared_state.tasks.write().clear();
+        // Clear task registry only when all worker/reactor threads are fully joined.
+        // If a thread timed out and was detached, keep task state intact so detached
+        // workers don't race dropped tasks.
+        if all_threads_joined {
+            self.shared_state.tasks.write().clear();
+        } else {
+            eprintln!("[runtime] reactor shutdown timed out; detached worker(s) remain");
+        }
     }
 
-    /// Join a thread with timeout, detach if stuck.
-    fn join_with_timeout(handle: JoinHandle<()>, timeout: Duration) {
+    /// Join a thread with timeout, detaching if it does not terminate in time.
+    fn join_with_timeout(handle: JoinHandle<()>, timeout: Duration) -> bool {
         let start = Instant::now();
         loop {
             if handle.is_finished() {
                 let _ = handle.join();
-                return;
+                return true;
             }
             if start.elapsed() > timeout {
                 drop(handle);
-                return;
+                return false;
             }
             thread::sleep(JOIN_POLL_INTERVAL);
         }
@@ -941,23 +948,23 @@ impl Reactor {
                 let handle = gc_ptr.as_ptr() as u64;
 
                 // Wrap in a proper Object with Buffer class_id so vtable dispatch works
-                let classes = shared_state.classes.read();
-                if let Some(buffer_class) = classes.get_class_by_name("Buffer") {
-                    let class_id = buffer_class.id;
-                    let field_count = buffer_class.field_count;
-                    drop(classes);
-                    let mut obj = Object::new(class_id, field_count);
-                    obj.fields[0] = Value::u64(handle); // bufferPtr field
-                    if field_count > 1 {
-                        obj.fields[1] = Value::i32(data.len() as i32); // length field
+                let (class_id, field_count) = {
+                    let mut classes = shared_state.classes.write();
+                    if let Some(buffer_class) = classes.get_class_by_name("Buffer") {
+                        (buffer_class.id, buffer_class.field_count.max(2))
+                    } else {
+                        let id = classes.next_class_id();
+                        classes.register_class(Class::new(id, "Buffer".to_string(), 2));
+                        (id, 2)
                     }
-                    let obj_ptr = gc.allocate(obj);
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) }
-                } else {
-                    drop(classes);
-                    // Fallback: return raw buffer pointer (no class dispatch)
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                };
+                let mut obj = Object::new(class_id, field_count);
+                obj.fields[0] = Value::u64(handle); // bufferPtr field
+                if field_count > 1 {
+                    obj.fields[1] = Value::i32(data.len() as i32); // length field
                 }
+                let obj_ptr = gc.allocate(obj);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) }
             }
             IoCompletion::String(s) => {
                 let raya_str = RayaString::new(s);

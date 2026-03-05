@@ -67,6 +67,8 @@ pub struct Compiler<'a> {
     interner: &'a Interner,
     /// Expression types from type checker (maps expr ptr to TypeId)
     expr_types: FxHashMap<usize, TypeId>,
+    /// Type annotation types from type checker (maps annotation ptr to TypeId)
+    type_annotation_types: FxHashMap<usize, TypeId>,
     /// JSX compilation options (None = JSX disabled)
     jsx_options: Option<lower::JsxOptions>,
     /// Whether to emit source map (bytecode offset → source location)
@@ -89,6 +91,7 @@ impl<'a> Compiler<'a> {
             type_ctx,
             interner,
             expr_types: FxHashMap::default(),
+            type_annotation_types: FxHashMap::default(),
             jsx_options: None,
             emit_sourcemap: false,
             js_this_binding_compat: false,
@@ -111,6 +114,15 @@ impl<'a> Compiler<'a> {
     /// Set expression types from the type checker's CheckResult
     pub fn with_expr_types(mut self, expr_types: FxHashMap<usize, TypeId>) -> Self {
         self.expr_types = expr_types;
+        self
+    }
+
+    /// Set resolved type annotation types from the type checker's CheckResult
+    pub fn with_type_annotation_types(
+        mut self,
+        type_annotation_types: FxHashMap<usize, TypeId>,
+    ) -> Self {
+        self.type_annotation_types = type_annotation_types;
         self
     }
 
@@ -160,6 +172,7 @@ impl<'a> Compiler<'a> {
     pub fn compile_to_ir(&self, module: &ast::Module) -> ir::IrModule {
         let mut lowerer =
             lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
+                .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(self.emit_sourcemap)
                 .with_js_this_binding_compat(self.js_this_binding_compat);
         if let Some(ref jsx_opts) = self.jsx_options {
@@ -187,6 +200,7 @@ impl<'a> Compiler<'a> {
         // Step 1: Lower AST to IR
         let mut lowerer =
             lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
+                .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(need_sourcemap)
                 .with_js_this_binding_compat(self.js_this_binding_compat);
         if let Some(ref jsx_opts) = self.jsx_options {
@@ -302,6 +316,7 @@ impl<'a> Compiler<'a> {
         // Step 1: Lower AST to IR
         let mut lowerer =
             lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
+                .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(self.emit_sourcemap)
                 .with_js_this_binding_compat(self.js_this_binding_compat);
         if let Some(ref jsx_opts) = self.jsx_options {

@@ -9,7 +9,7 @@ fn test_fetch_get_request_and_response() {
     expect_bool_with_builtins(
         r#"
         import fetch from "std:fetch";
-        import { HttpServer } from "std:http";
+        import { HttpRequest, HttpServer } from "std:http";
 
         async function serverTask(server: HttpServer): Promise<boolean> {
             let req: HttpRequest;
@@ -49,7 +49,7 @@ fn test_fetch_post_with_extra_headers() {
     expect_bool_with_builtins(
         r#"
         import fetch from "std:fetch";
-        import { HttpServer } from "std:http";
+        import { HttpRequest, HttpServer } from "std:http";
 
         async function serverTask(server: HttpServer): Promise<boolean> {
             let req: HttpRequest;

@@ -216,7 +216,6 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_regex_literal(&mut self, regex: &ast::RegexLiteral) -> Register {
-        let dest = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
         let pattern = self.interner.resolve(regex.pattern).to_string();
         let flags = self.interner.resolve(regex.flags).to_string();
 
@@ -234,7 +233,48 @@ impl<'a> Lowerer<'a> {
             value: IrValue::Constant(IrConstant::String(flags)),
         });
 
-        // new RegExp(pattern, flags) via NativeCall
+        // Prefer class construction when RegExp class metadata exists so literals
+        // produce proper objects (matching `new RegExp(...)`) rather than raw handles.
+        let regexp_class_id = self.class_map.iter().find_map(|(sym, class_id)| {
+            (self.interner.resolve(*sym) == TC::REGEXP_TYPE_NAME).then_some(*class_id)
+        });
+
+        if let Some(class_id) = regexp_class_id {
+            let dest = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::NewObject {
+                dest: dest.clone(),
+                class: class_id,
+            });
+
+            let all_fields = self.get_all_fields(class_id);
+            for field in &all_fields {
+                if let Some(ref init_expr) = field.initializer {
+                    let value = self.lower_expr(init_expr);
+                    self.emit(IrInstr::StoreField {
+                        object: dest.clone(),
+                        field: field.index,
+                        value,
+                    });
+                }
+            }
+
+            if let Some(ctor_func_id) = self
+                .class_info_map
+                .get(&class_id)
+                .and_then(|info| info.constructor)
+            {
+                self.emit(IrInstr::Call {
+                    dest: None,
+                    func: ctor_func_id,
+                    args: vec![dest.clone(), pattern_reg, flags_reg],
+                });
+            }
+
+            return dest;
+        }
+
+        // Fallback path when no RegExp class is present in scope.
+        let dest = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
         self.emit(IrInstr::NativeCall {
             dest: Some(dest.clone()),
             native_id: builtin_regexp::NEW,
@@ -1365,6 +1405,67 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
+            // Nested class-method environment bridge call path.
+            // std-wrapper class methods can call enclosing wrapper locals/functions
+            // that were materialized into dedicated globals.
+            if let Some(binding) = self
+                .current_method_env_globals
+                .as_ref()
+                .and_then(|m| m.get(&ident.name))
+                .copied()
+            {
+                let closure_ty = self.get_expr_type(&call.callee);
+                let closure_ty_raw = closure_ty.as_u32();
+                let known_callable = self.closure_globals.contains_key(&binding.global_idx)
+                    || self.callable_symbol_hints.contains(&ident.name)
+                    || self.bound_method_vars.contains_key(&ident.name)
+                    || self.function_map.contains_key(&ident.name);
+                if !known_callable && !self.type_is_callable(closure_ty) {
+                    self.errors
+                        .push(crate::compiler::CompileError::InternalError {
+                            message: format!(
+                                "unresolved call target '{}': bridged method-env value is not callable (type id {})",
+                                self.interner.resolve(ident.name),
+                                closure_ty_raw
+                            ),
+                        });
+                    self.poison_register(&dest);
+                    return dest;
+                }
+
+                let mut closure = self.alloc_register(closure_ty);
+                self.emit(IrInstr::LoadGlobal {
+                    dest: closure.clone(),
+                    index: binding.global_idx,
+                });
+                if binding.is_refcell {
+                    let value = self.alloc_register(closure_ty);
+                    self.emit(IrInstr::LoadRefCell {
+                        dest: value.clone(),
+                        refcell: closure,
+                    });
+                    closure = value;
+                }
+
+                if let Some(&func_id) = self.closure_globals.get(&binding.global_idx) {
+                    if self.async_closures.contains(&func_id) {
+                        self.emit(IrInstr::SpawnClosure {
+                            dest: dest.clone(),
+                            closure,
+                            args,
+                        });
+                        return dest;
+                    }
+                }
+
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest.clone()),
+                    closure,
+                    args,
+                });
+                return dest;
+            }
+
             // Captured/ancestor identifier call (e.g. method param used inside arrow):
             // resolve through identifier lowering so capture slots are honored.
             if is_captured || is_ancestor {
@@ -1858,8 +1959,66 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
+            // Method extraction bind fast-path:
+            // `obj.method.bind(receiver)` can be lowered directly to BindMethod
+            // when the source method slot is statically known.
+            if method_name == "bind" {
+                if let (Expression::Member(inner_member), Some(bound_receiver)) =
+                    (&*member.object, args.first().cloned())
+                {
+                    if let Some(class_id) = self.infer_class_id(&inner_member.object) {
+                        if let Some(method_slot) =
+                            self.find_method_slot(class_id, inner_member.property.name)
+                        {
+                            self.emit(IrInstr::BindMethod {
+                                dest: dest.clone(),
+                                object: bound_receiver,
+                                method: method_slot,
+                            });
+                            return dest;
+                        }
+                    }
+                }
+            }
+
             // Check if this is a static method call (e.g., Utils.double(21))
             if let Expression::Identifier(ident) = &*member.object {
+                let class_name = self.interner.resolve(ident.name);
+                let static_native_id = match (class_name, method_name) {
+                    ("Object", "defineProperty") => {
+                        Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTY)
+                    }
+                    ("Object", "getOwnPropertyDescriptor") => {
+                        Some(crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR)
+                    }
+                    ("Object", "defineProperties") => {
+                        Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES)
+                    }
+                    _ => None,
+                };
+                if let Some(native_id) = static_native_id {
+                    self.emit(IrInstr::NativeCall {
+                        dest: Some(dest.clone()),
+                        native_id,
+                        args,
+                    });
+                    if native_id == crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR
+                    {
+                        self.register_object_fields.insert(
+                            dest.id,
+                            vec![
+                                ("value".to_string(), 0),
+                                ("writable".to_string(), 1),
+                                ("configurable".to_string(), 2),
+                                ("enumerable".to_string(), 3),
+                                ("get".to_string(), 4),
+                                ("set".to_string(), 5),
+                            ],
+                        );
+                    }
+                    return dest;
+                }
+
                 if let Some(&class_id) = self.class_map.get(&ident.name) {
                     // This is a class identifier, check for static methods
                     if let Some(&func_id) =
@@ -1923,7 +2082,7 @@ impl<'a> Lowerer<'a> {
                     id == cid
                         && matches!(
                             self.interner.resolve(sym),
-                            "string" | "number" | "Array" | "RegExp"
+                            "string" | "number" | "Array"
                         )
                 });
                 if is_builtin {
@@ -1956,11 +2115,19 @@ impl<'a> Lowerer<'a> {
                         field: field_info.index,
                         optional: member.optional,
                     });
-                    self.emit(IrInstr::CallClosure {
-                        dest: Some(dest.clone()),
-                        closure: field_reg,
-                        args,
-                    });
+                    if self.type_id_is_async_callable(field_info.ty) {
+                        self.emit(IrInstr::SpawnClosure {
+                            dest: dest.clone(),
+                            closure: field_reg,
+                            args,
+                        });
+                    } else {
+                        self.emit(IrInstr::CallClosure {
+                            dest: Some(dest.clone()),
+                            closure: field_reg,
+                            args,
+                        });
+                    }
                     return dest;
                 }
 
@@ -2082,7 +2249,8 @@ impl<'a> Lowerer<'a> {
             }
 
             // Structural object-call path: `obj.f(...)` where `f` is function-typed.
-            // Keep this explicit so strict dispatch does not regress object-method calls.
+            // Keep slot-based lowering; runtime structural slot views map interface
+            // slots to concrete field/method bindings.
             if class_id.is_none()
                 && self.is_structural_object_type(self.get_expr_type(&member.object))
                 && self.type_is_callable(self.get_expr_type(&call.callee))
@@ -2108,11 +2276,19 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 let closure = self.lower_member(member);
-                self.emit(IrInstr::CallClosure {
-                    dest: Some(dest.clone()),
-                    closure,
-                    args,
-                });
+                if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
+                    self.emit(IrInstr::SpawnClosure {
+                        dest: dest.clone(),
+                        closure,
+                        args,
+                    });
+                } else {
+                    self.emit(IrInstr::CallClosure {
+                        dest: Some(dest.clone()),
+                        closure,
+                        args,
+                    });
+                }
                 return dest;
             }
 
@@ -2132,11 +2308,23 @@ impl<'a> Lowerer<'a> {
                                 );
                             }
                             let closure = self.lower_member(member);
-                            self.emit(IrInstr::CallClosure {
-                                dest: Some(dest.clone()),
-                                closure,
-                                args,
-                            });
+                            if self.late_bound_member_call_is_async(
+                                &member.object,
+                                &call.callee,
+                                method_name,
+                            ) {
+                                self.emit(IrInstr::SpawnClosure {
+                                    dest: dest.clone(),
+                                    closure,
+                                    args,
+                                });
+                            } else {
+                                self.emit(IrInstr::CallClosure {
+                                    dest: Some(dest.clone()),
+                                    closure,
+                                    args,
+                                });
+                            }
                             return dest;
                         }
                     }
@@ -2199,11 +2387,19 @@ impl<'a> Lowerer<'a> {
                     object,
                     property: method_name.to_string(),
                 });
-                self.emit(IrInstr::CallClosure {
-                    dest: Some(dest.clone()),
-                    closure,
-                    args,
-                });
+                if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
+                    self.emit(IrInstr::SpawnClosure {
+                        dest: dest.clone(),
+                        closure,
+                        args,
+                    });
+                } else {
+                    self.emit(IrInstr::CallClosure {
+                        dest: Some(dest.clone()),
+                        closure,
+                        args,
+                    });
+                }
                 return dest;
             }
 
@@ -2237,10 +2433,15 @@ impl<'a> Lowerer<'a> {
                     match action {
                         crate::compiler::type_registry::DispatchAction::NativeCall(mut id) => {
                             // Special handling: string methods with RegExp argument
-                            if obj_type_id == STRING_TYPE_ID
-                                && !args.is_empty()
-                                && args[0].ty.as_u32() == REGEXP_TYPE_ID
-                            {
+                            let first_arg_is_regexp = if !args.is_empty() {
+                                let reg_ty = self.normalize_type_for_dispatch(args[0].ty.as_u32());
+                                let checker_ty = self
+                                    .normalize_type_for_dispatch(self.get_expr_type(&call.arguments[0]).as_u32());
+                                reg_ty == REGEXP_TYPE_ID || checker_ty == REGEXP_TYPE_ID
+                            } else {
+                                false
+                            };
+                            if obj_type_id == STRING_TYPE_ID && first_arg_is_regexp {
                                 use crate::vm::builtin::string as bs;
                                 match method_name {
                                     "replace" => id = bs::REPLACE_REGEXP,
@@ -2276,36 +2477,20 @@ impl<'a> Lowerer<'a> {
             };
 
             if let Some(method_id) = method_id {
-                // Some builtin method IDs are implemented only through NativeCall
-                // handlers (map/set/channel/buffer/date/mutex). Lower these to
-                // NativeCall(receiver, ...args) to avoid object-vtable dispatch on
-                // non-object handle representations.
-                let use_native_dispatch = !member.optional
-                    && (crate::vm::builtin::is_map_method(method_id)
-                        || crate::vm::builtin::is_set_method(method_id)
-                        || crate::vm::builtin::is_channel_method(method_id)
-                        || crate::vm::builtin::is_buffer_method(method_id)
-                        || crate::vm::builtin::is_date_method(method_id)
-                        || crate::vm::builtin::is_mutex_method(method_id));
-
-                if use_native_dispatch {
-                    let mut native_args = Vec::with_capacity(args.len() + 1);
-                    native_args.push(object);
-                    native_args.extend(args);
-                    self.emit(IrInstr::NativeCall {
-                        dest: Some(dest.clone()),
-                        native_id: method_id,
-                        args: native_args,
-                    });
-                } else {
-                    self.emit(IrInstr::CallMethod {
-                        dest: Some(dest.clone()),
-                        object,
-                        method: method_id,
-                        args,
-                        optional: member.optional,
-                    });
-                }
+                // Registry DispatchAction::NativeCall entries are VM native IDs,
+                // not class vtable slots. Always lower these as NativeCall with
+                // receiver as arg0 to support primitive receivers (number/string)
+                // and handle-backed builtins (Map/Set/Channel/Buffer/Date/Mutex).
+                // Optional member calls on builtin native methods are currently
+                // lowered as eager native calls (same as non-optional).
+                let mut native_args = Vec::with_capacity(args.len() + 1);
+                native_args.push(object);
+                native_args.extend(args);
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id: method_id,
+                    args: native_args,
+                });
 
                 // Propagate return type for builtin methods so subsequent operations
                 // use the correct typed opcodes (e.g., Iadd vs Fadd, Seq vs Feq).
@@ -2338,11 +2523,19 @@ impl<'a> Lowerer<'a> {
                         field: field_index,
                         optional: member.optional,
                     });
-                    self.emit(IrInstr::CallClosure {
-                        dest: Some(dest.clone()),
-                        closure,
-                        args,
-                    });
+                    if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
+                        self.emit(IrInstr::SpawnClosure {
+                            dest: dest.clone(),
+                            closure,
+                            args,
+                        });
+                    } else {
+                        self.emit(IrInstr::CallClosure {
+                            dest: Some(dest.clone()),
+                            closure,
+                            args,
+                        });
+                    }
                     return dest;
                 }
             }
@@ -2357,11 +2550,19 @@ impl<'a> Lowerer<'a> {
                     object,
                     property: method_name.to_string(),
                 });
-                self.emit(IrInstr::CallClosure {
-                    dest: Some(dest.clone()),
-                    closure,
-                    args,
-                });
+                if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
+                    self.emit(IrInstr::SpawnClosure {
+                        dest: dest.clone(),
+                        closure,
+                        args,
+                    });
+                } else {
+                    self.emit(IrInstr::CallClosure {
+                        dest: Some(dest.clone()),
+                        closure,
+                        args,
+                    });
+                }
                 return dest;
             }
 
@@ -2434,11 +2635,19 @@ impl<'a> Lowerer<'a> {
         }
 
         let closure = self.lower_expr(&call.callee);
-        self.emit(IrInstr::CallClosure {
-            dest: Some(dest.clone()),
-            closure,
-            args,
-        });
+        if self.type_id_is_async_callable(callee_ty) {
+            self.emit(IrInstr::SpawnClosure {
+                dest: dest.clone(),
+                closure,
+                args,
+            });
+        } else {
+            self.emit(IrInstr::CallClosure {
+                dest: Some(dest.clone()),
+                closure,
+                args,
+            });
+        }
         dest
     }
 
@@ -2557,8 +2766,17 @@ impl<'a> Lowerer<'a> {
                         }
                         return dest;
                     }
-                    crate::compiler::type_registry::DispatchAction::NativeCall(_method_id) => {
-                        // Properties shouldn't use NativeCall, but handle for completeness
+                    crate::compiler::type_registry::DispatchAction::NativeCall(method_id) => {
+                        let mut dest = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+                        if let Some(ret_type) = self.type_registry.lookup_return_type(method_id) {
+                            dest.ty = TypeId::new(ret_type);
+                        }
+                        self.emit(IrInstr::NativeCall {
+                            dest: Some(dest.clone()),
+                            native_id: method_id,
+                            args: vec![object],
+                        });
+                        return dest;
                     }
                     crate::compiler::type_registry::DispatchAction::ClassMethod(_, _) => {
                         // Properties shouldn't use ClassMethod
@@ -2599,9 +2817,18 @@ impl<'a> Lowerer<'a> {
                 }
                 // Field not found — check if it's a method (bound method extraction)
                 if let Some(slot) = self.find_method_slot(class_id, member.property.name) {
+                    let member_ty = {
+                        let member_expr = Expression::Member(member.clone());
+                        let inferred = self.get_expr_type(&member_expr);
+                        if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                            UNRESOLVED
+                        } else {
+                            inferred
+                        }
+                    };
                     if self.js_this_binding_compat {
                         if let Some(func_id) = self.find_method(class_id, member.property.name) {
-                            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                            let dest = self.alloc_register(member_ty);
                             self.emit(IrInstr::MakeClosure {
                                 dest: dest.clone(),
                                 func: func_id,
@@ -2610,7 +2837,7 @@ impl<'a> Lowerer<'a> {
                             return dest;
                         }
                     }
-                    let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    let dest = self.alloc_register(member_ty);
                     self.emit(IrInstr::BindMethod {
                         dest: dest.clone(),
                         object,
@@ -3127,7 +3354,10 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn structural_slot_layout_from_type(&self, ty_id: TypeId) -> Option<Vec<(String, u16)>> {
+    pub(super) fn structural_slot_layout_from_type(
+        &self,
+        ty_id: TypeId,
+    ) -> Option<Vec<(String, u16)>> {
         let mut names = FxHashSet::default();
         let mut visited = FxHashSet::default();
         if !self.collect_structural_slot_names_from_type(ty_id, &mut names, &mut visited) {
@@ -4816,44 +5046,53 @@ impl<'a> Lowerer<'a> {
             }
 
             if name == TC::REGEXP_TYPE_NAME {
-                // new RegExp(pattern, flags?) -> NativeCall(0x0A00)
-                // Use TypeId 8 for RegExp
-                let regexp_dest = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
-                let mut args = Vec::new();
-                for arg in &new_expr.arguments {
-                    args.push(self.lower_expr(arg));
-                }
-                // If flags not provided, pass empty string
-                if args.len() == 1 {
-                    let empty_flags = self.alloc_register(TypeId::new(STRING_TYPE_ID)); // String type
-                    self.emit(IrInstr::Assign {
-                        dest: empty_flags.clone(),
-                        value: IrValue::Constant(IrConstant::String(String::new())),
+                // In no-prelude mode RegExp may not be declared as a class in this module.
+                // Fall back to direct native constructor only in that case.
+                let has_regexp_class = self.class_map.contains_key(&ident.name)
+                    || self.variable_class_map.contains_key(&ident.name);
+                if !has_regexp_class {
+                    let regexp_dest = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
+                    let mut args = Vec::new();
+                    for arg in &new_expr.arguments {
+                        args.push(self.lower_expr(arg));
+                    }
+                    // If flags not provided, pass empty string
+                    if args.len() == 1 {
+                        let empty_flags = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: empty_flags.clone(),
+                            value: IrValue::Constant(IrConstant::String(String::new())),
+                        });
+                        args.push(empty_flags);
+                    }
+                    self.emit(IrInstr::NativeCall {
+                        dest: Some(regexp_dest.clone()),
+                        native_id: builtin_regexp::NEW,
+                        args,
                     });
-                    args.push(empty_flags);
+                    return regexp_dest;
                 }
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(regexp_dest.clone()),
-                    native_id: builtin_regexp::NEW,
-                    args,
-                });
-                return regexp_dest;
             }
 
             if name == TC::CHANNEL_TYPE_NAME {
-                // Builtin Channel is type-known but may not be lowered as a concrete class
-                // in per-module compilation. Lower constructor directly to opcode IR.
-                let channel_dest = self.alloc_register(TypeId::new(CHANNEL_TYPE_ID));
-                let capacity = if let Some(first_arg) = new_expr.arguments.first() {
-                    self.lower_expr(first_arg)
-                } else {
-                    self.emit_i32_const(0)
-                };
-                self.emit(IrInstr::NewChannel {
-                    dest: channel_dest.clone(),
-                    capacity,
-                });
-                return channel_dest;
+                // When Channel class definition is unavailable, lower directly to opcode IR.
+                // If the Channel class exists (builtin prelude/module class), use normal class
+                // construction so methods dispatch through wrapper methods (`channelId` field).
+                let has_channel_class = self.class_map.contains_key(&ident.name)
+                    || self.variable_class_map.contains_key(&ident.name);
+                if !has_channel_class {
+                    let channel_dest = self.alloc_register(TypeId::new(CHANNEL_TYPE_ID));
+                    let capacity = if let Some(first_arg) = new_expr.arguments.first() {
+                        self.lower_expr(first_arg)
+                    } else {
+                        self.emit_i32_const(0)
+                    };
+                    self.emit(IrInstr::NewChannel {
+                        dest: channel_dest.clone(),
+                        capacity,
+                    });
+                    return channel_dest;
+                }
             }
 
             // Look up class ID from known class symbols or class-typed aliases.
@@ -4963,6 +5202,19 @@ impl<'a> Lowerer<'a> {
                     native_id,
                     args,
                 });
+                if name == "Object" {
+                    self.register_object_fields.insert(
+                        ctor_dest.id,
+                        vec![
+                            ("value".to_string(), 0),
+                            ("writable".to_string(), 1),
+                            ("configurable".to_string(), 2),
+                            ("enumerable".to_string(), 3),
+                            ("get".to_string(), 4),
+                            ("set".to_string(), 5),
+                        ],
+                    );
+                }
                 return ctor_dest;
             }
 
@@ -5041,9 +5293,17 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        let ctor_name = if let Expression::Identifier(ident) = &*new_expr.callee {
+            self.interner.resolve(ident.name).to_string()
+        } else {
+            "<dynamic>".to_string()
+        };
         self.errors
             .push(crate::compiler::CompileError::InternalError {
-                message: "unresolved constructor target in `new` expression".to_string(),
+                message: format!(
+                    "unresolved constructor target in `new` expression: {}",
+                    ctor_name
+                ),
             });
         self.lower_unresolved_poison()
     }
@@ -5254,9 +5514,6 @@ impl<'a> Lowerer<'a> {
         if let Expression::Member(member) = &*async_call.callee {
             let method_name_symbol = member.property.name;
 
-            // Lower the object
-            let object = self.lower_expr(&member.object);
-
             // Check if it's a static method call
             if let Expression::Identifier(ident) = &*member.object {
                 if let Some(&class_id) = self.class_map.get(&ident.name) {
@@ -5278,6 +5535,7 @@ impl<'a> Lowerer<'a> {
             let class_id = self.infer_class_id(&member.object);
             if let Some(class_id) = class_id {
                 if let Some(func_id) = self.find_method(class_id, method_name_symbol) {
+                    let object = self.lower_expr(&member.object);
                     let mut method_args = vec![object];
                     method_args.extend(args);
                     self.emit(IrInstr::Spawn {
@@ -5288,40 +5546,15 @@ impl<'a> Lowerer<'a> {
                     return dest;
                 }
             }
-        }
 
-        // Fallback: treat callee as closure/expression only when callable.
-        // For member calls we already emitted strict diagnostics above.
-        if let Expression::Member(member) = &*async_call.callee {
-            let method_name = self.interner.resolve(member.property.name);
-            let object_class = self.infer_class_id(&member.object).and_then(|cid| {
-                self.class_map.iter().find_map(|(&sym, &id)| {
-                    if id == cid {
-                        Some(self.interner.resolve(sym).to_string())
-                    } else {
-                        None
-                    }
-                })
+            // Dynamic/late-bound member fallback:
+            // lower member access and spawn the resulting callable.
+            let closure = self.lower_member(member);
+            self.emit(IrInstr::SpawnClosure {
+                dest: dest.clone(),
+                closure,
+                args,
             });
-            let object_ty = self.get_expr_type(&member.object).as_u32();
-            let object_desc = object_class
-                .map(|name| format!("class {}", name))
-                .or_else(|| {
-                    if object_ty != UNRESOLVED_TYPE_ID {
-                        Some(format!("type id {}", object_ty))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "unknown receiver type".to_string());
-            self.errors
-                .push(crate::compiler::CompileError::InternalError {
-                    message: format!(
-                        "unresolved async member call '{}()' on {}: no class dispatch path",
-                        method_name, object_desc
-                    ),
-                });
-            self.poison_register(&dest);
             return dest;
         }
 
@@ -5453,19 +5686,20 @@ impl<'a> Lowerer<'a> {
 
     /// Lower type cast expression: expr as TypeName
     fn lower_type_cast(&mut self, cast: &ast::TypeCastExpression) -> Register {
+        let mut target_ty = self.resolve_type_annotation(&cast.target_type);
+        if target_ty == UNRESOLVED {
+            if let ast::Type::Reference(type_ref) = &cast.target_type.ty {
+                let name = self.interner.resolve(type_ref.name.name);
+                if let Some(named) = self.type_ctx.lookup_named_type(name) {
+                    target_ty = named;
+                }
+            }
+        }
+
         // Lower the object expression. For object literals, use target-type
         // structural layout as contextual slot space.
         let prev_layout = self.object_literal_target_layout.clone();
         if matches!(&*cast.object, Expression::Object(_)) {
-            let mut target_ty = self.resolve_type_annotation(&cast.target_type);
-            if target_ty == UNRESOLVED {
-                if let ast::Type::Reference(type_ref) = &cast.target_type.ty {
-                    let name = self.interner.resolve(type_ref.name.name);
-                    if let Some(named) = self.type_ctx.lookup_named_type(name) {
-                        target_ty = named;
-                    }
-                }
-            }
             self.object_literal_target_layout = self
                 .structural_slot_layout_from_type(target_ty)
                 .map(|layout| {
@@ -5593,6 +5827,14 @@ impl<'a> Lowerer<'a> {
         for (field_idx, layout) in nested_array_layouts {
             self.register_nested_array_element_object_fields
                 .insert((dest.id, field_idx), layout);
+        }
+
+        // If lowering already propagated a concrete field layout for this value,
+        // slot-based member access can stay local without runtime remap registration.
+        // This avoids overriding concrete object-literal slots with metadata-based
+        // remaps when the source value is structurally known.
+        if !self.register_object_fields.contains_key(&dest.id) {
+            self.emit_structural_slot_registration_for_type(dest.clone(), target_ty);
         }
 
         dest
@@ -6054,16 +6296,29 @@ impl<'a> Lowerer<'a> {
                             .and_then(|reg| self.class_id_from_type_id(reg.ty))
                     });
                 }
-                self.variable_class_map
+                // Prefer explicit variable/class maps, then local register typing.
+                // Local register type is often more precise than checker fallback
+                // (e.g. primitive parameters should not degrade to Object class).
+                if let Some(class_id) = self.variable_class_map.get(&ident.name).copied() {
+                    return Some(class_id);
+                }
+                if let Some(class_id) = self.class_id_from_type_name(self.interner.resolve(ident.name))
+                {
+                    return Some(class_id);
+                }
+                if let Some(class_id) = self
+                    .variable_object_type_aliases
                     .get(&ident.name)
-                    .copied()
-                    .or_else(|| self.class_id_from_type_name(self.interner.resolve(ident.name)))
-                    .or_else(|| {
-                        self.variable_object_type_aliases
-                            .get(&ident.name)
-                            .and_then(|alias| self.class_id_from_type_name(alias))
-                    })
-                    .or_else(|| self.class_id_from_type_id(self.get_expr_type(expr)))
+                    .and_then(|alias| self.class_id_from_type_name(alias))
+                {
+                    return Some(class_id);
+                }
+                if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                    if let Some(local_reg) = self.local_registers.get(&local_idx) {
+                        return self.class_id_from_type_id(local_reg.ty);
+                    }
+                }
+                self.class_id_from_type_id(self.get_expr_type(expr))
             }
             Expression::TypeCast(cast) => self
                 .try_extract_class_from_type(&cast.target_type)
@@ -6213,6 +6468,150 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn type_id_is_promise_like(&self, ty_id: TypeId) -> bool {
+        use crate::parser::types::ty::Type;
+
+        if ty_id.as_u32() == UNRESOLVED_TYPE_ID {
+            return false;
+        }
+
+        match self.type_ctx.get(ty_id) {
+            Some(Type::Task(_)) => true,
+            Some(Type::Class(class_ty)) if class_ty.name == "Promise" => true,
+            Some(Type::Reference(type_ref)) => {
+                if type_ref.name == "Promise" {
+                    return true;
+                }
+                self.type_ctx
+                    .lookup_named_type(&type_ref.name)
+                    .is_some_and(|named| self.type_id_is_promise_like(named))
+            }
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.type_id_is_promise_like(constraint)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_id_is_promise_like(member)),
+            Some(Type::Generic(generic)) => self.type_id_is_promise_like(generic.base),
+            _ => false,
+        }
+    }
+
+    fn type_id_is_async_callable(&self, ty_id: TypeId) -> bool {
+        use crate::parser::types::ty::Type;
+
+        if ty_id.as_u32() == UNRESOLVED_TYPE_ID {
+            return false;
+        }
+
+        match self.type_ctx.get(ty_id) {
+            Some(Type::Function(func)) => {
+                func.is_async || self.type_id_is_promise_like(func.return_type)
+            }
+            Some(Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .is_some_and(|named| self.type_id_is_async_callable(named)),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.type_id_is_async_callable(constraint)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_id_is_async_callable(member)),
+            Some(Type::Generic(generic)) => self.type_id_is_async_callable(generic.base),
+            _ => false,
+        }
+    }
+
+    fn class_type_has_async_method(&self, ty_id: TypeId, method_name: &str) -> bool {
+        use crate::parser::types::ty::Type;
+
+        match self.type_ctx.get(ty_id) {
+            Some(Type::Class(class_ty)) => class_ty.methods.iter().any(|method| {
+                method.name == method_name && self.type_id_is_async_callable(method.ty)
+            }),
+            Some(Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .is_some_and(|named| self.class_type_has_async_method(named, method_name)),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.class_type_has_async_method(constraint, method_name)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.class_type_has_async_method(member, method_name)),
+            Some(Type::Generic(generic)) => self.class_type_has_async_method(generic.base, method_name),
+            _ => false,
+        }
+    }
+
+    fn late_bound_member_call_is_async(
+        &self,
+        receiver: &Expression,
+        callee: &Expression,
+        method_name: &str,
+    ) -> bool {
+        let callee_ty = self.get_expr_type(callee);
+        if self.type_id_is_async_callable(callee_ty) {
+            return true;
+        }
+
+        let Expression::Identifier(receiver_ident) = receiver else {
+            return false;
+        };
+
+        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+            eprintln!(
+                "[lower] late-bound async check '{}.{}' callee_ty={}",
+                self.interner.resolve(receiver_ident.name),
+                method_name,
+                callee_ty.as_u32()
+            );
+        }
+
+        if let Some(&receiver_ty) = self.late_bound_object_type_map.get(&receiver_ident.name) {
+            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                eprintln!(
+                    "[lower] late-bound async check via ctor ty id {}",
+                    receiver_ty.as_u32()
+                );
+            }
+            if self.class_type_has_async_method(receiver_ty, method_name) {
+                return true;
+            }
+        }
+
+        if let Some(&ctor_symbol) = self.late_bound_object_ctor_map.get(&receiver_ident.name) {
+            let ctor_name = self.interner.resolve(ctor_symbol);
+            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                eprintln!(
+                    "[lower] late-bound async check via ctor name '{}'",
+                    ctor_name
+                );
+            }
+            if let Some(ctor_ty) = self.type_ctx.lookup_named_type(ctor_name) {
+                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                    eprintln!(
+                        "[lower] late-bound async ctor '{}' resolved ty id {}",
+                        ctor_name,
+                        ctor_ty.as_u32()
+                    );
+                }
+                if self.class_type_has_async_method(ctor_ty, method_name) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
     pub(super) fn class_id_from_type_id(&self, ty_id: TypeId) -> Option<ClassId> {
         use crate::parser::types::ty::Type;
 
@@ -6349,7 +6748,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_template_literal(&mut self, template: &ast::TemplateLiteral) -> Register {
-        let string_ty = TypeId::new(NULL_TYPE_ID); // string type
+        let string_ty = TypeId::new(STRING_TYPE_ID);
 
         // If no parts, return empty string
         if template.parts.is_empty() {

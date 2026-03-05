@@ -108,13 +108,15 @@ fn compile_and_extract(
                 inferred_types: FxHashMap::default(),
                 captures: ModuleCaptureInfo::new(),
                 expr_types: FxHashMap::default(),
+                type_annotation_types: FxHashMap::default(),
                 warnings: Vec::new(),
             }
         }
     };
 
     // 4. Lower
-    let mut lowerer = Lowerer::with_expr_types(&type_ctx, &interner, check_result.expr_types);
+    let mut lowerer = Lowerer::with_expr_types(&type_ctx, &interner, check_result.expr_types)
+        .with_type_annotation_types(check_result.type_annotation_types);
     let ir_module = lowerer.lower_module(&module);
 
     // 5. Extract class method IrFunctions by name.

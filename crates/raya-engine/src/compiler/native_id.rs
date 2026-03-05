@@ -17,6 +17,10 @@ pub const OBJECT_GET_OWN_PROPERTY_DESCRIPTOR: u16 = 0x0005;
 pub const OBJECT_DEFINE_PROPERTIES: u16 = 0x0006;
 /// construct(classId, ...args) for class IDs loaded at runtime (e.g., imported classes)
 pub const OBJECT_CONSTRUCT_DYNAMIC_CLASS: u16 = 0x0007;
+/// registerStructuralView(object, memberNames[]) for structural slot remapping
+pub const OBJECT_REGISTER_STRUCTURAL_VIEW: u16 = 0x0008;
+/// construct plain Object descriptor instance with node-compat fields
+pub const OBJECT_NEW: u16 = 0x0009;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs

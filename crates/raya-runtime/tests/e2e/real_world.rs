@@ -1094,7 +1094,7 @@ fn test_event_emitter() {
     // EventEmitter with listeners stored as closures
     expect_i32_with_builtins(
         r#"
-        class EventEmitter {
+        class LocalEmitter {
             listeners: ((data: number) => void)[];
 
             constructor() {
@@ -1114,7 +1114,7 @@ fn test_event_emitter() {
 
         let total = 0;
 
-        let emitter = new EventEmitter();
+        let emitter = new LocalEmitter();
         emitter.on((data: number): void => {
             total = total + data;
         });

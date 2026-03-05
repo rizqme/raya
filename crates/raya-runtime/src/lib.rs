@@ -51,12 +51,12 @@ pub use module_system::{CompiledProgram, ProgramDiagnostics};
 pub use session::Session;
 
 use raya_engine::compiler::module::{LateLinkRequirement, LateLinkSymbolRequirement};
-use raya_engine::compiler::{module_id_from_name, Import, SymbolType};
+use raya_engine::compiler::{module_id_from_name, Export, Import, SymbolType};
 use raya_engine::parser::types::{try_hydrate_type_from_canonical_signature, Type, TypeContext};
 use raya_engine::parser::Interner;
 use raya_engine::vm::json::JSView;
 use raya_engine::vm::module::{ModuleLinker, ResolvedSymbol};
-use raya_engine::vm::object::{Closure, RayaString};
+use raya_engine::vm::object::{Closure, DynObject, RayaString};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -209,10 +209,24 @@ impl Runtime {
 
     /// Compile a Raya source string to a bytecode module.
     ///
-    /// Automatically includes builtin classes (Map, Set, Date, etc.) and
-    /// standard library modules (logger, math, crypto, etc.).
+    /// Uses inline compilation path for plain source and automatically routes
+    /// to binary module-graph compilation when `std:`/`node:` imports are present.
     pub fn compile(&self, source: &str) -> Result<CompiledModule, RuntimeError> {
-        Ok(self.compile_program_source(source)?.entry)
+        let type_mode = self
+            .options
+            .type_mode
+            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
+        let ts_options = self.resolve_ts_options_for_inline()?;
+        let (module, interner) = compile::compile_source_with_modes_and_ts_options(
+            source,
+            self.options.builtin_mode,
+            type_mode,
+            ts_options.as_ref(),
+        )?;
+        Ok(CompiledModule {
+            module,
+            interner: Some(interner),
+        })
     }
 
     /// Compile a Raya source string into a full binary-linked program graph.
@@ -252,18 +266,17 @@ impl Runtime {
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
         let ts_options = self.resolve_ts_options_for_inline()?;
-        let virtual_entry = std::env::current_dir()
-            .map_err(RuntimeError::Io)?
-            .join("__raya_inline_entry.raya");
-        let compiler = module_system::ProgramCompiler {
-            builtin_mode: self.options.builtin_mode,
+        let (module, interner) = compile::compile_source_with_options_and_modes_and_ts_options(
+            source,
+            options,
+            self.options.builtin_mode,
             type_mode,
-            ts_options,
-            compile_options: Some(options.clone()),
-        };
-        Ok(compiler
-            .compile_program_source(source, &virtual_entry)?
-            .entry)
+            ts_options.as_ref(),
+        )?;
+        Ok(CompiledModule {
+            module,
+            interner: Some(interner),
+        })
     }
 
     /// Compile a .raya source file with options (e.g., source map).
@@ -286,18 +299,12 @@ impl Runtime {
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
         let ts_options = self.resolve_ts_options_for_inline()?;
-        let virtual_entry = std::env::current_dir()
-            .map_err(RuntimeError::Io)?
-            .join("__raya_inline_entry.raya");
-        let compiler = module_system::ProgramCompiler {
-            builtin_mode: self.options.builtin_mode,
+        compile::check_source_with_modes_and_ts_options(
+            source,
+            self.options.builtin_mode,
             type_mode,
-            ts_options,
-            compile_options: None,
-        };
-        Ok(compiler
-            .check_program_source(source, &virtual_entry)?
-            .diagnostics)
+            ts_options.as_ref(),
+        )
     }
 
     /// Type-check a .raya source file without generating bytecode.
@@ -478,6 +485,10 @@ impl Runtime {
     /// let value = rt.eval("return 1 + 2;")?;
     /// ```
     pub fn eval(&self, code: &str) -> Result<Value, RuntimeError> {
+        if self.can_use_binary_program_execution() {
+            let program = self.compile_program_source(code)?;
+            return self.execute_program(&program);
+        }
         let module = self.compile(code)?;
         self.execute(&module)
     }
@@ -725,7 +736,14 @@ impl Runtime {
             } else {
                 // Dependency modules must execute once to materialize module-level state
                 // (default export objects, initialized globals, static setup).
-                let _ = vm.execute_entry_only(&current_module)?;
+                match vm.execute_entry_only(&current_module) {
+                    Ok(_) => {}
+                    // Pure library modules can legally export symbols without a top-level
+                    // `main`; they still need hydration/registration but have no init body.
+                    Err(raya_engine::vm::VmError::RuntimeError(message))
+                        if message == "No main function" => {}
+                    Err(error) => return Err(RuntimeError::Vm(error)),
+                }
             }
 
             vm.shared_state().mark_module_initialized(&current_module);
@@ -765,13 +783,16 @@ impl Runtime {
                 .shared_state()
                 .resolve_global_slot(module, local_global_slot);
 
-            let value = Self::materialize_import_value(
-                vm,
-                module,
-                import,
-                import.symbol.as_str(),
-                resolved_symbol,
-            )?;
+            let value = if import.symbol == "*" {
+                Self::materialize_namespace_import_value(vm, &resolved_symbol.module)?
+            } else {
+                Self::materialize_import_value(
+                    vm,
+                    module,
+                    import,
+                    resolved_symbol,
+                )?
+            };
             let mut globals = vm.shared_state().globals_by_index.write();
             if global_slot >= globals.len() {
                 globals.resize(global_slot + 1, Value::null());
@@ -786,37 +807,63 @@ impl Runtime {
         vm: &mut raya_engine::vm::Vm,
         consumer_module: &Module,
         import: &Import,
-        import_symbol: &str,
         resolved: &ResolvedSymbol,
     ) -> Result<Value, RuntimeError> {
+        let value = Self::materialize_export_value(vm, &resolved.module, &resolved.export)?;
         match resolved.export.symbol_type {
+            SymbolType::Constant => Self::register_structural_constant_slot_view(
+                vm,
+                consumer_module,
+                value,
+                import,
+                resolved,
+            ),
+            SymbolType::Class => Ok(value),
+            SymbolType::Function => Ok(value),
+        }
+    }
+
+    fn materialize_namespace_import_value(
+        vm: &mut raya_engine::vm::Vm,
+        module: &Arc<Module>,
+    ) -> Result<Value, RuntimeError> {
+        let mut namespace = DynObject::new();
+        for export in &module.exports {
+            if export.name == "*" {
+                continue;
+            }
+            let value = Self::materialize_export_value(vm, module, export)?;
+            namespace.set(export.name.clone(), value);
+        }
+        let gc_ptr = vm.shared_state().gc.lock().allocate(namespace);
+        Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
+    }
+
+    fn materialize_export_value(
+        vm: &mut raya_engine::vm::Vm,
+        module: &Arc<Module>,
+        export: &Export,
+    ) -> Result<Value, RuntimeError> {
+        match export.symbol_type {
             SymbolType::Function => {
-                let closure = Closure::with_module(
-                    resolved.export.index,
-                    Vec::new(),
-                    resolved.module.clone(),
-                );
+                let closure = Closure::with_module(export.index, Vec::new(), module.clone());
                 let gc_ptr = vm.shared_state().gc.lock().allocate(closure);
                 Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
             }
             SymbolType::Constant => {
-                let value = Self::materialize_constant_export(vm, resolved)?;
-                Self::register_structural_constant_slot_view(
-                    vm,
-                    consumer_module,
-                    value,
-                    import,
-                    resolved,
-                )
+                let resolved = ResolvedSymbol {
+                    module: module.clone(),
+                    export: export.clone(),
+                    index: export.index,
+                };
+                Self::materialize_constant_export(vm, &resolved)
             }
             SymbolType::Class => {
-                let class_id = vm
-                    .shared_state()
-                    .resolve_class_id(&resolved.module, resolved.export.index);
+                let class_id = vm.shared_state().resolve_class_id(module, export.index);
                 if class_id > i32::MAX as usize {
                     return Err(RuntimeError::Dependency(format!(
                         "Imported class symbol '{}' from '{}' has class ID {} outside i32 range",
-                        import_symbol, resolved.module.metadata.name, class_id
+                        export.name, module.metadata.name, class_id
                     )));
                 }
                 Ok(Value::i32(class_id as i32))
@@ -929,8 +976,16 @@ impl Runtime {
         let source = unsafe { &*ptr };
         vm.shared_state().register_structural_slot_view(
             consumer_module,
+            usize::MAX,
             source.object_id,
-            slot_map,
+            slot_map
+                .into_iter()
+                .map(|mapped| {
+                    mapped
+                        .map(raya_engine::vm::interpreter::StructuralSlotBinding::Field)
+                        .unwrap_or(raya_engine::vm::interpreter::StructuralSlotBinding::Missing)
+                })
+                .collect(),
         );
         Ok(value)
     }
@@ -1383,14 +1438,11 @@ impl Runtime {
     }
 
     fn can_use_binary_program_execution(&self) -> bool {
-        if self.options.builtin_mode != BuiltinMode::RayaStrict {
-            return false;
-        }
         let type_mode = self
             .options
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
-        if type_mode != TypeMode::Raya {
+        if !matches!(type_mode, TypeMode::Raya | TypeMode::Js) {
             return false;
         }
         if self.options.ts_options.is_some() {

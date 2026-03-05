@@ -18,7 +18,7 @@ use raya_sdk::{AbiResult, ClassInfo, NativeContext, NativeValue};
 
 use crate::vm::gc::GarbageCollector as Gc;
 use crate::vm::interpreter::ClassRegistry;
-use crate::vm::object::{Array, Buffer, ChannelObject, Object, RayaString};
+use crate::vm::object::{Array, Buffer, ChannelObject, Class, Object, RayaString};
 use crate::vm::reflect::ClassMetadataRegistry;
 use crate::vm::scheduler::TaskId;
 use crate::vm::value::Value;
@@ -87,6 +87,43 @@ impl<'a> EngineContext<'a> {
         let ptr = NonNull::new(gc_ptr.as_ptr()).unwrap();
         value_to_native(unsafe { Value::from_ptr(ptr) })
     }
+
+    fn read_buffer_from_handle(&self, handle: u64) -> AbiResult<Vec<u8>> {
+        let buf_ptr = handle as *const Buffer;
+        if buf_ptr.is_null() {
+            return Err("Invalid buffer handle (null)".into());
+        }
+        let buffer = unsafe { &*buf_ptr };
+        Ok((0..buffer.length())
+            .filter_map(|i| buffer.get_byte(i))
+            .collect())
+    }
+
+    fn read_buffer_from_object(&self, obj: &Object) -> AbiResult<Vec<u8>> {
+        let class_name = {
+            let classes = self.classes.read();
+            let class = classes
+                .get_class(obj.class_id)
+                .ok_or_else(|| "Buffer class metadata missing".to_string())?;
+            class.name.clone()
+        };
+        if class_name != "Buffer" {
+            return Err("Expected Buffer object".into());
+        }
+
+        let handle_field_index = {
+            let class_metadata = self.class_metadata.read();
+            class_metadata
+                .get(obj.class_id)
+                .and_then(|meta| meta.get_field_index("bufferPtr"))
+                .unwrap_or(0)
+        };
+        let handle = obj
+            .get_field(handle_field_index)
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| "Buffer object missing valid bufferPtr handle".to_string())?;
+        self.read_buffer_from_handle(handle)
+    }
 }
 
 impl NativeContext for EngineContext<'_> {
@@ -99,50 +136,35 @@ impl NativeContext for EngineContext<'_> {
     }
 
     fn create_buffer(&self, data: &[u8]) -> NativeValue {
-        // Create the raw Buffer
+        // Create the raw Buffer.
         let mut buffer = Buffer::new(data.len());
         for (i, &byte) in data.iter().enumerate() {
             let _ = buffer.set_byte(i, byte);
         }
 
-        // Look up Buffer class_id
-        let buffer_class_id = {
-            let classes = self.classes.read();
-            match classes.get_class_by_name("Buffer") {
-                Some(class) => class.id,
-                None => {
-                    // Fallback: if Buffer class not registered, return raw Buffer pointer
-                    // This maintains backward compatibility
-                    return self.alloc_ptr(buffer);
-                }
+        // Buffer values are always wrapped as Buffer class objects.
+        let (buffer_class_id, buffer_field_count) = {
+            let mut classes = self.classes.write();
+            if let Some(class) = classes.get_class_by_name("Buffer") {
+                (class.id, class.field_count.max(2))
+            } else {
+                let id = classes.next_class_id();
+                classes.register_class(Class::new(id, "Buffer".to_string(), 2));
+                (id, 2)
             }
         };
 
-        // Allocate Buffer and Object in single GC lock
         let obj_ptr = {
             let mut gc = self.gc.lock();
-
-            // Allocate raw Buffer
             let buf_ptr = gc.allocate(buffer);
             let handle = buf_ptr.as_ptr() as u64;
 
-            // Create Buffer object wrapping the handle + descriptor-backed length field.
-            let field_count = {
-                let classes = self.classes.read();
-                classes
-                    .get_class(buffer_class_id)
-                    .map(|c| c.field_count)
-                    .unwrap_or(2)
-            };
-            let mut obj = Object::new(buffer_class_id, field_count.max(2));
+            let mut obj = Object::new(buffer_class_id, buffer_field_count);
             let _ = obj.set_field(0, Value::u64(handle));
             let _ = obj.set_field(1, Value::i32(data.len() as i32));
-
-            // Allocate Object
             gc.allocate(obj)
         };
 
-        // Convert to NativeValue
         let value = unsafe { Value::from_ptr(NonNull::new(obj_ptr.as_ptr()).unwrap()) };
         value_to_native(value)
     }
@@ -185,33 +207,12 @@ impl NativeContext for EngineContext<'_> {
     fn read_buffer(&self, val: NativeValue) -> AbiResult<Vec<u8>> {
         let v = native_to_value(val);
         if !v.is_ptr() {
-            return Err("Expected Buffer, got non-pointer".into());
+            return Err("Expected Buffer".into());
         }
-
-        // Buffer is now an Object with bufferPtr field (field index 0)
-        // First get the Object, then extract the handle from field[0]
         let obj_ptr =
             unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Buffer object".to_string())?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
-
-        // Get bufferPtr from field 0
-        let handle_val = obj
-            .get_field(0)
-            .ok_or_else(|| "Buffer object missing bufferPtr field".to_string())?;
-        let handle = handle_val
-            .as_u64()
-            .ok_or_else(|| "Buffer bufferPtr is not a valid handle".to_string())?;
-
-        // Dereference the handle to get the actual Buffer
-        let buf_ptr = handle as *const Buffer;
-        if buf_ptr.is_null() {
-            return Err("Invalid buffer handle (null)".into());
-        }
-        let buffer = unsafe { &*buf_ptr };
-
-        Ok((0..buffer.length())
-            .filter_map(|i| buffer.get_byte(i))
-            .collect())
+        self.read_buffer_from_object(obj)
     }
 
     // ========================================================================
@@ -441,32 +442,16 @@ impl NativeContext for EngineContext<'_> {
 
 impl EngineContext<'_> {
     /// Extract a ChannelObject reference from a NativeValue.
-    ///
-    /// Handles both direct channel pointers and Channel<T> objects (field 0 = channelId).
     fn extract_channel(&self, val: NativeValue) -> AbiResult<&ChannelObject> {
         let v = native_to_value(val);
-        if !v.is_ptr() {
-            return Err("Expected channel, got non-pointer".into());
+        let handle = v
+            .as_u64()
+            .ok_or_else(|| "Expected channel handle (u64)".to_string())?;
+        let ch_ptr = handle as *const ChannelObject;
+        if ch_ptr.is_null() {
+            return Err("Expected channel handle (u64)".into());
         }
-
-        // Try direct ChannelObject pointer first
-        if let Some(ptr) = unsafe { v.as_ptr::<ChannelObject>() } {
-            return Ok(unsafe { &*ptr.as_ptr() });
-        }
-
-        // Try as Object (Channel<T> class) — field 0 is channelId
-        if let Some(obj_ptr) = unsafe { v.as_ptr::<Object>() } {
-            let obj = unsafe { &*obj_ptr.as_ptr() };
-            if let Some(field_val) = obj.get_field(0) {
-                if field_val.is_ptr() {
-                    if let Some(ch_ptr) = unsafe { field_val.as_ptr::<ChannelObject>() } {
-                        return Ok(unsafe { &*ch_ptr.as_ptr() });
-                    }
-                }
-            }
-        }
-
-        Err("Cannot extract channel from value".into())
+        Ok(unsafe { &*ch_ptr })
     }
 }
 
@@ -480,8 +465,18 @@ pub fn buffer_read_bytes(val: NativeValue) -> AbiResult<Vec<u8>> {
     if !v.is_ptr() {
         return Err("Expected Buffer, got non-pointer".into());
     }
-    let buf_ptr = unsafe { v.as_ptr::<Buffer>() }.ok_or_else(|| "Expected Buffer".to_string())?;
-    let buffer = unsafe { &*buf_ptr.as_ptr() };
+    let obj_ptr = unsafe { v.as_ptr::<Object>() }
+        .ok_or_else(|| "Expected Buffer object".to_string())?;
+    let obj = unsafe { &*obj_ptr.as_ptr() };
+    let handle = obj
+        .get_field(0)
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "Buffer object missing valid bufferPtr handle".to_string())?;
+    let buf_ptr = handle as *const Buffer;
+    if buf_ptr.is_null() {
+        return Err("Invalid buffer handle (null)".into());
+    }
+    let buffer = unsafe { &*buf_ptr };
     Ok((0..buffer.length())
         .filter_map(|i| buffer.get_byte(i))
         .collect())

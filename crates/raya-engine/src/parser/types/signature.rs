@@ -575,6 +575,9 @@ fn strip_wrapped<'a>(value: &'a str, prefix: &str, suffix: &str) -> Option<&'a s
 struct SignatureHydrator<'a> {
     type_ctx: &'a mut TypeContext,
     type_vars: HashMap<String, TypeId>,
+    // Active recursion slots for @Rk markers while parsing canonical signatures.
+    recursion_slots: Vec<Option<TypeId>>,
+    next_placeholder_id: u64,
 }
 
 impl<'a> SignatureHydrator<'a> {
@@ -582,10 +585,39 @@ impl<'a> SignatureHydrator<'a> {
         Self {
             type_ctx,
             type_vars: HashMap::new(),
+            recursion_slots: Vec::new(),
+            next_placeholder_id: 0,
         }
     }
 
     fn parse_type(&mut self, raw: &str) -> Option<TypeId> {
+        let slot_idx = self.recursion_slots.len();
+        self.recursion_slots.push(None);
+
+        let parsed = self.parse_type_inner(raw);
+        let resolved = match (self.recursion_slots[slot_idx], parsed) {
+            (Some(slot_ty), Some(parsed_ty)) => {
+                if slot_ty != parsed_ty {
+                    let new_ty = self.type_ctx.get(parsed_ty).cloned()?;
+                    self.type_ctx.replace_type(slot_ty, new_ty);
+                }
+                slot_ty
+            }
+            (None, Some(parsed_ty)) => {
+                self.recursion_slots[slot_idx] = Some(parsed_ty);
+                parsed_ty
+            }
+            (Some(slot_ty), None) => slot_ty,
+            (None, None) => {
+                self.recursion_slots.pop();
+                return None;
+            }
+        };
+        self.recursion_slots.pop();
+        Some(resolved)
+    }
+
+    fn parse_type_inner(&mut self, raw: &str) -> Option<TypeId> {
         let value = raw.trim();
         if value.is_empty() {
             return None;
@@ -611,8 +643,16 @@ impl<'a> SignatureHydrator<'a> {
         }
 
         if let Some(rest) = value.strip_prefix("@R") {
-            let _ = rest;
-            return Some(self.type_ctx.any_type());
+            let rec_idx = rest.parse::<usize>().ok()?;
+            if rec_idx >= self.recursion_slots.len() {
+                return None;
+            }
+            if let Some(existing) = self.recursion_slots[rec_idx] {
+                return Some(existing);
+            }
+            let placeholder = self.make_recursive_placeholder(rec_idx);
+            self.recursion_slots[rec_idx] = Some(placeholder);
+            return Some(placeholder);
         }
 
         if let Some(inner) = strip_wrapped(value, "strlit(", ")") {
@@ -732,6 +772,15 @@ impl<'a> SignatureHydrator<'a> {
 
         let name = unescape(value);
         self.type_ctx.lookup_named_type(&name)
+    }
+
+    fn make_recursive_placeholder(&mut self, rec_idx: usize) -> TypeId {
+        let unique = self.next_placeholder_id;
+        self.next_placeholder_id = self.next_placeholder_id.saturating_add(1);
+        self.type_ctx.intern(Type::Reference(super::ty::TypeReference {
+            name: format!("__sig_rec_{rec_idx}_{unique}"),
+            type_args: None,
+        }))
     }
 
     fn parse_function(&mut self, inner: &str) -> Option<TypeId> {

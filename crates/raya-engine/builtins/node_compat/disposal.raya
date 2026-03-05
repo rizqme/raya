@@ -42,7 +42,8 @@ class DisposableStack {
         this._disposed = true;
         let i = this._callbacks.length - 1;
         while (i >= 0) {
-            this._callbacks[i]();
+            let callback: () => void = this._callbacks[i];
+            callback();
             i = i - 1;
         }
         this._callbacks = [];
@@ -100,7 +101,8 @@ class AsyncDisposableStack {
         this._disposed = true;
         let i = this._callbacks.length - 1;
         while (i >= 0) {
-            await this._callbacks[i]();
+            let callback: () => Promise<void> = this._callbacks[i];
+            await callback();
             i = i - 1;
         }
         this._callbacks = [];

@@ -246,7 +246,25 @@ impl SymbolTable {
     ///
     /// Searches from current scope to global scope, returning the first match.
     pub fn resolve(&self, name: &str) -> Option<&Symbol> {
-        self.resolve_from_scope(name, self.current_scope)
+        if let Some(symbol) = self.resolve_from_scope(name, self.current_scope) {
+            return Some(symbol);
+        }
+
+        // Compatibility fallback: after binding a module the current scope is global,
+        // while top-level declarations live in the module scope child. Allow callers
+        // that resolve from global scope (primarily tests/introspection) to still
+        // discover module-level symbols.
+        if self.current_scope == ScopeId(0) {
+            for scope in self.scopes.iter().rev() {
+                if scope.kind == ScopeKind::Module && scope.parent == Some(ScopeId(0)) {
+                    if let Some(symbol) = scope.symbols.get(name) {
+                        return Some(symbol);
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Resolve a symbol by name from a specific scope, walking up the scope chain

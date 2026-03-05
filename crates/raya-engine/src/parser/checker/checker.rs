@@ -50,6 +50,8 @@ pub struct CheckResult {
     pub captures: ModuleCaptureInfo,
     /// Expression types: maps expression ID (ptr as usize) to TypeId
     pub expr_types: FxHashMap<usize, TypeId>,
+    /// Resolved type annotation types: maps TypeAnnotation node ID (ptr as usize) to TypeId
+    pub type_annotation_types: FxHashMap<usize, TypeId>,
     /// Warnings collected during type checking
     pub warnings: Vec<CheckWarning>,
 }
@@ -123,6 +125,8 @@ pub struct TypeChecker<'a> {
 
     /// Map from expression to its inferred type
     expr_types: FxHashMap<usize, TypeId>,
+    /// Resolved types for type-annotation AST nodes (keyed by node pointer).
+    type_annotation_types: FxHashMap<usize, TypeId>,
 
     /// Type checking errors
     errors: Vec<CheckError>,
@@ -218,6 +222,7 @@ impl<'a> TypeChecker<'a> {
             symbols,
             interner,
             expr_types: FxHashMap::default(),
+            type_annotation_types: FxHashMap::default(),
             errors: Vec::new(),
             current_function_return_type: None,
             type_env: TypeEnv::new(),
@@ -771,6 +776,7 @@ impl<'a> TypeChecker<'a> {
                 inferred_types: self.inferred_var_types,
                 captures: self.capture_info,
                 expr_types: self.expr_types,
+                type_annotation_types: self.type_annotation_types,
                 warnings: self.warnings,
             })
         } else {
@@ -989,26 +995,9 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Pattern::Object(obj_pat) => {
-                // Look up properties from value type (Class or Object)
-                let props: Option<Vec<crate::parser::types::ty::PropertySignature>> =
-                    if let Some(crate::parser::types::Type::Class(class)) =
-                        self.type_ctx.get(value_ty).cloned()
-                    {
-                        Some(class.properties.clone())
-                    } else if let Some(crate::parser::types::Type::Object(obj)) =
-                        self.type_ctx.get(value_ty).cloned()
-                    {
-                        Some(obj.properties.clone())
-                    } else {
-                        None
-                    };
-
                 for prop in &obj_pat.properties {
                     let prop_name = self.resolve(prop.key.name);
-                    let prop_ty = props
-                        .as_ref()
-                        .and_then(|ps| ps.iter().find(|p| p.name == prop_name))
-                        .map(|p| p.ty);
+                    let prop_ty = self.destructure_object_property_type(value_ty, &prop_name);
                     // If there's a default expression, use its type when property is missing
                     let final_ty = if let Some(ref default_expr) = prop.default {
                         let default_ty = self.check_expr(default_expr);
@@ -1029,6 +1018,72 @@ impl<'a> TypeChecker<'a> {
             Pattern::Rest(rest_pat) => {
                 self.check_destructure_pattern(&rest_pat.argument, value_ty);
             }
+        }
+    }
+
+    fn destructure_object_property_type(&mut self, ty: TypeId, prop_name: &str) -> Option<TypeId> {
+        use crate::parser::types::Type;
+
+        match self.type_ctx.get(ty).cloned() {
+            Some(Type::Object(obj)) => obj
+                .properties
+                .iter()
+                .find(|p| p.name == prop_name)
+                .map(|p| p.ty)
+                .or_else(|| obj.index_signature.map(|(_, sig_ty)| sig_ty)),
+            Some(Type::Class(class_ty)) => self
+                .lookup_class_member(&class_ty, prop_name)
+                .map(|(member_ty, _)| member_ty),
+            Some(Type::Interface(interface_ty)) => self.lookup_interface_member(&interface_ty, prop_name),
+            Some(Type::Reference(type_ref)) => {
+                let named_ty = self.type_ctx.lookup_named_type(&type_ref.name)?;
+                let resolved_ty = match self.type_ctx.get(named_ty).cloned() {
+                    Some(Type::Class(class_ty))
+                        if type_ref
+                            .type_args
+                            .as_ref()
+                            .is_some_and(|args| !args.is_empty())
+                            && !class_ty.type_params.is_empty() =>
+                    {
+                        let args = type_ref.type_args.as_ref().expect("checked is_some");
+                        self.instantiate_class_type(&class_ty, args)
+                    }
+                    Some(_) => named_ty,
+                    None => return None,
+                };
+                self.destructure_object_property_type(resolved_ty, prop_name)
+            }
+            Some(Type::Generic(generic)) => {
+                let resolved_ty = match self.type_ctx.get(generic.base).cloned() {
+                    Some(Type::Class(class_ty)) if !generic.type_args.is_empty() => {
+                        self.instantiate_class_type(&class_ty, &generic.type_args)
+                    }
+                    Some(_) => generic.base,
+                    None => return None,
+                };
+                self.destructure_object_property_type(resolved_ty, prop_name)
+            }
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .and_then(|constraint_ty| self.destructure_object_property_type(constraint_ty, prop_name)),
+            Some(Type::Union(union)) => {
+                let mut member_types = Vec::new();
+                for member in union.members {
+                    if let Some(member_ty) = self.destructure_object_property_type(member, prop_name) {
+                        if !member_types.contains(&member_ty) {
+                            member_types.push(member_ty);
+                        }
+                    }
+                }
+                if member_types.is_empty() {
+                    None
+                } else if member_types.len() == 1 {
+                    Some(member_types[0])
+                } else {
+                    Some(self.type_ctx.union_type(member_types))
+                }
+            }
+            _ => None,
         }
     }
 
@@ -1063,7 +1118,7 @@ impl<'a> TypeChecker<'a> {
                 }
             });
 
-        let mut return_ty = if let Some(func_ty) = &symbol_func_ty {
+        let declared_return_ty = if let Some(func_ty) = &symbol_func_ty {
             func_ty.return_type
         } else {
             func.return_type
@@ -1071,6 +1126,7 @@ impl<'a> TypeChecker<'a> {
                 .map(|ann| self.resolve_type_annotation(ann))
                 .unwrap_or_else(|| self.type_ctx.void_type())
         };
+        let mut return_ty = declared_return_ty;
 
         // For async functions, the declared return type is Promise<T>,
         // but return statements should check against T (the inner type)
@@ -1080,7 +1136,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        let param_types: Vec<TypeId> = if let Some(func_ty) = symbol_func_ty {
+        let param_types: Vec<TypeId> = if let Some(func_ty) = &symbol_func_ty {
             func_ty.params.iter().cloned().collect()
         } else {
             func.params
@@ -1094,6 +1150,35 @@ impl<'a> TypeChecker<'a> {
                 })
                 .collect()
         };
+
+        // Keep annotation-type map complete even when param/return types are reused
+        // from binder-resolved function symbols.
+        if let Some(func_ty) = &symbol_func_ty {
+            let mut positional_idx = 0usize;
+            for param in &func.params {
+                let Some(type_ann) = &param.type_annotation else {
+                    continue;
+                };
+                let ann_id = type_ann as *const _ as usize;
+                let ann_ty = if param.is_rest {
+                    func_ty.rest_param.unwrap_or_else(|| self.type_ctx.unknown_type())
+                } else {
+                    let ty = func_ty
+                        .params
+                        .get(positional_idx)
+                        .copied()
+                        .unwrap_or_else(|| self.type_ctx.unknown_type());
+                    positional_idx += 1;
+                    ty
+                };
+                self.type_annotation_types.insert(ann_id, ann_ty);
+            }
+
+            if let Some(return_ann) = &func.return_type {
+                let ann_id = return_ann as *const _ as usize;
+                self.type_annotation_types.insert(ann_id, declared_return_ty);
+            }
+        }
 
         // Set current function return type
         let prev_return_ty = self.current_function_return_type;
@@ -4577,9 +4662,7 @@ impl<'a> TypeChecker<'a> {
                 return self.type_ctx.unknown_type();
             };
 
-            let Some(crate::parser::types::Type::Class(current_class)) =
-                self.type_ctx.get(class_ty).cloned()
-            else {
+            let Some(current_class) = self.resolve_class_type(class_ty) else {
                 self.errors.push(CheckError::PropertyNotFound {
                     property: property_name,
                     ty: "super".to_string(),
@@ -4597,9 +4680,7 @@ impl<'a> TypeChecker<'a> {
                 return self.type_ctx.unknown_type();
             };
 
-            let Some(crate::parser::types::Type::Class(parent_class)) =
-                self.type_ctx.get(parent_ty).cloned()
-            else {
+            let Some(parent_class) = self.resolve_class_type(parent_ty) else {
                 self.errors.push(CheckError::PropertyNotFound {
                     property: property_name,
                     ty: format!("class {}", current_class.name),
@@ -4654,9 +4735,7 @@ impl<'a> TypeChecker<'a> {
             {
                 if symbol.kind == SymbolKind::Class {
                     // This is static member access (e.g., Date.now())
-                    if let Some(crate::parser::types::Type::Class(class)) =
-                        self.type_ctx.get(symbol.ty)
-                    {
+                    if let Some(class) = self.resolve_class_type(symbol.ty) {
                         // Check static properties
                         for prop in &class.static_properties {
                             if prop.name == property_name {
@@ -4687,6 +4766,30 @@ impl<'a> TypeChecker<'a> {
             self.type_ctx.get(inner).cloned()
         } else {
             self.type_ctx.get(object_ty).cloned()
+        };
+        let obj_type = match obj_type {
+            Some(crate::parser::types::Type::Reference(type_ref)) => {
+                if let Some(named_ty) = self.type_ctx.lookup_named_type(&type_ref.name) {
+                    match self.type_ctx.get(named_ty).cloned() {
+                        Some(crate::parser::types::Type::Class(class_ty))
+                            if type_ref
+                                .type_args
+                                .as_ref()
+                                .is_some_and(|args| !args.is_empty())
+                                && !class_ty.type_params.is_empty() =>
+                        {
+                            let args = type_ref.type_args.as_ref().expect("checked is_some");
+                            let instantiated_ty = self.instantiate_class_type(&class_ty, args);
+                            self.type_ctx.get(instantiated_ty).cloned()
+                        }
+                        Some(resolved) => Some(resolved),
+                        None => Some(crate::parser::types::Type::Reference(type_ref)),
+                    }
+                } else {
+                    Some(crate::parser::types::Type::Reference(type_ref))
+                }
+            }
+            other => other,
         };
 
         // Check for built-in array methods
@@ -4773,6 +4876,9 @@ impl<'a> TypeChecker<'a> {
 
         // Type::Buffer comes from type annotations; resolve via class definition.
         if matches!(&obj_type, Some(crate::parser::types::Type::Buffer)) {
+            if let Some(method_type) = self.get_buffer_method_type(&property_name, object_ty) {
+                return method_type;
+            }
             if let Some(ty) =
                 self.resolve_builtin_class_member("Buffer", &property_name, member.span)
             {
@@ -4811,13 +4917,7 @@ impl<'a> TypeChecker<'a> {
                     .resolve_from_scope(&class.name, self.current_scope)
                 {
                     if symbol.kind == SymbolKind::Class {
-                        self.type_ctx.get(symbol.ty).and_then(|t| {
-                            if let crate::parser::types::Type::Class(c) = t {
-                                Some(c.clone())
-                            } else {
-                                None
-                            }
-                        })
+                        self.resolve_class_type(symbol.ty)
                     } else {
                         None
                     }
@@ -4906,71 +5006,110 @@ impl<'a> TypeChecker<'a> {
                     continue;
                 }
                 if let Some(member_ty) = self.type_ctx.get(member_id).cloned() {
-                    match member_ty {
-                        crate::parser::types::Type::Object(obj) => {
-                            object_like_members += 1;
-                            for prop in &obj.properties {
-                                if prop.name == property_name && !found_types.contains(&prop.ty) {
-                                    found_types.push(prop.ty);
+                    let mut pending = vec![member_ty];
+                    while let Some(variant_ty) = pending.pop() {
+                        match variant_ty {
+                            crate::parser::types::Type::Object(obj) => {
+                                object_like_members += 1;
+                                for prop in &obj.properties {
+                                    if prop.name == property_name && !found_types.contains(&prop.ty)
+                                    {
+                                        found_types.push(prop.ty);
+                                    }
+                                }
+                                if let Some((_, sig_ty)) = obj.index_signature {
+                                    if !found_types.contains(&sig_ty) {
+                                        found_types.push(sig_ty);
+                                    }
                                 }
                             }
-                            if let Some((_, sig_ty)) = obj.index_signature {
-                                if !found_types.contains(&sig_ty) {
-                                    found_types.push(sig_ty);
+                            crate::parser::types::Type::Class(class) => {
+                                object_like_members += 1;
+                                if let Some((ty, _vis)) =
+                                    self.lookup_class_member(&class, &property_name)
+                                {
+                                    if !found_types.contains(&ty) {
+                                        found_types.push(ty);
+                                    }
                                 }
                             }
+                            crate::parser::types::Type::Interface(interface_ty) => {
+                                object_like_members += 1;
+                                if let Some(ty) =
+                                    self.lookup_interface_member(&interface_ty, &property_name)
+                                {
+                                    if !found_types.contains(&ty) {
+                                        found_types.push(ty);
+                                    }
+                                }
+                            }
+                            crate::parser::types::Type::Array(arr) => {
+                                object_like_members += 1;
+                                if let Some(ty) =
+                                    self.get_array_method_type(&property_name, arr.element)
+                                {
+                                    if !found_types.contains(&ty) {
+                                        found_types.push(ty);
+                                    }
+                                }
+                            }
+                            crate::parser::types::Type::Map(map_ty) => {
+                                object_like_members += 1;
+                                if let Some(ty) = self
+                                    .get_map_method_type(&property_name, map_ty.key, map_ty.value)
+                                {
+                                    if !found_types.contains(&ty) {
+                                        found_types.push(ty);
+                                    }
+                                }
+                            }
+                            crate::parser::types::Type::Set(set_ty) => {
+                                object_like_members += 1;
+                                if let Some(ty) =
+                                    self.get_set_method_type(&property_name, set_ty.element)
+                                {
+                                    if !found_types.contains(&ty) {
+                                        found_types.push(ty);
+                                    }
+                                }
+                            }
+                            crate::parser::types::Type::Reference(type_ref) => {
+                                if let Some(named_ty) = self.type_ctx.lookup_named_type(&type_ref.name)
+                                {
+                                    match self.type_ctx.get(named_ty).cloned() {
+                                        Some(crate::parser::types::Type::Class(class_ty))
+                                            if type_ref
+                                                .type_args
+                                                .as_ref()
+                                                .is_some_and(|args| !args.is_empty())
+                                                && !class_ty.type_params.is_empty() =>
+                                        {
+                                            let args =
+                                                type_ref.type_args.as_ref().expect("checked is_some");
+                                            let instantiated_ty =
+                                                self.instantiate_class_type(&class_ty, args);
+                                            if let Some(inst_ty) =
+                                                self.type_ctx.get(instantiated_ty).cloned()
+                                            {
+                                                pending.push(inst_ty);
+                                            } else {
+                                                pending.push(crate::parser::types::Type::Class(
+                                                    class_ty,
+                                                ));
+                                            }
+                                        }
+                                        Some(resolved) => pending.push(resolved),
+                                        None => {}
+                                    }
+                                }
+                            }
+                            crate::parser::types::Type::Generic(generic) => {
+                                if let Some(base_ty) = self.type_ctx.get(generic.base).cloned() {
+                                    pending.push(base_ty);
+                                }
+                            }
+                            _ => {}
                         }
-                        crate::parser::types::Type::Class(class) => {
-                            object_like_members += 1;
-                            if let Some((ty, _vis)) =
-                                self.lookup_class_member(&class, &property_name)
-                            {
-                                if !found_types.contains(&ty) {
-                                    found_types.push(ty);
-                                }
-                            }
-                        }
-                        crate::parser::types::Type::Interface(interface_ty) => {
-                            object_like_members += 1;
-                            if let Some(ty) =
-                                self.lookup_interface_member(&interface_ty, &property_name)
-                            {
-                                if !found_types.contains(&ty) {
-                                    found_types.push(ty);
-                                }
-                            }
-                        }
-                        crate::parser::types::Type::Array(arr) => {
-                            object_like_members += 1;
-                            if let Some(ty) =
-                                self.get_array_method_type(&property_name, arr.element)
-                            {
-                                if !found_types.contains(&ty) {
-                                    found_types.push(ty);
-                                }
-                            }
-                        }
-                        crate::parser::types::Type::Map(map_ty) => {
-                            object_like_members += 1;
-                            if let Some(ty) =
-                                self.get_map_method_type(&property_name, map_ty.key, map_ty.value)
-                            {
-                                if !found_types.contains(&ty) {
-                                    found_types.push(ty);
-                                }
-                            }
-                        }
-                        crate::parser::types::Type::Set(set_ty) => {
-                            object_like_members += 1;
-                            if let Some(ty) =
-                                self.get_set_method_type(&property_name, set_ty.element)
-                            {
-                                if !found_types.contains(&ty) {
-                                    found_types.push(ty);
-                                }
-                            }
-                        }
-                        _ => {}
                     }
                 }
             }
@@ -4998,9 +5137,19 @@ impl<'a> TypeChecker<'a> {
         // Handle TypeVar with constraint: delegate member access to the constraint type
         if let Some(crate::parser::types::Type::TypeVar(tv)) = &obj_type {
             if let Some(constraint_id) = tv.constraint {
-                if let Some(constraint_type) = self.type_ctx.get(constraint_id).cloned() {
-                    let mut object_like_constraint = false;
-                    // Look up member on the constraint type (Object or Class)
+                let mut object_like_constraint = false;
+                let mut pending = vec![constraint_id];
+                let mut visited = FxHashSet::default();
+
+                while let Some(ty_id) = pending.pop() {
+                    if !visited.insert(ty_id) {
+                        continue;
+                    }
+                    let Some(constraint_type) = self.type_ctx.get(ty_id).cloned() else {
+                        continue;
+                    };
+
+                    // Look up member on the (possibly referenced/generic) constraint type.
                     match &constraint_type {
                         crate::parser::types::Type::Object(obj) => {
                             object_like_constraint = true;
@@ -5029,22 +5178,32 @@ impl<'a> TypeChecker<'a> {
                                 return ty;
                             }
                         }
+                        crate::parser::types::Type::Reference(type_ref) => {
+                            if let Some(named_ty) = self.type_ctx.lookup_named_type(&type_ref.name)
+                            {
+                                pending.push(named_ty);
+                            }
+                        }
+                        crate::parser::types::Type::Generic(generic) => {
+                            pending.push(generic.base);
+                        }
                         _ => {}
                     }
-                    if object_like_constraint {
-                        self.errors.push(CheckError::PropertyNotFound {
-                            property: property_name.clone(),
-                            ty: self.format_type(constraint_id),
-                            span: member.span,
-                        });
-                        // Unavoidable fallback allowlist:
-                        // constrained typevar has object-like constraint but requested member is absent.
-                        return self.fallback_type(
-                            member.span,
-                            FallbackReason::Unavoidable,
-                            "member-typevar-constraint",
-                        );
-                    }
+                }
+
+                if object_like_constraint {
+                    self.errors.push(CheckError::PropertyNotFound {
+                        property: property_name.clone(),
+                        ty: self.format_type(constraint_id),
+                        span: member.span,
+                    });
+                    // Unavoidable fallback allowlist:
+                    // constrained typevar has object-like constraint but requested member is absent.
+                    return self.fallback_type(
+                        member.span,
+                        FallbackReason::Unavoidable,
+                        "member-typevar-constraint",
+                    );
                 }
             }
         }
@@ -5230,7 +5389,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn lookup_class_member(
-        &self,
+        &mut self,
         class: &crate::parser::types::ty::ClassType,
         property_name: &str,
     ) -> Option<(TypeId, crate::parser::ast::Visibility)> {
@@ -5249,16 +5408,56 @@ impl<'a> TypeChecker<'a> {
 
         // If not found and class has a parent, check parent class
         if let Some(parent_ty) = class.extends {
-            if let Some(crate::parser::types::Type::Class(parent_class)) =
-                self.type_ctx.get(parent_ty)
-            {
+            if let Some(parent_class) = self.resolve_class_type(parent_ty) {
                 // Recursively check parent class
-                return self.lookup_class_member(parent_class, property_name);
+                return self.lookup_class_member(&parent_class, property_name);
             }
         }
 
         // Not found in class hierarchy
         None
+    }
+
+    fn resolve_class_type(
+        &mut self,
+        ty: TypeId,
+    ) -> Option<crate::parser::types::ty::ClassType> {
+        use crate::parser::types::Type;
+        match self.type_ctx.get(ty).cloned()? {
+            Type::Class(class_ty) => Some(class_ty),
+            Type::Reference(type_ref) => {
+                let named_ty = self.type_ctx.lookup_named_type(&type_ref.name)?;
+                let named_class = match self.type_ctx.get(named_ty).cloned()? {
+                    Type::Class(class_ty) => class_ty,
+                    _ => return None,
+                };
+                if let Some(args) = type_ref
+                    .type_args
+                    .as_ref()
+                    .filter(|args| !args.is_empty() && !named_class.type_params.is_empty())
+                {
+                    let instantiated = self.instantiate_class_type(&named_class, args);
+                    match self.type_ctx.get(instantiated).cloned() {
+                        Some(Type::Class(class_ty)) => Some(class_ty),
+                        _ => Some(named_class),
+                    }
+                } else {
+                    Some(named_class)
+                }
+            }
+            Type::Generic(generic) => match self.type_ctx.get(generic.base).cloned() {
+                Some(Type::Class(class_ty)) if !generic.type_args.is_empty() => {
+                    let instantiated = self.instantiate_class_type(&class_ty, &generic.type_args);
+                    match self.type_ctx.get(instantiated).cloned() {
+                        Some(Type::Class(inst)) => Some(inst),
+                        _ => Some(class_ty),
+                    }
+                }
+                Some(Type::Class(class_ty)) => Some(class_ty),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Resolve a member on a built-in type by looking up its source-level class definition.
@@ -6413,7 +6612,10 @@ impl<'a> TypeChecker<'a> {
 
     /// Resolve a type annotation to a TypeId
     fn resolve_type_annotation(&mut self, ty_annot: &TypeAnnotation) -> TypeId {
-        self.resolve_type(&ty_annot.ty)
+        let ty = self.resolve_type(&ty_annot.ty);
+        let ann_id = ty_annot as *const _ as usize;
+        self.type_annotation_types.insert(ann_id, ty);
+        ty
     }
 
     /// Resolve a type AST node to a TypeId
@@ -6689,8 +6891,32 @@ impl<'a> TypeChecker<'a> {
                                 visibility: crate::parser::ast::Visibility::Public,
                             });
                         }
-                        crate::parser::ast::ObjectTypeMember::Method(_) => {
-                            // Methods are not part of the object type properties
+                        crate::parser::ast::ObjectTypeMember::Method(method) => {
+                            let mut param_tys = Vec::new();
+                            let mut rest_param = None;
+                            let mut min_params = 0usize;
+                            for param in &method.params {
+                                let param_ty = self.resolve_type_annotation(&param.ty);
+                                if param.is_rest {
+                                    rest_param = Some(param_ty);
+                                } else {
+                                    if !param.optional {
+                                        min_params += 1;
+                                    }
+                                    param_tys.push(param_ty);
+                                }
+                            }
+                            let return_ty = self.resolve_type_annotation(&method.return_type);
+                            let method_ty = self.type_ctx.function_type_with_rest(
+                                param_tys, return_ty, false, min_params, rest_param,
+                            );
+                            properties.push(crate::parser::types::ty::PropertySignature {
+                                name: self.interner.resolve(method.name.name).to_string(),
+                                ty: method_ty,
+                                optional: false,
+                                readonly: false,
+                                visibility: crate::parser::ast::Visibility::Public,
+                            });
                         }
                     }
                 }

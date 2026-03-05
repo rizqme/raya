@@ -1135,7 +1135,8 @@ fn test_method_chain_on_class() {
 #[test]
 fn test_number_floor() {
     expect_i32_with_builtins(
-        "let f: number = 42.9;
+        "import math from \"std:math\";
+         let f: number = 42.9;
          return math.floor(f);",
         42,
     );

@@ -116,7 +116,7 @@ fn test_net_udp_send_receive() {
             const received = receiver.receive(64);
             receiver.close();
             sender.close();
-            return received.toUtf8String() == "udp_ping";
+            return received.toString("utf8") == "udp_ping";
         }
 
         return main();

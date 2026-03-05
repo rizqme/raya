@@ -11,10 +11,11 @@ use crate::compiler::{Module, Opcode};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set};
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
+use crate::vm::interpreter::shared_state::StructuralSlotBinding;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    Array, BoundMethod, Buffer, ChannelObject, Closure, DateObject, MapObject, Object, RayaString,
-    RegExpObject, SetObject,
+    Array, BoundMethod, Buffer, ChannelObject, Class, Closure, DateObject, MapObject, Object,
+    RayaString, RegExpObject, SetObject,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -26,6 +27,29 @@ use std::sync::Arc;
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
 impl<'a> Interpreter<'a> {
+    fn legacy_object_literal_field_index(field_name: &str, field_count: usize) -> Option<usize> {
+        let idx = match field_name {
+            // Error-like object literal layout: [message, name, stack, cause, ...]
+            "message" => 0,
+            "name" => 1,
+            "stack" => 2,
+            "cause" => 3,
+            "code" => 4,
+            "errno" => 5,
+            "syscall" => 6,
+            "path" => 7,
+            // Node-compat descriptor Object layout: [value, writable, configurable, enumerable, get, set]
+            "value" => 0,
+            "writable" => 1,
+            "configurable" => 2,
+            "enumerable" => 3,
+            "get" => 4,
+            "set" => 5,
+            _ => return None,
+        };
+        (idx < field_count).then_some(idx)
+    }
+
     fn is_callable_value(value: Value) -> bool {
         if !value.is_ptr() {
             return false;
@@ -97,7 +121,12 @@ impl<'a> Interpreter<'a> {
         }
         let classes = self.classes.read();
         let class_name = classes.get_class(obj.class_id)?.name.as_str();
-        Self::builtin_field_index_for_class_name_native(class_name, field_name)
+        if let Some(index) = Self::builtin_field_index_for_class_name_native(class_name, field_name)
+        {
+            return Some(index);
+        }
+        // Backstop for no-prelude builtins still emitted as generic object literals.
+        Self::legacy_object_literal_field_index(field_name, obj.field_count())
     }
 
     fn get_field_value_by_name(&self, obj_val: Value, field_name: &str) -> Option<Value> {
@@ -203,6 +232,188 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
+    fn channel_from_handle_arg(&self, value: Value) -> Result<(u64, &ChannelObject), VmError> {
+        let Some(handle) = value.as_u64() else {
+            return Err(VmError::TypeError("Expected channel handle (u64)".to_string()));
+        };
+        let ch_ptr = handle as *const ChannelObject;
+        if ch_ptr.is_null() {
+            return Err(VmError::TypeError("Expected channel handle (u64)".to_string()));
+        }
+        Ok((handle, unsafe { &*ch_ptr }))
+    }
+
+    fn buffer_handle_from_value(&self, value: Value) -> Result<u64, VmError> {
+        let obj_ptr = unsafe { value.as_ptr::<Object>() }
+            .ok_or_else(|| VmError::TypeError("Expected Buffer object".to_string()))?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let classes = self.classes.read();
+        let class = classes
+            .get_class(obj.class_id)
+            .ok_or_else(|| VmError::RuntimeError("Buffer class metadata missing".to_string()))?;
+        if class.name != "Buffer" {
+            return Err(VmError::TypeError("Expected Buffer object".to_string()));
+        }
+        drop(classes);
+
+        let field_index = self
+            .get_field_index_for_value(value, "bufferPtr")
+            .ok_or_else(|| VmError::RuntimeError("Buffer field 'bufferPtr' not found".to_string()))?;
+        let handle = obj
+            .get_field(field_index)
+            .and_then(|f| f.as_u64())
+            .ok_or_else(|| VmError::RuntimeError("Buffer.bufferPtr is not a valid handle".to_string()))?;
+        Ok(handle)
+    }
+
+    fn decode_u64_handle(value: Value) -> Option<u64> {
+        if let Some(h) = value.as_u64() {
+            return Some(h);
+        }
+        if let Some(i) = value.as_i64() {
+            if i >= 0 {
+                return Some(i as u64);
+            }
+        }
+        if let Some(i) = value.as_i32() {
+            if i >= 0 {
+                return Some(i as u64);
+            }
+        }
+        if let Some(f) = value.as_f64() {
+            if f.is_finite() && f >= 0.0 && f.fract() == 0.0 && f <= u64::MAX as f64 {
+                return Some(f as u64);
+            }
+        }
+        None
+    }
+
+    fn map_handle_from_value(&self, value: Value) -> Result<u64, VmError> {
+        if let Some(handle) = Self::decode_u64_handle(value) {
+            return Ok(handle);
+        }
+        let obj_ptr = unsafe { value.as_ptr::<Object>() }
+            .ok_or_else(|| VmError::TypeError("Expected Map object or map handle".to_string()))?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let field_index = self
+            .get_field_index_for_value(value, "mapPtr")
+            .ok_or_else(|| VmError::RuntimeError("Map field 'mapPtr' not found".to_string()))?;
+        let raw = obj
+            .get_field(field_index)
+            .ok_or_else(|| VmError::RuntimeError("Map.mapPtr is missing".to_string()))?;
+        Self::decode_u64_handle(raw)
+            .ok_or_else(|| VmError::RuntimeError("Map.mapPtr is not a valid handle".to_string()))
+    }
+
+    fn set_handle_from_value(&self, value: Value) -> Result<u64, VmError> {
+        if let Some(handle) = Self::decode_u64_handle(value) {
+            return Ok(handle);
+        }
+        let obj_ptr = unsafe { value.as_ptr::<Object>() }
+            .ok_or_else(|| VmError::TypeError("Expected Set object or set handle".to_string()))?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let field_index = self
+            .get_field_index_for_value(value, "setPtr")
+            .ok_or_else(|| VmError::RuntimeError("Set field 'setPtr' not found".to_string()))?;
+        let raw = obj
+            .get_field(field_index)
+            .ok_or_else(|| VmError::RuntimeError("Set.setPtr is missing".to_string()))?;
+        Self::decode_u64_handle(raw)
+            .ok_or_else(|| VmError::RuntimeError("Set.setPtr is not a valid handle".to_string()))
+    }
+
+    pub(in crate::vm::interpreter) fn regexp_handle_from_value(
+        &self,
+        value: Value,
+    ) -> Result<u64, VmError> {
+        if let Some(handle) = Self::decode_u64_handle(value) {
+            return Ok(handle);
+        }
+        let obj_ptr = unsafe { value.as_ptr::<Object>() }
+            .ok_or_else(|| VmError::TypeError("Expected RegExp object or regexp handle".to_string()))?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let field_index = self
+            .get_field_index_for_value(value, "regexpPtr")
+            .ok_or_else(|| VmError::RuntimeError("RegExp field 'regexpPtr' not found".to_string()))?;
+        let raw = obj
+            .get_field(field_index)
+            .ok_or_else(|| VmError::RuntimeError("RegExp.regexpPtr is missing".to_string()))?;
+        Self::decode_u64_handle(raw)
+            .ok_or_else(|| VmError::RuntimeError("RegExp.regexpPtr is not a valid handle".to_string()))
+    }
+
+    fn ensure_buffer_class_layout(&self) -> (usize, usize) {
+        let mut classes = self.classes.write();
+        if let Some(class) = classes.get_class_by_name("Buffer") {
+            (class.id, class.field_count.max(2))
+        } else {
+            let id = classes.next_class_id();
+            classes.register_class(Class::new(id, "Buffer".to_string(), 2));
+            (id, 2)
+        }
+    }
+
+    fn ensure_object_class_layout(&self) -> (usize, usize) {
+        let mut classes = self.classes.write();
+        if let Some(id) = classes.get_class_by_name("Object").map(|class| class.id) {
+            let mut field_count = classes.get_class(id).map(|class| class.field_count).unwrap_or(0);
+            if field_count < 6 {
+                if let Some(class) = classes.get_class_mut(id) {
+                    class.field_count = 6;
+                    field_count = 6;
+                }
+            }
+            (id, field_count.max(6))
+        } else {
+            let id = classes.next_class_id();
+            classes.register_class(Class::new(id, "Object".to_string(), 6));
+            (id, 6)
+        }
+    }
+
+    fn alloc_buffer_object(&self, handle: u64, len: usize) -> Result<Value, VmError> {
+        let (buffer_class_id, buffer_field_count) = self.ensure_buffer_class_layout();
+        let mut obj = Object::new(buffer_class_id, buffer_field_count);
+        obj.set_field(0, Value::u64(handle)).map_err(VmError::RuntimeError)?;
+        if buffer_field_count > 1 {
+            obj.set_field(1, Value::i32(len as i32))
+                .map_err(VmError::RuntimeError)?;
+        }
+        let obj_ptr = self.gc.lock().allocate(obj);
+        Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
+    }
+
+    fn alloc_object_descriptor(&self) -> Result<Value, VmError> {
+        let (object_class_id, object_field_count) = self.ensure_object_class_layout();
+        let mut obj = Object::new(object_class_id, object_field_count);
+        if object_field_count > 0 {
+            obj.set_field(0, Value::null())
+                .map_err(VmError::RuntimeError)?;
+        }
+        if object_field_count > 1 {
+            obj.set_field(1, Value::bool(true))
+                .map_err(VmError::RuntimeError)?;
+        }
+        if object_field_count > 2 {
+            obj.set_field(2, Value::bool(true))
+                .map_err(VmError::RuntimeError)?;
+        }
+        if object_field_count > 3 {
+            obj.set_field(3, Value::bool(true))
+                .map_err(VmError::RuntimeError)?;
+        }
+        if object_field_count > 4 {
+            obj.set_field(4, Value::null())
+                .map_err(VmError::RuntimeError)?;
+        }
+        if object_field_count > 5 {
+            obj.set_field(5, Value::null())
+                .map_err(VmError::RuntimeError)?;
+        }
+        let obj_ptr = self.gc.lock().allocate(obj);
+        Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
+    }
+
     pub(in crate::vm::interpreter) fn exec_native_ops(
         &mut self,
         stack: &mut Stack,
@@ -233,8 +444,70 @@ impl<'a> Interpreter<'a> {
                 }
                 args.reverse();
 
+                // Route builtin array native IDs through shared array handler.
+                // Native array calls use args = [receiver, ...methodArgs].
+                if crate::vm::builtin::is_array_method(native_id) {
+                    if args.is_empty() {
+                        return OpcodeResult::Error(VmError::RuntimeError(
+                            "Array native call requires receiver".to_string(),
+                        ));
+                    }
+                    for arg in &args {
+                        if let Err(e) = stack.push(*arg) {
+                            return OpcodeResult::Error(e);
+                        }
+                    }
+                    let method_arg_count = args.len().saturating_sub(1);
+                    return match self.call_array_method(
+                        task,
+                        stack,
+                        native_id,
+                        method_arg_count,
+                        module,
+                    ) {
+                        Ok(()) => OpcodeResult::Continue,
+                        Err(e) => OpcodeResult::Error(e),
+                    };
+                }
+
+                // Route builtin string native IDs through shared string handler.
+                if crate::vm::builtin::is_string_method(native_id) {
+                    if args.is_empty() {
+                        return OpcodeResult::Error(VmError::RuntimeError(
+                            "String native call requires receiver".to_string(),
+                        ));
+                    }
+                    for arg in &args {
+                        if let Err(e) = stack.push(*arg) {
+                            return OpcodeResult::Error(e);
+                        }
+                    }
+                    let method_arg_count = args.len().saturating_sub(1);
+                    return match self.call_string_method(
+                        task,
+                        stack,
+                        native_id,
+                        method_arg_count,
+                        module,
+                    ) {
+                        Ok(()) => OpcodeResult::Continue,
+                        Err(e) => OpcodeResult::Error(e),
+                    };
+                }
+
                 // Execute native call - handle channel operations specially for suspension
                 match native_id {
+                    id if id == crate::compiler::native_id::OBJECT_NEW => {
+                        let value = match self.alloc_object_descriptor() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS => {
                         if args.is_empty() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -317,6 +590,105 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_REGISTER_STRUCTURAL_VIEW => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "registerStructuralView requires (object, memberNames[])"
+                                    .to_string(),
+                            ));
+                        }
+
+                        let object_val = args[0];
+                        if object_val.is_null() {
+                            if let Err(error) = stack.push(Value::null()) {
+                                return OpcodeResult::Error(error);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+
+                        let Some(names_ptr) = (unsafe { args[1].as_ptr::<Array>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "registerStructuralView expects array of member names".to_string(),
+                            ));
+                        };
+                        let names_array = unsafe { &*names_ptr.as_ptr() };
+                        let mut expected_names = Vec::with_capacity(names_array.elements.len());
+                        for element in &names_array.elements {
+                            let Some(name_ptr) = (unsafe { element.as_ptr::<RayaString>() }) else {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "registerStructuralView member names must be strings"
+                                        .to_string(),
+                                ));
+                            };
+                            expected_names.push(unsafe { &*name_ptr.as_ptr() }.data.clone());
+                        }
+
+                        let Some(object_ptr) = (unsafe { object_val.as_ptr::<Object>() }) else {
+                            if let Err(error) = stack.push(Value::null()) {
+                                return OpcodeResult::Error(error);
+                            }
+                            return OpcodeResult::Continue;
+                        };
+                        let object = unsafe { &*object_ptr.as_ptr() };
+                        let class_metadata = self.class_metadata.read();
+                        let class_meta = class_metadata.get(object.class_id);
+                        let class_name = {
+                            let classes = self.classes.read();
+                            classes
+                                .get_class(object.class_id)
+                                .map(|class| class.name.clone())
+                        };
+                        let use_identity_slots = class_meta.is_none();
+                        let slot_map: Vec<StructuralSlotBinding> = expected_names
+                            .iter()
+                            .enumerate()
+                            .map(|(expected_idx, name)| {
+                                if use_identity_slots {
+                                    return StructuralSlotBinding::Field(expected_idx);
+                                }
+                                class_meta
+                                    .and_then(|meta| {
+                                        meta.get_field_index(name).and_then(|index| {
+                                            (index < object.field_count())
+                                                .then_some(StructuralSlotBinding::Field(index))
+                                        })
+                                    })
+                                    .or_else(|| {
+                                        class_meta.and_then(|meta| {
+                                            meta.get_method_index(name)
+                                                .map(StructuralSlotBinding::Method)
+                                        })
+                                    })
+                                    .or_else(|| {
+                                        class_name.as_ref().and_then(|class_name| {
+                                            Self::builtin_field_index_for_class_name_native(
+                                                class_name,
+                                                name,
+                                            )
+                                            .map(StructuralSlotBinding::Field)
+                                        })
+                                    })
+                                    .unwrap_or(StructuralSlotBinding::Missing)
+                            })
+                            .collect();
+                        drop(class_metadata);
+
+                        let key = (module.checksum, self.profiler_func_id, object.object_id);
+                        let is_identity = slot_map.iter().enumerate().all(|(expected, binding)| {
+                            matches!(binding, StructuralSlotBinding::Field(actual) if *actual == expected)
+                        });
+                        if is_identity {
+                            self.structural_slot_views.write().remove(&key);
+                        } else {
+                            self.structural_slot_views.write().insert(key, slot_map);
+                        }
+
+                        if let Err(error) = stack.push(Value::null()) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     CHANNEL_NEW => {
                         // Create a new channel with given capacity
                         let capacity = args[0].as_i32().unwrap_or(0) as usize;
@@ -336,15 +708,11 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_SEND requires 2 arguments".to_string(),
                             ));
                         }
-                        let handle = args[0].as_u64().unwrap_or(0);
                         let value = args[1];
-                        let ch_ptr = handle as *const ChannelObject;
-                        if ch_ptr.is_null() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string(),
-                            ));
-                        }
-                        let channel = unsafe { &*ch_ptr };
+                        let (handle, channel) = match self.channel_from_handle_arg(args[0]) {
+                            Ok(tuple) => tuple,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
 
                         if channel.is_closed() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -372,14 +740,10 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_RECEIVE requires 1 argument".to_string(),
                             ));
                         }
-                        let handle = args[0].as_u64().unwrap_or(0);
-                        let ch_ptr = handle as *const ChannelObject;
-                        if ch_ptr.is_null() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string(),
-                            ));
-                        }
-                        let channel = unsafe { &*ch_ptr };
+                        let (handle, channel) = match self.channel_from_handle_arg(args[0]) {
+                            Ok(tuple) => tuple,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
 
                         if let Some(val) = channel.try_receive() {
                             if let Err(e) = stack.push(val) {
@@ -405,15 +769,11 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_TRY_SEND requires 2 arguments".to_string(),
                             ));
                         }
-                        let handle = args[0].as_u64().unwrap_or(0);
                         let value = args[1];
-                        let ch_ptr = handle as *const ChannelObject;
-                        if ch_ptr.is_null() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string(),
-                            ));
-                        }
-                        let channel = unsafe { &*ch_ptr };
+                        let (_, channel) = match self.channel_from_handle_arg(args[0]) {
+                            Ok(tuple) => tuple,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let result = channel.try_send(value);
                         if let Err(e) = stack.push(Value::bool(result)) {
                             return OpcodeResult::Error(e);
@@ -427,14 +787,10 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_TRY_RECEIVE requires 1 argument".to_string(),
                             ));
                         }
-                        let handle = args[0].as_u64().unwrap_or(0);
-                        let ch_ptr = handle as *const ChannelObject;
-                        if ch_ptr.is_null() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string(),
-                            ));
-                        }
-                        let channel = unsafe { &*ch_ptr };
+                        let (_, channel) = match self.channel_from_handle_arg(args[0]) {
+                            Ok(tuple) => tuple,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let result = channel.try_receive().unwrap_or(Value::null());
                         if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
@@ -448,14 +804,10 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_CLOSE requires 1 argument".to_string(),
                             ));
                         }
-                        let handle = args[0].as_u64().unwrap_or(0);
-                        let ch_ptr = handle as *const ChannelObject;
-                        if ch_ptr.is_null() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string(),
-                            ));
-                        }
-                        let channel = unsafe { &*ch_ptr };
+                        let (_, channel) = match self.channel_from_handle_arg(args[0]) {
+                            Ok(tuple) => tuple,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         channel.close();
                         // Reactor will wake any waiting tasks on next iteration
                         if let Err(e) = stack.push(Value::null()) {
@@ -470,14 +822,10 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_IS_CLOSED requires 1 argument".to_string(),
                             ));
                         }
-                        let handle = args[0].as_u64().unwrap_or(0);
-                        let ch_ptr = handle as *const ChannelObject;
-                        if ch_ptr.is_null() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string(),
-                            ));
-                        }
-                        let channel = unsafe { &*ch_ptr };
+                        let (_, channel) = match self.channel_from_handle_arg(args[0]) {
+                            Ok(tuple) => tuple,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         if let Err(e) = stack.push(Value::bool(channel.is_closed())) {
                             return OpcodeResult::Error(e);
                         }
@@ -490,14 +838,10 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_LENGTH requires 1 argument".to_string(),
                             ));
                         }
-                        let handle = args[0].as_u64().unwrap_or(0);
-                        let ch_ptr = handle as *const ChannelObject;
-                        if ch_ptr.is_null() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string(),
-                            ));
-                        }
-                        let channel = unsafe { &*ch_ptr };
+                        let (_, channel) = match self.channel_from_handle_arg(args[0]) {
+                            Ok(tuple) => tuple,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         if let Err(e) = stack.push(Value::i32(channel.length() as i32)) {
                             return OpcodeResult::Error(e);
                         }
@@ -510,14 +854,10 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_CAPACITY requires 1 argument".to_string(),
                             ));
                         }
-                        let handle = args[0].as_u64().unwrap_or(0);
-                        let ch_ptr = handle as *const ChannelObject;
-                        if ch_ptr.is_null() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string(),
-                            ));
-                        }
-                        let channel = unsafe { &*ch_ptr };
+                        let (_, channel) = match self.channel_from_handle_arg(args[0]) {
+                            Ok(tuple) => tuple,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         if let Err(e) = stack.push(Value::i32(channel.capacity() as i32)) {
                             return OpcodeResult::Error(e);
                         }
@@ -530,13 +870,20 @@ impl<'a> Interpreter<'a> {
                         let buf = Buffer::new(size);
                         let gc_ptr = self.gc.lock().allocate(buf);
                         let handle = gc_ptr.as_ptr() as u64;
-                        if let Err(e) = stack.push(Value::u64(handle)) {
+                        let wrapped = match self.alloc_buffer_object(handle, size) {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        if let Err(e) = stack.push(wrapped) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }
                     id if id == buffer::LENGTH => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.buffer_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -550,7 +897,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == buffer::GET_BYTE => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.buffer_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
@@ -566,7 +916,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == buffer::SET_BYTE => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.buffer_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let value = args[2].as_i32().unwrap_or(0) as u8;
                         let buf_ptr = handle as *mut Buffer;
@@ -585,7 +938,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == buffer::GET_INT32 => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.buffer_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
@@ -601,7 +957,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == buffer::SET_INT32 => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.buffer_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let value = args[2].as_i32().unwrap_or(0);
                         let buf_ptr = handle as *mut Buffer;
@@ -620,7 +979,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == buffer::GET_FLOAT64 => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.buffer_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
@@ -636,7 +998,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == buffer::SET_FLOAT64 => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.buffer_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let value = args[2].as_f64().unwrap_or(0.0);
                         let buf_ptr = handle as *mut Buffer;
@@ -655,7 +1020,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == buffer::SLICE => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.buffer_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let start = args[1].as_i32().unwrap_or(0) as usize;
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
@@ -677,30 +1045,9 @@ impl<'a> Interpreter<'a> {
                             gc_ptr.as_ptr() as u64
                         };
 
-                        // Create Buffer object instance wrapping the handle
-                        let (buffer_class_id, buffer_field_count) = {
-                            let classes = self.classes.read();
-                            match classes.get_class_by_name("Buffer") {
-                                Some(class) => (class.id, class.field_count),
-                                None => {
-                                    return OpcodeResult::Error(VmError::RuntimeError(
-                                        "Buffer class not found".to_string(),
-                                    ));
-                                }
-                            }
-                        };
-
-                        let mut obj = Object::new(buffer_class_id, buffer_field_count.max(2));
-                        if let Err(e) = obj.set_field(0, Value::u64(new_handle)) {
-                            return OpcodeResult::Error(VmError::RuntimeError(e));
-                        }
-                        if let Err(e) = obj.set_field(1, Value::i32(sliced_len)) {
-                            return OpcodeResult::Error(VmError::RuntimeError(e));
-                        }
-
-                        let obj_ptr = self.gc.lock().allocate(obj);
-                        let value = unsafe {
-                            Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap())
+                        let value = match self.alloc_buffer_object(new_handle, sliced_len as usize) {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
                         };
 
                         if let Err(e) = stack.push(value) {
@@ -710,8 +1057,14 @@ impl<'a> Interpreter<'a> {
                     }
                     id if id == buffer::COPY => {
                         // copy(srcHandle, targetHandle, targetStart?, sourceStart?, sourceEnd?)
-                        let src_handle = args[0].as_u64().unwrap_or(0);
-                        let tgt_handle = args[1].as_u64().unwrap_or(0);
+                        let src_handle = match self.buffer_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
+                        let tgt_handle = match self.buffer_handle_from_value(args[1]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let src_ptr = src_handle as *const Buffer;
                         let tgt_ptr = tgt_handle as *mut Buffer;
                         if src_ptr.is_null() || tgt_ptr.is_null() {
@@ -751,7 +1104,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == buffer::TO_STRING => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.buffer_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -792,7 +1148,12 @@ impl<'a> Interpreter<'a> {
                         buf.data.copy_from_slice(bytes);
                         let gc_ptr = self.gc.lock().allocate(buf);
                         let new_handle = gc_ptr.as_ptr() as u64;
-                        if let Err(e) = stack.push(Value::u64(new_handle)) {
+                        let value = match self.alloc_buffer_object(new_handle, bytes.len()) {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+
+                        if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
@@ -848,7 +1209,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == map::SIZE => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.map_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let map_ptr = handle as *const MapObject;
                         if map_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -862,7 +1226,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == map::GET => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.map_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let key = args[1];
                         let map_ptr = handle as *const MapObject;
                         if map_ptr.is_null() {
@@ -878,7 +1245,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == map::SET => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.map_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let key = args[1];
                         let value = args[2];
                         let map_ptr = handle as *mut MapObject;
@@ -895,7 +1265,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == map::HAS => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.map_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let key = args[1];
                         let map_ptr = handle as *const MapObject;
                         if map_ptr.is_null() {
@@ -910,7 +1283,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == map::DELETE => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.map_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let key = args[1];
                         let map_ptr = handle as *mut MapObject;
                         if map_ptr.is_null() {
@@ -926,7 +1302,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == map::CLEAR => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.map_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let map_ptr = handle as *mut MapObject;
                         if map_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -941,7 +1320,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == map::KEYS => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.map_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let map_ptr = handle as *const MapObject;
                         if map_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -964,7 +1346,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == map::VALUES => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.map_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let map_ptr = handle as *const MapObject;
                         if map_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -987,7 +1372,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == map::ENTRIES => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.map_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let map_ptr = handle as *const MapObject;
                         if map_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -1027,7 +1415,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == set::SIZE => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.set_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let set_ptr = handle as *const SetObject;
                         if set_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -1041,7 +1432,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == set::ADD => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.set_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let value = args[1];
                         let set_ptr = handle as *mut SetObject;
                         if set_ptr.is_null() {
@@ -1057,7 +1451,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == set::HAS => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.set_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let value = args[1];
                         let set_ptr = handle as *const SetObject;
                         if set_ptr.is_null() {
@@ -1072,7 +1469,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == set::DELETE => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.set_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let value = args[1];
                         let set_ptr = handle as *mut SetObject;
                         if set_ptr.is_null() {
@@ -1088,7 +1488,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == set::CLEAR => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.set_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let set_ptr = handle as *mut SetObject;
                         if set_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -1103,7 +1506,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == set::VALUES => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.set_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let set_ptr = handle as *const SetObject;
                         if set_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -1126,8 +1532,14 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == set::UNION => {
-                        let handle_a = args[0].as_u64().unwrap_or(0);
-                        let handle_b = args[1].as_u64().unwrap_or(0);
+                        let handle_a = match self.set_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
+                        let handle_b = match self.set_handle_from_value(args[1]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let set_a_ptr = handle_a as *const SetObject;
                         let set_b_ptr = handle_b as *const SetObject;
                         if set_a_ptr.is_null() || set_b_ptr.is_null() {
@@ -1152,8 +1564,14 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == set::INTERSECTION => {
-                        let handle_a = args[0].as_u64().unwrap_or(0);
-                        let handle_b = args[1].as_u64().unwrap_or(0);
+                        let handle_a = match self.set_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
+                        let handle_b = match self.set_handle_from_value(args[1]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let set_a_ptr = handle_a as *const SetObject;
                         let set_b_ptr = handle_b as *const SetObject;
                         if set_a_ptr.is_null() || set_b_ptr.is_null() {
@@ -1177,8 +1595,14 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == set::DIFFERENCE => {
-                        let handle_a = args[0].as_u64().unwrap_or(0);
-                        let handle_b = args[1].as_u64().unwrap_or(0);
+                        let handle_a = match self.set_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
+                        let handle_b = match self.set_handle_from_value(args[1]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let set_a_ptr = handle_a as *const SetObject;
                         let set_b_ptr = handle_b as *const SetObject;
                         if set_a_ptr.is_null() || set_b_ptr.is_null() {
@@ -1235,18 +1659,36 @@ impl<'a> Interpreter<'a> {
                                 format!("{}", value)
                             }
                         } else {
-                            let prec =
+                            let precision =
                                 args.get(1).and_then(|v| v.as_i32()).unwrap_or(1).max(1) as usize;
-                            if value == 0.0 {
-                                format!("{:.prec$}", 0.0, prec = prec - 1)
+                            if !value.is_finite() {
+                                format!("{}", value)
+                            } else if value == 0.0 {
+                                if precision == 1 {
+                                    "0".to_string()
+                                } else {
+                                    format!("0.{}", "0".repeat(precision - 1))
+                                }
                             } else {
                                 let magnitude = value.abs().log10().floor() as i32;
-                                let decimal_places = if prec as i32 > magnitude + 1 {
-                                    (prec as i32 - magnitude - 1) as usize
+                                let scale_pow = magnitude - precision as i32 + 1;
+                                let scale = 10f64.powi(scale_pow);
+                                let rounded = (value / scale).round() * scale;
+                                let decimal_places = (precision as i32 - magnitude - 1).max(0) as usize;
+                                let mut text = format!("{:.prec$}", rounded, prec = decimal_places);
+                                if decimal_places > 0 {
+                                    while text.ends_with('0') {
+                                        text.pop();
+                                    }
+                                    if text.ends_with('.') {
+                                        text.pop();
+                                    }
+                                }
+                                if text == "-0" {
+                                    "0".to_string()
                                 } else {
-                                    0
-                                };
-                                format!("{:.prec$}", value, prec = decimal_places)
+                                    text
+                                }
                             }
                         };
                         let s = RayaString::new(formatted);
@@ -1977,7 +2419,10 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                     id if id == regexp::TEST => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.regexp_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let input = if args[1].is_ptr() {
                             if let Some(s) = unsafe { args[1].as_ptr::<RayaString>() } {
                                 unsafe { &*s.as_ptr() }.data.clone()
@@ -2000,7 +2445,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == regexp::EXEC => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.regexp_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let input = if args[1].is_ptr() {
                             if let Some(s) = unsafe { args[1].as_ptr::<RayaString>() } {
                                 unsafe { &*s.as_ptr() }.data.clone()
@@ -2058,7 +2506,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == regexp::EXEC_ALL => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.regexp_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let input = if args[1].is_ptr() {
                             if let Some(s) = unsafe { args[1].as_ptr::<RayaString>() } {
                                 unsafe { &*s.as_ptr() }.data.clone()
@@ -2114,7 +2565,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == regexp::REPLACE => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.regexp_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let input = if args[1].is_ptr() {
                             if let Some(s) = unsafe { args[1].as_ptr::<RayaString>() } {
                                 unsafe { &*s.as_ptr() }.data.clone()
@@ -2152,7 +2606,10 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == regexp::SPLIT => {
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.regexp_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let input = if args[1].is_ptr() {
                             if let Some(s) = unsafe { args[1].as_ptr::<RayaString>() } {
                                 unsafe { &*s.as_ptr() }.data.clone()
@@ -2163,7 +2620,15 @@ impl<'a> Interpreter<'a> {
                             String::new()
                         };
                         let limit = if args.len() > 2 {
-                            args[2].as_i32().map(|v| v as usize)
+                            let raw_limit = args[2]
+                                .as_i32()
+                                .or_else(|| args[2].as_i64().map(|v| v as i32))
+                                .unwrap_or(0);
+                            if raw_limit > 0 {
+                                Some(raw_limit as usize)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         };
@@ -2197,7 +2662,10 @@ impl<'a> Interpreter<'a> {
                         // REGEXP_REPLACE_MATCHES: Get match data for replaceWith intrinsic
                         // Args: regexp handle, input string
                         // Returns: array of [matched_text, start_index] arrays, respecting 'g' flag
-                        let handle = args[0].as_u64().unwrap_or(0);
+                        let handle = match self.regexp_handle_from_value(args[0]) {
+                            Ok(h) => h,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
                         let input = if args[1].is_ptr() {
                             if let Some(s) = unsafe { args[1].as_ptr::<RayaString>() } {
                                 unsafe { &*s.as_ptr() }.data.clone()

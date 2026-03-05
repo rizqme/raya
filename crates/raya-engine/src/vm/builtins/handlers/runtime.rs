@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::Instant;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use crate::compiler::{verify_module, Compiler, Module};
 use crate::parser::ast;
@@ -15,7 +15,8 @@ use crate::parser::checker::{Binder, ScopeId, TypeChecker};
 use crate::parser::{Interner, Parser, TypeContext, TypeId};
 use crate::vm::builtin::runtime;
 use crate::vm::gc::GarbageCollector as Gc;
-use crate::vm::object::{Buffer, RayaString};
+use crate::vm::interpreter::ClassRegistry;
+use crate::vm::object::{Buffer, Class, Object, RayaString};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::Vm;
@@ -81,6 +82,7 @@ struct TypedAstEntry {
     #[allow(dead_code)]
     symbols: crate::parser::SymbolTable,
     expr_types: FxHashMap<usize, TypeId>,
+    type_annotation_types: FxHashMap<usize, TypeId>,
 }
 
 /// Registry of parsed and type-checked ASTs, keyed by integer ID
@@ -345,6 +347,7 @@ static VM_START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
 /// Context needed for runtime method execution
 pub struct RuntimeHandlerContext<'a> {
     pub gc: &'a Mutex<Gc>,
+    pub classes: &'a RwLock<ClassRegistry>,
 }
 
 // ============================================================================
@@ -508,15 +511,7 @@ pub fn call_runtime_method(
             let bytes = module.encode();
             drop(registry);
 
-            // Create a Buffer from the encoded bytes
-            let mut buffer = Buffer::new(bytes.len());
-            for (i, &byte) in bytes.iter().enumerate() {
-                let _ = buffer.set_byte(i, byte);
-            }
-
-            // Allocate on heap
-            let gc_ptr = ctx.gc.lock().allocate(buffer);
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+            allocate_buffer_object(ctx, &bytes)?
         }
 
         runtime::DECODE => {
@@ -527,17 +522,7 @@ pub fn call_runtime_method(
                     "Bytecode.decode requires 1 argument".to_string(),
                 ));
             }
-
-            // Read Buffer from heap
-            let buf_val = args[0];
-            if !buf_val.is_ptr() {
-                return Err(VmError::TypeError("Expected Buffer for data".to_string()));
-            }
-            let buf_ptr = unsafe { buf_val.as_ptr::<Buffer>() };
-            let buffer = unsafe { &*buf_ptr.unwrap().as_ptr() };
-            let bytes: Vec<u8> = (0..buffer.length())
-                .filter_map(|i| buffer.get_byte(i))
-                .collect();
+            let bytes = read_buffer_bytes(ctx, args[0], "data")?;
 
             let module = Module::decode(&bytes)
                 .map_err(|e| VmError::RuntimeError(format!("Failed to decode module: {}", e)))?;
@@ -622,8 +607,11 @@ pub fn call_runtime_method(
                 type_ctx,
                 symbols: _,
                 expr_types,
+                type_annotation_types,
             } = entry;
-            let compiler = Compiler::new(type_ctx, &interner).with_expr_types(expr_types);
+            let compiler = Compiler::new(type_ctx, &interner)
+                .with_expr_types(expr_types)
+                .with_type_annotation_types(type_annotation_types);
             let module = compiler
                 .compile_via_ir(&ast)
                 .map_err(|e| VmError::RuntimeError(format!("Compile error: {}", e)))?;
@@ -1185,16 +1173,7 @@ pub fn call_runtime_method(
                 .as_i32()
                 .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
                 as u32;
-            let buf_val = args[1];
-            if !buf_val.is_ptr() {
-                return Err(VmError::TypeError("Expected Buffer for bytes".to_string()));
-            }
-            let buf_ptr = unsafe { buf_val.as_ptr::<Buffer>() }
-                .ok_or_else(|| VmError::TypeError("Expected Buffer".to_string()))?;
-            let buffer = unsafe { &*buf_ptr.as_ptr() };
-            let bytes: Vec<u8> = (0..buffer.length())
-                .filter_map(|i| buffer.get_byte(i))
-                .collect();
+            let bytes = read_buffer_bytes(ctx, args[1], "bytes")?;
             let module = Module::decode(&bytes)
                 .map_err(|e| VmError::RuntimeError(format!("Bytecode decode error: {:?}", e)))?;
 
@@ -1981,6 +1960,79 @@ fn allocate_string(ctx: &RuntimeHandlerContext<'_>, s: String) -> Value {
     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
 }
 
+fn ensure_buffer_class_layout(ctx: &RuntimeHandlerContext<'_>) -> (usize, usize) {
+    let mut classes = ctx.classes.write();
+    if let Some(class) = classes.get_class_by_name("Buffer") {
+        (class.id, class.field_count.max(2))
+    } else {
+        let id = classes.next_class_id();
+        classes.register_class(Class::new(id, "Buffer".to_string(), 2));
+        (id, 2)
+    }
+}
+
+fn allocate_buffer_object(ctx: &RuntimeHandlerContext<'_>, data: &[u8]) -> Result<Value, VmError> {
+    let (buffer_class_id, buffer_field_count) = ensure_buffer_class_layout(ctx);
+    let mut buffer = Buffer::new(data.len());
+    for (i, &byte) in data.iter().enumerate() {
+        let _ = buffer.set_byte(i, byte);
+    }
+
+    let mut gc = ctx.gc.lock();
+    let buffer_ptr = gc.allocate(buffer);
+    let handle = buffer_ptr.as_ptr() as u64;
+
+    let mut obj = Object::new(buffer_class_id, buffer_field_count);
+    obj.set_field(0, Value::u64(handle)).map_err(VmError::RuntimeError)?;
+    if buffer_field_count > 1 {
+        obj.set_field(1, Value::i32(data.len() as i32))
+            .map_err(VmError::RuntimeError)?;
+    }
+    let obj_ptr = gc.allocate(obj);
+    Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
+}
+
+fn read_buffer_bytes(
+    ctx: &RuntimeHandlerContext<'_>,
+    value: Value,
+    arg_name: &str,
+) -> Result<Vec<u8>, VmError> {
+    if !value.is_ptr() {
+        return Err(VmError::TypeError(format!(
+            "Expected Buffer for {}",
+            arg_name
+        )));
+    }
+
+    let obj_ptr = unsafe { value.as_ptr::<Object>() }
+        .ok_or_else(|| VmError::TypeError(format!("Expected Buffer for {}", arg_name)))?;
+    let obj = unsafe { &*obj_ptr.as_ptr() };
+    let classes = ctx.classes.read();
+    let class = classes
+        .get_class(obj.class_id)
+        .ok_or_else(|| VmError::RuntimeError("Buffer class metadata missing".to_string()))?;
+    if class.name != "Buffer" {
+        return Err(VmError::TypeError(format!(
+            "Expected Buffer for {}",
+            arg_name
+        )));
+    }
+    drop(classes);
+
+    let handle = obj
+        .get_field(0)
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| VmError::RuntimeError("Buffer object missing valid handle".to_string()))?;
+    let buffer_ptr = handle as *const Buffer;
+    if buffer_ptr.is_null() {
+        return Err(VmError::RuntimeError("Invalid buffer handle".to_string()));
+    }
+    let buffer = unsafe { &*buffer_ptr };
+    Ok((0..buffer.length())
+        .filter_map(|i| buffer.get_byte(i))
+        .collect())
+}
+
 /// Parse Raya source code to an AST
 fn parse_source(source: &str) -> Result<(ast::Module, Interner), VmError> {
     let parser =
@@ -2017,6 +2069,7 @@ fn typecheck_ast(ast: ast::Module, interner: Interner) -> Result<TypedAstEntry, 
         type_ctx,
         symbols,
         expr_types: check_result.expr_types,
+        type_annotation_types: check_result.type_annotation_types,
     })
 }
 
@@ -2039,9 +2092,11 @@ fn compile_source_impl(source: &str, sourcemap: bool) -> Result<Module, VmError>
         type_ctx,
         symbols: _,
         expr_types,
+        type_annotation_types,
     } = typed;
     let compiler = Compiler::new(type_ctx, &interner)
         .with_expr_types(expr_types)
+        .with_type_annotation_types(type_annotation_types)
         .with_sourcemap(sourcemap);
     compiler
         .compile_via_ir(&ast)

@@ -5,7 +5,6 @@
 //! merged program source.
 
 pub mod graph;
-pub mod linker;
 pub mod loader;
 pub mod program;
 pub mod resolver;

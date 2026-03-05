@@ -677,7 +677,8 @@ fn test_method_with_extra_type_param() {
 fn test_stream_pipe_method_from_async_minimal() {
     // Uses the actual stream module with a minimal pipeThrough-like pattern
     expect_i32_with_builtins(
-        "let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
+        "import { ReadableStream, WritableStream, ReadableController, WritableController } from \"std:stream\";
+         let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.push(42);
              ctrl.close();
          }, 4);
@@ -709,7 +710,8 @@ fn test_stream_pipe_method_from_async_minimal() {
 fn test_transform_stream_construct() {
     // Just construct a TransformStream — no pipe
     expect_i32_with_builtins(
-        "let ts = new TransformStream<number, number>(
+        "import { TransformStream, TransformController } from \"std:stream\";
+         let ts = new TransformStream<number, number>(
              (input: number, ctrl: TransformController<number>): void => {
                  ctrl.push(input * 2);
              },
@@ -724,7 +726,8 @@ fn test_transform_stream_construct() {
 fn test_transform_stream_get_writable() {
     // Construct TransformStream, get writable
     expect_i32_with_builtins(
-        "let ts = new TransformStream<number, number>(
+        "import { TransformStream, TransformController } from \"std:stream\";
+         let ts = new TransformStream<number, number>(
              (input: number, ctrl: TransformController<number>): void => {
                  ctrl.push(input * 2);
              },
@@ -740,7 +743,8 @@ fn test_transform_stream_get_writable() {
 fn test_transform_stream_get_readable() {
     // Construct TransformStream, get readable
     expect_i32_with_builtins(
-        "let ts = new TransformStream<number, number>(
+        "import { TransformStream, TransformController } from \"std:stream\";
+         let ts = new TransformStream<number, number>(
              (input: number, ctrl: TransformController<number>): void => {
                  ctrl.push(input * 2);
              },
@@ -757,7 +761,8 @@ fn test_pipethrough_manual_inline() {
     // Manually inline what pipeThrough does, step by step
     // This is source.pipeThrough(transform) inlined:
     expect_i32_with_builtins(
-        "let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
+        "import { ReadableStream, TransformStream, ReadableController, TransformController } from \"std:stream\";
+         let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.push(10);
              ctrl.push(20);
              ctrl.close();
@@ -793,7 +798,8 @@ fn test_pipethrough_manual_inline() {
 fn test_pipethrough_method_call() {
     // Call pipeThrough as a method — exactly what the failing test does
     expect_i32_with_builtins(
-        "let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
+        "import { ReadableStream, TransformStream, ReadableController, TransformController } from \"std:stream\";
+         let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.push(10);
              ctrl.push(20);
              ctrl.close();

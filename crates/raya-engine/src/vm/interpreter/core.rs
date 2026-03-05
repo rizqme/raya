@@ -250,7 +250,12 @@ pub struct Interpreter<'a> {
 
     /// Structural slot translation views for imported objects.
     pub(in crate::vm::interpreter) structural_slot_views:
-        &'a RwLock<FxHashMap<([u8; 32], u64), Vec<Option<usize>>>>,
+        &'a RwLock<
+            FxHashMap<
+                ([u8; 32], usize, u64),
+                Vec<crate::vm::interpreter::shared_state::StructuralSlotBinding>,
+            >,
+        >,
 
     /// IO submission sender for NativeCallResult::Suspend (None in tests without reactor)
     pub(in crate::vm::interpreter) io_submit_tx:
@@ -354,23 +359,25 @@ impl<'a> Interpreter<'a> {
     }
 
     #[inline]
-    pub(in crate::vm::interpreter) fn remap_structural_slot_index(
+    pub(in crate::vm::interpreter) fn remap_structural_slot_binding(
         &self,
         module: &Module,
         object: &Object,
         expected_slot: usize,
-    ) -> Option<usize> {
-        if let Some(slot_map) = self
-            .structural_slot_views
-            .read()
-            .get(&(module.checksum, object.object_id))
+    ) -> crate::vm::interpreter::shared_state::StructuralSlotBinding {
+        let views = self.structural_slot_views.read();
+        if let Some(slot_map) = views
+            .get(&(module.checksum, self.profiler_func_id, object.object_id))
+            .or_else(|| views.get(&(module.checksum, usize::MAX, object.object_id)))
         {
             return slot_map
                 .get(expected_slot)
                 .copied()
-                .unwrap_or(Some(expected_slot));
+                .unwrap_or(crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(
+                    expected_slot,
+                ));
         }
-        Some(expected_slot)
+        crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(expected_slot)
     }
 
     #[inline]
@@ -480,7 +487,12 @@ impl<'a> Interpreter<'a> {
         module_layouts: &'a RwLock<
             FxHashMap<[u8; 32], crate::vm::interpreter::shared_state::ModuleRuntimeLayout>,
         >,
-        structural_slot_views: &'a RwLock<FxHashMap<([u8; 32], u64), Vec<Option<usize>>>>,
+        structural_slot_views: &'a RwLock<
+            FxHashMap<
+                ([u8; 32], usize, u64),
+                Vec<crate::vm::interpreter::shared_state::StructuralSlotBinding>,
+            >,
+        >,
         io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
         max_preemptions: u32,
         stack_pool: &'a crate::vm::scheduler::StackPool,
@@ -1698,7 +1710,10 @@ impl<'a> Interpreter<'a> {
         args: Vec<Value>,
         _module: &Module,
     ) -> Result<(), VmError> {
-        let ctx = RuntimeHandlerContext { gc: self.gc };
+        let ctx = RuntimeHandlerContext {
+            gc: self.gc,
+            classes: self.classes,
+        };
 
         // Push args back onto stack so the handler can pop them
         let arg_count = args.len();

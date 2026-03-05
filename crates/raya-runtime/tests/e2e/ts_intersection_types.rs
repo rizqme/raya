@@ -110,12 +110,12 @@ fn test_intersection_class_implements() {
          type Writable = {
              write(v: number): void;
          };
-         class Buffer implements Readable, Writable {
+         class RWBuffer implements Readable, Writable {
              data: number = 0;
              read(): number { return this.data; }
              write(v: number): void { this.data = v; }
          }
-         let buf = new Buffer();
+         let buf = new RWBuffer();
          buf.write(42);
          return buf.read();",
         42,

@@ -500,6 +500,12 @@ pub struct Lowerer<'a> {
     /// Variables initialized from imported class constructors where no local
     /// class metadata is available. These require late-bound member dispatch.
     late_bound_object_vars: FxHashSet<Symbol>,
+    /// Constructor symbol for late-bound imported-class instances.
+    /// Keyed by local variable symbol.
+    late_bound_object_ctor_map: FxHashMap<Symbol, Symbol>,
+    /// Checker/lowering TypeId for late-bound imported-class constructor symbols.
+    /// Keyed by local variable symbol.
+    late_bound_object_type_map: FxHashMap<Symbol, TypeId>,
     /// Synthetic global slot for `export default <expr>` materialization.
     default_export_global: Option<u16>,
     /// Depth counter: 0 = module top-level, >0 = inside function declaration.
@@ -518,6 +524,8 @@ pub struct Lowerer<'a> {
     closure_globals: FxHashMap<u16, FunctionId>,
     /// Expression types from type checker (maps expr ptr to TypeId)
     expr_types: FxHashMap<usize, TypeId>,
+    /// Type annotation types from checker (maps annotation ptr to TypeId)
+    type_annotation_types: FxHashMap<usize, TypeId>,
     /// Fallback expression types keyed by source span `(start, end)`.
     expr_types_by_span: FxHashMap<(usize, usize), TypeId>,
     /// Type map for module-level globals (preserves initializer types through LoadGlobal)
@@ -1061,6 +1069,8 @@ impl<'a> Lowerer<'a> {
             module_var_globals: FxHashMap::default(),
             import_bindings: FxHashSet::default(),
             late_bound_object_vars: FxHashSet::default(),
+            late_bound_object_ctor_map: FxHashMap::default(),
+            late_bound_object_type_map: FxHashMap::default(),
             default_export_global: None,
             function_depth: 0,
             block_depth: 0,
@@ -1068,6 +1078,7 @@ impl<'a> Lowerer<'a> {
             closure_locals: FxHashMap::default(),
             closure_globals: FxHashMap::default(),
             expr_types,
+            type_annotation_types: FxHashMap::default(),
             expr_types_by_span: FxHashMap::default(),
             global_type_map: FxHashMap::default(),
             pending_class_method_env_globals: None,
@@ -1108,6 +1119,15 @@ impl<'a> Lowerer<'a> {
     /// Enable JSX compilation with the given options
     pub fn with_jsx(mut self, options: JsxOptions) -> Self {
         self.jsx_options = Some(options);
+        self
+    }
+
+    /// Provide checker-resolved type IDs for annotation nodes.
+    pub fn with_type_annotation_types(
+        mut self,
+        type_annotation_types: FxHashMap<usize, TypeId>,
+    ) -> Self {
+        self.type_annotation_types = type_annotation_types;
         self
     }
 
@@ -1572,7 +1592,7 @@ impl<'a> Lowerer<'a> {
                     if let Some(type_ann) = &decl.type_annotation {
                         if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
                             self.variable_class_map.insert(name, class_id);
-                            self.late_bound_object_vars.remove(&name);
+                            self.clear_late_bound_object_binding(name);
                         }
                     }
                     // Track class type from new expression (e.g., `const math = new Math()`)
@@ -1596,7 +1616,7 @@ impl<'a> Lowerer<'a> {
                                         });
                                     if let Some(class_id) = class_id {
                                         self.variable_class_map.insert(name, class_id);
-                                        self.late_bound_object_vars.remove(&name);
+                                        self.clear_late_bound_object_binding(name);
                                         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                             eprintln!(
                                                 "[lower] variable_class_map: '{}' = class_id({}) (from new {}())",
@@ -1606,7 +1626,14 @@ impl<'a> Lowerer<'a> {
                                             );
                                         }
                                     } else if self.import_bindings.contains(&class_ident.name) {
-                                        self.late_bound_object_vars.insert(name);
+                                        let ctor_ty = self.get_expr_type(&new_expr.callee);
+                                        let ctor_ty =
+                                            (ctor_ty.as_u32() != UNRESOLVED_TYPE_ID).then_some(ctor_ty);
+                                        self.mark_late_bound_object_binding(
+                                            name,
+                                            class_ident.name,
+                                            ctor_ty,
+                                        );
                                         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                             eprintln!(
                                                 "[lower] late_bound_object_vars: '{}' marked (from new imported {}())",
@@ -1629,7 +1656,7 @@ impl<'a> Lowerer<'a> {
                                     self.try_extract_class_from_type(&cast.target_type)
                                 {
                                     self.variable_class_map.insert(name, class_id);
-                                    self.late_bound_object_vars.remove(&name);
+                                    self.clear_late_bound_object_binding(name);
                                     if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                         eprintln!(
                                             "[lower] variable_class_map: '{}' = class_id({}) (from cast)",
@@ -2599,6 +2626,7 @@ impl<'a> Lowerer<'a> {
         let mut fixed_param_count = 0;
         // Track parameters with destructuring patterns for later binding
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
+        let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
 
         for (decl_param_idx, param) in func.params.iter().enumerate() {
             // Skip rest parameters - they're handled separately
@@ -2624,6 +2652,12 @@ impl<'a> Lowerer<'a> {
                 .map(|t| self.resolve_type_annotation(t))
                 .unwrap_or(UNRESOLVED);
             let reg = self.alloc_register(ty);
+            if let Some(type_ann) = &param.type_annotation {
+                let expected_ty = self.resolve_structural_slot_type_from_annotation(type_ann);
+                if expected_ty != UNRESOLVED {
+                    structural_param_bindings.push((reg.clone(), expected_ty));
+                }
+            }
 
             // Extract parameter name from pattern
             if let Pattern::Identifier(ident) = &param.pattern {
@@ -2703,6 +2737,12 @@ impl<'a> Lowerer<'a> {
                 }
             }
             self.bind_pattern(pattern, value_reg);
+        }
+
+        // Register structural slot views for typed parameters so slot-based member
+        // access works for class/object/interface values uniformly at runtime.
+        for (param_reg, expected_ty) in structural_param_bindings {
+            self.emit_structural_slot_registration_for_type(param_reg, expected_ty);
         }
 
         // Emit rest array collection code if present
@@ -2921,11 +2961,20 @@ impl<'a> Lowerer<'a> {
                     self.local_registers.clear();
                     self.callable_local_hints.clear();
                     self.callable_symbol_hints.clear();
+                    self.register_object_fields.clear();
+                    self.register_nested_object_fields.clear();
+                    self.register_array_element_object_fields.clear();
+                    self.register_nested_array_element_object_fields.clear();
                     // Reset capture state for this method scope
                     self.refcell_vars.clear();
                     self.refcell_registers.clear();
                     self.refcell_inner_types.clear();
                     self.loop_captured_vars.clear();
+                    self.ancestor_variables = None;
+                    self.captures.clear();
+                    self.next_capture_slot = 0;
+                    self.this_captured_idx = None;
+                    self.closure_locals.clear();
                     self.current_method_env_globals = class_method_env_globals.clone();
 
                     // Create parameter registers
@@ -2977,6 +3026,7 @@ impl<'a> Lowerer<'a> {
 
                     // Add explicit parameters (excluding rest parameters)
                     let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
+                    let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
 
                     for (decl_param_idx, param) in method.params.iter().enumerate() {
                         // Skip rest parameters - they're handled separately
@@ -3001,6 +3051,13 @@ impl<'a> Lowerer<'a> {
                             .map(|t| self.resolve_type_annotation(t))
                             .unwrap_or(UNRESOLVED);
                         let reg = self.alloc_register(ty);
+                        if let Some(type_ann) = &param.type_annotation {
+                            let expected_ty =
+                                self.resolve_structural_slot_type_from_annotation(type_ann);
+                            if expected_ty != UNRESOLVED {
+                                structural_param_bindings.push((reg.clone(), expected_ty));
+                            }
+                        }
 
                         if let Pattern::Identifier(ident) = &param.pattern {
                             let local_idx = self.allocate_local(ident.name);
@@ -3097,6 +3154,10 @@ impl<'a> Lowerer<'a> {
                         self.bind_pattern(pattern, value_reg);
                     }
 
+                    for (param_reg, expected_ty) in structural_param_bindings {
+                        self.emit_structural_slot_registration_for_type(param_reg, expected_ty);
+                    }
+
                     // Emit rest array collection code if present
                     if let Some((rest_name, rest_ty)) = rest_param_info {
                         self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
@@ -3190,11 +3251,20 @@ impl<'a> Lowerer<'a> {
                 self.local_registers.clear();
                 self.callable_local_hints.clear();
                 self.callable_symbol_hints.clear();
+                self.register_object_fields.clear();
+                self.register_nested_object_fields.clear();
+                self.register_array_element_object_fields.clear();
+                self.register_nested_array_element_object_fields.clear();
                 // Reset capture state for constructor scope
                 self.refcell_vars.clear();
                 self.refcell_registers.clear();
                 self.refcell_inner_types.clear();
                 self.loop_captured_vars.clear();
+                self.ancestor_variables = None;
+                self.captures.clear();
+                self.next_capture_slot = 0;
+                self.this_captured_idx = None;
+                self.closure_locals.clear();
                 self.current_method_env_globals = class_method_env_globals.clone();
 
                 // Set current class context for 'this' handling
@@ -3219,6 +3289,7 @@ impl<'a> Lowerer<'a> {
 
                 // Add explicit parameters from constructor
                 let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
+                let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
 
                 for (decl_param_idx, param) in ctor.params.iter().enumerate() {
                     let ty = param
@@ -3227,6 +3298,13 @@ impl<'a> Lowerer<'a> {
                         .map(|t| self.resolve_type_annotation(t))
                         .unwrap_or(UNRESOLVED);
                     let reg = self.alloc_register(ty);
+                    if let Some(type_ann) = &param.type_annotation {
+                        let expected_ty =
+                            self.resolve_structural_slot_type_from_annotation(type_ann);
+                        if expected_ty != UNRESOLVED {
+                            structural_param_bindings.push((reg.clone(), expected_ty));
+                        }
+                    }
 
                     if let Pattern::Identifier(ident) = &param.pattern {
                         let local_idx = self.allocate_local(ident.name);
@@ -3312,6 +3390,10 @@ impl<'a> Lowerer<'a> {
                     self.bind_pattern(pattern, value_reg);
                 }
 
+                for (param_reg, expected_ty) in structural_param_bindings {
+                    self.emit_structural_slot_registration_for_type(param_reg, expected_ty);
+                }
+
                 // Pre-scan constructor body for captured variables
                 {
                     let mut ctor_locals = FxHashSet::default();
@@ -3395,10 +3477,19 @@ impl<'a> Lowerer<'a> {
             self.local_registers.clear();
             self.callable_local_hints.clear();
             self.callable_symbol_hints.clear();
+            self.register_object_fields.clear();
+            self.register_nested_object_fields.clear();
+            self.register_array_element_object_fields.clear();
+            self.register_nested_array_element_object_fields.clear();
             self.refcell_vars.clear();
             self.refcell_registers.clear();
             self.refcell_inner_types.clear();
             self.loop_captured_vars.clear();
+            self.ancestor_variables = None;
+            self.captures.clear();
+            self.next_capture_slot = 0;
+            self.this_captured_idx = None;
+            self.closure_locals.clear();
             self.current_method_env_globals = class_method_env_globals.clone();
 
             self.current_class = Some(class_id);
@@ -4664,6 +4755,58 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Register runtime structural slot bindings for an object value against an expected type.
+    ///
+    /// Emits:
+    /// `__registerStructuralView(object, ["memberA", "memberB", ...])`
+    /// where member names are canonicalized (sorted + deduped) from the expected type.
+    fn emit_structural_slot_registration_for_type(&mut self, object: Register, expected_ty: TypeId) {
+        if expected_ty == UNRESOLVED {
+            return;
+        }
+        let Some(layout) = self.structural_slot_layout_from_type(expected_ty) else {
+            return;
+        };
+        if layout.is_empty() {
+            return;
+        }
+
+        let mut name_regs = Vec::with_capacity(layout.len());
+        for (name, _) in layout {
+            let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: name_reg.clone(),
+                value: IrValue::Constant(IrConstant::String(name)),
+            });
+            name_regs.push(name_reg);
+        }
+
+        let names_array = self.alloc_register(TypeId::new(ARRAY_TYPE_ID));
+        self.emit(IrInstr::ArrayLiteral {
+            dest: names_array.clone(),
+            elements: name_regs,
+            elem_ty: TypeId::new(STRING_TYPE_ID),
+        });
+
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_REGISTER_STRUCTURAL_VIEW,
+            args: vec![object, names_array],
+        });
+    }
+
+    /// Resolve a type annotation for structural-slot registration.
+    ///
+    /// Prefers checker-resolved annotation TypeIds to avoid lowering-time
+    /// re-resolution drift for aliases and parenthesized types.
+    fn resolve_structural_slot_type_from_annotation(&self, type_ann: &ast::TypeAnnotation) -> TypeId {
+        let ann_id = type_ann as *const _ as usize;
+        self.type_annotation_types
+            .get(&ann_id)
+            .copied()
+            .unwrap_or_else(|| self.resolve_type_annotation(type_ann))
+    }
+
     fn try_extract_object_alias_name_from_type(
         &self,
         type_ann: &ast::TypeAnnotation,
@@ -4723,6 +4866,39 @@ impl<'a> Lowerer<'a> {
             }
             Expression::Parenthesized(inner) => self.expression_is_callable_hint(&inner.expression),
             _ => false,
+        }
+    }
+
+    fn clear_late_bound_object_binding(&mut self, name: Symbol) {
+        self.late_bound_object_vars.remove(&name);
+        self.late_bound_object_ctor_map.remove(&name);
+        self.late_bound_object_type_map.remove(&name);
+    }
+
+    fn mark_late_bound_object_binding(
+        &mut self,
+        name: Symbol,
+        constructor_symbol: Symbol,
+        constructor_type: Option<TypeId>,
+    ) {
+        self.late_bound_object_vars.insert(name);
+        self.late_bound_object_ctor_map
+            .insert(name, constructor_symbol);
+        if let Some(ty) = constructor_type {
+            self.late_bound_object_type_map.insert(name, ty);
+        } else {
+            self.late_bound_object_type_map.remove(&name);
+        }
+        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+            let ctor_ty = constructor_type
+                .map(|ty| ty.as_u32().to_string())
+                .unwrap_or_else(|| "none".to_string());
+            eprintln!(
+                "[lower] late-bound bind '{}' <- '{}' ctor_ty={}",
+                self.interner.resolve(name),
+                self.interner.resolve(constructor_symbol),
+                ctor_ty
+            );
         }
     }
 

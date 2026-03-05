@@ -341,8 +341,6 @@ mod aot_impl {
             | Opcode::StoreLocal
             | Opcode::LoadField
             | Opcode::StoreField
-            | Opcode::LoadFieldFast
-            | Opcode::StoreFieldFast
             | Opcode::OptionalField
             | Opcode::InitObject
             | Opcode::InitArray

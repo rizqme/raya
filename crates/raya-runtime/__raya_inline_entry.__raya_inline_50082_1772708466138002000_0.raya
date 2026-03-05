@@ -1,0 +1,14 @@
+async function inner(): number {
+             throw 'inner error';
+             return 0;
+         }
+         async function outer(): number {
+             return await inner();
+         }
+         let result = 0;
+         try {
+             result = await outer();
+         } catch (e) {
+             result = 42;
+         }
+         return result;

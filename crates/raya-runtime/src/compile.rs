@@ -170,52 +170,34 @@ pub fn compile_source_with_modes(
 
 /// Compile source with explicit builtin + type mode + optional TS options.
 ///
-/// When the source contains `std:` or `node:` import specifiers, routes
-/// through the full module-system graph builder so those imports are resolved
-/// and inlined before compilation.  For plain source with no such imports,
-/// falls through to the lighter `compile_graph_source` path to avoid the
-/// linker's module-wrapper transformation that would otherwise change
-/// top-level execution semantics (e.g. for the test runner).
+/// This always goes through the binary module-graph compiler.
 pub fn compile_source_with_modes_and_ts_options(
     source: &str,
     builtin_mode: BuiltinMode,
     type_mode: TypeMode,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<(Module, Interner), RuntimeError> {
-    if source_has_std_or_node_imports(source) {
-        use crate::module_system::ProgramCompiler;
-        let virtual_entry = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .join("__raya_inline_entry.raya");
-        let compiler = ProgramCompiler {
-            builtin_mode,
-            type_mode,
-            ts_options: ts_options.cloned(),
-            compile_options: None,
-        };
-        let program = compiler.compile_program_source(source, &virtual_entry)?;
-        let module = program.entry.module;
-        let interner = program
-            .entry
-            .interner
-            .expect("compile_program_source always sets interner");
-        Ok((module, interner))
-    } else {
-        compile_graph_source_with_modes_and_ts_options(source, builtin_mode, type_mode, ts_options)
-    }
-}
+    validate_mode_constraints(builtin_mode, type_mode, ts_options)?;
+    precheck_user_top_level_duplicates(source)?;
+    precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
-/// Returns true if `source` contains an `import … from "std:…"` or
-/// `import … from "node:…"` statement that the plain compiler cannot handle
-/// without the module-system linker.
-///
-/// This is a fast text-based heuristic — false positives from comments or
-/// string literals are benign (they just take the slower linker path).
-fn source_has_std_or_node_imports(source: &str) -> bool {
-    source.contains("from \"std:")
-        || source.contains("from 'std:")
-        || source.contains("from \"node:")
-        || source.contains("from 'node:")
+    use crate::module_system::ProgramCompiler;
+    let virtual_entry = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join("__raya_inline_entry.raya");
+    let compiler = ProgramCompiler {
+        builtin_mode,
+        type_mode,
+        ts_options: ts_options.cloned(),
+        compile_options: None,
+    };
+    let program = compiler.compile_program_source(source, &virtual_entry)?;
+    let module = program.entry.module;
+    let interner = program
+        .entry
+        .interner
+        .expect("compile_program_source always sets interner");
+    Ok((module, interner))
 }
 
 /// Compile Raya source code to a bytecode module with options.
@@ -266,20 +248,23 @@ pub fn compile_source_with_options_and_modes_and_ts_options(
     type_mode: TypeMode,
     ts_options: Option<&TsCompilerOptions>,
 ) -> Result<(Module, Interner), RuntimeError> {
-    compile_graph_source_with_options_and_modes_and_ts_options(
-        source,
-        options,
-        builtin_mode,
-        type_mode,
-        ts_options,
-    )
+    if options.sourcemap
+        || options.emit_generic_templates
+        || !matches!(
+            options.monomorphization_mode,
+            MonomorphizationMode::ConsumerLink
+        )
+    {
+        return Err(RuntimeError::Dependency(
+            "compile_source_with_options now requires binary-link-compatible defaults (no sourcemap, no emit_generic_templates, monomorphization=ConsumerLink)".to_string(),
+        ));
+    }
+    compile_source_with_modes_and_ts_options(source, builtin_mode, type_mode, ts_options)
 }
 
 /// Compile already-linked module-graph source (Module System V2 path).
 ///
-/// Linked source may already include an explicit builtin prelude injected by
-/// the module-system linker. If no linked prelude marker is present, this path
-/// falls back to legacy inline prelude injection (builtins + std sources).
+/// Linked source is compiled directly with binder-level builtin registration.
 pub fn compile_graph_source_with_modes_and_ts_options(
     source: &str,
     builtin_mode: BuiltinMode,
@@ -297,9 +282,7 @@ pub fn compile_graph_source_with_modes_and_ts_options(
 
 /// Compile already-linked module-graph source with explicit compile options.
 ///
-/// Linked source may already include an explicit builtin prelude injected by
-/// the module-system linker. If no linked prelude marker is present, this path
-/// falls back to legacy inline prelude injection (builtins + std sources).
+/// Linked source is compiled directly with binder-level builtin registration.
 pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     source: &str,
     options: &CompileOptions,
@@ -311,18 +294,8 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
-    let has_linked_builtin_prelude = source_has_linked_builtin_prelude(source);
-    let (full_source, user_offset) = if has_linked_builtin_prelude {
-        (
-            source.to_string(),
-            find_linked_user_offset(source).unwrap_or(0),
-        )
-    } else {
-        let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-        let prelude = format!("{}\n{}", builtin_src, builtins::std_sources());
-        let user_offset = prelude.len() + 1;
-        (format!("{}\n{}", prelude, source), user_offset)
-    };
+    let full_source = source.to_string();
+    let user_offset = 0usize;
     if let Ok(path) = std::env::var("RAYA_DEBUG_DUMP_SOURCE") {
         let _ = std::fs::write(path, &full_source);
     }
@@ -346,7 +319,6 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
         .with_policy(policy);
     let builtin_sigs = raya_engine::builtins::to_checker_signatures();
     binder.register_builtins(&builtin_sigs);
-    binder.skip_top_level_duplicate_detection();
 
     let mut symbols = binder.bind_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
@@ -361,8 +333,7 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     // Type check
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
         .with_mode(type_system_mode(type_mode))
-        .with_policy(policy)
-        .with_suppress_errors_before(user_offset);
+        .with_policy(policy);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
             errors
@@ -381,6 +352,7 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     // Compile via IR pipeline
     let compiler = Compiler::new(type_ctx, &interner)
         .with_expr_types(check_result.expr_types)
+        .with_type_annotation_types(check_result.type_annotation_types)
         .with_sourcemap(options.sourcemap)
         .with_emit_generic_templates(options.emit_generic_templates)
         .with_monomorphization_mode(options.monomorphization_mode)
@@ -431,9 +403,7 @@ pub fn check_source_with_modes_and_ts_options(
 
 /// Type-check already-linked module-graph source (Module System V2 path).
 ///
-/// Linked source may already include an explicit builtin prelude injected by
-/// the module-system linker. If no linked prelude marker is present, this path
-/// falls back to legacy inline prelude injection (builtins + std sources).
+/// Linked source is type-checked directly with binder-level builtin registration.
 pub fn check_graph_source_with_modes_and_ts_options(
     source: &str,
     builtin_mode: BuiltinMode,
@@ -444,18 +414,8 @@ pub fn check_graph_source_with_modes_and_ts_options(
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
-    let has_linked_builtin_prelude = source_has_linked_builtin_prelude(source);
-    let (full_source, user_offset) = if has_linked_builtin_prelude {
-        (
-            source.to_string(),
-            find_linked_user_offset(source).unwrap_or(0),
-        )
-    } else {
-        let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-        let prelude = format!("{}\n{}", builtin_src, builtins::std_sources());
-        let user_offset = prelude.len() + 1;
-        (format!("{}\n{}", prelude, source), user_offset)
-    };
+    let full_source = source.to_string();
+    let user_offset = 0usize;
     let prefix_lines = full_source[..user_offset]
         .bytes()
         .filter(|&b| b == b'\n')
@@ -476,7 +436,6 @@ pub fn check_graph_source_with_modes_and_ts_options(
         .with_policy(policy);
     let builtin_sigs = raya_engine::builtins::to_checker_signatures();
     binder.register_builtins(&builtin_sigs);
-    binder.skip_top_level_duplicate_detection();
 
     let bind_result = binder.bind_module(&ast);
 
@@ -485,8 +444,7 @@ pub fn check_graph_source_with_modes_and_ts_options(
         Ok(symbols) => {
             let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
                 .with_mode(type_system_mode(type_mode))
-                .with_policy(policy)
-                .with_suppress_errors_before(user_offset);
+                .with_policy(policy);
             match checker.check_module(&ast) {
                 Ok(mut result) => {
                     if matches!(type_mode, TypeMode::Ts) {
@@ -905,7 +863,8 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "std:pm import should compile with transitive std dependencies"
+            "std:pm import should compile with transitive std dependencies, got: {:?}",
+            result.err()
         );
     }
 
@@ -941,7 +900,8 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "std:encoding default import should compile in strict mode without recursive inference blowups"
+            "std:encoding default import should compile in strict mode without recursive inference blowups, got: {:?}",
+            result.err()
         );
     }
 
@@ -977,7 +937,8 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "combined std:encoding/std:url graph should compile in strict mode"
+            "combined std:encoding/std:url graph should compile in strict mode, got: {:?}",
+            result.err()
         );
     }
 
@@ -1005,7 +966,11 @@ mod tests {
             return p.join("a", "b");
             "#,
         );
-        assert!(result.is_ok(), "namespace std import should be supported");
+        assert!(
+            result.is_ok(),
+            "namespace std import should be supported, got: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -1019,7 +984,8 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "node:events should provide EventEmitter shim"
+            "node:events should provide EventEmitter shim, got: {:?}",
+            result.err()
         );
     }
 
@@ -1056,7 +1022,11 @@ mod tests {
 
         for source in cases {
             let result = compile_source_with_mode(source, BuiltinMode::NodeCompat);
-            assert!(result.is_ok(), "node import smoke case failed: {source}");
+            assert!(
+                result.is_ok(),
+                "node import smoke case failed: {source}, got: {:?}",
+                result.err()
+            );
         }
     }
 

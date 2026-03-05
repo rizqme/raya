@@ -1,9 +1,10 @@
 //! Concurrency opcode handlers: Spawn, SpawnClosure, Await, WaitAll, Sleep, MutexLock, MutexUnlock, Yield, TaskCancel
 
 use crate::compiler::{Module, Opcode};
+use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, Closure};
+use crate::vm::object::{Array, BoundMethod, Closure};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;
@@ -69,12 +70,6 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if !closure_val.is_ptr() {
-                    return OpcodeResult::Error(VmError::TypeError("Expected closure".to_string()));
-                }
-
-                let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
-                let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
 
                 let mut args = Vec::with_capacity(arg_count);
                 for _ in 0..arg_count {
@@ -84,20 +79,53 @@ impl<'a> Interpreter<'a> {
                     }
                 }
 
-                // Don't prepend captures to args - the closure body uses LoadCaptured
-                // which reads from the Closure object via task.current_closure()
-                let target_module = closure.module().unwrap_or_else(|| task.current_module());
-                let new_task = Arc::new(Task::with_args(
-                    closure.func_id,
-                    target_module,
-                    Some(task.id()),
-                    args,
-                ));
-                new_task.replace_stack(self.stack_pool.acquire());
+                if !closure_val.is_ptr() {
+                    return OpcodeResult::Error(VmError::TypeError(
+                        "Expected closure or bound method".to_string(),
+                    ));
+                }
 
-                // Push the closure onto the spawned task's closure stack
-                // so LoadCaptured can find it when the task starts executing
-                new_task.push_closure(closure_val);
+                let header = unsafe {
+                    let hp = (closure_val.as_ptr::<u8>().unwrap().as_ptr())
+                        .sub(std::mem::size_of::<GcHeader>());
+                    &*(hp as *const GcHeader)
+                };
+
+                let new_task = if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+                    let bm = unsafe { &*closure_val.as_ptr::<BoundMethod>().unwrap().as_ptr() };
+                    let mut method_args = Vec::with_capacity(args.len() + 1);
+                    method_args.push(bm.receiver);
+                    method_args.extend(args);
+                    let target_module = bm.module.clone().unwrap_or_else(|| task.current_module());
+                    Arc::new(Task::with_args(
+                        bm.func_id,
+                        target_module,
+                        Some(task.id()),
+                        method_args,
+                    ))
+                } else if header.type_id() == std::any::TypeId::of::<Closure>() {
+                    let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
+                    let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
+                    // Don't prepend captures to args - the closure body uses LoadCaptured
+                    // which reads from the Closure object via task.current_closure()
+                    let target_module = closure.module().unwrap_or_else(|| task.current_module());
+                    let new_task = Arc::new(Task::with_args(
+                        closure.func_id,
+                        target_module,
+                        Some(task.id()),
+                        args,
+                    ));
+                    // Push the closure onto the spawned task's closure stack
+                    // so LoadCaptured can find it when the task starts executing
+                    new_task.push_closure(closure_val);
+                    new_task
+                } else {
+                    return OpcodeResult::Error(VmError::TypeError(
+                        "Expected closure or bound method".to_string(),
+                    ));
+                };
+
+                new_task.replace_stack(self.stack_pool.acquire());
 
                 let task_id = new_task.id();
                 self.tasks.write().insert(task_id, new_task.clone());

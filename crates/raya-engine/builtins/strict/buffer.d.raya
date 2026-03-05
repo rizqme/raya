@@ -40,6 +40,4 @@ export class Buffer {
     /** Convert buffer to string using specified encoding */
     toString(encoding?: string): string;
 
-    /** Convert buffer to UTF-8 string */
-    toUtf8String(): string;
 }

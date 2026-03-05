@@ -315,7 +315,7 @@ fn test_link_type_symbol_mismatch() {
         symbol_id,
         scope: SymbolScope::Module,
         type_symbol_id: 1001,
-        type_signature: Some("fn(min=0,params=[],rest=_,ret=number)".to_string()),
+        type_signature: Some("fn(min=0,params=[],rest=_,ret=string)".to_string()),
     });
     linker.add_module(Arc::new(typed)).unwrap();
 
@@ -339,6 +339,44 @@ fn test_link_type_symbol_mismatch() {
             ..
         })
     ));
+}
+
+#[test]
+fn test_link_type_hash_diff_but_structurally_assignable() {
+    let mut linker = ModuleLinker::new();
+    let mut typed = create_module("typed");
+    typed.functions.push(Function {
+        name: "fn1".to_string(),
+        param_count: 0,
+        local_count: 0,
+        code: vec![],
+    });
+    let module_id = module_id_from_name("typed");
+    let symbol_id = test_symbol_id(module_id, "value", 0);
+    typed.exports.push(Export {
+        name: "value".to_string(),
+        symbol_type: SymbolType::Function,
+        index: 0,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: 1001,
+        type_signature: Some("fn(min=0,params=[],rest=_,ret=number)".to_string()),
+    });
+    linker.add_module(Arc::new(typed)).unwrap();
+
+    let import = Import {
+        module_specifier: "typed".to_string(),
+        symbol: "value".to_string(),
+        alias: None,
+        module_id,
+        symbol_id,
+        scope: SymbolScope::Module,
+        type_symbol_id: 2002,
+        type_signature: Some("fn(min=1,params=[number],rest=_,ret=number)".to_string()),
+        runtime_global_slot: None,
+    };
+    let result = linker.resolve_import(&import, "main");
+    assert!(result.is_ok());
 }
 
 #[test]

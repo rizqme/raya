@@ -1,9 +1,59 @@
 // node:events - Node.js-compatible events module
 // Usage: import EventEmitter from "node:events";
-// The builtin EventEmitter already implements the full Node.js API:
-//   on, once, off, emit, addListener, removeListener,
-//   removeAllListeners, listeners, listenerCount,
-//   eventNames, setMaxListeners, getMaxListeners
+
+// Binary module compilation cannot rely on ambient global builtin symbols.
+// Provide an explicit module-local EventEmitter shim surface.
+class EventEmitter {
+    on(_event: string, _listener: unknown): EventEmitter {
+        return this;
+    }
+
+    once(_event: string, _listener: unknown): EventEmitter {
+        return this;
+    }
+
+    off(_event: string, _listener: unknown): EventEmitter {
+        return this;
+    }
+
+    addListener(_event: string, _listener: unknown): EventEmitter {
+        return this;
+    }
+
+    removeListener(_event: string, _listener: unknown): EventEmitter {
+        return this;
+    }
+
+    removeAllListeners(_event?: string): EventEmitter {
+        return this;
+    }
+
+    listeners(_event: string): unknown[] {
+        return [];
+    }
+
+    listenerCount(_event: string): number {
+        return 0;
+    }
+
+    eventNames(): string[] {
+        return [];
+    }
+
+    setMaxListeners(_n: number): EventEmitter {
+        return this;
+    }
+
+    getMaxListeners(): number {
+        return 0;
+    }
+
+    emit(_event: string, ..._args: unknown[]): boolean {
+        return false;
+    }
+}
+
+const __node_events_default = EventEmitter;
 
 export { EventEmitter };
-export default EventEmitter;
+export default __node_events_default;

@@ -2,7 +2,7 @@
 //!
 //! Converts AST statements to IR instructions.
 
-use super::{is_module_wrapper_function_name, Lowerer, UNRESOLVED};
+use super::{is_module_wrapper_function_name, Lowerer, UNRESOLVED, UNRESOLVED_TYPE_ID};
 use crate::compiler::ir::block::BasicBlockId;
 use crate::compiler::ir::{
     BinaryOp, IrConstant, IrInstr, IrValue, Register, StringCompareMode, Terminator,
@@ -371,19 +371,53 @@ impl<'a> Lowerer<'a> {
                 };
                 if class_name == "Map" {
                     let iter_array = self.alloc_register(UNRESOLVED);
-                    self.emit(IrInstr::NativeCall {
-                        dest: Some(iter_array.clone()),
-                        native_id: crate::compiler::native_id::MAP_ENTRIES,
-                        args: vec![source_reg],
-                    });
+                    let mut lowered = false;
+                    if let Some(class_id) = self.class_id_by_name("Map") {
+                        if let Some(entries_sym) = self.interner.lookup("entries") {
+                            if let Some(slot) = self.find_method_slot(class_id, entries_sym) {
+                                self.emit(IrInstr::CallMethod {
+                                    dest: Some(iter_array.clone()),
+                                    object: source_reg.clone(),
+                                    method: slot,
+                                    args: vec![],
+                                    optional: false,
+                                });
+                                lowered = true;
+                            }
+                        }
+                    }
+                    if !lowered {
+                        self.emit(IrInstr::NativeCall {
+                            dest: Some(iter_array.clone()),
+                            native_id: crate::compiler::native_id::MAP_ENTRIES,
+                            args: vec![source_reg],
+                        });
+                    }
                     iter_array
                 } else if class_name == "Set" {
                     let iter_array = self.alloc_register(UNRESOLVED);
-                    self.emit(IrInstr::NativeCall {
-                        dest: Some(iter_array.clone()),
-                        native_id: crate::compiler::native_id::SET_VALUES,
-                        args: vec![source_reg],
-                    });
+                    let mut lowered = false;
+                    if let Some(class_id) = self.class_id_by_name("Set") {
+                        if let Some(values_sym) = self.interner.lookup("values") {
+                            if let Some(slot) = self.find_method_slot(class_id, values_sym) {
+                                self.emit(IrInstr::CallMethod {
+                                    dest: Some(iter_array.clone()),
+                                    object: source_reg.clone(),
+                                    method: slot,
+                                    args: vec![],
+                                    optional: false,
+                                });
+                                lowered = true;
+                            }
+                        }
+                    }
+                    if !lowered {
+                        self.emit(IrInstr::NativeCall {
+                            dest: Some(iter_array.clone()),
+                            native_id: crate::compiler::native_id::SET_VALUES,
+                            args: vec![source_reg],
+                        });
+                    }
                     iter_array
                 } else {
                     let class_id = match self.class_id_by_name(class_name) {
@@ -1686,7 +1720,7 @@ impl<'a> Lowerer<'a> {
         self.variable_object_type_aliases.remove(&name);
         self.task_result_type_aliases.remove(&name);
         self.callable_symbol_hints.remove(&name);
-        self.late_bound_object_vars.remove(&name);
+        self.clear_late_bound_object_binding(name);
 
         // Re-populate object field layout for __std_exports_<tag> variables.
         // These are declared as `const __std_exports_<tag> = __std_module_<tag>()`.
@@ -1786,7 +1820,7 @@ impl<'a> Lowerer<'a> {
                     if let Some(type_ann) = &decl.type_annotation {
                         if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
                             self.variable_class_map.insert(name, class_id);
-                            self.late_bound_object_vars.remove(&name);
+                            self.clear_late_bound_object_binding(name);
                         }
                         self.track_variable_object_alias_from_annotation(name, type_ann);
                         if let ast::Type::Array(arr_ty) = &type_ann.ty {
@@ -1820,9 +1854,12 @@ impl<'a> Lowerer<'a> {
                                 });
                             if let Some(class_id) = class_id {
                                 self.variable_class_map.insert(name, class_id);
-                                self.late_bound_object_vars.remove(&name);
+                                self.clear_late_bound_object_binding(name);
                             } else if self.import_bindings.contains(&ident.name) {
-                                self.late_bound_object_vars.insert(name);
+                                let ctor_ty = self.get_expr_type(&new_expr.callee);
+                                let ctor_ty =
+                                    (ctor_ty.as_u32() != UNRESOLVED_TYPE_ID).then_some(ctor_ty);
+                                self.mark_late_bound_object_binding(name, ident.name, ctor_ty);
                             }
                         }
                     }
@@ -1830,7 +1867,7 @@ impl<'a> Lowerer<'a> {
                     // Infer class type from method call return types
                     if let Some(class_id) = self.infer_class_id(init) {
                         self.variable_class_map.insert(name, class_id);
-                        self.late_bound_object_vars.remove(&name);
+                        self.clear_late_bound_object_binding(name);
                     }
                     self.track_task_result_alias_from_initializer(name, init);
                     self.track_variable_object_alias_from_initializer(name, init);
@@ -1861,6 +1898,11 @@ impl<'a> Lowerer<'a> {
                     let value = self
                         .lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
 
+                    if let Some(type_ann) = &decl.type_annotation {
+                        let expected_ty = self.resolve_structural_slot_type_from_annotation(type_ann);
+                        self.emit_structural_slot_registration_for_type(value.clone(), expected_ty);
+                    }
+
                     // Fallback class capture from lowered value type.
                     // This is critical for imported/default-exported factories where
                     // pre-lowering AST inference may miss the concrete class, but
@@ -1870,7 +1912,7 @@ impl<'a> Lowerer<'a> {
                     {
                         if let Some(class_id) = self.class_id_from_type_id(value.ty) {
                             self.variable_class_map.insert(name, class_id);
-                            self.late_bound_object_vars.remove(&name);
+                            self.clear_late_bound_object_binding(name);
                         }
                     }
 
@@ -1938,7 +1980,7 @@ impl<'a> Lowerer<'a> {
             if let Some(type_ann) = &decl.type_annotation {
                 if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
                     self.variable_class_map.insert(name, class_id);
-                    self.late_bound_object_vars.remove(&name);
+                    self.clear_late_bound_object_binding(name);
                 }
                 self.track_variable_object_alias_from_annotation(name, type_ann);
                 // Track array element class type (e.g., `let items: Item[] = [...]`)
@@ -1974,9 +2016,12 @@ impl<'a> Lowerer<'a> {
                         });
                     if let Some(class_id) = class_id {
                         self.variable_class_map.insert(name, class_id);
-                        self.late_bound_object_vars.remove(&name);
+                        self.clear_late_bound_object_binding(name);
                     } else if self.import_bindings.contains(&ident.name) {
-                        self.late_bound_object_vars.insert(name);
+                        let ctor_ty = self.get_expr_type(&new_expr.callee);
+                        let ctor_ty =
+                            (ctor_ty.as_u32() != UNRESOLVED_TYPE_ID).then_some(ctor_ty);
+                        self.mark_late_bound_object_binding(name, ident.name, ctor_ty);
                     }
                 }
             }
@@ -1985,7 +2030,7 @@ impl<'a> Lowerer<'a> {
             // e.g., `let output = source.pipeThrough(x)` → infer ReadableStream from return type
             if let Some(class_id) = self.infer_class_id(init) {
                 self.variable_class_map.insert(name, class_id);
-                self.late_bound_object_vars.remove(&name);
+                self.clear_late_bound_object_binding(name);
             }
             self.track_task_result_alias_from_initializer(name, init);
             self.track_variable_object_alias_from_initializer(name, init);
@@ -2016,6 +2061,11 @@ impl<'a> Lowerer<'a> {
             let value =
                 self.lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
 
+            if let Some(type_ann) = &decl.type_annotation {
+                let expected_ty = self.resolve_structural_slot_type_from_annotation(type_ann);
+                self.emit_structural_slot_registration_for_type(value.clone(), expected_ty);
+            }
+
             // Fallback class capture from lowered value type.
             // Helps preserve receiver typing for chained calls on values returned
             // from imports/factories when AST-only inference was inconclusive.
@@ -2024,7 +2074,7 @@ impl<'a> Lowerer<'a> {
             {
                 if let Some(class_id) = self.class_id_from_type_id(value.ty) {
                     self.variable_class_map.insert(name, class_id);
-                    self.late_bound_object_vars.remove(&name);
+                    self.clear_late_bound_object_binding(name);
                 }
             }
 

@@ -219,11 +219,7 @@ impl<'a> Binder<'a> {
         self.type_ctx.any_type()
     }
 
-    /// Build an object type from named members for import namespace fallbacks.
-    ///
-    /// Adds a callable string index-signature fallback so unresolved members on
-    /// namespace defaults (for legacy/default-export object modules) still type
-    /// as callable-any instead of hard-failing.
+    /// Build a structural object type from named namespace members.
     pub fn object_type_from_members(&mut self, members: Vec<(String, TypeId)>) -> TypeId {
         let properties = members
             .into_iter()
@@ -235,18 +231,24 @@ impl<'a> Binder<'a> {
                 visibility: crate::parser::ast::Visibility::Public,
             })
             .collect();
-        let any_ty = self.type_ctx.any_type();
-        let callable_any = self.type_ctx.function_type(vec![], any_ty, false);
         self.type_ctx
             .intern(Type::Object(crate::parser::types::ty::ObjectType {
                 properties,
-                index_signature: Some(("[key]".to_string(), callable_any)),
+                index_signature: None,
             }))
     }
 
     /// Format a type ID for diagnostics/debugging.
     pub fn format_type_id(&self, ty: TypeId) -> String {
         self.type_ctx.format_type(ty)
+    }
+
+    /// Register a named type alias for imported symbols so hydrated reference
+    /// types (e.g. `ReadableStream<T>`) can resolve during member checking.
+    pub fn register_imported_named_type(&mut self, name: &str, ty: TypeId) {
+        if self.type_ctx.lookup_named_type(name).is_none() {
+            self.type_ctx.register_named_type(name.to_string(), ty);
+        }
     }
 
     /// Register compiler intrinsics like __NATIVE_CALL and __OPCODE_CHANNEL_NEW
@@ -1615,6 +1617,9 @@ impl<'a> Binder<'a> {
             is_abstract: class.is_abstract,
         };
         let class_ty = self.type_ctx.intern(Type::Class(placeholder));
+        // Expose class name for reference-based annotations (including forward refs).
+        self.type_ctx
+            .register_named_type(class_name.clone(), class_ty);
 
         let symbol = Symbol {
             name: class_name.clone(),
@@ -2856,6 +2861,9 @@ impl<'a> Binder<'a> {
         // see the full class type without needing to update every TypeId.
         self.type_ctx
             .replace_type(class_ty, Type::Class(full_class_type));
+        // Keep named-type mapping pinned to the canonical class TypeId.
+        self.type_ctx
+            .register_named_type(class_name.clone(), class_ty);
 
         // Bind class members in the already-entered class scope
         // (scope was pushed earlier for type parameters)
@@ -3476,60 +3484,79 @@ impl<'a> Binder<'a> {
                     .symbols
                     .resolve_from_scope(&name, self.symbols.current_scope_id())
                 {
-                    if symbol.kind == SymbolKind::TypeAlias
-                        || symbol.kind == SymbolKind::TypeParameter
-                        || symbol.kind == SymbolKind::Class
-                    {
-                        let template_ty = symbol.ty;
-
-                        // Check if this is a generic type with type arguments
-                        if let Some(ref type_args) = type_ref.type_args {
-                            // Try type alias params first
-                            let param_names = if let Some(names) =
-                                self.generic_type_alias_params.get(&name).cloned()
-                            {
-                                Some(names)
-                            } else if let Some(Type::Class(class_ty)) =
-                                self.type_ctx.get(template_ty).cloned()
-                            {
-                                // For classes, read type_params from the ClassType
-                                if !class_ty.type_params.is_empty() {
-                                    Some(class_ty.type_params.clone())
-                                } else {
+                    match symbol.kind {
+                        SymbolKind::Class => {
+                            // Keep class references symbolic during binding so forward refs and
+                            // cross-class generics don't capture pre-pass placeholder layouts.
+                            let type_args = if let Some(type_args) = &type_ref.type_args {
+                                let mut resolved = Vec::with_capacity(type_args.len());
+                                for arg in type_args {
+                                    resolved.push(self.resolve_type_annotation(arg)?);
+                                }
+                                if resolved.is_empty() {
                                     None
+                                } else {
+                                    Some(resolved)
                                 }
                             } else {
                                 None
                             };
+                            Ok(self
+                                .type_ctx
+                                .intern(Type::Reference(crate::parser::types::ty::TypeReference {
+                                    name,
+                                    type_args,
+                                })))
+                        }
+                        SymbolKind::TypeAlias | SymbolKind::TypeParameter => {
+                            let template_ty = symbol.ty;
 
-                            if let Some(param_names) = param_names {
-                                if type_args.len() == param_names.len() {
-                                    // Resolve each type argument
-                                    let mut resolved_args = Vec::new();
-                                    for arg in type_args {
-                                        resolved_args.push(self.resolve_type_annotation(arg)?);
+                            // Check if this is a generic type alias with type arguments.
+                            if let Some(ref type_args) = type_ref.type_args {
+                                if let Some(param_names) =
+                                    self.generic_type_alias_params.get(&name).cloned()
+                                {
+                                    if type_args.len() == param_names.len() {
+                                        // Resolve each type argument.
+                                        let mut resolved_args = Vec::new();
+                                        for arg in type_args {
+                                            resolved_args.push(self.resolve_type_annotation(arg)?);
+                                        }
+                                        // Build substitution map: param_name → concrete type.
+                                        let mut subs = std::collections::HashMap::new();
+                                        for (param_name, arg_ty) in
+                                            param_names.iter().zip(resolved_args.iter())
+                                        {
+                                            subs.insert(param_name.clone(), *arg_ty);
+                                        }
+                                        // Apply substitution to the template alias type.
+                                        return Ok(self.substitute_type_vars(template_ty, &subs));
                                     }
-                                    // Build substitution map: param_name → concrete type
-                                    let mut subs = std::collections::HashMap::new();
-                                    for (param_name, arg_ty) in
-                                        param_names.iter().zip(resolved_args.iter())
-                                    {
-                                        subs.insert(param_name.clone(), *arg_ty);
-                                    }
-                                    // Apply substitution to the template type
-                                    return Ok(self.substitute_type_vars(template_ty, &subs));
                                 }
                             }
-                        }
 
-                        Ok(template_ty)
-                    } else {
-                        Err(BindError::NotAType { name, span })
+                            Ok(template_ty)
+                        }
+                        _ => Err(BindError::NotAType { name, span }),
                     }
                 } else {
                     // Fall back to globally registered named types (primitive/system aliases)
                     // only when no in-scope symbol matches. This preserves shadowing semantics.
                     if let Some(named_ty) = self.type_ctx.lookup_named_type(&name) {
+                        if let Some(type_args) = &type_ref.type_args {
+                            let mut resolved_args = Vec::with_capacity(type_args.len());
+                            for arg in type_args {
+                                resolved_args.push(self.resolve_type_annotation(arg)?);
+                            }
+                            if !resolved_args.is_empty() {
+                                return Ok(self.type_ctx.intern(Type::Reference(
+                                    crate::parser::types::ty::TypeReference {
+                                        name,
+                                        type_args: Some(resolved_args),
+                                    },
+                                )));
+                            }
+                        }
                         Ok(named_ty)
                     } else {
                         Err(BindError::UndefinedType { name, span })

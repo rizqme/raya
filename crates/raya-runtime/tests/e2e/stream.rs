@@ -4,6 +4,20 @@
 
 use super::harness::*;
 
+fn with_stream_imports(source: &str) -> String {
+    format!(
+        r#"import {{
+             ReadableStream,
+             WritableStream,
+             TransformStream,
+             ReadableController,
+             WritableController,
+             TransformController
+         }} from "std:stream";
+         {source}"#
+    )
+}
+
 // ============================================================================
 // ReadableStream basics
 // ============================================================================
@@ -11,7 +25,8 @@ use super::harness::*;
 #[test]
 fn test_readable_stream_from_array() {
     expect_i32_with_builtins(
-        "let stream = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
+        &with_stream_imports(
+            "let stream = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.push(1);
              ctrl.push(2);
              ctrl.push(3);
@@ -19,6 +34,7 @@ fn test_readable_stream_from_array() {
          }, 16);
          let result = stream.collect();
          return result.length;",
+        ),
         3,
     );
 }
@@ -26,7 +42,8 @@ fn test_readable_stream_from_array() {
 #[test]
 fn test_readable_stream_from_array_values() {
     expect_i32_with_builtins(
-        "let stream = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
+        &with_stream_imports(
+            "let stream = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.push(10);
              ctrl.push(20);
              ctrl.push(30);
@@ -43,6 +60,7 @@ fn test_readable_stream_from_array_values() {
          // d should be null (stream ended)
          if (d != null) { sum = sum + 999; }
          return sum;",
+        ),
         60,
     );
 }
@@ -50,12 +68,14 @@ fn test_readable_stream_from_array_values() {
 #[test]
 fn test_readable_stream_empty() {
     expect_i32_with_builtins(
-        "let stream = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
+        &with_stream_imports(
+            "let stream = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.close();
          }, 1);
          let val = stream.read();
          if (val == null) { return 1; }
          return 0;",
+        ),
         1,
     );
 }
@@ -63,7 +83,8 @@ fn test_readable_stream_empty() {
 #[test]
 fn test_readable_stream_producer() {
     expect_i32_with_builtins(
-        "let stream = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
+        &with_stream_imports(
+            "let stream = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.push(5);
              ctrl.push(10);
              ctrl.push(15);
@@ -77,6 +98,7 @@ fn test_readable_stream_producer() {
              i = i + 1;
          }
          return sum;",
+        ),
         30,
     );
 }
@@ -89,7 +111,8 @@ fn test_readable_stream_producer() {
 fn test_writable_stream_consumer() {
     // Use array to accumulate values (arrays are heap objects, shared by reference in closures)
     expect_i32_with_builtins(
-        "let acc: number[] = [];
+        &with_stream_imports(
+            "let acc: number[] = [];
          let sink = new WritableStream<number>((ctrl: WritableController<number>): void => {
              let val = ctrl.pull();
              while (val != null) {
@@ -110,6 +133,7 @@ fn test_writable_stream_consumer() {
              i = i + 1;
          }
          return total;",
+        ),
         60,
     );
 }
@@ -122,7 +146,8 @@ fn test_writable_stream_consumer() {
 fn test_readable_pipe_to_writable() {
     // Use array to accumulate piped values (arrays shared by reference in closures)
     expect_i32_with_builtins(
-        "let acc: number[] = [];
+        &with_stream_imports(
+            "let acc: number[] = [];
          let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.push(1);
              ctrl.push(2);
@@ -148,6 +173,7 @@ fn test_readable_pipe_to_writable() {
              i = i + 1;
          }
          return total;",
+        ),
         15,
     );
 }
@@ -159,7 +185,8 @@ fn test_readable_pipe_to_writable() {
 #[test]
 fn test_transform_stream_map() {
     expect_i32_with_builtins(
-        "let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
+        &with_stream_imports(
+            "let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.push(1);
              ctrl.push(2);
              ctrl.push(3);
@@ -182,6 +209,7 @@ fn test_transform_stream_map() {
              i = i + 1;
          }
          return sum;",
+        ),
         12, // (1*2 + 2*2 + 3*2) = 12
     );
 }
@@ -189,7 +217,8 @@ fn test_transform_stream_map() {
 #[test]
 fn test_transform_stream_filter() {
     expect_i32_with_builtins(
-        "let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
+        &with_stream_imports(
+            "let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.push(1);
              ctrl.push(2);
              ctrl.push(3);
@@ -211,6 +240,7 @@ fn test_transform_stream_filter() {
          let output = source.pipeThrough<number>(evens);
          let result = output.collect();
          return result.length;",
+        ),
         3, // 2, 4, 6
     );
 }
@@ -223,7 +253,8 @@ fn test_transform_stream_filter() {
 fn test_pipe_basic() {
     // Use array to accumulate piped values (arrays shared by reference in closures)
     expect_i32_with_builtins(
-        "let acc: number[] = [];
+        &with_stream_imports(
+            "let acc: number[] = [];
          let source = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.push(10);
              ctrl.push(20);
@@ -247,6 +278,7 @@ fn test_pipe_basic() {
              i = i + 1;
          }
          return total;",
+        ),
         60,
     );
 }
@@ -258,7 +290,8 @@ fn test_pipe_basic() {
 #[test]
 fn test_collect_values() {
     expect_i32_with_builtins(
-        "let stream = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
+        &with_stream_imports(
+            "let stream = new ReadableStream<number>((ctrl: ReadableController<number>): void => {
              ctrl.push(5);
              ctrl.push(10);
              ctrl.push(15);
@@ -267,6 +300,7 @@ fn test_collect_values() {
          }, 16);
          let arr = stream.collect();
          return arr[0] + arr[1] + arr[2] + arr[3];",
+        ),
         50,
     );
 }

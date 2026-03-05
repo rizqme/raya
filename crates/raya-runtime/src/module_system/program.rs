@@ -1,10 +1,11 @@
-use crate::builtins;
 use crate::compile;
 use crate::compile::{TsCompilerOptions, TypeMode};
 use crate::error::RuntimeError;
 use crate::BuiltinMode;
 use raya_engine::compiler::module::{specialization_template_from_symbol, LateLinkRequirement};
-use raya_engine::compiler::module::{ModuleCompileError, ModuleCompiler as BinaryModuleCompiler};
+use raya_engine::compiler::module::{
+    BuiltinSurfaceMode, ModuleCompileError, ModuleCompiler as BinaryModuleCompiler,
+};
 use raya_engine::compiler::{module_id_from_name, SymbolType};
 use raya_engine::parser::checker::TypeSystemMode;
 use raya_engine::parser::{Interner, Parser};
@@ -15,16 +16,6 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-const BUILTIN_PRELUDE_BEGIN_MARKER: &str = "// __raya_builtin_prelude_begin";
-const BUILTIN_PRELUDE_END_MARKER: &str = "// __raya_builtin_prelude_end";
-const STD_PRELUDE_BEGIN_MARKER: &str = "// __raya_std_prelude_begin";
-const STD_PRELUDE_END_MARKER: &str = "// __raya_std_prelude_end";
-
-#[cfg(test)]
-use super::graph::ProgramGraphBuilder;
-#[cfg(test)]
-use super::linker::ProgramLinkerV2;
 
 pub struct CompiledProgram {
     pub entry_path: PathBuf,
@@ -55,7 +46,7 @@ impl ProgramCompiler {
     pub fn compile_program_file(&self, path: &Path) -> Result<CompiledProgram, RuntimeError> {
         if !self.can_use_binary_module_pipeline() {
             return Err(RuntimeError::Dependency(
-                "compile_program_file now requires the binary module pipeline; disable legacy-only compile options or type-mode overrides".to_string(),
+                "compile_program_file now requires the binary module pipeline; disable unsupported compile options or type-mode overrides".to_string(),
             ));
         }
         self.compile_program_file_binary(path)
@@ -77,8 +68,12 @@ impl ProgramCompiler {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let mut compiler =
-            BinaryModuleCompiler::new(project_root).with_checker_mode(self.type_system_mode());
+        let mut compiler = BinaryModuleCompiler::new(project_root)
+            .with_checker_mode(self.type_system_mode())
+            .with_builtin_surface_mode(match self.builtin_mode {
+                BuiltinMode::RayaStrict => BuiltinSurfaceMode::RayaStrict,
+                BuiltinMode::NodeCompat => BuiltinSurfaceMode::NodeCompat,
+            });
         let mut compiled_modules = compiler.compile(&entry_path)?;
         if std::env::var("RAYA_DEBUG_MODULE_NATIVES").is_ok() {
             for compiled in &compiled_modules {
@@ -320,93 +315,6 @@ impl ProgramCompiler {
         }
     }
 
-    fn with_builtin_prelude(&self, source: &str) -> String {
-        if source.contains(BUILTIN_PRELUDE_BEGIN_MARKER) {
-            return source.to_string();
-        }
-        let std_import_prelude = self.synthesize_std_global_imports(source);
-
-        let mut merged = String::new();
-        merged.push_str(BUILTIN_PRELUDE_BEGIN_MARKER);
-        merged.push('\n');
-        merged.push_str("// module: __raya:builtins (pre-imported)\n");
-        merged.push_str(builtins::builtin_sources_for_mode(self.builtin_mode));
-        if !merged.ends_with('\n') {
-            merged.push('\n');
-        }
-        merged.push_str(BUILTIN_PRELUDE_END_MARKER);
-        merged.push('\n');
-        merged.push_str(STD_PRELUDE_BEGIN_MARKER);
-        merged.push('\n');
-        merged.push_str("// module: __raya:std-imports (pre-imported)\n");
-        if !std_import_prelude.is_empty() {
-            merged.push_str(std_import_prelude.as_str());
-            if !merged.ends_with('\n') {
-                merged.push('\n');
-            }
-        }
-        if !merged.ends_with('\n') {
-            merged.push('\n');
-        }
-        merged.push_str(STD_PRELUDE_END_MARKER);
-        merged.push('\n');
-        merged.push_str(source);
-        merged
-    }
-
-    fn synthesize_std_global_imports(&self, source: &str) -> String {
-        let candidates: &[(&str, &str)] = &[
-            ("logger", "std:logger"),
-            ("math", "std:math"),
-            ("reflect", "std:reflect"),
-            ("runtime", "std:runtime"),
-            ("crypto", "std:crypto"),
-            ("time", "std:time"),
-            ("path", "std:path"),
-            ("stream", "std:stream"),
-            ("compress", "std:compress"),
-            ("url", "std:url"),
-            ("args", "std:args"),
-            ("encoding", "std:encoding"),
-            ("semver", "std:semver"),
-            ("template", "std:template"),
-            ("fs", "std:fs"),
-            ("net", "std:net"),
-            ("http2", "std:http2"),
-            ("http", "std:http"),
-            ("fetch", "std:fetch"),
-            ("env", "std:env"),
-            ("process", "std:process"),
-            ("os", "std:os"),
-            ("io", "std:io"),
-            ("dns", "std:dns"),
-            ("terminal", "std:terminal"),
-            ("ws", "std:ws"),
-            ("readline", "std:readline"),
-            ("glob", "std:glob"),
-            ("archive", "std:archive"),
-            ("watch", "std:watch"),
-            ("pm", "std:pm"),
-        ];
-
-        let mut imports = Vec::new();
-        for &(symbol, specifier) in candidates {
-            let quoted = format!("\"{}\"", specifier);
-            let single_quoted = format!("'{}'", specifier);
-            if source.contains(&quoted) || source.contains(&single_quoted) {
-                continue;
-            }
-
-            let dot_use = source.contains(&format!("{}.", symbol));
-            let call_use = symbol == "fetch" && source.contains("fetch(");
-            if dot_use || call_use {
-                imports.push(format!("import {} from \"{}\";", symbol, specifier));
-            }
-        }
-
-        imports.join("\n")
-    }
-
     pub fn check_program_file(&self, path: &Path) -> Result<ProgramDiagnostics, RuntimeError> {
         let program = self.compile_program_file(path)?;
         let source = fs::read_to_string(path).map_err(RuntimeError::Io)?;
@@ -433,14 +341,12 @@ impl ProgramCompiler {
     ) -> Result<CompiledProgram, RuntimeError> {
         if !self.can_use_binary_module_pipeline() {
             return Err(RuntimeError::Dependency(
-                "compile_program_source now requires the binary module pipeline; disable legacy-only compile options or type-mode overrides".to_string(),
+                "compile_program_source now requires the binary module pipeline; disable unsupported compile options or type-mode overrides".to_string(),
             ));
         }
         self.enforce_dynamic_import_policy(source)?;
 
-        let linked_source = self.with_builtin_prelude(source);
-        let materialized_entry =
-            materialize_inline_entry_source(virtual_entry_path, linked_source.as_str())?;
+        let materialized_entry = materialize_inline_entry_source(virtual_entry_path, source)?;
         let compile_result = self
             .compile_program_file_binary(&materialized_entry)
             .map_err(map_module_compile_error);
@@ -667,65 +573,6 @@ mod tests {
             result.is_ok(),
             "std:stream import should compile through linker path: {:?}",
             result.err()
-        );
-    }
-
-    #[test]
-    fn linker_preserves_generic_alias_arity_for_class_method_references() {
-        let temp = TempDir::new().expect("temp dir");
-        let lib_path = temp.path().join("lib.raya");
-        let main_path = temp.path().join("main.raya");
-
-        fs::write(
-            &lib_path,
-            r#"
-            export class C<T> {
-                value: T;
-                constructor(value: T) {
-                    this.value = value;
-                }
-            }
-
-            export class S<T> {
-                pipe(c: C<T>): string {
-                    return "ok";
-                }
-            }
-            "#,
-        )
-        .expect("write lib");
-
-        fs::write(
-            &main_path,
-            r#"
-            import { C, S } from "./lib.raya";
-            return 1;
-            "#,
-        )
-        .expect("write main");
-
-        let graph = super::ProgramGraphBuilder::new()
-            .build(&main_path)
-            .expect("build graph");
-        let linked = super::ProgramLinkerV2::link(&graph, BuiltinMode::RayaStrict).expect("link");
-
-        assert!(
-            linked.source.contains("// __raya_builtin_prelude_begin"),
-            "linked source should include explicit builtin prelude begin marker"
-        );
-        assert!(
-            linked.source.contains("// __raya_builtin_prelude_end"),
-            "linked source should include explicit builtin prelude end marker"
-        );
-        assert!(
-            linked.source.contains("type __t_m0_C<T> ="),
-            "generic class alias should preserve arity: {}",
-            linked.source
-        );
-        assert!(
-            linked.source.contains("pipe: (c: __t_m0_C<T>) => string"),
-            "method reference should keep generic argument in alias expansion: {}",
-            linked.source
         );
     }
 

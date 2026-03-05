@@ -4,6 +4,7 @@ use crate::compiler::Module;
 use crate::compiler::Opcode;
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
+use crate::vm::interpreter::shared_state::StructuralSlotBinding;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{Array, BoundMethod, Closure, Object, RayaString};
 use crate::vm::stack::Stack;
@@ -13,6 +14,35 @@ use crate::vm::VmError;
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
 impl<'a> Interpreter<'a> {
+    fn bound_method_value_for_slot(
+        &mut self,
+        receiver: Value,
+        method_slot: usize,
+    ) -> Result<Value, VmError> {
+        let receiver = Self::ensure_object_receiver(receiver, "method binding")?;
+        let obj = unsafe { &*receiver.as_ptr::<Object>().unwrap().as_ptr() };
+        let classes = self.classes.read();
+        let class = classes
+            .get_class(obj.class_id)
+            .ok_or_else(|| VmError::RuntimeError(format!("Invalid class index: {}", obj.class_id)))?;
+        let func_id = class.vtable.get_method(method_slot).ok_or_else(|| {
+            VmError::RuntimeError(format!(
+                "Invalid method slot: {} for class {}",
+                method_slot, class.name
+            ))
+        })?;
+        let method_module = class.module.clone();
+        drop(classes);
+
+        let bm = BoundMethod {
+            receiver,
+            func_id,
+            module: method_module,
+        };
+        let gc_ptr = self.gc.lock().allocate(bm);
+        Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
+    }
+
     fn callable_frame_for_value(
         &self,
         callable: Value,
@@ -148,6 +178,42 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn legacy_field_name_for_layout(field_offset: usize, field_count: usize) -> Option<String> {
+        let name = match field_offset {
+            0 => "message",
+            1 => "name",
+            2 => "stack",
+            3 => "cause",
+            4 => "code",
+            5 => "errno",
+            6 => "syscall",
+            7 => "path",
+            _ => return None,
+        };
+        (field_offset < field_count).then(|| name.to_string())
+    }
+
+    fn legacy_field_index_for_layout(field_name: &str, field_count: usize) -> Option<usize> {
+        let idx = match field_name {
+            "message" => 0,
+            "name" => 1,
+            "stack" => 2,
+            "cause" => 3,
+            "code" => 4,
+            "errno" => 5,
+            "syscall" => 6,
+            "path" => 7,
+            "value" => 0,
+            "writable" => 1,
+            "configurable" => 2,
+            "enumerable" => 3,
+            "get" => 4,
+            "set" => 5,
+            _ => return None,
+        };
+        (idx < field_count).then_some(idx)
+    }
+
     fn field_name_for_offset(&self, obj: &Object, field_offset: usize) -> Option<String> {
         let class_metadata = self.class_metadata.read();
         let from_metadata = class_metadata
@@ -160,7 +226,16 @@ impl<'a> Interpreter<'a> {
         }
         let classes = self.classes.read();
         let class_name = classes.get_class(obj.class_id)?.name.as_str();
-        Self::builtin_field_name_for_class_name(class_name, field_offset)
+        if class_name == "Object" && obj.field_count() <= 4 {
+            if let Some(name) = Self::legacy_field_name_for_layout(field_offset, obj.field_count())
+            {
+                return Some(name);
+            }
+        }
+        if let Some(name) = Self::builtin_field_name_for_class_name(class_name, field_offset) {
+            return Some(name);
+        }
+        Self::legacy_field_name_for_layout(field_offset, obj.field_count())
     }
 
     fn field_index_for_value(&self, obj_val: Value, field_name: &str) -> Option<usize> {
@@ -175,7 +250,17 @@ impl<'a> Interpreter<'a> {
         }
         let classes = self.classes.read();
         let class_name = classes.get_class(obj.class_id)?.name.as_str();
-        Self::builtin_field_index_for_class_name(class_name, field_name)
+        if class_name == "Object" && obj.field_count() <= 4 {
+            if let Some(index) =
+                Self::legacy_field_index_for_layout(field_name, obj.field_count())
+            {
+                return Some(index);
+            }
+        }
+        if let Some(index) = Self::builtin_field_index_for_class_name(class_name, field_name) {
+            return Some(index);
+        }
+        Self::legacy_field_index_for_layout(field_name, obj.field_count())
     }
 
     fn get_value_field_by_name(&self, obj_val: Value, field_name: &str) -> Option<Value> {
@@ -333,13 +418,26 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
-                let Some(field_offset) =
-                    self.remap_structural_slot_index(module, obj, field_offset)
-                else {
+                let slot_binding = self.remap_structural_slot_binding(module, obj, field_offset);
+                if let StructuralSlotBinding::Missing = slot_binding {
                     if let Err(e) = stack.push(Value::null()) {
                         return OpcodeResult::Error(e);
                     }
                     return OpcodeResult::Continue;
+                }
+                if let StructuralSlotBinding::Method(method_slot) = slot_binding {
+                    let bound = match self.bound_method_value_for_slot(actual_obj, method_slot) {
+                        Ok(value) => value,
+                        Err(error) => return OpcodeResult::Error(error),
+                    };
+                    if let Err(e) = stack.push(bound) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                }
+                let field_offset = match slot_binding {
+                    StructuralSlotBinding::Field(offset) => offset,
+                    StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => unreachable!(),
                 };
                 if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
                     if let Some(getter) = self.descriptor_accessor(actual_obj, &field_name, "get") {
@@ -404,12 +502,19 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
-                let Some(field_offset) =
-                    self.remap_structural_slot_index(module, obj, field_offset)
-                else {
-                    return OpcodeResult::Error(VmError::TypeError(
-                        "Cannot write field not present in structural slot view".to_string(),
-                    ));
+                let slot_binding = self.remap_structural_slot_binding(module, obj, field_offset);
+                let field_offset = match slot_binding {
+                    StructuralSlotBinding::Field(offset) => offset,
+                    StructuralSlotBinding::Method(_) => {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "Cannot assign to structural method slot".to_string(),
+                        ));
+                    }
+                    StructuralSlotBinding::Missing => {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "Cannot write field not present in structural slot view".to_string(),
+                        ));
+                    }
                 };
                 if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
                     if let Some(setter) = self.descriptor_accessor(actual_obj, &field_name, "set") {
@@ -483,13 +588,26 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
-                let Some(field_offset) =
-                    self.remap_structural_slot_index(module, obj, field_offset)
-                else {
+                let slot_binding = self.remap_structural_slot_binding(module, obj, field_offset);
+                if let StructuralSlotBinding::Missing = slot_binding {
                     if let Err(e) = stack.push(Value::null()) {
                         return OpcodeResult::Error(e);
                     }
                     return OpcodeResult::Continue;
+                }
+                if let StructuralSlotBinding::Method(method_slot) = slot_binding {
+                    let bound = match self.bound_method_value_for_slot(actual_obj, method_slot) {
+                        Ok(value) => value,
+                        Err(error) => return OpcodeResult::Error(error),
+                    };
+                    if let Err(e) = stack.push(bound) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                }
+                let field_offset = match slot_binding {
+                    StructuralSlotBinding::Field(offset) => offset,
+                    StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => unreachable!(),
                 };
                 let value = obj.get_field(field_offset).unwrap_or(Value::null());
                 if let Err(e) = stack.push(value) {
@@ -504,7 +622,14 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let class_index = self.resolve_class_id(module, local_class_index);
+                // Anonymous object literals use class id 0 as the dynamic object carrier.
+                // Do not rebase it through module-local class layout, otherwise it can
+                // alias unrelated module class metadata and break structural slot mapping.
+                let class_index = if local_class_index == 0 {
+                    0
+                } else {
+                    self.resolve_class_id(module, local_class_index)
+                };
                 let field_count = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),

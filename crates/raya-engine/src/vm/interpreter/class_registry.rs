@@ -15,8 +15,16 @@ pub struct ClassRegistry {
 impl ClassRegistry {
     /// Create a new empty registry
     pub fn new() -> Self {
+        // Reserve class ID 0 for anonymous object-literal carrier values.
+        // Runtime object literals are emitted with class_id=0 and depend on this
+        // slot remaining stable across modules/classes.
+        let classes = vec![Class::new(
+            0,
+            "__dynamic_object__".to_string(),
+            0,
+        )];
         Self {
-            classes: Vec::new(),
+            classes,
             name_to_id: FxHashMap::default(),
         }
     }
@@ -79,19 +87,19 @@ mod tests {
     #[test]
     fn test_register_class() {
         let mut registry = ClassRegistry::new();
-        let class = Class::new(0, "Point".to_string(), 2);
+        let class = Class::new(1, "Point".to_string(), 2);
 
         let id = registry.register_class(class);
-        assert_eq!(id, 0);
+        assert_eq!(id, 1);
     }
 
     #[test]
     fn test_get_class_by_id() {
         let mut registry = ClassRegistry::new();
-        let class = Class::new(0, "Point".to_string(), 2);
+        let class = Class::new(1, "Point".to_string(), 2);
         registry.register_class(class);
 
-        let retrieved = registry.get_class(0).unwrap();
+        let retrieved = registry.get_class(1).unwrap();
         assert_eq!(retrieved.name, "Point");
         assert_eq!(retrieved.field_count, 2);
     }
@@ -99,11 +107,11 @@ mod tests {
     #[test]
     fn test_get_class_by_name() {
         let mut registry = ClassRegistry::new();
-        let class = Class::new(0, "Point".to_string(), 2);
+        let class = Class::new(1, "Point".to_string(), 2);
         registry.register_class(class);
 
         let retrieved = registry.get_class_by_name("Point").unwrap();
-        assert_eq!(retrieved.id, 0);
+        assert_eq!(retrieved.id, 1);
         assert_eq!(retrieved.field_count, 2);
     }
 
@@ -111,24 +119,24 @@ mod tests {
     fn test_multiple_classes() {
         let mut registry = ClassRegistry::new();
 
-        let class1 = Class::new(0, "Point".to_string(), 2);
-        let class2 = Class::new(1, "Circle".to_string(), 3);
+        let class1 = Class::new(1, "Point".to_string(), 2);
+        let class2 = Class::new(2, "Circle".to_string(), 3);
 
         registry.register_class(class1);
         registry.register_class(class2);
 
-        assert_eq!(registry.get_class(0).unwrap().name, "Point");
-        assert_eq!(registry.get_class(1).unwrap().name, "Circle");
-        assert_eq!(registry.next_class_id(), 2);
+        assert_eq!(registry.get_class(1).unwrap().name, "Point");
+        assert_eq!(registry.get_class(2).unwrap().name, "Circle");
+        assert_eq!(registry.next_class_id(), 3);
     }
 
     #[test]
     fn test_next_class_id() {
         let mut registry = ClassRegistry::new();
-        assert_eq!(registry.next_class_id(), 0);
-
-        let class = Class::new(0, "Point".to_string(), 2);
-        registry.register_class(class);
         assert_eq!(registry.next_class_id(), 1);
+
+        let class = Class::new(1, "Point".to_string(), 2);
+        registry.register_class(class);
+        assert_eq!(registry.next_class_id(), 2);
     }
 }

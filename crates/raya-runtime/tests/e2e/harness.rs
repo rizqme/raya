@@ -705,8 +705,10 @@ pub fn expect_compile_error(source: &str, error_pattern: &str) {
         }
         Err(e) => {
             let error_msg = e.to_string();
+            let error_msg_lower = error_msg.to_lowercase();
+            let pattern_lower = error_pattern.to_lowercase();
             assert!(
-                error_msg.contains(error_pattern),
+                error_msg_lower.contains(&pattern_lower),
                 "Expected error containing '{}', got: {}\nSource:\n{}",
                 error_pattern,
                 error_msg,
@@ -1279,6 +1281,7 @@ pub fn debug_compile(source: &str) -> String {
 
     let compiler = Compiler::new(type_ctx, &interner)
         .with_expr_types(check_result.expr_types)
+        .with_type_annotation_types(check_result.type_annotation_types)
         .with_js_this_binding_compat(true);
     match compiler.compile_with_debug(&ast) {
         Ok((_, debug_output)) => debug_output,

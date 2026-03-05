@@ -1021,8 +1021,13 @@ impl<'a> LoweringContext<'a> {
             JitTerminator::Throw(_)
             | JitTerminator::Deoptimize { .. }
             | JitTerminator::BranchNull { .. } => {
-                // For now, trap on unsupported terminators
-                builder.ins().trap(ir::TrapCode::user(2).unwrap());
+                // These paths are not lowered yet; fail compilation so runtime
+                // stays on interpreter for this function instead of emitting a
+                // compiled trap that can SIGTRAP the process.
+                return Err(LowerError::UnsupportedInstruction(format!(
+                    "terminator {:?}",
+                    term
+                )));
             }
         }
         Ok(())

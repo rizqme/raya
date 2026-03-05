@@ -275,6 +275,9 @@ fn find_token_occurrence(source: &str, token: &str) -> Option<usize> {
                 if prev_non_ws == Some('.') {
                     continue;
                 }
+                if is_member_or_method_declaration_context(source, start, end) {
+                    continue;
+                }
             }
             return Some(start);
         }
@@ -285,6 +288,63 @@ fn find_token_occurrence(source: &str, token: &str) -> Option<usize> {
 
 fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
+}
+
+fn is_member_or_method_declaration_context(source: &str, _start: usize, end: usize) -> bool {
+    let mut idx = end;
+    while let Some(ch) = source[idx..].chars().next() {
+        if ch.is_ascii_whitespace() {
+            idx += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    let Some(next) = source[idx..].chars().next() else {
+        return false;
+    };
+
+    // Object literal key: `{ eval: ... }`
+    if next == ':' {
+        return true;
+    }
+
+    // Method shorthand/declaration style: `eval(...) { ... }` or `eval(...): T`
+    if next != '(' {
+        return false;
+    }
+
+    let mut depth = 0usize;
+    let mut close_idx = None;
+    for (off, ch) in source[idx..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    close_idx = Some(idx + off + ch.len_utf8());
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let Some(mut after_paren) = close_idx else {
+        return false;
+    };
+    while let Some(ch) = source[after_paren..].chars().next() {
+        if ch.is_ascii_whitespace() {
+            after_paren += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    matches!(
+        source[after_paren..].chars().next(),
+        Some(':') | Some('{')
+    )
 }
 
 fn mask_non_code_regions(source: &str) -> String {
