@@ -1,6 +1,6 @@
 # raya-cli
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Unified command-line interface for the Raya toolchain.
 
@@ -158,3 +158,15 @@ Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contain
 - JIT is default-on at the CLI level; `--no-jit` flag disables it
 - AOT feature: `[features] aot = ["raya-engine/aot"]` — forwards to engine
 - Run CLI tests with: `cargo test -p raya-cli`
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-cli`
+- Direct subdirectories: scripts, src, tests
+- Direct files (excluding `CLAUDE.md`): Cargo.toml
+- Rust files in this directory: (none)
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

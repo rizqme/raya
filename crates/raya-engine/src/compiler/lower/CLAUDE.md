@@ -1,6 +1,6 @@
 # lower module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 AST to IR lowering - transforms typed AST into three-address code IR.
 
@@ -197,3 +197,15 @@ Object spread (`{ ...obj }`) is lowered via static field-copy expansion:
 - `as T` lowering emits runtime `Cast` instructions when `T` is runtime-checkable
   (class targets and supported runtime kind masks). Cast checks happen at cast
   sites, not on every later operation.
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/compiler/lower`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): class_methods.rs, control_flow.rs, expr.rs, mod.rs, stmt.rs
+- Rust files in this directory: class_methods.rs, control_flow.rs, expr.rs, mod.rs, stmt.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

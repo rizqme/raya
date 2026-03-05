@@ -1,6 +1,6 @@
 # raya-sdk
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 SDK for writing Raya native modules and stdlib implementations.
 
@@ -95,3 +95,15 @@ fn read_file(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult 
 - `NativeContext` is NOT Send — extract all data from it BEFORE creating BlockingWork closures
 - `IoCompletion::StringArray` is for operations like `readDir` that return `string[]`
 - `IoRequest::Sleep` exists but currently sleep uses `BlockingWork` with `thread::sleep`
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-sdk`
+- Direct subdirectories: src
+- Direct files (excluding `CLAUDE.md`): Cargo.toml
+- Rust files in this directory: (none)
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

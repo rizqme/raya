@@ -1,6 +1,6 @@
 # Crates Overview
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 This directory contains all Rust crates that make up the Raya language implementation.
 
@@ -83,3 +83,15 @@ When working on Raya:
 - **Example app fixtures + CLI e2e** live in `raya-examples`
 
 See each crate's `CLAUDE.md` for detailed guidance.
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates`
+- Direct subdirectories: raya-cli, raya-engine, raya-examples, raya-lsp, raya-native, raya-pm, raya-runtime, raya-sdk, raya-stdlib, raya-stdlib-node, raya-stdlib-posix
+- Direct files (excluding `CLAUDE.md`): (none)
+- Rust files in this directory: (none)
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

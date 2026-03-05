@@ -1,6 +1,6 @@
 # sync module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Task-aware synchronization primitives for Raya.
 
@@ -144,3 +144,15 @@ pub struct MutexSnapshot {
 - No reader-writer locks yet (Mutex only)
 - Mutex IDs are stable across snapshots
 - Deadlock detection is NOT implemented
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/vm/sync`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): guard.rs, mod.rs, mutex.rs, mutex_id.rs, registry.rs, semaphore.rs, serialize.rs
+- Rust files in this directory: guard.rs, mod.rs, mutex.rs, mutex_id.rs, registry.rs, semaphore.rs, serialize.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

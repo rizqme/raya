@@ -1,6 +1,6 @@
 # raya-stdlib
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Cross-platform native implementations for Raya's standard library.
 
@@ -129,3 +129,15 @@ Both route to the same Rust implementations. Newer modules (encoding, semver, te
 - `NativeContext` provides GC allocation, class registry, and scheduler access
 - `NativeValue` is type-safe (not string-based) — use `.as_f64()`, `.as_i32()`, `.as_string()`, etc.
 - Keep native implementations simple — complex logic should be in Raya
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-stdlib`
+- Direct subdirectories: raya, src
+- Direct files (excluding `CLAUDE.md`): Cargo.toml, README.md
+- Rust files in this directory: (none)
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

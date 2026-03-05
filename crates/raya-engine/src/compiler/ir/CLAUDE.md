@@ -1,6 +1,6 @@
 # ir module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Intermediate Representation for the Raya compiler.
 
@@ -160,3 +160,15 @@ entry:
 - SSA-like: registers assigned once (mostly)
 - Function IDs are indices, resolved at codegen
 - `PrettyPrint` trait for debugging output
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/compiler/ir`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): block.rs, function.rs, instr.rs, mod.rs, module.rs, pretty.rs, value.rs
+- Rust files in this directory: block.rs, function.rs, instr.rs, mod.rs, module.rs, pretty.rs, value.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

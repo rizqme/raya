@@ -1,6 +1,6 @@
 # codegen module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 IR to bytecode code generation.
 
@@ -146,3 +146,15 @@ fn emit_binary_op(writer: &mut BytecodeWriter, op: BinaryOp, ty: TypeId) {
 - Stack-based bytecode: load operands, operate, store result
 - Methods use vtable indices, not function IDs
 - `ObjectLiteral` emits class_id as **u16** (not u32) + field_count as u16, followed by `InitObject` per field
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/compiler/codegen`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): context.rs, control.rs, emit.rs, mod.rs
+- Rust files in this directory: context.rs, control.rs, emit.rs, mod.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

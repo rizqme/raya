@@ -1,6 +1,6 @@
 # types module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Type system representation and operations for Raya.
 
@@ -115,3 +115,15 @@ Establishes subtype relationships:
 - Strict mode blocks unsafe coercions; non-strict modes allow selected compatibility coercions (for example primitive-to-string in concat contexts)
 - `JSObject<T>` wrappers may be used in node-compat inference to preserve known
   fields from `T` while still allowing dynamic property access fallback
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/parser/types`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): assignability.rs, bare_union.rs, context.rs, discriminant.rs, error.rs, generics.rs, mod.rs, normalize.rs, signature.rs, subtyping.rs, ty.rs
+- Rust files in this directory: assignability.rs, bare_union.rs, context.rs, discriminant.rs, error.rs, generics.rs, mod.rs, normalize.rs, signature.rs, subtyping.rs, ty.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

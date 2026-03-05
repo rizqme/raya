@@ -1,6 +1,6 @@
 # interpreter module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Single-executor bytecode interpreter with suspendable task execution.
 
@@ -188,3 +188,15 @@ Native IDs: 0x0D00-0x0E2F (see `vm/builtin.rs`)
 - Array callback methods (map/filter/reduce/forEach) are **compiler intrinsics**, not runtime CallMethod
 - `Opcode::Cast` in `opcodes/types.rs` performs runtime validation for explicit
   cast sites (class casts and runtime kind-mask casts). It is not a per-op guard system.
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/vm/interpreter`
+- Direct subdirectories: handlers, opcodes
+- Direct files (excluding `CLAUDE.md`): capabilities.rs, class_registry.rs, context.rs, core.rs, debug_state.rs, execution.rs, marshal.rs, mod.rs, module_registry.rs, native_module_registry.rs, safepoint.rs, shared_state.rs, vm_facade.rs
+- Rust files in this directory: capabilities.rs, class_registry.rs, context.rs, core.rs, debug_state.rs, execution.rs, marshal.rs, mod.rs, module_registry.rs, native_module_registry.rs, safepoint.rs, shared_state.rs, vm_facade.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

@@ -1,6 +1,6 @@
 # module module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Module loading, linking, and import resolution for the VM.
 
@@ -165,3 +165,15 @@ graph.topological_sort() -> Vec<PathBuf>
 - URL imports are cached by content hash
 - Circular imports should be detected and reported
 - Linked modules share a unified constant pool
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/vm/module`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): deps.rs, import.rs, linker.rs, mod.rs
+- Rust files in this directory: deps.rs, import.rs, linker.rs, mod.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

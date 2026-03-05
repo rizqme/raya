@@ -1,6 +1,6 @@
 # scheduler module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Unified reactor with VM + IO worker pools for Raya's goroutine-style concurrency.
 
@@ -121,3 +121,15 @@ Native handlers return `NativeCallResult::Suspend(IoRequest::BlockingWork { work
 - Timer heap uses `BinaryHeap<SleepEntry>` with `Reverse`-like ordering (earliest wake first)
 - Channel waiters use 3-phase resolution: try buffer ops, pair senders with receivers, re-queue unresolved
 - **Stack pooling** dramatically reduces allocation overhead for short-lived tasks
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/vm/scheduler`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): mod.rs, pool.rs, reactor.rs, scheduler.rs, task.rs
+- Rust files in this directory: mod.rs, pool.rs, reactor.rs, scheduler.rs, task.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

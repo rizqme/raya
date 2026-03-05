@@ -1,6 +1,6 @@
 # CLAUDE.md - Raya Project
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 **Raya** is a statically-typed language with TypeScript syntax, implemented in Rust. Custom bytecode VM with goroutine-style concurrency. Static-first type system with compile-time checking plus explicit runtime-checked casts where required.
 
@@ -379,3 +379,15 @@ The VitePress documentation includes the install script at `/install.sh`, which 
 | Generic erasure? | ❌ No, use monomorphization |
 | Concurrency model? | Goroutine-style Tasks |
 | Implementation language? | Rust (stable) |
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `.`
+- Direct subdirectories: .cargo, .claude, .github, .wrangler, benches, crates, docs, examples, raya-examples-fault-injection, raya-examples-pkg-workflow, raya-examples-tcp-chat, raya-examples-template-pipeline, raya-examples-todo-kv, scripts, skills, target
+- Direct files (excluding `CLAUDE.md`): .dockerignore, .editorconfig, .git, .gitignore, 1, Cargo.lock, Cargo.toml, Dockerfile.ci, LICENSE, Makefile, OPTIONAL_PARAMS_COMPLETE.md, README.md, raya-logo.svg, rustfmt.toml, wrangler.toml
+- Rust files in this directory: (none)
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

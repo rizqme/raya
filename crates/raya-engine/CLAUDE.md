@@ -1,6 +1,6 @@
 # raya-engine
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 The core Raya language engine containing the parser, compiler, and virtual machine.
 
@@ -241,3 +241,15 @@ Vm::execute(&Module) -> VmResult<Value>
 - **AOT helper integration tests (shared state path)**: helper tests now cover shared-state dispatch end-to-end for both immediate native value returns and suspend submissions (including `IoSubmission` emission + `SuspendReason::IoWait`), so runtime-integrated and stub fallback paths are both exercised.
 
 See submodule CLAUDE.md files for detailed guidance on each component.
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine`
+- Direct subdirectories: builtins, examples, src, tests
+- Direct files (excluding `CLAUDE.md`): Cargo.toml, build.rs
+- Rust files in this directory: build.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

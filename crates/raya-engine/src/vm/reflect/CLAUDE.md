@@ -1,6 +1,6 @@
 # vm/reflect module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Runtime reflection implementation for the Raya VM.
 
@@ -142,3 +142,15 @@ registry.get_class_decorators(class_id) -> Vec<&DecoratorApplication>
 - SharedVmState holds MetadataStore, ClassMetadataRegistry
 - Reflection is always enabled (no compiler flag)
 - Most invoke/execute operations are stubs (need VM context threading)
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/vm/reflect`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): bootstrap.rs, bytecode_builder.rs, class_metadata.rs, dynamic_module.rs, function_builder.rs, generic_metadata.rs, introspection.rs, metadata.rs, mod.rs, permissions.rs, proxy.rs, runtime_builder.rs, snapshot.rs, type_builder.rs
+- Rust files in this directory: bootstrap.rs, bytecode_builder.rs, class_metadata.rs, dynamic_module.rs, function_builder.rs, generic_metadata.rs, introspection.rs, metadata.rs, mod.rs, permissions.rs, proxy.rs, runtime_builder.rs, snapshot.rs, type_builder.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

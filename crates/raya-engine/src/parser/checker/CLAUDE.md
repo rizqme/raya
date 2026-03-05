@@ -1,6 +1,6 @@
 # checker module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Type checking, inference, and semantic analysis for Raya.
 
@@ -163,3 +163,15 @@ Pre-defined signatures for:
 - Errors include span for precise location
 - `expr_types` maps expression pointers to their inferred types
 - **Scope resolution**: Always use `resolve_from_scope` with `self.current_scope` when resolving names during type checking (not bare `resolve` which uses scope 0)
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/parser/checker`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): binder.rs, builtins.rs, captures.rs, checker.rs, diagnostic.rs, error.rs, exhaustiveness.rs, mod.rs, narrowing.rs, symbols.rs, type_guards.rs
+- Rust files in this directory: binder.rs, builtins.rs, captures.rs, checker.rs, diagnostic.rs, error.rs, exhaustiveness.rs, mod.rs, narrowing.rs, symbols.rs, type_guards.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

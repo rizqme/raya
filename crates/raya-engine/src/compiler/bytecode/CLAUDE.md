@@ -1,6 +1,6 @@
 # bytecode module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Bytecode format definitions, encoding/decoding, and verification.
 
@@ -201,3 +201,15 @@ Checks:
 - Module checksum is SHA-256 of payload (after header)
 - All indices are u16 or u32 depending on context
 - `CALL` uses function index, `CALL_METHOD` uses vtable index
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/compiler/bytecode`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): constants.rs, encoder.rs, mod.rs, module.rs, opcode.rs, verify.rs
+- Rust files in this directory: constants.rs, encoder.rs, mod.rs, module.rs, opcode.rs, verify.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

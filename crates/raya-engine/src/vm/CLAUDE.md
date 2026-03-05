@@ -1,6 +1,6 @@
 # vm module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Raya Virtual Machine runtime: interpreter, scheduler, GC, and runtime support.
 
@@ -152,3 +152,15 @@ const result = await task;  // Suspends current task
 - `ModuleNativeCall` uses `NativeFunctionRegistry` for name-based dispatch
 - Exception handling uses try/catch blocks in bytecode
 - **Builtin classes**: lowercase files (array.raya, string.raya), centralized TypeRegistry dispatch
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/vm`
+- Direct subdirectories: builtins, ffi, gc, interpreter, json, module, reflect, scheduler, snapshot, sync, types
+- Direct files (excluding `CLAUDE.md`): abi.rs, builtin.rs, defaults.rs, mod.rs, native_handler.rs, native_registry.rs, object.rs, stack.rs, value.rs
+- Rust files in this directory: abi.rs, builtin.rs, defaults.rs, mod.rs, native_handler.rs, native_registry.rs, object.rs, stack.rs, value.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

@@ -1,6 +1,6 @@
 # parser module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Frontend of the Raya compiler: lexer, parser, type system, and type checker.
 
@@ -101,3 +101,15 @@ let type_ctx = result.type_context();
 - **Rest parameters** (`...args`) parsed via `Token::DotDotDot`
 - **Optional parameters** (`param?`) parsed via `Token::Question`
 - Parameter ordering validated: required params must come before optional params
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/parser`
+- Direct subdirectories: ast, checker, parser, types
+- Direct files (excluding `CLAUDE.md`): ast.rs, interner.rs, lexer.rs, mod.rs, parser.rs, token.rs
+- Rust files in this directory: ast.rs, interner.rs, lexer.rs, mod.rs, parser.rs, token.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

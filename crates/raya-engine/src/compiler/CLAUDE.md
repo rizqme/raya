@@ -1,6 +1,6 @@
 # compiler module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Middle-end and backend of the Raya compiler: IR, optimizations, and bytecode generation.
 
@@ -166,3 +166,15 @@ pub const STRING_CHAR_AT: u16 = 0x0200;
 - **Rest parameters** (`...args`) lowered to array allocation + argument collection
 - **Optional parameters** (`param?`) handled with default value initialization
 - **Method-level type parameters** partially supported (ongoing work)
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/compiler`
+- Direct subdirectories: bytecode, codegen, intrinsic, ir, lower, module, monomorphize, optimize
+- Direct files (excluding `CLAUDE.md`): codegen_ast.rs, error.rs, mod.rs, module_builder.rs, native_id.rs, type_registry.rs
+- Rust files in this directory: codegen_ast.rs, error.rs, mod.rs, module_builder.rs, native_id.rs, type_registry.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

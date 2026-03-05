@@ -1,6 +1,6 @@
 # raya-runtime
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 High-level runtime API for compiling and executing Raya programs. Hosts all e2e tests.
 
@@ -149,3 +149,15 @@ Routing is handled by `StdNativeHandler` in `raya-stdlib/src/handler.rs`:
 - Run runtime tests with: `cargo test -p raya-runtime`
 - Multiworker e2e harness now applies a 30s execution timeout (`compile_and_run_multiworker*`) and returns a clear runtime timeout error instead of hanging indefinitely on scheduler deadlocks/regressions.
 - `tests/e2e/net.rs` TCP echo test binds a dynamic loopback port (with retries) and derives client port from `listener.localAddr()` to avoid fixed-port collisions in CI.
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-runtime`
+- Direct subdirectories: examples, src, tests
+- Direct files (excluding `CLAUDE.md`): 1, Cargo.toml, __raya_inline_entry.__raya_inline_50082_1772708466138002000_0.raya, __raya_inline_entry.__raya_inline_52386_1772708690520266000_0.raya
+- Rust files in this directory: (none)
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

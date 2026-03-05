@@ -1,6 +1,6 @@
 # ffi module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Foreign Function Interface for native module integration.
 
@@ -168,3 +168,15 @@ pub enum NativeError {
 - Dynamic libraries export `raya_module_init` and `raya_module_cleanup`
 - Use `raya-sdk` types in native modules (not `raya-engine`)
 - C API enables embedding Raya in other languages
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/vm/ffi`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): c_api.rs, loader.rs, mod.rs, native.rs
+- Rust files in this directory: c_api.rs, loader.rs, mod.rs, native.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

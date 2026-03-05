@@ -1,6 +1,6 @@
 # gc module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Garbage collector for Raya VM heap management.
 
@@ -200,3 +200,15 @@ if gc.should_collect() {
 - JSON parsing now pins objects to prevent premature GC
 - Future: generational for better performance
 - Future: concurrent marking for lower latency
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/vm/gc`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): collector.rs, header.rs, heap.rs, mod.rs, nursery.rs, ptr.rs, roots.rs
+- Rust files in this directory: collector.rs, header.rs, heap.rs, mod.rs, nursery.rs, ptr.rs, roots.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

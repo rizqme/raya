@@ -1,6 +1,6 @@
 # raya-lsp
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Language Server Protocol (LSP) implementation for Raya.
 
@@ -66,3 +66,15 @@ raya-lsp
 - Reuse `raya-engine::parser` for lexing/parsing
 - Reuse `raya-engine::parser::checker` for type information
 - Reference VS Code LSP extension examples
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-lsp`
+- Direct subdirectories: src
+- Direct files (excluding `CLAUDE.md`): Cargo.toml
+- Rust files in this directory: (none)
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

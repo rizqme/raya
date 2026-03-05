@@ -1,6 +1,6 @@
 # snapshot module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 VM state serialization for pause/resume functionality.
 
@@ -145,3 +145,15 @@ if self.safepoint_requested() {
 - Safepoints ensure consistent state
 - Checksums verify snapshot integrity
 - Cross-machine restore requires same module versions
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/vm/snapshot`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): format.rs, heap.rs, mod.rs, reader.rs, task.rs, writer.rs
+- Rust files in this directory: format.rs, heap.rs, mod.rs, reader.rs, task.rs, writer.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

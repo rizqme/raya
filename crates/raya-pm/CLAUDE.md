@@ -1,6 +1,6 @@
 # raya-pm
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Package manager library for Raya. This is a library crate used by the main `raya` CLI.
 
@@ -199,3 +199,15 @@ GET /packages/{name}/{version} → VersionInfo + download URL
 - Resolver handles diamond dependencies with conflict detection
 - Lockfile checksums must be 64 hex characters (SHA-256)
 - Scoped packages (@org/name) are supported
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-pm`
+- Direct subdirectories: src, tests
+- Direct files (excluding `CLAUDE.md`): Cargo.toml, ERROR_HANDLING.md
+- Rust files in this directory: (none)
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

@@ -1,6 +1,6 @@
 # monomorphize module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Generic specialization for the Raya compiler.
 
@@ -138,3 +138,15 @@ let a = wrap(42);  // Specializes wrap<number> AND Array<number>
 - Recursive generics are handled by fixpoint iteration
 - Specialization can significantly increase code size
 - Type erasure is NOT used - all generics are fully specialized
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/compiler/monomorphize`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): collect.rs, mod.rs, rewrite.rs, specialize.rs, substitute.rs
+- Rust files in this directory: collect.rs, mod.rs, rewrite.rs, specialize.rs, substitute.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

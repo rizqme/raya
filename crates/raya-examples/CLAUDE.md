@@ -1,6 +1,6 @@
 # raya-examples
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Example Raya applications plus end-to-end tests.
 
@@ -49,3 +49,15 @@ Example Raya applications plus end-to-end tests.
   - `tests/fixture_fault_injection_e2e.rs`
   - Shared helpers in `tests/common/mod.rs` provide CLI timeout guard (20s) and
     summary parsing.
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-examples`
+- Direct subdirectories: fixtures, src, tests
+- Direct files (excluding `CLAUDE.md`): Cargo.toml
+- Rust files in this directory: (none)
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

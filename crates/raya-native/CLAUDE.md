@@ -1,6 +1,6 @@
 # raya-native
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Proc-macro crate for ergonomic native module development.
 
@@ -129,3 +129,15 @@ cargo build --release
 - `#[module]` generates `raya_module_init` and `raya_module_cleanup`
 - Panic handling is automatic in generated wrappers
 - Type conversions use `FromRaya`/`ToRaya` traits from `raya-sdk`
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-native`
+- Direct subdirectories: src
+- Direct files (excluding `CLAUDE.md`): Cargo.toml
+- Rust files in this directory: (none)
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

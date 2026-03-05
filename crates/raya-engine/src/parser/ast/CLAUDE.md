@@ -1,6 +1,6 @@
 # ast module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Abstract Syntax Tree definitions for Raya.
 
@@ -149,3 +149,15 @@ pub trait Visitor {
 - Box is used for recursive structures to avoid infinite size
 - Annotations are parsed from special comments `//@@tag args...`
 - Visitor trait enables AST traversal without modifying nodes
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/parser/ast`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): expression.rs, pattern.rs, statement.rs, types.rs, visitor.rs
+- Rust files in this directory: expression.rs, pattern.rs, statement.rs, types.rs, visitor.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

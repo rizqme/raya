@@ -1,6 +1,6 @@
 # compiler/module - Multi-Module Compilation
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 Module compilation system for multi-file Raya projects.
 
@@ -199,3 +199,15 @@ This limitation exists because TypeIDs are local to each module's TypeContext. A
 - Graph uses topological sort (Kahn's algorithm) for compilation order
 - `std:` modules (e.g., `std:logger`) are resolved via `std_modules.rs` with embedded sources
 - `export default` is supported for default imports (`import logger from "std:logger"`)
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/compiler/module`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): cache.rs, compiler.rs, declaration.rs, exports.rs, graph.rs, mod.rs, resolver.rs, std_modules.rs, typedef.rs
+- Rust files in this directory: cache.rs, compiler.rs, declaration.rs, exports.rs, graph.rs, mod.rs, resolver.rs, std_modules.rs, typedef.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

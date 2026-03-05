@@ -1,6 +1,6 @@
 # optimize module
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 IR optimization passes for the Raya compiler.
 
@@ -158,3 +158,15 @@ pub trait Pass {
 - DCE should run after other passes clean up dead code
 - PHI elimination is needed because bytecode isn't SSA
 - All passes must preserve program semantics
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-engine/src/compiler/optimize`
+- Direct subdirectories: (none)
+- Direct files (excluding `CLAUDE.md`): constant_fold.rs, dce.rs, inline.rs, mod.rs, phi_elim.rs
+- Rust files in this directory: constant_fold.rs, dce.rs, inline.rs, mod.rs, phi_elim.rs
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->

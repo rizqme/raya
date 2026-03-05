@@ -1,6 +1,6 @@
 # raya-stdlib-posix
 
-_Verified against source on 2026-02-27._
+_Verified against source on 2026-03-06._
 
 POSIX/OS-dependent native implementations for Raya's standard library.
 
@@ -121,3 +121,15 @@ NativeCallResult::Suspend(IoRequest::BlockingWork {
 - **TCP readLine correctness**: `net.tcpReadLine` must not use a temporary `BufReader` over a cloned stream.
   It can over-read past `\n` and drop buffered bytes, causing next `readLine()` to hang.
   Use direct stream reads (byte-by-byte or persistent buffer per handle) to preserve framing.
+
+
+<!-- AUTO-FOLDER-SNAPSHOT:START -->
+## Auto Folder Snapshot
+
+- Updated: 2026-03-06
+- Directory: `crates/raya-stdlib-posix`
+- Direct subdirectories: raya, src
+- Direct files (excluding `CLAUDE.md`): Cargo.toml
+- Rust files in this directory: (none)
+
+<!-- AUTO-FOLDER-SNAPSHOT:END -->
