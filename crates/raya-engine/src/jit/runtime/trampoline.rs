@@ -132,4 +132,8 @@ pub struct RuntimeHelperTable {
     pub string_concat: unsafe extern "C" fn(u64, u64, *mut ()) -> u64,
     /// Generic equality: (left_val, right_val, shared_state) -> bool
     pub generic_equals: unsafe extern "C" fn(u64, u64, *mut ()) -> bool,
+    /// Structural/nominal field load: (obj_val, expected_slot, func_id, module_ptr, shared_state) -> result_val
+    pub object_get_field: unsafe extern "C" fn(u64, u32, u32, *const (), *mut ()) -> u64,
+    /// Structural/nominal field store: (obj_val, expected_slot, value, func_id, module_ptr, shared_state) -> success
+    pub object_set_field: unsafe extern "C" fn(u64, u32, u64, u32, *const (), *mut ()) -> bool,
 }

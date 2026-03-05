@@ -7037,13 +7037,15 @@ impl<'a> TypeChecker<'a> {
                                         p.name == method.name
                                     },
                                 ) {
-                                    merged_properties.push(crate::parser::types::ty::PropertySignature {
-                                        name: method.name.clone(),
-                                        ty: method.ty,
-                                        optional: false,
-                                        readonly: false,
-                                        visibility: crate::parser::ast::Visibility::Public,
-                                    });
+                                    merged_properties.push(
+                                        crate::parser::types::ty::PropertySignature {
+                                            name: method.name.clone(),
+                                            ty: method.ty,
+                                            optional: false,
+                                            readonly: false,
+                                            visibility: crate::parser::ast::Visibility::Public,
+                                        },
+                                    );
                                 }
                             }
                             for sig in iface.call_signatures {
@@ -7079,13 +7081,15 @@ impl<'a> TypeChecker<'a> {
                                         p.name == method.name
                                     },
                                 ) {
-                                    merged_properties.push(crate::parser::types::ty::PropertySignature {
-                                        name: method.name.clone(),
-                                        ty: method.ty,
-                                        optional: false,
-                                        readonly: false,
-                                        visibility: crate::parser::ast::Visibility::Public,
-                                    });
+                                    merged_properties.push(
+                                        crate::parser::types::ty::PropertySignature {
+                                            name: method.name.clone(),
+                                            ty: method.ty,
+                                            optional: false,
+                                            readonly: false,
+                                            visibility: crate::parser::ast::Visibility::Public,
+                                        },
+                                    );
                                 }
                             }
                         }

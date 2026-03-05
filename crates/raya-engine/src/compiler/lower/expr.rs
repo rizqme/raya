@@ -5537,7 +5537,7 @@ impl<'a> Lowerer<'a> {
             }
 
             if self.import_bindings.contains(&ident.name) {
-                // Imported class identifiers are hydrated at runtime as numeric class IDs.
+                // Imported class identifiers are hydrated at runtime as TypeHandle values.
                 // Use a dynamic constructor native path for `new ImportedClass(...)`.
                 let class_id = self.lower_expr(&new_expr.callee);
                 let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
@@ -6525,12 +6525,14 @@ impl<'a> Lowerer<'a> {
 
         match self.type_ctx.get(ty_id) {
             Some(Type::Function(func)) => Some(func.return_type),
-            Some(Type::Object(obj)) => obj.construct_signatures.iter().find_map(|sig_ty| {
-                match self.type_ctx.get(*sig_ty) {
-                    Some(Type::Function(func)) => Some(func.return_type),
-                    _ => None,
-                }
-            }),
+            Some(Type::Object(obj)) => {
+                obj.construct_signatures.iter().find_map(|sig_ty| {
+                    match self.type_ctx.get(*sig_ty) {
+                        Some(Type::Function(func)) => Some(func.return_type),
+                        _ => None,
+                    }
+                })
+            }
             Some(Type::Interface(iface)) => iface.construct_signatures.iter().find_map(|sig_ty| {
                 match self.type_ctx.get(*sig_ty) {
                     Some(Type::Function(func)) => Some(func.return_type),

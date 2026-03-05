@@ -444,9 +444,17 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { receiver_val.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                let class_id = match obj.nominal_class_id() {
+                    Some(id) => id,
+                    None => {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "Cannot call method on structural object value".to_string(),
+                        ));
+                    }
+                };
 
                 let classes = self.classes.read();
-                let class = match classes.get_class(obj.class_id) {
+                let class = match classes.get_class(class_id) {
                     Some(c) => c,
                     None => {
                         let receiver_kind = {
@@ -471,7 +479,7 @@ impl<'a> Interpreter<'a> {
                         };
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
                             "Invalid class ID: {} (receiver_kind={})",
-                            obj.class_id, receiver_kind
+                            class_id, receiver_kind
                         )));
                     }
                 };
@@ -481,7 +489,7 @@ impl<'a> Interpreter<'a> {
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
                             "Method index {} not found in vtable for class '{}' (id={}, vtable_size={})",
-                            method_index, class.name, obj.class_id, class.vtable.method_count()
+                            method_index, class.name, class_id, class.vtable.method_count()
                         )));
                     }
                 };

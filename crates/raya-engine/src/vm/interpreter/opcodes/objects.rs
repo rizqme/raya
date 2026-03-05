@@ -21,10 +21,13 @@ impl<'a> Interpreter<'a> {
     ) -> Result<Value, VmError> {
         let receiver = Self::ensure_object_receiver(receiver, "method binding")?;
         let obj = unsafe { &*receiver.as_ptr::<Object>().unwrap().as_ptr() };
-        let classes = self.classes.read();
-        let class = classes.get_class(obj.class_id).ok_or_else(|| {
-            VmError::RuntimeError(format!("Invalid class index: {}", obj.class_id))
+        let class_id = obj.nominal_class_id().ok_or_else(|| {
+            VmError::TypeError("Cannot bind method on structural object value".to_string())
         })?;
+        let classes = self.classes.read();
+        let class = classes
+            .get_class(class_id)
+            .ok_or_else(|| VmError::RuntimeError(format!("Invalid class index: {}", class_id)))?;
         let func_id = class.vtable.get_method(method_slot).ok_or_else(|| {
             VmError::RuntimeError(format!(
                 "Invalid method slot: {} for class {}",
@@ -215,16 +218,19 @@ impl<'a> Interpreter<'a> {
     }
 
     fn field_name_for_offset(&self, obj: &Object, field_offset: usize) -> Option<String> {
+        let nominal_class_id = obj.nominal_class_id();
         let class_metadata = self.class_metadata.read();
-        let from_metadata = class_metadata
-            .get(obj.class_id)
-            .and_then(|meta| meta.field_names.get(field_offset))
-            .cloned()
-            .filter(|name| !name.is_empty());
+        let from_metadata = nominal_class_id.and_then(|class_id| {
+            class_metadata
+                .get(class_id)
+                .and_then(|meta| meta.field_names.get(field_offset))
+                .cloned()
+                .filter(|name| !name.is_empty())
+        });
         if from_metadata.is_some() {
             return from_metadata;
         }
-        if obj.class_id == 0 {
+        if obj.is_structural() {
             if let Some(name) = self
                 .structural_object_shapes
                 .read()
@@ -235,8 +241,9 @@ impl<'a> Interpreter<'a> {
                 return Some(name);
             }
         }
+        let class_id = nominal_class_id?;
         let classes = self.classes.read();
-        let class_name = classes.get_class(obj.class_id)?.name.as_str();
+        let class_name = classes.get_class(class_id)?.name.as_str();
         if class_name == "Object" && obj.field_count() <= 4 {
             if let Some(name) = Self::legacy_field_name_for_layout(field_offset, obj.field_count())
             {
@@ -252,14 +259,15 @@ impl<'a> Interpreter<'a> {
     fn field_index_for_value(&self, obj_val: Value, field_name: &str) -> Option<usize> {
         let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
+        let nominal_class_id = obj.nominal_class_id();
         let class_metadata = self.class_metadata.read();
-        let from_metadata = class_metadata
-            .get(obj.class_id)
+        let from_metadata = nominal_class_id
+            .and_then(|class_id| class_metadata.get(class_id))
             .and_then(|meta| meta.get_field_index(field_name));
         if from_metadata.is_some() {
             return from_metadata;
         }
-        if obj.class_id == 0 {
+        if obj.is_structural() {
             if let Some(index) = self
                 .structural_object_shapes
                 .read()
@@ -269,8 +277,9 @@ impl<'a> Interpreter<'a> {
                 return Some(index);
             }
         }
+        let class_id = nominal_class_id?;
         let classes = self.classes.read();
-        let class_name = classes.get_class(obj.class_id)?.name.as_str();
+        let class_name = classes.get_class(class_id)?.name.as_str();
         if class_name == "Object" && obj.field_count() <= 4 {
             if let Some(index) = Self::legacy_field_index_for_layout(field_name, obj.field_count())
             {
@@ -407,11 +416,7 @@ impl<'a> Interpreter<'a> {
                 let field_count = class.field_count;
                 drop(classes);
 
-                let obj = if class_index == 0 {
-                    Object::new_structural(0, field_count)
-                } else {
-                    Object::new(class_index, field_count)
-                };
+                let obj = Object::new(class_index, field_count);
                 let gc_ptr = self.gc.lock().allocate(obj);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
@@ -488,10 +493,14 @@ impl<'a> Interpreter<'a> {
                 // and allows optional object properties to be absent at runtime.
                 let value = obj.get_field(field_offset).unwrap_or(Value::null());
                 if std::env::var("RAYA_DEBUG_FIELD_TRACE").is_ok() {
+                    let class_debug = obj
+                        .nominal_class_id()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "structural".to_string());
                     eprintln!(
                         "[field-trace] LoadField[{}] class_id={} field_count={} => {:?} (is_ptr={})",
                         field_offset,
-                        obj.class_id,
+                        class_debug,
                         obj.field_count(),
                         value,
                         value.is_ptr()
@@ -720,13 +729,20 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let obj = unsafe { &*obj_val.as_ptr::<Object>().unwrap().as_ptr() };
+                let class_id = obj.nominal_class_id().ok_or_else(|| {
+                    VmError::TypeError("Cannot bind method on structural object value".to_string())
+                });
+                let class_id = match class_id {
+                    Ok(id) => id,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
                 let classes = self.classes.read();
-                let class = match classes.get_class(obj.class_id) {
+                let class = match classes.get_class(class_id) {
                     Some(c) => c,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
                             "Invalid class index: {}",
-                            obj.class_id
+                            class_id
                         )));
                     }
                 };

@@ -29,8 +29,11 @@ pub enum JSView {
     Str(*const RayaString),
     /// Heap-allocated array
     Arr(*const Array),
-    /// Typed class instance (fixed field schema).
-    Struct { ptr: *const Object, class_id: usize },
+    /// Fixed-field object instance with optional nominal identity.
+    Struct {
+        ptr: *const Object,
+        nominal_type_id: Option<usize>,
+    },
     /// Dynamic hashmap object (JSON.parse result, `JsonObject`-typed).
     Dyn(*const DynObject),
     /// Any other heap type (Closure, BoundMethod, RefCell, Channel, …).
@@ -82,10 +85,10 @@ pub fn js_classify(val: Value) -> JSView {
         JSView::Arr(ptr as *const Array)
     } else if type_id == TypeId::of::<Object>() {
         let obj_ptr = ptr as *const Object;
-        let class_id = unsafe { (*obj_ptr).class_id };
+        let nominal_type_id = unsafe { (*obj_ptr).nominal_class_id() };
         JSView::Struct {
             ptr: obj_ptr,
-            class_id,
+            nominal_type_id,
         }
     } else if type_id == TypeId::of::<DynObject>() {
         JSView::Dyn(ptr as *const DynObject)

@@ -19,6 +19,19 @@ pub type PropKeyId = u32;
 /// Runtime handle identity for imported/exported type constructors.
 pub type TypeHandleId = u32;
 
+/// Runtime handle for nominal type constructors crossing module boundaries.
+///
+/// This is the canonical runtime representation used for imported/exported class
+/// constructors in binary linking mode. It avoids exposing raw class IDs through
+/// module hydration globals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypeHandle {
+    /// Global nominal type/class ID in the VM registry.
+    pub nominal_type_id: NominalTypeId,
+    /// Optional structural shape hash for diagnostics/contract checks.
+    pub shape_id: Option<ShapeId>,
+}
+
 /// Global counter for generating unique object IDs
 static NEXT_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -101,6 +114,18 @@ impl Object {
     /// Get number of fields
     pub fn field_count(&self) -> usize {
         self.fields.len()
+    }
+
+    /// Return the nominal class ID when this object participates in nominal dispatch.
+    #[inline]
+    pub fn nominal_class_id(&self) -> Option<usize> {
+        self.nominal_type_id.map(|id| id as usize)
+    }
+
+    /// Return true when this object is a structural/dynamic carrier (no nominal identity).
+    #[inline]
+    pub fn is_structural(&self) -> bool {
+        self.nominal_type_id.is_none()
     }
 }
 

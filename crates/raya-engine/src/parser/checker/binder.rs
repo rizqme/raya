@@ -4186,11 +4186,7 @@ mod tests {
         let box_ctor = symbols.resolve("BoxCtor").expect("BoxCtor symbol");
         match ctx.get(box_ctor.ty) {
             Some(Type::Object(obj)) => {
-                assert_eq!(
-                    obj.call_signatures.len(),
-                    0,
-                    "BoxCtor call signatures"
-                );
+                assert_eq!(obj.call_signatures.len(), 0, "BoxCtor call signatures");
                 assert_eq!(
                     obj.construct_signatures.len(),
                     1,

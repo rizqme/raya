@@ -342,9 +342,10 @@ impl<'a> SubtypingContext<'a> {
             // Function <: Object with structural call signatures.
             (Type::Function(_), Type::Object(o)) => {
                 let props_match = o.properties.iter().all(|p| p.optional);
-                let methods_match = o.call_signatures.iter().all(|sup_sig| {
-                    self.is_subtype(sub, *sup_sig)
-                });
+                let methods_match = o
+                    .call_signatures
+                    .iter()
+                    .all(|sup_sig| self.is_subtype(sub, *sup_sig));
                 let construct_match = o.construct_signatures.is_empty();
                 props_match && methods_match && construct_match
             }
@@ -353,9 +354,10 @@ impl<'a> SubtypingContext<'a> {
             (Type::Function(_), Type::Interface(i)) => {
                 let props_match = i.properties.iter().all(|p| p.optional);
                 let methods_empty = i.methods.is_empty();
-                let call_match = i.call_signatures.iter().all(|sup_sig| {
-                    self.is_subtype(sub, *sup_sig)
-                });
+                let call_match = i
+                    .call_signatures
+                    .iter()
+                    .all(|sup_sig| self.is_subtype(sub, *sup_sig));
                 let construct_match = i.construct_signatures.is_empty();
                 props_match && methods_empty && call_match && construct_match
             }
@@ -418,21 +420,22 @@ impl<'a> SubtypingContext<'a> {
             // Class <: Object (structural): class instance <: object type
             // Optional properties in the target object type don't need to exist in the class
             (Type::Class(c), Type::Object(o)) => {
-                let construct_match = o.construct_signatures.iter().all(|sig| {
-                    match self.type_ctx.get(*sig) {
-                        Some(Type::Function(func)) => self.is_subtype(sub, func.return_type),
-                        _ => false,
-                    }
-                });
+                let construct_match =
+                    o.construct_signatures
+                        .iter()
+                        .all(|sig| match self.type_ctx.get(*sig) {
+                            Some(Type::Function(func)) => self.is_subtype(sub, func.return_type),
+                            _ => false,
+                        });
                 o.call_signatures.is_empty()
                     && construct_match
                     && o.properties.iter().all(|op| {
-                    // If the target property is optional, the class doesn't need to have it
-                    if op.optional {
-                        return true;
-                    }
-                    // For required properties, check class properties
-                    c.properties
+                        // If the target property is optional, the class doesn't need to have it
+                        if op.optional {
+                            return true;
+                        }
+                        // For required properties, check class properties
+                        c.properties
                         .iter()
                         .filter(|cp| cp.visibility == Visibility::Public)
                         .any(|cp| {
@@ -557,34 +560,36 @@ impl<'a> SubtypingContext<'a> {
             // Class <: Interface (structural subtyping for interfaces)
             (Type::Class(c), Type::Interface(i)) => {
                 // Check if class implements all interface members
-                let construct_match = i.construct_signatures.iter().all(|sig| {
-                    match self.type_ctx.get(*sig) {
-                        Some(Type::Function(func)) => self.is_subtype(sub, func.return_type),
-                        _ => false,
-                    }
-                });
+                let construct_match =
+                    i.construct_signatures
+                        .iter()
+                        .all(|sig| match self.type_ctx.get(*sig) {
+                            Some(Type::Function(func)) => self.is_subtype(sub, func.return_type),
+                            _ => false,
+                        });
                 i.call_signatures.is_empty()
                     && construct_match
                     && i.properties.iter().all(|ip| {
-                    // If the interface property is optional, the class doesn't need to have it
-                    if ip.optional {
-                        return true;
-                    }
-                    // For required properties, check class properties
-                    c.properties
-                        .iter()
-                        .filter(|cp| cp.visibility == Visibility::Public)
-                        .any(|cp| {
-                            cp.name == ip.name
+                        // If the interface property is optional, the class doesn't need to have it
+                        if ip.optional {
+                            return true;
+                        }
+                        // For required properties, check class properties
+                        c.properties
+                            .iter()
+                            .filter(|cp| cp.visibility == Visibility::Public)
+                            .any(|cp| {
+                                cp.name == ip.name
                                 && !cp.optional // Class property must not be optional for required interface
                                 && (!ip.readonly || cp.readonly)
                                 && self.is_subtype(cp.ty, ip.ty)
-                        })
-                }) && i.methods.iter().all(|im| {
-                    c.methods
-                        .iter()
-                        .filter(|cm| cm.visibility == Visibility::Public)
-                        .any(|cm| cm.name == im.name && self.is_subtype(cm.ty, im.ty))
+                            })
+                    })
+                    && i.methods.iter().all(|im| {
+                        c.methods
+                            .iter()
+                            .filter(|cm| cm.visibility == Visibility::Public)
+                            .any(|cm| cm.name == im.name && self.is_subtype(cm.ty, im.ty))
                     })
             }
 

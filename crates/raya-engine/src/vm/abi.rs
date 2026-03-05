@@ -100,10 +100,13 @@ impl<'a> EngineContext<'a> {
     }
 
     fn read_buffer_from_object(&self, obj: &Object) -> AbiResult<Vec<u8>> {
+        let class_id = obj
+            .nominal_class_id()
+            .ok_or_else(|| "Expected nominal Buffer object".to_string())?;
         let class_name = {
             let classes = self.classes.read();
             let class = classes
-                .get_class(obj.class_id)
+                .get_class(class_id)
                 .ok_or_else(|| "Buffer class metadata missing".to_string())?;
             class.name.clone()
         };
@@ -114,7 +117,7 @@ impl<'a> EngineContext<'a> {
         let handle_field_index = {
             let class_metadata = self.class_metadata.read();
             class_metadata
-                .get(obj.class_id)
+                .get(class_id)
                 .and_then(|meta| meta.get_field_index("bufferPtr"))
                 .unwrap_or(0)
         };
@@ -283,7 +286,8 @@ impl NativeContext for EngineContext<'_> {
         let obj_ptr =
             unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Object".to_string())?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
-        Ok(obj.class_id)
+        obj.nominal_class_id()
+            .ok_or_else(|| "Object has no nominal class identity".into())
     }
 
     // ========================================================================
@@ -564,7 +568,9 @@ pub fn object_class_id(val: NativeValue) -> AbiResult<usize> {
         return Err("Expected Object, got non-pointer".into());
     }
     let obj_ptr = unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Object".to_string())?;
-    Ok(unsafe { &*obj_ptr.as_ptr() }.class_id)
+    let obj = unsafe { &*obj_ptr.as_ptr() };
+    obj.nominal_class_id()
+        .ok_or_else(|| "Object has no nominal class identity".into())
 }
 
 /// Allocate a new Object

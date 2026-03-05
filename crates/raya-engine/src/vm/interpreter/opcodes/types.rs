@@ -108,7 +108,7 @@ impl<'a> Interpreter<'a> {
                     if let Some(obj_ptr) = object_ptr_checked(obj_val) {
                         let obj = unsafe { &*obj_ptr.as_ptr() };
                         let classes = self.classes.read();
-                        let mut current_class_id = Some(obj.class_id);
+                        let mut current_class_id = obj.nominal_class_id();
                         let mut matches = false;
                         while let Some(cid) = current_class_id {
                             if cid == class_index {
@@ -326,7 +326,7 @@ impl<'a> Interpreter<'a> {
                     if let Some(obj_ptr) = object_ptr_checked(obj_val) {
                         let obj = unsafe { &*obj_ptr.as_ptr() };
                         let classes = self.classes.read();
-                        let mut current_class_id = Some(obj.class_id);
+                        let mut current_class_id = obj.nominal_class_id();
                         let mut matches = false;
                         while let Some(cid) = current_class_id {
                             if cid == cast_target_class {
@@ -365,15 +365,18 @@ impl<'a> Interpreter<'a> {
                     let (actual_id, actual_name) =
                         if let Some(obj_ptr) = object_ptr_checked(obj_val) {
                             let obj = unsafe { &*obj_ptr.as_ptr() };
-                            let class_id = obj.class_id;
-                            let class_name = {
-                                let classes = self.classes.read();
-                                classes
-                                    .get_class(class_id)
-                                    .map(|c| c.name.clone())
-                                    .unwrap_or_else(|| "<unknown>".to_string())
-                            };
-                            (class_id, class_name)
+                            if let Some(class_id) = obj.nominal_class_id() {
+                                let class_name = {
+                                    let classes = self.classes.read();
+                                    classes
+                                        .get_class(class_id)
+                                        .map(|c| c.name.clone())
+                                        .unwrap_or_else(|| "<unknown>".to_string())
+                                };
+                                (class_id, class_name)
+                            } else {
+                                (usize::MAX, "<structural-object>".to_string())
+                            }
                         } else {
                             (usize::MAX, "<non-object>".to_string())
                         };
@@ -420,15 +423,18 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let result = match js_classify(obj_val) {
-                    JSView::Struct { ptr, class_id } => {
+                    JSView::Struct { ptr, .. } => {
                         // Typed class instance: name → slot lookup
                         let obj = unsafe { &*ptr };
+                        let nominal_class_id = obj.nominal_class_id();
                         let field_index = self.get_field_index_for_value(obj_val, &prop_name);
                         let class_metadata = self.class_metadata.read();
                         let method_slot = if field_index.is_none() {
-                            class_metadata
-                                .get(class_id)
-                                .and_then(|meta| meta.get_method_index(&prop_name))
+                            nominal_class_id.and_then(|class_id| {
+                                class_metadata
+                                    .get(class_id)
+                                    .and_then(|meta| meta.get_method_index(&prop_name))
+                            })
                         } else {
                             None
                         };
@@ -438,8 +444,9 @@ impl<'a> Interpreter<'a> {
                             obj.get_field(index).unwrap_or(Value::null())
                         } else {
                             let classes = self.classes.read();
-                            let (func_id, method_module) =
-                                classes.get_class(class_id).map_or((None, None), |class| {
+                            let (func_id, method_module) = nominal_class_id
+                                .and_then(|class_id| classes.get_class(class_id))
+                                .map_or((None, None), |class| {
                                     let method_module = class.module.clone();
                                     let search_module =
                                         method_module.as_ref().map_or(module, |m| m);
@@ -481,17 +488,25 @@ impl<'a> Interpreter<'a> {
                                 }
                             } else {
                                 if std::env::var("RAYA_DEBUG_DYNGET").is_ok() {
+                                    let class_debug = nominal_class_id
+                                        .map(|id| id.to_string())
+                                        .unwrap_or_else(|| "structural".to_string());
                                     let class_name = {
-                                        let classes = self.classes.read();
-                                        classes
-                                            .get_class(class_id)
-                                            .map(|class| class.name.clone())
-                                            .unwrap_or_else(|| "<unknown>".to_string())
+                                        nominal_class_id.map_or_else(
+                                            || "<structural-object>".to_string(),
+                                            |class_id| {
+                                                let classes = self.classes.read();
+                                                classes
+                                                    .get_class(class_id)
+                                                    .map(|class| class.name.clone())
+                                                    .unwrap_or_else(|| "<unknown>".to_string())
+                                            },
+                                        )
                                     };
                                     let metadata_methods = {
                                         let class_metadata = self.class_metadata.read();
-                                        class_metadata
-                                            .get(class_id)
+                                        nominal_class_id
+                                            .and_then(|class_id| class_metadata.get(class_id))
                                             .map(|meta| {
                                                 meta.method_names
                                                     .iter()
@@ -503,7 +518,7 @@ impl<'a> Interpreter<'a> {
                                     };
                                     eprintln!(
                                         "[dynget] unresolved struct member '{}.{}' class_id={} metadata_methods={:?}",
-                                        class_name, prop_name, class_id, metadata_methods
+                                        class_name, prop_name, class_debug, metadata_methods
                                     );
                                 }
                                 Value::null()
@@ -570,7 +585,7 @@ impl<'a> Interpreter<'a> {
                 }
 
                 match js_classify(obj_val) {
-                    JSView::Struct { ptr, class_id } => {
+                    JSView::Struct { ptr, .. } => {
                         let obj = unsafe { &mut *(ptr as *mut Object) };
                         let field_index = self.get_field_index_for_value(obj_val, &prop_name);
                         if let Some(index) = field_index {

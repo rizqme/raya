@@ -196,7 +196,8 @@ pub struct SharedVmState {
         RwLock<FxHashMap<StructuralAdapterKey, Arc<Vec<StructuralSlotBinding>>>>,
 
     /// Structural object shapes keyed by object_id.
-    /// Stores canonical slot names for dynamic object-literal carriers (class_id=0)
+    /// Stores canonical slot names for dynamic object-literal carriers
+    /// (objects without nominal type identity).
     /// so expected structural views can be remapped by name across call boundaries.
     pub structural_object_shapes: RwLock<FxHashMap<u64, Vec<String>>>,
 
@@ -301,12 +302,10 @@ impl SharedVmState {
     /// Link a module's native function table against the registry.
     /// Must be called before executing a module that uses ModuleNativeCall.
     pub fn link_module_natives(&self, module: &Module) -> Result<(), String> {
-        if module.native_functions.is_empty() {
-            return Ok(());
+        let resolved = self.resolve_module_natives(module)?;
+        if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
+            layout.resolved_natives = resolved;
         }
-        let registry = self.native_registry.read();
-        let resolved = ResolvedNatives::link(&module.native_functions, &registry)?;
-        *self.resolved_natives.write() = resolved;
         Ok(())
     }
 
@@ -376,16 +375,7 @@ impl SharedVmState {
         self.module_layouts
             .read()
             .get(&module.checksum)
-            .map(|layout| {
-                // Module-local class IDs are rebased only for classes declared
-                // in the module's own class table. Manually-authored bytecode
-                // may still use global IDs directly (legacy tests/harnesses).
-                if local_class_id < layout.class_len {
-                    layout.class_base + local_class_id
-                } else {
-                    local_class_id
-                }
-            })
+            .map(|layout| layout.class_base + local_class_id)
             .unwrap_or(local_class_id)
     }
 
@@ -395,7 +385,7 @@ impl SharedVmState {
             .read()
             .get(&module.checksum)
             .map(|layout| layout.resolved_natives.clone())
-            .unwrap_or_else(|| self.resolved_natives.read().clone())
+            .unwrap_or_else(ResolvedNatives::empty)
     }
 
     /// Register a structural slot view for object access in `module`.
@@ -600,9 +590,6 @@ impl SharedVmState {
 
         // Register classes from the module (rebased to global class IDs).
         self.register_classes(&module, class_base);
-
-        // Preserve legacy global table for call-sites that still read it directly.
-        *self.resolved_natives.write() = resolved_natives;
 
         Ok(())
     }

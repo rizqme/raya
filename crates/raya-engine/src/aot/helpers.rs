@@ -23,6 +23,7 @@ use super::frame::{
 };
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
 use crate::vm::interpreter::SharedVmState;
+use crate::vm::object::Object;
 use crate::vm::scheduler::{IoSubmission, Task};
 use crate::vm::value::Value;
 use raya_sdk::NativeCallResult;
@@ -106,9 +107,23 @@ unsafe extern "C" fn helper_safepoint_poll(_ctx: *mut AotTaskContext) {
     // TODO: Check GC safepoint, trigger collection if needed
 }
 
-unsafe extern "C" fn helper_alloc_object(_ctx: *mut AotTaskContext, _class_id: u32) -> u64 {
-    // TODO: Allocate object via GC
-    abi::NULL_VALUE
+unsafe extern "C" fn helper_alloc_object(ctx: *mut AotTaskContext, class_id: u32) -> u64 {
+    if ctx.is_null() || (*ctx).shared_state.is_null() {
+        return abi::NULL_VALUE;
+    }
+    let shared = &*((*ctx).shared_state as *const SharedVmState);
+    let class_id = class_id as usize;
+    let field_count = {
+        let classes = shared.classes.read();
+        let Some(class) = classes.get_class(class_id) else {
+            return abi::NULL_VALUE;
+        };
+        class.field_count
+    };
+    let mut gc = shared.gc.lock();
+    let obj_ptr = gc.allocate(Object::new(class_id, field_count));
+    let value = Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap());
+    value.raw()
 }
 
 unsafe extern "C" fn helper_alloc_array(
@@ -194,13 +209,24 @@ unsafe extern "C" fn helper_generic_less_than(a: u64, b: u64) -> u8 {
 // Object field access (stubs)
 // =============================================================================
 
-unsafe extern "C" fn helper_object_get_field(_obj: u64, _field_index: u32) -> u64 {
-    // TODO: Object field access via GC heap
-    abi::NULL_VALUE
+unsafe extern "C" fn helper_object_get_field(obj: u64, field_index: u32) -> u64 {
+    let value = Value::from_raw(obj);
+    let Some(obj_ptr) = value.as_ptr::<Object>() else {
+        return abi::NULL_VALUE;
+    };
+    let obj = &*obj_ptr.as_ptr();
+    obj.get_field(field_index as usize)
+        .unwrap_or(Value::null())
+        .raw()
 }
 
-unsafe extern "C" fn helper_object_set_field(_obj: u64, _field_index: u32, _value: u64) {
-    // TODO: Object field store via GC heap
+unsafe extern "C" fn helper_object_set_field(obj: u64, field_index: u32, value: u64) {
+    let object = Value::from_raw(obj);
+    let Some(obj_ptr) = object.as_ptr::<Object>() else {
+        return;
+    };
+    let obj = &mut *obj_ptr.as_ptr();
+    let _ = obj.set_field(field_index as usize, Value::from_raw(value));
 }
 
 // =============================================================================
@@ -241,8 +267,18 @@ unsafe extern "C" fn helper_native_call(
         let native_args: Vec<raya_sdk::NativeValue> =
             value_args.iter().map(|v| value_to_native(*v)).collect();
 
-        // Dispatch through resolved native table (ModuleNativeCall-style).
-        let resolved = shared.resolved_natives.read();
+        // Dispatch through the module-scoped resolved native table when available.
+        let resolved = if !(*ctx).module.is_null() {
+            let module = &*((*ctx).module as *const crate::compiler::Module);
+            shared
+                .module_layouts
+                .read()
+                .get(&module.checksum)
+                .map(|layout| layout.resolved_natives.clone())
+                .unwrap_or_else(|| shared.resolved_natives.read().clone())
+        } else {
+            shared.resolved_natives.read().clone()
+        };
         match resolved.call(native_id, &engine_ctx, &native_args) {
             NativeCallResult::Value(val) => return native_to_value(val).raw(),
             NativeCallResult::Suspend(io_request) => {

@@ -52,11 +52,13 @@ pub use session::Session;
 
 use raya_engine::compiler::module::{LateLinkRequirement, LateLinkSymbolRequirement};
 use raya_engine::compiler::{module_id_from_name, Export, Import, SymbolType};
-use raya_engine::parser::types::{try_hydrate_type_from_canonical_signature, Type, TypeContext};
+use raya_engine::parser::types::{
+    signature_hash, try_hydrate_type_from_canonical_signature, Type, TypeContext,
+};
 use raya_engine::parser::Interner;
 use raya_engine::vm::json::JSView;
 use raya_engine::vm::module::{ModuleLinker, ResolvedSymbol};
-use raya_engine::vm::object::{Closure, DynObject, RayaString};
+use raya_engine::vm::object::{Closure, DynObject, RayaString, TypeHandle};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -853,13 +855,18 @@ impl Runtime {
             }
             SymbolType::Class => {
                 let class_id = vm.shared_state().resolve_class_id(module, export.index);
-                if class_id > i32::MAX as usize {
+                if class_id > u32::MAX as usize {
                     return Err(RuntimeError::Dependency(format!(
-                        "Imported class symbol '{}' from '{}' has class ID {} outside i32 range",
+                        "Imported class symbol '{}' from '{}' has class ID {} outside u32 range",
                         export.name, module.metadata.name, class_id
                     )));
                 }
-                Ok(Value::i32(class_id as i32))
+                let handle = TypeHandle {
+                    nominal_type_id: class_id as u32,
+                    shape_id: export.type_signature.as_deref().map(signature_hash),
+                };
+                let gc_ptr = vm.shared_state().gc.lock().allocate(handle);
+                Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
             }
         }
     }
@@ -955,25 +962,76 @@ impl Runtime {
         let Some(actual_layout) = Self::structural_slot_layout_from_signature(actual_sig) else {
             return Ok(value);
         };
-        let slot_map = Self::slot_map_from_layouts(&expected_layout, &actual_layout);
-        if slot_map.is_empty() {
-            return Ok(value);
-        };
-        let required_shape = Self::shape_id_for_member_names(&expected_layout);
-
-        let JSView::Struct { ptr, class_id } = raya_engine::vm::json::js_classify(value) else {
-            return Ok(value);
-        };
-        // Structural slot views currently target plain object-namespace values.
-        if class_id != 0 {
+        if expected_layout.is_empty() {
             return Ok(value);
         }
+        let required_shape = Self::shape_id_for_member_names(&expected_layout);
+        let expected_methods =
+            Self::structural_method_layout_from_signature(expected_sig).unwrap_or_default();
+
+        let JSView::Struct {
+            ptr,
+            nominal_type_id,
+        } = raya_engine::vm::json::js_classify(value)
+        else {
+            return Ok(value);
+        };
 
         let source = unsafe { &*ptr };
         let provider_layout = if source.layout_id == 0 {
-            Self::dynamic_layout_id_from_member_names(&actual_layout)
+            if let Some(class_id) = nominal_type_id {
+                class_id as u32
+            } else {
+                Self::dynamic_layout_id_from_member_names(&actual_layout)
+            }
         } else {
             source.layout_id
+        };
+        let slot_map = if let Some(class_id) = nominal_type_id {
+            let class_metadata = vm.shared_state().class_metadata.read();
+            if let Some(meta) = class_metadata.get(class_id) {
+                expected_layout
+                    .iter()
+                    .map(|name| {
+                        let prefer_method = expected_methods.contains(name);
+                        let method_binding = meta
+                            .get_method_index(name)
+                            .map(raya_engine::vm::interpreter::StructuralSlotBinding::Method);
+                        let field_binding = meta.get_field_index(name).map(|idx| {
+                            raya_engine::vm::interpreter::StructuralSlotBinding::Field(idx)
+                        });
+                        if prefer_method {
+                            method_binding.or(field_binding).unwrap_or(
+                                raya_engine::vm::interpreter::StructuralSlotBinding::Missing,
+                            )
+                        } else {
+                            field_binding.or(method_binding).unwrap_or(
+                                raya_engine::vm::interpreter::StructuralSlotBinding::Missing,
+                            )
+                        }
+                    })
+                    .collect()
+            } else {
+                let fallback = Self::slot_map_from_layouts(&expected_layout, &actual_layout);
+                fallback
+                    .into_iter()
+                    .map(|mapped| {
+                        mapped
+                            .map(raya_engine::vm::interpreter::StructuralSlotBinding::Field)
+                            .unwrap_or(raya_engine::vm::interpreter::StructuralSlotBinding::Missing)
+                    })
+                    .collect()
+            }
+        } else {
+            let fallback = Self::slot_map_from_layouts(&expected_layout, &actual_layout);
+            fallback
+                .into_iter()
+                .map(|mapped| {
+                    mapped
+                        .map(raya_engine::vm::interpreter::StructuralSlotBinding::Field)
+                        .unwrap_or(raya_engine::vm::interpreter::StructuralSlotBinding::Missing)
+                })
+                .collect()
         };
         vm.shared_state().register_structural_slot_view(
             consumer_module,
@@ -981,14 +1039,7 @@ impl Runtime {
             source.object_id,
             provider_layout,
             required_shape,
-            slot_map
-                .into_iter()
-                .map(|mapped| {
-                    mapped
-                        .map(raya_engine::vm::interpreter::StructuralSlotBinding::Field)
-                        .unwrap_or(raya_engine::vm::interpreter::StructuralSlotBinding::Missing)
-                })
-                .collect(),
+            slot_map,
         );
         Ok(value)
     }
@@ -1050,6 +1101,48 @@ impl Runtime {
         }
     }
 
+    fn collect_structural_method_names(
+        type_ctx: &TypeContext,
+        ty: raya_engine::parser::TypeId,
+        out: &mut BTreeSet<String>,
+    ) -> bool {
+        let Some(ty) = type_ctx.get(ty) else {
+            return false;
+        };
+        match ty {
+            Type::Object(_) => false,
+            Type::Interface(interface) => {
+                out.extend(interface.methods.iter().map(|method| method.name.clone()));
+                true
+            }
+            Type::Class(class) => {
+                out.extend(class.methods.iter().map(|method| method.name.clone()));
+                true
+            }
+            Type::Union(union) => {
+                let mut any = false;
+                for &member in &union.members {
+                    any |= Self::collect_structural_method_names(type_ctx, member, out);
+                }
+                any
+            }
+            Type::TypeVar(type_var) => {
+                type_var.constraint.is_some_and(|constraint| {
+                    Self::collect_structural_method_names(type_ctx, constraint, out)
+                }) || type_var.default.is_some_and(|default| {
+                    Self::collect_structural_method_names(type_ctx, default, out)
+                })
+            }
+            Type::Reference(reference) => type_ctx
+                .lookup_named_type(&reference.name)
+                .is_some_and(|named| Self::collect_structural_method_names(type_ctx, named, out)),
+            Type::Generic(generic) => {
+                Self::collect_structural_method_names(type_ctx, generic.base, out)
+            }
+            _ => false,
+        }
+    }
+
     fn structural_slot_layout(
         type_ctx: &TypeContext,
         ty: raya_engine::parser::TypeId,
@@ -1059,6 +1152,17 @@ impl Runtime {
             return None;
         }
         Some(fields.into_iter().collect())
+    }
+
+    fn structural_method_layout(
+        type_ctx: &TypeContext,
+        ty: raya_engine::parser::TypeId,
+    ) -> Option<Vec<String>> {
+        let mut methods = BTreeSet::new();
+        if !Self::collect_structural_method_names(type_ctx, ty, &mut methods) {
+            return None;
+        }
+        Some(methods.into_iter().collect())
     }
 
     fn structural_slot_map(expected_sig: &str, actual_sig: &str) -> Option<Vec<Option<usize>>> {
@@ -1091,6 +1195,12 @@ impl Runtime {
         let mut type_ctx = TypeContext::new();
         let ty = try_hydrate_type_from_canonical_signature(signature, &mut type_ctx)?;
         Self::structural_slot_layout(&type_ctx, ty)
+    }
+
+    fn structural_method_layout_from_signature(signature: &str) -> Option<Vec<String>> {
+        let mut type_ctx = TypeContext::new();
+        let ty = try_hydrate_type_from_canonical_signature(signature, &mut type_ctx)?;
+        Self::structural_method_layout(&type_ctx, ty)
     }
 
     fn dynamic_layout_id_from_member_names(names: &[String]) -> u32 {

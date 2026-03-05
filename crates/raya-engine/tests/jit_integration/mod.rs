@@ -47,6 +47,27 @@ const I32_TAG_BASE: u64 = NAN_BOX_BASE | TAG_I32;
 const BOOL_TAG_BASE: u64 = NAN_BOX_BASE | TAG_BOOL;
 const NULL_VALUE: u64 = NAN_BOX_BASE | TAG_NULL;
 
+unsafe extern "C" fn stub_object_get_field(
+    _object_raw: u64,
+    _expected_slot: u32,
+    _func_id: u32,
+    _module_ptr: *const (),
+    _shared_state: *mut (),
+) -> u64 {
+    NULL_VALUE
+}
+
+unsafe extern "C" fn stub_object_set_field(
+    _object_raw: u64,
+    _expected_slot: u32,
+    _value_raw: u64,
+    _func_id: u32,
+    _module_ptr: *const (),
+    _shared_state: *mut (),
+) -> bool {
+    false
+}
+
 // ============================================================================
 // NaN-boxing decode helpers
 // ============================================================================
@@ -493,6 +514,8 @@ fn jit_native_call_zero_arg_ctx_fastpath_returns_value() {
             deoptimize: stub_deoptimize,
             string_concat: stub_string_concat,
             generic_equals: stub_generic_equals,
+            object_get_field: stub_object_get_field,
+            object_set_field: stub_object_set_field,
         },
     };
 
@@ -596,6 +619,8 @@ fn jit_native_call_zero_arg_ctx_fastpath_sentinel_suspends() {
             deoptimize: stub_deoptimize,
             string_concat: stub_string_concat,
             generic_equals: stub_generic_equals,
+            object_get_field: stub_object_get_field,
+            object_set_field: stub_object_set_field,
         },
     };
 
@@ -705,6 +730,8 @@ fn jit_native_call_args_ctx_fastpath_returns_value() {
             deoptimize: stub_deoptimize,
             string_concat: stub_string_concat,
             generic_equals: stub_generic_equals,
+            object_get_field: stub_object_get_field,
+            object_set_field: stub_object_set_field,
         },
     };
 
@@ -811,6 +838,8 @@ fn jit_native_call_args_ctx_fastpath_sentinel_suspends() {
             deoptimize: stub_deoptimize,
             string_concat: stub_string_concat,
             generic_equals: stub_generic_equals,
+            object_get_field: stub_object_get_field,
+            object_set_field: stub_object_set_field,
         },
     };
 
@@ -926,6 +955,8 @@ fn jit_check_preemption_exits_with_suspend_kind_when_helper_requests_preempt() {
             deoptimize: stub_deoptimize,
             string_concat: stub_string_concat,
             generic_equals: stub_generic_equals,
+            object_get_field: stub_object_get_field,
+            object_set_field: stub_object_set_field,
         },
     };
 

@@ -262,7 +262,8 @@ pub struct Interpreter<'a> {
             Arc<Vec<crate::vm::interpreter::shared_state::StructuralSlotBinding>>,
         >,
     >,
-    /// Canonical structural shapes for dynamic object-literal carriers (class_id=0).
+    /// Canonical structural shapes for dynamic object-literal carriers
+    /// (objects without nominal type identity).
     pub(in crate::vm::interpreter) structural_object_shapes:
         &'a RwLock<FxHashMap<u64, Vec<String>>>,
 
@@ -345,13 +346,7 @@ impl<'a> Interpreter<'a> {
         self.module_layouts
             .read()
             .get(&module.checksum)
-            .map(|layout| {
-                if local_class_id < layout.class_len {
-                    layout.class_base + local_class_id
-                } else {
-                    local_class_id
-                }
-            })
+            .map(|layout| layout.class_base + local_class_id)
             .unwrap_or(local_class_id)
     }
 
@@ -364,7 +359,7 @@ impl<'a> Interpreter<'a> {
             .read()
             .get(&module.checksum)
             .map(|layout| layout.resolved_natives.clone())
-            .unwrap_or_else(|| self.resolved_natives.read().clone())
+            .unwrap_or_else(crate::vm::native_registry::ResolvedNatives::empty)
     }
 
     #[inline]
@@ -1105,6 +1100,8 @@ impl<'a> Interpreter<'a> {
                                 let mut locals_buf = vec![0u64; extra_locals];
                                 let mut exit_info =
                                     crate::jit::runtime::trampoline::JitExitInfo::default();
+                                let jit_resolved_natives =
+                                    parking_lot::RwLock::new(self.module_resolved_natives(&module));
                                 let bridge_ctx =
                                     crate::jit::runtime::helpers::build_runtime_bridge_context(
                                         self.safepoint,
@@ -1112,7 +1109,9 @@ impl<'a> Interpreter<'a> {
                                         self.gc,
                                         self.classes,
                                         self.class_metadata,
-                                        self.resolved_natives,
+                                        &jit_resolved_natives,
+                                        self.structural_slot_views,
+                                        self.structural_shape_adapters,
                                         self.io_submit_tx,
                                     );
                                 let mut runtime_ctx =

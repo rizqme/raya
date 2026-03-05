@@ -35,6 +35,8 @@ pub struct LoweringContext<'a> {
     sig_check_preemption: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.native_call_dispatch
     sig_native_call_dispatch: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.object_get_field
+    sig_object_get_field: Option<ir::SigRef>,
 }
 
 /// The five parameters of the JIT entry function ABI
@@ -139,6 +141,7 @@ impl<'a> LoweringContext<'a> {
             sig_safepoint_poll: None,
             sig_check_preemption: None,
             sig_native_call_dispatch: None,
+            sig_object_get_field: None,
         };
 
         // Declare all registers as Cranelift variables
@@ -569,6 +572,61 @@ impl<'a> LoweringContext<'a> {
                     .store(MemFlags::trusted(), v, self.params.locals_ptr, offset);
             }
 
+            // ===== Object Field Access (shape-aware helper path) =====
+            JitInstr::LoadField {
+                dest,
+                object,
+                offset,
+            }
+            | JitInstr::OptionalField {
+                dest,
+                object,
+                offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let null_block = builder.create_block();
+                let done = builder.create_block();
+                builder.append_block_param(done, types::I64);
+                builder
+                    .ins()
+                    .brif(is_ctx_null, null_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+                builder.seal_block(null_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx, 112); // 24 + 88
+                let sig = self.object_get_field_sig(builder);
+                let object_val = self.use_reg(builder, *object);
+                let slot = builder.ins().iconst(types::I32, *offset as i64);
+                let func_id = builder
+                    .ins()
+                    .iconst(types::I32, self.func.func_index as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[object_val, slot, func_id, module_ptr, shared_state],
+                );
+                let result = builder.inst_results(call)[0];
+                let result_arg = [ir::BlockArg::Value(result)];
+                builder.ins().jump(done, &result_arg);
+
+                builder.switch_to_block(null_block);
+                let null = abi::emit_null(builder);
+                let null_arg = [ir::BlockArg::Value(null)];
+                builder.ins().jump(done, &null_arg);
+
+                builder.seal_block(done);
+                builder.switch_to_block(done);
+                let merged = builder.block_params(done)[0];
+                self.def_reg(builder, *dest, merged);
+            }
+
             // ===== Move / Phi =====
             JitInstr::Move { dest, src } => {
                 let v = self.use_reg(builder, *src);
@@ -931,6 +989,22 @@ impl<'a> LoweringContext<'a> {
         sig.returns.push(AbiParam::new(types::I64)); // NaN-boxed value or suspend sentinel
         let sig_ref = builder.func.import_signature(sig);
         self.sig_native_call_dispatch = Some(sig_ref);
+        sig_ref
+    }
+
+    fn object_get_field_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_object_get_field {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // object value
+        sig.params.push(AbiParam::new(types::I32)); // expected slot
+        sig.params.push(AbiParam::new(types::I32)); // function id
+        sig.params.push(AbiParam::new(types::I64)); // module ptr
+        sig.params.push(AbiParam::new(types::I64)); // shared_state ptr
+        sig.returns.push(AbiParam::new(types::I64)); // loaded value
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_object_get_field = Some(sig_ref);
         sig_ref
     }
 

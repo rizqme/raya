@@ -754,11 +754,17 @@ impl TypeContext {
                 }
 
                 for &sig in &o.call_signatures {
-                    members.push(format!("(call): {}", self.format_type_depth(sig, depth + 1)));
+                    members.push(format!(
+                        "(call): {}",
+                        self.format_type_depth(sig, depth + 1)
+                    ));
                 }
 
                 for &sig in &o.construct_signatures {
-                    members.push(format!("new (...): {}", self.format_type_depth(sig, depth + 1)));
+                    members.push(format!(
+                        "new (...): {}",
+                        self.format_type_depth(sig, depth + 1)
+                    ));
                 }
 
                 if members.is_empty() {

@@ -172,11 +172,14 @@ fn format_heap_value(value: &Value, vm: &Vm) -> String {
     // Object (class instance)
     if tid == TypeId::of::<Object>() {
         let obj = unsafe { &*(value.as_ptr::<Object>().unwrap().as_ptr()) };
-        let classes = vm.shared_state().classes.read();
-        if let Some(class) = classes.get_class(obj.class_id) {
-            return format!("[object {}]", class.name);
+        if let Some(class_id) = obj.nominal_class_id() {
+            let classes = vm.shared_state().classes.read();
+            if let Some(class) = classes.get_class(class_id) {
+                return format!("[object {}]", class.name);
+            }
+            return format!("[object #{}]", class_id);
         }
-        return format!("[object #{}]", obj.class_id);
+        return "[object structural]".to_string();
     }
 
     // Array

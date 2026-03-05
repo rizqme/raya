@@ -8,13 +8,20 @@ use crate::compiler::Module;
 use crate::jit::runtime::trampoline::{RuntimeContext, RuntimeHelperTable};
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
 use crate::vm::gc::GarbageCollector;
-use crate::vm::interpreter::{ClassRegistry, SafepointCoordinator};
+use crate::vm::interpreter::{
+    ClassRegistry, SafepointCoordinator, StructuralAdapterKey, StructuralSlotBinding,
+    StructuralViewHandle,
+};
 use crate::vm::native_registry::ResolvedNatives;
+use crate::vm::object::{BoundMethod, Object};
 use crate::vm::reflect::ClassMetadataRegistry;
 use crate::vm::scheduler::IoSubmission;
 use crate::vm::scheduler::Task;
 use crate::vm::value::Value;
 use raya_sdk::NativeCallResult;
+use rustc_hash::FxHashMap;
+use std::ptr::NonNull;
+use std::sync::Arc;
 
 /// Sentinel returned by JIT native helper dispatch when the native call suspended.
 /// Distinct from valid NaN-boxed Values.
@@ -28,6 +35,11 @@ pub struct JitRuntimeBridgeContext {
     pub classes: *const parking_lot::RwLock<ClassRegistry>,
     pub class_metadata: *const parking_lot::RwLock<ClassMetadataRegistry>,
     pub resolved_natives: *const parking_lot::RwLock<ResolvedNatives>,
+    pub structural_slot_views:
+        *const parking_lot::RwLock<FxHashMap<([u8; 32], usize, u64), StructuralViewHandle>>,
+    pub structural_shape_adapters: *const parking_lot::RwLock<
+        FxHashMap<StructuralAdapterKey, Arc<Vec<StructuralSlotBinding>>>,
+    >,
     pub io_submit_tx: *const crossbeam::channel::Sender<IoSubmission>,
 }
 
@@ -40,6 +52,12 @@ pub fn build_runtime_bridge_context(
     classes: &parking_lot::RwLock<ClassRegistry>,
     class_metadata: &parking_lot::RwLock<ClassMetadataRegistry>,
     resolved_natives: &parking_lot::RwLock<ResolvedNatives>,
+    structural_slot_views: &parking_lot::RwLock<
+        FxHashMap<([u8; 32], usize, u64), StructuralViewHandle>,
+    >,
+    structural_shape_adapters: &parking_lot::RwLock<
+        FxHashMap<StructuralAdapterKey, Arc<Vec<StructuralSlotBinding>>>,
+    >,
     io_submit_tx: Option<&crossbeam::channel::Sender<IoSubmission>>,
 ) -> JitRuntimeBridgeContext {
     JitRuntimeBridgeContext {
@@ -49,6 +67,8 @@ pub fn build_runtime_bridge_context(
         classes: classes as *const _,
         class_metadata: class_metadata as *const _,
         resolved_natives: resolved_natives as *const _,
+        structural_slot_views: structural_slot_views as *const _,
+        structural_shape_adapters: structural_shape_adapters as *const _,
         io_submit_tx: io_submit_tx.map_or(std::ptr::null(), |tx| tx as *const _),
     }
 }
@@ -77,11 +97,32 @@ pub fn runtime_helpers() -> RuntimeHelperTable {
         deoptimize: helper_deoptimize,
         string_concat: helper_string_concat,
         generic_equals: helper_generic_equals,
+        object_get_field: helper_object_get_field,
+        object_set_field: helper_object_set_field,
     }
 }
 
-unsafe extern "C" fn helper_alloc_object(_class_id: u32, _shared_state: *mut ()) -> *mut () {
-    std::ptr::null_mut()
+unsafe extern "C" fn helper_alloc_object(class_id: u32, shared_state: *mut ()) -> *mut () {
+    if shared_state.is_null() {
+        return std::ptr::null_mut();
+    }
+    let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
+    if bridge.gc.is_null() || bridge.classes.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let class_id = class_id as usize;
+    let field_count = {
+        let classes = (&*bridge.classes).read();
+        match classes.get_class(class_id) {
+            Some(class) => class.field_count,
+            None => return std::ptr::null_mut(),
+        }
+    };
+
+    let mut gc = (&*bridge.gc).lock();
+    let obj_ptr = gc.allocate(Object::new(class_id, field_count));
+    obj_ptr.as_ptr().cast::<()>()
 }
 
 unsafe extern "C" fn helper_alloc_array(
@@ -207,6 +248,127 @@ unsafe extern "C" fn helper_generic_equals(
     false
 }
 
+unsafe fn remap_structural_slot_binding(
+    bridge: &JitRuntimeBridgeContext,
+    module: &Module,
+    func_id: usize,
+    object: &Object,
+    expected_slot: usize,
+) -> StructuralSlotBinding {
+    if bridge.structural_slot_views.is_null() || bridge.structural_shape_adapters.is_null() {
+        return StructuralSlotBinding::Field(expected_slot);
+    }
+
+    let views = (&*bridge.structural_slot_views).read();
+    let handle = views
+        .get(&(module.checksum, func_id, object.object_id))
+        .or_else(|| views.get(&(module.checksum, usize::MAX, object.object_id)))
+        .copied();
+    drop(views);
+
+    let Some(handle) = handle else {
+        return StructuralSlotBinding::Field(expected_slot);
+    };
+
+    let adapters = (&*bridge.structural_shape_adapters).read();
+    adapters
+        .get(&handle.adapter_key)
+        .and_then(|slot_map: &Arc<Vec<StructuralSlotBinding>>| slot_map.get(expected_slot).copied())
+        .unwrap_or(StructuralSlotBinding::Missing)
+}
+
+unsafe extern "C" fn helper_object_get_field(
+    object_raw: u64,
+    expected_slot: u32,
+    func_id: u32,
+    module_ptr: *const (),
+    shared_state: *mut (),
+) -> u64 {
+    if shared_state.is_null() || module_ptr.is_null() {
+        return Value::null().raw();
+    }
+    let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
+    if bridge.classes.is_null() || bridge.gc.is_null() {
+        return Value::null().raw();
+    }
+
+    let object_val = Value::from_raw(object_raw);
+    let Some(object_ptr) = object_val.as_ptr::<Object>() else {
+        return Value::null().raw();
+    };
+    let object = &*object_ptr.as_ptr();
+    let module = &*(module_ptr.cast::<Module>());
+    let binding = remap_structural_slot_binding(
+        bridge,
+        module,
+        func_id as usize,
+        object,
+        expected_slot as usize,
+    );
+
+    match binding {
+        StructuralSlotBinding::Field(slot) => object.get_field(slot).unwrap_or(Value::null()).raw(),
+        StructuralSlotBinding::Method(method_slot) => {
+            let Some(class_id) = object.nominal_class_id() else {
+                return Value::null().raw();
+            };
+            let (func_id, method_module) = {
+                let classes = (&*bridge.classes).read();
+                let Some(class) = classes.get_class(class_id) else {
+                    return Value::null().raw();
+                };
+                let Some(fid) = class.vtable.get_method(method_slot) else {
+                    return Value::null().raw();
+                };
+                (fid, class.module.clone())
+            };
+
+            let bound = BoundMethod {
+                receiver: object_val,
+                func_id,
+                module: method_module,
+            };
+            let mut gc = (&*bridge.gc).lock();
+            let bm_ptr = gc.allocate(bound);
+            Value::from_ptr(NonNull::new(bm_ptr.as_ptr()).unwrap()).raw()
+        }
+        StructuralSlotBinding::Missing => Value::null().raw(),
+    }
+}
+
+unsafe extern "C" fn helper_object_set_field(
+    object_raw: u64,
+    expected_slot: u32,
+    value_raw: u64,
+    func_id: u32,
+    module_ptr: *const (),
+    shared_state: *mut (),
+) -> bool {
+    if shared_state.is_null() || module_ptr.is_null() {
+        return false;
+    }
+    let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
+    let object_val = Value::from_raw(object_raw);
+    let Some(object_ptr) = object_val.as_ptr::<Object>() else {
+        return false;
+    };
+    let object = &mut *object_ptr.as_ptr();
+    let module = &*(module_ptr.cast::<Module>());
+    let binding = remap_structural_slot_binding(
+        bridge,
+        module,
+        func_id as usize,
+        object,
+        expected_slot as usize,
+    );
+    match binding {
+        StructuralSlotBinding::Field(slot) => {
+            object.set_field(slot, Value::from_raw(value_raw)).is_ok()
+        }
+        StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +405,8 @@ mod tests {
             &shared.classes,
             &shared.class_metadata,
             &shared.resolved_natives,
+            &shared.structural_slot_views,
+            &shared.structural_shape_adapters,
             None,
         );
 
@@ -288,6 +452,8 @@ mod tests {
             &shared.classes,
             &shared.class_metadata,
             &shared.resolved_natives,
+            &shared.structural_slot_views,
+            &shared.structural_shape_adapters,
             Some(&tx),
         );
 

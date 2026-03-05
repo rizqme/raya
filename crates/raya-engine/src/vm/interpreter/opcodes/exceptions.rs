@@ -72,52 +72,54 @@ impl<'a> Interpreter<'a> {
 
                         // Check if this is an Error or subclass (Error class has "name" and "stack" fields)
                         // Error fields: 0=message, 1=name, 2=stack
-                        if let Some(class) = classes.get_class(obj.class_id) {
-                            // Check if class is Error or inherits from Error
-                            let is_error = class.name == "Error"
-                                || class.name == "TypeError"
-                                || class.name == "RangeError"
-                                || class.name == "ReferenceError"
-                                || class.name == "SyntaxError"
-                                || class.name == "ChannelClosedError"
-                                || class.name == "AssertionError"
-                                || class.parent_id.is_some(); // Subclasses have parent
+                        if let Some(class_id) = obj.nominal_class_id() {
+                            if let Some(class) = classes.get_class(class_id) {
+                                // Check if class is Error or inherits from Error
+                                let is_error = class.name == "Error"
+                                    || class.name == "TypeError"
+                                    || class.name == "RangeError"
+                                    || class.name == "ReferenceError"
+                                    || class.name == "SyntaxError"
+                                    || class.name == "ChannelClosedError"
+                                    || class.name == "AssertionError"
+                                    || class.parent_id.is_some(); // Subclasses have parent
 
-                            if is_error && obj.fields.len() >= 3 {
-                                // Get error name and message
-                                let error_name = if let Some(name_ptr) =
-                                    unsafe { obj.fields[1].as_ptr::<RayaString>() }
-                                {
-                                    unsafe { &*name_ptr.as_ptr() }.data.clone()
-                                } else {
-                                    "Error".to_string()
-                                };
+                                if is_error && obj.fields.len() >= 3 {
+                                    // Get error name and message
+                                    let error_name = if let Some(name_ptr) =
+                                        unsafe { obj.fields[1].as_ptr::<RayaString>() }
+                                    {
+                                        unsafe { &*name_ptr.as_ptr() }.data.clone()
+                                    } else {
+                                        "Error".to_string()
+                                    };
 
-                                let error_message = if let Some(msg_ptr) =
-                                    unsafe { obj.fields[0].as_ptr::<RayaString>() }
-                                {
-                                    unsafe { &*msg_ptr.as_ptr() }.data.clone()
-                                } else {
-                                    String::new()
-                                };
+                                    let error_message = if let Some(msg_ptr) =
+                                        unsafe { obj.fields[0].as_ptr::<RayaString>() }
+                                    {
+                                        unsafe { &*msg_ptr.as_ptr() }.data.clone()
+                                    } else {
+                                        String::new()
+                                    };
 
-                                drop(classes);
+                                    drop(classes);
 
-                                // Build stack trace
-                                let stack_trace =
-                                    task.build_stack_trace(&error_name, &error_message);
+                                    // Build stack trace
+                                    let stack_trace =
+                                        task.build_stack_trace(&error_name, &error_message);
 
-                                // Allocate stack trace string
-                                let raya_string = RayaString::new(stack_trace);
-                                let gc_ptr = self.gc.lock().allocate(raya_string);
-                                let stack_value = unsafe {
-                                    Value::from_ptr(
-                                        std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
-                                    )
-                                };
+                                    // Allocate stack trace string
+                                    let raya_string = RayaString::new(stack_trace);
+                                    let gc_ptr = self.gc.lock().allocate(raya_string);
+                                    let stack_value = unsafe {
+                                        Value::from_ptr(
+                                            std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
+                                        )
+                                    };
 
-                                // Set stack field (index 2)
-                                obj.fields[2] = stack_value;
+                                    // Set stack field (index 2)
+                                    obj.fields[2] = stack_value;
+                                }
                             }
                         }
                     }

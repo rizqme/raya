@@ -17,7 +17,7 @@ use crate::vm::interpreter::shared_state::{
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
     Array, BoundMethod, Buffer, ChannelObject, Class, Closure, DateObject, MapObject, Object,
-    RayaString, RegExpObject, SetObject,
+    RayaString, RegExpObject, SetObject, TypeHandle,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -134,14 +134,15 @@ impl<'a> Interpreter<'a> {
     ) -> Option<usize> {
         let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
+        let nominal_class_id = obj.nominal_class_id();
         let class_metadata = self.class_metadata.read();
-        let metadata_index = class_metadata
-            .get(obj.class_id)
+        let metadata_index = nominal_class_id
+            .and_then(|class_id| class_metadata.get(class_id))
             .and_then(|meta| meta.get_field_index(field_name));
         if metadata_index.is_some() {
             return metadata_index;
         }
-        if obj.class_id == 0 {
+        if obj.is_structural() {
             if let Some(index) = self
                 .structural_object_shapes
                 .read()
@@ -151,8 +152,9 @@ impl<'a> Interpreter<'a> {
                 return Some(index);
             }
         }
+        let class_id = nominal_class_id?;
         let classes = self.classes.read();
-        let class_name = classes.get_class(obj.class_id)?.name.as_str();
+        let class_name = classes.get_class(class_id)?.name.as_str();
         if let Some(index) = Self::builtin_field_index_for_class_name_native(class_name, field_name)
         {
             return Some(index);
@@ -283,9 +285,12 @@ impl<'a> Interpreter<'a> {
         let obj_ptr = unsafe { value.as_ptr::<Object>() }
             .ok_or_else(|| VmError::TypeError("Expected Buffer object".to_string()))?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
+        let class_id = obj
+            .nominal_class_id()
+            .ok_or_else(|| VmError::TypeError("Expected Buffer object".to_string()))?;
         let classes = self.classes.read();
         let class = classes
-            .get_class(obj.class_id)
+            .get_class(class_id)
             .ok_or_else(|| VmError::RuntimeError("Buffer class metadata missing".to_string()))?;
         if class.name != "Buffer" {
             return Err(VmError::TypeError("Expected Buffer object".to_string()));
@@ -559,37 +564,21 @@ impl<'a> Interpreter<'a> {
                     id if id == crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS => {
                         if args.is_empty() {
                             return OpcodeResult::Error(VmError::RuntimeError(
-                                "dynamic class construction requires class ID as first argument"
+                                "dynamic class construction requires type handle as first argument"
                                     .to_string(),
                             ));
                         }
 
-                        let class_id = args[0]
-                            .as_i32()
-                            .map(|value| value as usize)
-                            .or_else(|| {
-                                args[0].as_f64().and_then(|value| {
-                                    if value.is_finite()
-                                        && value >= 0.0
-                                        && value.fract() == 0.0
-                                        && value <= usize::MAX as f64
-                                    {
-                                        Some(value as usize)
-                                    } else {
-                                        None
-                                    }
-                                })
-                            })
-                            .ok_or_else(|| {
-                                VmError::TypeError(
-                                    "dynamic class construction expects numeric class ID"
+                        let class_id = match unsafe { args[0].as_ptr::<TypeHandle>() } {
+                            Some(handle_ptr) => unsafe {
+                                (*handle_ptr.as_ptr()).nominal_type_id as usize
+                            },
+                            None => {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "dynamic class construction expects TypeHandle (imported class value)"
                                         .to_string(),
-                                )
-                            });
-
-                        let class_id = match class_id {
-                            Ok(id) => id,
-                            Err(error) => return OpcodeResult::Error(error),
+                                ));
+                            }
                         };
 
                         let classes = self.classes.read();
@@ -678,23 +667,26 @@ impl<'a> Interpreter<'a> {
                             return OpcodeResult::Continue;
                         };
                         let object_id = unsafe { (*object_ptr.as_ptr()).object_id };
-                        let object_class_id = unsafe { (*object_ptr.as_ptr()).class_id };
+                        let object_nominal_class_id =
+                            unsafe { (*object_ptr.as_ptr()).nominal_class_id() };
                         let object_layout_id = unsafe { (*object_ptr.as_ptr()).layout_id };
                         let object_field_count = unsafe { (*object_ptr.as_ptr()).field_count() };
                         let debug_structural = std::env::var("RAYA_DEBUG_STRUCTURAL_VIEW").is_ok();
                         let class_metadata = self.class_metadata.read();
-                        let class_meta = class_metadata.get(object_class_id).cloned();
+                        let class_meta = object_nominal_class_id
+                            .and_then(|class_id| class_metadata.get(class_id))
+                            .cloned();
                         drop(class_metadata);
                         let class_name = {
                             let classes = self.classes.read();
-                            classes
-                                .get_class(object_class_id)
+                            object_nominal_class_id
+                                .and_then(|class_id| classes.get_class(class_id))
                                 .map(|class| class.name.clone())
                         };
                         let (provider_layout, slot_map): (LayoutId, Vec<StructuralSlotBinding>) =
                             if let Some(class_meta) = class_meta {
                                 let provider_layout = if object_layout_id == 0 {
-                                    object_class_id as LayoutId
+                                    object_nominal_class_id.unwrap_or(0) as LayoutId
                                 } else {
                                     object_layout_id
                                 };
@@ -791,7 +783,9 @@ impl<'a> Interpreter<'a> {
                                 "[structural-view] install key=(func={},obj={}) class_id={} layout={} shape={} map=[{}]",
                                 self.profiler_func_id,
                                 object_id,
-                                object_class_id,
+                                object_nominal_class_id
+                                    .map(|id| id.to_string())
+                                    .unwrap_or_else(|| "structural".to_string()),
                                 provider_layout,
                                 required_shape,
                                 slot_desc
@@ -2077,12 +2071,17 @@ impl<'a> Interpreter<'a> {
                         }
                         if let Some(desc_ptr) = unsafe { descriptors_obj.as_ptr::<Object>() } {
                             let desc_obj = unsafe { &*desc_ptr.as_ptr() };
-                            let class_id = desc_obj.class_id;
-                            let field_names = {
+                            let field_names = if let Some(class_id) = desc_obj.nominal_class_id() {
                                 let metadata = self.class_metadata.read();
                                 metadata
                                     .get(class_id)
                                     .map(|m| m.field_names.clone())
+                                    .unwrap_or_default()
+                            } else {
+                                self.structural_object_shapes
+                                    .read()
+                                    .get(&desc_obj.object_id)
+                                    .cloned()
                                     .unwrap_or_default()
                             };
                             for (idx, field_name) in field_names.into_iter().enumerate() {
