@@ -4760,22 +4760,28 @@ impl<'a> Lowerer<'a> {
     /// Emits:
     /// `__registerStructuralView(object, ["memberA", "memberB", ...])`
     /// where member names are canonicalized (sorted + deduped) from the expected type.
-    fn emit_structural_slot_registration_for_names(
+    fn emit_structural_slot_registration_for_ordered_names(
         &mut self,
         object: Register,
-        mut names: Vec<String>,
+        names: Vec<String>,
     ) {
         if names.is_empty() {
             return;
         }
-        names.sort_unstable();
-        names.dedup();
-        if names.is_empty() {
+
+        let mut seen = FxHashSet::default();
+        let mut ordered = Vec::with_capacity(names.len());
+        for name in names {
+            if seen.insert(name.clone()) {
+                ordered.push(name);
+            }
+        }
+        if ordered.is_empty() {
             return;
         }
 
-        let mut name_regs = Vec::with_capacity(names.len());
-        for name in names {
+        let mut name_regs = Vec::with_capacity(ordered.len());
+        for name in ordered {
             let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             self.emit(IrInstr::Assign {
                 dest: name_reg.clone(),
@@ -4798,8 +4804,37 @@ impl<'a> Lowerer<'a> {
         });
     }
 
+    fn emit_structural_slot_registration_for_names(
+        &mut self,
+        object: Register,
+        mut names: Vec<String>,
+    ) {
+        if names.is_empty() {
+            return;
+        }
+        names.sort_unstable();
+        names.dedup();
+        self.emit_structural_slot_registration_for_ordered_names(object, names);
+    }
+
     fn emit_structural_slot_registration_for_type(&mut self, object: Register, expected_ty: TypeId) {
         if expected_ty == UNRESOLVED {
+            return;
+        }
+        if self
+            .ordered_slot_names_for_concrete_classish_type(expected_ty)
+            .is_some()
+        {
+            // Concrete class member loads/stores use fixed class field indices in IR.
+            // Installing structural slot remaps for those values can corrupt accesses
+            // (especially when the public structural projection omits private fields).
+            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                eprintln!(
+                    "[lower] skip registerStructuralView for concrete class-ish type reg={} expected_ty={}",
+                    object.id,
+                    self.type_ctx.format_type(expected_ty),
+                );
+            }
             return;
         }
         let Some(layout) = self.structural_slot_layout_from_type(expected_ty) else {

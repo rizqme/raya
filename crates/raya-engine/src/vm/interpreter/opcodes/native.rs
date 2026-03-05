@@ -109,7 +109,11 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn get_field_index_for_value(&self, obj_val: Value, field_name: &str) -> Option<usize> {
+    pub(in crate::vm::interpreter) fn get_field_index_for_value(
+        &self,
+        obj_val: Value,
+        field_name: &str,
+    ) -> Option<usize> {
         let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
         let class_metadata = self.class_metadata.read();
@@ -118,6 +122,16 @@ impl<'a> Interpreter<'a> {
             .and_then(|meta| meta.get_field_index(field_name));
         if metadata_index.is_some() {
             return metadata_index;
+        }
+        if obj.class_id == 0 {
+            if let Some(index) = self
+                .structural_object_shapes
+                .read()
+                .get(&obj.object_id)
+                .and_then(|names| names.iter().position(|name| name == field_name))
+            {
+                return Some(index);
+            }
         }
         let classes = self.classes.read();
         let class_name = classes.get_class(obj.class_id)?.name.as_str();

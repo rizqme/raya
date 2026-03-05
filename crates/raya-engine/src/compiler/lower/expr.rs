@@ -3374,6 +3374,140 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn resolve_concrete_class_type_for_runtime_slots(
+        &self,
+        ty_id: TypeId,
+        visited: &mut FxHashSet<TypeId>,
+    ) -> Option<TypeId> {
+        if !visited.insert(ty_id) {
+            return None;
+        }
+        let ty = self.type_ctx.get(ty_id)?;
+        match ty {
+            crate::parser::types::Type::Class(_) => Some(ty_id),
+            crate::parser::types::Type::Reference(reference) => self
+                .type_ctx
+                .lookup_named_type(&reference.name)
+                .and_then(|named| self.resolve_concrete_class_type_for_runtime_slots(named, visited)),
+            crate::parser::types::Type::Generic(generic) => {
+                self.resolve_concrete_class_type_for_runtime_slots(generic.base, visited)
+            }
+            crate::parser::types::Type::TypeVar(type_var) => type_var
+                .constraint
+                .or(type_var.default)
+                .and_then(|inner| self.resolve_concrete_class_type_for_runtime_slots(inner, visited)),
+            crate::parser::types::Type::Union(union) => {
+                let mut resolved: Option<TypeId> = None;
+                for &member in &union.members {
+                    let Some(member_ty) = self.type_ctx.get(member) else {
+                        continue;
+                    };
+                    if matches!(
+                        member_ty,
+                        crate::parser::types::Type::Primitive(
+                            crate::parser::types::PrimitiveType::Null
+                        )
+                    ) {
+                        continue;
+                    }
+                    let member_class =
+                        self.resolve_concrete_class_type_for_runtime_slots(member, visited)?;
+                    if let Some(existing) = resolved {
+                        if existing != member_class {
+                            return None;
+                        }
+                    } else {
+                        resolved = Some(member_class);
+                    }
+                }
+                resolved
+            }
+            _ => None,
+        }
+    }
+
+    fn collect_ordered_public_class_slot_names(
+        &self,
+        ty_id: TypeId,
+        names: &mut Vec<String>,
+        seen: &mut FxHashSet<String>,
+        visited: &mut FxHashSet<TypeId>,
+    ) -> bool {
+        if !visited.insert(ty_id) {
+            return false;
+        }
+        let Some(ty) = self.type_ctx.get(ty_id) else {
+            return false;
+        };
+        match ty {
+            crate::parser::types::Type::Class(class) => {
+                let mut found = false;
+                if let Some(parent) = class.extends {
+                    found |= self.collect_ordered_public_class_slot_names(
+                        parent, names, seen, visited,
+                    );
+                }
+                for property in &class.properties {
+                    if property.visibility == crate::parser::ast::Visibility::Public
+                        && seen.insert(property.name.clone())
+                    {
+                        names.push(property.name.clone());
+                        found = true;
+                    }
+                }
+                for method in &class.methods {
+                    if method.visibility == crate::parser::ast::Visibility::Public
+                        && seen.insert(method.name.clone())
+                    {
+                        names.push(method.name.clone());
+                        found = true;
+                    }
+                }
+                found
+            }
+            crate::parser::types::Type::Reference(reference) => self
+                .type_ctx
+                .lookup_named_type(&reference.name)
+                .is_some_and(|named| {
+                    self.collect_ordered_public_class_slot_names(named, names, seen, visited)
+                }),
+            crate::parser::types::Type::Generic(generic) => {
+                self.collect_ordered_public_class_slot_names(generic.base, names, seen, visited)
+            }
+            crate::parser::types::Type::TypeVar(type_var) => type_var
+                .constraint
+                .or(type_var.default)
+                .is_some_and(|inner| {
+                    self.collect_ordered_public_class_slot_names(inner, names, seen, visited)
+                }),
+            _ => false,
+        }
+    }
+
+    pub(super) fn ordered_slot_names_for_concrete_classish_type(
+        &self,
+        ty_id: TypeId,
+    ) -> Option<Vec<String>> {
+        let mut visited = FxHashSet::default();
+        let class_ty = self.resolve_concrete_class_type_for_runtime_slots(ty_id, &mut visited)?;
+        let mut names = Vec::new();
+        let mut seen = FxHashSet::default();
+        let mut ordered_visited = FxHashSet::default();
+        if !self.collect_ordered_public_class_slot_names(
+            class_ty,
+            &mut names,
+            &mut seen,
+            &mut ordered_visited,
+        ) {
+            return None;
+        }
+        if names.is_empty() {
+            None
+        } else {
+            Some(names)
+        }
+    }
+
     pub(super) fn structural_slot_layout_from_type(
         &self,
         ty_id: TypeId,
@@ -3621,8 +3755,6 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        let literal_field_names = field_names.clone();
-
         if let Some(target_names) = self.object_literal_target_layout.clone() {
             for name in target_names {
                 if !field_index_map.contains_key(&name) {
@@ -3749,7 +3881,7 @@ impl<'a> Lowerer<'a> {
             .map(|(idx, name)| (name.clone(), idx))
             .collect();
         self.register_object_fields.insert(dest.id, field_layout);
-        self.emit_structural_slot_registration_for_names(dest.clone(), literal_field_names);
+        self.emit_structural_slot_registration_for_names(dest.clone(), field_names);
 
         dest
     }

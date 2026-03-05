@@ -423,10 +423,8 @@ impl<'a> Interpreter<'a> {
                     JSView::Struct { ptr, class_id } => {
                         // Typed class instance: name → slot lookup
                         let obj = unsafe { &*ptr };
+                        let field_index = self.get_field_index_for_value(obj_val, &prop_name);
                         let class_metadata = self.class_metadata.read();
-                        let field_index = class_metadata
-                            .get(class_id)
-                            .and_then(|meta| meta.get_field_index(&prop_name));
                         let method_slot = if field_index.is_none() {
                             class_metadata
                                 .get(class_id)
@@ -574,11 +572,7 @@ impl<'a> Interpreter<'a> {
                 match js_classify(obj_val) {
                     JSView::Struct { ptr, class_id } => {
                         let obj = unsafe { &mut *(ptr as *mut Object) };
-                        let class_metadata = self.class_metadata.read();
-                        let field_index = class_metadata
-                            .get(class_id)
-                            .and_then(|meta| meta.get_field_index(&prop_name));
-                        drop(class_metadata);
+                        let field_index = self.get_field_index_for_value(obj_val, &prop_name);
                         if let Some(index) = field_index {
                             let _ = obj.set_field(index, value);
                         } else {
@@ -657,13 +651,9 @@ impl<'a> Interpreter<'a> {
 
                 let result = match js_classify(obj_val) {
                     JSView::Dyn(ptr) => unsafe { (*ptr).get(&key_str) }.unwrap_or(Value::null()),
-                    JSView::Struct { ptr, class_id } => {
+                    JSView::Struct { ptr, .. } => {
                         let obj = unsafe { &*ptr };
-                        let class_metadata = self.class_metadata.read();
-                        let field_index = class_metadata
-                            .get(class_id)
-                            .and_then(|meta| meta.get_field_index(&key_str));
-                        drop(class_metadata);
+                        let field_index = self.get_field_index_for_value(obj_val, &key_str);
                         if let Some(index) = field_index {
                             obj.get_field(index).unwrap_or(Value::null())
                         } else {
@@ -711,13 +701,9 @@ impl<'a> Interpreter<'a> {
                         let obj = unsafe { &mut *(ptr as *mut DynObject) };
                         obj.set(key_str, value);
                     }
-                    JSView::Struct { ptr, class_id } => {
+                    JSView::Struct { ptr, .. } => {
                         let obj = unsafe { &mut *(ptr as *mut Object) };
-                        let class_metadata = self.class_metadata.read();
-                        let field_index = class_metadata
-                            .get(class_id)
-                            .and_then(|meta| meta.get_field_index(&key_str));
-                        drop(class_metadata);
+                        let field_index = self.get_field_index_for_value(obj_val, &key_str);
                         if let Some(index) = field_index {
                             let _ = obj.set_field(index, value);
                         } else {
