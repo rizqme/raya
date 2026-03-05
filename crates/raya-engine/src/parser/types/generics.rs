@@ -204,10 +204,12 @@ impl<'a> GenericContext<'a> {
                 if !changed {
                     Ok(ty)
                 } else {
-                    Ok(self.type_ctx.intern(Type::Reference(super::ty::TypeReference {
-                        name: reference.name,
-                        type_args: Some(substituted_args),
-                    })))
+                    Ok(self
+                        .type_ctx
+                        .intern(Type::Reference(super::ty::TypeReference {
+                            name: reference.name,
+                            type_args: Some(substituted_args),
+                        })))
                 }
             }
 

@@ -298,6 +298,9 @@ pub struct ObjectType {
 pub enum ObjectTypeMember {
     Property(ObjectTypeProperty),
     Method(ObjectTypeMethod),
+    IndexSignature(ObjectTypeIndexSignature),
+    CallSignature(ObjectTypeCallSignature),
+    ConstructSignature(ObjectTypeConstructSignature),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -313,6 +316,30 @@ pub struct ObjectTypeProperty {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjectTypeMethod {
     pub name: Identifier,
+    pub optional: bool,
+    pub params: Vec<FunctionTypeParam>,
+    pub return_type: TypeAnnotation,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectTypeIndexSignature {
+    pub key_name: Identifier,
+    pub key_type: TypeAnnotation,
+    pub value_type: TypeAnnotation,
+    pub readonly: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectTypeCallSignature {
+    pub params: Vec<FunctionTypeParam>,
+    pub return_type: TypeAnnotation,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectTypeConstructSignature {
     pub params: Vec<FunctionTypeParam>,
     pub return_type: TypeAnnotation,
     pub span: Span,

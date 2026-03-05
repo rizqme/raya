@@ -341,10 +341,7 @@ fn is_member_or_method_declaration_context(source: &str, _start: usize, end: usi
         }
     }
 
-    matches!(
-        source[after_paren..].chars().next(),
-        Some(':') | Some('{')
-    )
+    matches!(source[after_paren..].chars().next(), Some(':') | Some('{'))
 }
 
 fn mask_non_code_regions(source: &str) -> String {

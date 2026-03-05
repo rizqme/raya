@@ -465,8 +465,8 @@ pub fn buffer_read_bytes(val: NativeValue) -> AbiResult<Vec<u8>> {
     if !v.is_ptr() {
         return Err("Expected Buffer, got non-pointer".into());
     }
-    let obj_ptr = unsafe { v.as_ptr::<Object>() }
-        .ok_or_else(|| "Expected Buffer object".to_string())?;
+    let obj_ptr =
+        unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Buffer object".to_string())?;
     let obj = unsafe { &*obj_ptr.as_ptr() };
     let handle = obj
         .get_field(0)

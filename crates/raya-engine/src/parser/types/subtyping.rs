@@ -339,6 +339,27 @@ impl<'a> SubtypingContext<'a> {
             // This allows storing function references in Object-typed containers.
             (Type::Function(_), Type::Class(class)) if class.name == "Object" => true,
 
+            // Function <: Object with structural call signatures.
+            (Type::Function(_), Type::Object(o)) => {
+                let props_match = o.properties.iter().all(|p| p.optional);
+                let methods_match = o.call_signatures.iter().all(|sup_sig| {
+                    self.is_subtype(sub, *sup_sig)
+                });
+                let construct_match = o.construct_signatures.is_empty();
+                props_match && methods_match && construct_match
+            }
+
+            // Function <: Interface with structural call signatures.
+            (Type::Function(_), Type::Interface(i)) => {
+                let props_match = i.properties.iter().all(|p| p.optional);
+                let methods_empty = i.methods.is_empty();
+                let call_match = i.call_signatures.iter().all(|sup_sig| {
+                    self.is_subtype(sub, *sup_sig)
+                });
+                let construct_match = i.construct_signatures.is_empty();
+                props_match && methods_empty && call_match && construct_match
+            }
+
             // Array subtyping: T[] <: U[] if T <: U
             (Type::Array(a1), Type::Array(a2)) => self.is_subtype(a1.element, a2.element),
 
@@ -371,7 +392,7 @@ impl<'a> SubtypingContext<'a> {
             (Type::Object(o1), Type::Object(o2)) => {
                 // All required properties in o2 must be in o1 with compatible variance.
                 // Optional properties in o2 may be absent in o1.
-                o2.properties.iter().all(|p2| {
+                let props_match = o2.properties.iter().all(|p2| {
                     match o1.properties.iter().find(|p1| p1.name == p2.name) {
                         Some(p1) => {
                             (p2.optional || !p1.optional)
@@ -380,13 +401,32 @@ impl<'a> SubtypingContext<'a> {
                         }
                         None => p2.optional,
                     }
-                })
+                });
+                let call_match = o2.call_signatures.iter().all(|sup_sig| {
+                    o1.call_signatures
+                        .iter()
+                        .any(|sub_sig| self.is_subtype(*sub_sig, *sup_sig))
+                });
+                let construct_match = o2.construct_signatures.iter().all(|sup_sig| {
+                    o1.construct_signatures
+                        .iter()
+                        .any(|sub_sig| self.is_subtype(*sub_sig, *sup_sig))
+                });
+                props_match && call_match && construct_match
             }
 
             // Class <: Object (structural): class instance <: object type
             // Optional properties in the target object type don't need to exist in the class
             (Type::Class(c), Type::Object(o)) => {
-                o.properties.iter().all(|op| {
+                let construct_match = o.construct_signatures.iter().all(|sig| {
+                    match self.type_ctx.get(*sig) {
+                        Some(Type::Function(func)) => self.is_subtype(sub, func.return_type),
+                        _ => false,
+                    }
+                });
+                o.call_signatures.is_empty()
+                    && construct_match
+                    && o.properties.iter().all(|op| {
                     // If the target property is optional, the class doesn't need to have it
                     if op.optional {
                         return true;
@@ -406,7 +446,7 @@ impl<'a> SubtypingContext<'a> {
                         .iter()
                         .filter(|cm| cm.visibility == Visibility::Public)
                         .any(|cm| cm.name == op.name && self.is_subtype(cm.ty, op.ty))
-                })
+                    })
             }
 
             // Object <: Object-like Class (structural)
@@ -440,8 +480,8 @@ impl<'a> SubtypingContext<'a> {
                     .properties
                     .iter()
                     .filter(|p2| p2.visibility == Visibility::Public)
-                    .all(
-                        |p2| match c1
+                    .all(|p2| {
+                        match c1
                             .properties
                             .iter()
                             .filter(|p1| p1.visibility == Visibility::Public)
@@ -453,8 +493,8 @@ impl<'a> SubtypingContext<'a> {
                                     && self.is_subtype(p1.ty, p2.ty)
                             }
                             None => p2.optional,
-                        },
-                    );
+                        }
+                    });
 
                 let methods_match = c2
                     .methods
@@ -517,7 +557,15 @@ impl<'a> SubtypingContext<'a> {
             // Class <: Interface (structural subtyping for interfaces)
             (Type::Class(c), Type::Interface(i)) => {
                 // Check if class implements all interface members
-                i.properties.iter().all(|ip| {
+                let construct_match = i.construct_signatures.iter().all(|sig| {
+                    match self.type_ctx.get(*sig) {
+                        Some(Type::Function(func)) => self.is_subtype(sub, func.return_type),
+                        _ => false,
+                    }
+                });
+                i.call_signatures.is_empty()
+                    && construct_match
+                    && i.properties.iter().all(|ip| {
                     // If the interface property is optional, the class doesn't need to have it
                     if ip.optional {
                         return true;
@@ -537,7 +585,7 @@ impl<'a> SubtypingContext<'a> {
                         .iter()
                         .filter(|cm| cm.visibility == Visibility::Public)
                         .any(|cm| cm.name == im.name && self.is_subtype(cm.ty, im.ty))
-                })
+                    })
             }
 
             // Interface subtyping (structural)
@@ -561,7 +609,74 @@ impl<'a> SubtypingContext<'a> {
                         .any(|m1| m1.name == m2.name && self.is_subtype(m1.ty, m2.ty))
                 });
 
-                props_match && methods_match
+                let call_match = i2.call_signatures.iter().all(|sup_sig| {
+                    i1.call_signatures
+                        .iter()
+                        .any(|sub_sig| self.is_subtype(*sub_sig, *sup_sig))
+                });
+                let construct_match = i2.construct_signatures.iter().all(|sup_sig| {
+                    i1.construct_signatures
+                        .iter()
+                        .any(|sub_sig| self.is_subtype(*sub_sig, *sup_sig))
+                });
+
+                props_match && methods_match && call_match && construct_match
+            }
+
+            // Object <: Interface (structural)
+            (Type::Object(o), Type::Interface(i)) => {
+                let props_match = i.properties.iter().all(|ip| {
+                    match o.properties.iter().find(|op| op.name == ip.name) {
+                        Some(op) => {
+                            (ip.optional || !op.optional)
+                                && (!ip.readonly || op.readonly)
+                                && self.is_subtype(op.ty, ip.ty)
+                        }
+                        None => ip.optional,
+                    }
+                });
+                let methods_match = i.methods.iter().all(|im| {
+                    o.properties
+                        .iter()
+                        .find(|op| op.name == im.name)
+                        .is_some_and(|op| self.is_subtype(op.ty, im.ty))
+                });
+                let call_match = i.call_signatures.iter().all(|sup_sig| {
+                    o.call_signatures
+                        .iter()
+                        .any(|sub_sig| self.is_subtype(*sub_sig, *sup_sig))
+                });
+                let construct_match = i.construct_signatures.iter().all(|sup_sig| {
+                    o.construct_signatures
+                        .iter()
+                        .any(|sub_sig| self.is_subtype(*sub_sig, *sup_sig))
+                });
+                props_match && methods_match && call_match && construct_match
+            }
+
+            // Interface <: Object (structural)
+            (Type::Interface(i), Type::Object(o)) => {
+                let props_match = o.properties.iter().all(|op| {
+                    match i.properties.iter().find(|ip| ip.name == op.name) {
+                        Some(ip) => {
+                            (op.optional || !ip.optional)
+                                && (!op.readonly || ip.readonly)
+                                && self.is_subtype(ip.ty, op.ty)
+                        }
+                        None => op.optional,
+                    }
+                });
+                let call_match = o.call_signatures.iter().all(|sup_sig| {
+                    i.call_signatures
+                        .iter()
+                        .any(|sub_sig| self.is_subtype(*sub_sig, *sup_sig))
+                });
+                let construct_match = o.construct_signatures.iter().all(|sup_sig| {
+                    i.construct_signatures
+                        .iter()
+                        .any(|sub_sig| self.is_subtype(*sub_sig, *sup_sig))
+                });
+                props_match && call_match && construct_match
             }
 
             // Type variable subtyping

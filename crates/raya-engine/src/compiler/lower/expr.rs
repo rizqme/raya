@@ -333,6 +333,36 @@ impl<'a> Lowerer<'a> {
             return self.emit_constant_value(&const_val);
         }
 
+        // Ambient strict globals available without prelude source materialization.
+        let name = self.interner.resolve(ident.name);
+        match name {
+            "Infinity" => {
+                let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::F64(f64::INFINITY)),
+                });
+                return dest;
+            }
+            "NaN" => {
+                let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::F64(f64::NAN)),
+                });
+                return dest;
+            }
+            "undefined" => {
+                let dest = self.alloc_register(TypeId::new(NULL_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::Null),
+                });
+                return dest;
+            }
+            _ => {}
+        }
+
         // Look up the variable in the local map (current function's locals)
         if let Some(&local_idx) = self.local_map.get(&ident.name) {
             // Check if this is a RefCell variable
@@ -933,6 +963,74 @@ impl<'a> Lowerer<'a> {
         if let Expression::Identifier(ident) = &*call.callee {
             // Check for builtin functions/intrinsics first
             let name = self.interner.resolve(ident.name);
+
+            // Primitive/global coercion helpers available in strict mode.
+            if name == "Boolean" {
+                if let Some(value) = args.first().cloned() {
+                    let not_val = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+                    self.emit(IrInstr::UnaryOp {
+                        dest: not_val.clone(),
+                        op: UnaryOp::Not,
+                        operand: value,
+                    });
+                    self.emit(IrInstr::UnaryOp {
+                        dest: dest.clone(),
+                        op: UnaryOp::Not,
+                        operand: not_val,
+                    });
+                } else {
+                    self.emit(IrInstr::Assign {
+                        dest: dest.clone(),
+                        value: IrValue::Constant(IrConstant::Boolean(false)),
+                    });
+                }
+                return dest;
+            }
+            if name == "Number" {
+                if let Some(value) = args.first().cloned() {
+                    self.emit(IrInstr::NativeCall {
+                        dest: Some(dest.clone()),
+                        native_id: crate::vm::builtin::number::PARSE_FLOAT,
+                        args: vec![value],
+                    });
+                } else {
+                    self.emit(IrInstr::Assign {
+                        dest: dest.clone(),
+                        value: IrValue::Constant(IrConstant::I32(0)),
+                    });
+                }
+                return dest;
+            }
+            if name == "String" {
+                if let Some(value) = args.first().cloned() {
+                    self.emit(IrInstr::ToString {
+                        dest: dest.clone(),
+                        operand: value,
+                    });
+                } else {
+                    self.emit(IrInstr::Assign {
+                        dest: dest.clone(),
+                        value: IrValue::Constant(IrConstant::String(String::new())),
+                    });
+                }
+                return dest;
+            }
+            if name == "encodeURI" || name == "encodeURIComponent" {
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id: crate::vm::builtin::url::ENCODE,
+                    args,
+                });
+                return dest;
+            }
+            if name == "decodeURI" || name == "decodeURIComponent" {
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id: crate::vm::builtin::url::DECODE,
+                    args,
+                });
+                return dest;
+            }
 
             // Handle __NATIVE_CALL intrinsic: __NATIVE_CALL(native_id, args...)
             // First argument can be:
@@ -2002,8 +2100,7 @@ impl<'a> Lowerer<'a> {
                         native_id,
                         args,
                     });
-                    if native_id == crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR
-                    {
+                    if native_id == crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR {
                         self.register_object_fields.insert(
                             dest.id,
                             vec![
@@ -2079,11 +2176,7 @@ impl<'a> Lowerer<'a> {
             // are dispatched via the type registry (native calls / class methods)
             if let Some(cid) = class_id {
                 let is_builtin = self.class_map.iter().any(|(&sym, &id)| {
-                    id == cid
-                        && matches!(
-                            self.interner.resolve(sym),
-                            "string" | "number" | "Array"
-                        )
+                    id == cid && matches!(self.interner.resolve(sym), "string" | "number" | "Array")
                 });
                 if is_builtin {
                     class_id = None;
@@ -2435,8 +2528,9 @@ impl<'a> Lowerer<'a> {
                             // Special handling: string methods with RegExp argument
                             let first_arg_is_regexp = if !args.is_empty() {
                                 let reg_ty = self.normalize_type_for_dispatch(args[0].ty.as_u32());
-                                let checker_ty = self
-                                    .normalize_type_for_dispatch(self.get_expr_type(&call.arguments[0]).as_u32());
+                                let checker_ty = self.normalize_type_for_dispatch(
+                                    self.get_expr_type(&call.arguments[0]).as_u32(),
+                                );
                                 reg_ty == REGEXP_TYPE_ID || checker_ty == REGEXP_TYPE_ID
                             } else {
                                 false
@@ -2523,7 +2617,11 @@ impl<'a> Lowerer<'a> {
                         field: field_index,
                         optional: member.optional,
                     });
-                    if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
+                    if self.late_bound_member_call_is_async(
+                        &member.object,
+                        &call.callee,
+                        method_name,
+                    ) {
                         self.emit(IrInstr::SpawnClosure {
                             dest: dest.clone(),
                             closure,
@@ -3388,14 +3486,17 @@ impl<'a> Lowerer<'a> {
             crate::parser::types::Type::Reference(reference) => self
                 .type_ctx
                 .lookup_named_type(&reference.name)
-                .and_then(|named| self.resolve_concrete_class_type_for_runtime_slots(named, visited)),
+                .and_then(|named| {
+                    self.resolve_concrete_class_type_for_runtime_slots(named, visited)
+                }),
             crate::parser::types::Type::Generic(generic) => {
                 self.resolve_concrete_class_type_for_runtime_slots(generic.base, visited)
             }
-            crate::parser::types::Type::TypeVar(type_var) => type_var
-                .constraint
-                .or(type_var.default)
-                .and_then(|inner| self.resolve_concrete_class_type_for_runtime_slots(inner, visited)),
+            crate::parser::types::Type::TypeVar(type_var) => {
+                type_var.constraint.or(type_var.default).and_then(|inner| {
+                    self.resolve_concrete_class_type_for_runtime_slots(inner, visited)
+                })
+            }
             crate::parser::types::Type::Union(union) => {
                 let mut resolved: Option<TypeId> = None;
                 for &member in &union.members {
@@ -3443,9 +3544,8 @@ impl<'a> Lowerer<'a> {
             crate::parser::types::Type::Class(class) => {
                 let mut found = false;
                 if let Some(parent) = class.extends {
-                    found |= self.collect_ordered_public_class_slot_names(
-                        parent, names, seen, visited,
-                    );
+                    found |=
+                        self.collect_ordered_public_class_slot_names(parent, names, seen, visited);
                 }
                 for property in &class.properties {
                     if property.visibility == crate::parser::ast::Visibility::Public
@@ -5452,6 +5552,26 @@ impl<'a> Lowerer<'a> {
                 });
                 return dest;
             }
+
+            let callee_ty = self.get_expr_type(&new_expr.callee);
+            if self.type_has_construct_signature(callee_ty) {
+                let return_ty = self
+                    .first_construct_signature_return_type(callee_ty)
+                    .unwrap_or(UNRESOLVED);
+                let ctor_dest = self.alloc_register(return_ty);
+                let class_id = self.lower_expr(&new_expr.callee);
+                let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
+                native_args.push(class_id);
+                for arg in &new_expr.arguments {
+                    native_args.push(self.lower_expr(arg));
+                }
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(ctor_dest.clone()),
+                    native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
+                    args: native_args,
+                });
+                return ctor_dest;
+            }
         }
 
         let ctor_name = if let Expression::Identifier(ident) = &*new_expr.callee {
@@ -6358,6 +6478,12 @@ impl<'a> Lowerer<'a> {
 
         match self.type_ctx.get(ty_id) {
             Some(Type::Function(_)) => true,
+            Some(Type::Object(obj)) => !obj.call_signatures.is_empty(),
+            Some(Type::Interface(iface)) => !iface.call_signatures.is_empty(),
+            Some(Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .is_some_and(|named| self.type_is_callable(named)),
             Some(Type::TypeVar(tv)) => tv
                 .constraint
                 .is_some_and(|constraint| self.type_is_callable(constraint)),
@@ -6366,7 +6492,67 @@ impl<'a> Lowerer<'a> {
                 .iter()
                 .copied()
                 .any(|member| self.type_is_callable(member)),
+            Some(Type::Generic(generic)) => self.type_is_callable(generic.base),
             _ => false,
+        }
+    }
+
+    fn type_has_construct_signature(&self, ty_id: TypeId) -> bool {
+        use crate::parser::types::ty::Type;
+
+        match self.type_ctx.get(ty_id) {
+            Some(Type::Object(obj)) => !obj.construct_signatures.is_empty(),
+            Some(Type::Interface(iface)) => !iface.construct_signatures.is_empty(),
+            Some(Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .is_some_and(|named| self.type_has_construct_signature(named)),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.type_has_construct_signature(constraint)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_has_construct_signature(member)),
+            Some(Type::Generic(generic)) => self.type_has_construct_signature(generic.base),
+            _ => false,
+        }
+    }
+
+    fn first_construct_signature_return_type(&self, ty_id: TypeId) -> Option<TypeId> {
+        use crate::parser::types::ty::Type;
+
+        match self.type_ctx.get(ty_id) {
+            Some(Type::Function(func)) => Some(func.return_type),
+            Some(Type::Object(obj)) => obj.construct_signatures.iter().find_map(|sig_ty| {
+                match self.type_ctx.get(*sig_ty) {
+                    Some(Type::Function(func)) => Some(func.return_type),
+                    _ => None,
+                }
+            }),
+            Some(Type::Interface(iface)) => iface.construct_signatures.iter().find_map(|sig_ty| {
+                match self.type_ctx.get(*sig_ty) {
+                    Some(Type::Function(func)) => Some(func.return_type),
+                    _ => None,
+                }
+            }),
+            Some(Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .and_then(|named| self.first_construct_signature_return_type(named)),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .and_then(|constraint| self.first_construct_signature_return_type(constraint)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .find_map(|member| self.first_construct_signature_return_type(member)),
+            Some(Type::Generic(generic)) => {
+                self.first_construct_signature_return_type(generic.base)
+            }
+            _ => None,
         }
     }
 
@@ -6463,7 +6649,8 @@ impl<'a> Lowerer<'a> {
                 if let Some(class_id) = self.variable_class_map.get(&ident.name).copied() {
                     return Some(class_id);
                 }
-                if let Some(class_id) = self.class_id_from_type_name(self.interner.resolve(ident.name))
+                if let Some(class_id) =
+                    self.class_id_from_type_name(self.interner.resolve(ident.name))
                 {
                     return Some(class_id);
                 }
@@ -6671,6 +6858,16 @@ impl<'a> Lowerer<'a> {
             Some(Type::Function(func)) => {
                 func.is_async || self.type_id_is_promise_like(func.return_type)
             }
+            Some(Type::Object(obj)) => obj
+                .call_signatures
+                .iter()
+                .copied()
+                .any(|sig| self.type_id_is_async_callable(sig)),
+            Some(Type::Interface(iface)) => iface
+                .call_signatures
+                .iter()
+                .copied()
+                .any(|sig| self.type_id_is_async_callable(sig)),
             Some(Type::Reference(type_ref)) => self
                 .type_ctx
                 .lookup_named_type(&type_ref.name)
@@ -6699,15 +6896,17 @@ impl<'a> Lowerer<'a> {
                 .type_ctx
                 .lookup_named_type(&type_ref.name)
                 .is_some_and(|named| self.class_type_has_async_method(named, method_name)),
-            Some(Type::TypeVar(tv)) => tv
-                .constraint
-                .is_some_and(|constraint| self.class_type_has_async_method(constraint, method_name)),
+            Some(Type::TypeVar(tv)) => tv.constraint.is_some_and(|constraint| {
+                self.class_type_has_async_method(constraint, method_name)
+            }),
             Some(Type::Union(union)) => union
                 .members
                 .iter()
                 .copied()
                 .any(|member| self.class_type_has_async_method(member, method_name)),
-            Some(Type::Generic(generic)) => self.class_type_has_async_method(generic.base, method_name),
+            Some(Type::Generic(generic)) => {
+                self.class_type_has_async_method(generic.base, method_name)
+            }
             _ => false,
         }
     }

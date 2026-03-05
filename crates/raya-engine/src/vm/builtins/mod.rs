@@ -1857,7 +1857,11 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 },
                 MethodSig {
                     name: "defineProperty",
-                    params: &[("obj", "Object"), ("key", "string"), ("descriptor", "Object")],
+                    params: &[
+                        ("obj", "Object"),
+                        ("key", "string"),
+                        ("descriptor", "Object"),
+                    ],
                     min_params: 3,
                     return_type: "Object",
                     is_static: true,

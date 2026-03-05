@@ -33,6 +33,13 @@ pub enum DeclarationSourceKind {
     DTs,
 }
 
+/// Builtin declaration surface mode used for global-symbol seeding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinSurfaceMode {
+    RayaStrict,
+    NodeCompat,
+}
+
 /// Parsed declaration module plus exported link metadata.
 #[derive(Debug, Clone)]
 pub struct DeclarationModule {
@@ -179,11 +186,28 @@ pub fn load_declaration_module(
             message: e.to_string(),
         })?;
 
+    load_declaration_module_from_source(
+        declaration_path,
+        source_kind,
+        &raw_source,
+        module_identity,
+        virtual_module_path,
+    )
+}
+
+/// Parse declaration source and project exported symbol metadata.
+pub fn load_declaration_module_from_source(
+    declaration_path: &Path,
+    source_kind: DeclarationSourceKind,
+    raw_source: &str,
+    module_identity: &str,
+    virtual_module_path: &Path,
+) -> Result<DeclarationModule, DeclarationError> {
     if source_kind == DeclarationSourceKind::DTs {
-        detect_unsupported_dts_syntax(declaration_path, &raw_source)?;
+        detect_unsupported_dts_syntax(declaration_path, raw_source)?;
     }
 
-    let normalized_source = normalize_declaration_source(source_kind, &raw_source);
+    let normalized_source = normalize_declaration_source(source_kind, raw_source);
 
     let parser = Parser::new(&normalized_source).map_err(|errors| DeclarationError::LexError {
         path: declaration_path.to_path_buf(),
@@ -220,6 +244,240 @@ pub fn load_declaration_module(
         module_identity: module_identity.to_string(),
         exports,
     })
+}
+
+fn strict_builtin_declaration_sources() -> &'static [(&'static str, &'static str)] {
+    &[
+        (
+            "strict/buffer.d.raya",
+            include_str!("../../../builtins/strict/buffer.d.raya"),
+        ),
+        (
+            "strict/channel.d.raya",
+            include_str!("../../../builtins/strict/channel.d.raya"),
+        ),
+        (
+            "strict/date.d.raya",
+            include_str!("../../../builtins/strict/date.d.raya"),
+        ),
+        (
+            "strict/error.d.raya",
+            include_str!("../../../builtins/strict/error.d.raya"),
+        ),
+        (
+            "strict/event_emitter.d.raya",
+            include_str!("../../../builtins/strict/event_emitter.d.raya"),
+        ),
+        (
+            "strict/globals.shared.d.raya",
+            include_str!("../../../builtins/strict/globals.shared.d.raya"),
+        ),
+        (
+            "strict/iterator.d.raya",
+            include_str!("../../../builtins/strict/iterator.d.raya"),
+        ),
+        (
+            "strict/map.d.raya",
+            include_str!("../../../builtins/strict/map.d.raya"),
+        ),
+        (
+            "strict/mutex.d.raya",
+            include_str!("../../../builtins/strict/mutex.d.raya"),
+        ),
+        (
+            "strict/object.d.raya",
+            include_str!("../../../builtins/strict/object.d.raya"),
+        ),
+        (
+            "strict/promise.d.raya",
+            include_str!("../../../builtins/strict/promise.d.raya"),
+        ),
+        (
+            "strict/set.d.raya",
+            include_str!("../../../builtins/strict/set.d.raya"),
+        ),
+        (
+            "strict/symbol.d.raya",
+            include_str!("../../../builtins/strict/symbol.d.raya"),
+        ),
+        (
+            "strict/temporal.d.raya",
+            include_str!("../../../builtins/strict/temporal.d.raya"),
+        ),
+    ]
+}
+
+fn node_compat_builtin_declaration_sources() -> &'static [(&'static str, &'static str)] {
+    &[
+        (
+            "node_compat/atomics.d.raya",
+            include_str!("../../../builtins/node_compat/atomics.d.raya"),
+        ),
+        (
+            "node_compat/buffer.d.raya",
+            include_str!("../../../builtins/node_compat/buffer.d.raya"),
+        ),
+        (
+            "node_compat/channel.d.raya",
+            include_str!("../../../builtins/node_compat/channel.d.raya"),
+        ),
+        (
+            "node_compat/dataview.d.raya",
+            include_str!("../../../builtins/node_compat/dataview.d.raya"),
+        ),
+        (
+            "node_compat/date.d.raya",
+            include_str!("../../../builtins/node_compat/date.d.raya"),
+        ),
+        (
+            "node_compat/disposal.d.raya",
+            include_str!("../../../builtins/node_compat/disposal.d.raya"),
+        ),
+        (
+            "node_compat/error.d.raya",
+            include_str!("../../../builtins/node_compat/error.d.raya"),
+        ),
+        (
+            "node_compat/event_emitter.d.raya",
+            include_str!("../../../builtins/node_compat/event_emitter.d.raya"),
+        ),
+        (
+            "node_compat/function_families.d.raya",
+            include_str!("../../../builtins/node_compat/function_families.d.raya"),
+        ),
+        (
+            "node_compat/globals.d.raya",
+            include_str!("../../../builtins/node_compat/globals.d.raya"),
+        ),
+        (
+            "node_compat/globals.shared.d.raya",
+            include_str!("../../../builtins/node_compat/globals.shared.d.raya"),
+        ),
+        (
+            "node_compat/intl.d.raya",
+            include_str!("../../../builtins/node_compat/intl.d.raya"),
+        ),
+        (
+            "node_compat/iterator.d.raya",
+            include_str!("../../../builtins/node_compat/iterator.d.raya"),
+        ),
+        (
+            "node_compat/map.d.raya",
+            include_str!("../../../builtins/node_compat/map.d.raya"),
+        ),
+        (
+            "node_compat/mutex.d.raya",
+            include_str!("../../../builtins/node_compat/mutex.d.raya"),
+        ),
+        (
+            "node_compat/object.d.raya",
+            include_str!("../../../builtins/node_compat/object.d.raya"),
+        ),
+        (
+            "node_compat/promise.d.raya",
+            include_str!("../../../builtins/node_compat/promise.d.raya"),
+        ),
+        (
+            "node_compat/set.d.raya",
+            include_str!("../../../builtins/node_compat/set.d.raya"),
+        ),
+        (
+            "node_compat/symbol.d.raya",
+            include_str!("../../../builtins/node_compat/symbol.d.raya"),
+        ),
+        (
+            "node_compat/temporal.d.raya",
+            include_str!("../../../builtins/node_compat/temporal.d.raya"),
+        ),
+        (
+            "node_compat/typedarray.d.raya",
+            include_str!("../../../builtins/node_compat/typedarray.d.raya"),
+        ),
+        (
+            "node_compat/weak_collections.d.raya",
+            include_str!("../../../builtins/node_compat/weak_collections.d.raya"),
+        ),
+        (
+            "node_compat/weak_refs.d.raya",
+            include_str!("../../../builtins/node_compat/weak_refs.d.raya"),
+        ),
+    ]
+}
+
+/// Load embedded builtin declaration exports for global checker seeding.
+pub fn builtin_global_exports(mode: BuiltinSurfaceMode) -> Result<ModuleExports, DeclarationError> {
+    let (mode_name, decls): (&str, &[(&str, &str)]) = match mode {
+        BuiltinSurfaceMode::RayaStrict => ("strict", strict_builtin_declaration_sources()),
+        BuiltinSurfaceMode::NodeCompat => {
+            ("node_compat", node_compat_builtin_declaration_sources())
+        }
+    };
+
+    let merged_module_identity = format!("__raya_builtin__/{}", mode_name);
+    let merged_module_path = PathBuf::from(format!("__raya_builtin__/{}.d.raya", mode_name));
+    let mut merged = ModuleExports::new(merged_module_path, merged_module_identity.clone());
+    let merged_module_id = module_id_from_name(&merged_module_identity);
+
+    for (logical_path, source) in decls {
+        let declaration_path =
+            PathBuf::from(format!("__raya_builtin__/declarations/{}", logical_path));
+        let virtual_module_path = PathBuf::from(format!(
+            "__raya_builtin__/virtual/{}.raya",
+            logical_path.replace('/', "__")
+        ));
+        let module_identity = format!(
+            "{}::{}",
+            merged_module_identity,
+            logical_path.replace('/', "::")
+        );
+        let declaration = load_declaration_module_from_source(
+            &declaration_path,
+            DeclarationSourceKind::DRaya,
+            source,
+            &module_identity,
+            &virtual_module_path,
+        )?;
+
+        for (name, exported) in declaration.exports.symbols {
+            if let Some(existing) = merged.symbols.get(&name) {
+                if existing.kind == exported.kind
+                    && existing.type_signature == exported.type_signature
+                    && existing.is_const == exported.is_const
+                    && existing.is_async == exported.is_async
+                {
+                    continue;
+                }
+                return Err(DeclarationError::InvalidDeclaration {
+                    path: declaration_path.clone(),
+                    line: 1,
+                    column: 1,
+                    message: format!(
+                        "Duplicate builtin declaration export '{}' has incompatible signatures",
+                        name
+                    ),
+                });
+            }
+
+            let symbol_id =
+                symbol_id_from_name(&merged_module_identity, SymbolScope::Module, &name);
+            merged.add_symbol(ExportedSymbol {
+                name: name.clone(),
+                local_name: name,
+                kind: exported.kind,
+                ty: TypeId::new(TypeContext::UNKNOWN_TYPE_ID),
+                is_const: exported.is_const,
+                is_async: exported.is_async,
+                module_name: merged_module_identity.clone(),
+                module_id: merged_module_id,
+                symbol_id,
+                type_symbol_id: exported.type_symbol_id,
+                type_signature: exported.type_signature,
+                scope: SymbolScope::Module,
+            });
+        }
+    }
+
+    Ok(merged)
 }
 
 fn detect_unsupported_dts_syntax(path: &Path, source: &str) -> Result<(), DeclarationError> {
@@ -283,47 +541,107 @@ fn normalize_dts_line(line: &str) -> String {
     line.to_string()
 }
 
+fn is_class_declaration_start(trimmed_start: &str) -> bool {
+    (trimmed_start.starts_with("class ")
+        || trimmed_start.starts_with("abstract class ")
+        || trimmed_start.starts_with("export class ")
+        || trimmed_start.starts_with("export abstract class "))
+        && trimmed_start.contains('{')
+}
+
 fn materialize_declaration_stubs(source: &str) -> String {
-    let mut out = String::with_capacity(source.len() + 128);
+    let mut out_lines = Vec::<String>::new();
     let mut class_depth = 0i32;
+    let mut pending_callable_line: Option<usize> = None;
 
     for line in source.lines() {
         let mut normalized = line.to_string();
         let trimmed = normalized.trim();
+        let trimmed_start = normalized.trim_start();
 
-        let is_signature_like =
-            trimmed.ends_with(';') && trimmed.contains('(') && trimmed.contains(')');
-        if is_signature_like {
-            let is_top_level_fn = trimmed.starts_with("export function ")
-                || trimmed.starts_with("function ")
-                || trimmed.starts_with("export async function ")
-                || trimmed.starts_with("async function ");
-            let is_class_member = class_depth > 0
-                && !trimmed.starts_with("export ")
-                && !trimmed.starts_with("import ")
-                && !trimmed.starts_with("type ")
-                && !trimmed.starts_with("interface ")
-                && !trimmed.starts_with("readonly ");
-            let is_abstract = trimmed.starts_with("abstract ");
+        let starts_class_decl = is_class_declaration_start(trimmed_start);
+        let open = line.chars().filter(|c| *c == '{').count() as i32;
+        let close = line.chars().filter(|c| *c == '}').count() as i32;
 
-            if (is_top_level_fn || is_class_member) && !is_abstract {
+        if let Some(start_idx) = pending_callable_line {
+            let _ = start_idx;
+            if trimmed.ends_with(';') {
                 if let Some(index) = normalized.rfind(';') {
                     normalized.replace_range(
                         index..=index,
                         " { throw new Error(\"__raya_decl_stub__\"); }",
                     );
                 }
+                pending_callable_line = None;
             }
+            out_lines.push(normalized);
+        } else {
+            let is_variable_signature = trimmed.ends_with(';')
+                && !trimmed.contains('=')
+                && trimmed.contains(':')
+                && (trimmed.starts_with("export const ")
+                    || trimmed.starts_with("const ")
+                    || trimmed.starts_with("export let ")
+                    || trimmed.starts_with("let "));
+
+            let is_top_level_fn_start = trimmed.starts_with("export function ")
+                || trimmed.starts_with("function ")
+                || trimmed.starts_with("export async function ")
+                || trimmed.starts_with("async function ");
+
+            let is_class_member_start = class_depth > 0
+                && !trimmed.is_empty()
+                && !trimmed.starts_with('}')
+                && !trimmed.starts_with('{')
+                && !trimmed.starts_with("export ")
+                && !trimmed.starts_with("import ")
+                && !trimmed.starts_with("type ")
+                && !trimmed.starts_with("interface ")
+                && !trimmed.starts_with("//")
+                && !trimmed.starts_with("/*")
+                && !trimmed.starts_with('*');
+
+            let starts_with_member_token = trimmed
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+
+            let callable_signature_start = trimmed.contains('(')
+                && !trimmed.starts_with("abstract ")
+                && !trimmed.contains('{')
+                && starts_with_member_token
+                && (is_top_level_fn_start || is_class_member_start);
+
+            if callable_signature_start {
+                if trimmed.ends_with(';') {
+                    if let Some(index) = normalized.rfind(';') {
+                        normalized.replace_range(
+                            index..=index,
+                            " { throw new Error(\"__raya_decl_stub__\"); }",
+                        );
+                    }
+                } else {
+                    pending_callable_line = Some(out_lines.len());
+                }
+            } else if is_variable_signature {
+                if let Some(index) = normalized.rfind(';') {
+                    normalized.replace_range(index..=index, " = null;");
+                }
+            }
+
+            out_lines.push(normalized);
         }
 
-        out.push_str(&normalized);
-        out.push('\n');
-
-        let open = line.chars().filter(|c| *c == '{').count() as i32;
-        let close = line.chars().filter(|c| *c == '}').count() as i32;
-        class_depth = (class_depth + open - close).max(0);
+        if class_depth > 0 || starts_class_decl {
+            class_depth = (class_depth + open - close).max(0);
+        }
     }
 
+    let mut out = String::with_capacity(source.len() + 128);
+    for line in out_lines {
+        out.push_str(&line);
+        out.push('\n');
+    }
     out
 }
 
@@ -543,7 +861,19 @@ fn export_from_item(
                 canonical_signature,
             })
         }
-        DeclarationItem::TypeAlias(_) => None,
+        DeclarationItem::TypeAlias(alias) => {
+            let canonical_signature = canonicalizer
+                .with_type_params(alias.type_params.as_deref(), |this| {
+                    this.canonical_type_annotation(&alias.type_annotation)
+                });
+            Some(DeclarationExport {
+                name: export_name.to_string(),
+                kind: SymbolKind::TypeAlias,
+                is_const: true,
+                is_async: false,
+                canonical_signature,
+            })
+        }
     };
 
     Ok(export)
@@ -788,11 +1118,34 @@ impl<'a> DeclarationCanonicalizer<'a> {
                                 &method.params,
                                 &method.return_type,
                             );
+                            let optional = if method.optional { "opt" } else { "req" };
                             members.insert(format!(
-                                "prop:{}:rw:req:{}",
+                                "prop:{}:rw:{}:{}",
                                 escape(self.interner.resolve(method.name.name)),
+                                optional,
                                 fn_sig
                             ));
+                        }
+                        ObjectTypeMember::IndexSignature(index) => {
+                            members.insert(format!(
+                                "index:{}:{}",
+                                escape(self.interner.resolve(index.key_name.name)),
+                                self.canonical_type_annotation(&index.value_type)
+                            ));
+                        }
+                        ObjectTypeMember::CallSignature(call_sig) => {
+                            let fn_sig = self.canonical_function_type_params(
+                                &call_sig.params,
+                                &call_sig.return_type,
+                            );
+                            members.insert(format!("call:{}", fn_sig));
+                        }
+                        ObjectTypeMember::ConstructSignature(ctor_sig) => {
+                            let fn_sig = self.canonical_function_type_params(
+                                &ctor_sig.params,
+                                &ctor_sig.return_type,
+                            );
+                            members.insert(format!("ctor:{}", fn_sig));
                         }
                     }
                 }
@@ -1078,7 +1431,7 @@ mod tests {
         let src = "export declare function add(a: number): number;\ndeclare const x: number;\n";
         let out = normalize_declaration_source(DeclarationSourceKind::DTs, src);
         assert!(out.contains("export function add"));
-        assert!(out.contains("const x: number;"));
+        assert!(out.contains("const x: number = null;"));
     }
 
     #[test]
@@ -1207,6 +1560,138 @@ mod tests {
             .symbols
             .get("Pair")
             .expect("right pair")
+            .type_signature;
+        assert_eq!(left_sig, right_sig);
+    }
+
+    #[test]
+    fn declaration_interface_optional_method_affects_signature() {
+        let temp = TempDir::new().expect("temp dir");
+        let a = temp.path().join("a.d.raya");
+        let b = temp.path().join("b.d.raya");
+
+        std::fs::write(
+            &a,
+            r#"
+            export interface Handler {
+                run?(): number;
+            }
+            export const h: Handler;
+            "#,
+        )
+        .expect("write a");
+
+        std::fs::write(
+            &b,
+            r#"
+            export interface Handler {
+                run(): number;
+            }
+            export const h: Handler;
+            "#,
+        )
+        .expect("write b");
+
+        let module_identity = temp
+            .path()
+            .join("handler.raya")
+            .to_string_lossy()
+            .to_string();
+        let left =
+            load_declaration_module(&a, &module_identity, &temp.path().join("a_virtual.raya"))
+                .expect("load a");
+        let right =
+            load_declaration_module(&b, &module_identity, &temp.path().join("b_virtual.raya"))
+                .expect("load b");
+
+        let left_sig = &left
+            .exports
+            .symbols
+            .get("h")
+            .expect("left h")
+            .type_signature;
+        let right_sig = &right
+            .exports
+            .symbols
+            .get("h")
+            .expect("right h")
+            .type_signature;
+        assert_ne!(left_sig, right_sig);
+    }
+
+    #[test]
+    fn declaration_interface_members_do_not_get_function_bodies() {
+        let src = r#"
+            export interface Handler {
+                run?(): number;
+            }
+            export declare class Box {
+                get(): number;
+            }
+        "#;
+        let normalized = normalize_declaration_source(DeclarationSourceKind::DTs, src);
+        assert!(normalized.contains("run?(): number;"));
+        assert!(
+            normalized.contains("get(): number { throw new Error(\"__raya_decl_stub__\"); }"),
+            "class methods should still be stubbed"
+        );
+    }
+
+    #[test]
+    fn declaration_interface_call_and_construct_signatures_are_canonicalized() {
+        let temp = TempDir::new().expect("temp dir");
+        let a = temp.path().join("a.d.raya");
+        let b = temp.path().join("b.d.raya");
+
+        std::fs::write(
+            &a,
+            r#"
+            export interface Factory {
+                name: string;
+                (value: number): string;
+                new (value: number): { value: number };
+            }
+            export const f: Factory;
+            "#,
+        )
+        .expect("write a");
+
+        std::fs::write(
+            &b,
+            r#"
+            export interface Factory {
+                new (value: number): { value: number };
+                (value: number): string;
+                name: string;
+            }
+            export const f: Factory;
+            "#,
+        )
+        .expect("write b");
+
+        let module_identity = temp
+            .path()
+            .join("factory.raya")
+            .to_string_lossy()
+            .to_string();
+        let left =
+            load_declaration_module(&a, &module_identity, &temp.path().join("a_virtual.raya"))
+                .expect("load a");
+        let right =
+            load_declaration_module(&b, &module_identity, &temp.path().join("b_virtual.raya"))
+                .expect("load b");
+
+        let left_sig = &left
+            .exports
+            .symbols
+            .get("f")
+            .expect("left f")
+            .type_signature;
+        let right_sig = &right
+            .exports
+            .symbols
+            .get("f")
+            .expect("right f")
             .type_signature;
         assert_eq!(left_sig, right_sig);
     }

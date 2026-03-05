@@ -8,6 +8,17 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+/// Physical object-layout identity used for slot dispatch and structural adapters.
+pub type LayoutId = u32;
+/// Nominal runtime type identity used for class semantics.
+pub type NominalTypeId = u32;
+/// Structural compatibility identity.
+pub type ShapeId = u64;
+/// Interned dynamic property key identity.
+pub type PropKeyId = u32;
+/// Runtime handle identity for imported/exported type constructors.
+pub type TypeHandleId = u32;
+
 /// Global counter for generating unique object IDs
 static NEXT_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -21,7 +32,14 @@ fn generate_object_id() -> u64 {
 pub struct Object {
     /// Unique object ID (assigned on creation, used for hashCode/equals)
     pub object_id: u64,
+    /// Physical layout identity for fixed-slot access.
+    pub layout_id: LayoutId,
+    /// Optional nominal class/type identity.
+    pub nominal_type_id: Option<NominalTypeId>,
     /// Class ID (index into VM class registry)
+    ///
+    /// Compatibility field retained while migrating call-sites to
+    /// `layout_id` + `nominal_type_id`.
     pub class_id: usize,
     /// Field values
     pub fields: Vec<Value>,
@@ -30,9 +48,33 @@ pub struct Object {
 impl Object {
     /// Create a new object with uninitialized fields
     pub fn new(class_id: usize, field_count: usize) -> Self {
+        Self::new_nominal(class_id as LayoutId, class_id as NominalTypeId, field_count)
+    }
+
+    /// Create a nominal object with explicit layout and nominal type IDs.
+    pub fn new_nominal(
+        layout_id: LayoutId,
+        nominal_type_id: NominalTypeId,
+        field_count: usize,
+    ) -> Self {
         Self {
             object_id: generate_object_id(),
-            class_id,
+            layout_id,
+            nominal_type_id: Some(nominal_type_id),
+            class_id: nominal_type_id as usize,
+            fields: vec![Value::null(); field_count],
+        }
+    }
+
+    /// Create a structural/dynamic object with explicit layout ID and no nominal identity.
+    pub fn new_structural(layout_id: LayoutId, field_count: usize) -> Self {
+        Self {
+            object_id: generate_object_id(),
+            layout_id,
+            nominal_type_id: None,
+            // Compatibility value during migration. Structural objects should not
+            // participate in nominal class dispatch.
+            class_id: 0,
             fields: vec![Value::null(); field_count],
         }
     }

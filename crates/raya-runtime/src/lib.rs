@@ -238,9 +238,7 @@ impl Runtime {
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
         let ts_options = self.resolve_ts_options_for_inline()?;
-        let virtual_entry = std::env::current_dir()
-            .map_err(RuntimeError::Io)?
-            .join("__raya_inline_entry.raya");
+        let virtual_entry = std::env::temp_dir().join("__raya_inline_entry.raya");
         let compiler = module_system::ProgramCompiler {
             builtin_mode: self.options.builtin_mode,
             type_mode,
@@ -786,12 +784,7 @@ impl Runtime {
             let value = if import.symbol == "*" {
                 Self::materialize_namespace_import_value(vm, &resolved_symbol.module)?
             } else {
-                Self::materialize_import_value(
-                    vm,
-                    module,
-                    import,
-                    resolved_symbol,
-                )?
+                Self::materialize_import_value(vm, module, import, resolved_symbol)?
             };
             let mut globals = vm.shared_state().globals_by_index.write();
             if global_slot >= globals.len() {
@@ -949,21 +942,24 @@ impl Runtime {
         import: &Import,
         resolved: &ResolvedSymbol,
     ) -> Result<Value, RuntimeError> {
-        if import.type_symbol_id == resolved.export.type_symbol_id {
-            return Ok(value);
-        }
         let Some(expected_sig) = import.type_signature.as_deref() else {
             return Ok(value);
         };
         let Some(actual_sig) = resolved.export.type_signature.as_deref() else {
             return Ok(value);
         };
-        let Some(slot_map) = Self::structural_slot_map(expected_sig, actual_sig) else {
+        let Some(expected_layout) = Self::structural_slot_layout_from_signature(expected_sig)
+        else {
             return Ok(value);
         };
+        let Some(actual_layout) = Self::structural_slot_layout_from_signature(actual_sig) else {
+            return Ok(value);
+        };
+        let slot_map = Self::slot_map_from_layouts(&expected_layout, &actual_layout);
         if slot_map.is_empty() {
             return Ok(value);
-        }
+        };
+        let required_shape = Self::shape_id_for_member_names(&expected_layout);
 
         let JSView::Struct { ptr, class_id } = raya_engine::vm::json::js_classify(value) else {
             return Ok(value);
@@ -974,10 +970,17 @@ impl Runtime {
         }
 
         let source = unsafe { &*ptr };
+        let provider_layout = if source.layout_id == 0 {
+            Self::dynamic_layout_id_from_member_names(&actual_layout)
+        } else {
+            source.layout_id
+        };
         vm.shared_state().register_structural_slot_view(
             consumer_module,
             usize::MAX,
             source.object_id,
+            provider_layout,
+            required_shape,
             slot_map
                 .into_iter()
                 .map(|mapped| {
@@ -1059,12 +1062,18 @@ impl Runtime {
     }
 
     fn structural_slot_map(expected_sig: &str, actual_sig: &str) -> Option<Vec<Option<usize>>> {
-        let mut type_ctx = TypeContext::new();
-        let expected_ty = try_hydrate_type_from_canonical_signature(expected_sig, &mut type_ctx)?;
-        let actual_ty = try_hydrate_type_from_canonical_signature(actual_sig, &mut type_ctx)?;
-        let expected_layout = Self::structural_slot_layout(&type_ctx, expected_ty)?;
-        let actual_layout = Self::structural_slot_layout(&type_ctx, actual_ty)?;
+        let expected_layout = Self::structural_slot_layout_from_signature(expected_sig)?;
+        let actual_layout = Self::structural_slot_layout_from_signature(actual_sig)?;
+        Some(Self::slot_map_from_layouts(
+            &expected_layout,
+            &actual_layout,
+        ))
+    }
 
+    fn slot_map_from_layouts(
+        expected_layout: &[String],
+        actual_layout: &[String],
+    ) -> Vec<Option<usize>> {
         let actual_index: HashMap<&str, usize> = actual_layout
             .iter()
             .enumerate()
@@ -1072,11 +1081,30 @@ impl Runtime {
             .collect();
 
         let mut slot_map = Vec::with_capacity(expected_layout.len());
-        for expected_field in &expected_layout {
+        for expected_field in expected_layout {
             slot_map.push(actual_index.get(expected_field.as_str()).copied());
         }
+        slot_map
+    }
 
-        Some(slot_map)
+    fn structural_slot_layout_from_signature(signature: &str) -> Option<Vec<String>> {
+        let mut type_ctx = TypeContext::new();
+        let ty = try_hydrate_type_from_canonical_signature(signature, &mut type_ctx)?;
+        Self::structural_slot_layout(&type_ctx, ty)
+    }
+
+    fn dynamic_layout_id_from_member_names(names: &[String]) -> u32 {
+        let payload = format!("layout{{{}}}", names.join(","));
+        let raw = raya_engine::parser::types::signature_hash(&payload) as u32;
+        raw.max(1)
+    }
+
+    fn shape_id_for_member_names(names: &[String]) -> u64 {
+        let mut canonical = names.to_vec();
+        canonical.sort_unstable();
+        canonical.dedup();
+        let payload = format!("shape{{{}}}", canonical.join(","));
+        raya_engine::parser::types::signature_hash(&payload)
     }
 
     fn maybe_enable_jit(&self, vm: &mut raya_engine::vm::Vm) {

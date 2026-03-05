@@ -190,6 +190,10 @@ pub struct ObjectType {
     pub properties: Vec<PropertySignature>,
     /// Index signature: [key: string]: T
     pub index_signature: Option<(String, TypeId)>,
+    /// Callable signatures: (args) => R
+    pub call_signatures: Vec<TypeId>,
+    /// Construct signatures: new (args) => R
+    pub construct_signatures: Vec<TypeId>,
 }
 
 /// Method signature
@@ -239,6 +243,10 @@ pub struct InterfaceType {
     pub properties: Vec<PropertySignature>,
     /// Methods
     pub methods: Vec<MethodSignature>,
+    /// Callable signatures: (args) => R
+    pub call_signatures: Vec<TypeId>,
+    /// Construct signatures: new (args) => R
+    pub construct_signatures: Vec<TypeId>,
     /// Extended interfaces
     pub extends: Vec<TypeId>,
 }

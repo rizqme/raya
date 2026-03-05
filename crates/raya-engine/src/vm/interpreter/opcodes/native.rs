@@ -11,7 +11,9 @@ use crate::compiler::{Module, Opcode};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set};
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
-use crate::vm::interpreter::shared_state::StructuralSlotBinding;
+use crate::vm::interpreter::shared_state::{
+    LayoutId, StructuralAdapterKey, StructuralSlotBinding, StructuralViewHandle,
+};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
     Array, BoundMethod, Buffer, ChannelObject, Class, Closure, DateObject, MapObject, Object,
@@ -27,6 +29,22 @@ use std::sync::Arc;
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
 impl<'a> Interpreter<'a> {
+    fn shape_id_for_member_names(names: &[String]) -> u64 {
+        let mut canonical = names.to_vec();
+        canonical.sort_unstable();
+        canonical.dedup();
+        let payload = format!("shape{{{}}}", canonical.join(","));
+        crate::parser::types::signature_hash(&payload)
+    }
+
+    fn dynamic_layout_id_from_member_names(names: &[String]) -> LayoutId {
+        // Layout identity is order-sensitive: slot order defines physical layout.
+        let payload = format!("layout{{{}}}", names.join(","));
+        let raw = crate::parser::types::signature_hash(&payload) as u32;
+        // Reserve 0 for "unknown/unset layout" during migration.
+        raw.max(1)
+    }
+
     fn legacy_object_literal_field_index(field_name: &str, field_count: usize) -> Option<usize> {
         let idx = match field_name {
             // Error-like object literal layout: [message, name, stack, cause, ...]
@@ -248,11 +266,15 @@ impl<'a> Interpreter<'a> {
 
     fn channel_from_handle_arg(&self, value: Value) -> Result<(u64, &ChannelObject), VmError> {
         let Some(handle) = value.as_u64() else {
-            return Err(VmError::TypeError("Expected channel handle (u64)".to_string()));
+            return Err(VmError::TypeError(
+                "Expected channel handle (u64)".to_string(),
+            ));
         };
         let ch_ptr = handle as *const ChannelObject;
         if ch_ptr.is_null() {
-            return Err(VmError::TypeError("Expected channel handle (u64)".to_string()));
+            return Err(VmError::TypeError(
+                "Expected channel handle (u64)".to_string(),
+            ));
         }
         Ok((handle, unsafe { &*ch_ptr }))
     }
@@ -272,11 +294,15 @@ impl<'a> Interpreter<'a> {
 
         let field_index = self
             .get_field_index_for_value(value, "bufferPtr")
-            .ok_or_else(|| VmError::RuntimeError("Buffer field 'bufferPtr' not found".to_string()))?;
+            .ok_or_else(|| {
+                VmError::RuntimeError("Buffer field 'bufferPtr' not found".to_string())
+            })?;
         let handle = obj
             .get_field(field_index)
             .and_then(|f| f.as_u64())
-            .ok_or_else(|| VmError::RuntimeError("Buffer.bufferPtr is not a valid handle".to_string()))?;
+            .ok_or_else(|| {
+                VmError::RuntimeError("Buffer.bufferPtr is not a valid handle".to_string())
+            })?;
         Ok(handle)
     }
 
@@ -343,17 +369,21 @@ impl<'a> Interpreter<'a> {
         if let Some(handle) = Self::decode_u64_handle(value) {
             return Ok(handle);
         }
-        let obj_ptr = unsafe { value.as_ptr::<Object>() }
-            .ok_or_else(|| VmError::TypeError("Expected RegExp object or regexp handle".to_string()))?;
+        let obj_ptr = unsafe { value.as_ptr::<Object>() }.ok_or_else(|| {
+            VmError::TypeError("Expected RegExp object or regexp handle".to_string())
+        })?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
         let field_index = self
             .get_field_index_for_value(value, "regexpPtr")
-            .ok_or_else(|| VmError::RuntimeError("RegExp field 'regexpPtr' not found".to_string()))?;
+            .ok_or_else(|| {
+                VmError::RuntimeError("RegExp field 'regexpPtr' not found".to_string())
+            })?;
         let raw = obj
             .get_field(field_index)
             .ok_or_else(|| VmError::RuntimeError("RegExp.regexpPtr is missing".to_string()))?;
-        Self::decode_u64_handle(raw)
-            .ok_or_else(|| VmError::RuntimeError("RegExp.regexpPtr is not a valid handle".to_string()))
+        Self::decode_u64_handle(raw).ok_or_else(|| {
+            VmError::RuntimeError("RegExp.regexpPtr is not a valid handle".to_string())
+        })
     }
 
     fn ensure_buffer_class_layout(&self) -> (usize, usize) {
@@ -370,7 +400,10 @@ impl<'a> Interpreter<'a> {
     fn ensure_object_class_layout(&self) -> (usize, usize) {
         let mut classes = self.classes.write();
         if let Some(id) = classes.get_class_by_name("Object").map(|class| class.id) {
-            let mut field_count = classes.get_class(id).map(|class| class.field_count).unwrap_or(0);
+            let mut field_count = classes
+                .get_class(id)
+                .map(|class| class.field_count)
+                .unwrap_or(0);
             if field_count < 6 {
                 if let Some(class) = classes.get_class_mut(id) {
                     class.field_count = 6;
@@ -388,7 +421,8 @@ impl<'a> Interpreter<'a> {
     fn alloc_buffer_object(&self, handle: u64, len: usize) -> Result<Value, VmError> {
         let (buffer_class_id, buffer_field_count) = self.ensure_buffer_class_layout();
         let mut obj = Object::new(buffer_class_id, buffer_field_count);
-        obj.set_field(0, Value::u64(handle)).map_err(VmError::RuntimeError)?;
+        obj.set_field(0, Value::u64(handle))
+            .map_err(VmError::RuntimeError)?;
         if buffer_field_count > 1 {
             obj.set_field(1, Value::i32(len as i32))
                 .map_err(VmError::RuntimeError)?;
@@ -643,73 +677,101 @@ impl<'a> Interpreter<'a> {
                             }
                             return OpcodeResult::Continue;
                         };
-                        let object = unsafe { &*object_ptr.as_ptr() };
+                        let object_id = unsafe { (*object_ptr.as_ptr()).object_id };
+                        let object_class_id = unsafe { (*object_ptr.as_ptr()).class_id };
+                        let object_layout_id = unsafe { (*object_ptr.as_ptr()).layout_id };
+                        let object_field_count = unsafe { (*object_ptr.as_ptr()).field_count() };
                         let debug_structural = std::env::var("RAYA_DEBUG_STRUCTURAL_VIEW").is_ok();
                         let class_metadata = self.class_metadata.read();
-                        let class_meta = class_metadata.get(object.class_id).cloned();
+                        let class_meta = class_metadata.get(object_class_id).cloned();
                         drop(class_metadata);
                         let class_name = {
                             let classes = self.classes.read();
                             classes
-                                .get_class(object.class_id)
+                                .get_class(object_class_id)
                                 .map(|class| class.name.clone())
                         };
-                        let slot_map: Vec<StructuralSlotBinding> = if let Some(class_meta) = class_meta
-                        {
-                            expected_names
-                                .iter()
-                                .map(|name| {
-                                    class_meta
-                                        .get_field_index(name)
-                                        .and_then(|index| {
-                                            (index < object.field_count())
-                                                .then_some(StructuralSlotBinding::Field(index))
-                                        })
-                                        .or_else(|| {
-                                            class_meta
-                                                .get_method_index(name)
-                                                .map(StructuralSlotBinding::Method)
-                                        })
-                                        .or_else(|| {
-                                            class_name.as_ref().and_then(|class_name| {
-                                                Self::builtin_field_index_for_class_name_native(
-                                                    class_name,
-                                                    name,
-                                                )
-                                                .map(StructuralSlotBinding::Field)
+                        let (provider_layout, slot_map): (LayoutId, Vec<StructuralSlotBinding>) =
+                            if let Some(class_meta) = class_meta {
+                                let provider_layout = if object_layout_id == 0 {
+                                    object_class_id as LayoutId
+                                } else {
+                                    object_layout_id
+                                };
+                                let slot_map = expected_names
+                                    .iter()
+                                    .map(|name| {
+                                        class_meta
+                                            .get_field_index(name)
+                                            .and_then(|index| {
+                                                (index < object_field_count)
+                                                    .then_some(StructuralSlotBinding::Field(index))
                                             })
-                                        })
-                                        .unwrap_or(StructuralSlotBinding::Missing)
-                                })
-                                .collect()
-                        } else {
-                            // Dynamic object-literal carriers (class_id=0) do not have class
-                            // metadata. Track canonical field names per object and remap by name.
-                            let mut shapes = self.structural_object_shapes.write();
-                            let actual_names = shapes
-                                .entry(object.object_id)
-                                .or_insert_with(|| expected_names.clone());
-                            if debug_structural {
-                                eprintln!(
-                                    "[structural-view] seed/remap object_id={} expected=[{}] actual=[{}]",
-                                    object.object_id,
-                                    expected_names.join(","),
-                                    actual_names.join(",")
-                                );
-                            }
-                            expected_names
-                                .iter()
-                                .map(|name| {
-                                    actual_names
-                                        .iter()
-                                        .position(|actual| actual == name)
-                                        .map(StructuralSlotBinding::Field)
-                                        .unwrap_or(StructuralSlotBinding::Missing)
-                                })
-                                .collect()
-                        };
+                                            .or_else(|| {
+                                                class_meta
+                                                    .get_method_index(name)
+                                                    .map(StructuralSlotBinding::Method)
+                                            })
+                                            .or_else(|| {
+                                                class_name.as_ref().and_then(|class_name| {
+                                                    Self::builtin_field_index_for_class_name_native(
+                                                        class_name, name,
+                                                    )
+                                                    .map(StructuralSlotBinding::Field)
+                                                })
+                                            })
+                                            .unwrap_or(StructuralSlotBinding::Missing)
+                                    })
+                                    .collect();
+                                (provider_layout, slot_map)
+                            } else {
+                                // Dynamic object-literal carriers do not have class metadata.
+                                // Track canonical field names per object and remap by name.
+                                let mut shapes = self.structural_object_shapes.write();
+                                let actual_names = shapes
+                                    .entry(object_id)
+                                    .or_insert_with(|| expected_names.clone());
+                                let derived_layout =
+                                    Self::dynamic_layout_id_from_member_names(actual_names);
+                                // Stamp physical layout identity once so subsequent shape views
+                                // can share adapter cache entries by `(layout_id, shape_id)`.
+                                let object_mut = unsafe { &mut *object_ptr.as_ptr() };
+                                if object_mut.layout_id == 0 {
+                                    object_mut.layout_id = derived_layout;
+                                }
+                                let provider_layout = object_mut.layout_id;
+                                if debug_structural {
+                                    eprintln!(
+                                        "[structural-view] seed/remap object_id={} layout={} expected=[{}] actual=[{}]",
+                                        object_id,
+                                        provider_layout,
+                                        expected_names.join(","),
+                                        actual_names.join(",")
+                                    );
+                                }
+                                let slot_map = expected_names
+                                    .iter()
+                                    .map(|name| {
+                                        actual_names
+                                            .iter()
+                                            .position(|actual| actual == name)
+                                            .map(StructuralSlotBinding::Field)
+                                            .unwrap_or(StructuralSlotBinding::Missing)
+                                    })
+                                    .collect();
+                                (provider_layout, slot_map)
+                            };
 
-                        let key = (module.checksum, self.profiler_func_id, object.object_id);
+                        let key = (module.checksum, self.profiler_func_id, object_id);
+                        let required_shape = Self::shape_id_for_member_names(&expected_names);
+                        let adapter_key = StructuralAdapterKey {
+                            provider_layout,
+                            required_shape,
+                        };
+                        let slot_map = Arc::new(slot_map);
+                        self.structural_shape_adapters
+                            .write()
+                            .insert(adapter_key, slot_map.clone());
                         if debug_structural {
                             let slot_desc = slot_map
                                 .iter()
@@ -726,10 +788,12 @@ impl<'a> Interpreter<'a> {
                                 .collect::<Vec<_>>()
                                 .join(",");
                             eprintln!(
-                                "[structural-view] install key=(func={},obj={}) class_id={} map=[{}]",
+                                "[structural-view] install key=(func={},obj={}) class_id={} layout={} shape={} map=[{}]",
                                 self.profiler_func_id,
-                                object.object_id,
-                                object.class_id,
+                                object_id,
+                                object_class_id,
+                                provider_layout,
+                                required_shape,
                                 slot_desc
                             );
                         }
@@ -739,7 +803,9 @@ impl<'a> Interpreter<'a> {
                         if is_identity {
                             self.structural_slot_views.write().remove(&key);
                         } else {
-                            self.structural_slot_views.write().insert(key, slot_map);
+                            self.structural_slot_views
+                                .write()
+                                .insert(key, StructuralViewHandle { adapter_key });
                         }
 
                         if let Err(error) = stack.push(Value::null()) {
@@ -1104,7 +1170,8 @@ impl<'a> Interpreter<'a> {
                             gc_ptr.as_ptr() as u64
                         };
 
-                        let value = match self.alloc_buffer_object(new_handle, sliced_len as usize) {
+                        let value = match self.alloc_buffer_object(new_handle, sliced_len as usize)
+                        {
                             Ok(v) => v,
                             Err(e) => return OpcodeResult::Error(e),
                         };
@@ -1733,7 +1800,8 @@ impl<'a> Interpreter<'a> {
                                 let scale_pow = magnitude - precision as i32 + 1;
                                 let scale = 10f64.powi(scale_pow);
                                 let rounded = (value / scale).round() * scale;
-                                let decimal_places = (precision as i32 - magnitude - 1).max(0) as usize;
+                                let decimal_places =
+                                    (precision as i32 - magnitude - 1).max(0) as usize;
                                 let mut text = format!("{:.prec$}", rounded, prec = decimal_places);
                                 if decimal_places > 0 {
                                     while text.ends_with('0') {
@@ -2921,7 +2989,7 @@ impl<'a> Interpreter<'a> {
 
                         // Create a new object with the specified fields
                         let mut gc = self.gc.lock();
-                        let mut obj = Object::new(0, field_keys.len()); // class_id 0 for anonymous
+                        let mut obj = Object::new_structural(0, field_keys.len());
 
                         // Extract each field from the parsed DynObject and store in typed Object
                         for (index, key) in field_keys.iter().enumerate() {

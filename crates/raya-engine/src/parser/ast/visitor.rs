@@ -665,6 +665,29 @@ pub fn walk_object_type<V: Visitor>(visitor: &mut V, obj: &ObjectType) {
                 }
                 visitor.visit_type_annotation(&method.return_type);
             }
+            ObjectTypeMember::IndexSignature(index_sig) => {
+                visitor.visit_identifier(&index_sig.key_name);
+                visitor.visit_type_annotation(&index_sig.key_type);
+                visitor.visit_type_annotation(&index_sig.value_type);
+            }
+            ObjectTypeMember::CallSignature(call_sig) => {
+                for param in &call_sig.params {
+                    if let Some(name) = &param.name {
+                        visitor.visit_identifier(name);
+                    }
+                    visitor.visit_type_annotation(&param.ty);
+                }
+                visitor.visit_type_annotation(&call_sig.return_type);
+            }
+            ObjectTypeMember::ConstructSignature(ctor_sig) => {
+                for param in &ctor_sig.params {
+                    if let Some(name) = &param.name {
+                        visitor.visit_identifier(name);
+                    }
+                    visitor.visit_type_annotation(&param.ty);
+                }
+                visitor.visit_type_annotation(&ctor_sig.return_type);
+            }
         }
     }
 }

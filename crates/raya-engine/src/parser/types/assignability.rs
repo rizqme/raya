@@ -39,7 +39,7 @@ impl<'a> AssignabilityContext<'a> {
     pub fn new(type_ctx: &'a TypeContext) -> Self {
         AssignabilityContext {
             type_ctx,
-            subtyping: SubtypingContext::new(type_ctx),
+            subtyping: SubtypingContext::new(type_ctx).with_relaxed_function_call_arity(true),
             strict_mode: false,
             active_pairs: FxHashSet::default(),
             pair_cache: rustc_hash::FxHashMap::default(),
@@ -50,7 +50,7 @@ impl<'a> AssignabilityContext<'a> {
     pub fn with_strict_mode(type_ctx: &'a TypeContext, strict_mode: bool) -> Self {
         AssignabilityContext {
             type_ctx,
-            subtyping: SubtypingContext::new(type_ctx),
+            subtyping: SubtypingContext::new(type_ctx).with_relaxed_function_call_arity(true),
             strict_mode,
             active_pairs: FxHashSet::default(),
             pair_cache: rustc_hash::FxHashMap::default(),

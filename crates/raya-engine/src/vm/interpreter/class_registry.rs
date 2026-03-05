@@ -18,11 +18,7 @@ impl ClassRegistry {
         // Reserve class ID 0 for anonymous object-literal carrier values.
         // Runtime object literals are emitted with class_id=0 and depend on this
         // slot remaining stable across modules/classes.
-        let classes = vec![Class::new(
-            0,
-            "__dynamic_object__".to_string(),
-            0,
-        )];
+        let classes = vec![Class::new(0, "__dynamic_object__".to_string(), 0)];
         Self {
             classes,
             name_to_id: FxHashMap::default(),

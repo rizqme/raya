@@ -1983,7 +1983,8 @@ fn allocate_buffer_object(ctx: &RuntimeHandlerContext<'_>, data: &[u8]) -> Resul
     let handle = buffer_ptr.as_ptr() as u64;
 
     let mut obj = Object::new(buffer_class_id, buffer_field_count);
-    obj.set_field(0, Value::u64(handle)).map_err(VmError::RuntimeError)?;
+    obj.set_field(0, Value::u64(handle))
+        .map_err(VmError::RuntimeError)?;
     if buffer_field_count > 1 {
         obj.set_field(1, Value::i32(data.len() as i32))
             .map_err(VmError::RuntimeError)?;

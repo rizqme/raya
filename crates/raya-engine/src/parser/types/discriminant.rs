@@ -518,6 +518,8 @@ mod tests {
                 },
             ],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         // Create { kind: "error", error: string }
@@ -541,6 +543,8 @@ mod tests {
                 },
             ],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         let inference = DiscriminantInference::new(&ctx);
@@ -580,6 +584,8 @@ mod tests {
                 },
             ],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         let kind_lit2 = ctx.string_literal("b");
@@ -602,6 +608,8 @@ mod tests {
                 },
             ],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         let inference = DiscriminantInference::new(&ctx);
@@ -630,6 +638,8 @@ mod tests {
                 visibility: Default::default(),
             }],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         // Variant 2 has "type" field (different name)
@@ -643,6 +653,8 @@ mod tests {
                 visibility: Default::default(),
             }],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         let inference = DiscriminantInference::new(&ctx);
@@ -672,6 +684,8 @@ mod tests {
                 visibility: Default::default(),
             }],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         let kind_lit2 = ctx.string_literal("same");
@@ -684,6 +698,8 @@ mod tests {
                 visibility: Default::default(),
             }],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         let inference = DiscriminantInference::new(&ctx);
@@ -713,6 +729,8 @@ mod tests {
                 visibility: Default::default(),
             }],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         // Variant 2 has number literal for "kind"
@@ -726,6 +744,8 @@ mod tests {
                 visibility: Default::default(),
             }],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         let inference = DiscriminantInference::new(&ctx);
@@ -765,6 +785,8 @@ mod tests {
                 },
             ],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         let error_kind = ctx.string_literal("error");
@@ -787,6 +809,8 @@ mod tests {
                 },
             ],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         // union_type should automatically infer discriminant

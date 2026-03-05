@@ -58,6 +58,24 @@ pub enum StructuralSlotBinding {
     Missing,
 }
 
+/// Stable layout identity used by structural adapter cache.
+pub type LayoutId = crate::vm::object::LayoutId;
+/// Stable structural shape identity.
+pub type ShapeId = crate::vm::object::ShapeId;
+
+/// Structural adapter cache key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StructuralAdapterKey {
+    pub provider_layout: LayoutId,
+    pub required_shape: ShapeId,
+}
+
+/// Per-object structural view points to a shared adapter entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StructuralViewHandle {
+    pub adapter_key: StructuralAdapterKey,
+}
+
 #[cfg(feature = "jit")]
 #[derive(Default)]
 pub struct JitTelemetry {
@@ -168,10 +186,14 @@ pub struct SharedVmState {
     pub module_layouts: RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
 
     /// Structural slot translation views for imported/structural objects.
-    /// Key: (consumer module checksum, consumer function id, object_id),
+    /// Key: (consumer module checksum, consumer function id, object_id).
+    /// Value: shared adapter handle.
+    pub structural_slot_views: RwLock<FxHashMap<([u8; 32], usize, u64), StructuralViewHandle>>,
+
+    /// Shared adapter cache keyed by provider layout + required structural shape.
     /// Value: expected-slot -> provider binding.
-    pub structural_slot_views:
-        RwLock<FxHashMap<([u8; 32], usize, u64), Vec<StructuralSlotBinding>>>,
+    pub structural_shape_adapters:
+        RwLock<FxHashMap<StructuralAdapterKey, Arc<Vec<StructuralSlotBinding>>>>,
 
     /// Structural object shapes keyed by object_id.
     /// Stores canonical slot names for dynamic object-literal carriers (class_id=0)
@@ -255,6 +277,7 @@ impl SharedVmState {
             module_registry: RwLock::new(ModuleRegistry::new()),
             module_layouts: RwLock::new(FxHashMap::default()),
             structural_slot_views: RwLock::new(FxHashMap::default()),
+            structural_shape_adapters: RwLock::new(FxHashMap::default()),
             structural_object_shapes: RwLock::new(FxHashMap::default()),
             debug_state: Mutex::new(None),
             max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,
@@ -382,11 +405,21 @@ impl SharedVmState {
         module: &Module,
         consumer_func_id: usize,
         object_id: u64,
+        provider_layout: LayoutId,
+        required_shape: ShapeId,
         slot_map: Vec<StructuralSlotBinding>,
     ) {
         if slot_map.is_empty() {
             return;
         }
+        let adapter_key = StructuralAdapterKey {
+            provider_layout,
+            required_shape,
+        };
+        let slot_map = Arc::new(slot_map);
+        self.structural_shape_adapters
+            .write()
+            .insert(adapter_key, slot_map.clone());
         let is_identity = slot_map
             .iter()
             .enumerate()
@@ -398,7 +431,9 @@ impl SharedVmState {
             self.structural_slot_views.write().remove(&key);
             return;
         }
-        self.structural_slot_views.write().insert(key, slot_map);
+        self.structural_slot_views
+            .write()
+            .insert(key, StructuralViewHandle { adapter_key });
     }
 
     /// Mark a module as initialized.

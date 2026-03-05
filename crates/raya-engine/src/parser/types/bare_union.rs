@@ -200,6 +200,8 @@ impl<'a> BareUnionTransform<'a> {
                 },
             ],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }))
     }
 }
@@ -253,6 +255,8 @@ mod tests {
         let obj = ctx.intern(Type::Object(ObjectType {
             properties: vec![],
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
 
         let detector = BareUnionDetector::new(&ctx);

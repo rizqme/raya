@@ -447,6 +447,16 @@ fn test_interface_index_access_type_retained() {
 }
 
 #[test]
+fn test_interface_string_index_signature_type_retained() {
+    expect_i32(
+        "interface Dict { [key: string]: number }
+         let d: Dict = { value: 11 };
+         return d[\"value\"];",
+        11,
+    );
+}
+
+#[test]
 fn test_interface_extends_type_retained() {
     expect_i32(
         "interface Base { x: number }
@@ -463,7 +473,7 @@ fn test_interface_extends_undefined_type_reports_error() {
         "interface Derived extends MissingBase { y: number }
          let d: Derived = { y: 1 };
          return d.y;",
-        "UndefinedType",
+        "Undefined type",
     );
 }
 
@@ -473,7 +483,65 @@ fn test_interface_missing_required_property_reports_error() {
         "interface Box { value: number }
          let b: Box = {};
          return 0;",
-        "TypeMismatch",
+        "Type mismatch",
+    );
+}
+
+#[test]
+fn test_interface_optional_method_can_be_omitted() {
+    expect_i32(
+        "interface Handler { run?(): number }
+         let h: Handler = {};
+         return 1;",
+        1,
+    );
+}
+
+#[test]
+fn test_interface_call_signature_assignability_and_call() {
+    expect_i32(
+        "interface Adder { (a: number, b: number): number }
+         function unary(a: number): number { return a; }
+         let f: Adder = unary;
+         return f(20, 22);",
+        20,
+    );
+}
+
+#[test]
+fn test_interface_construct_signature_assignability_and_new() {
+    expect_i32(
+        "interface BoxCtor { new (value: number): { value: number } }
+         class Box {
+             value: number;
+             constructor(value: number) { this.value = value; }
+         }
+         let C: BoxCtor = Box;
+         let b = new C(42);
+         return b.value;",
+        42,
+    );
+}
+
+#[test]
+fn test_interface_extends_class_public_surface_type_retained() {
+    expect_i32(
+        "class Base { x: number = 1; }
+         interface Derived extends Base { y: number }
+         let d: Derived = { x: 1, y: 2 };
+         return d.x + d.y;",
+        3,
+    );
+}
+
+#[test]
+fn test_interface_extends_class_requires_base_members() {
+    expect_compile_error(
+        "class Base { x: number = 1; }
+         interface Derived extends Base { y: number }
+         let d: Derived = { y: 2 };
+         return d.y;",
+        "Type mismatch",
     );
 }
 

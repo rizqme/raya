@@ -25,11 +25,12 @@ pub const STD_MODULE_PREFIX: &str = "std:";
 pub const NODE_MODULE_PREFIX: &str = "node:";
 
 pub use cache::ModuleCache;
-pub use compiler::{BuiltinSurfaceMode, CompiledModule, ModuleCompileError, ModuleCompiler};
+pub use compiler::{CompiledModule, ModuleCompileError, ModuleCompiler};
 pub use declaration::{
-    declaration_runtime_identity_path, load_declaration_module,
-    specialization_template_from_symbol, DeclarationError, DeclarationModule,
-    DeclarationSourceKind, LateLinkRequirement, LateLinkSymbolRequirement,
+    builtin_global_exports, declaration_runtime_identity_path, load_declaration_module,
+    load_declaration_module_from_source, specialization_template_from_symbol, BuiltinSurfaceMode,
+    DeclarationError, DeclarationModule, DeclarationSourceKind, LateLinkRequirement,
+    LateLinkSymbolRequirement,
 };
 pub use exports::{ExportRegistry, ExportedSymbol, ModuleExports};
 pub use graph::{ModuleGraph, ModuleNode};

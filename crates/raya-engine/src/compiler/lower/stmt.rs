@@ -1781,6 +1781,9 @@ impl<'a> Lowerer<'a> {
                             ast::ObjectTypeMember::Method(method) => {
                                 Some(self.interner.resolve(method.name.name).to_string())
                             }
+                            ast::ObjectTypeMember::IndexSignature(_) => None,
+                            ast::ObjectTypeMember::CallSignature(_) => None,
+                            ast::ObjectTypeMember::ConstructSignature(_) => None,
                         })
                         .collect();
                     if !member_names.is_empty() {
@@ -1899,7 +1902,8 @@ impl<'a> Lowerer<'a> {
                         .lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
 
                     if let Some(type_ann) = &decl.type_annotation {
-                        let expected_ty = self.resolve_structural_slot_type_from_annotation(type_ann);
+                        let expected_ty =
+                            self.resolve_structural_slot_type_from_annotation(type_ann);
                         self.emit_structural_slot_registration_for_type(value.clone(), expected_ty);
                     }
 
@@ -2019,8 +2023,7 @@ impl<'a> Lowerer<'a> {
                         self.clear_late_bound_object_binding(name);
                     } else if self.import_bindings.contains(&ident.name) {
                         let ctor_ty = self.get_expr_type(&new_expr.callee);
-                        let ctor_ty =
-                            (ctor_ty.as_u32() != UNRESOLVED_TYPE_ID).then_some(ctor_ty);
+                        let ctor_ty = (ctor_ty.as_u32() != UNRESOLVED_TYPE_ID).then_some(ctor_ty);
                         self.mark_late_bound_object_binding(name, ident.name, ctor_ty);
                     }
                 }

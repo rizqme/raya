@@ -118,6 +118,8 @@ impl TypeContext {
         let json_object = ctx.intern(Type::Object(super::ty::ObjectType {
             properties: vec![],
             index_signature: Some(("string".into(), json)),
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }));
         ctx.register_named_type("JsonObject".into(), json_object);
 
@@ -451,6 +453,8 @@ impl TypeContext {
         self.intern(Type::Object(super::ty::ObjectType {
             properties,
             index_signature: None,
+            call_signatures: vec![],
+            construct_signatures: vec![],
         }))
     }
 
@@ -727,14 +731,10 @@ impl TypeContext {
                 format!("[{}]", elems.join(", "))
             }
             Type::Object(o) => {
-                if o.properties.is_empty() {
-                    return "{}".to_string();
-                }
-                let max_props = if depth == 0 { 6 } else { 3 };
-                let props: Vec<_> = o
+                let max_members = if depth == 0 { 6 } else { 3 };
+                let mut members: Vec<String> = o
                     .properties
                     .iter()
-                    .take(max_props)
                     .map(|p| {
                         let opt = if p.optional { "?" } else { "" };
                         format!(
@@ -745,12 +745,34 @@ impl TypeContext {
                         )
                     })
                     .collect();
-                let ellipsis = if o.properties.len() > max_props {
+
+                if let Some((_, sig_ty)) = o.index_signature {
+                    members.push(format!(
+                        "[key: string]: {}",
+                        self.format_type_depth(sig_ty, depth + 1)
+                    ));
+                }
+
+                for &sig in &o.call_signatures {
+                    members.push(format!("(call): {}", self.format_type_depth(sig, depth + 1)));
+                }
+
+                for &sig in &o.construct_signatures {
+                    members.push(format!("new (...): {}", self.format_type_depth(sig, depth + 1)));
+                }
+
+                if members.is_empty() {
+                    return "{}".to_string();
+                }
+
+                let total_members = members.len();
+                let shown: Vec<_> = members.into_iter().take(max_members).collect();
+                let ellipsis = if total_members > max_members {
                     ", …"
                 } else {
                     ""
                 };
-                format!("{{ {}{} }}", props.join(", "), ellipsis)
+                format!("{{ {}{} }}", shown.join(", "), ellipsis)
             }
             Type::Class(c) => {
                 if c.type_params.is_empty() {

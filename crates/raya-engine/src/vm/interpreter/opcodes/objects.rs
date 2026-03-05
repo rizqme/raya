@@ -22,9 +22,9 @@ impl<'a> Interpreter<'a> {
         let receiver = Self::ensure_object_receiver(receiver, "method binding")?;
         let obj = unsafe { &*receiver.as_ptr::<Object>().unwrap().as_ptr() };
         let classes = self.classes.read();
-        let class = classes
-            .get_class(obj.class_id)
-            .ok_or_else(|| VmError::RuntimeError(format!("Invalid class index: {}", obj.class_id)))?;
+        let class = classes.get_class(obj.class_id).ok_or_else(|| {
+            VmError::RuntimeError(format!("Invalid class index: {}", obj.class_id))
+        })?;
         let func_id = class.vtable.get_method(method_slot).ok_or_else(|| {
             VmError::RuntimeError(format!(
                 "Invalid method slot: {} for class {}",
@@ -272,8 +272,7 @@ impl<'a> Interpreter<'a> {
         let classes = self.classes.read();
         let class_name = classes.get_class(obj.class_id)?.name.as_str();
         if class_name == "Object" && obj.field_count() <= 4 {
-            if let Some(index) =
-                Self::legacy_field_index_for_layout(field_name, obj.field_count())
+            if let Some(index) = Self::legacy_field_index_for_layout(field_name, obj.field_count())
             {
                 return Some(index);
             }
@@ -408,7 +407,11 @@ impl<'a> Interpreter<'a> {
                 let field_count = class.field_count;
                 drop(classes);
 
-                let obj = Object::new(class_index, field_count);
+                let obj = if class_index == 0 {
+                    Object::new_structural(0, field_count)
+                } else {
+                    Object::new(class_index, field_count)
+                };
                 let gc_ptr = self.gc.lock().allocate(obj);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
@@ -458,7 +461,9 @@ impl<'a> Interpreter<'a> {
                 }
                 let field_offset = match slot_binding {
                     StructuralSlotBinding::Field(offset) => offset,
-                    StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => unreachable!(),
+                    StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => {
+                        unreachable!()
+                    }
                 };
                 if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
                     if let Some(getter) = self.descriptor_accessor(actual_obj, &field_name, "get") {
@@ -628,7 +633,9 @@ impl<'a> Interpreter<'a> {
                 }
                 let field_offset = match slot_binding {
                     StructuralSlotBinding::Field(offset) => offset,
-                    StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => unreachable!(),
+                    StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => {
+                        unreachable!()
+                    }
                 };
                 let value = obj.get_field(field_offset).unwrap_or(Value::null());
                 if let Err(e) = stack.push(value) {
@@ -656,7 +663,11 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                let obj = Object::new(class_index, field_count);
+                let obj = if class_index == 0 {
+                    Object::new_structural(0, field_count)
+                } else {
+                    Object::new(class_index, field_count)
+                };
                 let gc_ptr = self.gc.lock().allocate(obj);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };

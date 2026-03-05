@@ -271,6 +271,14 @@ impl<'a> Canonicalizer<'a> {
             ));
         }
 
+        for sig in &object.call_signatures {
+            members.insert(format!("call:{}", self.canonicalize_type(*sig)));
+        }
+
+        for sig in &object.construct_signatures {
+            members.insert(format!("ctor:{}", self.canonicalize_type(*sig)));
+        }
+
         format!("obj({})", members.into_iter().collect::<Vec<_>>().join(","))
     }
 
@@ -427,6 +435,14 @@ impl<'a> Canonicalizer<'a> {
                 exts.sort_unstable();
                 exts.dedup();
                 members.insert(format!("extends:[{}]", exts.join(",")));
+            }
+
+            for sig in &iface.call_signatures {
+                members.insert(format!("call:{}", this.canonicalize_type(*sig)));
+            }
+
+            for sig in &iface.construct_signatures {
+                members.insert(format!("ctor:{}", this.canonicalize_type(*sig)));
             }
 
             format!(
@@ -777,10 +793,11 @@ impl<'a> SignatureHydrator<'a> {
     fn make_recursive_placeholder(&mut self, rec_idx: usize) -> TypeId {
         let unique = self.next_placeholder_id;
         self.next_placeholder_id = self.next_placeholder_id.saturating_add(1);
-        self.type_ctx.intern(Type::Reference(super::ty::TypeReference {
-            name: format!("__sig_rec_{rec_idx}_{unique}"),
-            type_args: None,
-        }))
+        self.type_ctx
+            .intern(Type::Reference(super::ty::TypeReference {
+                name: format!("__sig_rec_{rec_idx}_{unique}"),
+                type_args: None,
+            }))
     }
 
     fn parse_function(&mut self, inner: &str) -> Option<TypeId> {
@@ -823,6 +840,8 @@ impl<'a> SignatureHydrator<'a> {
     fn parse_object(&mut self, inner: &str) -> Option<TypeId> {
         let mut properties = Vec::new();
         let mut index_signature = None::<(String, TypeId)>;
+        let mut call_signatures = Vec::new();
+        let mut construct_signatures = Vec::new();
 
         if !inner.trim().is_empty() {
             for entry in split_top_level(inner, ',') {
@@ -850,6 +869,14 @@ impl<'a> SignatureHydrator<'a> {
                         let ty = self.parse_type(&fields[2])?;
                         index_signature = Some((key, ty));
                     }
+                    "call" if fields.len() >= 2 => {
+                        let ty = self.parse_type(&fields[1])?;
+                        call_signatures.push(ty);
+                    }
+                    "ctor" if fields.len() >= 2 => {
+                        let ty = self.parse_type(&fields[1])?;
+                        construct_signatures.push(ty);
+                    }
                     _ => {}
                 }
             }
@@ -858,6 +885,8 @@ impl<'a> SignatureHydrator<'a> {
         Some(self.type_ctx.intern(Type::Object(super::ty::ObjectType {
             properties,
             index_signature,
+            call_signatures,
+            construct_signatures,
         })))
     }
 
@@ -945,6 +974,8 @@ impl<'a> SignatureHydrator<'a> {
     fn parse_interface(&mut self, inner: &str) -> Option<TypeId> {
         let mut properties = Vec::new();
         let mut methods = Vec::new();
+        let mut call_signatures = Vec::new();
+        let mut construct_signatures = Vec::new();
         let mut extends = Vec::new();
 
         if !inner.trim().is_empty() {
@@ -988,6 +1019,14 @@ impl<'a> SignatureHydrator<'a> {
                             }
                         }
                     }
+                    "call" if fields.len() >= 2 => {
+                        let ty = self.parse_type(&fields[1])?;
+                        call_signatures.push(ty);
+                    }
+                    "ctor" if fields.len() >= 2 => {
+                        let ty = self.parse_type(&fields[1])?;
+                        construct_signatures.push(ty);
+                    }
                     _ => {}
                 }
             }
@@ -1001,6 +1040,8 @@ impl<'a> SignatureHydrator<'a> {
                     type_params: Vec::new(),
                     properties,
                     methods,
+                    call_signatures,
+                    construct_signatures,
                     extends,
                 })),
         )

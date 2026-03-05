@@ -1807,7 +1807,7 @@ impl<'a> Interpreter<'a> {
                                     .unwrap_or("unknown");
 
                                 // Create a SourceLocation object with: file, line, column
-                                let mut result_obj = Object::new(0, 3);
+                                let mut result_obj = Object::new_structural(0, 3);
 
                                 // Set file
                                 let file_str = RayaString::new(source_file.to_string());
@@ -2988,7 +2988,7 @@ impl<'a> Interpreter<'a> {
         // - identity: number
         // - timestamp: number
         // - fields: object mapping field names to values
-        let mut obj = Object::new(0, 4); // class_id 0 for dynamic object, 4 fields
+        let mut obj = Object::new_structural(0, 4);
 
         // Store class_name
         let class_name_str = RayaString::new(snapshot.class_name.clone());
@@ -3019,7 +3019,7 @@ impl<'a> Interpreter<'a> {
     ) -> Value {
         // Create an object with field count matching the number of fields
         let field_count = fields.len();
-        let mut obj = Object::new(0, field_count);
+        let mut obj = Object::new_structural(0, field_count);
 
         // Sort fields by name for consistent ordering
         let mut field_names: Vec<_> = fields.keys().collect();
@@ -3028,7 +3028,7 @@ impl<'a> Interpreter<'a> {
         for (i, name) in field_names.iter().enumerate() {
             if let Some(field) = fields.get(*name) {
                 // Create a field info object with: name, value, type_name
-                let mut field_obj = Object::new(0, 3);
+                let mut field_obj = Object::new_structural(0, 3);
 
                 // Field name
                 let name_str = RayaString::new(field.name.clone());
@@ -3097,7 +3097,7 @@ impl<'a> Interpreter<'a> {
         // - added: string[] (field names added)
         // - removed: string[] (field names removed)
         // - changed: object mapping field name to { old, new }
-        let mut obj = Object::new(0, 3);
+        let mut obj = Object::new_structural(0, 3);
 
         // Create added array
         let mut added_arr = Array::new(0, diff.added.len());
@@ -3142,7 +3142,7 @@ impl<'a> Interpreter<'a> {
         changes: &std::collections::HashMap<String, crate::vm::reflect::ValueChange>,
     ) -> Value {
         let change_count = changes.len();
-        let mut obj = Object::new(0, change_count);
+        let mut obj = Object::new_structural(0, change_count);
 
         // Sort changes by name for consistent ordering
         let mut change_names: Vec<_> = changes.keys().collect();
@@ -3151,7 +3151,7 @@ impl<'a> Interpreter<'a> {
         for (i, name) in change_names.iter().enumerate() {
             if let Some(change) = changes.get(*name) {
                 // Create a change object with: fieldName, old, new
-                let mut change_obj = Object::new(0, 3);
+                let mut change_obj = Object::new_structural(0, 3);
 
                 // Field name
                 let name_str = RayaString::new((*name).clone());

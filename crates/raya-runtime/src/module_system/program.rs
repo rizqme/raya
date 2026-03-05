@@ -2,12 +2,12 @@ use crate::compile;
 use crate::compile::{TsCompilerOptions, TypeMode};
 use crate::error::RuntimeError;
 use crate::BuiltinMode;
-use raya_engine::compiler::module::{specialization_template_from_symbol, LateLinkRequirement};
 use raya_engine::compiler::module::{
-    BuiltinSurfaceMode, ModuleCompileError, ModuleCompiler as BinaryModuleCompiler,
+    specialization_template_from_symbol, BuiltinSurfaceMode, LateLinkRequirement,
 };
+use raya_engine::compiler::module::{ModuleCompileError, ModuleCompiler as BinaryModuleCompiler};
 use raya_engine::compiler::{module_id_from_name, SymbolType};
-use raya_engine::parser::checker::TypeSystemMode;
+use raya_engine::parser::checker::{CheckerPolicy, TsTypeFlags, TypeSystemMode};
 use raya_engine::parser::{Interner, Parser};
 use raya_engine::vm::module::ModuleLinker;
 use std::collections::HashMap;
@@ -70,10 +70,8 @@ impl ProgramCompiler {
 
         let mut compiler = BinaryModuleCompiler::new(project_root)
             .with_checker_mode(self.type_system_mode())
-            .with_builtin_surface_mode(match self.builtin_mode {
-                BuiltinMode::RayaStrict => BuiltinSurfaceMode::RayaStrict,
-                BuiltinMode::NodeCompat => BuiltinSurfaceMode::NodeCompat,
-            });
+            .with_checker_policy(self.checker_policy())
+            .with_builtin_surface_mode(self.builtin_surface_mode());
         let mut compiled_modules = compiler.compile(&entry_path)?;
         if std::env::var("RAYA_DEBUG_MODULE_NATIVES").is_ok() {
             for compiled in &compiled_modules {
@@ -294,10 +292,7 @@ impl ProgramCompiler {
     }
 
     fn can_use_binary_module_pipeline(&self) -> bool {
-        if !matches!(self.type_mode, TypeMode::Raya | TypeMode::Js) {
-            return false;
-        }
-        if self.ts_options.is_some() || self.type_mode == TypeMode::Ts {
+        if !matches!(self.type_mode, TypeMode::Raya | TypeMode::Js | TypeMode::Ts) {
             return false;
         }
         if self.compile_options.is_some() {
@@ -312,6 +307,28 @@ impl ProgramCompiler {
             TypeMode::Raya => TypeSystemMode::Raya,
             TypeMode::Js => TypeSystemMode::Js,
             TypeMode::Ts => TypeSystemMode::Ts,
+        }
+    }
+
+    fn checker_policy(&self) -> CheckerPolicy {
+        match self.type_mode {
+            TypeMode::Raya => CheckerPolicy::for_mode(TypeSystemMode::Raya),
+            TypeMode::Js => CheckerPolicy::for_mode(TypeSystemMode::Js),
+            TypeMode::Ts => {
+                let flags = self
+                    .ts_options
+                    .as_ref()
+                    .map(TsCompilerOptions::effective_typecheck_flags)
+                    .unwrap_or_else(TsTypeFlags::default);
+                CheckerPolicy::for_ts(flags)
+            }
+        }
+    }
+
+    fn builtin_surface_mode(&self) -> BuiltinSurfaceMode {
+        match self.builtin_mode {
+            BuiltinMode::RayaStrict => BuiltinSurfaceMode::RayaStrict,
+            BuiltinMode::NodeCompat => BuiltinSurfaceMode::NodeCompat,
         }
     }
 
@@ -433,14 +450,12 @@ fn materialize_inline_entry_source(
     virtual_entry_path: &Path,
     source: &str,
 ) -> Result<PathBuf, RuntimeError> {
-    let mut candidate_dirs = Vec::new();
+    // Inline sources are ephemeral; always materialize under temp to avoid
+    // polluting project directories.
+    let mut candidate_dirs = vec![std::env::temp_dir().join("raya-inline")];
     if let Some(parent) = virtual_entry_path.parent() {
         candidate_dirs.push(parent.to_path_buf());
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        candidate_dirs.push(cwd);
-    }
-    candidate_dirs.push(std::env::temp_dir());
 
     let mut deduped_dirs = Vec::new();
     for dir in candidate_dirs {

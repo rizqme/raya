@@ -235,6 +235,8 @@ impl<'a> Binder<'a> {
             .intern(Type::Object(crate::parser::types::ty::ObjectType {
                 properties,
                 index_signature: None,
+                call_signatures: vec![],
+                construct_signatures: vec![],
             }))
     }
 
@@ -3468,6 +3470,8 @@ impl<'a> Binder<'a> {
                             let object_type = crate::parser::types::ty::ObjectType {
                                 properties: vec![],
                                 index_signature: Some(("[key]".to_string(), value_ty)),
+                                call_signatures: vec![],
+                                construct_signatures: vec![],
                             };
                             return Ok(self.type_ctx.intern(Type::Object(object_type)));
                         }
@@ -3501,12 +3505,9 @@ impl<'a> Binder<'a> {
                             } else {
                                 None
                             };
-                            Ok(self
-                                .type_ctx
-                                .intern(Type::Reference(crate::parser::types::ty::TypeReference {
-                                    name,
-                                    type_args,
-                                })))
+                            Ok(self.type_ctx.intern(Type::Reference(
+                                crate::parser::types::ty::TypeReference { name, type_args },
+                            )))
                         }
                         SymbolKind::TypeAlias | SymbolKind::TypeParameter => {
                             let template_ty = symbol.ty;
@@ -3588,25 +3589,146 @@ impl<'a> Binder<'a> {
             }
 
             AstType::Intersection(intersection) => {
-                // Resolve all constituent types and merge their properties into a single Object type
+                // Resolve all constituent types and merge their structural members into
+                // a single object type. This supports TS-compatible interface/class
+                // extension forms lowered to intersections.
                 let mut merged_properties = Vec::new();
+                let mut index_signature: Option<(String, TypeId)> = None;
+                let mut call_signatures: Vec<TypeId> = Vec::new();
+                let mut construct_signatures: Vec<TypeId> = Vec::new();
+                let mut pending = Vec::new();
+                let mut visited = std::collections::HashSet::new();
+
                 for ty_annot in &intersection.types {
-                    let ty_id = self.resolve_type_annotation(ty_annot)?;
-                    if let Some(crate::parser::types::Type::Object(obj)) =
-                        self.type_ctx.get(ty_id).cloned()
-                    {
-                        for prop in &obj.properties {
-                            if !merged_properties.iter().any(
-                                |p: &crate::parser::types::ty::PropertySignature| {
-                                    p.name == prop.name
-                                },
-                            ) {
-                                merged_properties.push(prop.clone());
+                    pending.push(self.resolve_type_annotation(ty_annot)?);
+                }
+
+                while let Some(ty_id) = pending.pop() {
+                    if !visited.insert(ty_id) {
+                        continue;
+                    }
+
+                    let Some(ty) = self.type_ctx.get(ty_id).cloned() else {
+                        continue;
+                    };
+
+                    match ty {
+                        crate::parser::types::Type::Object(obj) => {
+                            for prop in obj.properties {
+                                if !merged_properties.iter().any(
+                                    |p: &crate::parser::types::ty::PropertySignature| {
+                                        p.name == prop.name
+                                    },
+                                ) {
+                                    merged_properties.push(prop);
+                                }
+                            }
+                            if index_signature.is_none() {
+                                index_signature = obj.index_signature;
+                            }
+                            for sig in obj.call_signatures {
+                                if !call_signatures.contains(&sig) {
+                                    call_signatures.push(sig);
+                                }
+                            }
+                            for sig in obj.construct_signatures {
+                                if !construct_signatures.contains(&sig) {
+                                    construct_signatures.push(sig);
+                                }
                             }
                         }
+                        crate::parser::types::Type::Class(class_ty) => {
+                            for prop in class_ty.properties.into_iter().filter(|prop| {
+                                prop.visibility == crate::parser::ast::Visibility::Public
+                            }) {
+                                if !merged_properties.iter().any(
+                                    |existing: &crate::parser::types::ty::PropertySignature| {
+                                        existing.name == prop.name
+                                    },
+                                ) {
+                                    merged_properties.push(prop);
+                                }
+                            }
+                            for method in class_ty.methods.into_iter().filter(|method| {
+                                method.visibility == crate::parser::ast::Visibility::Public
+                            }) {
+                                if !merged_properties.iter().any(
+                                    |existing: &crate::parser::types::ty::PropertySignature| {
+                                        existing.name == method.name
+                                    },
+                                ) {
+                                    merged_properties.push(
+                                        crate::parser::types::ty::PropertySignature {
+                                            name: method.name,
+                                            ty: method.ty,
+                                            optional: false,
+                                            readonly: false,
+                                            visibility: crate::parser::ast::Visibility::Public,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        crate::parser::types::Type::Interface(interface_ty) => {
+                            for prop in interface_ty.properties {
+                                if !merged_properties.iter().any(
+                                    |existing: &crate::parser::types::ty::PropertySignature| {
+                                        existing.name == prop.name
+                                    },
+                                ) {
+                                    merged_properties.push(prop);
+                                }
+                            }
+                            for method in interface_ty.methods {
+                                if !merged_properties.iter().any(
+                                    |existing: &crate::parser::types::ty::PropertySignature| {
+                                        existing.name == method.name
+                                    },
+                                ) {
+                                    merged_properties.push(
+                                        crate::parser::types::ty::PropertySignature {
+                                            name: method.name,
+                                            ty: method.ty,
+                                            optional: false,
+                                            readonly: false,
+                                            visibility: crate::parser::ast::Visibility::Public,
+                                        },
+                                    );
+                                }
+                            }
+                            for sig in interface_ty.call_signatures {
+                                if !call_signatures.contains(&sig) {
+                                    call_signatures.push(sig);
+                                }
+                            }
+                            for sig in interface_ty.construct_signatures {
+                                if !construct_signatures.contains(&sig) {
+                                    construct_signatures.push(sig);
+                                }
+                            }
+                            pending.extend(interface_ty.extends);
+                        }
+                        crate::parser::types::Type::Reference(type_ref) => {
+                            if let Some(named_ty) = self.type_ctx.lookup_named_type(&type_ref.name)
+                            {
+                                pending.push(named_ty);
+                            }
+                        }
+                        crate::parser::types::Type::Generic(generic_ty) => {
+                            pending.push(generic_ty.base);
+                        }
+                        _ => {}
                     }
                 }
-                Ok(self.type_ctx.object_type(merged_properties))
+
+                Ok(self.type_ctx.intern(crate::parser::types::Type::Object(
+                    crate::parser::types::ty::ObjectType {
+                        properties: merged_properties,
+                        index_signature,
+                        call_signatures,
+                        construct_signatures,
+                    },
+                )))
             }
 
             AstType::Function(func) => {
@@ -3637,6 +3759,9 @@ impl<'a> Binder<'a> {
                 use crate::parser::types::ty::{ObjectType, PropertySignature};
 
                 let mut properties = Vec::new();
+                let mut index_signature: Option<(String, TypeId)> = None;
+                let mut call_signatures = Vec::new();
+                let mut construct_signatures = Vec::new();
 
                 for member in &obj.members {
                     match member {
@@ -3674,17 +3799,66 @@ impl<'a> Binder<'a> {
                             properties.push(PropertySignature {
                                 name: self.resolve(method.name.name),
                                 ty: func_ty,
-                                optional: false,
+                                optional: method.optional,
                                 readonly: false,
                                 visibility: Default::default(),
                             });
+                        }
+                        ObjectTypeMember::IndexSignature(index) => {
+                            let key_name = self.resolve(index.key_name.name);
+                            let value_ty = self.resolve_type_annotation(&index.value_type)?;
+                            index_signature = Some((key_name, value_ty));
+                        }
+                        ObjectTypeMember::CallSignature(call_sig) => {
+                            let mut param_tys = Vec::new();
+                            let mut rest_param = None;
+                            let mut min_params = 0usize;
+                            for p in &call_sig.params {
+                                let p_ty = self.resolve_type_annotation(&p.ty)?;
+                                if p.is_rest {
+                                    rest_param = Some(p_ty);
+                                } else {
+                                    if !p.optional {
+                                        min_params += 1;
+                                    }
+                                    param_tys.push(p_ty);
+                                }
+                            }
+                            let return_ty = self.resolve_type_annotation(&call_sig.return_type)?;
+                            let call_ty = self.type_ctx.function_type_with_rest(
+                                param_tys, return_ty, false, min_params, rest_param,
+                            );
+                            call_signatures.push(call_ty);
+                        }
+                        ObjectTypeMember::ConstructSignature(ctor_sig) => {
+                            let mut param_tys = Vec::new();
+                            let mut rest_param = None;
+                            let mut min_params = 0usize;
+                            for p in &ctor_sig.params {
+                                let p_ty = self.resolve_type_annotation(&p.ty)?;
+                                if p.is_rest {
+                                    rest_param = Some(p_ty);
+                                } else {
+                                    if !p.optional {
+                                        min_params += 1;
+                                    }
+                                    param_tys.push(p_ty);
+                                }
+                            }
+                            let return_ty = self.resolve_type_annotation(&ctor_sig.return_type)?;
+                            let ctor_ty = self.type_ctx.function_type_with_rest(
+                                param_tys, return_ty, false, min_params, rest_param,
+                            );
+                            construct_signatures.push(ctor_ty);
                         }
                     }
                 }
 
                 let object_type = ObjectType {
                     properties,
-                    index_signature: None,
+                    index_signature,
+                    call_signatures,
+                    construct_signatures,
                 };
 
                 Ok(self
@@ -3984,5 +4158,46 @@ mod tests {
             }
         "#;
         let _ = parse_and_bind(source);
+    }
+
+    #[test]
+    fn test_interface_call_and_construct_signatures_bind_into_object_shape() {
+        let source = r#"
+            interface Adder { (a: number, b: number): number }
+            interface BoxCtor { new (value: number): { value: number } }
+            function unary(a: number): number { return a; }
+            let f: Adder = unary;
+        "#;
+        let (symbols, ctx) = parse_and_bind(source);
+
+        let adder = symbols.resolve("Adder").expect("Adder symbol");
+        match ctx.get(adder.ty) {
+            Some(Type::Object(obj)) => {
+                assert_eq!(obj.call_signatures.len(), 1, "Adder call signatures");
+                assert_eq!(
+                    obj.construct_signatures.len(),
+                    0,
+                    "Adder construct signatures"
+                );
+            }
+            other => panic!("expected Adder to bind as object type, got {other:?}"),
+        }
+
+        let box_ctor = symbols.resolve("BoxCtor").expect("BoxCtor symbol");
+        match ctx.get(box_ctor.ty) {
+            Some(Type::Object(obj)) => {
+                assert_eq!(
+                    obj.call_signatures.len(),
+                    0,
+                    "BoxCtor call signatures"
+                );
+                assert_eq!(
+                    obj.construct_signatures.len(),
+                    1,
+                    "BoxCtor construct signatures"
+                );
+            }
+            other => panic!("expected BoxCtor to bind as object type, got {other:?}"),
+        }
     }
 }

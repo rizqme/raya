@@ -193,6 +193,21 @@ fn parse_primary_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError>
             }
         }
 
+        // TS-style `this` type in declaration signatures.
+        Token::This => {
+            parser.advance();
+            TypeAnnotation {
+                ty: Type::Reference(TypeReference {
+                    name: Identifier {
+                        name: parser.intern("this"),
+                        span: start_span,
+                    },
+                    type_args: None,
+                }),
+                span: start_span,
+            }
+        }
+
         // Parenthesized type: (T)
         Token::LeftParen => {
             parser.advance();
@@ -577,6 +592,79 @@ fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember
             false
         };
 
+        // Index signature: [key: string]: ValueType
+        if parser.check(&Token::LeftBracket) {
+            parser.advance();
+            let key_name = if let Token::Identifier(n) = parser.current() {
+                let id = Identifier {
+                    name: *n,
+                    span: parser.current_span(),
+                };
+                parser.advance();
+                id
+            } else {
+                return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
+            };
+            parser.expect(Token::Colon)?;
+            let key_type = parse_type_annotation(parser)?;
+            parser.expect(Token::RightBracket)?;
+            parser.expect(Token::Colon)?;
+            let value_type = parse_type_annotation(parser)?;
+            let span = parser.combine_spans(&start_span, &value_type.span);
+            members.push(ObjectTypeMember::IndexSignature(ObjectTypeIndexSignature {
+                key_name,
+                key_type,
+                value_type,
+                readonly,
+                span,
+            }));
+            if parser.check(&Token::Semicolon) || parser.check(&Token::Comma) {
+                parser.advance();
+            }
+            continue;
+        }
+
+        // Call signature: (args): ReturnType
+        if parser.check(&Token::LeftParen) {
+            parser.advance();
+            let params = parse_function_type_params(parser)?;
+            parser.expect(Token::RightParen)?;
+            parser.expect(Token::Colon)?;
+            let return_type = parse_type_annotation(parser)?;
+            let span = parser.combine_spans(&start_span, &return_type.span);
+            members.push(ObjectTypeMember::CallSignature(ObjectTypeCallSignature {
+                params,
+                return_type,
+                span,
+            }));
+            if parser.check(&Token::Semicolon) || parser.check(&Token::Comma) {
+                parser.advance();
+            }
+            continue;
+        }
+
+        // Construct signature: new (args): ReturnType
+        if parser.check(&Token::New) {
+            parser.advance();
+            parser.expect(Token::LeftParen)?;
+            let params = parse_function_type_params(parser)?;
+            parser.expect(Token::RightParen)?;
+            parser.expect(Token::Colon)?;
+            let return_type = parse_type_annotation(parser)?;
+            let span = parser.combine_spans(&start_span, &return_type.span);
+            members.push(ObjectTypeMember::ConstructSignature(
+                ObjectTypeConstructSignature {
+                    params,
+                    return_type,
+                    span,
+                },
+            ));
+            if parser.check(&Token::Semicolon) || parser.check(&Token::Comma) {
+                parser.advance();
+            }
+            continue;
+        }
+
         // Parse property/method name (identifiers and contextual keywords like `type`)
         let name = if let Token::Identifier(n) = parser.current() {
             let id = Identifier {
@@ -617,6 +705,7 @@ fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember
 
             members.push(ObjectTypeMember::Method(ObjectTypeMethod {
                 name,
+                optional,
                 params,
                 return_type,
                 span,
@@ -636,6 +725,7 @@ fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember
 
                 members.push(ObjectTypeMember::Method(ObjectTypeMethod {
                     name,
+                    optional,
                     params,
                     return_type,
                     span,

@@ -249,15 +249,22 @@ pub struct Interpreter<'a> {
         &'a RwLock<FxHashMap<[u8; 32], crate::vm::interpreter::shared_state::ModuleRuntimeLayout>>,
 
     /// Structural slot translation views for imported objects.
-    pub(in crate::vm::interpreter) structural_slot_views:
-        &'a RwLock<
-            FxHashMap<
-                ([u8; 32], usize, u64),
-                Vec<crate::vm::interpreter::shared_state::StructuralSlotBinding>,
-            >,
+    pub(in crate::vm::interpreter) structural_slot_views: &'a RwLock<
+        FxHashMap<
+            ([u8; 32], usize, u64),
+            crate::vm::interpreter::shared_state::StructuralViewHandle,
         >,
+    >,
+    /// Shared structural adapter cache keyed by `(provider_layout, required_shape)`.
+    pub(in crate::vm::interpreter) structural_shape_adapters: &'a RwLock<
+        FxHashMap<
+            crate::vm::interpreter::shared_state::StructuralAdapterKey,
+            Arc<Vec<crate::vm::interpreter::shared_state::StructuralSlotBinding>>,
+        >,
+    >,
     /// Canonical structural shapes for dynamic object-literal carriers (class_id=0).
-    pub(in crate::vm::interpreter) structural_object_shapes: &'a RwLock<FxHashMap<u64, Vec<String>>>,
+    pub(in crate::vm::interpreter) structural_object_shapes:
+        &'a RwLock<FxHashMap<u64, Vec<String>>>,
 
     /// IO submission sender for NativeCallResult::Suspend (None in tests without reactor)
     pub(in crate::vm::interpreter) io_submit_tx:
@@ -369,25 +376,40 @@ impl<'a> Interpreter<'a> {
     ) -> crate::vm::interpreter::shared_state::StructuralSlotBinding {
         let debug_structural = std::env::var("RAYA_DEBUG_STRUCTURAL_VIEW").is_ok();
         let views = self.structural_slot_views.read();
-        if let Some(slot_map) = views
+        if let Some(handle) = views
             .get(&(module.checksum, self.profiler_func_id, object.object_id))
             .or_else(|| views.get(&(module.checksum, usize::MAX, object.object_id)))
         {
+            let adapters = self.structural_shape_adapters.read();
+            let Some(slot_map) = adapters.get(&handle.adapter_key) else {
+                if debug_structural {
+                    eprintln!(
+                        "[structural-view] remap stale-handle func={} obj={} layout={} shape={} expected_slot={}",
+                        self.profiler_func_id,
+                        object.object_id,
+                        handle.adapter_key.provider_layout,
+                        handle.adapter_key.required_shape,
+                        expected_slot
+                    );
+                }
+                return crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(
+                    expected_slot,
+                );
+            };
             if debug_structural {
                 eprintln!(
-                    "[structural-view] remap hit func={} obj={} expected_slot={} map_len={}",
+                    "[structural-view] remap hit func={} obj={} layout={} shape={} expected_slot={} map_len={}",
                     self.profiler_func_id,
                     object.object_id,
+                    handle.adapter_key.provider_layout,
+                    handle.adapter_key.required_shape,
                     expected_slot,
                     slot_map.len()
                 );
             }
-            return slot_map
-                .get(expected_slot)
-                .copied()
-                .unwrap_or(crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(
-                    expected_slot,
-                ));
+            return slot_map.get(expected_slot).copied().unwrap_or(
+                crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(expected_slot),
+            );
         }
         if debug_structural {
             eprintln!(
@@ -508,7 +530,13 @@ impl<'a> Interpreter<'a> {
         structural_slot_views: &'a RwLock<
             FxHashMap<
                 ([u8; 32], usize, u64),
-                Vec<crate::vm::interpreter::shared_state::StructuralSlotBinding>,
+                crate::vm::interpreter::shared_state::StructuralViewHandle,
+            >,
+        >,
+        structural_shape_adapters: &'a RwLock<
+            FxHashMap<
+                crate::vm::interpreter::shared_state::StructuralAdapterKey,
+                Arc<Vec<crate::vm::interpreter::shared_state::StructuralSlotBinding>>,
             >,
         >,
         structural_object_shapes: &'a RwLock<FxHashMap<u64, Vec<String>>>,
@@ -530,6 +558,7 @@ impl<'a> Interpreter<'a> {
             resolved_natives,
             module_layouts,
             structural_slot_views,
+            structural_shape_adapters,
             structural_object_shapes,
             io_submit_tx,
             max_preemptions,

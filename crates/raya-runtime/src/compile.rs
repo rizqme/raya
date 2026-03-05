@@ -19,11 +19,6 @@ use crate::builtins;
 use crate::error::RuntimeError;
 use crate::BuiltinMode;
 
-const BUILTIN_PRELUDE_BEGIN_MARKER: &str = "// __raya_builtin_prelude_begin";
-const BUILTIN_PRELUDE_END_MARKER: &str = "// __raya_builtin_prelude_end";
-const STD_PRELUDE_BEGIN_MARKER: &str = "// __raya_std_prelude_begin";
-const STD_PRELUDE_END_MARKER: &str = "// __raya_std_prelude_end";
-
 /// Checker behavior mode, independent from builtin API surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TypeMode {
@@ -132,17 +127,15 @@ pub struct CheckDiagnostics {
     pub bind_errors: Vec<BindError>,
     /// Warnings from type checking
     pub warnings: Vec<CheckWarning>,
-    /// Full source (builtins + user code)
+    /// Full source text submitted for checking.
     pub source: String,
-    /// Byte offset where user code begins in `source`
+    /// Byte offset where user code begins in `source`.
+    ///
+    /// With binary-link-only compilation this is always 0.
     pub user_offset: usize,
 }
 
 /// Compile Raya source code to a bytecode module.
-///
-/// Prepends builtin class sources so user code can reference core globals
-/// (Map, Set, Buffer, Date, Promise, etc.). Standard library modules are not
-/// auto-injected; they must be imported explicitly.
 pub fn compile_source(source: &str) -> Result<(Module, Interner), RuntimeError> {
     compile_source_with_mode(source, BuiltinMode::RayaStrict)
 }
@@ -182,9 +175,7 @@ pub fn compile_source_with_modes_and_ts_options(
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
     use crate::module_system::ProgramCompiler;
-    let virtual_entry = std::env::current_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        .join("__raya_inline_entry.raya");
+    let virtual_entry = std::env::temp_dir().join("__raya_inline_entry.raya");
     let compiler = ProgramCompiler {
         builtin_mode,
         type_mode,
@@ -518,7 +509,7 @@ fn format_check_error(error: &CheckError, user_offset: usize, full_source: &str)
             .filter(|&b| b == b'\n')
             .count()
             + 1;
-        format!("{} (prelude line {})", error, abs_line)
+        format!("{} (line {})", error, abs_line)
     }
 }
 
@@ -534,7 +525,7 @@ fn format_bind_error(error: &BindError, user_offset: usize, full_source: &str) -
             .filter(|&b| b == b'\n')
             .count()
             + 1;
-        format!("{} (prelude line {})", error, abs_line)
+        format!("{} (line {})", error, abs_line)
     }
 }
 
@@ -575,17 +566,9 @@ fn format_parse_errors(errors: &[ParseError], prefix_lines: usize) -> String {
         .join("\n")
 }
 
-/// Detect duplicate top-level declarations within user source before builtin/std
-/// sources are prepended.
-///
-/// Binder duplicate detection is disabled in the main pipeline to allow user
-/// symbols to shadow builtins. This precheck still rejects duplicates that
-/// occur entirely within user code (e.g., repeated pasted REPL blocks).
+/// Detect duplicate top-level declarations in the submitted source.
 fn precheck_user_top_level_duplicates(source: &str) -> Result<(), RuntimeError> {
-    // Linked module source may include synthetic builtin prelude declarations.
-    // User declarations should be able to shadow these names.
-    let precheck_source = mask_linked_builtin_prelude_body(source);
-    let parser = Parser::new(precheck_source.as_ref()).map_err(|errors| {
+    let parser = Parser::new(source).map_err(|errors| {
         RuntimeError::Lex(
             errors
                 .iter()
@@ -648,8 +631,7 @@ fn precheck_node_compat_symbol_usage(
 
     // Linked module-graph source includes std module bodies. In strict mode we only
     // enforce node-compat symbol usage against user-authored modules, not std internals.
-    let precheck_source = mask_linked_builtin_prelude_body(source);
-    let precheck_source = mask_linked_std_module_bodies(precheck_source.as_ref());
+    let precheck_source = mask_linked_std_module_bodies(source);
     if let Some(found) =
         builtin_manifest::find_first_node_compat_symbol_usage(precheck_source.as_ref())
     {
@@ -660,69 +642,6 @@ fn precheck_node_compat_symbol_usage(
     }
 
     Ok(())
-}
-
-fn source_has_linked_builtin_prelude(source: &str) -> bool {
-    source.contains(BUILTIN_PRELUDE_BEGIN_MARKER)
-}
-
-fn find_linked_user_offset(source: &str) -> Option<usize> {
-    let prelude_end_idx = if let Some(std_end) = source.find(STD_PRELUDE_END_MARKER) {
-        std_end + STD_PRELUDE_END_MARKER.len()
-    } else {
-        let builtin_end = source.find(BUILTIN_PRELUDE_END_MARKER)?;
-        builtin_end + BUILTIN_PRELUDE_END_MARKER.len()
-    };
-    // Consume one trailing newline if present.
-    if source.as_bytes().get(prelude_end_idx) == Some(&b'\n') {
-        Some(prelude_end_idx + 1)
-    } else {
-        Some(prelude_end_idx)
-    }
-}
-
-fn mask_linked_builtin_prelude_body(source: &str) -> Cow<'_, str> {
-    if !source.contains(BUILTIN_PRELUDE_BEGIN_MARKER) && !source.contains(STD_PRELUDE_BEGIN_MARKER)
-    {
-        return Cow::Borrowed(source);
-    }
-
-    let mut masked = String::with_capacity(source.len());
-    let mut in_builtin_prelude_body = false;
-    let mut in_std_prelude_body = false;
-    for line in source.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with(BUILTIN_PRELUDE_BEGIN_MARKER) {
-            in_builtin_prelude_body = true;
-            masked.push_str(line);
-            continue;
-        }
-        if trimmed.starts_with(BUILTIN_PRELUDE_END_MARKER) {
-            in_builtin_prelude_body = false;
-            masked.push_str(line);
-            continue;
-        }
-        if trimmed.starts_with(STD_PRELUDE_BEGIN_MARKER) {
-            in_std_prelude_body = true;
-            masked.push_str(line);
-            continue;
-        }
-        if trimmed.starts_with(STD_PRELUDE_END_MARKER) {
-            in_std_prelude_body = false;
-            masked.push_str(line);
-            continue;
-        }
-
-        if in_builtin_prelude_body || in_std_prelude_body {
-            if line.ends_with('\n') {
-                masked.push('\n');
-            }
-        } else {
-            masked.push_str(line);
-        }
-    }
-
-    Cow::Owned(masked)
 }
 
 fn mask_linked_std_module_bodies(source: &str) -> Cow<'_, str> {
@@ -782,9 +701,9 @@ mod tests {
     #[test]
     fn test_check_returns_user_offset() {
         let diag = check_source("let x = 1;").unwrap();
-        assert!(
-            diag.user_offset > 0,
-            "user_offset should be > 0 (builtins are prepended)"
+        assert_eq!(
+            diag.user_offset, 0,
+            "user_offset should be 0 in binary-link-only mode"
         );
     }
 
@@ -818,13 +737,9 @@ mod tests {
     }
 
     #[test]
-    fn test_check_source_full_source_includes_builtins() {
+    fn test_check_source_returns_original_source() {
         let diag = check_source("let x = 1;").unwrap();
-        // The full source should include builtin classes
-        assert!(
-            diag.source.contains("class Map"),
-            "Full source should include Map builtin"
-        );
+        assert_eq!(diag.source, "let x = 1;");
     }
 
     #[test]
@@ -882,7 +797,7 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "mixed std imports should compile without prelude symbol collisions"
+            "mixed std imports should compile without symbol collisions"
         );
     }
 

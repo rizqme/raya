@@ -525,6 +525,8 @@ impl<'a> TypeChecker<'a> {
                     visibility: crate::parser::ast::Visibility::Public,
                 }],
                 index_signature: Some(("[key]".to_string(), index_value_ty)),
+                call_signatures: vec![],
+                construct_signatures: vec![],
             },
         ));
         let widened_inner = self.type_ctx.union_type(vec![inner_base, ext_obj_ty]);
@@ -895,23 +897,15 @@ impl<'a> TypeChecker<'a> {
 
                     // Determine the variable's type
                     let var_ty = if decl.type_annotation.is_some() {
-                        // Get the declared type from symbol table
-                        if let Some(symbol) =
-                            self.symbols.resolve_from_scope(&name, self.current_scope)
-                        {
-                            self.check_assignable(init_ty, symbol.ty, *init.span());
-                            symbol.ty
-                        } else {
-                            // Inside arrow bodies, the binder never visited — resolve
-                            // the annotation and store in inferred_var_types so
-                            // subsequent references can find this variable
-                            let resolved_ty = self
-                                .resolve_type_annotation(decl.type_annotation.as_ref().unwrap());
-                            self.check_assignable(init_ty, resolved_ty, *init.span());
-                            self.inferred_var_types
-                                .insert((self.current_scope.0, name.clone()), resolved_ty);
-                            resolved_ty
-                        }
+                        // Resolve the declared annotation in checker scope. This is
+                        // authoritative for variable declarations, even when binder
+                        // prepass placeholders are still attached to the symbol entry.
+                        let resolved_ty =
+                            self.resolve_type_annotation(decl.type_annotation.as_ref().unwrap());
+                        self.check_assignable(init_ty, resolved_ty, *init.span());
+                        self.inferred_var_types
+                            .insert((self.current_scope.0, name.clone()), resolved_ty);
+                        resolved_ty
                     } else {
                         // No type annotation - infer type from initializer
                         // Store the inferred type for later lookups
@@ -1034,7 +1028,9 @@ impl<'a> TypeChecker<'a> {
             Some(Type::Class(class_ty)) => self
                 .lookup_class_member(&class_ty, prop_name)
                 .map(|(member_ty, _)| member_ty),
-            Some(Type::Interface(interface_ty)) => self.lookup_interface_member(&interface_ty, prop_name),
+            Some(Type::Interface(interface_ty)) => {
+                self.lookup_interface_member(&interface_ty, prop_name)
+            }
             Some(Type::Reference(type_ref)) => {
                 let named_ty = self.type_ctx.lookup_named_type(&type_ref.name)?;
                 let resolved_ty = match self.type_ctx.get(named_ty).cloned() {
@@ -1063,13 +1059,15 @@ impl<'a> TypeChecker<'a> {
                 };
                 self.destructure_object_property_type(resolved_ty, prop_name)
             }
-            Some(Type::TypeVar(tv)) => tv
-                .constraint
-                .and_then(|constraint_ty| self.destructure_object_property_type(constraint_ty, prop_name)),
+            Some(Type::TypeVar(tv)) => tv.constraint.and_then(|constraint_ty| {
+                self.destructure_object_property_type(constraint_ty, prop_name)
+            }),
             Some(Type::Union(union)) => {
                 let mut member_types = Vec::new();
                 for member in union.members {
-                    if let Some(member_ty) = self.destructure_object_property_type(member, prop_name) {
+                    if let Some(member_ty) =
+                        self.destructure_object_property_type(member, prop_name)
+                    {
                         if !member_types.contains(&member_ty) {
                             member_types.push(member_ty);
                         }
@@ -1161,7 +1159,9 @@ impl<'a> TypeChecker<'a> {
                 };
                 let ann_id = type_ann as *const _ as usize;
                 let ann_ty = if param.is_rest {
-                    func_ty.rest_param.unwrap_or_else(|| self.type_ctx.unknown_type())
+                    func_ty
+                        .rest_param
+                        .unwrap_or_else(|| self.type_ctx.unknown_type())
                 } else {
                     let ty = func_ty
                         .params
@@ -1176,7 +1176,8 @@ impl<'a> TypeChecker<'a> {
 
             if let Some(return_ann) = &func.return_type {
                 let ann_id = return_ann as *const _ as usize;
-                self.type_annotation_types.insert(ann_id, declared_return_ty);
+                self.type_annotation_types
+                    .insert(ann_id, declared_return_ty);
             }
         }
 
@@ -2909,8 +2910,18 @@ impl<'a> TypeChecker<'a> {
             .map(|arg| (self.check_expr(arg), *arg.span()))
             .collect();
 
-        // Clone the function type to avoid borrow checker issues
-        let func_ty_opt = self.type_ctx.get(callee_ty).cloned();
+        // Clone the function type to avoid borrow checker issues. Structural
+        // callable object/interface signatures are projected to function types.
+        let mut func_ty_opt = self.type_ctx.get(callee_ty).cloned();
+        if let Some(crate::parser::types::Type::Object(obj)) = func_ty_opt.as_ref() {
+            if let Some(sig_ty) = obj.call_signatures.first() {
+                func_ty_opt = self.type_ctx.get(*sig_ty).cloned();
+            }
+        } else if let Some(crate::parser::types::Type::Interface(iface)) = func_ty_opt.as_ref() {
+            if let Some(sig_ty) = iface.call_signatures.first() {
+                func_ty_opt = self.type_ctx.get(*sig_ty).cloned();
+            }
+        }
 
         // Check if callee is a function type
         match func_ty_opt {
@@ -3090,9 +3101,33 @@ impl<'a> TypeChecker<'a> {
             // member access resolves to a union of function types.
             Some(crate::parser::types::Type::Union(union)) => {
                 for &member_id in &union.members {
-                    if let Some(crate::parser::types::Type::Function(func)) =
-                        self.type_ctx.get(member_id).cloned()
-                    {
+                    let mut member_func = None;
+                    match self.type_ctx.get(member_id).cloned() {
+                        Some(crate::parser::types::Type::Function(func)) => {
+                            member_func = Some(func);
+                        }
+                        Some(crate::parser::types::Type::Object(obj)) => {
+                            if let Some(sig_ty) = obj.call_signatures.first() {
+                                if let Some(crate::parser::types::Type::Function(func)) =
+                                    self.type_ctx.get(*sig_ty).cloned()
+                                {
+                                    member_func = Some(func);
+                                }
+                            }
+                        }
+                        Some(crate::parser::types::Type::Interface(iface)) => {
+                            if let Some(sig_ty) = iface.call_signatures.first() {
+                                if let Some(crate::parser::types::Type::Function(func)) =
+                                    self.type_ctx.get(*sig_ty).cloned()
+                                {
+                                    member_func = Some(func);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    if let Some(func) = member_func {
                         // Re-dispatch with this function type
                         for (i, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
                             if i < func.params.len() {
@@ -4225,6 +4260,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Check new expression (class instantiation)
     fn check_new(&mut self, new_expr: &crate::parser::ast::NewExpression) -> TypeId {
+        let mut deferred_non_class_name: Option<String> = None;
         // Get the callee type (should be a class)
         if let Expression::Identifier(ident) = &*new_expr.callee {
             let name = self.resolve(ident.name);
@@ -4331,27 +4367,142 @@ impl<'a> TypeChecker<'a> {
                         self.check_expr(arg);
                     }
                     if let Some(ty) = self.get_var_type(&name) {
+                        if let Some(return_ty) = self.first_construct_signature_return_type(ty) {
+                            return return_ty;
+                        }
                         return ty;
                     }
                     return self.type_ctx.unknown_type();
                 } else {
-                    // Symbol exists but is not a class — cannot use 'new' on it
-                    self.errors.push(CheckError::NewNonClass {
-                        name: name.clone(),
-                        span: new_expr.span,
-                    });
-                    for arg in &new_expr.arguments {
-                        self.check_expr(arg);
-                    }
-                    return self.type_ctx.unknown_type();
+                    // Symbol exists but is not a nominal class. Defer reporting
+                    // until structural construct-signature checks have a chance.
+                    deferred_non_class_name = Some(name.clone());
                 }
             }
         }
+
+        let callee_ty = self.check_expr(&new_expr.callee);
+        let mut ctor_fn: Option<crate::parser::types::ty::FunctionType> = None;
+        match self.type_ctx.get(callee_ty).cloned() {
+            Some(crate::parser::types::Type::Function(func)) => {
+                ctor_fn = Some(func);
+            }
+            Some(crate::parser::types::Type::Object(obj)) => {
+                if let Some(sig_ty) = obj.construct_signatures.first() {
+                    if let Some(crate::parser::types::Type::Function(func)) =
+                        self.type_ctx.get(*sig_ty).cloned()
+                    {
+                        ctor_fn = Some(func);
+                    }
+                }
+            }
+            Some(crate::parser::types::Type::Interface(iface)) => {
+                if let Some(sig_ty) = iface.construct_signatures.first() {
+                    if let Some(crate::parser::types::Type::Function(func)) =
+                        self.type_ctx.get(*sig_ty).cloned()
+                    {
+                        ctor_fn = Some(func);
+                    }
+                }
+            }
+            Some(crate::parser::types::Type::Union(union)) => {
+                for member in union.members {
+                    match self.type_ctx.get(member).cloned() {
+                        Some(crate::parser::types::Type::Function(func)) => {
+                            ctor_fn = Some(func);
+                            break;
+                        }
+                        Some(crate::parser::types::Type::Object(obj)) => {
+                            if let Some(sig_ty) = obj.construct_signatures.first() {
+                                if let Some(crate::parser::types::Type::Function(func)) =
+                                    self.type_ctx.get(*sig_ty).cloned()
+                                {
+                                    ctor_fn = Some(func);
+                                    break;
+                                }
+                            }
+                        }
+                        Some(crate::parser::types::Type::Interface(iface)) => {
+                            if let Some(sig_ty) = iface.construct_signatures.first() {
+                                if let Some(crate::parser::types::Type::Function(func)) =
+                                    self.type_ctx.get(*sig_ty).cloned()
+                                {
+                                    ctor_fn = Some(func);
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        if let Some(func) = ctor_fn {
+            let arg_types: Vec<(TypeId, crate::parser::Span)> = new_expr
+                .arguments
+                .iter()
+                .map(|arg| (self.check_expr(arg), *arg.span()))
+                .collect();
+            let (min_params, max_params) = self.compute_fn_arity_bounds(&func);
+            if arg_types.len() < min_params || arg_types.len() > max_params {
+                self.errors.push(CheckError::ArgumentCountMismatch {
+                    expected: func.params.len(),
+                    min_expected: min_params,
+                    actual: arg_types.len(),
+                    span: new_expr.span,
+                });
+            }
+            for (index, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
+                if let Some(param_ty) = self.helper_param_type_at(&func, index) {
+                    self.check_assignable(*arg_ty, param_ty, *arg_span);
+                }
+            }
+            return func.return_type;
+        }
+
+        if let Some(name) = deferred_non_class_name {
+            self.errors.push(CheckError::NewNonClass {
+                name,
+                span: new_expr.span,
+            });
+        }
+
         // Check arguments even if we can't determine the class
         for arg in &new_expr.arguments {
             self.check_expr(arg);
         }
         self.type_ctx.unknown_type()
+    }
+
+    fn first_construct_signature_return_type(&self, ty: TypeId) -> Option<TypeId> {
+        match self.type_ctx.get(ty).cloned() {
+            Some(crate::parser::types::Type::Function(func)) => Some(func.return_type),
+            Some(crate::parser::types::Type::Object(obj)) => obj
+                .construct_signatures
+                .first()
+                .and_then(|sig_ty| match self.type_ctx.get(*sig_ty).cloned() {
+                    Some(crate::parser::types::Type::Function(func)) => Some(func.return_type),
+                    _ => None,
+                }),
+            Some(crate::parser::types::Type::Interface(iface)) => iface
+                .construct_signatures
+                .first()
+                .and_then(|sig_ty| match self.type_ctx.get(*sig_ty).cloned() {
+                    Some(crate::parser::types::Type::Function(func)) => Some(func.return_type),
+                    _ => None,
+                }),
+            Some(crate::parser::types::Type::Union(union)) => union
+                .members
+                .into_iter()
+                .find_map(|member| self.first_construct_signature_return_type(member)),
+            Some(crate::parser::types::Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .and_then(|named| self.first_construct_signature_return_type(named)),
+            _ => None,
+        }
     }
 
     /// Check this expression
@@ -5055,9 +5206,11 @@ impl<'a> TypeChecker<'a> {
                             }
                             crate::parser::types::Type::Map(map_ty) => {
                                 object_like_members += 1;
-                                if let Some(ty) = self
-                                    .get_map_method_type(&property_name, map_ty.key, map_ty.value)
-                                {
+                                if let Some(ty) = self.get_map_method_type(
+                                    &property_name,
+                                    map_ty.key,
+                                    map_ty.value,
+                                ) {
                                     if !found_types.contains(&ty) {
                                         found_types.push(ty);
                                     }
@@ -5074,7 +5227,8 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
                             crate::parser::types::Type::Reference(type_ref) => {
-                                if let Some(named_ty) = self.type_ctx.lookup_named_type(&type_ref.name)
+                                if let Some(named_ty) =
+                                    self.type_ctx.lookup_named_type(&type_ref.name)
                                 {
                                     match self.type_ctx.get(named_ty).cloned() {
                                         Some(crate::parser::types::Type::Class(class_ty))
@@ -5084,8 +5238,10 @@ impl<'a> TypeChecker<'a> {
                                                 .is_some_and(|args| !args.is_empty())
                                                 && !class_ty.type_params.is_empty() =>
                                         {
-                                            let args =
-                                                type_ref.type_args.as_ref().expect("checked is_some");
+                                            let args = type_ref
+                                                .type_args
+                                                .as_ref()
+                                                .expect("checked is_some");
                                             let instantiated_ty =
                                                 self.instantiate_class_type(&class_ty, args);
                                             if let Some(inst_ty) =
@@ -5418,10 +5574,7 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
-    fn resolve_class_type(
-        &mut self,
-        ty: TypeId,
-    ) -> Option<crate::parser::types::ty::ClassType> {
+    fn resolve_class_type(&mut self, ty: TypeId) -> Option<crate::parser::types::ty::ClassType> {
         use crate::parser::types::Type;
         match self.type_ctx.get(ty).cloned()? {
             Type::Class(class_ty) => Some(class_ty),
@@ -6380,6 +6533,8 @@ impl<'a> TypeChecker<'a> {
             .intern(crate::parser::types::Type::Object(ObjectType {
                 properties,
                 index_signature: None,
+                call_signatures: vec![],
+                construct_signatures: vec![],
             }))
     }
 
@@ -6756,6 +6911,8 @@ impl<'a> TypeChecker<'a> {
                             let object_type = crate::parser::types::ty::ObjectType {
                                 properties: vec![],
                                 index_signature: Some(("[key]".to_string(), value_ty)),
+                                call_signatures: vec![],
+                                construct_signatures: vec![],
                             };
                             return self
                                 .type_ctx
@@ -6834,23 +6991,115 @@ impl<'a> TypeChecker<'a> {
             AstType::Intersection(intersection) => {
                 // Merge constituent types into a single Object type
                 let mut merged_properties = Vec::new();
+                let mut index_signature: Option<(String, TypeId)> = None;
+                let mut call_signatures: Vec<TypeId> = Vec::new();
+                let mut construct_signatures: Vec<TypeId> = Vec::new();
                 for ty_annot in &intersection.types {
                     let ty_id = self.resolve_type_annotation(ty_annot);
-                    if let Some(crate::parser::types::Type::Object(obj)) =
-                        self.type_ctx.get(ty_id).cloned()
-                    {
-                        for prop in &obj.properties {
-                            if !merged_properties.iter().any(
-                                |p: &crate::parser::types::ty::PropertySignature| {
-                                    p.name == prop.name
-                                },
-                            ) {
-                                merged_properties.push(prop.clone());
+                    match self.type_ctx.get(ty_id).cloned() {
+                        Some(crate::parser::types::Type::Object(obj)) => {
+                            for prop in &obj.properties {
+                                if !merged_properties.iter().any(
+                                    |p: &crate::parser::types::ty::PropertySignature| {
+                                        p.name == prop.name
+                                    },
+                                ) {
+                                    merged_properties.push(prop.clone());
+                                }
+                            }
+                            if index_signature.is_none() {
+                                index_signature = obj.index_signature;
+                            }
+                            for sig in obj.call_signatures {
+                                if !call_signatures.contains(&sig) {
+                                    call_signatures.push(sig);
+                                }
+                            }
+                            for sig in obj.construct_signatures {
+                                if !construct_signatures.contains(&sig) {
+                                    construct_signatures.push(sig);
+                                }
                             }
                         }
+                        Some(crate::parser::types::Type::Interface(iface)) => {
+                            for prop in &iface.properties {
+                                if !merged_properties.iter().any(
+                                    |p: &crate::parser::types::ty::PropertySignature| {
+                                        p.name == prop.name
+                                    },
+                                ) {
+                                    merged_properties.push(prop.clone());
+                                }
+                            }
+                            for method in &iface.methods {
+                                if !merged_properties.iter().any(
+                                    |p: &crate::parser::types::ty::PropertySignature| {
+                                        p.name == method.name
+                                    },
+                                ) {
+                                    merged_properties.push(crate::parser::types::ty::PropertySignature {
+                                        name: method.name.clone(),
+                                        ty: method.ty,
+                                        optional: false,
+                                        readonly: false,
+                                        visibility: crate::parser::ast::Visibility::Public,
+                                    });
+                                }
+                            }
+                            for sig in iface.call_signatures {
+                                if !call_signatures.contains(&sig) {
+                                    call_signatures.push(sig);
+                                }
+                            }
+                            for sig in iface.construct_signatures {
+                                if !construct_signatures.contains(&sig) {
+                                    construct_signatures.push(sig);
+                                }
+                            }
+                        }
+                        Some(crate::parser::types::Type::Class(class_ty)) => {
+                            for prop in &class_ty.properties {
+                                if prop.visibility != crate::parser::ast::Visibility::Public {
+                                    continue;
+                                }
+                                if !merged_properties.iter().any(
+                                    |p: &crate::parser::types::ty::PropertySignature| {
+                                        p.name == prop.name
+                                    },
+                                ) {
+                                    merged_properties.push(prop.clone());
+                                }
+                            }
+                            for method in &class_ty.methods {
+                                if method.visibility != crate::parser::ast::Visibility::Public {
+                                    continue;
+                                }
+                                if !merged_properties.iter().any(
+                                    |p: &crate::parser::types::ty::PropertySignature| {
+                                        p.name == method.name
+                                    },
+                                ) {
+                                    merged_properties.push(crate::parser::types::ty::PropertySignature {
+                                        name: method.name.clone(),
+                                        ty: method.ty,
+                                        optional: false,
+                                        readonly: false,
+                                        visibility: crate::parser::ast::Visibility::Public,
+                                    });
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                self.type_ctx.object_type(merged_properties)
+                self.type_ctx.intern(crate::parser::types::Type::Object(
+                    crate::parser::types::ty::ObjectType {
+                        properties: merged_properties,
+                        index_signature,
+                        call_signatures,
+                        construct_signatures,
+                    },
+                ))
             }
 
             AstType::Function(func) => {
@@ -6878,6 +7127,9 @@ impl<'a> TypeChecker<'a> {
             AstType::Object(obj) => {
                 // Build an object type from the type annotation
                 let mut properties = Vec::new();
+                let mut index_signature: Option<(String, TypeId)> = None;
+                let mut call_signatures: Vec<TypeId> = Vec::new();
+                let mut construct_signatures: Vec<TypeId> = Vec::new();
                 for member in &obj.members {
                     match member {
                         crate::parser::ast::ObjectTypeMember::Property(prop) => {
@@ -6913,14 +7165,66 @@ impl<'a> TypeChecker<'a> {
                             properties.push(crate::parser::types::ty::PropertySignature {
                                 name: self.interner.resolve(method.name.name).to_string(),
                                 ty: method_ty,
-                                optional: false,
+                                optional: method.optional,
                                 readonly: false,
                                 visibility: crate::parser::ast::Visibility::Public,
                             });
                         }
+                        crate::parser::ast::ObjectTypeMember::IndexSignature(index) => {
+                            let key_name = self.interner.resolve(index.key_name.name).to_string();
+                            let value_ty = self.resolve_type_annotation(&index.value_type);
+                            index_signature = Some((key_name, value_ty));
+                        }
+                        crate::parser::ast::ObjectTypeMember::CallSignature(call_sig) => {
+                            let mut param_tys = Vec::new();
+                            let mut rest_param = None;
+                            let mut min_params = 0usize;
+                            for param in &call_sig.params {
+                                let param_ty = self.resolve_type_annotation(&param.ty);
+                                if param.is_rest {
+                                    rest_param = Some(param_ty);
+                                } else {
+                                    if !param.optional {
+                                        min_params += 1;
+                                    }
+                                    param_tys.push(param_ty);
+                                }
+                            }
+                            let return_ty = self.resolve_type_annotation(&call_sig.return_type);
+                            call_signatures.push(self.type_ctx.function_type_with_rest(
+                                param_tys, return_ty, false, min_params, rest_param,
+                            ));
+                        }
+                        crate::parser::ast::ObjectTypeMember::ConstructSignature(ctor_sig) => {
+                            let mut param_tys = Vec::new();
+                            let mut rest_param = None;
+                            let mut min_params = 0usize;
+                            for param in &ctor_sig.params {
+                                let param_ty = self.resolve_type_annotation(&param.ty);
+                                if param.is_rest {
+                                    rest_param = Some(param_ty);
+                                } else {
+                                    if !param.optional {
+                                        min_params += 1;
+                                    }
+                                    param_tys.push(param_ty);
+                                }
+                            }
+                            let return_ty = self.resolve_type_annotation(&ctor_sig.return_type);
+                            construct_signatures.push(self.type_ctx.function_type_with_rest(
+                                param_tys, return_ty, false, min_params, rest_param,
+                            ));
+                        }
                     }
                 }
-                self.type_ctx.object_type(properties)
+                self.type_ctx.intern(crate::parser::types::Type::Object(
+                    crate::parser::types::ty::ObjectType {
+                        properties,
+                        index_signature,
+                        call_signatures,
+                        construct_signatures,
+                    },
+                ))
             }
 
             AstType::Keyof(keyof_ty) => {
@@ -7534,6 +7838,46 @@ mod tests {
 
         let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
         checker.check_module(&module).map(|_| ())
+    }
+
+    #[test]
+    fn test_checker_resolves_interface_call_signature_alias_reference() {
+        let source = r#"
+            interface Adder { (a: number, b: number): number }
+            function unary(a: number): number { return a; }
+            let f: Adder = unary;
+        "#;
+        let parser = Parser::new(source).unwrap();
+        let (module, interner) = parser.parse().unwrap();
+
+        let mut type_ctx = TypeContext::new();
+        let binder = Binder::new(&mut type_ctx, &interner);
+        let symbols = binder.bind_module(&module).unwrap();
+        let mut checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
+
+        let ann = module
+            .statements
+            .iter()
+            .find_map(|stmt| match stmt {
+                Statement::VariableDecl(decl) => match &decl.pattern {
+                    Pattern::Identifier(ident) if interner.resolve(ident.name) == "f" => {
+                        decl.type_annotation.as_ref()
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("f annotation");
+
+        checker.enter_scope();
+        let ty = checker.resolve_type_annotation(ann);
+        match checker.type_ctx.get(ty) {
+            Some(crate::parser::types::Type::Object(obj)) => {
+                assert_eq!(obj.call_signatures.len(), 1);
+            }
+            other => panic!("expected object type for Adder, got {other:?}"),
+        }
+        checker.exit_scope();
     }
 
     #[test]

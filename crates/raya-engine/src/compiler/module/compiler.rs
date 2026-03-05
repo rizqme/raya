@@ -17,123 +17,21 @@ use crate::parser::ast::{
     ExportDecl, Expression, ImportSpecifier, Module as AstModule, Pattern, Statement,
 };
 use crate::parser::checker::{
-    Binder, ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind, TypeChecker, TypeSystemMode,
+    Binder, CheckerPolicy, ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind, TypeChecker,
+    TypeSystemMode,
 };
 use crate::parser::{Interner, Parser, Span, TypeContext};
 
 use super::cache::ModuleCache;
 use super::declaration::{
-    declaration_runtime_identity_path, load_declaration_module,
-    specialization_template_from_symbol, DeclarationError, DeclarationModule,
+    builtin_global_exports, declaration_runtime_identity_path, load_declaration_module,
+    specialization_template_from_symbol, BuiltinSurfaceMode, DeclarationError, DeclarationModule,
     DeclarationSourceKind, LateLinkRequirement, LateLinkSymbolRequirement,
 };
 use super::exports::{ExportRegistry, ExportedSymbol, ModuleExports};
 use super::graph::{GraphError, ModuleGraph};
 use super::resolver::{ModuleResolver, ResolveError};
 use super::std_modules::StdModuleRegistry;
-
-const BUILTIN_PRELUDE_BEGIN_MARKER: &str = "// __raya_builtin_prelude_begin";
-const BUILTIN_PRELUDE_END_MARKER: &str = "// __raya_builtin_prelude_end";
-const STD_PRELUDE_END_MARKER: &str = "// __raya_std_prelude_end";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum BuiltinSurfaceMode {
-    #[default]
-    RayaStrict,
-    NodeCompat,
-}
-
-fn strict_builtin_prelude() -> &'static str {
-    concat!(
-        include_str!("../../../builtins/strict/array.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/regexp.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/object.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/error.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/symbol.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/globals.shared.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/map.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/set.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/buffer.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/date.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/channel.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/mutex.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/promise.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/event_emitter.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/iterator.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/temporal.raya"),
-        "\n",
-    )
-}
-
-fn node_compat_builtin_prelude() -> &'static str {
-    concat!(
-        include_str!("../../../builtins/strict/array.raya"),
-        "\n",
-        include_str!("../../../builtins/strict/regexp.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/object.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/error.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/symbol.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/globals.shared.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/map.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/set.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/buffer.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/date.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/channel.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/mutex.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/promise.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/event_emitter.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/iterator.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/temporal.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/typedarray.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/atomics.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/dataview.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/globals.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/function_families.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/disposal.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/intl.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/weak_collections.raya"),
-        "\n",
-        include_str!("../../../builtins/node_compat/weak_refs.raya"),
-        "\n",
-    )
-}
 
 /// Errors that can occur during multi-module compilation
 #[derive(Debug, Error)]
@@ -219,8 +117,12 @@ pub struct ModuleCompiler {
     late_link_requirements: HashMap<u64, LateLinkRequirement>,
     /// Checker mode (Raya strict or JS-like compatibility).
     checker_mode: TypeSystemMode,
-    /// Builtin prelude surface mode for module compilation.
+    /// Checker policy override (TS flags etc.) propagated into bind/check passes.
+    checker_policy: CheckerPolicy,
+    /// Builtin declaration surface used for global symbol seeding.
     builtin_surface_mode: BuiltinSurfaceMode,
+    /// Cached builtin global exports for the configured surface mode.
+    builtin_globals: Option<ModuleExports>,
 }
 
 impl ModuleCompiler {
@@ -273,7 +175,9 @@ impl ModuleCompiler {
             declaration_virtual_by_identity: HashMap::new(),
             late_link_requirements: HashMap::new(),
             checker_mode: TypeSystemMode::Raya,
+            checker_policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
+            builtin_globals: None,
         }
     }
 
@@ -292,7 +196,9 @@ impl ModuleCompiler {
             declaration_virtual_by_identity: HashMap::new(),
             late_link_requirements: HashMap::new(),
             checker_mode: TypeSystemMode::Raya,
+            checker_policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
+            builtin_globals: None,
         })
     }
 
@@ -305,12 +211,22 @@ impl ModuleCompiler {
     /// Configure checker mode for graph compilation.
     pub fn with_checker_mode(mut self, mode: TypeSystemMode) -> Self {
         self.checker_mode = mode;
+        self.checker_policy = CheckerPolicy::for_mode(mode);
         self
     }
 
-    /// Configure builtin surface mode for graph compilation.
+    /// Configure checker policy for graph compilation.
+    pub fn with_checker_policy(mut self, policy: CheckerPolicy) -> Self {
+        self.checker_policy = policy;
+        self
+    }
+
+    /// Configure builtin declaration surface for global symbol seeding.
     pub fn with_builtin_surface_mode(mut self, mode: BuiltinSurfaceMode) -> Self {
-        self.builtin_surface_mode = mode;
+        if self.builtin_surface_mode != mode {
+            self.builtin_surface_mode = mode;
+            self.builtin_globals = None;
+        }
         self
     }
 
@@ -336,29 +252,6 @@ impl ModuleCompiler {
             path: path.to_path_buf(),
             message: e.to_string(),
         })
-    }
-
-    fn inject_builtin_prelude_if_missing(&self, source: &str) -> String {
-        if source.contains(BUILTIN_PRELUDE_BEGIN_MARKER) {
-            return source.to_string();
-        }
-
-        let prelude = match self.builtin_surface_mode {
-            BuiltinSurfaceMode::RayaStrict => strict_builtin_prelude(),
-            BuiltinSurfaceMode::NodeCompat => node_compat_builtin_prelude(),
-        };
-
-        let mut linked = String::new();
-        linked.push_str(BUILTIN_PRELUDE_BEGIN_MARKER);
-        linked.push('\n');
-        linked.push_str(prelude);
-        if !linked.ends_with('\n') {
-            linked.push('\n');
-        }
-        linked.push_str(BUILTIN_PRELUDE_END_MARKER);
-        linked.push('\n');
-        linked.push_str(source);
-        linked
     }
 
     fn module_identity(&self, path: &Path) -> String {
@@ -851,6 +744,92 @@ impl ModuleCompiler {
         Ok(imports)
     }
 
+    fn inject_builtin_globals(
+        &mut self,
+        binder: &mut Binder<'_>,
+        current_path: &Path,
+    ) -> ModuleCompileResult<()> {
+        if self.builtin_globals.is_none() {
+            let exports = builtin_global_exports(self.builtin_surface_mode).map_err(|e| {
+                ModuleCompileError::TypeError {
+                    path: current_path.to_path_buf(),
+                    message: format!("Failed to load builtin declaration surface: {e}"),
+                }
+            })?;
+            self.builtin_globals = Some(exports);
+        }
+
+        let Some(exports) = self.builtin_globals.as_ref() else {
+            return Ok(());
+        };
+
+        // Register type-bearing declarations first so references inside value
+        // signatures can resolve to named types during hydration.
+        let mut names = exports.symbols.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+
+        for name in &names {
+            let Some(exported) = exports.symbols.get(name) else {
+                continue;
+            };
+            if !matches!(
+                exported.kind,
+                SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeAlias
+            ) {
+                continue;
+            }
+            let imported_ty = binder.hydrate_imported_signature_type(&exported.type_signature);
+            binder.register_imported_named_type(name, imported_ty);
+            let symbol = Symbol {
+                name: name.clone(),
+                kind: exported.kind,
+                ty: imported_ty,
+                flags: SymbolFlags {
+                    is_exported: false,
+                    is_const: true,
+                    is_async: false,
+                    is_readonly: true,
+                    is_imported: false,
+                },
+                scope_id: ScopeId(0),
+                span: Span::new(0, 0, 0, 0),
+                referenced: false,
+            };
+            let _ = binder.define_imported(symbol);
+        }
+
+        for name in names {
+            let Some(exported) = exports.symbols.get(&name) else {
+                continue;
+            };
+            if matches!(
+                exported.kind,
+                SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeAlias
+            ) {
+                continue;
+            }
+            let imported_ty = binder.hydrate_imported_signature_type(&exported.type_signature);
+            let symbol = Symbol {
+                name,
+                kind: exported.kind,
+                ty: imported_ty,
+                flags: SymbolFlags {
+                    is_exported: false,
+                    is_const: exported.is_const,
+                    is_async: exported.is_async,
+                    is_readonly: exported.is_const,
+                    is_imported: false,
+                },
+                scope_id: ScopeId(0),
+                span: Span::new(0, 0, 0, 0),
+                referenced: false,
+            };
+            let _ = binder.define_imported(symbol);
+        }
+
+        Ok(())
+    }
+
     /// Compile a single module with cross-module symbol resolution
     ///
     /// Returns the bytecode and the module's exports for use by dependent modules.
@@ -859,8 +838,7 @@ impl ModuleCompiler {
         path: &PathBuf,
     ) -> ModuleCompileResult<(BytecodeModule, ModuleExports)> {
         // Read source
-        let source = self.inject_builtin_prelude_if_missing(&self.read_module_source(path)?);
-        let linked_user_offset = find_linked_user_offset(&source);
+        let source = self.read_module_source(path)?;
 
         // Parse
         let parser = Parser::new(&source).map_err(|e| ModuleCompileError::LexError {
@@ -875,19 +853,28 @@ impl ModuleCompiler {
 
         // Bind
         let mut type_ctx = TypeContext::new();
-        let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(self.checker_mode);
+        let mut binder = Binder::new(&mut type_ctx, &interner)
+            .with_mode(self.checker_mode)
+            .with_policy(self.checker_policy);
 
         let builtin_sigs = crate::builtins::to_checker_signatures();
         binder.register_builtins(&builtin_sigs);
+        self.inject_builtin_globals(&mut binder, path)?;
 
         // Inject imported symbols from the export registry
-        self.inject_imports(&ast, path, &mut binder, &interner, linked_user_offset)?;
+        self.inject_imports(&ast, path, &mut binder, &interner, None)?;
 
         let mut symbols = binder
             .bind_module(&ast)
             .map_err(|e| ModuleCompileError::TypeError {
                 path: path.clone(),
-                message: format!("Binding error: {:?}", e),
+                message: format!(
+                    "Binding error: {}",
+                    e.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
             })?;
 
         if std::env::var("RAYA_DEBUG_IMPORT_TYPES").is_ok() {
@@ -905,19 +892,19 @@ impl ModuleCompiler {
         }
 
         // Type check
-        let mut checker =
-            TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(self.checker_mode);
-        if let Some(offset) = linked_user_offset {
-            checker = checker
-                .with_skip_class_bodies_before(offset)
-                .with_suppress_errors_before(offset);
-        }
+        let mut checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
+            .with_mode(self.checker_mode)
+            .with_policy(self.checker_policy);
         let check_result =
             checker
                 .check_module(&ast)
                 .map_err(|e| ModuleCompileError::TypeError {
                     path: path.clone(),
-                    message: format!("{:?}", e),
+                    message: e
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; "),
                 })?;
 
         // Apply inferred types
@@ -1025,7 +1012,9 @@ impl ModuleCompiler {
                                 }
                                 if matches!(
                                     exported.kind,
-                                    SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeAlias
+                                    SymbolKind::Class
+                                        | SymbolKind::Interface
+                                        | SymbolKind::TypeAlias
                                 ) {
                                     binder.register_imported_named_type(&import_name, imported_ty);
                                     binder.register_imported_named_type(&local_name, imported_ty);
@@ -1070,6 +1059,12 @@ impl ModuleCompiler {
                                 for export_name in export_names {
                                     if let Some(exported) = module_exports.symbols.get(&export_name)
                                     {
+                                        if matches!(
+                                            exported.kind,
+                                            SymbolKind::TypeAlias | SymbolKind::TypeParameter
+                                        ) {
+                                            continue;
+                                        }
                                         let member_ty = binder.hydrate_imported_signature_type(
                                             &exported.type_signature,
                                         );
@@ -1115,7 +1110,9 @@ impl ModuleCompiler {
                                     .hydrate_imported_signature_type(&exported.type_signature);
                                 if matches!(
                                     exported.kind,
-                                    SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeAlias
+                                    SymbolKind::Class
+                                        | SymbolKind::Interface
+                                        | SymbolKind::TypeAlias
                                 ) {
                                     binder.register_imported_named_type(&local_name, imported_ty);
                                 }
@@ -1487,6 +1484,13 @@ impl ModuleCompiler {
                                         ),
                                     })?
                                     .clone();
+                                if matches!(
+                                    exported.kind,
+                                    crate::parser::checker::SymbolKind::TypeAlias
+                                        | crate::parser::checker::SymbolKind::TypeParameter
+                                ) {
+                                    continue;
+                                }
                                 if declaration_target {
                                     self.record_late_link_symbol_requirement(
                                         &target_module_name,
@@ -1523,6 +1527,13 @@ impl ModuleCompiler {
                                         ),
                                     })?
                                     .clone();
+                                if matches!(
+                                    exported.kind,
+                                    crate::parser::checker::SymbolKind::TypeAlias
+                                        | crate::parser::checker::SymbolKind::TypeParameter
+                                ) {
+                                    continue;
+                                }
                                 if declaration_target {
                                     self.record_late_link_symbol_requirement(
                                         &target_module_name,
@@ -1598,6 +1609,13 @@ impl ModuleCompiler {
                                 ),
                             })?
                             .clone();
+                        if matches!(
+                            exported.kind,
+                            crate::parser::checker::SymbolKind::TypeAlias
+                                | crate::parser::checker::SymbolKind::TypeParameter
+                        ) {
+                            continue;
+                        }
                         if declaration_target {
                             self.record_late_link_symbol_requirement(
                                 &target_module_name,
@@ -1702,25 +1720,6 @@ impl ModuleCompiler {
                 .sort_by(|a, b| a.symbol_id.cmp(&b.symbol_id));
         }
         requirements
-    }
-}
-
-fn find_linked_user_offset(source: &str) -> Option<usize> {
-    if !source.contains(BUILTIN_PRELUDE_BEGIN_MARKER) {
-        return None;
-    }
-
-    let prelude_end_idx = if let Some(std_end) = source.find(STD_PRELUDE_END_MARKER) {
-        std_end + STD_PRELUDE_END_MARKER.len()
-    } else {
-        let builtin_end = source.find(BUILTIN_PRELUDE_END_MARKER)?;
-        builtin_end + BUILTIN_PRELUDE_END_MARKER.len()
-    };
-
-    if source.as_bytes().get(prelude_end_idx) == Some(&b'\n') {
-        Some(prelude_end_idx + 1)
-    } else {
-        Some(prelude_end_idx)
     }
 }
 

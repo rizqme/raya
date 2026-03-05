@@ -1451,6 +1451,9 @@ impl<'a> Lowerer<'a> {
                                             ));
                                         }
                                     }
+                                    ast::ObjectTypeMember::IndexSignature(_) => {}
+                                    ast::ObjectTypeMember::CallSignature(_) => {}
+                                    ast::ObjectTypeMember::ConstructSignature(_) => {}
                                 }
                             }
                         }
@@ -1477,6 +1480,9 @@ impl<'a> Lowerer<'a> {
                                                         );
                                                     }
                                                 }
+                                                ast::ObjectTypeMember::IndexSignature(_) => {}
+                                                ast::ObjectTypeMember::CallSignature(_) => {}
+                                                ast::ObjectTypeMember::ConstructSignature(_) => {}
                                             }
                                         }
                                     }
@@ -1627,8 +1633,8 @@ impl<'a> Lowerer<'a> {
                                         }
                                     } else if self.import_bindings.contains(&class_ident.name) {
                                         let ctor_ty = self.get_expr_type(&new_expr.callee);
-                                        let ctor_ty =
-                                            (ctor_ty.as_u32() != UNRESOLVED_TYPE_ID).then_some(ctor_ty);
+                                        let ctor_ty = (ctor_ty.as_u32() != UNRESOLVED_TYPE_ID)
+                                            .then_some(ctor_ty);
                                         self.mark_late_bound_object_binding(
                                             name,
                                             class_ident.name,
@@ -4384,6 +4390,9 @@ impl<'a> Lowerer<'a> {
             }
             ast::Type::Object(obj) => {
                 let mut properties = Vec::with_capacity(obj.members.len());
+                let mut index_signature = None;
+                let mut call_signatures = Vec::new();
+                let mut construct_signatures = Vec::new();
                 for member in &obj.members {
                     match member {
                         ast::ObjectTypeMember::Property(prop) => {
@@ -4424,17 +4433,80 @@ impl<'a> Lowerer<'a> {
                             properties.push(TyProperty {
                                 name: self.interner.resolve(method.name.name).to_string(),
                                 ty: method_ty,
-                                optional: false,
+                                optional: method.optional,
                                 readonly: false,
                                 visibility: ast::Visibility::Public,
                             });
+                        }
+                        ast::ObjectTypeMember::IndexSignature(index) => {
+                            let key_name = self.interner.resolve(index.key_name.name).to_string();
+                            let value_ty = self.resolve_type_annotation(&index.value_type);
+                            index_signature = Some((key_name, value_ty));
+                        }
+                        ast::ObjectTypeMember::CallSignature(call_sig) => {
+                            let mut params = Vec::with_capacity(call_sig.params.len());
+                            let mut rest_param = None;
+                            let mut min_params = 0usize;
+                            for param in &call_sig.params {
+                                let param_ty = self.resolve_type_annotation(&param.ty);
+                                if param.is_rest {
+                                    rest_param = Some(param_ty);
+                                } else {
+                                    if !param.optional {
+                                        min_params += 1;
+                                    }
+                                    params.push(param_ty);
+                                }
+                            }
+                            let return_ty = self.resolve_type_annotation(&call_sig.return_type);
+                            let call_ty = self
+                                .type_ctx
+                                .lookup(&TyType::Function(TyFunction {
+                                    params,
+                                    return_type: return_ty,
+                                    is_async: false,
+                                    min_params,
+                                    rest_param,
+                                }))
+                                .unwrap_or(UNRESOLVED);
+                            call_signatures.push(call_ty);
+                        }
+                        ast::ObjectTypeMember::ConstructSignature(ctor_sig) => {
+                            let mut params = Vec::with_capacity(ctor_sig.params.len());
+                            let mut rest_param = None;
+                            let mut min_params = 0usize;
+                            for param in &ctor_sig.params {
+                                let param_ty = self.resolve_type_annotation(&param.ty);
+                                if param.is_rest {
+                                    rest_param = Some(param_ty);
+                                } else {
+                                    if !param.optional {
+                                        min_params += 1;
+                                    }
+                                    params.push(param_ty);
+                                }
+                            }
+                            let return_ty = self.resolve_type_annotation(&ctor_sig.return_type);
+                            let ctor_ty = self
+                                .type_ctx
+                                .lookup(&TyType::Function(TyFunction {
+                                    params,
+                                    return_type: return_ty,
+                                    is_async: false,
+                                    min_params,
+                                    rest_param,
+                                }))
+                                .unwrap_or(UNRESOLVED);
+                            construct_signatures.push(ctor_ty);
                         }
                     }
                 }
                 self.type_ctx
                     .lookup(&TyType::Object(TyObject {
                         properties,
-                        index_signature: None,
+                        index_signature,
+                        call_signatures,
+                        construct_signatures,
                     }))
                     .unwrap_or(UNRESOLVED)
             }
@@ -4647,6 +4719,11 @@ impl<'a> Lowerer<'a> {
                         ast::ObjectTypeMember::Method(_) => {
                             // Methods don't contribute to destructuring field layout
                         }
+                        ast::ObjectTypeMember::IndexSignature(_) => {
+                            // Index signatures don't contribute named field layout.
+                        }
+                        ast::ObjectTypeMember::CallSignature(_) => {}
+                        ast::ObjectTypeMember::ConstructSignature(_) => {}
                     }
                 }
                 if names.is_empty() {
@@ -4682,6 +4759,9 @@ impl<'a> Lowerer<'a> {
                     Some(self.interner.resolve(prop.name.name).to_string())
                 }
                 ast::ObjectTypeMember::Method(_) => None,
+                ast::ObjectTypeMember::IndexSignature(_) => None,
+                ast::ObjectTypeMember::CallSignature(_) => None,
+                ast::ObjectTypeMember::ConstructSignature(_) => None,
             })
             .collect();
         outer_names.sort_unstable();
@@ -4716,6 +4796,9 @@ impl<'a> Lowerer<'a> {
                         Some(self.interner.resolve(elem_prop.name.name).to_string())
                     }
                     ast::ObjectTypeMember::Method(_) => None,
+                    ast::ObjectTypeMember::IndexSignature(_) => None,
+                    ast::ObjectTypeMember::CallSignature(_) => None,
+                    ast::ObjectTypeMember::ConstructSignature(_) => None,
                 })
                 .collect();
             elem_names.sort_unstable();
@@ -4817,7 +4900,11 @@ impl<'a> Lowerer<'a> {
         self.emit_structural_slot_registration_for_ordered_names(object, names);
     }
 
-    fn emit_structural_slot_registration_for_type(&mut self, object: Register, expected_ty: TypeId) {
+    fn emit_structural_slot_registration_for_type(
+        &mut self,
+        object: Register,
+        expected_ty: TypeId,
+    ) {
         if expected_ty == UNRESOLVED {
             return;
         }
@@ -4862,7 +4949,10 @@ impl<'a> Lowerer<'a> {
     ///
     /// Prefers checker-resolved annotation TypeIds to avoid lowering-time
     /// re-resolution drift for aliases and parenthesized types.
-    fn resolve_structural_slot_type_from_annotation(&self, type_ann: &ast::TypeAnnotation) -> TypeId {
+    fn resolve_structural_slot_type_from_annotation(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+    ) -> TypeId {
         let ann_id = type_ann as *const _ as usize;
         self.type_annotation_types
             .get(&ann_id)
