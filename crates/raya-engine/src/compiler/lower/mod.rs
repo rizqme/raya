@@ -2690,6 +2690,11 @@ impl<'a> Lowerer<'a> {
                 let expected_ty = self.resolve_structural_slot_type_from_annotation(type_ann);
                 if expected_ty != UNRESOLVED {
                     structural_param_bindings.push((reg.clone(), expected_ty));
+                    if let Some(layout) = self.structural_projection_layout_from_type_id(expected_ty)
+                    {
+                        self.register_structural_projection_fields
+                            .insert(reg.id, layout.clone());
+                    }
                 }
             }
 
@@ -2788,7 +2793,9 @@ impl<'a> Lowerer<'a> {
         // Register structural slot views for typed parameters so slot-based member
         // access works for class/object/interface values uniformly at runtime.
         for (param_reg, expected_ty) in structural_param_bindings {
-            self.emit_structural_slot_registration_for_type(param_reg, expected_ty);
+            if !self.emit_projected_shape_registration_for_register_type(&param_reg, expected_ty) {
+                self.emit_structural_slot_registration_for_type(param_reg, expected_ty);
+            }
         }
 
         // Emit rest array collection code if present
@@ -3102,6 +3109,12 @@ impl<'a> Lowerer<'a> {
                                 self.resolve_structural_slot_type_from_annotation(type_ann);
                             if expected_ty != UNRESOLVED {
                                 structural_param_bindings.push((reg.clone(), expected_ty));
+                                if let Some(layout) =
+                                    self.structural_projection_layout_from_type_id(expected_ty)
+                                {
+                                    self.register_structural_projection_fields
+                                        .insert(reg.id, layout.clone());
+                                }
                             }
                         }
 
@@ -3215,7 +3228,11 @@ impl<'a> Lowerer<'a> {
                     }
 
                     for (param_reg, expected_ty) in structural_param_bindings {
-                        self.emit_structural_slot_registration_for_type(param_reg, expected_ty);
+                        if !self
+                            .emit_projected_shape_registration_for_register_type(&param_reg, expected_ty)
+                        {
+                            self.emit_structural_slot_registration_for_type(param_reg, expected_ty);
+                        }
                     }
 
                     // Emit rest array collection code if present
@@ -3363,6 +3380,12 @@ impl<'a> Lowerer<'a> {
                             self.resolve_structural_slot_type_from_annotation(type_ann);
                         if expected_ty != UNRESOLVED {
                             structural_param_bindings.push((reg.clone(), expected_ty));
+                            if let Some(layout) =
+                                self.structural_projection_layout_from_type_id(expected_ty)
+                            {
+                                self.register_structural_projection_fields
+                                    .insert(reg.id, layout.clone());
+                            }
                         }
                     }
 
@@ -3465,7 +3488,9 @@ impl<'a> Lowerer<'a> {
                 }
 
                 for (param_reg, expected_ty) in structural_param_bindings {
-                    self.emit_structural_slot_registration_for_type(param_reg, expected_ty);
+                    if !self.emit_projected_shape_registration_for_register_type(&param_reg, expected_ty) {
+                        self.emit_structural_slot_registration_for_type(param_reg, expected_ty);
+                    }
                 }
 
                 // Pre-scan constructor body for captured variables
@@ -4971,6 +4996,31 @@ impl<'a> Lowerer<'a> {
         names: Vec<String>,
     ) {
         self.emit_structural_registration_for_ordered_names(None, names);
+    }
+
+    fn emit_shape_name_registration_for_projection_layout(
+        &mut self,
+        layout: Vec<(String, usize)>,
+    ) {
+        let mut names = layout.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
+        names.sort_unstable();
+        names.dedup();
+        self.emit_structural_shape_name_registration_for_ordered_names(names);
+    }
+
+    fn emit_projected_shape_registration_for_register_type(
+        &mut self,
+        reg: &Register,
+        expected_ty: TypeId,
+    ) -> bool {
+        let Some(layout) = self.structural_projection_layout_from_type_id(expected_ty) else {
+            return false;
+        };
+        self.register_structural_projection_fields
+            .entry(reg.id)
+            .or_insert_with(|| layout.clone());
+        self.emit_shape_name_registration_for_projection_layout(layout);
+        true
     }
 
     fn emit_structural_slot_registration_for_names(

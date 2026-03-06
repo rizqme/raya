@@ -3331,7 +3331,9 @@ impl<'a> Lowerer<'a> {
                     field: field_index,
                     optional: member.optional,
                 });
-                self.emit_structural_slot_registration_for_type(dest.clone(), field_ty);
+                if !self.emit_projected_shape_registration_for_register_type(&dest, field_ty) {
+                    self.emit_structural_slot_registration_for_type(dest.clone(), field_ty);
+                }
                 if let Some(nested_layout) = self
                     .register_nested_object_fields
                     .get(&(object_id, field_index))

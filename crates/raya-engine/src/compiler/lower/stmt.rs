@@ -2023,7 +2023,11 @@ impl<'a> Lowerer<'a> {
                     if let Some(type_ann) = &decl.type_annotation {
                         let expected_ty =
                             self.resolve_structural_slot_type_from_annotation(type_ann);
-                        self.emit_structural_slot_registration_for_type(value.clone(), expected_ty);
+                        if !self
+                            .emit_projected_shape_registration_for_register_type(&value, expected_ty)
+                        {
+                            self.emit_structural_slot_registration_for_type(value.clone(), expected_ty);
+                        }
                     }
 
                     // Fallback class capture from lowered value type.
@@ -2204,7 +2208,9 @@ impl<'a> Lowerer<'a> {
 
             if let Some(type_ann) = &decl.type_annotation {
                 let expected_ty = self.resolve_structural_slot_type_from_annotation(type_ann);
-                self.emit_structural_slot_registration_for_type(value.clone(), expected_ty);
+                if !self.emit_projected_shape_registration_for_register_type(&value, expected_ty) {
+                    self.emit_structural_slot_registration_for_type(value.clone(), expected_ty);
+                }
             }
 
             // Fallback class capture from lowered value type.

@@ -335,6 +335,30 @@ fn test_structural_parameter_projection_uses_shape_slots() {
 }
 
 #[test]
+fn test_structural_field_load_projection_uses_shape_slots() {
+    expect_i32(
+        "type View = {
+             b: number;
+             c: number;
+         };
+         class Box {
+             c: number = 3;
+             b: number = 2;
+         }
+         class Holder {
+             view: View;
+             constructor() {
+                 this.view = new Box();
+             }
+         }
+         let holder = new Holder();
+         let view = holder.view;
+         return view.b + view.c;",
+        5,
+    );
+}
+
+#[test]
 fn test_structural_parameter_destructuring_uses_projected_shape_slots() {
     expect_i32(
         "class Box {
