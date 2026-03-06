@@ -762,14 +762,6 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
 
-                        let object_val = args[0];
-                        if object_val.is_null() {
-                            if let Err(error) = stack.push(Value::null()) {
-                                return OpcodeResult::Error(error);
-                            }
-                            return OpcodeResult::Continue;
-                        }
-
                         let Some(names_ptr) = (unsafe { args[1].as_ptr::<Array>() }) else {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "registerStructuralView expects array of member names".to_string(),
@@ -787,17 +779,26 @@ impl<'a> Interpreter<'a> {
                             expected_names.push(unsafe { &*name_ptr.as_ptr() }.data.clone());
                         }
 
+                        let required_shape = Self::shape_id_for_member_names(&expected_names);
+                        self.structural_shape_names
+                            .write()
+                            .entry(required_shape)
+                            .or_insert_with(|| expected_names.clone());
+
+                        let object_val = args[0];
+                        if object_val.is_null() {
+                            if let Err(error) = stack.push(Value::null()) {
+                                return OpcodeResult::Error(error);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+
                         let Some(object_ptr) = (unsafe { object_val.as_ptr::<Object>() }) else {
                             if let Err(error) = stack.push(Value::null()) {
                                 return OpcodeResult::Error(error);
                             }
                             return OpcodeResult::Continue;
                         };
-                        let required_shape = Self::shape_id_for_member_names(&expected_names);
-                        self.structural_shape_names
-                            .write()
-                            .entry(required_shape)
-                            .or_insert_with(|| expected_names.clone());
                         let object_id = unsafe { (*object_ptr.as_ptr()).object_id() };
                         let object_nominal_class_id =
                             unsafe { (*object_ptr.as_ptr()).nominal_class_id() };

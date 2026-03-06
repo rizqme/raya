@@ -6669,7 +6669,12 @@ impl<'a> Lowerer<'a> {
         // slot-based member access can stay local without runtime remap registration.
         // This avoids overriding concrete object-literal slots with metadata-based
         // remaps when the source value is structurally known.
-        if !self.register_object_fields.contains_key(&dest.id) {
+        if let Some(layout) = self.register_structural_projection_fields.get(&dest.id).cloned() {
+            let mut names = layout.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
+            names.sort_unstable();
+            names.dedup();
+            self.emit_structural_shape_name_registration_for_ordered_names(names);
+        } else if !self.register_object_fields.contains_key(&dest.id) {
             self.emit_structural_slot_registration_for_type(dest.clone(), target_ty);
         }
 

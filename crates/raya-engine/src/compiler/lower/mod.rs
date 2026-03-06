@@ -4906,14 +4906,9 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Register runtime structural slot bindings for an object value against an expected type.
-    ///
-    /// Emits:
-    /// `__registerStructuralView(object, ["memberA", "memberB", ...])`
-    /// where member names are canonicalized (sorted + deduped) from the expected type.
-    fn emit_structural_slot_registration_for_ordered_names(
+    fn emit_structural_registration_for_ordered_names(
         &mut self,
-        object: Register,
+        object: Option<Register>,
         names: Vec<String>,
     ) {
         if names.is_empty() {
@@ -4948,11 +4943,34 @@ impl<'a> Lowerer<'a> {
             elem_ty: TypeId::new(STRING_TYPE_ID),
         });
 
+        let object = object.unwrap_or_else(|| self.lower_null_literal());
         self.emit(IrInstr::NativeCall {
             dest: None,
             native_id: crate::compiler::native_id::OBJECT_REGISTER_STRUCTURAL_VIEW,
             args: vec![object, names_array],
         });
+    }
+
+    /// Register runtime structural slot bindings for an object value against an expected type.
+    ///
+    /// Emits:
+    /// `__registerStructuralView(object, ["memberA", "memberB", ...])`
+    /// where member names are canonicalized (sorted + deduped) from the expected type.
+    fn emit_structural_slot_registration_for_ordered_names(
+        &mut self,
+        object: Register,
+        names: Vec<String>,
+    ) {
+        self.emit_structural_registration_for_ordered_names(Some(object), names);
+    }
+
+    /// Register canonical member names for a structural shape without attaching
+    /// an object-specific runtime view.
+    fn emit_structural_shape_name_registration_for_ordered_names(
+        &mut self,
+        names: Vec<String>,
+    ) {
+        self.emit_structural_registration_for_ordered_names(None, names);
     }
 
     fn emit_structural_slot_registration_for_names(
