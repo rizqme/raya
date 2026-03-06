@@ -391,6 +391,25 @@ fn test_structural_conditional_result_destructuring_uses_shape_slots() {
 }
 
 #[test]
+fn test_structural_await_result_destructuring_uses_shape_slots() {
+    expect_i32(
+        "class Box {
+             c: number = 3;
+             b: number = 2;
+         }
+         async function makeView(): Promise<{ b: number; c: number }> {
+             return new Box();
+         }
+         async function main(): Promise<number> {
+             let { b, c } = await makeView();
+             return b + c;
+         }
+         return await main();",
+        5,
+    );
+}
+
+#[test]
 fn test_structural_parameter_destructuring_uses_projected_shape_slots() {
     expect_i32(
         "class Box {
