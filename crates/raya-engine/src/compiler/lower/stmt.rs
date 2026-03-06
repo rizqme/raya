@@ -1568,6 +1568,10 @@ impl<'a> Lowerer<'a> {
             crate::parser::types::Type::Generic(generic) => {
                 self.type_allows_structural_projection(generic.base)
             }
+            crate::parser::types::Type::TypeVar(type_var) => type_var
+                .constraint
+                .or(type_var.default)
+                .is_some_and(|inner| self.type_allows_structural_projection(inner)),
             _ => false,
         }
     }

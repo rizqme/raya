@@ -410,6 +410,22 @@ fn test_structural_await_result_destructuring_uses_shape_slots() {
 }
 
 #[test]
+fn test_generic_structural_constraint_param_uses_shape_slots() {
+    expect_i32(
+        "class Box {
+             c: number = 3;
+             b: number = 2;
+         }
+         function run<T extends { b: number; c: number }>(view: T): number {
+             let { b, c } = view;
+             return b + c;
+         }
+         return run(new Box());",
+        5,
+    );
+}
+
+#[test]
 fn test_structural_parameter_destructuring_uses_projected_shape_slots() {
     expect_i32(
         "class Box {
