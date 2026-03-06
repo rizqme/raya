@@ -1556,6 +1556,9 @@ impl<'a> Lowerer<'a> {
         match ty_def {
             crate::parser::types::Type::Object(_)
             | crate::parser::types::Type::Interface(_) => true,
+            crate::parser::types::Type::Class(class_ty) => {
+                self.class_id_from_type_name(&class_ty.name).is_none()
+            }
             crate::parser::types::Type::Union(union) => union
                 .members
                 .iter()
@@ -3169,8 +3172,9 @@ impl<'a> Lowerer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::lower::Lowerer;
+    use crate::compiler::lower::{ClassId, Lowerer};
     use crate::parser::{Parser, TypeContext};
+    use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type};
 
     fn lower(source: &str) -> crate::ir::IrModule {
         let parser = Parser::new(source).expect("lexer error");
@@ -3207,5 +3211,54 @@ mod tests {
         "#;
         let ir = lower(source);
         assert!(ir.get_function_by_name("foo").is_some());
+    }
+
+    #[test]
+    fn imported_class_type_uses_structural_projection_layout() {
+        let parser = Parser::new("let x = 1;").expect("lexer error");
+        let (_module, mut interner) = parser.parse().expect("parse error");
+        let class_name = interner.intern("RemoteBox");
+        let mut type_ctx = TypeContext::new();
+        let number_ty = type_ctx.number_type();
+        let get_value_ty = type_ctx.function_type(vec![], number_ty, false);
+        let remote_ty = type_ctx.intern(Type::Class(ClassType {
+            name: "RemoteBox".to_string(),
+            type_params: vec![],
+            properties: vec![PropertySignature {
+                name: "value".to_string(),
+                ty: number_ty,
+                optional: false,
+                readonly: false,
+                visibility: Default::default(),
+            }],
+            methods: vec![MethodSignature {
+                name: "getValue".to_string(),
+                ty: get_value_ty,
+                type_params: vec![],
+                visibility: Default::default(),
+            }],
+            static_properties: vec![],
+            static_methods: vec![],
+            extends: None,
+            implements: vec![],
+            is_abstract: false,
+        }));
+        let lowerer_type_ctx = Box::leak(Box::new(type_ctx));
+        let interner = Box::leak(Box::new(interner));
+        let mut lowerer = Lowerer::new(lowerer_type_ctx, interner);
+        assert!(
+            lowerer
+                .structural_projection_layout_from_type_id(remote_ty)
+                .is_some(),
+            "late-bound/imported class public surface should project structurally"
+        );
+
+        lowerer.class_map.insert(class_name, ClassId::new(1));
+        assert!(
+            lowerer
+                .structural_projection_layout_from_type_id(remote_ty)
+                .is_none(),
+            "local concrete classes should stay nominal in lowering"
+        );
     }
 }

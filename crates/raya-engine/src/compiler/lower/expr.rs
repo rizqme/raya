@@ -3757,7 +3757,9 @@ impl<'a> Lowerer<'a> {
         }
         let ty = self.type_ctx.get(ty_id)?;
         match ty {
-            crate::parser::types::Type::Class(_) => Some(ty_id),
+            crate::parser::types::Type::Class(class_ty) => self
+                .class_id_from_type_name(&class_ty.name)
+                .map(|_| ty_id),
             crate::parser::types::Type::Reference(reference) => self
                 .type_ctx
                 .lookup_named_type(&reference.name)
