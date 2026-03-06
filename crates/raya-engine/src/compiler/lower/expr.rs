@@ -1810,47 +1810,6 @@ impl<'a> Lowerer<'a> {
                                 });
                                 return json_dest;
                             }
-                            "encode" => {
-                                // JSON.encode<T>(value) -> for now, same as stringify
-                                // TODO: Generate specialized encoder based on type T
-                                self.emit(IrInstr::NativeCall {
-                                    dest: Some(dest.clone()),
-                                    native_id: JSON_STRINGIFY,
-                                    args,
-                                });
-                                return dest;
-                            }
-                            "decode" => {
-                                // JSON.decode<T>(json) -> typed decoder
-                                // If type argument is provided, use specialized decoder
-
-                                if let Some(type_args) = &call.type_args {
-                                    if let Some(first_type) = type_args.first() {
-                                        // Try to get field info from the type
-                                        if let Some(field_info) =
-                                            self.get_json_field_info(&first_type.ty)
-                                        {
-                                            // Generate specialized decode with field info
-                                            return self.emit_json_decode_with_fields(
-                                                dest.clone(),
-                                                args,
-                                                field_info,
-                                            );
-                                        }
-                                    }
-                                }
-
-                                // Fallback to generic parse if no type info available
-                                // Returns json type (TypeId 15) for duck typing support
-
-                                let json_dest = self.alloc_register(TypeId::new(JSON_TYPE_ID));
-                                self.emit(IrInstr::NativeCall {
-                                    dest: Some(json_dest.clone()),
-                                    native_id: JSON_PARSE,
-                                    args,
-                                });
-                                return json_dest;
-                            }
                             _ => {}
                         }
                     }

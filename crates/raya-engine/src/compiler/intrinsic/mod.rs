@@ -5,8 +5,6 @@
 //!
 //! Currently supported intrinsics:
 //! - `JSON.stringify()` / `JSON.parse()` - Runtime JSON operations
-//! - `JSON.encode<T>()` - Type-safe JSON encoding with compile-time codegen
-//! - `JSON.decode<T>()` - Type-safe JSON decoding with compile-time codegen
 //!
 //! Note: Field mapping with @json decorator will be added in a future milestone.
 

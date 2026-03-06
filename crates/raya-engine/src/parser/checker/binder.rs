@@ -116,12 +116,26 @@ impl<'a> Binder<'a> {
     /// Used to pre-register builtin primitive types (e.g., RegExp, Array) before
     /// compiling a `.raya` file that cross-references them.
     pub fn register_external_class(&mut self, name: &str) {
-        // Reuse existing TypeId if already registered (e.g., pre-interned primitives like
-        // string=1, RegExp=8, Array=17). This preserves canonical TypeIds for dispatch.
+        // Preserve primitive named types (`string`, `number`, ...) as primitives.
+        // Builtin wrapper classes for those names need their own class TypeId so
+        // previously interned primitive references are not rewritten into classes.
         let type_id = if let Some(existing) = self.type_ctx.lookup_named_type(name) {
-            existing
+            match self.type_ctx.get(existing) {
+                Some(Type::Class(_)) => existing,
+                _ => self.type_ctx.intern(Type::Class(ClassType {
+                    name: name.to_string(),
+                    type_params: Vec::new(),
+                    properties: Vec::new(),
+                    methods: Vec::new(),
+                    static_properties: Vec::new(),
+                    static_methods: Vec::new(),
+                    extends: None,
+                    implements: Vec::new(),
+                    is_abstract: false,
+                })),
+            }
         } else {
-            let stub_type = Type::Class(ClassType {
+            let id = self.type_ctx.intern(Type::Class(ClassType {
                 name: name.to_string(),
                 type_params: Vec::new(),
                 properties: Vec::new(),
@@ -131,8 +145,7 @@ impl<'a> Binder<'a> {
                 extends: None,
                 implements: Vec::new(),
                 is_abstract: false,
-            });
-            let id = self.type_ctx.intern(stub_type);
+            }));
             self.type_ctx.register_named_type(name.to_string(), id);
             id
         };
@@ -571,11 +584,9 @@ impl<'a> Binder<'a> {
     /// JSON is a built-in global object (like JavaScript's JSON) with:
     /// - JSON.stringify(value: any): string - Runtime serialization
     /// - JSON.parse(json: string): any - Runtime parsing
-    /// - JSON.encode<T>(value: T): string - Compile-time codegen (simplified return type for now)
-    /// - JSON.decode<T>(json: string): T - Compile-time codegen (returns typed value)
     ///
-    /// JSON.parse and JSON.decode (without type args) return the `json` type.
-    /// The `json` type supports duck typing - property access returns json values.
+    /// JSON.parse returns the `json` type, which supports duck typing:
+    /// property access returns json values.
     fn register_json_global(&mut self) {
         let string_ty = self.type_ctx.string_type();
         let any_ty = self.type_ctx.any_type();
@@ -584,8 +595,6 @@ impl<'a> Binder<'a> {
         // Build static methods for JSON object
         // JSON.stringify takes any value and returns string
         // JSON.parse returns json type (supports duck typing)
-        // JSON.encode<T> returns string
-        // JSON.decode<T> returns T (or json if no type arg)
         let static_methods = vec![
             MethodSignature {
                 name: "stringify".to_string(),
@@ -597,18 +606,6 @@ impl<'a> Binder<'a> {
                 name: "parse".to_string(),
                 ty: self.type_ctx.function_type(vec![string_ty], json_ty, false),
                 type_params: vec![],
-                visibility: Default::default(),
-            },
-            MethodSignature {
-                name: "encode".to_string(),
-                ty: self.type_ctx.function_type(vec![any_ty], string_ty, false),
-                type_params: vec!["T".to_string()],
-                visibility: Default::default(),
-            },
-            MethodSignature {
-                name: "decode".to_string(),
-                ty: self.type_ctx.function_type(vec![string_ty], json_ty, false),
-                type_params: vec!["T".to_string()],
                 visibility: Default::default(),
             },
         ];
@@ -1351,9 +1348,26 @@ impl<'a> Binder<'a> {
             is_abstract: false,
         };
 
-        let class_ty = if let Some(existing) = self.type_ctx.lookup_named_type(&class_sig.name) {
-            self.type_ctx.replace_type(existing, Type::Class(class_type));
-            existing
+        let class_ty = if let Some(symbol) = self.symbols.resolve(&class_sig.name) {
+            if symbol.kind == SymbolKind::Class {
+                self.type_ctx.replace_type(symbol.ty, Type::Class(class_type));
+                symbol.ty
+            } else if let Some(existing) = self.type_ctx.lookup_named_type(&class_sig.name) {
+                self.type_ctx.replace_type(existing, Type::Class(class_type));
+                existing
+            } else {
+                let id = self.type_ctx.intern(Type::Class(class_type));
+                self.type_ctx.register_named_type(class_sig.name.clone(), id);
+                id
+            }
+        } else if let Some(existing) = self.type_ctx.lookup_named_type(&class_sig.name) {
+            match self.type_ctx.get(existing) {
+                Some(Type::Class(_)) => {
+                    self.type_ctx.replace_type(existing, Type::Class(class_type));
+                    existing
+                }
+                _ => self.type_ctx.intern(Type::Class(class_type)),
+            }
         } else {
             let id = self.type_ctx.intern(Type::Class(class_type));
             self.type_ctx.register_named_type(class_sig.name.clone(), id);

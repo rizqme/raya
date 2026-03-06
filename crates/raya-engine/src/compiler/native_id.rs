@@ -378,10 +378,6 @@ pub const PATH_WITH_EXT: u16 = 0x600C;
 pub const JSON_STRINGIFY: u16 = 0x0C00;
 /// JSON.parse(json: string): any
 pub const JSON_PARSE: u16 = 0x0C01;
-/// JSON.decode<T>(json: string): T - typed decode with field metadata
-/// Args: [json_string, field_count, ...field_specs]
-/// Each field_spec is: [json_key_string, field_index, field_type]
-pub const JSON_DECODE_OBJECT: u16 = 0x0C02;
 /// Merge all properties from source into dest: Object.assign(dest, source)
 /// Args: [dest_object, source_object]
 pub const JSON_MERGE: u16 = 0x0C03;
@@ -579,7 +575,6 @@ pub fn native_name(id: u16) -> &'static str {
         // JSON
         JSON_STRINGIFY => "JSON.stringify",
         JSON_PARSE => "JSON.parse",
-        JSON_DECODE_OBJECT => "JSON.decode",
         JSON_MERGE => "JSON.merge",
 
         // Reflect - Metadata

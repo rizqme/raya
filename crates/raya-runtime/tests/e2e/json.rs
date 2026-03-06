@@ -59,45 +59,29 @@ fn test_json_parse_null() {
 }
 
 // ============================================================================
-// JSON.decode<T> - Typed Decode with Inline Object Types
+// JSON surface is JS-compatible: stringify + parse only
 // ============================================================================
 
 #[test]
-fn test_json_decode_inline_object_runs() {
-    // Verify JSON.decode with inline object type compiles and runs
-    // Note: Field access on inline types requires enhanced type tracking
-    let source = r#"
+fn test_json_decode_is_not_supported() {
+    expect_compile_error(
+        r#"
         let json = '{"name":"Alice","age":30}';
         let user = JSON.decode<{name: string; age: number}>(json);
-        return 1;
-    "#;
-    expect_i32(source, 1);
+        return user;
+    "#,
+        "does not exist",
+    );
 }
 
 #[test]
-fn test_json_decode_with_annotation_runs() {
-    // Verify JSON.decode with field name mapping annotations compiles and runs
-    let source = r#"
-        let json = '{"user_name":"Charlie","user_age":35}';
-        let user = JSON.decode<{
-            //@@json user_name
-            name: string;
-            //@@json user_age
-            age: number;
-        }>(json);
-        return 1;
-    "#;
-    expect_i32(source, 1);
-}
-
-#[test]
-fn test_json_decode_fallback_to_parse() {
-    // Without type argument, decode should fallback to parse behavior
-    let source = r#"
-        let result = JSON.decode('{"value":42}');
-        return 1;
-    "#;
-    expect_i32(source, 1);
+fn test_json_encode_is_not_supported() {
+    expect_compile_error(
+        r#"
+        return JSON.encode({ name: "Alice" });
+    "#,
+        "does not exist",
+    );
 }
 
 // ============================================================================
@@ -210,26 +194,21 @@ fn test_json_parse_null_object_property_access() {
 }
 
 // ============================================================================
-// Type Casting - 'as' keyword
+// Primitive Type Regression
 // ============================================================================
 
 #[test]
-fn test_json_as_cast_to_class() {
-    // Cast JSON to a class type using 'as'
+fn test_class_constructor_string_param_stays_primitive() {
     let source = r#"
         class User {
             name: string;
-            age: number;
-            constructor(name: string, age: number) {
+
+            constructor(name: string) {
                 this.name = name;
-                this.age = age;
             }
         }
 
-        // For now, JSON.decode with type creates the typed object
-        let json = '{"name":"Alice","age":30}';
-        let user = JSON.decode<User>(json);
-        return user.name;
+        return new User("Alice").name;
     "#;
     expect_string(source, "Alice");
 }
