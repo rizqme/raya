@@ -33,6 +33,7 @@ pub(super) const BOOLEAN_TYPE_ID: u32 = TypeContext::BOOLEAN_TYPE_ID;
 pub(super) const NULL_TYPE_ID: u32 = TypeContext::NULL_TYPE_ID;
 pub(super) const UNKNOWN_TYPE_ID: u32 = TypeContext::UNKNOWN_TYPE_ID;
 pub(super) const REGEXP_TYPE_ID: u32 = TypeContext::REGEXP_TYPE_ID;
+pub(super) const MUTEX_TYPE_ID: u32 = TypeContext::MUTEX_TYPE_ID;
 pub(super) const TASK_TYPE_ID: u32 = TypeContext::TASK_TYPE_ID;
 pub(super) const CHANNEL_TYPE_ID: u32 = TypeContext::CHANNEL_TYPE_ID;
 pub(super) const MAP_TYPE_ID: u32 = TypeContext::MAP_TYPE_ID;
@@ -497,6 +498,8 @@ pub struct Lowerer<'a> {
     module_var_globals: FxHashMap<Symbol, u16>,
     /// Import-local binding symbols, used for import-specific lowering diagnostics.
     import_bindings: FxHashSet<Symbol>,
+    /// Ambient builtin globals available without explicit source declarations/imports.
+    ambient_builtin_globals: FxHashSet<String>,
     /// Variables initialized from imported class constructors where no local
     /// class metadata is available. These require late-bound member dispatch.
     late_bound_object_vars: FxHashSet<Symbol>,
@@ -541,6 +544,9 @@ pub struct Lowerer<'a> {
     /// Object field layout for registers from decode<T> calls
     /// Maps register id → Vec<(field_name, field_index)>
     register_object_fields: FxHashMap<RegisterId, Vec<(String, usize)>>,
+    /// Structural projection layout for registers whose field access must use shape-slot
+    /// remapping instead of direct provider slots.
+    register_structural_projection_fields: FxHashMap<RegisterId, Vec<(String, usize)>>,
     /// Nested object field layouts for concrete object fields.
     /// Maps (object register id, field index) -> nested field layout of the stored value.
     register_nested_object_fields: FxHashMap<(RegisterId, u16), Vec<(String, usize)>>,
@@ -559,6 +565,9 @@ pub struct Lowerer<'a> {
     /// Alias name backing object-typed variables (identifier -> type alias name).
     /// Used to prefer declaration-order alias field indices over checker-internal object order.
     variable_object_type_aliases: FxHashMap<Symbol, String>,
+    /// Explicit structural projection layout for variables whose static view should
+    /// use shape-slot access instead of nominal class dispatch.
+    variable_structural_projection_fields: FxHashMap<Symbol, Vec<(String, usize)>>,
     /// For variables holding async-call Task results, tracks the awaited value alias type.
     /// Example: `const t = async listener.accept()` records `t -> "__t_m0_TcpStream"`.
     task_result_type_aliases: FxHashMap<Symbol, String>,
@@ -903,7 +912,7 @@ fn module_wrapper_alias_tag(name: &str) -> Option<String> {
 /// Carries wrapper context (`__std_module_<tag>`, `__raya_mod_init_<id>`) to build exact alias mappings.
 struct NestedClassRegistrar<'l, 'a> {
     lowerer: &'l mut Lowerer<'a>,
-    std_wrapper_tag: Option<String>,
+    wrapper_tag: Option<String>,
 }
 
 impl Visitor for NestedClassRegistrar<'_, '_> {
@@ -913,24 +922,24 @@ impl Visitor for NestedClassRegistrar<'_, '_> {
     }
 
     fn visit_function_decl(&mut self, decl: &ast::FunctionDecl) {
-        let prev = self.std_wrapper_tag.clone();
+        let prev = self.wrapper_tag.clone();
         let fn_name = self.lowerer.interner.resolve(decl.name.name);
         if let Some(tag) = module_wrapper_alias_tag(fn_name) {
-            self.std_wrapper_tag = Some(tag);
+            self.wrapper_tag = Some(tag);
         }
         walk_function_decl(self, decl);
-        self.std_wrapper_tag = prev;
+        self.wrapper_tag = prev;
     }
 
     fn visit_class_decl(&mut self, decl: &ast::ClassDecl) {
         self.lowerer
-            .register_class_with_alias_context(decl, self.std_wrapper_tag.as_deref());
+            .register_class_with_alias_context(decl, self.wrapper_tag.as_deref());
         ast::walk_class_decl(self, decl);
     }
 }
 
 /// Visitor that pre-registers function declarations inside nested statement trees.
-/// Used for std-prelude wrappers so forward sibling function calls resolve deterministically.
+/// Used for module-wrapper helper functions so forward sibling calls resolve deterministically.
 struct NestedFunctionRegistrar<'l, 'a> {
     lowerer: &'l mut Lowerer<'a>,
 }
@@ -1068,6 +1077,7 @@ impl<'a> Lowerer<'a> {
             next_global_index: 0,
             module_var_globals: FxHashMap::default(),
             import_bindings: FxHashSet::default(),
+            ambient_builtin_globals: FxHashSet::default(),
             late_bound_object_vars: FxHashSet::default(),
             late_bound_object_ctor_map: FxHashMap::default(),
             late_bound_object_type_map: FxHashMap::default(),
@@ -1085,12 +1095,14 @@ impl<'a> Lowerer<'a> {
             current_method_env_globals: None,
             constant_map: FxHashMap::default(),
             register_object_fields: FxHashMap::default(),
+            register_structural_projection_fields: FxHashMap::default(),
             register_nested_object_fields: FxHashMap::default(),
             register_array_element_object_fields: FxHashMap::default(),
             register_nested_array_element_object_fields: FxHashMap::default(),
             variable_object_fields: FxHashMap::default(),
             variable_nested_object_fields: FxHashMap::default(),
             variable_object_type_aliases: FxHashMap::default(),
+            variable_structural_projection_fields: FxHashMap::default(),
             task_result_type_aliases: FxHashMap::default(),
             object_spread_target_filter: None,
             object_literal_target_layout: None,
@@ -1128,6 +1140,12 @@ impl<'a> Lowerer<'a> {
         type_annotation_types: FxHashMap<usize, TypeId>,
     ) -> Self {
         self.type_annotation_types = type_annotation_types;
+        self
+    }
+
+    /// Provide ambient builtin global names available via runtime native lookup.
+    pub fn with_ambient_builtin_globals(mut self, names: FxHashSet<String>) -> Self {
+        self.ambient_builtin_globals = names;
         self
     }
 
@@ -1411,13 +1429,13 @@ impl<'a> Lowerer<'a> {
             match stmt {
                 Statement::FunctionDecl(func) => {
                     self.register_function_decl(func);
-                    let std_tag = module_wrapper_alias_tag(self.interner.resolve(func.name.name));
-                    self.register_nested_classes_in_block(&func.body.statements, std_tag);
+                    let wrapper_tag = module_wrapper_alias_tag(self.interner.resolve(func.name.name));
+                    self.register_nested_classes_in_block(&func.body.statements, wrapper_tag);
                 }
                 Statement::ClassDecl(class) => {
                     let mut visitor = NestedClassRegistrar {
                         lowerer: self,
-                        std_wrapper_tag: None,
+                        wrapper_tag: None,
                     };
                     visitor.visit_class_decl(class);
                 }
@@ -1631,10 +1649,20 @@ impl<'a> Lowerer<'a> {
                                                 self.interner.resolve(class_ident.name)
                                             );
                                         }
-                                    } else if self.import_bindings.contains(&class_ident.name) {
-                                        let ctor_ty = self.get_expr_type(&new_expr.callee);
-                                        let ctor_ty = (ctor_ty.as_u32() != UNRESOLVED_TYPE_ID)
-                                            .then_some(ctor_ty);
+                                    } else if self.import_bindings.contains(&class_ident.name)
+                                        || self.ambient_builtin_globals
+                                            .contains(self.interner.resolve(class_ident.name))
+                                    {
+                                        let ctor_ty = self
+                                            .get_expr_type(&new_expr.callee)
+                                            .as_u32()
+                                            .ne(&UNRESOLVED_TYPE_ID)
+                                            .then(|| self.get_expr_type(&new_expr.callee))
+                                            .or_else(|| {
+                                                self.type_ctx.lookup_named_type(
+                                                    self.interner.resolve(class_ident.name),
+                                                )
+                                            });
                                         self.mark_late_bound_object_binding(
                                             name,
                                             class_ident.name,
@@ -1642,7 +1670,7 @@ impl<'a> Lowerer<'a> {
                                         );
                                         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                             eprintln!(
-                                                "[lower] late_bound_object_vars: '{}' marked (from new imported {}())",
+                                                "[lower] late_bound_object_vars: '{}' marked (from runtime-bound new {}())",
                                                 self.interner.resolve(name),
                                                 self.interner.resolve(class_ident.name)
                                             );
@@ -1955,15 +1983,15 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Register class declarations reachable within nested statement blocks.
-    /// Needed for std-prelude wrapper functions where classes are function-local.
+    /// Needed for module-wrapper functions where classes are function-local.
     fn register_nested_classes_in_block(
         &mut self,
         statements: &[Statement],
-        std_wrapper_tag: Option<String>,
+        wrapper_tag: Option<String>,
     ) {
         let mut visitor = NestedClassRegistrar {
             lowerer: self,
-            std_wrapper_tag,
+            wrapper_tag,
         };
         for stmt in statements {
             visitor.visit_statement(stmt);
@@ -1971,7 +1999,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Register nested function declarations reachable in a statement subtree.
-    /// Used for std wrapper functions so forward sibling helper calls resolve by ID.
+    /// Used for module-wrapper functions so forward sibling helper calls resolve by ID.
     fn register_nested_functions_in_block(&mut self, statements: &[Statement]) {
         let mut visitor = NestedFunctionRegistrar { lowerer: self };
         for stmt in statements {
@@ -2068,7 +2096,7 @@ impl<'a> Lowerer<'a> {
     fn register_class_with_alias_context(
         &mut self,
         class: &ast::ClassDecl,
-        std_wrapper_tag: Option<&str>,
+        wrapper_tag: Option<&str>,
     ) {
         // Resolve type-name references (method returns/field types) in this class's
         // lexical source position so shadowing picks the right class declaration.
@@ -2088,14 +2116,14 @@ impl<'a> Lowerer<'a> {
         // Insert into class_map (last class with a given name wins for name-based lookups)
         self.class_map.insert(class.name.name, class_id);
 
-        if let Some(tag) = std_wrapper_tag {
+        if let Some(tag) = wrapper_tag {
             let class_name = self.interner.resolve(class.name.name);
             let alias = format!("__t_{}_{}", tag, class_name);
             if let Some(prev) = self.type_alias_class_map.insert(alias.clone(), class_id) {
                 if prev != class_id {
                     self.errors.push(super::error::CompileError::InternalError {
                         message: format!(
-                            "conflicting std-prelude alias mapping for '{}': {} vs {}",
+                            "conflicting wrapper alias mapping for '{}': {} vs {}",
                             alias,
                             prev.as_u32(),
                             class_id.as_u32()
@@ -2617,12 +2645,12 @@ impl<'a> Lowerer<'a> {
 
         // Get function name
         let name = self.interner.resolve(func.name.name);
-        let is_std_wrapper = is_module_wrapper_function_name(name);
+        let is_module_wrapper = is_module_wrapper_function_name(name);
 
-        // Std wrapper helpers are frequently referenced before declaration
+        // Module-wrapper helpers are frequently referenced before declaration
         // (e.g. pmInstall -> installDependency). Pre-register nested function
         // IDs/return mappings so forward sibling calls resolve deterministically.
-        if is_std_wrapper {
+        if is_module_wrapper {
             self.register_nested_functions_in_block(&func.body.statements);
         }
 
@@ -2673,8 +2701,20 @@ impl<'a> Lowerer<'a> {
                 // Track class type for parameters with class type annotations
                 // so method calls can be statically resolved
                 if let Some(type_ann) = &param.type_annotation {
+                    let expected_ty = self.resolve_structural_slot_type_from_annotation(type_ann);
+                    if let Some(layout) = self.structural_projection_layout_from_type_id(expected_ty)
+                    {
+                        self.variable_structural_projection_fields
+                            .insert(ident.name, layout);
+                        self.variable_class_map.remove(&ident.name);
+                    }
                     if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
-                        self.variable_class_map.insert(ident.name, class_id);
+                        if !self
+                            .variable_structural_projection_fields
+                            .contains_key(&ident.name)
+                        {
+                            self.variable_class_map.insert(ident.name, class_id);
+                        }
                     }
                     self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                     if self.type_annotation_is_callable(type_ann) {
@@ -3071,10 +3111,24 @@ impl<'a> Lowerer<'a> {
 
                             // Track class type for parameters with class type annotations
                             if let Some(type_ann) = &param.type_annotation {
+                                let expected_ty =
+                                    self.resolve_structural_slot_type_from_annotation(type_ann);
+                                if let Some(layout) =
+                                    self.structural_projection_layout_from_type_id(expected_ty)
+                                {
+                                    self.variable_structural_projection_fields
+                                        .insert(ident.name, layout);
+                                    self.variable_class_map.remove(&ident.name);
+                                }
                                 if let Some(param_class_id) =
                                     self.try_extract_class_from_type(type_ann)
                                 {
-                                    self.variable_class_map.insert(ident.name, param_class_id);
+                                    if !self
+                                        .variable_structural_projection_fields
+                                        .contains_key(&ident.name)
+                                    {
+                                        self.variable_class_map.insert(ident.name, param_class_id);
+                                    }
                                 }
                                 self.register_variable_type_hints_from_annotation(
                                     ident.name, type_ann,
@@ -3316,9 +3370,23 @@ impl<'a> Lowerer<'a> {
                         let local_idx = self.allocate_local(ident.name);
                         self.local_registers.insert(local_idx, reg.clone());
                         if let Some(type_ann) = &param.type_annotation {
+                            let expected_ty =
+                                self.resolve_structural_slot_type_from_annotation(type_ann);
+                            if let Some(layout) =
+                                self.structural_projection_layout_from_type_id(expected_ty)
+                            {
+                                self.variable_structural_projection_fields
+                                    .insert(ident.name, layout);
+                                self.variable_class_map.remove(&ident.name);
+                            }
                             if let Some(param_class_id) = self.try_extract_class_from_type(type_ann)
                             {
-                                self.variable_class_map.insert(ident.name, param_class_id);
+                                if !self
+                                    .variable_structural_projection_fields
+                                    .contains_key(&ident.name)
+                                {
+                                    self.variable_class_map.insert(ident.name, param_class_id);
+                                }
                             }
                             self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                             if self.type_annotation_is_callable(type_ann) {
@@ -4603,7 +4671,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Resolve a class ID from a type name.
-    /// Supports direct class names and synthesized std-prelude aliases:
+    /// Supports direct class names and synthesized wrapper aliases:
     /// `__t_<module>_<ClassName>`.
     pub(super) fn class_id_from_type_name(&self, type_name: &str) -> Option<ClassId> {
         let pick_scoped = |entries: &Vec<(usize, ClassId)>| -> Option<ClassId> {
@@ -5026,6 +5094,44 @@ impl<'a> Lowerer<'a> {
         self.late_bound_object_vars.remove(&name);
         self.late_bound_object_ctor_map.remove(&name);
         self.late_bound_object_type_map.remove(&name);
+    }
+
+    pub(super) fn identifier_requires_late_bound_dispatch(&self, name: Symbol) -> bool {
+        if self.late_bound_object_vars.contains(&name) {
+            return true;
+        }
+
+        let resolved = self.interner.resolve(name);
+        self.ambient_builtin_globals.contains(resolved)
+            && !self.class_map.contains_key(&name)
+            && !self.variable_class_map.contains_key(&name)
+    }
+
+    pub(super) fn type_requires_late_bound_dispatch(&self, ty_id: TypeId) -> bool {
+        use crate::parser::types::ty::Type;
+
+        match self.type_ctx.get(ty_id) {
+            Some(Type::Class(class_ty)) => {
+                self.class_id_from_type_name(&class_ty.name).is_none()
+                    && !self.type_registry.has_builtin_dispatch_type(&class_ty.name)
+            }
+            Some(Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .is_some_and(|named| self.type_requires_late_bound_dispatch(named)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_requires_late_bound_dispatch(member)),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.type_requires_late_bound_dispatch(constraint)),
+            Some(Type::Generic(generic)) => {
+                self.type_requires_late_bound_dispatch(generic.base)
+            }
+            _ => false,
+        }
     }
 
     fn mark_late_bound_object_binding(
@@ -5537,7 +5643,7 @@ mod class_identity_tests {
     }
 
     #[test]
-    fn std_wrapper_cast_binding_uses_class_dispatch() {
+    fn module_wrapper_cast_binding_uses_class_dispatch() {
         use crate::compiler::ir::IrInstr;
 
         let source = r#"

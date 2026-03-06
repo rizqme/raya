@@ -1,4 +1,0 @@
-// Minimal test - no imports, just use the globally available test function
-test("hello", () => {
-    let x = 1 + 2;
-});

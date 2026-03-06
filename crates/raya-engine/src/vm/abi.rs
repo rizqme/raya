@@ -146,14 +146,15 @@ impl NativeContext for EngineContext<'_> {
         }
 
         // Buffer values are always wrapped as Buffer class objects.
-        let (buffer_class_id, buffer_field_count) = {
+        let (buffer_class_id, buffer_field_count, buffer_layout_id) = {
             let mut classes = self.classes.write();
             if let Some(class) = classes.get_class_by_name("Buffer") {
-                (class.id, class.field_count.max(2))
+                (class.id, class.field_count.max(2), class.layout_id)
             } else {
                 let id = classes.next_class_id();
                 classes.register_class(Class::new(id, "Buffer".to_string(), 2));
-                (id, 2)
+                let class = classes.get_class(id).expect("registered Buffer class");
+                (id, 2, class.layout_id)
             }
         };
 
@@ -162,7 +163,11 @@ impl NativeContext for EngineContext<'_> {
             let buf_ptr = gc.allocate(buffer);
             let handle = buf_ptr.as_ptr() as u64;
 
-            let mut obj = Object::new(buffer_class_id, buffer_field_count);
+            let mut obj = Object::new_nominal(
+                buffer_layout_id,
+                buffer_class_id as u32,
+                buffer_field_count,
+            );
             let _ = obj.set_field(0, Value::u64(handle));
             let _ = obj.set_field(1, Value::i32(data.len() as i32));
             gc.allocate(obj)
@@ -181,14 +186,14 @@ impl NativeContext for EngineContext<'_> {
     }
 
     fn create_object_by_id(&self, class_id: usize) -> AbiResult<NativeValue> {
-        let field_count = {
+        let (field_count, layout_id) = {
             let classes = self.classes.read();
             let class = classes
                 .get_class(class_id)
                 .ok_or_else(|| format!("Class {} not found", class_id))?;
-            class.field_count
+            (class.field_count, class.layout_id)
         };
-        let obj = Object::new(class_id, field_count);
+        let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
         Ok(self.alloc_ptr(obj))
     }
 
@@ -579,7 +584,14 @@ pub fn object_allocate(
     class_id: usize,
     field_count: usize,
 ) -> NativeValue {
-    let obj = Object::new(class_id, field_count);
+    let layout_id = {
+        let classes = ctx.classes.read();
+        classes
+            .get_class(class_id)
+            .map(|class| class.layout_id)
+            .unwrap_or_else(|| panic!("Class {} not found", class_id))
+    };
+    let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
     ctx.alloc_ptr(obj)
 }
 

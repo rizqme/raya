@@ -21,6 +21,10 @@ pub const OBJECT_CONSTRUCT_DYNAMIC_CLASS: u16 = 0x0007;
 pub const OBJECT_REGISTER_STRUCTURAL_VIEW: u16 = 0x0008;
 /// construct plain Object descriptor instance with node-compat fields
 pub const OBJECT_NEW: u16 = 0x0009;
+/// load ambient builtin global value by name (e.g., ArrayBuffer, Reflect, Intl)
+pub const OBJECT_GET_AMBIENT_GLOBAL: u16 = 0x000A;
+/// instanceof(obj, runtimeClassValue) using hidden type handles on imported/ambient classes
+pub const OBJECT_INSTANCE_OF_DYNAMIC_CLASS: u16 = 0x000B;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -111,6 +115,7 @@ pub const TASK_MARK_OBSERVED: u16 = 0x0504;
 // ============================================================================
 
 pub const ERROR_STACK: u16 = 0x0600;
+pub const ERROR_TO_STRING: u16 = 0x0601;
 
 // ============================================================================
 // Buffer (0x07xx)
@@ -512,6 +517,9 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_GET_OWN_PROPERTY_DESCRIPTOR => "Object.getOwnPropertyDescriptor",
         OBJECT_DEFINE_PROPERTIES => "Object.defineProperties",
         OBJECT_CONSTRUCT_DYNAMIC_CLASS => "Object.constructDynamicClass",
+        OBJECT_NEW => "Object.new",
+        OBJECT_GET_AMBIENT_GLOBAL => "Object.getAmbientGlobal",
+        OBJECT_INSTANCE_OF_DYNAMIC_CLASS => "Object.instanceOfDynamicClass",
 
         // Array
         ARRAY_PUSH => "Array.push",
@@ -635,6 +643,10 @@ pub fn native_name(id: u16) -> &'static str {
         NUMBER_TO_FIXED => "Number.toFixed",
         NUMBER_TO_PRECISION => "Number.toPrecision",
         NUMBER_TO_STRING_RADIX => "Number.toString",
+
+        // Error
+        ERROR_STACK => "Error.stack",
+        ERROR_TO_STRING => "Error.toString",
 
         // Logger
         LOGGER_DEBUG => "logger.debug",

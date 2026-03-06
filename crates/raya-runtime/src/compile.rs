@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::builtin_manifest;
 use crate::builtins;
@@ -175,7 +176,7 @@ pub fn compile_source_with_modes_and_ts_options(
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
     use crate::module_system::ProgramCompiler;
-    let virtual_entry = std::env::temp_dir().join("__raya_inline_entry.raya");
+    let virtual_entry = Path::new("<inline>.raya");
     let compiler = ProgramCompiler {
         builtin_mode,
         type_mode,

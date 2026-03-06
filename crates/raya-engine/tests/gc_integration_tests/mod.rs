@@ -20,9 +20,9 @@ fn test_gc_basic_collection() {
     let mut gc = GarbageCollector::default();
 
     // Allocate objects
-    let obj1 = Object::new(0, 2);
-    let obj2 = Object::new(0, 2);
-    let obj3 = Object::new(0, 2);
+    let obj1 = Object::new_synthetic_structural(2);
+    let obj2 = Object::new_synthetic_structural(2);
+    let obj3 = Object::new_synthetic_structural(2);
 
     let ptr1 = gc.allocate(obj1);
     let ptr2 = gc.allocate(obj2);
@@ -47,9 +47,9 @@ fn test_gc_nested_objects() {
     let mut gc = GarbageCollector::default();
 
     // Create object graph: root -> obj1 -> obj2 -> obj3
-    let mut obj1 = Object::new(0, 1);
-    let mut obj2 = Object::new(0, 1);
-    let obj3 = Object::new(0, 1);
+    let mut obj1 = Object::new_synthetic_structural(1);
+    let mut obj2 = Object::new_synthetic_structural(1);
+    let obj3 = Object::new_synthetic_structural(1);
 
     let ptr3 = gc.allocate(obj3);
     let val3 = unsafe { Value::from_ptr(NonNull::new(ptr3.as_ptr()).unwrap()) };
@@ -77,8 +77,8 @@ fn test_gc_circular_references() {
     let mut gc = GarbageCollector::default();
 
     // Create circular reference: obj1 <-> obj2
-    let obj1 = Object::new(0, 1);
-    let obj2 = Object::new(0, 1);
+    let obj1 = Object::new_synthetic_structural(1);
+    let obj2 = Object::new_synthetic_structural(1);
 
     let ptr1 = gc.allocate(obj1);
     let ptr2 = gc.allocate(obj2);
@@ -103,8 +103,8 @@ fn test_gc_array_elements() {
     let mut gc = GarbageCollector::default();
 
     // Create array with object elements
-    let obj1 = Object::new(0, 1);
-    let obj2 = Object::new(0, 1);
+    let obj1 = Object::new_synthetic_structural(1);
+    let obj2 = Object::new_synthetic_structural(1);
 
     let ptr1 = gc.allocate(obj1);
     let ptr2 = gc.allocate(obj2);
@@ -135,7 +135,7 @@ fn test_gc_multiple_collections() {
 
     for i in 0..5 {
         // Allocate objects
-        let obj = Object::new(0, 1);
+        let obj = Object::new_synthetic_structural(1);
         let ptr = gc.allocate(obj);
 
         // Keep only the current one
@@ -164,7 +164,7 @@ fn test_gc_threshold_trigger() {
     let initial_collections = gc.stats().collections;
 
     for _ in 0..100 {
-        let obj = Object::new(0, 10); // Object with 10 fields
+        let obj = Object::new_synthetic_structural(10); // Object with 10 fields
         let _ptr = gc.allocate(obj);
     }
 
@@ -203,7 +203,7 @@ fn test_gc_mixed_types() {
     let mut gc = GarbageCollector::default();
 
     // Mix of objects, arrays, and strings
-    let obj = Object::new(0, 2);
+    let obj = Object::new_synthetic_structural(2);
     let arr = Array::new(0, 5);
     let string = RayaString::new("test".to_string());
 
@@ -245,7 +245,7 @@ fn test_gc_stats_tracking() {
     // Allocate and collect multiple times
     for _ in 0..3 {
         for _ in 0..5 {
-            let obj = Object::new(0, 2);
+            let obj = Object::new_synthetic_structural(2);
             let _ptr = gc.allocate(obj);
         }
         gc.clear_stack_roots();
@@ -265,7 +265,7 @@ fn test_gc_large_object_graph() {
     // Create a chain of 50 objects
     let mut current_val = Value::null();
     for _ in 0..50 {
-        let mut obj = Object::new(0, 1);
+        let mut obj = Object::new_synthetic_structural(1);
         if !current_val.is_null() {
             obj.set_field(0, current_val).unwrap();
         }
@@ -289,7 +289,7 @@ fn test_gc_no_roots_clears_all() {
 
     // Allocate many objects without roots
     for _ in 0..20 {
-        let obj = Object::new(0, 2);
+        let obj = Object::new_synthetic_structural(2);
         let _ptr = gc.allocate(obj);
     }
 
@@ -305,7 +305,7 @@ fn test_gc_preserve_primitives_in_objects() {
     let mut gc = GarbageCollector::default();
 
     // Create object with primitive fields
-    let mut obj = Object::new(0, 3);
+    let mut obj = Object::new_synthetic_structural(3);
     obj.set_field(0, Value::i32(42)).unwrap();
     obj.set_field(1, Value::f64(3.14)).unwrap();
     obj.set_field(2, Value::bool(true)).unwrap();

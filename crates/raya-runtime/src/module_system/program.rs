@@ -12,10 +12,8 @@ use raya_engine::parser::{Interner, Parser};
 use raya_engine::vm::module::ModuleLinker;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct CompiledProgram {
     pub entry_path: PathBuf,
@@ -73,6 +71,77 @@ impl ProgramCompiler {
             .with_checker_policy(self.checker_policy())
             .with_builtin_surface_mode(self.builtin_surface_mode());
         let mut compiled_modules = compiler.compile(&entry_path)?;
+        if std::env::var("RAYA_DEBUG_MODULE_NATIVES").is_ok() {
+            for compiled in &compiled_modules {
+                eprintln!(
+                    "[module-natives] module='{}' path='{}' natives={}",
+                    compiled.bytecode.metadata.name,
+                    compiled.path.display(),
+                    compiled.bytecode.native_functions.len()
+                );
+                for (idx, name) in compiled.bytecode.native_functions.iter().enumerate() {
+                    eprintln!("  [{idx}] {name}");
+                }
+            }
+        }
+        self.run_post_link_cross_module_monomorphization_pass(&mut compiled_modules)?;
+        self.validate_compiled_module_links(&compiled_modules)?;
+        let late_link_requirements = compiler.late_link_requirements();
+        let module_order = compiled_modules
+            .iter()
+            .filter(|module| !module.declaration_only)
+            .map(|module| module.path.clone())
+            .collect::<Vec<_>>();
+
+        let mut entry = None;
+        let mut dependencies = Vec::new();
+        for compiled in compiled_modules {
+            if compiled.declaration_only {
+                continue;
+            }
+            let runtime_module = crate::CompiledModule {
+                module: compiled.bytecode,
+                interner: None,
+            };
+            if compiled.path == entry_path {
+                entry = Some(runtime_module);
+            } else {
+                dependencies.push(runtime_module);
+            }
+        }
+
+        let entry = entry.ok_or_else(|| ModuleCompileError::IoError {
+            path: entry_path.clone(),
+            message: "Entry module missing from compiled module graph".to_string(),
+        })?;
+
+        Ok(CompiledProgram {
+            entry_path,
+            module_order,
+            merged_source: String::new(),
+            entry,
+            dependencies,
+            late_link_requirements,
+        })
+    }
+
+    fn compile_program_source_binary(
+        &self,
+        source: &str,
+        virtual_entry_path: &Path,
+    ) -> Result<CompiledProgram, ModuleCompileError> {
+        let entry_path = virtual_entry_path.to_path_buf();
+        let project_root = entry_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let mut compiler = BinaryModuleCompiler::new(project_root)
+            .with_checker_mode(self.type_system_mode())
+            .with_checker_policy(self.checker_policy())
+            .with_builtin_surface_mode(self.builtin_surface_mode());
+        let mut compiled_modules =
+            compiler.compile_with_virtual_entry_source(&entry_path, source.to_string())?;
         if std::env::var("RAYA_DEBUG_MODULE_NATIVES").is_ok() {
             for compiled in &compiled_modules {
                 eprintln!(
@@ -363,12 +432,9 @@ impl ProgramCompiler {
         }
         self.enforce_dynamic_import_policy(source)?;
 
-        let materialized_entry = materialize_inline_entry_source(virtual_entry_path, source)?;
-        let compile_result = self
-            .compile_program_file_binary(&materialized_entry)
-            .map_err(map_module_compile_error);
-        let _ = fs::remove_file(&materialized_entry);
-        let mut program = compile_result?;
+        let mut program = self
+            .compile_program_source_binary(source, virtual_entry_path)
+            .map_err(map_module_compile_error)?;
 
         let entry_name = virtual_entry_path.to_string_lossy().to_string();
         if !entry_name.is_empty() {
@@ -444,73 +510,6 @@ fn parse_interner(source: &str) -> Result<Interner, RuntimeError> {
         )
     })?;
     Ok(interner)
-}
-
-fn materialize_inline_entry_source(
-    virtual_entry_path: &Path,
-    source: &str,
-) -> Result<PathBuf, RuntimeError> {
-    // Inline sources are ephemeral; always materialize under temp to avoid
-    // polluting project directories.
-    let mut candidate_dirs = vec![std::env::temp_dir().join("raya-inline")];
-    if let Some(parent) = virtual_entry_path.parent() {
-        candidate_dirs.push(parent.to_path_buf());
-    }
-
-    let mut deduped_dirs = Vec::new();
-    for dir in candidate_dirs {
-        if !deduped_dirs.contains(&dir) {
-            deduped_dirs.push(dir);
-        }
-    }
-
-    let stem = virtual_entry_path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("__raya_inline_entry");
-    let ext = virtual_entry_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("raya");
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let pid = std::process::id();
-
-    let mut last_error = None;
-    for dir in deduped_dirs {
-        if fs::create_dir_all(&dir).is_err() {
-            continue;
-        }
-
-        for attempt in 0..16u32 {
-            let candidate = dir.join(format!(
-                "{stem}.__raya_inline_{pid}_{timestamp}_{attempt}.{ext}"
-            ));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
-            {
-                Ok(mut file) => match file.write_all(source.as_bytes()) {
-                    Ok(_) => return Ok(candidate),
-                    Err(error) => {
-                        let _ = fs::remove_file(&candidate);
-                        last_error = Some(error);
-                    }
-                },
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-                Err(error) => last_error = Some(error),
-            }
-        }
-    }
-
-    Err(RuntimeError::Io(last_error.unwrap_or_else(|| {
-        std::io::Error::other("failed to materialize inline entry source")
-    })))
 }
 
 fn map_module_compile_error(error: ModuleCompileError) -> RuntimeError {

@@ -97,7 +97,7 @@ impl<'a> SubtypingContext<'a> {
         };
 
         // Bridge specialized builtin container/runtime types with their class-type names.
-        // In checker/runtime-prelude flows we can see either side represented as:
+        // In checker/runtime flows we can see either side represented as:
         // - Type::Map/Set/Channel/Promise/Array (specialized builtin types), or
         // - Type::Class { name: "Map" | "Set" | ... } (from class declarations).
         // They denote the same runtime entities and should be mutually compatible.

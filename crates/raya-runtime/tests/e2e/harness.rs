@@ -73,8 +73,7 @@ pub fn compile(source: &str) -> E2EResult<(Module, Interner)> {
 
 /// Compile Raya source code with builtin classes included
 ///
-/// Uses the production runtime module pipeline (Module System V2), with no
-/// std-prelude/source-rewrite fallback path.
+/// Uses the production runtime module pipeline (Module System V2) only.
 pub fn compile_with_builtins(source: &str) -> E2EResult<(Module, Interner)> {
     compile_via_binary_linker(source, BuiltinMode::RayaStrict)
 }
@@ -326,26 +325,6 @@ pub fn expect_bool_runtime(source: &str, expected: bool) {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
         }
     }
-}
-
-/// Compile and execute using the production runtime compile pipeline.
-///
-/// This path mirrors `raya run/eval` behavior (builtin + std prelude injection)
-/// and is useful for validating builtins that depend on runtime compile semantics.
-pub fn compile_and_run_runtime_legacy(source: &str) -> E2EResult<Value> {
-    let (module, _interner) = raya_runtime::compile::compile_source(source)
-        .map_err(|e| E2EError::TypeCheck(e.to_string()))?;
-
-    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
-    {
-        let mut registry = vm.native_registry().write();
-        raya_stdlib::register_stdlib(&mut registry);
-        raya_stdlib_posix::register_posix(&mut registry);
-    }
-
-    let value = vm.execute(&module).map_err(E2EError::Vm)?;
-    keep_vm_alive(vm);
-    Ok(value)
 }
 
 /// Compile and execute with builtins, expecting a specific i32 result

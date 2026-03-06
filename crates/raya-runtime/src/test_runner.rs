@@ -2,8 +2,8 @@
 //!
 //! The test runner:
 //! 1. Reads the test file source
-//! 2. Prepends std:test source and appends `__runTests();`
-//! 3. Compiles using the standard `compile_source` pipeline
+//! 2. Appends `__runTests();` to the std:test harness + user source
+//! 3. Compiles using the standard binary-link pipeline
 //! 4. Creates a VM with stdlib + test result handlers
 //! 5. Executes the module and returns collected results
 
@@ -34,8 +34,8 @@ pub fn run_test_file(
 
 /// Run test source code and return results.
 ///
-/// Prepends std:test, appends `__runTests()`, compiles, then executes
-/// on a VM with test result collection handlers.
+/// Compiles the std:test harness plus user source as one entry module, then
+/// executes it on a VM with test result collection handlers.
 pub fn run_test_source(
     source: &str,
     file_path: &Path,
@@ -44,7 +44,7 @@ pub fn run_test_source(
     // Build test source: test framework + user code + runner invocation
     let full_test_source = format!("{}\n{}\n__runTests();\n", TEST_SOURCE, source);
 
-    // Compile (compile_source prepends builtins + stdlib)
+    // Compile through the binary module pipeline.
     let (module, _interner) = compile::compile_source(&full_test_source)?;
 
     // Create VM with test handlers

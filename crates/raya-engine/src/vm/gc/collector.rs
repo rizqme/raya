@@ -294,6 +294,12 @@ impl GarbageCollector {
                     for &field_value in &obj.fields {
                         self.mark_value(field_value);
                     }
+                    if let Some(dyn_map) = obj.dyn_map() {
+                        let dyn_values: Vec<Value> = dyn_map.values().copied().collect();
+                        for value in dyn_values {
+                            self.mark_value(value);
+                        }
+                    }
                     return;
                 }
                 "Array" => {
@@ -311,6 +317,11 @@ impl GarbageCollector {
                 "BoundMethod" => {
                     // Trace the receiver (it's a GC-allocated object)
                     let bm = unsafe { &*(ptr as *const crate::vm::object::BoundMethod) };
+                    self.mark_value(bm.receiver);
+                    return;
+                }
+                "BoundNativeMethod" => {
+                    let bm = unsafe { &*(ptr as *const crate::vm::object::BoundNativeMethod) };
                     self.mark_value(bm.receiver);
                     return;
                 }

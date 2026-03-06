@@ -335,16 +335,18 @@ impl Reactor {
                 &state.mutex_registry,
                 &state.safepoint,
                 &state.globals_by_index,
+                &state.builtin_global_slots,
                 &state.tasks,
                 &state.injector,
                 &state.metadata,
                 &state.class_metadata,
                 &state.native_handler,
-                &state.resolved_natives,
                 &state.module_layouts,
                 &state.structural_slot_views,
                 &state.structural_shape_adapters,
-                &state.structural_object_shapes,
+                &state.structural_shape_names,
+                &state.structural_layout_shapes,
+                &state.type_handles,
                 Some(&io_submit_tx),
                 state.max_preemptions,
                 &state.stack_pool,
@@ -950,17 +952,22 @@ impl Reactor {
                 let handle = gc_ptr.as_ptr() as u64;
 
                 // Wrap in a proper Object with Buffer class_id so vtable dispatch works
-                let (class_id, field_count) = {
+                let (class_id, field_count, layout_id) = {
                     let mut classes = shared_state.classes.write();
                     if let Some(buffer_class) = classes.get_class_by_name("Buffer") {
-                        (buffer_class.id, buffer_class.field_count.max(2))
+                        (
+                            buffer_class.id,
+                            buffer_class.field_count.max(2),
+                            buffer_class.layout_id,
+                        )
                     } else {
                         let id = classes.next_class_id();
                         classes.register_class(Class::new(id, "Buffer".to_string(), 2));
-                        (id, 2)
+                        let class = classes.get_class(id).expect("registered Buffer class");
+                        (id, 2, class.layout_id)
                     }
                 };
-                let mut obj = Object::new(class_id, field_count);
+                let mut obj = Object::new_nominal(layout_id, class_id as u32, field_count);
                 obj.fields[0] = Value::u64(handle); // bufferPtr field
                 if field_count > 1 {
                     obj.fields[1] = Value::i32(data.len() as i32); // length field

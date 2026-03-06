@@ -66,8 +66,8 @@ raya-cli (CLI commands use Runtime)
 src/
 ├── lib.rs              # Runtime struct, CompiledModule, RuntimeOptions, public API
 ├── error.rs            # RuntimeError enum (thiserror)
-├── builtins.rs         # builtin_sources() + std_sources() via include_str!
-├── compile.rs          # compile_source(): parser → binder → checker → compiler
+├── builtins.rs         # Per-file builtin source inventory with stable logical paths
+├── compile.rs          # compile_source(): binary graph compile via virtual entry
 ├── session.rs          # Session: persistent eval with declaration accumulation (REPL)
 ├── vm_setup.rs         # create_vm(): VM with StdNativeHandler + stdlib + posix
 ├── loader.rs           # load_bytecode_file(), resolve_ryb_deps(), find_library()
@@ -94,12 +94,13 @@ tests/
 ## Compilation Pipeline
 
 ```
-builtin_sources() + std_sources() + user source
-    → Parser::new() → parse()
-    → Binder (empty native sigs — builtins are in source)
+user source
+    → ProgramCompiler::compile_program_source(..., "<inline>.raya")
+    → Binary module graph resolution
+    → Builtin global declaration seeding
     → TypeChecker
     → Compiler::compile_via_ir()
-    → Module (bytecode)
+    → Linked Module graph / entry bytecode
 ```
 
 Type behavior is controlled independently from builtin API mode:
@@ -144,8 +145,8 @@ Routing is handled by `StdNativeHandler` in `raya-stdlib/src/handler.rs`:
 - E2E tests live here, NOT in raya-engine
 - `StdNativeHandler` implementation lives in `raya-stdlib/src/handler.rs`, re-exported here for backward compat
 - When adding new stdlib modules, implement in `raya-stdlib`, route in `handler.rs`
-- The `builtins.rs` file uses `include_str!` to embed builtin + std `.raya` source at compile time
-- `compile.rs` error formatting now labels failures in prepended builtin/std sections as `prelude line N` to make upstream checker regressions debuggable
+- The `builtins.rs` file exposes builtin files individually; runtime builtin loading is declaration-first, then per-file compilation with preserved logical filenames
+- `compile.rs` uses virtual entry paths like `<inline>.raya` / `<eval>.raya`; it no longer materializes synthetic cwd files for inline execution
 - Run runtime tests with: `cargo test -p raya-runtime`
 - Multiworker e2e harness now applies a 30s execution timeout (`compile_and_run_multiworker*`) and returns a clear runtime timeout error instead of hanging indefinitely on scheduler deadlocks/regressions.
 - `tests/e2e/net.rs` TCP echo test binds a dynamic loopback port (with retries) and derives client port from `listener.localAddr()` to avoid fixed-port collisions in CI.

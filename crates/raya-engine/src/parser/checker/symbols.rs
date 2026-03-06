@@ -114,6 +114,8 @@ pub struct SymbolTable {
     scopes: Vec<Scope>,
     /// Current scope ID
     current_scope: ScopeId,
+    /// Generic type alias parameter order by alias name.
+    generic_type_alias_params: FxHashMap<String, Vec<String>>,
 }
 
 impl SymbolTable {
@@ -124,6 +126,7 @@ impl SymbolTable {
         SymbolTable {
             scopes: vec![global_scope],
             current_scope: ScopeId(0),
+            generic_type_alias_params: FxHashMap::default(),
         }
     }
 
@@ -141,6 +144,19 @@ impl SymbolTable {
         self.scopes.push(scope);
         self.current_scope = id;
         id
+    }
+
+    /// Persist generic type alias parameter ordering for checker-time instantiation.
+    pub fn set_generic_type_alias_params(
+        &mut self,
+        params: FxHashMap<String, Vec<String>>,
+    ) {
+        self.generic_type_alias_params = params;
+    }
+
+    /// Look up generic type alias parameter names in declaration order.
+    pub fn generic_type_alias_params(&self, name: &str) -> Option<&[String]> {
+        self.generic_type_alias_params.get(name).map(Vec::as_slice)
     }
 
     /// Pop the current scope, returning to its parent
@@ -333,8 +349,8 @@ impl SymbolTable {
 
     /// Replace a symbol entry in a specific scope without duplicate checks.
     ///
-    /// Used by binder paths that intentionally allow top-level shadowing
-    /// (e.g., prelude/builtin declarations replaced by user declarations).
+    /// Used by binder paths that intentionally allow duplicate helper declarations
+    /// and then replace the active symbol entry directly.
     pub fn replace_in_scope(&mut self, scope_id: ScopeId, mut symbol: Symbol) -> bool {
         if let Some(scope) = self.scopes.get_mut(scope_id.0 as usize) {
             symbol.scope_id = scope_id;

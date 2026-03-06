@@ -8,7 +8,7 @@ use super::error::BindError;
 use super::symbols::{ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind, SymbolTable};
 use super::{CheckerPolicy, TypeSystemMode};
 use crate::parser::ast::*;
-use crate::parser::types::hydrate_type_from_canonical_signature;
+use crate::parser::types::try_hydrate_type_from_canonical_signature;
 use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type};
 use crate::parser::types::{TypeContext, TypeId};
 use crate::parser::Interner;
@@ -29,11 +29,11 @@ pub struct Binder<'a> {
     /// Tracks function names that have been fully bound (in bind_function).
     /// Used to detect duplicate function declarations in user code.
     bound_functions: std::collections::HashMap<String, crate::parser::Span>,
-    /// When true, builtin source files are prepended to user code, so duplicate
-    /// class/function names between builtins and user code are expected (user shadows).
-    detect_top_level_duplicates: bool,
+    /// When true, duplicate top-level class/function declarations are rejected.
+    /// Some helper/builtin compilation paths intentionally disable this.
+    reject_duplicate_top_level_declarations: bool,
     /// Tracks type parameter names for generic type aliases (e.g., Container<T> → ["T"])
-    generic_type_alias_params: std::collections::HashMap<String, Vec<String>>,
+    generic_type_alias_params: rustc_hash::FxHashMap<String, Vec<String>>,
     /// Type system behavior mode.
     mode: TypeSystemMode,
     /// Effective checker policy.
@@ -63,8 +63,8 @@ impl<'a> Binder<'a> {
             interner,
             bound_classes: std::collections::HashMap::new(),
             bound_functions: std::collections::HashMap::new(),
-            detect_top_level_duplicates: true,
-            generic_type_alias_params: std::collections::HashMap::new(),
+            reject_duplicate_top_level_declarations: true,
+            generic_type_alias_params: rustc_hash::FxHashMap::default(),
             mode: TypeSystemMode::Raya,
             policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
         }
@@ -107,11 +107,9 @@ impl<'a> Binder<'a> {
         self.inference_fallback_type()
     }
 
-    /// Disable top-level duplicate class/function detection.
-    /// Call this when builtin source files are prepended to user code,
-    /// since user code may legitimately shadow builtin class names.
-    pub fn skip_top_level_duplicate_detection(&mut self) {
-        self.detect_top_level_duplicates = false;
+    /// Allow duplicate top-level class/function declarations for synthetic/helper builds.
+    pub fn allow_duplicate_top_level_declarations(&mut self) {
+        self.reject_duplicate_top_level_declarations = false;
     }
 
     /// Register an external class type so it can be referenced by name during binding.
@@ -172,6 +170,15 @@ impl<'a> Binder<'a> {
         // Register decorator type aliases (ClassDecorator<T>, etc.)
         self.register_decorator_types();
 
+        // Predeclare all builtin class symbols/types so builtin property/method
+        // signatures can reference classes that are declared later in BUILTIN_SIGS
+        // (including self-references like `Error | null`).
+        for sig in builtins {
+            for class_sig in &sig.classes {
+                self.register_external_class(&class_sig.name);
+            }
+        }
+
         for sig in builtins {
             // Register each class from this builtin module
             for class_sig in &sig.classes {
@@ -197,7 +204,10 @@ impl<'a> Binder<'a> {
 
     /// Hydrate a canonical structural signature into this module's `TypeContext`.
     pub fn hydrate_imported_signature_type(&mut self, signature: &str) -> TypeId {
-        hydrate_type_from_canonical_signature(signature, self.type_ctx)
+        // Use `unknown` (not `any`) on parse failure so strict import paths
+        // can deterministically reject unresolved structural signatures.
+        try_hydrate_type_from_canonical_signature(signature, self.type_ctx)
+            .unwrap_or_else(|| self.type_ctx.unknown_type())
     }
 
     /// Check whether a type ID currently resolves to `unknown`.
@@ -251,6 +261,25 @@ impl<'a> Binder<'a> {
         if self.type_ctx.lookup_named_type(name).is_none() {
             self.type_ctx.register_named_type(name.to_string(), ty);
         }
+    }
+
+    /// Override a named type mapping in the binder type context.
+    ///
+    /// Binary declaration surfaces are the authoritative module-boundary contract.
+    /// They must be able to replace older builtin checker stubs when the richer
+    /// canonical declaration shape differs.
+    pub fn override_imported_named_type(&mut self, name: &str, ty: TypeId) {
+        self.type_ctx.register_named_type(name.to_string(), ty);
+    }
+
+    /// Look up a named type in the binder type context.
+    pub fn lookup_named_type(&self, name: &str) -> Option<TypeId> {
+        self.type_ctx.lookup_named_type(name)
+    }
+
+    /// Return whether a symbol already exists in global scope.
+    pub fn has_global_symbol(&self, name: &str) -> bool {
+        self.symbols.resolve_from_scope(name, ScopeId(0)).is_some()
     }
 
     /// Register compiler intrinsics like __NATIVE_CALL and __OPCODE_CHANNEL_NEW
@@ -1305,6 +1334,10 @@ impl<'a> Binder<'a> {
             })
             .collect();
 
+        let extends = self
+            .builtin_parent_type_name(&class_sig.name)
+            .and_then(|parent| self.type_ctx.lookup_named_type(parent));
+
         // Create the class type
         let class_type = ClassType {
             name: class_sig.name.clone(),
@@ -1313,12 +1346,19 @@ impl<'a> Binder<'a> {
             methods,
             static_properties,
             static_methods,
-            extends: None,
+            extends,
             implements: vec![],
             is_abstract: false,
         };
 
-        let class_ty = self.type_ctx.intern(Type::Class(class_type));
+        let class_ty = if let Some(existing) = self.type_ctx.lookup_named_type(&class_sig.name) {
+            self.type_ctx.replace_type(existing, Type::Class(class_type));
+            existing
+        } else {
+            let id = self.type_ctx.intern(Type::Class(class_type));
+            self.type_ctx.register_named_type(class_sig.name.clone(), id);
+            id
+        };
 
         // Register the class symbol
         let symbol = Symbol {
@@ -1344,6 +1384,15 @@ impl<'a> Binder<'a> {
 
         // Ignore errors for duplicate symbols (builtins might override each other)
         let _ = self.symbols.define(symbol);
+    }
+
+    fn builtin_parent_type_name(&self, class_name: &str) -> Option<&'static str> {
+        // Runtime builtin signatures currently model many classes as flat declarations.
+        // Preserve expected inheritance surface for error hierarchy in checker types.
+        if class_name != "Error" && class_name.ends_with("Error") {
+            return Some("Error");
+        }
+        None
     }
 
     /// Register a single builtin function
@@ -1514,6 +1563,8 @@ impl<'a> Binder<'a> {
         self.symbols.pop_scope();
 
         if errors.is_empty() {
+            self.symbols
+                .set_generic_type_alias_params(self.generic_type_alias_params);
             Ok(self.symbols)
         } else {
             Err(errors)
@@ -1930,7 +1981,7 @@ impl<'a> Binder<'a> {
                     {
                         // Allow value binding to coexist with a same-name type alias in this scope.
                         // The checker resolves identifiers by TypeId, so the type alias symbol
-                        // can service both type and value references for std-prelude shims.
+                        // can service both type and value references for helper-generated shims.
                         return Ok(());
                     }
                 }
@@ -2139,7 +2190,7 @@ impl<'a> Binder<'a> {
         let func_name = self.resolve(func.name.name);
 
         // Detect duplicate function declarations
-        if self.detect_top_level_duplicates {
+        if self.reject_duplicate_top_level_declarations {
             if let Some(&original_span) = self.bound_functions.get(&func_name) {
                 return Err(BindError::DuplicateSymbol {
                     name: func_name,
@@ -2401,7 +2452,7 @@ impl<'a> Binder<'a> {
         let class_name = self.resolve(class.name.name);
 
         // Detect duplicate class declarations using the bound_classes set.
-        if self.detect_top_level_duplicates {
+        if self.reject_duplicate_top_level_declarations {
             if let Some(&original_span) = self.bound_classes.get(&class_name) {
                 return Err(BindError::DuplicateSymbol {
                     name: class_name,
@@ -3224,125 +3275,17 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// Recursively substitute TypeVars in a type according to a substitution map
-    fn substitute_type_vars(
+    fn instantiate_generic_type_alias(
         &mut self,
-        ty: TypeId,
-        subs: &std::collections::HashMap<String, TypeId>,
+        template_ty: TypeId,
+        param_names: &[String],
+        resolved_args: &[TypeId],
     ) -> TypeId {
-        let mut cache = std::collections::HashMap::new();
-        let mut active = std::collections::HashSet::new();
-        self.substitute_type_vars_inner(ty, subs, &mut cache, &mut active)
-    }
-
-    fn substitute_type_vars_inner(
-        &mut self,
-        ty: TypeId,
-        subs: &std::collections::HashMap<String, TypeId>,
-        cache: &mut std::collections::HashMap<TypeId, TypeId>,
-        active: &mut std::collections::HashSet<TypeId>,
-    ) -> TypeId {
-        if let Some(cached) = cache.get(&ty).copied() {
-            return cached;
+        let mut gen_ctx = crate::parser::types::GenericContext::new(self.type_ctx);
+        for (param_name, &arg_ty) in param_names.iter().zip(resolved_args.iter()) {
+            gen_ctx.add_substitution(param_name.clone(), arg_ty);
         }
-
-        // Guard against recursive generic shapes like A<T> -> B<T> -> A<T>.
-        // Returning the original TypeId preserves a finite graph and prevents
-        // stack overflows during substitution.
-        if !active.insert(ty) {
-            return ty;
-        }
-
-        let type_info = self.type_ctx.get(ty).cloned();
-        let result = match type_info {
-            Some(Type::TypeVar(tv)) => {
-                if let Some(&sub) = subs.get(&tv.name) {
-                    sub
-                } else {
-                    ty
-                }
-            }
-            Some(Type::Object(obj)) => {
-                let new_props: Vec<_> = obj
-                    .properties
-                    .iter()
-                    .map(|p| PropertySignature {
-                        name: p.name.clone(),
-                        ty: self.substitute_type_vars_inner(p.ty, subs, cache, active),
-                        optional: p.optional,
-                        readonly: p.readonly,
-                        visibility: p.visibility,
-                    })
-                    .collect();
-                self.type_ctx.object_type(new_props)
-            }
-            Some(Type::Union(union)) => {
-                let new_members: Vec<_> = union
-                    .members
-                    .iter()
-                    .map(|&m| self.substitute_type_vars_inner(m, subs, cache, active))
-                    .collect();
-                self.type_ctx.union_type(new_members)
-            }
-            Some(Type::Function(func)) => {
-                let new_params: Vec<_> = func
-                    .params
-                    .iter()
-                    .map(|&p| self.substitute_type_vars_inner(p, subs, cache, active))
-                    .collect();
-                let new_ret =
-                    self.substitute_type_vars_inner(func.return_type, subs, cache, active);
-                self.type_ctx
-                    .function_type(new_params, new_ret, func.is_async)
-            }
-            Some(Type::Array(arr)) => {
-                let new_elem = self.substitute_type_vars_inner(arr.element, subs, cache, active);
-                self.type_ctx.array_type(new_elem)
-            }
-            Some(Type::Class(class)) => {
-                let new_props: Vec<_> = class
-                    .properties
-                    .iter()
-                    .map(|p| PropertySignature {
-                        name: p.name.clone(),
-                        ty: self.substitute_type_vars_inner(p.ty, subs, cache, active),
-                        optional: p.optional,
-                        readonly: p.readonly,
-                        visibility: p.visibility,
-                    })
-                    .collect();
-                let new_methods: Vec<_> = class
-                    .methods
-                    .iter()
-                    .map(|m| MethodSignature {
-                        name: m.name.clone(),
-                        ty: self.substitute_type_vars_inner(m.ty, subs, cache, active),
-                        type_params: m.type_params.clone(),
-                        visibility: m.visibility,
-                    })
-                    .collect();
-                let new_extends = class
-                    .extends
-                    .map(|e| self.substitute_type_vars_inner(e, subs, cache, active));
-                let new_class = ClassType {
-                    name: class.name.clone(),
-                    type_params: vec![], // Specialized class has no type params
-                    properties: new_props,
-                    methods: new_methods,
-                    static_properties: class.static_properties.clone(),
-                    static_methods: class.static_methods.clone(),
-                    extends: new_extends,
-                    implements: class.implements.clone(),
-                    is_abstract: class.is_abstract,
-                };
-                self.type_ctx.intern(Type::Class(new_class))
-            }
-            _ => ty,
-        };
-
-        active.remove(&ty);
-        cache.insert(ty, result);
-        result
+        gen_ctx.apply_substitution(template_ty).unwrap_or(template_ty)
     }
 
     /// Resolve type to TypeId
@@ -3519,19 +3462,15 @@ impl<'a> Binder<'a> {
                                 {
                                     if type_args.len() == param_names.len() {
                                         // Resolve each type argument.
-                                        let mut resolved_args = Vec::new();
+                                        let mut resolved_args = Vec::with_capacity(type_args.len());
                                         for arg in type_args {
                                             resolved_args.push(self.resolve_type_annotation(arg)?);
                                         }
-                                        // Build substitution map: param_name → concrete type.
-                                        let mut subs = std::collections::HashMap::new();
-                                        for (param_name, arg_ty) in
-                                            param_names.iter().zip(resolved_args.iter())
-                                        {
-                                            subs.insert(param_name.clone(), *arg_ty);
-                                        }
-                                        // Apply substitution to the template alias type.
-                                        return Ok(self.substitute_type_vars(template_ty, &subs));
+                                        return Ok(self.instantiate_generic_type_alias(
+                                            template_ty,
+                                            &param_names,
+                                            &resolved_args,
+                                        ));
                                     }
                                 }
                             }
@@ -4130,6 +4069,7 @@ mod tests {
         };
         match ctx.get(field_ty) {
             Some(Type::Class(class_ty)) => assert_eq!(class_ty.name, "Json"),
+            Some(Type::Reference(reference)) => assert_eq!(reference.name, "Json"),
             Some(other) => panic!("expected json field to be class Json, got {other:?}"),
             None => panic!("missing field type"),
         }

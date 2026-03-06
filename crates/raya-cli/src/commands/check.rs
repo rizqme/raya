@@ -52,13 +52,10 @@ pub fn execute(
             let parent = file_path
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."));
-            let tsconfig = loader::find_tsconfig(parent).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "--mode ts requires discoverable tsconfig.json near {}",
-                    file_path.display()
-                )
-            })?;
-            Some(loader::load_ts_compiler_options(&tsconfig)?)
+            match loader::find_tsconfig(parent) {
+                Some(tsconfig) => Some(loader::load_ts_compiler_options(&tsconfig)?),
+                None => Some(TsCompilerOptions::default()),
+            }
         } else {
             None
         };

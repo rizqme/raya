@@ -48,7 +48,7 @@ use crate::parser::ast;
 use crate::parser::Interner;
 use crate::parser::TypeContext;
 use crate::parser::TypeId;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashSet;
 
 /// Monomorphization strategy for compilation.
@@ -83,6 +83,8 @@ pub struct Compiler<'a> {
     module_identity: Option<String>,
     /// Original source text for debug dumps (enables source-annotated IR/bytecode output)
     source_text: Option<String>,
+    /// Ambient builtin globals available without explicit source declarations/imports.
+    ambient_builtin_globals: FxHashSet<String>,
 }
 
 impl<'a> Compiler<'a> {
@@ -99,6 +101,7 @@ impl<'a> Compiler<'a> {
             monomorphization_mode: MonomorphizationMode::ConsumerLink,
             module_identity: None,
             source_text: None,
+            ambient_builtin_globals: FxHashSet::default(),
         }
     }
 
@@ -162,6 +165,16 @@ impl<'a> Compiler<'a> {
         self
     }
 
+    /// Provide ambient builtin global names that lowering may resolve via runtime lookup.
+    pub fn with_ambient_builtin_globals<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.ambient_builtin_globals = names.into_iter().map(Into::into).collect();
+        self
+    }
+
     /// Compile a module into bytecode
     pub fn compile(&mut self, module: &ast::Module) -> CompileResult<Module> {
         let mut codegen = CodeGenerator::new(&self.type_ctx, self.interner);
@@ -174,7 +187,8 @@ impl<'a> Compiler<'a> {
             lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
                 .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(self.emit_sourcemap)
-                .with_js_this_binding_compat(self.js_this_binding_compat);
+                .with_js_this_binding_compat(self.js_this_binding_compat)
+                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -202,7 +216,8 @@ impl<'a> Compiler<'a> {
             lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
                 .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(need_sourcemap)
-                .with_js_this_binding_compat(self.js_this_binding_compat);
+                .with_js_this_binding_compat(self.js_this_binding_compat)
+                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -318,7 +333,8 @@ impl<'a> Compiler<'a> {
             lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
                 .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(self.emit_sourcemap)
-                .with_js_this_binding_compat(self.js_this_binding_compat);
+                .with_js_this_binding_compat(self.js_this_binding_compat)
+                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }

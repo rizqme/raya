@@ -898,7 +898,7 @@ impl Task {
         }
     }
 
-    /// Restore a task from a `SerializedTask` and a fallback module reference.
+    /// Restore a task from a `SerializedTask` and a module reference.
     ///
     /// Runtime-transient state (preemption counters, start_time, waiters, etc.) is
     /// reset to defaults — only persistent execution state is restored.
@@ -906,13 +906,20 @@ impl Task {
         serialized: SerializedTask,
         module: Arc<crate::compiler::Module>,
     ) -> Self {
-        Self::from_serialized_with_lookup(serialized, module, |_| None)
+        let fallback_checksum = module.checksum;
+        Self::from_serialized_with_lookup(serialized, module.clone(), move |checksum| {
+            if *checksum == fallback_checksum {
+                Some(module.clone())
+            } else {
+                None
+            }
+        })
     }
 
     /// Restore a task from serialized state while resolving modules by checksum.
     pub fn from_serialized_with_lookup<F>(
         serialized: SerializedTask,
-        fallback_module: Arc<crate::compiler::Module>,
+        _module_for_restore_context: Arc<crate::compiler::Module>,
         mut resolve_module: F,
     ) -> Self
     where
@@ -922,21 +929,34 @@ impl Task {
             checksum.iter().any(|b| *b != 0)
         }
 
-        let task_module = if checksum_is_set(&serialized.module_checksum) {
-            resolve_module(&serialized.module_checksum).unwrap_or_else(|| fallback_module.clone())
-        } else {
-            fallback_module.clone()
-        };
+        if !checksum_is_set(&serialized.module_checksum) {
+            panic!("snapshot restore failed: missing task module checksum");
+        }
+        let task_module = resolve_module(&serialized.module_checksum).unwrap_or_else(|| {
+            panic!(
+                "snapshot restore failed: unknown task module checksum {:02x?}",
+                serialized.module_checksum
+            )
+        });
 
         // Map SerializedFrame -> ExecutionFrame
         let execution_frames: Vec<ExecutionFrame> = serialized
             .frames
             .iter()
             .map(|sf| ExecutionFrame {
-                module: if checksum_is_set(&sf.module_checksum) {
-                    resolve_module(&sf.module_checksum).unwrap_or_else(|| task_module.clone())
-                } else {
-                    task_module.clone()
+                module: {
+                    if !checksum_is_set(&sf.module_checksum) {
+                        panic!(
+                            "snapshot restore failed: missing frame module checksum for function {}",
+                            sf.function_index
+                        );
+                    }
+                    resolve_module(&sf.module_checksum).unwrap_or_else(|| {
+                        panic!(
+                            "snapshot restore failed: unknown frame module checksum {:02x?}",
+                            sf.module_checksum
+                        )
+                    })
                 },
                 func_id: sf.function_index,
                 ip: sf.return_ip,
@@ -1061,7 +1081,10 @@ mod tests {
             local_count: 0,
             code: vec![Opcode::Return as u8],
         });
-        Arc::new(module)
+        // Finalize checksum so snapshot-restore tests exercise strict module identity.
+        let encoded = module.encode();
+        let finalized = Module::decode(&encoded).expect("finalize module checksum for tests");
+        Arc::new(finalized)
     }
 
     fn create_test_module() -> Arc<Module> {
@@ -1481,6 +1504,7 @@ mod tests {
 
         let mut serialized = SerializedTask::new(task_id, 0);
         serialized.state = TaskState::Suspended;
+        serialized.module_checksum = module.checksum;
         serialized.ip = 100;
         serialized.stack = vec![Value::i32(1), Value::i32(2), Value::i32(3)];
         serialized.parent = Some(parent_id);

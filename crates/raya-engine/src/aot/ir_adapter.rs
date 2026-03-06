@@ -428,10 +428,35 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![Self::reg(object), *field as u32],
                 });
             }
+            IrInstr::LoadFieldShape {
+                dest,
+                object,
+                field,
+                optional: _,
+                ..
+            } => {
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::ObjectGetField,
+                    args: vec![Self::reg(object), *field as u32],
+                });
+            }
             IrInstr::StoreField {
                 object,
                 field,
                 value,
+            } => {
+                out.push(SmInstr::CallHelper {
+                    dest: None,
+                    helper: HelperCall::ObjectSetField,
+                    args: vec![Self::reg(object), *field as u32, Self::reg(value)],
+                });
+            }
+            IrInstr::StoreFieldShape {
+                object,
+                field,
+                value,
+                ..
             } => {
                 out.push(SmInstr::CallHelper {
                     dest: None,
@@ -502,10 +527,10 @@ impl<'a> IrFunctionAdapter<'a> {
             }
             IrInstr::ObjectLiteral {
                 dest,
-                class,
+                type_index,
                 fields,
             } => {
-                let mut args = vec![class.as_u32()];
+                let mut args = vec![*type_index];
                 for (field_idx, reg) in fields {
                     args.push(*field_idx as u32);
                     args.push(Self::reg(reg));

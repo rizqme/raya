@@ -113,15 +113,15 @@ unsafe extern "C" fn helper_alloc_object(ctx: *mut AotTaskContext, class_id: u32
     }
     let shared = &*((*ctx).shared_state as *const SharedVmState);
     let class_id = class_id as usize;
-    let field_count = {
+    let (field_count, layout_id) = {
         let classes = shared.classes.read();
         let Some(class) = classes.get_class(class_id) else {
             return abi::NULL_VALUE;
         };
-        class.field_count
+        (class.field_count, class.layout_id)
     };
     let mut gc = shared.gc.lock();
-    let obj_ptr = gc.allocate(Object::new(class_id, field_count));
+    let obj_ptr = gc.allocate(Object::new_nominal(layout_id, class_id as u32, field_count));
     let value = Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap());
     value.raw()
 }
@@ -275,8 +275,9 @@ unsafe extern "C" fn helper_native_call(
                 .read()
                 .get(&module.checksum)
                 .map(|layout| layout.resolved_natives.clone())
-                .unwrap_or_else(|| shared.resolved_natives.read().clone())
+                .unwrap_or_else(crate::vm::native_registry::ResolvedNatives::empty)
         } else {
+            // Context-less helper path used in unit tests / partial runtimes.
             shared.resolved_natives.read().clone()
         };
         match resolved.call(native_id, &engine_ctx, &native_args) {

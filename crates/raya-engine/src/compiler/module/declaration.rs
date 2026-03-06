@@ -606,10 +606,23 @@ fn materialize_declaration_stubs(source: &str) -> String {
                 .next()
                 .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
 
+            // Class fields can legally have function types:
+            //   field: (x: T) => U;
+            // Those are not callable declarations and must not receive
+            // stub bodies. Distinguish by checking whether the first colon
+            // appears before the first opening parenthesis.
+            let first_colon = trimmed.find(':');
+            let first_paren = trimmed.find('(');
+            let has_field_type_annotation = matches!(
+                (first_colon, first_paren),
+                (Some(colon), Some(paren)) if colon < paren
+            );
+
             let callable_signature_start = trimmed.contains('(')
                 && !trimmed.starts_with("abstract ")
                 && !trimmed.contains('{')
                 && starts_with_member_token
+                && !has_field_type_annotation
                 && (is_top_level_fn_start || is_class_member_start);
 
             if callable_signature_start {
@@ -1634,6 +1647,31 @@ mod tests {
         assert!(
             normalized.contains("get(): number { throw new Error(\"__raya_decl_stub__\"); }"),
             "class methods should still be stubbed"
+        );
+    }
+
+    #[test]
+    fn declaration_class_function_typed_fields_do_not_get_stub_bodies() {
+        let src = r#"
+            export class Object {
+                get: (() => Object) | null;
+                set: ((value: Object) => void) | null;
+                toString(): string;
+            }
+        "#;
+        let normalized = normalize_declaration_source(DeclarationSourceKind::DRaya, src);
+
+        assert!(
+            normalized.contains("get: (() => Object) | null;"),
+            "function-typed field 'get' must remain a field declaration"
+        );
+        assert!(
+            normalized.contains("set: ((value: Object) => void) | null;"),
+            "function-typed field 'set' must remain a field declaration"
+        );
+        assert!(
+            normalized.contains("toString(): string { throw new Error(\"__raya_decl_stub__\"); }"),
+            "methods should still be stubbed"
         );
     }
 

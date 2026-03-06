@@ -18,6 +18,14 @@ pub type ShapeId = u64;
 pub type PropKeyId = u32;
 /// Runtime handle identity for imported/exported type constructors.
 pub type TypeHandleId = u32;
+/// High-bit tag reserved for deterministic structural layout IDs.
+pub const STRUCTURAL_LAYOUT_ID_TAG: LayoutId = 0x8000_0000;
+/// Object flag: this object has an active dynamic property lane.
+pub const OBJECT_FLAG_HAS_DYN_MAP: u32 = 1 << 0;
+/// Object flag: object is frozen against mutation.
+pub const OBJECT_FLAG_FROZEN: u32 = 1 << 1;
+/// Object flag: object is sealed against extension.
+pub const OBJECT_FLAG_SEALED: u32 = 1 << 2;
 
 /// Runtime handle for nominal type constructors crossing module boundaries.
 ///
@@ -26,8 +34,8 @@ pub type TypeHandleId = u32;
 /// module hydration globals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TypeHandle {
-    /// Global nominal type/class ID in the VM registry.
-    pub nominal_type_id: NominalTypeId,
+    /// Runtime-owned type handle ID in the VM registry.
+    pub handle_id: TypeHandleId,
     /// Optional structural shape hash for diagnostics/contract checks.
     pub shape_id: Option<ShapeId>,
 }
@@ -40,30 +48,71 @@ fn generate_object_id() -> u64 {
     NEXT_OBJECT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Derive a deterministic physical layout ID from ordered member names.
+pub fn layout_id_from_ordered_names(names: &[String]) -> LayoutId {
+    let payload = format!("layout{{{}}}", names.join(","));
+    let raw = crate::parser::types::signature_hash(&payload) as LayoutId;
+    (raw | STRUCTURAL_LAYOUT_ID_TAG).max(STRUCTURAL_LAYOUT_ID_TAG | 1)
+}
+
+/// Derive a deterministic structural shape ID from member names.
+pub fn shape_id_from_member_names(names: &[String]) -> ShapeId {
+    let mut canonical = names.to_vec();
+    canonical.sort_unstable();
+    canonical.dedup();
+    let payload = format!("shape{{{}}}", canonical.join(","));
+    crate::parser::types::signature_hash(&payload)
+}
+
+/// Immutable identity header for runtime objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectHeader {
+    /// Unique object identity used for hashing/structural adapter caches.
+    pub object_id: u64,
+    /// Physical layout identity used for fixed-slot dispatch.
+    pub layout_id: LayoutId,
+    /// Optional nominal runtime type identity used for class semantics.
+    pub nominal_type_id: Option<NominalTypeId>,
+    /// Runtime object flags.
+    pub flags: u32,
+}
+
+impl ObjectHeader {
+    #[inline]
+    pub fn nominal(layout_id: LayoutId, nominal_type_id: NominalTypeId) -> Self {
+        assert_ne!(layout_id, 0, "runtime object layout id must be nonzero");
+        Self {
+            object_id: generate_object_id(),
+            layout_id,
+            nominal_type_id: Some(nominal_type_id),
+            flags: 0,
+        }
+    }
+
+    #[inline]
+    pub fn structural(layout_id: LayoutId) -> Self {
+        assert_ne!(layout_id, 0, "runtime object layout id must be nonzero");
+        Self {
+            object_id: generate_object_id(),
+            layout_id,
+            nominal_type_id: None,
+            flags: 0,
+        }
+    }
+}
+
 /// Object instance (heap-allocated)
 #[derive(Debug, Clone)]
 pub struct Object {
-    /// Unique object ID (assigned on creation, used for hashCode/equals)
-    pub object_id: u64,
-    /// Physical layout identity for fixed-slot access.
-    pub layout_id: LayoutId,
-    /// Optional nominal class/type identity.
-    pub nominal_type_id: Option<NominalTypeId>,
-    /// Class ID (index into VM class registry)
-    ///
-    /// Compatibility field retained while migrating call-sites to
-    /// `layout_id` + `nominal_type_id`.
-    pub class_id: usize,
+    /// Runtime identity header.
+    pub header: ObjectHeader,
     /// Field values
     pub fields: Vec<Value>,
+    /// Dynamic property lane for JS-style keyed properties.
+    pub dyn_map: Option<FxHashMap<PropKeyId, Value>>,
 }
 
 impl Object {
-    /// Create a new object with uninitialized fields
-    pub fn new(class_id: usize, field_count: usize) -> Self {
-        Self::new_nominal(class_id as LayoutId, class_id as NominalTypeId, field_count)
-    }
-
     /// Create a nominal object with explicit layout and nominal type IDs.
     pub fn new_nominal(
         layout_id: LayoutId,
@@ -71,25 +120,121 @@ impl Object {
         field_count: usize,
     ) -> Self {
         Self {
-            object_id: generate_object_id(),
-            layout_id,
-            nominal_type_id: Some(nominal_type_id),
-            class_id: nominal_type_id as usize,
+            header: ObjectHeader::nominal(layout_id, nominal_type_id),
             fields: vec![Value::null(); field_count],
+            dyn_map: None,
         }
     }
 
     /// Create a structural/dynamic object with explicit layout ID and no nominal identity.
     pub fn new_structural(layout_id: LayoutId, field_count: usize) -> Self {
         Self {
-            object_id: generate_object_id(),
-            layout_id,
-            nominal_type_id: None,
-            // Compatibility value during migration. Structural objects should not
-            // participate in nominal class dispatch.
-            class_id: 0,
+            header: ObjectHeader::structural(layout_id),
             fields: vec![Value::null(); field_count],
+            dyn_map: None,
         }
+    }
+
+    /// Create a structural object with the dynamic property lane enabled.
+    pub fn new_dynamic(layout_id: LayoutId, field_count: usize) -> Self {
+        let mut object = Self::new_structural(layout_id, field_count);
+        object.ensure_dyn_map();
+        object
+    }
+
+    fn synthetic_nominal_layout_id(
+        nominal_type_id: NominalTypeId,
+        field_count: usize,
+    ) -> LayoutId {
+        let payload = format!("test_nominal_layout:{nominal_type_id}:{field_count}");
+        let raw = crate::parser::types::signature_hash(&payload) as LayoutId;
+        (raw & !STRUCTURAL_LAYOUT_ID_TAG).max(1)
+    }
+
+    fn synthetic_structural_layout_id(field_count: usize) -> LayoutId {
+        let names = (0..field_count)
+            .map(|index| format!("__slot{index}"))
+            .collect::<Vec<_>>();
+        layout_id_from_ordered_names(&names)
+    }
+
+    /// Create a synthetic nominal object with a deterministic nonzero layout.
+    ///
+    /// This is intended for internal tests and helper code that need a nominal
+    /// object without first registering a full runtime class definition.
+    pub fn new_synthetic_nominal(nominal_type_id: usize, field_count: usize) -> Self {
+        let nominal_type_id = nominal_type_id as NominalTypeId;
+        let layout_id = Self::synthetic_nominal_layout_id(nominal_type_id, field_count);
+        Self::new_nominal(layout_id, nominal_type_id, field_count)
+    }
+
+    /// Create a synthetic structural object with a deterministic nonzero layout.
+    ///
+    /// This is intended for internal tests and helper code that need a
+    /// structural object without going through compiler-produced object literals.
+    pub fn new_synthetic_structural(field_count: usize) -> Self {
+        let layout_id = Self::synthetic_structural_layout_id(field_count);
+        Self::new_structural(layout_id, field_count)
+    }
+
+    #[inline]
+    pub fn object_id(&self) -> u64 {
+        self.header.object_id
+    }
+
+    #[inline]
+    pub fn layout_id(&self) -> LayoutId {
+        self.header.layout_id
+    }
+
+    #[inline]
+    pub fn set_layout_id(&mut self, layout_id: LayoutId) {
+        self.header.layout_id = layout_id;
+    }
+
+    #[inline]
+    pub fn nominal_type_id(&self) -> Option<NominalTypeId> {
+        self.header.nominal_type_id
+    }
+
+    #[inline]
+    pub fn set_nominal_type_id(&mut self, nominal_type_id: Option<NominalTypeId>) {
+        self.header.nominal_type_id = nominal_type_id;
+    }
+
+    #[inline]
+    pub fn flags(&self) -> u32 {
+        self.header.flags
+    }
+
+    #[inline]
+    pub fn has_flag(&self, flag: u32) -> bool {
+        self.header.flags & flag != 0
+    }
+
+    #[inline]
+    pub fn set_flag(&mut self, flag: u32) {
+        self.header.flags |= flag;
+    }
+
+    #[inline]
+    pub fn clear_flag(&mut self, flag: u32) {
+        self.header.flags &= !flag;
+    }
+
+    #[inline]
+    pub fn dyn_map(&self) -> Option<&FxHashMap<PropKeyId, Value>> {
+        self.dyn_map.as_ref()
+    }
+
+    #[inline]
+    pub fn dyn_map_mut(&mut self) -> Option<&mut FxHashMap<PropKeyId, Value>> {
+        self.dyn_map.as_mut()
+    }
+
+    pub fn ensure_dyn_map(&mut self) -> &mut FxHashMap<PropKeyId, Value> {
+        self.set_flag(OBJECT_FLAG_HAS_DYN_MAP);
+        self.dyn_map.get_or_insert_with(FxHashMap::default)
     }
 
     /// Get a field value by index
@@ -119,13 +264,20 @@ impl Object {
     /// Return the nominal class ID when this object participates in nominal dispatch.
     #[inline]
     pub fn nominal_class_id(&self) -> Option<usize> {
-        self.nominal_type_id.map(|id| id as usize)
+        self.nominal_type_id().map(|id| id as usize)
+    }
+
+    /// Return a stable runtime identity for diagnostics/debug paths.
+    #[inline]
+    pub fn runtime_identity_id(&self) -> usize {
+        self.nominal_class_id()
+            .unwrap_or_else(|| self.layout_id() as usize)
     }
 
     /// Return true when this object is a structural/dynamic carrier (no nominal identity).
     #[inline]
     pub fn is_structural(&self) -> bool {
-        self.nominal_type_id.is_none()
+        self.nominal_type_id().is_none()
     }
 }
 
@@ -182,6 +334,8 @@ impl Default for DynObject {
 pub struct Class {
     /// Class ID (unique identifier)
     pub id: usize,
+    /// Physical runtime layout ID for object storage.
+    pub layout_id: LayoutId,
     /// Class name
     pub name: String,
     /// Number of instance fields (including inherited)
@@ -203,6 +357,7 @@ impl Class {
     pub fn new(id: usize, name: String, field_count: usize) -> Self {
         Self {
             id,
+            layout_id: 0,
             name,
             field_count,
             parent_id: None,
@@ -217,6 +372,7 @@ impl Class {
     pub fn with_parent(id: usize, name: String, field_count: usize, parent_id: usize) -> Self {
         Self {
             id,
+            layout_id: 0,
             name,
             field_count,
             parent_id: Some(parent_id),
@@ -236,6 +392,7 @@ impl Class {
     ) -> Self {
         Self {
             id,
+            layout_id: 0,
             name,
             field_count,
             parent_id: None,
@@ -249,6 +406,12 @@ impl Class {
     /// Set the constructor function ID
     pub fn set_constructor(&mut self, function_id: usize) {
         self.constructor_id = Some(function_id);
+    }
+
+    /// Set physical layout ID once assigned by the runtime registry.
+    pub fn set_layout_id(&mut self, layout_id: LayoutId) {
+        assert_ne!(layout_id, 0, "nominal type layout id must be nonzero");
+        self.layout_id = layout_id;
     }
 
     /// Get the constructor function ID
@@ -288,6 +451,13 @@ impl Class {
     /// Get method from vtable
     pub fn get_method(&self, method_index: usize) -> Option<usize> {
         self.vtable.get_method(method_index)
+    }
+}
+
+impl Object {
+    /// Create a nominal object using the runtime class metadata.
+    pub fn new_from_class(class: &Class) -> Self {
+        Self::new_nominal(class.layout_id, class.id as NominalTypeId, class.field_count)
     }
 }
 
@@ -531,6 +701,18 @@ pub struct BoundMethod {
     pub func_id: usize,
     /// Optional explicit module binding for cross-module method dispatch.
     pub module: Option<Arc<crate::compiler::Module>>,
+}
+
+/// A native method bound to its receiver object.
+///
+/// Used when dynamic member lookup resolves to a VM native method instead of
+/// a bytecode function-backed class/vtable method.
+#[derive(Debug, Clone)]
+pub struct BoundNativeMethod {
+    /// The receiver object (becomes arg0 to native dispatch).
+    pub receiver: Value,
+    /// VM native method ID.
+    pub native_id: u16,
 }
 
 /// RefCell - A heap-allocated mutable cell for capture-by-reference semantics
@@ -1519,14 +1701,15 @@ mod tests {
 
     #[test]
     fn test_object_creation() {
-        let obj = Object::new(0, 3);
+        let obj = Object::new_synthetic_structural(3);
         assert_eq!(obj.field_count(), 3);
-        assert_eq!(obj.class_id, 0);
+        assert_eq!(obj.nominal_class_id(), None);
+        assert_ne!(obj.layout_id(), 0);
     }
 
     #[test]
     fn test_object_field_access() {
-        let mut obj = Object::new(0, 2);
+        let mut obj = Object::new_synthetic_structural(2);
         let value = Value::i32(42);
 
         obj.set_field(0, value).unwrap();
@@ -1538,7 +1721,7 @@ mod tests {
 
     #[test]
     fn test_object_field_bounds() {
-        let mut obj = Object::new(0, 2);
+        let mut obj = Object::new_synthetic_structural(2);
         assert!(obj.set_field(2, Value::null()).is_err());
         assert_eq!(obj.get_field(10), None);
     }
@@ -1557,6 +1740,13 @@ mod tests {
         let class = Class::with_parent(1, "ColoredPoint".to_string(), 3, 0);
         assert_eq!(class.parent_id, Some(0));
         assert_eq!(class.field_count, 3);
+    }
+
+    #[test]
+    fn test_structural_layout_ids_use_tagged_domain() {
+        let layout_id = layout_id_from_ordered_names(&["a".to_string(), "b".to_string()]);
+        assert_ne!(layout_id, 0);
+        assert_eq!(layout_id & STRUCTURAL_LAYOUT_ID_TAG, STRUCTURAL_LAYOUT_ID_TAG);
     }
 
     #[test]

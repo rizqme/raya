@@ -184,12 +184,12 @@ impl<'a> Lowerer<'a> {
                     // Nested class declaration — lower once by declaration identity.
                     // lower_class resets per-function state (registers, blocks, locals)
                     // for each method/constructor, so save and restore enclosing state.
-                    let in_std_wrapper = self
+                    let in_module_wrapper = self
                         .current_function
                         .as_ref()
                         .is_some_and(|f| is_module_wrapper_function_name(&f.name));
                     let saved_pending_method_env = self.pending_class_method_env_globals.take();
-                    if in_std_wrapper {
+                    if in_module_wrapper {
                         self.pending_class_method_env_globals =
                             Some(self.materialize_current_locals_for_method_env());
                     }
@@ -1301,6 +1301,17 @@ impl<'a> Lowerer<'a> {
                 // Prefer statically known field layout; otherwise use Reflect.get by property name.
                 let field_layout: Option<Vec<(String, usize)>> =
                     self.register_object_fields.get(&value_reg.id).cloned();
+                let projected_layout: Option<Vec<(String, usize)>> = self
+                    .register_structural_projection_fields
+                    .get(&value_reg.id)
+                    .cloned();
+                let projected_shape_id = projected_layout.as_ref().map(|layout| {
+                    let names = layout
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .collect::<Vec<_>>();
+                    crate::vm::object::shape_id_from_member_names(&names)
+                });
 
                 for property in &obj_pat.properties {
                     let prop_name = self.interner.resolve(property.key.name).to_string();
@@ -1325,12 +1336,22 @@ impl<'a> Lowerer<'a> {
                             continue;
                         };
                         let loaded = self.alloc_register(inferred_field_ty);
-                        self.emit(IrInstr::LoadField {
-                            dest: loaded.clone(),
-                            object: value_reg.clone(),
-                            field: field_index,
-                            optional: false,
-                        });
+                        if let Some(shape_id) = projected_shape_id {
+                            self.emit(IrInstr::LoadFieldShape {
+                                dest: loaded.clone(),
+                                object: value_reg.clone(),
+                                shape_id,
+                                field: field_index,
+                                optional: false,
+                            });
+                        } else {
+                            self.emit(IrInstr::LoadField {
+                                dest: loaded.clone(),
+                                object: value_reg.clone(),
+                                field: field_index,
+                                optional: false,
+                            });
+                        }
                         if let Some(nested_layout) = self
                             .register_nested_object_fields
                             .get(&(value_reg.id, field_index))
@@ -1527,6 +1548,63 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn type_allows_structural_projection(&self, ty: TypeId) -> bool {
+        let Some(ty_def) = self.type_ctx.get(ty) else {
+            return false;
+        };
+
+        match ty_def {
+            crate::parser::types::Type::Object(_)
+            | crate::parser::types::Type::Interface(_) => true,
+            crate::parser::types::Type::Union(union) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_allows_structural_projection(member)),
+            crate::parser::types::Type::Reference(type_ref) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .is_some_and(|resolved| self.type_allows_structural_projection(resolved)),
+            crate::parser::types::Type::Generic(generic) => {
+                self.type_allows_structural_projection(generic.base)
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn structural_projection_layout_from_type_id(
+        &self,
+        ty: TypeId,
+    ) -> Option<Vec<(String, usize)>> {
+        if !self.type_allows_structural_projection(ty) {
+            return None;
+        }
+        self.structural_slot_layout_from_type(ty).map(|layout| {
+            layout
+                .into_iter()
+                .map(|(field_name, field_idx)| (field_name, field_idx as usize))
+                .collect()
+        })
+    }
+
+    fn track_variable_structural_projection_from_annotation(
+        &mut self,
+        name: crate::parser::Symbol,
+        type_ann: &ast::TypeAnnotation,
+    ) {
+        if self.try_extract_class_from_type(type_ann).is_some() {
+            self.variable_structural_projection_fields.remove(&name);
+            return;
+        }
+
+        let ty = self.resolve_structural_slot_type_from_annotation(type_ann);
+        if let Some(layout) = self.structural_projection_layout_from_type_id(ty) {
+            self.variable_structural_projection_fields.insert(name, layout);
+        } else {
+            self.variable_structural_projection_fields.remove(&name);
+        }
+    }
+
     fn track_variable_object_alias_from_initializer(
         &mut self,
         name: crate::parser::Symbol,
@@ -1591,6 +1669,28 @@ impl<'a> Lowerer<'a> {
             if let Some(alias_name) = self.find_object_alias_for_type_id(init_ty) {
                 self.variable_object_type_aliases.insert(name, alias_name);
             }
+        }
+    }
+
+    fn track_variable_structural_projection_from_initializer(
+        &mut self,
+        name: crate::parser::Symbol,
+        init: &ast::Expression,
+    ) {
+        let projected_layout = match init {
+            ast::Expression::TypeCast(cast) => {
+                if self.try_extract_class_from_type(&cast.target_type).is_some() {
+                    None
+                } else {
+                    let target_ty = self.resolve_structural_slot_type_from_annotation(&cast.target_type);
+                    self.structural_projection_layout_from_type_id(target_ty)
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(layout) = projected_layout {
+            self.variable_structural_projection_fields.insert(name, layout);
         }
     }
 
@@ -1718,6 +1818,7 @@ impl<'a> Lowerer<'a> {
         self.variable_object_fields.remove(&name);
         self.variable_nested_object_fields.remove(&name);
         self.variable_object_type_aliases.remove(&name);
+        self.variable_structural_projection_fields.remove(&name);
         self.task_result_type_aliases.remove(&name);
         self.callable_symbol_hints.remove(&name);
         self.clear_late_bound_object_binding(name);
@@ -1826,6 +1927,10 @@ impl<'a> Lowerer<'a> {
                             self.clear_late_bound_object_binding(name);
                         }
                         self.track_variable_object_alias_from_annotation(name, type_ann);
+                        self.track_variable_structural_projection_from_annotation(name, type_ann);
+                        if self.variable_structural_projection_fields.contains_key(&name) {
+                            self.variable_class_map.remove(&name);
+                        }
                         if let ast::Type::Array(arr_ty) = &type_ann.ty {
                             if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
                                 if let Some(&class_id) = self.class_map.get(&elem_ref.name.name) {
@@ -1858,10 +1963,20 @@ impl<'a> Lowerer<'a> {
                             if let Some(class_id) = class_id {
                                 self.variable_class_map.insert(name, class_id);
                                 self.clear_late_bound_object_binding(name);
-                            } else if self.import_bindings.contains(&ident.name) {
-                                let ctor_ty = self.get_expr_type(&new_expr.callee);
-                                let ctor_ty =
-                                    (ctor_ty.as_u32() != UNRESOLVED_TYPE_ID).then_some(ctor_ty);
+                            } else if self.import_bindings.contains(&ident.name)
+                                || self
+                                    .ambient_builtin_globals
+                                    .contains(self.interner.resolve(ident.name))
+                            {
+                                let ctor_ty = self
+                                    .get_expr_type(&new_expr.callee)
+                                    .as_u32()
+                                    .ne(&UNRESOLVED_TYPE_ID)
+                                    .then(|| self.get_expr_type(&new_expr.callee))
+                                    .or_else(|| {
+                                        self.type_ctx
+                                            .lookup_named_type(self.interner.resolve(ident.name))
+                                    });
                                 self.mark_late_bound_object_binding(name, ident.name, ctor_ty);
                             }
                         }
@@ -1874,6 +1989,10 @@ impl<'a> Lowerer<'a> {
                     }
                     self.track_task_result_alias_from_initializer(name, init);
                     self.track_variable_object_alias_from_initializer(name, init);
+                    self.track_variable_structural_projection_from_initializer(name, init);
+                    if self.variable_structural_projection_fields.contains_key(&name) {
+                        self.variable_class_map.remove(&name);
+                    }
 
                     // Track bound method variables (e.g., `let f = obj.method`)
                     if !self.js_this_binding_compat && matches!(init, ast::Expression::Member(_)) {
@@ -1987,6 +2106,10 @@ impl<'a> Lowerer<'a> {
                     self.clear_late_bound_object_binding(name);
                 }
                 self.track_variable_object_alias_from_annotation(name, type_ann);
+                self.track_variable_structural_projection_from_annotation(name, type_ann);
+                if self.variable_structural_projection_fields.contains_key(&name) {
+                    self.variable_class_map.remove(&name);
+                }
                 // Track array element class type (e.g., `let items: Item[] = [...]`)
                 if let ast::Type::Array(arr_ty) = &type_ann.ty {
                     if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
@@ -2021,9 +2144,20 @@ impl<'a> Lowerer<'a> {
                     if let Some(class_id) = class_id {
                         self.variable_class_map.insert(name, class_id);
                         self.clear_late_bound_object_binding(name);
-                    } else if self.import_bindings.contains(&ident.name) {
-                        let ctor_ty = self.get_expr_type(&new_expr.callee);
-                        let ctor_ty = (ctor_ty.as_u32() != UNRESOLVED_TYPE_ID).then_some(ctor_ty);
+                    } else if self.import_bindings.contains(&ident.name)
+                        || self
+                            .ambient_builtin_globals
+                            .contains(self.interner.resolve(ident.name))
+                    {
+                        let ctor_ty = self
+                            .get_expr_type(&new_expr.callee)
+                            .as_u32()
+                            .ne(&UNRESOLVED_TYPE_ID)
+                            .then(|| self.get_expr_type(&new_expr.callee))
+                            .or_else(|| {
+                                self.type_ctx
+                                    .lookup_named_type(self.interner.resolve(ident.name))
+                            });
                         self.mark_late_bound_object_binding(name, ident.name, ctor_ty);
                     }
                 }
@@ -2037,6 +2171,10 @@ impl<'a> Lowerer<'a> {
             }
             self.track_task_result_alias_from_initializer(name, init);
             self.track_variable_object_alias_from_initializer(name, init);
+            self.track_variable_structural_projection_from_initializer(name, init);
+            if self.variable_structural_projection_fields.contains_key(&name) {
+                self.variable_class_map.remove(&name);
+            }
 
             // Track bound method variables (e.g., `let f = obj.method`)
             if !self.js_this_binding_compat && matches!(init, ast::Expression::Member(_)) {
@@ -2109,14 +2247,14 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Std wrapper top-scope arrow bindings (e.g., `const sign = (...) => ...`)
+            // Module-wrapper top-scope arrow bindings (e.g., `const sign = (...) => ...`)
             // are referenced from nested class methods. Class methods are lowered as
             // standalone IR functions, so resolve these helpers via function_map.
-            let in_std_wrapper = self
+            let in_module_wrapper = self
                 .current_function
                 .as_ref()
                 .is_some_and(|f| is_module_wrapper_function_name(&f.name));
-            if in_std_wrapper && matches!(init, ast::Expression::Arrow(_)) {
+            if in_module_wrapper && matches!(init, ast::Expression::Arrow(_)) {
                 if let Some(func_id) = self.last_arrow_func_id {
                     self.function_map.insert(name, func_id);
                 }
@@ -2185,6 +2323,10 @@ impl<'a> Lowerer<'a> {
                     self.variable_class_map.insert(name, class_id);
                 }
                 self.track_variable_object_alias_from_annotation(name, type_ann);
+                self.track_variable_structural_projection_from_annotation(name, type_ann);
+                if self.variable_structural_projection_fields.contains_key(&name) {
+                    self.variable_class_map.remove(&name);
+                }
                 if let ast::Type::Array(arr_ty) = &type_ann.ty {
                     if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
                         if let Some(&class_id) = self.class_map.get(&elem_ref.name.name) {
@@ -2282,19 +2424,19 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Std-prelude wrappers rely on sibling helper functions from class methods
+        // Module-wrapper functions rely on sibling helper functions from class methods
         // (e.g., EnvNamespace.cwd() calling local `cwd()`), so expose wrapper-local
         // function declarations in function_map for direct identifier calls.
-        let in_std_wrapper = self
+        let in_module_wrapper = self
             .current_function
             .as_ref()
             .is_some_and(|f| is_module_wrapper_function_name(&f.name));
-        if in_std_wrapper {
+        if in_module_wrapper {
             if let Some(func_id) = self.last_arrow_func_id {
                 self.function_map.insert(func_decl.name.name, func_id);
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                     eprintln!(
-                        "[lower] std wrapper helper fn '{}' -> func_id={} preassigned={}",
+                        "[lower] wrapper helper fn '{}' -> func_id={} preassigned={}",
                         self.interner.resolve(func_decl.name.name),
                         func_id.as_u32(),
                         preassigned_func_id

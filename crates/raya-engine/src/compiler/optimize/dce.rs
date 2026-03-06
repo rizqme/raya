@@ -93,7 +93,14 @@ impl DeadCodeEliminator {
             IrInstr::LoadField { object, .. } => {
                 used.insert(object.id);
             }
+            IrInstr::LoadFieldShape { object, .. } => {
+                used.insert(object.id);
+            }
             IrInstr::StoreField { object, value, .. } => {
+                used.insert(object.id);
+                used.insert(value.id);
+            }
+            IrInstr::StoreFieldShape { object, value, .. } => {
                 used.insert(object.id);
                 used.insert(value.id);
             }

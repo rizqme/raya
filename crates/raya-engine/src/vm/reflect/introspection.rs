@@ -197,7 +197,7 @@ pub fn get_class_id(obj: Value) -> Option<usize> {
     let obj_ptr = unsafe { obj.as_ptr::<Object>() };
     if let Some(ptr) = obj_ptr {
         let obj_ref = unsafe { &*ptr.as_ptr() };
-        return Some(obj_ref.class_id);
+        return obj_ref.nominal_class_id();
     }
 
     None
@@ -353,26 +353,26 @@ mod tests {
         let mut registry = ClassRegistry::new();
 
         // Create class hierarchy: Animal -> Dog
-        let animal = Class::new(0, "Animal".to_string(), 1);
-        let dog = Class::with_parent(1, "Dog".to_string(), 2, 0);
+        let animal = Class::new(1, "Animal".to_string(), 1);
+        let dog = Class::with_parent(2, "Dog".to_string(), 2, 1);
 
         registry.register_class(animal);
         registry.register_class(dog);
 
         // Dog is subclass of Animal
-        assert!(is_subclass_of(&registry, 1, 0));
+        assert!(is_subclass_of(&registry, 2, 1));
         // Dog is subclass of itself
-        assert!(is_subclass_of(&registry, 1, 1));
+        assert!(is_subclass_of(&registry, 2, 2));
         // Animal is not subclass of Dog
-        assert!(!is_subclass_of(&registry, 0, 1));
+        assert!(!is_subclass_of(&registry, 1, 2));
     }
 
     #[test]
     fn test_get_all_classes() {
         let mut registry = ClassRegistry::new();
 
-        let class1 = Class::new(0, "Foo".to_string(), 1);
-        let class2 = Class::new(1, "Bar".to_string(), 2);
+        let class1 = Class::new(1, "Foo".to_string(), 1);
+        let class2 = Class::new(2, "Bar".to_string(), 2);
 
         registry.register_class(class1);
         registry.register_class(class2);
@@ -394,23 +394,23 @@ mod tests {
         let mut registry = ClassRegistry::new();
 
         // Create class hierarchy: Animal -> Dog -> Labrador
-        let animal = Class::new(0, "Animal".to_string(), 1);
-        let dog = Class::with_parent(1, "Dog".to_string(), 2, 0);
-        let labrador = Class::with_parent(2, "Labrador".to_string(), 3, 1);
+        let animal = Class::new(1, "Animal".to_string(), 1);
+        let dog = Class::with_parent(2, "Dog".to_string(), 2, 1);
+        let labrador = Class::with_parent(3, "Labrador".to_string(), 3, 2);
 
         registry.register_class(animal);
         registry.register_class(dog);
         registry.register_class(labrador);
 
         // Get hierarchy for Labrador
-        let hierarchy = get_class_hierarchy(&registry, 2);
+        let hierarchy = get_class_hierarchy(&registry, 3);
         assert_eq!(hierarchy.len(), 3);
         assert_eq!(hierarchy[0].name, "Labrador");
         assert_eq!(hierarchy[1].name, "Dog");
         assert_eq!(hierarchy[2].name, "Animal");
 
         // Get hierarchy for Animal (root)
-        let animal_hierarchy = get_class_hierarchy(&registry, 0);
+        let animal_hierarchy = get_class_hierarchy(&registry, 1);
         assert_eq!(animal_hierarchy.len(), 1);
         assert_eq!(animal_hierarchy[0].name, "Animal");
     }
@@ -419,8 +419,8 @@ mod tests {
     fn test_get_class_by_name() {
         let mut registry = ClassRegistry::new();
 
-        let point = Class::new(0, "Point".to_string(), 2);
-        let circle = Class::new(1, "Circle".to_string(), 3);
+        let point = Class::new(1, "Point".to_string(), 2);
+        let circle = Class::new(2, "Circle".to_string(), 3);
 
         registry.register_class(point);
         registry.register_class(circle);
@@ -428,11 +428,11 @@ mod tests {
         // Lookup by name
         let found = get_class_by_name(&registry, "Point");
         assert!(found.is_some());
-        assert_eq!(found.unwrap().id, 0);
+        assert_eq!(found.unwrap().id, 1);
 
         let found = get_class_by_name(&registry, "Circle");
         assert!(found.is_some());
-        assert_eq!(found.unwrap().id, 1);
+        assert_eq!(found.unwrap().id, 2);
 
         // Non-existent class
         let not_found = get_class_by_name(&registry, "Unknown");
@@ -443,11 +443,11 @@ mod tests {
     fn test_get_class() {
         let mut registry = ClassRegistry::new();
 
-        let user = Class::new(0, "User".to_string(), 3);
+        let user = Class::new(1, "User".to_string(), 3);
         registry.register_class(user);
 
         // Get by ID
-        let found = get_class(&registry, 0);
+        let found = get_class(&registry, 1);
         assert!(found.is_some());
         assert_eq!(found.unwrap().name, "User");
         assert_eq!(found.unwrap().field_count, 3);
@@ -469,7 +469,7 @@ mod tests {
         let context_id = VmContextId::new();
         let type_registry = Arc::new(create_standard_registry());
         let gc = Arc::new(Mutex::new(GarbageCollector::new(context_id, type_registry)));
-        let obj = Object::new(5, 2);
+        let obj = Object::new_synthetic_nominal(5, 2);
 
         let gc_ptr = gc.lock().allocate(obj);
         let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
@@ -494,54 +494,54 @@ mod tests {
 
         let mut registry = ClassRegistry::new();
 
-        // Create class hierarchy: Animal (0) -> Dog (1) -> Labrador (2)
-        let animal = Class::new(0, "Animal".to_string(), 1);
-        let dog = Class::with_parent(1, "Dog".to_string(), 2, 0);
-        let labrador = Class::with_parent(2, "Labrador".to_string(), 3, 1);
+        // Create class hierarchy: Animal (1) -> Dog (2) -> Labrador (3)
+        let animal = Class::new(1, "Animal".to_string(), 1);
+        let dog = Class::with_parent(2, "Dog".to_string(), 2, 1);
+        let labrador = Class::with_parent(3, "Labrador".to_string(), 3, 2);
 
         registry.register_class(animal);
         registry.register_class(dog);
         registry.register_class(labrador);
 
-        // Create a Labrador instance (class_id = 2)
+        // Create a Labrador instance (class_id = 3)
         let context_id = VmContextId::new();
         let type_registry = Arc::new(create_standard_registry());
         let gc = Arc::new(Mutex::new(GarbageCollector::new(context_id, type_registry)));
-        let obj = Object::new(2, 3); // class_id = 2 (Labrador)
+        let obj = Object::new_synthetic_nominal(3, 3); // class_id = 3 (Labrador)
         let gc_ptr = gc.lock().allocate(obj);
         let lab_value =
             unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
 
         // Labrador is instance of Labrador, Dog, and Animal
-        assert!(is_instance_of(&registry, lab_value, 2)); // Labrador
-        assert!(is_instance_of(&registry, lab_value, 1)); // Dog
-        assert!(is_instance_of(&registry, lab_value, 0)); // Animal
+        assert!(is_instance_of(&registry, lab_value, 3)); // Labrador
+        assert!(is_instance_of(&registry, lab_value, 2)); // Dog
+        assert!(is_instance_of(&registry, lab_value, 1)); // Animal
 
         // Create a Dog instance
-        let dog_obj = Object::new(1, 2);
+        let dog_obj = Object::new_synthetic_nominal(2, 2);
         let dog_ptr = gc.lock().allocate(dog_obj);
         let dog_value =
             unsafe { Value::from_ptr(std::ptr::NonNull::new(dog_ptr.as_ptr()).unwrap()) };
 
         // Dog is instance of Dog and Animal, but not Labrador
-        assert!(is_instance_of(&registry, dog_value, 1)); // Dog
-        assert!(is_instance_of(&registry, dog_value, 0)); // Animal
-        assert!(!is_instance_of(&registry, dog_value, 2)); // NOT Labrador
+        assert!(is_instance_of(&registry, dog_value, 2)); // Dog
+        assert!(is_instance_of(&registry, dog_value, 1)); // Animal
+        assert!(!is_instance_of(&registry, dog_value, 3)); // NOT Labrador
 
         // Primitives are not instances of any class
-        assert!(!is_instance_of(&registry, Value::i32(42), 0));
+        assert!(!is_instance_of(&registry, Value::i32(42), 1));
     }
 
     #[test]
     fn test_deep_inheritance_chain() {
         let mut registry = ClassRegistry::new();
 
-        // Create deep hierarchy: A (0) -> B (1) -> C (2) -> D (3) -> E (4)
-        let a = Class::new(0, "A".to_string(), 1);
-        let b = Class::with_parent(1, "B".to_string(), 1, 0);
-        let c = Class::with_parent(2, "C".to_string(), 1, 1);
-        let d = Class::with_parent(3, "D".to_string(), 1, 2);
-        let e = Class::with_parent(4, "E".to_string(), 1, 3);
+        // Create deep hierarchy: A (1) -> B (2) -> C (3) -> D (4) -> E (5)
+        let a = Class::new(1, "A".to_string(), 1);
+        let b = Class::with_parent(2, "B".to_string(), 1, 1);
+        let c = Class::with_parent(3, "C".to_string(), 1, 2);
+        let d = Class::with_parent(4, "D".to_string(), 1, 3);
+        let e = Class::with_parent(5, "E".to_string(), 1, 4);
 
         registry.register_class(a);
         registry.register_class(b);
@@ -550,20 +550,20 @@ mod tests {
         registry.register_class(e);
 
         // Test hierarchy from E
-        let hierarchy = get_class_hierarchy(&registry, 4);
+        let hierarchy = get_class_hierarchy(&registry, 5);
         assert_eq!(hierarchy.len(), 5);
         assert_eq!(hierarchy[0].name, "E");
         assert_eq!(hierarchy[4].name, "A");
 
         // E is subclass of all ancestors
-        assert!(is_subclass_of(&registry, 4, 3));
-        assert!(is_subclass_of(&registry, 4, 2));
-        assert!(is_subclass_of(&registry, 4, 1));
-        assert!(is_subclass_of(&registry, 4, 0));
+        assert!(is_subclass_of(&registry, 5, 4));
+        assert!(is_subclass_of(&registry, 5, 3));
+        assert!(is_subclass_of(&registry, 5, 2));
+        assert!(is_subclass_of(&registry, 5, 1));
 
         // A is not subclass of any descendants
-        assert!(!is_subclass_of(&registry, 0, 1));
-        assert!(!is_subclass_of(&registry, 0, 4));
+        assert!(!is_subclass_of(&registry, 1, 2));
+        assert!(!is_subclass_of(&registry, 1, 5));
     }
 
     #[test]
@@ -626,11 +626,11 @@ mod tests {
     fn test_is_assignable_same_type() {
         // Same type is always assignable to itself
         let mut registry = ClassRegistry::new();
-        let user = Class::new(0, "User".to_string(), 2);
+        let user = Class::new(1, "User".to_string(), 2);
         registry.register_class(user);
 
         // Same class should be assignable to itself
-        assert!(is_subclass_of(&registry, 0, 0));
+        assert!(is_subclass_of(&registry, 1, 1));
     }
 
     #[test]
@@ -643,9 +643,9 @@ mod tests {
 
         let mut registry = ClassRegistry::new();
 
-        // Animal (0) -> Dog (1)
-        let animal = Class::new(0, "Animal".to_string(), 1);
-        let dog = Class::with_parent(1, "Dog".to_string(), 2, 0);
+        // Animal (1) -> Dog (2)
+        let animal = Class::new(1, "Animal".to_string(), 1);
+        let dog = Class::with_parent(2, "Dog".to_string(), 2, 1);
         registry.register_class(animal);
         registry.register_class(dog);
 
@@ -653,26 +653,26 @@ mod tests {
         let context_id = VmContextId::new();
         let type_registry = Arc::new(create_standard_registry());
         let gc = Arc::new(Mutex::new(GarbageCollector::new(context_id, type_registry)));
-        let dog_obj = Object::new(1, 2); // class_id = 1 (Dog)
+        let dog_obj = Object::new_synthetic_nominal(2, 2); // class_id = 2 (Dog)
         let dog_ptr = gc.lock().allocate(dog_obj);
         let dog_value =
             unsafe { Value::from_ptr(std::ptr::NonNull::new(dog_ptr.as_ptr()).unwrap()) };
 
         // Dog can be cast to Animal (upcast)
-        assert!(is_instance_of(&registry, dog_value, 0));
-        // Dog can be cast to Dog
         assert!(is_instance_of(&registry, dog_value, 1));
+        // Dog can be cast to Dog
+        assert!(is_instance_of(&registry, dog_value, 2));
 
         // Create an Animal instance
-        let animal_obj = Object::new(0, 1); // class_id = 0 (Animal)
+        let animal_obj = Object::new_synthetic_nominal(1, 1); // class_id = 1 (Animal)
         let animal_ptr = gc.lock().allocate(animal_obj);
         let animal_value =
             unsafe { Value::from_ptr(std::ptr::NonNull::new(animal_ptr.as_ptr()).unwrap()) };
 
         // Animal cannot be cast to Dog (downcast fails)
-        assert!(!is_instance_of(&registry, animal_value, 1));
+        assert!(!is_instance_of(&registry, animal_value, 2));
         // Animal can be cast to Animal
-        assert!(is_instance_of(&registry, animal_value, 0));
+        assert!(is_instance_of(&registry, animal_value, 1));
     }
 
     #[test]
@@ -680,7 +680,7 @@ mod tests {
         let registry = ClassRegistry::new();
 
         // null is not an instance of any class
-        assert!(!is_instance_of(&registry, Value::null(), 0));
+        assert!(!is_instance_of(&registry, Value::null(), 1));
         assert!(!is_instance_of(&registry, Value::null(), 999));
     }
 
@@ -689,8 +689,8 @@ mod tests {
         let registry = ClassRegistry::new();
 
         // Primitives are not instances of any class
-        assert!(!is_instance_of(&registry, Value::i32(42), 0));
-        assert!(!is_instance_of(&registry, Value::f64(3.14), 0));
-        assert!(!is_instance_of(&registry, Value::bool(true), 0));
+        assert!(!is_instance_of(&registry, Value::i32(42), 1));
+        assert!(!is_instance_of(&registry, Value::f64(3.14), 1));
+        assert!(!is_instance_of(&registry, Value::bool(true), 1));
     }
 }

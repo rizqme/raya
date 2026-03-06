@@ -27,8 +27,8 @@ mod memory_analysis {
         let mut gc = GarbageCollector::default();
 
         // Allocate some objects
-        let _obj1 = gc.allocate(Object::new(0, 3));
-        let _obj2 = gc.allocate(Object::new(0, 5));
+        let _obj1 = gc.allocate(Object::new_synthetic_structural(3));
+        let _obj2 = gc.allocate(Object::new_synthetic_structural(5));
         let _arr = gc.allocate(Array::new(10, 0));
         let _str = gc.allocate(RayaString::new("hello".to_string()));
 
@@ -42,8 +42,8 @@ mod memory_analysis {
         let mut gc = GarbageCollector::default();
 
         // Allocate objects
-        let _obj1 = gc.allocate(Object::new(0, 3));
-        let _obj2 = gc.allocate(Object::new(1, 2));
+        let _obj1 = gc.allocate(Object::new_synthetic_structural(3));
+        let _obj2 = gc.allocate(Object::new_synthetic_nominal(1, 2));
 
         let before_stats = gc.heap_stats();
         assert_eq!(before_stats.allocation_count, 2);
@@ -60,9 +60,9 @@ mod memory_analysis {
         let mut gc = GarbageCollector::default();
 
         // Allocate several objects
-        let _obj1 = gc.allocate(Object::new(0, 3));
-        let _obj2 = gc.allocate(Object::new(1, 5));
-        let _obj3 = gc.allocate(Object::new(0, 2));
+        let _obj1 = gc.allocate(Object::new_synthetic_structural(3));
+        let _obj2 = gc.allocate(Object::new_synthetic_nominal(1, 5));
+        let _obj3 = gc.allocate(Object::new_synthetic_structural(2));
 
         // Verify we can iterate over allocations
         let count = gc.heap().iter_allocations().count();
@@ -76,10 +76,10 @@ mod memory_analysis {
         let class_id_b = 99;
 
         // Allocate objects of different classes
-        let _obj_a1 = gc.allocate(Object::new(class_id_a, 2));
-        let _obj_a2 = gc.allocate(Object::new(class_id_a, 2));
-        let _obj_b1 = gc.allocate(Object::new(class_id_b, 3));
-        let _obj_a3 = gc.allocate(Object::new(class_id_a, 2));
+        let _obj_a1 = gc.allocate(Object::new_synthetic_nominal(class_id_a, 2));
+        let _obj_a2 = gc.allocate(Object::new_synthetic_nominal(class_id_a, 2));
+        let _obj_b1 = gc.allocate(Object::new_synthetic_nominal(class_id_b, 3));
+        let _obj_a3 = gc.allocate(Object::new_synthetic_nominal(class_id_a, 2));
 
         // Count instances of class A
         let mut count_a = 0;
@@ -88,7 +88,7 @@ mod memory_analysis {
             if header.type_id() == std::any::TypeId::of::<Object>() {
                 let obj_ptr = unsafe { header_ptr.add(1) as *const Object };
                 let obj = unsafe { &*obj_ptr };
-                if obj.class_id == class_id_a {
+                if obj.nominal_class_id() == Some(class_id_a) {
                     count_a += 1;
                 }
             }
@@ -356,8 +356,8 @@ mod object_identity {
     fn test_object_identity_via_pointer() {
         let mut gc = GarbageCollector::default();
 
-        let obj1 = gc.allocate(Object::new(0, 2));
-        let obj2 = gc.allocate(Object::new(0, 2));
+        let obj1 = gc.allocate(Object::new_synthetic_structural(2));
+        let obj2 = gc.allocate(Object::new_synthetic_structural(2));
 
         // Different allocations have different pointers
         let ptr1 = obj1.as_ptr() as usize;
@@ -371,7 +371,7 @@ mod object_identity {
         use raya_engine::vm::reflect::get_class_id;
 
         let mut gc = GarbageCollector::default();
-        let obj = gc.allocate(Object::new(42, 3));
+        let obj = gc.allocate(Object::new_synthetic_nominal(42, 3));
 
         // Create Value from the object pointer
         let value = unsafe {
@@ -398,8 +398,8 @@ mod proxy_tests {
         let mut gc = GarbageCollector::default();
 
         // Create target and handler objects
-        let target_obj = gc.allocate(Object::new(1, 2));
-        let handler_obj = gc.allocate(Object::new(2, 4));
+        let target_obj = gc.allocate(Object::new_synthetic_nominal(1, 2));
+        let handler_obj = gc.allocate(Object::new_synthetic_nominal(2, 4));
 
         let target_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap())
@@ -417,8 +417,8 @@ mod proxy_tests {
     fn test_proxy_get_target() {
         let mut gc = GarbageCollector::default();
 
-        let target_obj = gc.allocate(Object::new(42, 3));
-        let handler_obj = gc.allocate(Object::new(0, 0));
+        let target_obj = gc.allocate(Object::new_synthetic_nominal(42, 3));
+        let handler_obj = gc.allocate(Object::new_synthetic_structural(0));
 
         let target_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap())
@@ -438,8 +438,8 @@ mod proxy_tests {
     fn test_proxy_get_handler() {
         let mut gc = GarbageCollector::default();
 
-        let target_obj = gc.allocate(Object::new(1, 1));
-        let handler_obj = gc.allocate(Object::new(99, 4));
+        let target_obj = gc.allocate(Object::new_synthetic_nominal(1, 1));
+        let handler_obj = gc.allocate(Object::new_synthetic_nominal(99, 4));
 
         let target_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap())
@@ -459,8 +459,8 @@ mod proxy_tests {
     fn test_proxy_allocation_via_gc() {
         let mut gc = GarbageCollector::default();
 
-        let target_obj = gc.allocate(Object::new(1, 2));
-        let handler_obj = gc.allocate(Object::new(2, 4));
+        let target_obj = gc.allocate(Object::new_synthetic_nominal(1, 2));
+        let handler_obj = gc.allocate(Object::new_synthetic_nominal(2, 4));
 
         let target_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap())
@@ -483,8 +483,8 @@ mod proxy_tests {
     fn test_proxy_is_distinct_from_target() {
         let mut gc = GarbageCollector::default();
 
-        let target_obj = gc.allocate(Object::new(1, 2));
-        let handler_obj = gc.allocate(Object::new(2, 4));
+        let target_obj = gc.allocate(Object::new_synthetic_nominal(1, 2));
+        let handler_obj = gc.allocate(Object::new_synthetic_nominal(2, 4));
 
         let target_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap())
@@ -507,10 +507,10 @@ mod proxy_tests {
     fn test_proxy_unique_ids() {
         let mut gc = GarbageCollector::default();
 
-        let target1 = gc.allocate(Object::new(1, 1));
-        let handler1 = gc.allocate(Object::new(0, 0));
-        let target2 = gc.allocate(Object::new(2, 1));
-        let handler2 = gc.allocate(Object::new(0, 0));
+        let target1 = gc.allocate(Object::new_synthetic_nominal(1, 1));
+        let handler1 = gc.allocate(Object::new_synthetic_structural(0));
+        let target2 = gc.allocate(Object::new_synthetic_nominal(2, 1));
+        let handler2 = gc.allocate(Object::new_synthetic_structural(0));
 
         let target1_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(target1.as_ptr() as *mut Object).unwrap())

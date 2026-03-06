@@ -126,6 +126,13 @@ impl FunctionContext {
             .extend_from_slice(&value.to_le_bytes());
     }
 
+    /// Emit a u64 operand
+    fn emit_u64(&mut self, value: u64) {
+        self.builder
+            .code_mut()
+            .extend_from_slice(&value.to_le_bytes());
+    }
+
     /// Get current code position
     fn current_position(&self) -> usize {
         self.builder.current_position()
@@ -661,6 +668,25 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
+            IrInstr::LoadFieldShape {
+                dest,
+                object,
+                shape_id,
+                field,
+                optional,
+            } => {
+                self.emit_load_register(ctx, object);
+                if *optional {
+                    ctx.emit(Opcode::OptionalFieldShape);
+                } else {
+                    ctx.emit(Opcode::LoadFieldShape);
+                }
+                ctx.emit_u64(*shape_id);
+                ctx.emit_u16(*field);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
             IrInstr::BindMethod {
                 dest,
                 object,
@@ -683,6 +709,19 @@ impl IrCodeGenerator {
                 self.emit_load_register(ctx, object);
                 self.emit_load_register(ctx, value);
                 ctx.emit(Opcode::StoreField);
+                ctx.emit_u16(*field);
+            }
+
+            IrInstr::StoreFieldShape {
+                object,
+                shape_id,
+                field,
+                value,
+            } => {
+                self.emit_load_register(ctx, object);
+                self.emit_load_register(ctx, value);
+                ctx.emit(Opcode::StoreFieldShape);
+                ctx.emit_u64(*shape_id);
                 ctx.emit_u16(*field);
             }
 
@@ -771,12 +810,12 @@ impl IrCodeGenerator {
 
             IrInstr::ObjectLiteral {
                 dest,
-                class,
+                type_index,
                 fields,
             } => {
                 // Create the object first (pushes it on the stack)
                 ctx.emit(Opcode::ObjectLiteral);
-                ctx.emit_u16(class.as_u32() as u16);
+                ctx.emit_u32(*type_index);
                 ctx.emit_u16(fields.len() as u16);
                 // Initialize each field: push value, then InitObject pops value and peeks object
                 for (field_idx, value) in fields {

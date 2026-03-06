@@ -405,13 +405,18 @@ impl<'a> Interpreter<'a> {
                     if let Some(slot) = method_slot {
                         let obj_ptr = unsafe { target.as_ptr::<Object>() };
                         let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                        let Some(runtime_class_id) = obj.nominal_class_id() else {
+                            return Err(VmError::RuntimeError(
+                                "Method fallback requires nominal runtime type".to_string(),
+                            ));
+                        };
                         let classes = self.classes.read();
-                        let class = match classes.get_class(obj.class_id) {
+                        let class = match classes.get_class(runtime_class_id) {
                             Some(c) => c,
                             None => {
                                 return Err(VmError::RuntimeError(format!(
                                     "Invalid class index: {}",
-                                    obj.class_id
+                                    runtime_class_id
                                 )));
                             }
                         };
@@ -866,10 +871,11 @@ impl<'a> Interpreter<'a> {
                     VmError::RuntimeError(format!("Class {} not found", class_id))
                 })?;
                 let field_count = class.field_count;
+                let layout_id = class.layout_id;
                 drop(classes);
 
                 // Allocate new object
-                let obj = Object::new(class_id, field_count);
+                let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
                 let gc_ptr = self.gc.lock().allocate(obj);
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
 
@@ -892,10 +898,11 @@ impl<'a> Interpreter<'a> {
                     VmError::RuntimeError(format!("Class {} not found", class_id))
                 })?;
                 let field_count = class.field_count;
+                let layout_id = class.layout_id;
                 drop(classes);
 
                 // Allocate new object (uninitialized - fields are null)
-                let obj = Object::new(class_id, field_count);
+                let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
                 let gc_ptr = self.gc.lock().allocate(obj);
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
             }
@@ -1403,13 +1410,17 @@ impl<'a> Interpreter<'a> {
                     if let Some(ptr) = unsafe { target.as_ptr::<Object>() } {
                         let obj = unsafe { &*ptr.as_ptr() };
                         let class_registry = self.classes.read();
-                        if let Some(class) = class_registry.get_class(obj.class_id) {
-                            let names: Vec<String> = (0..class.field_count)
-                                .map(|i| format!("field_{}", i))
-                                .collect();
-                            (class.name.clone(), names)
+                        if let Some(class_id) = obj.nominal_class_id() {
+                            if let Some(class) = class_registry.get_class(class_id) {
+                                let names: Vec<String> = (0..class.field_count)
+                                    .map(|i| format!("field_{}", i))
+                                    .collect();
+                                (class.name.clone(), names)
+                            } else {
+                                (format!("Class{}", class_id), Vec::new())
+                            }
                         } else {
-                            (format!("Class{}", obj.class_id), Vec::new())
+                            (format!("Layout{}", obj.layout_id()), Vec::new())
                         }
                     } else {
                         ("unknown".to_string(), Vec::new())
@@ -1439,13 +1450,17 @@ impl<'a> Interpreter<'a> {
                     if let Some(ptr) = unsafe { obj_a.as_ptr::<Object>() } {
                         let obj = unsafe { &*ptr.as_ptr() };
                         let class_registry = self.classes.read();
-                        if let Some(class) = class_registry.get_class(obj.class_id) {
-                            let names: Vec<String> = (0..class.field_count)
-                                .map(|i| format!("field_{}", i))
-                                .collect();
-                            (class.name.clone(), names)
+                        if let Some(class_id) = obj.nominal_class_id() {
+                            if let Some(class) = class_registry.get_class(class_id) {
+                                let names: Vec<String> = (0..class.field_count)
+                                    .map(|i| format!("field_{}", i))
+                                    .collect();
+                                (class.name.clone(), names)
+                            } else {
+                                (format!("Class{}", class_id), Vec::new())
+                            }
                         } else {
-                            (format!("Class{}", obj.class_id), Vec::new())
+                            (format!("Layout{}", obj.layout_id()), Vec::new())
                         }
                     } else {
                         ("unknown".to_string(), Vec::new())
@@ -1455,13 +1470,17 @@ impl<'a> Interpreter<'a> {
                     if let Some(ptr) = unsafe { obj_b.as_ptr::<Object>() } {
                         let obj = unsafe { &*ptr.as_ptr() };
                         let class_registry = self.classes.read();
-                        if let Some(class) = class_registry.get_class(obj.class_id) {
-                            let names: Vec<String> = (0..class.field_count)
-                                .map(|i| format!("field_{}", i))
-                                .collect();
-                            (class.name.clone(), names)
+                        if let Some(class_id) = obj.nominal_class_id() {
+                            if let Some(class) = class_registry.get_class(class_id) {
+                                let names: Vec<String> = (0..class.field_count)
+                                    .map(|i| format!("field_{}", i))
+                                    .collect();
+                                (class.name.clone(), names)
+                            } else {
+                                (format!("Class{}", class_id), Vec::new())
+                            }
                         } else {
-                            (format!("Class{}", obj.class_id), Vec::new())
+                            (format!("Layout{}", obj.layout_id()), Vec::new())
                         }
                     } else {
                         ("unknown".to_string(), Vec::new())
@@ -1641,7 +1660,7 @@ impl<'a> Interpreter<'a> {
                     if header.type_id() == std::any::TypeId::of::<Object>() {
                         let obj_ptr = unsafe { header_ptr.add(1) as *const Object };
                         let obj = unsafe { &*obj_ptr };
-                        if obj.class_id == class_id {
+                        if obj.nominal_class_id() == Some(class_id) {
                             let value = unsafe {
                                 Value::from_ptr(
                                     std::ptr::NonNull::new(obj_ptr as *mut Object).unwrap(),
@@ -1807,7 +1826,14 @@ impl<'a> Interpreter<'a> {
                                     .unwrap_or("unknown");
 
                                 // Create a SourceLocation object with: file, line, column
-                                let mut result_obj = Object::new_structural(0, 3);
+                                let mut result_obj = Object::new_structural(
+                                    crate::vm::object::layout_id_from_ordered_names(&[
+                                        "file".to_string(),
+                                        "line".to_string(),
+                                        "column".to_string(),
+                                    ]),
+                                    3,
+                                );
 
                                 // Set file
                                 let file_str = RayaString::new(source_file.to_string());
@@ -2988,7 +3014,15 @@ impl<'a> Interpreter<'a> {
         // - identity: number
         // - timestamp: number
         // - fields: object mapping field names to values
-        let mut obj = Object::new_structural(0, 4);
+        let mut obj = Object::new_structural(
+            crate::vm::object::layout_id_from_ordered_names(&[
+                "class_name".to_string(),
+                "identity".to_string(),
+                "timestamp".to_string(),
+                "fields".to_string(),
+            ]),
+            4,
+        );
 
         // Store class_name
         let class_name_str = RayaString::new(snapshot.class_name.clone());
@@ -3019,16 +3053,26 @@ impl<'a> Interpreter<'a> {
     ) -> Value {
         // Create an object with field count matching the number of fields
         let field_count = fields.len();
-        let mut obj = Object::new_structural(0, field_count);
-
         // Sort fields by name for consistent ordering
         let mut field_names: Vec<_> = fields.keys().collect();
         field_names.sort();
+        let ordered_names: Vec<String> = field_names.iter().map(|name| (*name).clone()).collect();
+        let mut obj = Object::new_structural(
+            crate::vm::object::layout_id_from_ordered_names(&ordered_names),
+            field_count,
+        );
 
         for (i, name) in field_names.iter().enumerate() {
             if let Some(field) = fields.get(*name) {
                 // Create a field info object with: name, value, type_name
-                let mut field_obj = Object::new_structural(0, 3);
+                let mut field_obj = Object::new_structural(
+                    crate::vm::object::layout_id_from_ordered_names(&[
+                        "name".to_string(),
+                        "value".to_string(),
+                        "type_name".to_string(),
+                    ]),
+                    3,
+                );
 
                 // Field name
                 let name_str = RayaString::new(field.name.clone());
@@ -3097,7 +3141,14 @@ impl<'a> Interpreter<'a> {
         // - added: string[] (field names added)
         // - removed: string[] (field names removed)
         // - changed: object mapping field name to { old, new }
-        let mut obj = Object::new_structural(0, 3);
+        let mut obj = Object::new_structural(
+            crate::vm::object::layout_id_from_ordered_names(&[
+                "added".to_string(),
+                "removed".to_string(),
+                "changed".to_string(),
+            ]),
+            3,
+        );
 
         // Create added array
         let mut added_arr = Array::new(0, diff.added.len());
@@ -3142,16 +3193,27 @@ impl<'a> Interpreter<'a> {
         changes: &std::collections::HashMap<String, crate::vm::reflect::ValueChange>,
     ) -> Value {
         let change_count = changes.len();
-        let mut obj = Object::new_structural(0, change_count);
-
         // Sort changes by name for consistent ordering
         let mut change_names: Vec<_> = changes.keys().collect();
         change_names.sort();
+        let ordered_names: Vec<String> =
+            change_names.iter().map(|name| (*name).clone()).collect();
+        let mut obj = Object::new_structural(
+            crate::vm::object::layout_id_from_ordered_names(&ordered_names),
+            change_count,
+        );
 
         for (i, name) in change_names.iter().enumerate() {
             if let Some(change) = changes.get(*name) {
                 // Create a change object with: fieldName, old, new
-                let mut change_obj = Object::new_structural(0, 3);
+                let mut change_obj = Object::new_structural(
+                    crate::vm::object::layout_id_from_ordered_names(&[
+                        "fieldName".to_string(),
+                        "old".to_string(),
+                        "new".to_string(),
+                    ]),
+                    3,
+                );
 
                 // Field name
                 let name_str = RayaString::new((*name).clone());

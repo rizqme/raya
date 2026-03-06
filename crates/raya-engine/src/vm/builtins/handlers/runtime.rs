@@ -1960,19 +1960,20 @@ fn allocate_string(ctx: &RuntimeHandlerContext<'_>, s: String) -> Value {
     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
 }
 
-fn ensure_buffer_class_layout(ctx: &RuntimeHandlerContext<'_>) -> (usize, usize) {
+fn ensure_buffer_class_layout(ctx: &RuntimeHandlerContext<'_>) -> (usize, usize, u32) {
     let mut classes = ctx.classes.write();
     if let Some(class) = classes.get_class_by_name("Buffer") {
-        (class.id, class.field_count.max(2))
+        (class.id, class.field_count.max(2), class.layout_id)
     } else {
         let id = classes.next_class_id();
         classes.register_class(Class::new(id, "Buffer".to_string(), 2));
-        (id, 2)
+        let class = classes.get_class(id).expect("registered Buffer class");
+        (id, 2, class.layout_id)
     }
 }
 
 fn allocate_buffer_object(ctx: &RuntimeHandlerContext<'_>, data: &[u8]) -> Result<Value, VmError> {
-    let (buffer_class_id, buffer_field_count) = ensure_buffer_class_layout(ctx);
+    let (buffer_class_id, buffer_field_count, buffer_layout_id) = ensure_buffer_class_layout(ctx);
     let mut buffer = Buffer::new(data.len());
     for (i, &byte) in data.iter().enumerate() {
         let _ = buffer.set_byte(i, byte);
@@ -1982,7 +1983,8 @@ fn allocate_buffer_object(ctx: &RuntimeHandlerContext<'_>, data: &[u8]) -> Resul
     let buffer_ptr = gc.allocate(buffer);
     let handle = buffer_ptr.as_ptr() as u64;
 
-    let mut obj = Object::new(buffer_class_id, buffer_field_count);
+    let mut obj =
+        Object::new_nominal(buffer_layout_id, buffer_class_id as u32, buffer_field_count);
     obj.set_field(0, Value::u64(handle))
         .map_err(VmError::RuntimeError)?;
     if buffer_field_count > 1 {
@@ -2008,9 +2010,12 @@ fn read_buffer_bytes(
     let obj_ptr = unsafe { value.as_ptr::<Object>() }
         .ok_or_else(|| VmError::TypeError(format!("Expected Buffer for {}", arg_name)))?;
     let obj = unsafe { &*obj_ptr.as_ptr() };
+    let class_id = obj
+        .nominal_class_id()
+        .ok_or_else(|| VmError::TypeError(format!("Expected Buffer for {}", arg_name)))?;
     let classes = ctx.classes.read();
     let class = classes
-        .get_class(obj.class_id)
+        .get_class(class_id)
         .ok_or_else(|| VmError::RuntimeError("Buffer class metadata missing".to_string()))?;
     if class.name != "Buffer" {
         return Err(VmError::TypeError(format!(

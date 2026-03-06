@@ -4,7 +4,7 @@ use crate::compiler::{Module, Opcode};
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, BoundMethod, Closure, Object, RayaString};
+use crate::vm::object::{Array, BoundMethod, BoundNativeMethod, Closure, Object, RayaString};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -106,7 +106,7 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
 
-                    // Check GcHeader to distinguish BoundMethod from Closure
+                    // Check GcHeader to distinguish BoundMethod/BoundNativeMethod/Closure
                     let header = unsafe {
                         let hp = (closure_val.as_ptr::<u8>().unwrap().as_ptr())
                             .sub(std::mem::size_of::<GcHeader>());
@@ -134,6 +134,41 @@ impl<'a> Interpreter<'a> {
                             module: bm.module.clone(),
                             return_action: ReturnAction::PushReturnValue,
                         }
+                    } else if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
+                        let bm =
+                            unsafe { &*closure_val.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
+                        let mut native_args = Vec::with_capacity(arg_count + 1);
+                        native_args.push(bm.receiver);
+                        native_args.extend(args_tmp.into_iter().rev());
+
+                        // Reuse the native opcode execution path directly (no per-method hardcoding).
+                        for arg in &native_args {
+                            if let Err(error) = stack.push(*arg) {
+                                return OpcodeResult::Error(error);
+                            }
+                        }
+                        let arg_count_u8 = match u8::try_from(native_args.len()) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                return OpcodeResult::Error(VmError::RuntimeError(
+                                    "Too many arguments for bound native method call".to_string(),
+                                ))
+                            }
+                        };
+                        let code = [
+                            (bm.native_id & 0x00FF) as u8,
+                            ((bm.native_id >> 8) & 0x00FF) as u8,
+                            arg_count_u8,
+                        ];
+                        let mut native_ip = 0usize;
+                        self.exec_native_ops(
+                            stack,
+                            &mut native_ip,
+                            &code,
+                            module,
+                            task,
+                            Opcode::NativeCall,
+                        )
                     } else {
                         // Closure call - push args back (they become the callee's locals)
                         for arg in args_tmp.into_iter().rev() {
@@ -427,6 +462,10 @@ impl<'a> Interpreter<'a> {
                         "Closure"
                     } else if receiver_header.type_id() == std::any::TypeId::of::<BoundMethod>() {
                         "BoundMethod"
+                    } else if receiver_header.type_id()
+                        == std::any::TypeId::of::<BoundNativeMethod>()
+                    {
+                        "BoundNativeMethod"
                     } else {
                         "UnknownGcType"
                     };
@@ -473,6 +512,10 @@ impl<'a> Interpreter<'a> {
                                 "Closure"
                             } else if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
                                 "BoundMethod"
+                            } else if header.type_id()
+                                == std::any::TypeId::of::<BoundNativeMethod>()
+                            {
+                                "BoundNativeMethod"
                             } else {
                                 "UnknownGcType"
                             }
@@ -513,7 +556,10 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let class_index = self.resolve_class_id(module, local_class_index);
+                let class_index = match self.resolve_nominal_type_id(module, local_class_index) {
+                    Ok(id) => id,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
                 let arg_count = match Self::read_u8(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
@@ -541,12 +587,13 @@ impl<'a> Interpreter<'a> {
                     }
                 };
                 let field_count = class.field_count;
+                let layout_id = class.layout_id;
                 let constructor_id = class.get_constructor();
                 let constructor_module = class.module.clone();
                 drop(classes);
 
                 // Create the object
-                let obj = Object::new(class_index, field_count);
+                let obj = Object::new_nominal(layout_id, class_index as u32, field_count);
                 let gc_ptr = self.gc.lock().allocate(obj);
                 let obj_val =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
@@ -588,7 +635,10 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let class_index = self.resolve_class_id(module, local_class_index);
+                let class_index = match self.resolve_nominal_type_id(module, local_class_index) {
+                    Ok(id) => id,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
                 let arg_count = match Self::read_u8(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),

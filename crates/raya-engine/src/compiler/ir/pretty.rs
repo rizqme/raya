@@ -253,12 +253,42 @@ fn format_instr(instr: &IrInstr) -> String {
                 format!("{} = load_field {}.field{}", dest, object, field)
             }
         }
+        IrInstr::LoadFieldShape {
+            dest,
+            object,
+            shape_id,
+            field,
+            optional,
+        } => {
+            if *optional {
+                format!(
+                    "{} = load_optional_field_shape {}.field{} @shape{:016x}",
+                    dest, object, field, shape_id
+                )
+            } else {
+                format!(
+                    "{} = load_field_shape {}.field{} @shape{:016x}",
+                    dest, object, field, shape_id
+                )
+            }
+        }
         IrInstr::StoreField {
             object,
             field,
             value,
         } => {
             format!("store_field {}.field{} = {}", object, field, value)
+        }
+        IrInstr::StoreFieldShape {
+            object,
+            shape_id,
+            field,
+            value,
+        } => {
+            format!(
+                "store_field_shape {}.field{} @shape{:016x} = {}",
+                object, field, shape_id, value
+            )
         }
         IrInstr::DynGetProp {
             dest,
@@ -312,7 +342,7 @@ fn format_instr(instr: &IrInstr) -> String {
         }
         IrInstr::ObjectLiteral {
             dest,
-            class,
+            type_index,
             fields,
         } => {
             let field_strs: Vec<String> = fields
@@ -320,9 +350,9 @@ fn format_instr(instr: &IrInstr) -> String {
                 .map(|(idx, val)| format!("field{}: {}", idx, val))
                 .collect();
             format!(
-                "{} = object_literal {} {{ {} }}",
+                "{} = object_literal @{} {{ {} }}",
                 dest,
-                class,
+                type_index,
                 field_strs.join(", ")
             )
         }

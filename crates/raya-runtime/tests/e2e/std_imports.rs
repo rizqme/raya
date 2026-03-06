@@ -1,4 +1,4 @@
-//! End-to-end regression tests for std import prelude/linking behavior.
+//! End-to-end regression tests for std import binary-link behavior.
 
 use super::harness::compile_with_builtins;
 use super::harness::expect_bool_with_builtins;

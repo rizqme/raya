@@ -31,6 +31,19 @@ fn test_type_alias_basic_object_shape() {
 }
 
 #[test]
+fn test_type_alias_reordered_object_literal_access() {
+    expect_i32(
+        "type Point = {
+             x: number;
+             y: number;
+         };
+         let p: Point = { y: 32, x: 10 };
+         return p.x + p.y;",
+        42,
+    );
+}
+
+#[test]
 fn test_type_alias_with_string_property() {
     expect_string(
         "type Named = {
@@ -253,5 +266,86 @@ fn test_type_alias_as_return_type() {
          let r = makeResult(42);
          return r.value;",
         42,
+    );
+}
+
+#[test]
+fn test_structural_multi_view_projection_preserves_slot_mapping() {
+    expect_i32(
+        "let full = { a: 1, b: 2, c: 3 };
+         let ab = full as { a: number; b: number };
+         let bc = full as { b: number; c: number };
+         return ab.a + bc.b + bc.c;",
+        6,
+    );
+}
+
+#[test]
+fn test_structural_spread_uses_projected_shape_slots() {
+    expect_i32(
+        "class Box {
+             c: number = 3;
+             b: number = 2;
+         }
+         let view = new Box() as { b: number; c: number };
+         let copy = { ...view };
+         return copy.b + copy.c;",
+        5,
+    );
+}
+
+#[test]
+fn test_structural_class_projection_method_and_fields() {
+    expect_i32(
+        "type PairView = {
+             b: number;
+             c: number;
+             sum(): number;
+         };
+         class Box {
+             c: number = 3;
+             b: number = 2;
+             sum(): number {
+                 return this.b + this.c;
+             }
+         }
+         let view: PairView = new Box();
+         return view.b + view.sum();",
+        7,
+    );
+}
+
+#[test]
+fn test_structural_parameter_projection_uses_shape_slots() {
+    expect_i32(
+        "class Box {
+             a: number = 1;
+             b: number = 2;
+             sum(x: number): number {
+                 return this.a + this.b + x;
+             }
+         }
+         function run(view: { b: number; sum(x: number): number }): number {
+             view.b = 5;
+             return view.sum(1) + view.b;
+         }
+         return run(new Box());",
+        12,
+    );
+}
+
+#[test]
+fn test_structural_parameter_destructuring_uses_projected_shape_slots() {
+    expect_i32(
+        "class Box {
+             c: number = 3;
+             b: number = 2;
+         }
+         function run(view: { b: number; c: number }): number {
+             let { b, c } = view;
+             return b + c;
+         }
+         return run(new Box());",
+        5,
     );
 }

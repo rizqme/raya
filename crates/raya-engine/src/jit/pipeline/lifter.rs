@@ -979,6 +979,12 @@ fn lift_instruction(
                 });
             }
         }
+        Opcode::LoadFieldShape | Opcode::StoreFieldShape | Opcode::OptionalFieldShape => {
+            return Err(LiftError::UnsupportedOpcode {
+                opcode: instr.opcode,
+                offset: instr.offset,
+            });
+        }
         Opcode::OptionalField => {
             if let Operands::U16(offset) = instr.operands {
                 let object = stack.pop(instr.offset)?;

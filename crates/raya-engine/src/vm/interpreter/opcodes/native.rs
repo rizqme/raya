@@ -12,12 +12,12 @@ use crate::vm::builtin::{buffer, date, map, mutex, regexp, set};
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::shared_state::{
-    LayoutId, StructuralAdapterKey, StructuralSlotBinding, StructuralViewHandle,
+    LayoutId, ShapeAdapter, StructuralAdapterKey, StructuralSlotBinding, StructuralViewHandle,
 };
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    Array, BoundMethod, Buffer, ChannelObject, Class, Closure, DateObject, MapObject, Object,
-    RayaString, RegExpObject, SetObject, TypeHandle,
+    Array, BoundMethod, BoundNativeMethod, Buffer, ChannelObject, Class, Closure, DateObject,
+    DynObject, MapObject, Object, RayaString, RegExpObject, SetObject, TypeHandle,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -27,22 +27,15 @@ use crate::vm::VmError;
 use std::sync::Arc;
 
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
+const IMPORTED_CLASS_TYPE_HANDLE_KEY: &str = "__raya_type_handle__";
 
 impl<'a> Interpreter<'a> {
     fn shape_id_for_member_names(names: &[String]) -> u64 {
-        let mut canonical = names.to_vec();
-        canonical.sort_unstable();
-        canonical.dedup();
-        let payload = format!("shape{{{}}}", canonical.join(","));
-        crate::parser::types::signature_hash(&payload)
+        crate::vm::object::shape_id_from_member_names(names)
     }
 
     fn dynamic_layout_id_from_member_names(names: &[String]) -> LayoutId {
-        // Layout identity is order-sensitive: slot order defines physical layout.
-        let payload = format!("layout{{{}}}", names.join(","));
-        let raw = crate::parser::types::signature_hash(&payload) as u32;
-        // Reserve 0 for "unknown/unset layout" during migration.
-        raw.max(1)
+        crate::vm::object::layout_id_from_ordered_names(names)
     }
 
     fn legacy_object_literal_field_index(field_name: &str, field_count: usize) -> Option<usize> {
@@ -56,6 +49,7 @@ impl<'a> Interpreter<'a> {
             "errno" => 5,
             "syscall" => 6,
             "path" => 7,
+            "errors" => 8,
             // Node-compat descriptor Object layout: [value, writable, configurable, enumerable, get, set]
             "value" => 0,
             "writable" => 1,
@@ -78,6 +72,58 @@ impl<'a> Interpreter<'a> {
         };
         header.type_id() == std::any::TypeId::of::<Closure>()
             || header.type_id() == std::any::TypeId::of::<BoundMethod>()
+            || header.type_id() == std::any::TypeId::of::<BoundNativeMethod>()
+    }
+
+    fn raw_type_handle_id(value: Value) -> Option<crate::vm::object::TypeHandleId> {
+        if !value.is_ptr() {
+            return None;
+        }
+        let header = unsafe {
+            let hp = (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
+            &*(hp as *const GcHeader)
+        };
+        if header.type_id() != std::any::TypeId::of::<TypeHandle>() {
+            return None;
+        }
+        let handle_ptr = unsafe { value.as_ptr::<TypeHandle>() }?;
+        Some(unsafe { (*handle_ptr.as_ptr()).handle_id })
+    }
+
+    fn type_handle_nominal_id(
+        &self,
+        value: Value,
+    ) -> Option<crate::vm::object::NominalTypeId> {
+        let handle_id = Self::raw_type_handle_id(value)?;
+        self.type_handles
+            .read()
+            .get(handle_id)
+            .map(|entry| entry.nominal_type_id)
+    }
+
+    fn nominal_type_id_from_imported_class_value(
+        &self,
+        value: Value,
+    ) -> Option<usize> {
+        if let Some(nominal_id) = self.type_handle_nominal_id(value) {
+            return Some(nominal_id as usize);
+        }
+
+        if !value.is_ptr() {
+            return None;
+        }
+        let header = unsafe {
+            let hp = (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
+            &*(hp as *const GcHeader)
+        };
+        if header.type_id() != std::any::TypeId::of::<DynObject>() {
+            return None;
+        }
+
+        let dyn_ptr = unsafe { value.as_ptr::<DynObject>() }?;
+        let dyn_obj = unsafe { &*dyn_ptr.as_ptr() };
+        let handle_val = dyn_obj.get(IMPORTED_CLASS_TYPE_HANDLE_KEY)?;
+        self.type_handle_nominal_id(handle_val).map(|id| id as usize)
     }
 
     fn builtin_field_index_for_class_name_native(
@@ -110,8 +156,20 @@ impl<'a> Interpreter<'a> {
                 "length" => Some(1),
                 _ => None,
             },
+            "AggregateError" => match field_name {
+                "message" => Some(0),
+                "name" => Some(1),
+                "stack" => Some(2),
+                "cause" => Some(3),
+                "code" => Some(4),
+                "errno" => Some(5),
+                "syscall" => Some(6),
+                "path" => Some(7),
+                "errors" => Some(8),
+                _ => None,
+            },
             "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError"
-            | "URIError" | "EvalError" | "AggregateError" | "ChannelClosedError"
+            | "URIError" | "EvalError" | "ChannelClosedError"
             | "AssertionError" => match field_name {
                 "message" => Some(0),
                 "name" => Some(1),
@@ -146,7 +204,7 @@ impl<'a> Interpreter<'a> {
             if let Some(index) = self
                 .structural_object_shapes
                 .read()
-                .get(&obj.object_id)
+                .get(&obj.layout_id())
                 .and_then(|names| names.iter().position(|name| name == field_name))
             {
                 return Some(index);
@@ -159,7 +217,7 @@ impl<'a> Interpreter<'a> {
         {
             return Some(index);
         }
-        // Backstop for no-prelude builtins still emitted as generic object literals.
+        // Backstop for builtin values still emitted as generic object literals.
         Self::legacy_object_literal_field_index(field_name, obj.field_count())
     }
 
@@ -391,18 +449,19 @@ impl<'a> Interpreter<'a> {
         })
     }
 
-    fn ensure_buffer_class_layout(&self) -> (usize, usize) {
+    fn ensure_buffer_class_layout(&self) -> (usize, usize, LayoutId) {
         let mut classes = self.classes.write();
         if let Some(class) = classes.get_class_by_name("Buffer") {
-            (class.id, class.field_count.max(2))
+            (class.id, class.field_count.max(2), class.layout_id)
         } else {
             let id = classes.next_class_id();
             classes.register_class(Class::new(id, "Buffer".to_string(), 2));
-            (id, 2)
+            let class = classes.get_class(id).expect("registered Buffer class");
+            (id, 2, class.layout_id)
         }
     }
 
-    fn ensure_object_class_layout(&self) -> (usize, usize) {
+    fn ensure_object_class_layout(&self) -> (usize, usize, LayoutId) {
         let mut classes = self.classes.write();
         if let Some(id) = classes.get_class_by_name("Object").map(|class| class.id) {
             let mut field_count = classes
@@ -415,17 +474,24 @@ impl<'a> Interpreter<'a> {
                     field_count = 6;
                 }
             }
-            (id, field_count.max(6))
+            let layout_id = classes
+                .get_class(id)
+                .map(|class| class.layout_id)
+                .expect("registered Object class");
+            (id, field_count.max(6), layout_id)
         } else {
             let id = classes.next_class_id();
             classes.register_class(Class::new(id, "Object".to_string(), 6));
-            (id, 6)
+            let class = classes.get_class(id).expect("registered Object class");
+            (id, 6, class.layout_id)
         }
     }
 
     fn alloc_buffer_object(&self, handle: u64, len: usize) -> Result<Value, VmError> {
-        let (buffer_class_id, buffer_field_count) = self.ensure_buffer_class_layout();
-        let mut obj = Object::new(buffer_class_id, buffer_field_count);
+        let (buffer_class_id, buffer_field_count, buffer_layout_id) =
+            self.ensure_buffer_class_layout();
+        let mut obj =
+            Object::new_nominal(buffer_layout_id, buffer_class_id as u32, buffer_field_count);
         obj.set_field(0, Value::u64(handle))
             .map_err(VmError::RuntimeError)?;
         if buffer_field_count > 1 {
@@ -437,8 +503,10 @@ impl<'a> Interpreter<'a> {
     }
 
     fn alloc_object_descriptor(&self) -> Result<Value, VmError> {
-        let (object_class_id, object_field_count) = self.ensure_object_class_layout();
-        let mut obj = Object::new(object_class_id, object_field_count);
+        let (object_class_id, object_field_count, object_layout_id) =
+            self.ensure_object_class_layout();
+        let mut obj =
+            Object::new_nominal(object_layout_id, object_class_id as u32, object_field_count);
         if object_field_count > 0 {
             obj.set_field(0, Value::null())
                 .map_err(VmError::RuntimeError)?;
@@ -561,6 +629,42 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "ambient global lookup expects exactly one string argument"
+                                    .to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "ambient global lookup expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        let Some(slot) = self
+                            .builtin_global_slots
+                            .read()
+                            .get(name.data.as_str())
+                            .copied()
+                        else {
+                            return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                "ambient builtin global '{}' is not initialized",
+                                name.data
+                            )));
+                        };
+                        let value = self
+                            .globals_by_index
+                            .read()
+                            .get(slot)
+                            .copied()
+                            .unwrap_or(Value::null());
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS => {
                         if args.is_empty() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -569,16 +673,13 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
 
-                        let class_id = match unsafe { args[0].as_ptr::<TypeHandle>() } {
-                            Some(handle_ptr) => unsafe {
-                                (*handle_ptr.as_ptr()).nominal_type_id as usize
-                            },
-                            None => {
-                                return OpcodeResult::Error(VmError::TypeError(
-                                    "dynamic class construction expects TypeHandle (imported class value)"
-                                        .to_string(),
-                                ));
-                            }
+                        let Some(class_id) =
+                            self.nominal_type_id_from_imported_class_value(args[0])
+                        else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "dynamic class construction expects imported class value with type handle"
+                                    .to_string(),
+                            ));
                         };
 
                         let classes = self.classes.read();
@@ -592,11 +693,12 @@ impl<'a> Interpreter<'a> {
                             }
                         };
                         let field_count = class.field_count;
+                        let layout_id = class.layout_id;
                         let constructor_id = class.get_constructor();
                         let constructor_module = class.module.clone();
                         drop(classes);
 
-                        let obj = Object::new(class_id, field_count);
+                        let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
                         let gc_ptr = self.gc.lock().allocate(obj);
                         let obj_val = unsafe {
                             Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
@@ -622,6 +724,31 @@ impl<'a> Interpreter<'a> {
                         }
 
                         if let Err(error) = stack.push(obj_val) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_INSTANCE_OF_DYNAMIC_CLASS => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "dynamic instanceof requires (object, classValue)".to_string(),
+                            ));
+                        }
+
+                        let Some(class_id) =
+                            self.nominal_type_id_from_imported_class_value(args[1])
+                        else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "dynamic instanceof expects imported or ambient class value"
+                                    .to_string(),
+                            ));
+                        };
+
+                        let classes = self.classes.read();
+                        let result =
+                            crate::vm::reflect::is_instance_of(&classes, args[0], class_id);
+                        if let Err(error) = stack.push(Value::bool(result)) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
@@ -666,115 +793,85 @@ impl<'a> Interpreter<'a> {
                             }
                             return OpcodeResult::Continue;
                         };
-                        let object_id = unsafe { (*object_ptr.as_ptr()).object_id };
+                        let required_shape = Self::shape_id_for_member_names(&expected_names);
+                        self.structural_shape_names
+                            .write()
+                            .entry(required_shape)
+                            .or_insert_with(|| expected_names.clone());
+                        let object_id = unsafe { (*object_ptr.as_ptr()).object_id() };
                         let object_nominal_class_id =
                             unsafe { (*object_ptr.as_ptr()).nominal_class_id() };
-                        let object_layout_id = unsafe { (*object_ptr.as_ptr()).layout_id };
-                        let object_field_count = unsafe { (*object_ptr.as_ptr()).field_count() };
+                        let object_layout_id = unsafe { (*object_ptr.as_ptr()).layout_id() };
+                        let object_ref = unsafe { &*object_ptr.as_ptr() };
                         let debug_structural = std::env::var("RAYA_DEBUG_STRUCTURAL_VIEW").is_ok();
-                        let class_metadata = self.class_metadata.read();
-                        let class_meta = object_nominal_class_id
-                            .and_then(|class_id| class_metadata.get(class_id))
-                            .cloned();
-                        drop(class_metadata);
-                        let class_name = {
-                            let classes = self.classes.read();
-                            object_nominal_class_id
-                                .and_then(|class_id| classes.get_class(class_id))
-                                .map(|class| class.name.clone())
-                        };
-                        let (provider_layout, slot_map): (LayoutId, Vec<StructuralSlotBinding>) =
-                            if let Some(class_meta) = class_meta {
-                                let provider_layout = if object_layout_id == 0 {
-                                    object_nominal_class_id.unwrap_or(0) as LayoutId
-                                } else {
-                                    object_layout_id
-                                };
-                                let slot_map = expected_names
-                                    .iter()
-                                    .map(|name| {
-                                        class_meta
-                                            .get_field_index(name)
-                                            .and_then(|index| {
-                                                (index < object_field_count)
-                                                    .then_some(StructuralSlotBinding::Field(index))
-                                            })
-                                            .or_else(|| {
-                                                class_meta
-                                                    .get_method_index(name)
-                                                    .map(StructuralSlotBinding::Method)
-                                            })
-                                            .or_else(|| {
-                                                class_name.as_ref().and_then(|class_name| {
-                                                    Self::builtin_field_index_for_class_name_native(
-                                                        class_name, name,
-                                                    )
-                                                    .map(StructuralSlotBinding::Field)
-                                                })
-                                            })
-                                            .unwrap_or(StructuralSlotBinding::Missing)
-                                    })
-                                    .collect();
-                                (provider_layout, slot_map)
-                            } else {
-                                // Dynamic object-literal carriers do not have class metadata.
-                                // Track canonical field names per object and remap by name.
+                        let (provider_layout, slot_map): (LayoutId, Vec<StructuralSlotBinding>) = if object_ref
+                            .nominal_class_id()
+                            .is_none()
+                        {
+                            let actual_names = {
                                 let mut shapes = self.structural_object_shapes.write();
-                                let actual_names = shapes
-                                    .entry(object_id)
-                                    .or_insert_with(|| expected_names.clone());
-                                let derived_layout =
-                                    Self::dynamic_layout_id_from_member_names(actual_names);
-                                // Stamp physical layout identity once so subsequent shape views
-                                // can share adapter cache entries by `(layout_id, shape_id)`.
-                                let object_mut = unsafe { &mut *object_ptr.as_ptr() };
-                                if object_mut.layout_id == 0 {
-                                    object_mut.layout_id = derived_layout;
-                                }
-                                let provider_layout = object_mut.layout_id;
-                                if debug_structural {
-                                    eprintln!(
-                                        "[structural-view] seed/remap object_id={} layout={} expected=[{}] actual=[{}]",
-                                        object_id,
-                                        provider_layout,
-                                        expected_names.join(","),
-                                        actual_names.join(",")
-                                    );
-                                }
-                                let slot_map = expected_names
-                                    .iter()
-                                    .map(|name| {
-                                        actual_names
-                                            .iter()
-                                            .position(|actual| actual == name)
-                                            .map(StructuralSlotBinding::Field)
-                                            .unwrap_or(StructuralSlotBinding::Missing)
-                                    })
-                                    .collect();
-                                (provider_layout, slot_map)
+                                shapes
+                                    .entry(object_ref.layout_id())
+                                    .or_insert_with(|| expected_names.clone())
+                                    .clone()
                             };
+                            let derived_layout =
+                                Self::dynamic_layout_id_from_member_names(&actual_names);
+                            let provider_layout = object_ref.layout_id();
+                            if provider_layout != derived_layout {
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "structural layout metadata mismatch: object layout {} != derived layout {}",
+                                    provider_layout, derived_layout
+                                )));
+                            }
+                            if debug_structural {
+                                eprintln!(
+                                    "[structural-view] seed/remap object_id={} layout={} expected=[{}] actual=[{}]",
+                                    object_id,
+                                    provider_layout,
+                                    expected_names.join(","),
+                                    actual_names.join(",")
+                                );
+                            }
+                            let slot_map = expected_names
+                                .iter()
+                                .map(|name| {
+                                    actual_names
+                                        .iter()
+                                        .position(|actual| actual == name)
+                                        .map(StructuralSlotBinding::Field)
+                                        .unwrap_or(StructuralSlotBinding::Missing)
+                                })
+                                .collect();
+                            (provider_layout, slot_map)
+                        } else {
+                            if object_layout_id == 0 {
+                                return OpcodeResult::Error(VmError::RuntimeError(
+                                    "structural view registration requires a physical layout id"
+                                        .to_string(),
+                                ));
+                            }
+                            let slot_map = self
+                                .build_shape_slot_map_for_object(object_ref, &expected_names)
+                                .unwrap_or_default();
+                            (object_layout_id, slot_map)
+                        };
 
                         let key = (module.checksum, self.profiler_func_id, object_id);
-                        let required_shape = Self::shape_id_for_member_names(&expected_names);
                         let adapter_key = StructuralAdapterKey {
                             provider_layout,
                             required_shape,
                         };
-                        let slot_map = Arc::new(slot_map);
+                        let adapter =
+                            Arc::new(ShapeAdapter::from_slot_map(provider_layout, required_shape, &slot_map));
                         self.structural_shape_adapters
                             .write()
-                            .insert(adapter_key, slot_map.clone());
+                            .insert(adapter_key, adapter.clone());
                         if debug_structural {
-                            let slot_desc = slot_map
-                                .iter()
-                                .enumerate()
-                                .map(|(idx, binding)| match binding {
-                                    StructuralSlotBinding::Field(field) => {
-                                        format!("{idx}->f{field}")
-                                    }
-                                    StructuralSlotBinding::Method(method) => {
-                                        format!("{idx}->m{method}")
-                                    }
+                            let slot_desc = (0..adapter.len())
+                                .map(|idx| match adapter.binding_for_slot(idx) {
+                                    StructuralSlotBinding::Field(field) => format!("{idx}->f{field}"),
+                                    StructuralSlotBinding::Method(method) => format!("{idx}->m{method}"),
                                     StructuralSlotBinding::Missing => format!("{idx}->missing"),
                                 })
                                 .collect::<Vec<_>>()
@@ -791,9 +888,7 @@ impl<'a> Interpreter<'a> {
                                 slot_desc
                             );
                         }
-                        let is_identity = slot_map.iter().enumerate().all(|(expected, binding)| {
-                            matches!(binding, StructuralSlotBinding::Field(actual) if *actual == expected)
-                        });
+                        let is_identity = adapter.is_identity_field_projection();
                         if is_identity {
                             self.structural_slot_views.write().remove(&key);
                         } else {
@@ -2080,7 +2175,7 @@ impl<'a> Interpreter<'a> {
                             } else {
                                 self.structural_object_shapes
                                     .read()
-                                    .get(&desc_obj.object_id)
+                                    .get(&desc_obj.layout_id())
                                     .cloned()
                                     .unwrap_or_default()
                             };
@@ -2215,6 +2310,57 @@ impl<'a> Interpreter<'a> {
                             }
                         };
                         if let Err(e) = stack.push(result) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::ERROR_TO_STRING => {
+                        let error_val = args.first().copied().unwrap_or(Value::null());
+                        let name_val = self
+                            .get_field_value_by_name(error_val, "name")
+                            .unwrap_or(Value::null());
+                        let message_val = self
+                            .get_field_value_by_name(error_val, "message")
+                            .unwrap_or(Value::null());
+
+                        let to_string = |value: Value| -> String {
+                            if value.is_null() {
+                                return String::new();
+                            }
+                            if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
+                                return unsafe { &*ptr.as_ptr() }.data.clone();
+                            }
+                            if let Some(i) = value.as_i32() {
+                                return i.to_string();
+                            }
+                            if let Some(f) = value.as_f64() {
+                                if f.fract() == 0.0 {
+                                    return format!("{}", f as i64);
+                                }
+                                return f.to_string();
+                            }
+                            if let Some(b) = value.as_bool() {
+                                return b.to_string();
+                            }
+                            String::new()
+                        };
+
+                        let mut name = to_string(name_val);
+                        if name.is_empty() {
+                            name = "Error".to_string();
+                        }
+                        let message = to_string(message_val);
+                        let rendered = if message.is_empty() {
+                            name
+                        } else {
+                            format!("{}: {}", name, message)
+                        };
+                        let s = RayaString::new(rendered);
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let value = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
+                        if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
@@ -2988,7 +3134,10 @@ impl<'a> Interpreter<'a> {
 
                         // Create a new object with the specified fields
                         let mut gc = self.gc.lock();
-                        let mut obj = Object::new_structural(0, field_keys.len());
+                        let mut obj = Object::new_structural(
+                            Self::dynamic_layout_id_from_member_names(&field_keys),
+                            field_keys.len(),
+                        );
 
                         // Extract each field from the parsed DynObject and store in typed Object
                         for (index, key) in field_keys.iter().enumerate() {

@@ -50,18 +50,28 @@ pub use error::RuntimeError;
 pub use module_system::{CompiledProgram, ProgramDiagnostics};
 pub use session::Session;
 
-use raya_engine::compiler::module::{LateLinkRequirement, LateLinkSymbolRequirement};
+use raya_engine::compiler::module::{
+    builtin_global_exports, BuiltinSurfaceMode, LateLinkRequirement, LateLinkSymbolRequirement,
+};
 use raya_engine::compiler::{module_id_from_name, Export, Import, SymbolType};
 use raya_engine::parser::types::{
-    signature_hash, try_hydrate_type_from_canonical_signature, Type, TypeContext,
+    signature_hash, structural_signature_is_assignable, try_hydrate_type_from_canonical_signature,
+    Type, TypeContext,
 };
-use raya_engine::parser::Interner;
+use raya_engine::parser::ast::{Pattern, Statement};
+use raya_engine::parser::{Interner, Parser};
 use raya_engine::vm::json::JSView;
 use raya_engine::vm::module::{ModuleLinker, ResolvedSymbol};
 use raya_engine::vm::object::{Closure, DynObject, RayaString, TypeHandle};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
+
+const IMPORTED_CLASS_TYPE_HANDLE_KEY: &str = "__raya_type_handle__";
+
+static STRICT_BUILTIN_RUNTIME_MODULES: OnceLock<Result<Vec<Module>, String>> = OnceLock::new();
+static NODE_BUILTIN_RUNTIME_MODULES: OnceLock<Result<Vec<Module>, String>> = OnceLock::new();
 
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -172,6 +182,25 @@ impl Default for Runtime {
 }
 
 impl Runtime {
+    fn compile_program_source_with_virtual_entry(
+        &self,
+        source: &str,
+        virtual_entry: &Path,
+    ) -> Result<CompiledProgram, RuntimeError> {
+        let type_mode = self
+            .options
+            .type_mode
+            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
+        let ts_options = self.resolve_ts_options_for_inline()?;
+        let compiler = module_system::ProgramCompiler {
+            builtin_mode: self.options.builtin_mode,
+            type_mode,
+            ts_options,
+            compile_options: None,
+        };
+        compiler.compile_program_source(source, virtual_entry)
+    }
+
     fn resolve_ts_options_for_inline(&self) -> Result<Option<TsCompilerOptions>, RuntimeError> {
         if !matches!(self.options.type_mode, Some(TypeMode::Ts)) {
             return Ok(self.options.ts_options.clone());
@@ -179,15 +208,31 @@ impl Runtime {
         if let Some(opts) = &self.options.ts_options {
             return Ok(Some(opts.clone()));
         }
-        let cwd = std::env::current_dir().map_err(|e| {
-            RuntimeError::TypeCheck(format!("Failed to determine current directory: {}", e))
-        })?;
-        let tsconfig = loader::find_tsconfig(&cwd).ok_or_else(|| {
-            RuntimeError::TypeCheck(
-                "Type mode 'ts' requires a discoverable tsconfig.json".to_string(),
-            )
-        })?;
-        Ok(Some(loader::load_ts_compiler_options(&tsconfig)?))
+        let cwd = match std::env::current_dir() {
+            Ok(path) => path,
+            Err(_) => return Ok(Some(TsCompilerOptions::default())),
+        };
+        match loader::find_tsconfig(&cwd) {
+            Some(tsconfig) => Ok(Some(loader::load_ts_compiler_options(&tsconfig)?)),
+            None => Ok(Some(TsCompilerOptions::default())),
+        }
+    }
+
+    fn resolve_ts_options_for_path(
+        &self,
+        path: &Path,
+    ) -> Result<Option<TsCompilerOptions>, RuntimeError> {
+        if !matches!(self.options.type_mode, Some(TypeMode::Ts)) {
+            return Ok(self.options.ts_options.clone());
+        }
+        if let Some(opts) = &self.options.ts_options {
+            return Ok(Some(opts.clone()));
+        }
+        let search_root = path.parent().unwrap_or(path);
+        match loader::find_tsconfig(search_root) {
+            Some(tsconfig) => Ok(Some(loader::load_ts_compiler_options(&tsconfig)?)),
+            None => Ok(Some(TsCompilerOptions::default())),
+        }
     }
 
     /// Create a runtime with default options.
@@ -235,19 +280,7 @@ impl Runtime {
     ///
     /// Returns the entry module plus all compiled dependencies and late-link metadata.
     pub fn compile_program_source(&self, source: &str) -> Result<CompiledProgram, RuntimeError> {
-        let type_mode = self
-            .options
-            .type_mode
-            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
-        let ts_options = self.resolve_ts_options_for_inline()?;
-        let virtual_entry = std::env::temp_dir().join("__raya_inline_entry.raya");
-        let compiler = module_system::ProgramCompiler {
-            builtin_mode: self.options.builtin_mode,
-            type_mode,
-            ts_options,
-            compile_options: None,
-        };
-        compiler.compile_program_source(source, &virtual_entry)
+        self.compile_program_source_with_virtual_entry(source, Path::new("<inline>.raya"))
     }
 
     /// Compile a .raya source file to a bytecode module.
@@ -318,17 +351,7 @@ impl Runtime {
             .options
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
-        let ts_options = if matches!(type_mode, TypeMode::Ts) {
-            let tsconfig =
-                loader::find_tsconfig(path.parent().unwrap_or(path)).ok_or_else(|| {
-                    RuntimeError::TypeCheck(
-                        "Type mode 'ts' requires a discoverable tsconfig.json".to_string(),
-                    )
-                })?;
-            Some(loader::load_ts_compiler_options(&tsconfig)?)
-        } else {
-            self.options.ts_options.clone()
-        };
+        let ts_options = self.resolve_ts_options_for_path(path)?;
 
         let compiler = module_system::ProgramCompiler {
             builtin_mode: self.options.builtin_mode,
@@ -349,17 +372,7 @@ impl Runtime {
             .options
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
-        let ts_options = if matches!(type_mode, TypeMode::Ts) {
-            let tsconfig =
-                loader::find_tsconfig(path.parent().unwrap_or(path)).ok_or_else(|| {
-                    RuntimeError::TypeCheck(
-                        "Type mode 'ts' requires a discoverable tsconfig.json".to_string(),
-                    )
-                })?;
-            Some(loader::load_ts_compiler_options(&tsconfig)?)
-        } else {
-            self.options.ts_options.clone()
-        };
+        let ts_options = self.resolve_ts_options_for_path(path)?;
 
         let compiler = module_system::ProgramCompiler {
             builtin_mode: self.options.builtin_mode,
@@ -385,17 +398,7 @@ impl Runtime {
             .options
             .type_mode
             .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
-        let ts_options = if matches!(type_mode, TypeMode::Ts) {
-            let tsconfig =
-                loader::find_tsconfig(path.parent().unwrap_or(path)).ok_or_else(|| {
-                    RuntimeError::TypeCheck(
-                        "Type mode 'ts' requires a discoverable tsconfig.json".to_string(),
-                    )
-                })?;
-            Some(loader::load_ts_compiler_options(&tsconfig)?)
-        } else {
-            self.options.ts_options.clone()
-        };
+        let ts_options = self.resolve_ts_options_for_path(path)?;
 
         let compiler = module_system::ProgramCompiler {
             builtin_mode: self.options.builtin_mode,
@@ -423,6 +426,7 @@ impl Runtime {
     /// Execute a compiled module and return the VM result value.
     pub fn execute(&self, module: &CompiledModule) -> Result<Value, RuntimeError> {
         let mut vm = vm_setup::create_vm(&self.options);
+        self.ensure_ambient_builtin_globals_seeded(&mut vm)?;
         vm.shared_state()
             .register_module(Arc::new(module.module.clone()))
             .map_err(RuntimeError::Dependency)?;
@@ -485,12 +489,9 @@ impl Runtime {
     /// let value = rt.eval("return 1 + 2;")?;
     /// ```
     pub fn eval(&self, code: &str) -> Result<Value, RuntimeError> {
-        if self.can_use_binary_program_execution() {
-            let program = self.compile_program_source(code)?;
-            return self.execute_program(&program);
-        }
-        let module = self.compile(code)?;
-        self.execute(&module)
+        let program =
+            self.compile_program_source_with_virtual_entry(code, Path::new("<eval>.raya"))?;
+        self.execute_program(&program)
     }
 
     /// Run a file (.raya or .ryb), auto-detecting format by extension.
@@ -681,12 +682,295 @@ impl Runtime {
         Ok(deps)
     }
 
+    fn builtin_surface_mode_for_runtime(mode: BuiltinMode) -> BuiltinSurfaceMode {
+        match mode {
+            BuiltinMode::RayaStrict => BuiltinSurfaceMode::RayaStrict,
+            BuiltinMode::NodeCompat => BuiltinSurfaceMode::NodeCompat,
+        }
+    }
+
+    fn ambient_builtin_export_names(mode: BuiltinMode) -> Result<Vec<String>, RuntimeError> {
+        let exports = builtin_global_exports(Self::builtin_surface_mode_for_runtime(mode))
+            .map_err(|error| {
+                RuntimeError::Dependency(format!(
+                    "Failed to load builtin declaration exports for runtime seeding: {error}"
+                ))
+            })?;
+        let mut names = exports
+            .symbols
+            .iter()
+            .filter_map(|(name, exported)| {
+                match exported.kind {
+                    raya_engine::parser::checker::SymbolKind::TypeAlias
+                    | raya_engine::parser::checker::SymbolKind::TypeParameter
+                    | raya_engine::parser::checker::SymbolKind::Interface => None,
+                    _ => Some(name.clone()),
+                }
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+
+    fn collect_pattern_names(pattern: &Pattern, interner: &Interner, out: &mut Vec<String>) {
+        match pattern {
+            Pattern::Identifier(id) => out.push(interner.resolve(id.name).to_string()),
+            Pattern::Array(arr) => {
+                for elem in arr.elements.iter().flatten() {
+                    Self::collect_pattern_names(&elem.pattern, interner, out);
+                }
+                if let Some(rest) = &arr.rest {
+                    Self::collect_pattern_names(rest, interner, out);
+                }
+            }
+            Pattern::Object(obj) => {
+                for prop in &obj.properties {
+                    Self::collect_pattern_names(&prop.value, interner, out);
+                }
+                if let Some(rest) = &obj.rest {
+                    out.push(interner.resolve(rest.name).to_string());
+                }
+            }
+            Pattern::Rest(rest) => Self::collect_pattern_names(&rest.argument, interner, out),
+        }
+    }
+
+    fn top_level_runtime_names(source: &str) -> Result<Vec<String>, RuntimeError> {
+        let parser = Parser::new(source).map_err(|errors| {
+            RuntimeError::Parse(
+                errors
+                    .iter()
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })?;
+        let (ast, interner) = parser.parse().map_err(|errors| {
+            RuntimeError::Parse(
+                errors
+                    .iter()
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })?;
+        let mut names = Vec::new();
+        for stmt in &ast.statements {
+            match stmt {
+                Statement::ClassDecl(class_decl) => {
+                    names.push(interner.resolve(class_decl.name.name).to_string());
+                }
+                Statement::FunctionDecl(func_decl) => {
+                    names.push(interner.resolve(func_decl.name.name).to_string());
+                }
+                Statement::VariableDecl(var_decl) => {
+                    Self::collect_pattern_names(&var_decl.pattern, &interner, &mut names);
+                }
+                _ => {}
+            }
+        }
+        names.retain(|name| !name.is_empty());
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+
+    fn compiled_builtin_runtime_modules(mode: BuiltinMode) -> Result<Vec<Module>, RuntimeError> {
+        let cache = match mode {
+            BuiltinMode::RayaStrict => &STRICT_BUILTIN_RUNTIME_MODULES,
+            BuiltinMode::NodeCompat => &NODE_BUILTIN_RUNTIME_MODULES,
+        };
+
+        let cached = cache.get_or_init(|| {
+            let ambient_names = match Self::ambient_builtin_export_names(mode) {
+                Ok(names) => names,
+                Err(error) => return Err(error.to_string()),
+            };
+            // Phase 1: declaration contract (declared ambient builtin symbols).
+            let declared_name_set = ambient_names
+                .iter()
+                .cloned()
+                .collect::<HashSet<_>>();
+            struct ParsedBuiltinUnit {
+                logical_path: &'static str,
+                ast: raya_engine::parser::ast::Module,
+                interner: Interner,
+            }
+
+            let checker_mode = match compile::default_type_mode_for_builtin(mode) {
+                TypeMode::Raya => raya_engine::parser::checker::TypeSystemMode::Raya,
+                TypeMode::Js => raya_engine::parser::checker::TypeSystemMode::Js,
+                TypeMode::Ts => raya_engine::parser::checker::TypeSystemMode::Ts,
+            };
+            let checker_policy = raya_engine::parser::checker::CheckerPolicy::for_mode(checker_mode);
+
+            // Phase 2a: parse/materialize each builtin source module with explicit exports.
+            let mut parsed_units = Vec::new();
+            for (logical_path, module_source) in builtins::builtin_source_modules_for_mode(mode) {
+                let mut export_names = match Self::top_level_runtime_names(module_source) {
+                    Ok(names) => names,
+                    Err(error) => {
+                        return Err(format!(
+                            "Failed to collect top-level names for '{}': {}",
+                            logical_path, error
+                        ))
+                    }
+                };
+                export_names.retain(|name| declared_name_set.contains(name));
+                export_names.sort();
+                export_names.dedup();
+
+                let mut source = (*module_source).to_string();
+                if !export_names.is_empty() {
+                    source.push_str("\nexport { ");
+                    source.push_str(&export_names.join(", "));
+                    source.push_str(" };");
+                }
+
+                let parser = match Parser::new(&source) {
+                    Ok(parser) => parser,
+                    Err(errors) => {
+                        return Err(format!(
+                            "Failed to parse builtin source '{}': {}",
+                            logical_path,
+                            errors
+                                .iter()
+                                .map(|error| error.to_string())
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        ))
+                    }
+                };
+                let (ast, interner) = match parser.parse() {
+                    Ok(parsed) => parsed,
+                    Err(errors) => {
+                        return Err(format!(
+                            "Failed to parse builtin source '{}': {}",
+                            logical_path,
+                            errors
+                                .iter()
+                                .map(|error| error.to_string())
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        ))
+                    }
+                };
+
+                parsed_units.push(ParsedBuiltinUnit {
+                    logical_path,
+                    ast,
+                    interner,
+                });
+            }
+
+            // Phase 2b: bind declarations for the whole builtin content graph first.
+            let mut shared_type_ctx = TypeContext::new();
+            for unit in &parsed_units {
+                let mut binder =
+                    raya_engine::parser::checker::binder::Binder::new(&mut shared_type_ctx, &unit.interner)
+                        .with_mode(checker_mode)
+                        .with_policy(checker_policy);
+                if let Err(errors) = binder.bind_module(&unit.ast) {
+                    return Err(format!(
+                        "Failed to bind builtin source '{}': {}",
+                        unit.logical_path,
+                        errors
+                            .iter()
+                            .map(|error| error.to_string())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ));
+                }
+            }
+
+            // Phase 2c: compile each module with stable file identity and shared declarations.
+            let mut modules = Vec::with_capacity(parsed_units.len());
+            for unit in parsed_units {
+                let module_identity = format!("__raya_builtin__/{}", unit.logical_path);
+                let mut compiler =
+                    raya_engine::compiler::Compiler::new(shared_type_ctx.clone(), &unit.interner)
+                        .with_module_identity(module_identity)
+                        .with_js_this_binding_compat(true)
+                        .with_ambient_builtin_globals(declared_name_set.clone());
+                let module = match compiler.compile_via_ir(&unit.ast) {
+                    Ok(module) => module,
+                    Err(error) => {
+                        return Err(format!(
+                            "Failed to compile builtin source '{}': {}",
+                            unit.logical_path, error
+                        ))
+                    }
+                };
+                let encoded = module.encode();
+                let finalized = match Module::decode(&encoded) {
+                    Ok(module) => module,
+                    Err(error) => {
+                        return Err(format!(
+                            "Failed to finalize builtin source '{}': {}",
+                            unit.logical_path, error
+                        ))
+                    }
+                };
+                modules.push(finalized);
+            }
+
+            Ok(modules)
+        });
+
+        cached
+            .as_ref()
+            .cloned()
+            .map_err(|message| RuntimeError::Dependency(message.clone()))
+    }
+
+    fn ensure_ambient_builtin_globals_seeded(
+        &self,
+        vm: &mut raya_engine::vm::Vm,
+    ) -> Result<(), RuntimeError> {
+        let ambient_names = Self::ambient_builtin_export_names(self.options.builtin_mode)?;
+        if ambient_names.is_empty() {
+            return Ok(());
+        }
+        if ambient_names
+            .iter()
+            .all(|name| vm.shared_state().get_builtin_global(name).is_some())
+        {
+            return Ok(());
+        }
+
+        for module in Self::compiled_builtin_runtime_modules(self.options.builtin_mode)? {
+            let builtin_module = Arc::new(module);
+            vm.shared_state()
+                .register_module(builtin_module.clone())
+                .map_err(RuntimeError::Dependency)?;
+
+            if !vm.shared_state().is_module_initialized(&builtin_module) {
+                match vm.execute_entry_only(&builtin_module) {
+                    Ok(_) => {}
+                    Err(raya_engine::vm::VmError::RuntimeError(message))
+                        if message == "No main function" => {}
+                    Err(error) => return Err(RuntimeError::Vm(error)),
+                }
+                vm.shared_state().mark_module_initialized(&builtin_module);
+            }
+
+            for export in &builtin_module.exports {
+                let value = Self::materialize_export_value(vm, &builtin_module, export)?;
+                vm.shared_state().set_builtin_global(export.name.clone(), value);
+            }
+        }
+
+        Ok(())
+    }
+
     fn execute_with_deps_in_vm(
         &self,
         vm: &mut raya_engine::vm::Vm,
         module: &CompiledModule,
         deps: &[CompiledModule],
     ) -> Result<Value, RuntimeError> {
+        self.ensure_ambient_builtin_globals_seeded(vm)?;
         // Register dependency modules.
         for dep in deps {
             vm.shared_state()
@@ -854,19 +1138,104 @@ impl Runtime {
                 Self::materialize_constant_export(vm, &resolved)
             }
             SymbolType::Class => {
-                let class_id = vm.shared_state().resolve_class_id(module, export.index);
+                let class_name = module
+                    .classes
+                    .get(export.index)
+                    .map(|class_def| class_def.name.clone())
+                    .unwrap_or_else(|| export.name.clone());
+
+                let class_id = {
+                    let rebased = vm
+                        .shared_state()
+                        .resolve_nominal_type_id(module, export.index)
+                        .ok_or_else(|| RuntimeError::Dependency(
+                            format!(
+                                "invalid module-local nominal type id {} for export '{}'",
+                                export.index, export.name
+                            )
+                        ))?;
+                    let classes = vm.shared_state().classes.read();
+                    let rebased_ok = classes.get_class(rebased).is_some_and(|class| {
+                        class.name == class_name
+                            && class.module.as_ref().is_some_and(|class_module| {
+                                class_module.checksum == module.checksum
+                            })
+                    });
+                    if rebased_ok {
+                        rebased
+                    } else {
+                        classes
+                            .iter()
+                            .find_map(|(id, class)| {
+                                (class.name == class_name
+                                    && class.module.as_ref().is_some_and(|class_module| {
+                                        class_module.checksum == module.checksum
+                                    }))
+                                .then_some(id)
+                            })
+                            .ok_or_else(|| {
+                                RuntimeError::Dependency(format!(
+                                    "Imported class symbol '{}' from '{}' could not be resolved to a registered runtime class (export index {})",
+                                    export.name, module.metadata.name, export.index
+                                ))
+                            })?
+                    }
+                };
+
                 if class_id > u32::MAX as usize {
                     return Err(RuntimeError::Dependency(format!(
                         "Imported class symbol '{}' from '{}' has class ID {} outside u32 range",
                         export.name, module.metadata.name, class_id
                     )));
                 }
-                let handle = TypeHandle {
-                    nominal_type_id: class_id as u32,
-                    shape_id: export.type_signature.as_deref().map(signature_hash),
+                let shape_id = export.type_signature.as_deref().map(signature_hash);
+                let layout_id = {
+                    let classes = vm.shared_state().classes.read();
+                    classes
+                        .get_class(class_id)
+                        .map(|class| class.layout_id)
+                        .ok_or_else(|| {
+                            RuntimeError::Dependency(format!(
+                                "class '{}' missing runtime layout id",
+                                class_name
+                            ))
+                        })?
                 };
-                let gc_ptr = vm.shared_state().gc.lock().allocate(handle);
-                Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
+                let handle_id =
+                    vm.shared_state()
+                        .register_type_handle(class_id as u32, layout_id, shape_id);
+                let handle = TypeHandle {
+                    handle_id,
+                    shape_id,
+                };
+                let handle_gc = vm.shared_state().gc.lock().allocate(handle);
+                let handle_value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(handle_gc.as_ptr()).unwrap()) };
+
+                // Class imports hydrate as class objects carrying:
+                // - hidden constructor handle for `new ImportedClass(...)`
+                // - static methods as callable closures
+                let mut class_object = DynObject::new();
+                class_object.set(IMPORTED_CLASS_TYPE_HANDLE_KEY.to_string(), handle_value);
+
+                let static_prefix = format!("{}::static::", class_name);
+                for (function_id, function) in module.functions.iter().enumerate() {
+                    let Some(method_name) = function.name.strip_prefix(&static_prefix) else {
+                        continue;
+                    };
+                    if method_name.is_empty() {
+                        continue;
+                    }
+                    let closure = Closure::with_module(function_id, Vec::new(), module.clone());
+                    let closure_gc = vm.shared_state().gc.lock().allocate(closure);
+                    let closure_value = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(closure_gc.as_ptr()).unwrap())
+                    };
+                    class_object.set(method_name.to_string(), closure_value);
+                }
+
+                let class_gc = vm.shared_state().gc.lock().allocate(class_object);
+                Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(class_gc.as_ptr()).unwrap()) })
             }
         }
     }
@@ -971,6 +1340,7 @@ impl Runtime {
 
         let JSView::Struct {
             ptr,
+            layout_id,
             nominal_type_id,
         } = raya_engine::vm::json::js_classify(value)
         else {
@@ -978,18 +1348,15 @@ impl Runtime {
         };
 
         let source = unsafe { &*ptr };
-        let provider_layout = if source.layout_id == 0 {
-            if let Some(class_id) = nominal_type_id {
-                class_id as u32
-            } else {
-                Self::dynamic_layout_id_from_member_names(&actual_layout)
-            }
-        } else {
-            source.layout_id
-        };
+        let provider_layout = source.layout_id();
+        if provider_layout == 0 {
+            return Err(RuntimeError::Vm(raya_engine::vm::VmError::RuntimeError(
+                "structural export value is missing a physical layout id".to_string(),
+            )));
+        }
         let slot_map = if let Some(class_id) = nominal_type_id {
             let class_metadata = vm.shared_state().class_metadata.read();
-            if let Some(meta) = class_metadata.get(class_id) {
+            if let Some(meta) = class_metadata.get(class_id as usize) {
                 expected_layout
                     .iter()
                     .map(|name| {
@@ -1036,7 +1403,7 @@ impl Runtime {
         vm.shared_state().register_structural_slot_view(
             consumer_module,
             usize::MAX,
-            source.object_id,
+            source.object_id(),
             provider_layout,
             required_shape,
             slot_map,
@@ -1204,17 +1571,11 @@ impl Runtime {
     }
 
     fn dynamic_layout_id_from_member_names(names: &[String]) -> u32 {
-        let payload = format!("layout{{{}}}", names.join(","));
-        let raw = raya_engine::parser::types::signature_hash(&payload) as u32;
-        raw.max(1)
+        raya_engine::vm::object::layout_id_from_ordered_names(names)
     }
 
     fn shape_id_for_member_names(names: &[String]) -> u64 {
-        let mut canonical = names.to_vec();
-        canonical.sort_unstable();
-        canonical.dedup();
-        let payload = format!("shape{{{}}}", canonical.join(","));
-        raya_engine::parser::types::signature_hash(&payload)
+        raya_engine::vm::object::shape_id_from_member_names(names)
     }
 
     fn maybe_enable_jit(&self, vm: &mut raya_engine::vm::Vm) {
@@ -1516,20 +1877,32 @@ impl Runtime {
             )));
         }
 
-        if exported.type_symbol_id != symbol.type_symbol_id {
-            let actual_pretty = exported
-                .type_signature
-                .as_deref()
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("hash:{:016x}", exported.type_symbol_id));
+        if symbol.type_symbol_id == 0 || exported.type_symbol_id == 0 {
             return Err(RuntimeError::Dependency(format!(
-                "Late-link type signature mismatch for '{}': expected {:#x} ({}), got {:#x} ({})",
-                symbol.symbol,
-                symbol.type_symbol_id,
-                symbol.type_signature,
-                exported.type_symbol_id,
-                actual_pretty
+                "Late-link symbol '{}' is missing structural type signature hash (expected={:#x}, actual={:#x})",
+                symbol.symbol, symbol.type_symbol_id, exported.type_symbol_id
             )));
+        }
+
+        if exported.type_symbol_id != symbol.type_symbol_id {
+            let assignable = exported.type_signature.as_deref().is_some_and(|actual| {
+                structural_signature_is_assignable(&symbol.type_signature, actual)
+            });
+            if !assignable {
+                let actual_pretty = exported
+                    .type_signature
+                    .as_deref()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("hash:{:016x}", exported.type_symbol_id));
+                return Err(RuntimeError::Dependency(format!(
+                    "Late-link type signature mismatch for '{}': expected {:#x} ({}), got {:#x} ({})",
+                    symbol.symbol,
+                    symbol.type_symbol_id,
+                    symbol.type_signature,
+                    exported.type_symbol_id,
+                    actual_pretty
+                )));
+            }
         }
 
         if let Some(template) = &symbol.specialization_template {

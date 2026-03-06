@@ -54,6 +54,8 @@ pub enum Operands {
     Spawn { func_index: u16, arg_count: u16 },
     /// ArrayLiteral: type_index (u32) + length (u32)
     ArrayLiteral { type_index: u32, length: u32 },
+    /// Structural shape field op: shape_id (u64) + slot (u16)
+    ShapeSlot { shape_id: u64, slot: u16 },
 }
 
 #[derive(Clone, Copy)]
@@ -351,6 +353,13 @@ fn decode_operands(
                 arg_count,
             })
         }
+
+        // u64 + u16 — structural shape field operations
+        Opcode::LoadFieldShape | Opcode::StoreFieldShape | Opcode::OptionalFieldShape => {
+            let shape_id = read_u64(code, pos, offset)?;
+            let slot = read_u16(code, pos, offset)?;
+            Ok(Operands::ShapeSlot { shape_id, slot })
+        }
     }
 }
 
@@ -378,6 +387,24 @@ fn read_u32(code: &[u8], pos: &mut usize, offset: usize) -> Result<u32, DecodeEr
     }
     let v = u32::from_le_bytes([code[*pos], code[*pos + 1], code[*pos + 2], code[*pos + 3]]);
     *pos += 4;
+    Ok(v)
+}
+
+fn read_u64(code: &[u8], pos: &mut usize, offset: usize) -> Result<u64, DecodeError> {
+    if *pos + 8 > code.len() {
+        return Err(DecodeError::UnexpectedEnd(offset));
+    }
+    let v = u64::from_le_bytes([
+        code[*pos],
+        code[*pos + 1],
+        code[*pos + 2],
+        code[*pos + 3],
+        code[*pos + 4],
+        code[*pos + 5],
+        code[*pos + 6],
+        code[*pos + 7],
+    ]);
+    *pos += 8;
     Ok(v)
 }
 

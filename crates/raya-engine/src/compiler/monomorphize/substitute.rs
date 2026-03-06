@@ -187,12 +187,36 @@ impl TypeSubstitution {
                 field: *field,
                 optional: *optional,
             },
+            IrInstr::LoadFieldShape {
+                dest,
+                object,
+                shape_id,
+                field,
+                optional,
+            } => IrInstr::LoadFieldShape {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                shape_id: *shape_id,
+                field: *field,
+                optional: *optional,
+            },
             IrInstr::StoreField {
                 object,
                 field,
                 value,
             } => IrInstr::StoreField {
                 object: self.apply_register(object),
+                field: *field,
+                value: self.apply_register(value),
+            },
+            IrInstr::StoreFieldShape {
+                object,
+                shape_id,
+                field,
+                value,
+            } => IrInstr::StoreFieldShape {
+                object: self.apply_register(object),
+                shape_id: *shape_id,
                 field: *field,
                 value: self.apply_register(value),
             },
@@ -257,11 +281,11 @@ impl TypeSubstitution {
             },
             IrInstr::ObjectLiteral {
                 dest,
-                class,
+                type_index,
                 fields,
             } => IrInstr::ObjectLiteral {
                 dest: self.apply_register(dest),
-                class: *class,
+                type_index: *type_index,
                 fields: fields
                     .iter()
                     .map(|(idx, val)| (*idx, self.apply_register(val)))

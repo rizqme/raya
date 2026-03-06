@@ -529,11 +529,8 @@ fn test_e2e_load_module_with_class() {
 
     // Verify the class was registered
     let classes = vm.shared_state().classes.read();
-    let point = classes.get_class(0);
-    assert!(
-        point.is_some(),
-        "Class 'Point' should be registered at index 0"
-    );
+    let point = classes.get_class_by_name("Point");
+    assert!(point.is_some(), "Class 'Point' should be registered");
     assert_eq!(point.unwrap().name, "Point");
     assert_eq!(point.unwrap().field_count, 2);
 }
@@ -599,13 +596,17 @@ fn test_e2e_load_module_with_class_hierarchy() {
     let classes = vm.shared_state().classes.read();
 
     // Base class
-    let base = classes.get_class(0).expect("Base class should exist");
+    let base = classes
+        .get_class_by_name("Base")
+        .expect("Base class should exist");
     assert_eq!(base.name, "Base");
     assert_eq!(base.vtable.methods.len(), 1);
     assert_eq!(base.vtable.methods[0], 0); // points to function 0
 
     // Child class
-    let child = classes.get_class(1).expect("Child class should exist");
+    let child = classes
+        .get_class_by_name("Child")
+        .expect("Child class should exist");
     assert_eq!(child.name, "Child");
     assert_eq!(child.vtable.methods.len(), 1);
     assert_eq!(child.vtable.methods[0], 1); // overridden to function 1

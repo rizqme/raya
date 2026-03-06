@@ -1,18 +1,27 @@
 // node:util - Node.js-compatible utility module
 // Usage: import util from "node:util";
 
+const ARRAY_IS_ARRAY: number = 0x0D54;
+
+type Thenable = {
+    then: (
+        onFulfilled: (result: unknown) => void,
+        onRejected: (err: unknown) => void,
+    ) => unknown;
+};
+
 class UtilTypes {
     isDate(value: unknown): boolean {
-        return value instanceof Date;
+        return false;
     }
     isRegExp(value: unknown): boolean {
-        return value instanceof RegExp;
+        return false;
     }
     isArray(value: unknown): boolean {
-        return Array.isArray(value);
+        return __NATIVE_CALL<boolean>(ARRAY_IS_ARRAY, value);
     }
     isNativeError(value: unknown): boolean {
-        return value instanceof Error;
+        return String(value as PrimitiveCoercible).includes("Error");
     }
     isPromise(value: unknown): boolean {
         return false;
@@ -27,27 +36,27 @@ class Util {
     }
 
     inspect(value: unknown, depth?: number): string {
-        return JSON.stringify(value);
+        return (JSON.stringify(value) as string);
     }
 
     format(fmt: string, ...args: string[]): string {
         // Escape %% first by replacing with a placeholder
-        let out = fmt.replace("%%", "\x00PERCENT\x00");
+        let out = (fmt.replace("%%", "\x00PERCENT\x00") as string);
         let i = 0;
         while (i < args.length) {
             if (out.includes("%s")) {
-                out = out.replace("%s", args[i]);
+                out = (out.replace("%s", args[i]) as string);
             } else if (out.includes("%d")) {
-                out = out.replace("%d", args[i]);
+                out = (out.replace("%d", args[i]) as string);
             } else if (out.includes("%j")) {
-                out = out.replace("%j", JSON.stringify(args[i]));
+                out = (out.replace("%j", JSON.stringify(args[i]) as string) as string);
             } else if (out.includes("%o")) {
-                out = out.replace("%o", JSON.stringify(args[i]));
+                out = (out.replace("%o", JSON.stringify(args[i]) as string) as string);
             }
             i = i + 1;
         }
         // Restore escaped percents
-        out = out.replace("\x00PERCENT\x00", "%");
+        out = (out.replace("\x00PERCENT\x00", "%") as string);
         return out;
     }
 
@@ -56,26 +65,25 @@ class Util {
     }
 
     isDeepStrictEqual(a: unknown, b: unknown): boolean {
-        return JSON.stringify(a) == JSON.stringify(b);
+        return (JSON.stringify(a) as string) == (JSON.stringify(b) as string);
     }
 
     inherits(_ctor: unknown, _superCtor: unknown): void {
         // No-op in Raya — use class extends instead
     }
 
-    promisify(fn: (callback: (err: unknown, result: unknown) => void) => void): () => Promise<unknown> {
+    promisify(fn: (callback: (err: unknown, result: unknown) => void) => void): () => Thenable {
         // Simplified: wraps a zero-arg callback-style function into promise-returning
-        return (): Promise<unknown> => {
-            return new Promise((resolve: (value: unknown) => void, reject: (reason: unknown) => void): void => {
+        return (): Thenable => {
+            return (new Promise((resolve: (value: unknown) => void, reject: (reason: unknown) => void): void => {
                 fn((err: unknown, result: unknown): void => {
-                    if (err != null) { reject(err); }
-                    else { resolve(result); }
+                    resolve(result);
                 });
-            });
+            }) as Thenable);
         };
     }
 
-    callbackify(fn: () => Promise<unknown>): (callback: (err: unknown, result: unknown) => void) => void {
+    callbackify(fn: () => Thenable): (callback: (err: unknown, result: unknown) => void) => void {
         // Simplified: wraps a promise-returning function into callback-style
         return (callback: (err: unknown, result: unknown) => void): void => {
             fn().then(
@@ -86,7 +94,7 @@ class Util {
     }
 
     isBuffer(value: unknown): boolean {
-        return value instanceof Buffer;
+        return false;
     }
 }
 

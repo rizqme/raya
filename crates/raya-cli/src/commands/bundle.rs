@@ -371,6 +371,7 @@ mod aot_impl {
             | Opcode::DynHas
             | Opcode::LoadStatic
             | Opcode::StoreStatic => 4,
+            Opcode::LoadFieldShape | Opcode::StoreFieldShape | Opcode::OptionalFieldShape => 10,
             Opcode::ConstF64 | Opcode::ArrayLiteral | Opcode::Try => 8,
             Opcode::Call
             | Opcode::CallMethod

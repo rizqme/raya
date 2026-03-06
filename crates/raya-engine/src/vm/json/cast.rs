@@ -69,6 +69,8 @@ pub enum TypeKind {
     Interface {
         /// Class ID for runtime type tagging
         class_id: usize,
+        /// Physical layout ID for typed object allocation.
+        layout_id: crate::vm::object::LayoutId,
         /// Field names and their type schema IDs
         fields: Vec<(String, usize)>,
     },
@@ -182,9 +184,11 @@ fn validate_cast_impl(
 
         TypeKind::String => validate_string(json, gc),
 
-        TypeKind::Interface { class_id, fields } => {
-            validate_interface(json, *class_id, fields, schema_registry, gc, depth)
-        }
+        TypeKind::Interface {
+            class_id,
+            layout_id,
+            fields,
+        } => validate_interface(json, *class_id, *layout_id, fields, schema_registry, gc, depth),
 
         TypeKind::Array { element_type_id } => {
             validate_array(json, *element_type_id, schema_registry, gc, depth)
@@ -258,6 +262,7 @@ fn validate_string(json: &JsonValue, _gc: &mut GarbageCollector) -> VmResult<Val
 fn validate_interface(
     json: &JsonValue,
     class_id: usize,
+    layout_id: crate::vm::object::LayoutId,
     fields: &[(String, usize)],
     schema_registry: &TypeSchemaRegistry,
     gc: &mut GarbageCollector,
@@ -293,7 +298,7 @@ fn validate_interface(
     }
 
     // Create typed object
-    let mut obj = Object::new(class_id, field_values.len());
+    let mut obj = Object::new_nominal(layout_id, class_id as u32, field_values.len());
     obj.fields = field_values;
 
     let obj_ptr = gc.allocate(obj);

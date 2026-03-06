@@ -187,14 +187,6 @@ pub struct TypeChecker<'a> {
     /// (e.g. arrow functions without explicit return annotations).
     return_type_collector: Vec<Vec<TypeId>>,
 
-    /// If set, class declarations whose span starts before this byte offset
-    /// will skip full member body checking and only sync scopes.
-    /// Used by runtime compile pipeline to trust prepended builtin/stdlib sources.
-    skip_class_bodies_before: Option<usize>,
-    /// If set, suppress checker errors whose span ends before this byte offset.
-    /// This is used to ignore diagnostics from trusted prepended prelude sources
-    /// while still collecting full expression type information.
-    suppress_errors_before: Option<usize>,
     /// Type-system behavior mode.
     mode: TypeSystemMode,
     /// Effective checker policy.
@@ -239,8 +231,6 @@ impl<'a> TypeChecker<'a> {
             in_constructor: false,
             arrow_depth: 0,
             warnings: Vec::new(),
-            skip_class_bodies_before: None,
-            suppress_errors_before: None,
             return_type_collector: Vec::new(),
             mode: TypeSystemMode::Raya,
             policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
@@ -709,20 +699,6 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Skip full class member body checking for classes before `offset`.
-    /// This keeps checker strict for user code while avoiding false positives
-    /// from prepended trusted prelude sources.
-    pub fn with_skip_class_bodies_before(mut self, offset: usize) -> Self {
-        self.skip_class_bodies_before = Some(offset);
-        self
-    }
-
-    /// Suppress checker errors for spans fully before `offset`.
-    pub fn with_suppress_errors_before(mut self, offset: usize) -> Self {
-        self.suppress_errors_before = Some(offset);
-        self
-    }
-
     /// Resolve a parser Symbol to a String
     #[inline]
     fn resolve(&self, sym: ParserSymbol) -> String {
@@ -765,10 +741,6 @@ impl<'a> TypeChecker<'a> {
             self.check_stmt(stmt);
         }
         self.exit_scope();
-
-        if let Some(offset) = self.suppress_errors_before {
-            self.errors.retain(|e| e.span().end > offset);
-        }
 
         // Collect unused variable warnings
         self.collect_unused_warnings();
@@ -1104,8 +1076,8 @@ impl<'a> TypeChecker<'a> {
             .symbols
             .resolve_from_scope(&func_name, self.current_scope)
             .and_then(|symbol| {
-                // In prelude shadowing mode, multiple same-name function declarations can exist.
-                // Only trust symbol-table function type when this declaration is the active symbol.
+                // Duplicate-tolerant helper builds can admit multiple same-name declarations.
+                // Only trust the symbol-table function type when this declaration is the active symbol.
                 if symbol.span == func.name.span {
                     self.type_ctx.get(symbol.ty).and_then(|ty| match ty {
                         crate::parser::types::Type::Function(func_ty) => Some(func_ty.clone()),
@@ -1366,16 +1338,6 @@ impl<'a> TypeChecker<'a> {
             .resolve_from_scope(&class_name, self.current_scope)
         {
             self.current_class_type = Some(symbol.ty);
-        }
-
-        // Trusted prelude class: keep scope IDs in sync but skip deep body checks.
-        if self
-            .skip_class_bodies_before
-            .is_some_and(|offset| class.span.start < offset)
-        {
-            self.current_class_type = prev_class_type;
-            self.sync_class_scopes(class);
-            return;
         }
 
         // Enter class scope (mirrors binder's push_scope for class)
@@ -4362,7 +4324,7 @@ impl<'a> TypeChecker<'a> {
 
                     return symbol.ty;
                 } else if self.is_constructible_var(&name) {
-                    // Support class aliases (e.g., const B = A; new B()) used by std prelude imports.
+                    // Support class aliases (e.g., const B = A; new B()) for imported or helper-bound constructors.
                     for arg in &new_expr.arguments {
                         self.check_expr(arg);
                     }
@@ -4920,7 +4882,13 @@ impl<'a> TypeChecker<'a> {
         };
         let obj_type = match obj_type {
             Some(crate::parser::types::Type::Reference(type_ref)) => {
-                if let Some(named_ty) = self.type_ctx.lookup_named_type(&type_ref.name) {
+                // Resolve through symbols first (scope-aware shadowing), then named types.
+                let resolved_named_ty = self
+                    .symbols
+                    .resolve_from_scope(&type_ref.name, self.current_scope)
+                    .map(|symbol| symbol.ty)
+                    .or_else(|| self.type_ctx.lookup_named_type(&type_ref.name));
+                if let Some(named_ty) = resolved_named_ty {
                     match self.type_ctx.get(named_ty).cloned() {
                         Some(crate::parser::types::Type::Class(class_ty))
                             if type_ref
@@ -5542,6 +5510,19 @@ impl<'a> TypeChecker<'a> {
 
         self.type_ctx
             .intern(crate::parser::types::Type::Class(instantiated))
+    }
+
+    fn instantiate_generic_type_alias(
+        &mut self,
+        template_ty: TypeId,
+        param_names: &[String],
+        type_args: &[TypeId],
+    ) -> TypeId {
+        let mut gen_ctx = GenericContext::new(self.type_ctx);
+        for (param_name, &arg_ty) in param_names.iter().zip(type_args.iter()) {
+            gen_ctx.add_substitution(param_name.clone(), arg_ty);
+        }
+        gen_ctx.apply_substitution(template_ty).unwrap_or(template_ty)
     }
 
     fn lookup_class_member(
@@ -6940,13 +6921,38 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
-                    // If this is a generic class with type arguments, instantiate it
                     if let Some(ref type_args) = type_ref.type_args {
                         if !type_args.is_empty() {
                             let resolved_args: Vec<TypeId> = type_args
                                 .iter()
                                 .map(|arg| self.resolve_type_annotation(arg))
                                 .collect();
+
+                            if symbol.kind == SymbolKind::TypeAlias {
+                                if let Some(param_names) =
+                                    self.symbols.generic_type_alias_params(&name)
+                                {
+                                    if param_names.len() != resolved_args.len() {
+                                        self.errors.push(CheckError::InvalidTypeReferenceArity {
+                                            name: name.clone(),
+                                            expected: param_names.len(),
+                                            actual: resolved_args.len(),
+                                            span: type_ref.name.span,
+                                        });
+                                        return self.fallback_type(
+                                            type_ref.name.span,
+                                            FallbackReason::RecoverableUnsupportedExpr,
+                                            "type-reference-alias-arity",
+                                        );
+                                    }
+                                    return self.instantiate_generic_type_alias(
+                                        symbol.ty,
+                                        param_names,
+                                        &resolved_args,
+                                    );
+                                }
+                            }
+
                             if let Some(crate::parser::types::Type::Class(class)) =
                                 self.type_ctx.get(symbol.ty).cloned()
                             {

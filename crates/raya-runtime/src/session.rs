@@ -22,7 +22,7 @@ use raya_engine::vm::object::{
     Array, BoundMethod, Buffer, ChannelObject, Closure, DateObject, MapObject, RegExpObject,
     SetObject,
 };
-use raya_engine::vm::{Object, RayaString, Value, Vm};
+use raya_engine::vm::{Object, RayaString, Value, Vm, VmError};
 
 use crate::error::RuntimeError;
 use crate::{compile, vm_setup, RuntimeOptions};
@@ -52,7 +52,7 @@ impl Session {
 
     /// Evaluate code in this session. Declarations persist across calls.
     ///
-    /// Prior declarations are prepended to the code and the whole thing is
+    /// Prior declarations are combined with the new code and the whole thing is
     /// compiled and executed as a single module on a fresh VM.
     pub fn eval(&mut self, code: &str) -> Result<Value, RuntimeError> {
         // Build full source: accumulated declarations + new code
@@ -73,13 +73,23 @@ impl Session {
             self.options.ts_options.as_ref(),
         )?;
 
+        let trimmed = code.trim();
         let mut vm = vm_setup::create_vm(&self.options);
         // REPL/session should execute only the compiler entry main and avoid
         // implicit invocation of user-defined `main`.
-        let result = vm.execute_entry_only(&module)?;
+        let result = match vm.execute_entry_only(&module) {
+            Ok(value) => value,
+            Err(VmError::RuntimeError(message))
+                if message == "No main function" && is_declaration(trimmed) =>
+            {
+                // Declaration-only cells are valid session updates even when they
+                // do not produce an entry function body.
+                Value::null()
+            }
+            Err(error) => return Err(RuntimeError::Vm(error)),
+        };
 
-        // If successful and this is a declaration, accumulate it
-        let trimmed = code.trim();
+        // If successful and this is a declaration, accumulate it.
         if is_declaration(trimmed) {
             self.declarations.push(code.to_string());
         }

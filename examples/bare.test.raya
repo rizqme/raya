@@ -1,2 +1,0 @@
-// Bare test - no test calls at all
-let x = 1 + 2;

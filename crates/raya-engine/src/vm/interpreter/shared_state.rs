@@ -37,10 +37,10 @@ pub struct ModuleRuntimeLayout {
     pub global_base: usize,
     /// Number of module-local global slots reserved.
     pub global_len: usize,
-    /// Module-local class IDs are rebased by this absolute base.
-    pub class_base: usize,
-    /// Number of classes registered from this module.
-    pub class_len: usize,
+    /// Module-local nominal type IDs are rebased by this absolute base.
+    pub nominal_type_base: usize,
+    /// Number of nominal types registered from this module.
+    pub nominal_type_len: usize,
     /// Resolved native function dispatch table for this module.
     pub resolved_natives: ResolvedNatives,
     /// Whether module-level init has been executed in this VM.
@@ -58,10 +58,145 @@ pub enum StructuralSlotBinding {
     Missing,
 }
 
+/// Cached structural adapter from a provider layout to a required shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShapeAdapter {
+    pub provider_layout: LayoutId,
+    pub required_shape: ShapeId,
+    pub field_map: Vec<Option<usize>>,
+    pub method_map: Vec<Option<usize>>,
+    pub epoch: u32,
+}
+
+impl ShapeAdapter {
+    pub fn from_slot_map(
+        provider_layout: LayoutId,
+        required_shape: ShapeId,
+        slot_map: &[StructuralSlotBinding],
+    ) -> Self {
+        let mut field_map = Vec::with_capacity(slot_map.len());
+        let mut method_map = Vec::with_capacity(slot_map.len());
+        for binding in slot_map {
+            match binding {
+                StructuralSlotBinding::Field(slot) => {
+                    field_map.push(Some(*slot));
+                    method_map.push(None);
+                }
+                StructuralSlotBinding::Method(slot) => {
+                    field_map.push(None);
+                    method_map.push(Some(*slot));
+                }
+                StructuralSlotBinding::Missing => {
+                    field_map.push(None);
+                    method_map.push(None);
+                }
+            }
+        }
+        Self {
+            provider_layout,
+            required_shape,
+            field_map,
+            method_map,
+            epoch: 0,
+        }
+    }
+
+    pub fn binding_for_slot(&self, expected_slot: usize) -> StructuralSlotBinding {
+        if let Some(Some(slot)) = self.field_map.get(expected_slot) {
+            return StructuralSlotBinding::Field(*slot);
+        }
+        if let Some(Some(slot)) = self.method_map.get(expected_slot) {
+            return StructuralSlotBinding::Method(*slot);
+        }
+        StructuralSlotBinding::Missing
+    }
+
+    pub fn len(&self) -> usize {
+        self.field_map.len().max(self.method_map.len())
+    }
+
+    pub fn is_identity_field_projection(&self) -> bool {
+        self.field_map
+            .iter()
+            .enumerate()
+            .all(|(expected, binding)| binding == &Some(expected))
+            && self.method_map.iter().all(|binding| binding.is_none())
+    }
+}
+
 /// Stable layout identity used by structural adapter cache.
 pub type LayoutId = crate::vm::object::LayoutId;
 /// Stable structural shape identity.
 pub type ShapeId = crate::vm::object::ShapeId;
+/// Stable runtime type-handle identity.
+pub type TypeHandleId = crate::vm::object::TypeHandleId;
+/// Stable nominal runtime type identity.
+pub type NominalTypeId = crate::vm::object::NominalTypeId;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TypeHandleKey {
+    nominal_type_id: NominalTypeId,
+    layout_id: LayoutId,
+    shape_id: Option<ShapeId>,
+}
+
+/// Runtime-owned entry for imported/exported constructor handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TypeHandleEntry {
+    pub handle_id: TypeHandleId,
+    pub nominal_type_id: NominalTypeId,
+    pub layout_id: LayoutId,
+    pub shape_id: Option<ShapeId>,
+}
+
+#[derive(Debug, Default)]
+pub struct RuntimeTypeHandleRegistry {
+    next_id: TypeHandleId,
+    entries: FxHashMap<TypeHandleId, TypeHandleEntry>,
+    reverse: FxHashMap<TypeHandleKey, TypeHandleId>,
+}
+
+impl RuntimeTypeHandleRegistry {
+    pub fn new() -> Self {
+        Self {
+            next_id: 1,
+            entries: FxHashMap::default(),
+            reverse: FxHashMap::default(),
+        }
+    }
+
+    pub fn register(
+        &mut self,
+        nominal_type_id: NominalTypeId,
+        layout_id: LayoutId,
+        shape_id: Option<ShapeId>,
+    ) -> TypeHandleId {
+        let key = TypeHandleKey {
+            nominal_type_id,
+            layout_id,
+            shape_id,
+        };
+        if let Some(&existing) = self.reverse.get(&key) {
+            return existing;
+        }
+
+        let handle_id = self.next_id.max(1);
+        self.next_id = self.next_id.saturating_add(1).max(1);
+        let entry = TypeHandleEntry {
+            handle_id,
+            nominal_type_id,
+            layout_id,
+            shape_id,
+        };
+        self.entries.insert(handle_id, entry);
+        self.reverse.insert(key, handle_id);
+        handle_id
+    }
+
+    pub fn get(&self, handle_id: TypeHandleId) -> Option<TypeHandleEntry> {
+        self.entries.get(&handle_id).copied()
+    }
+}
 
 /// Structural adapter cache key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -142,6 +277,10 @@ pub struct SharedVmState {
     /// Global variables by index (for static fields)
     pub globals_by_index: RwLock<Vec<Value>>,
 
+    /// Named ambient builtin globals stored as roots in `globals_by_index`.
+    /// Maps builtin name -> global slot index.
+    pub builtin_global_slots: RwLock<FxHashMap<String, usize>>,
+
     /// Safepoint coordinator
     pub safepoint: Arc<SafepointCoordinator>,
 
@@ -191,15 +330,20 @@ pub struct SharedVmState {
     pub structural_slot_views: RwLock<FxHashMap<([u8; 32], usize, u64), StructuralViewHandle>>,
 
     /// Shared adapter cache keyed by provider layout + required structural shape.
-    /// Value: expected-slot -> provider binding.
+    /// Value: cached adapter with split field/method maps.
     pub structural_shape_adapters:
-        RwLock<FxHashMap<StructuralAdapterKey, Arc<Vec<StructuralSlotBinding>>>>,
+        RwLock<FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>>,
 
-    /// Structural object shapes keyed by object_id.
-    /// Stores canonical slot names for dynamic object-literal carriers
-    /// (objects without nominal type identity).
-    /// so expected structural views can be remapped by name across call boundaries.
-    pub structural_object_shapes: RwLock<FxHashMap<u64, Vec<String>>>,
+    /// Canonical member names keyed by structural shape id.
+    pub structural_shape_names: RwLock<FxHashMap<ShapeId, Vec<String>>>,
+
+    /// Structural layout shapes keyed by physical layout ID.
+    /// Stores canonical slot names for structural object carriers so expected
+    /// structural views can be remapped by name across call boundaries.
+    pub structural_layout_shapes: RwLock<FxHashMap<LayoutId, Vec<String>>>,
+
+    /// Runtime-owned constructor/type handles used for imported/exported nominal types.
+    pub type_handles: RwLock<RuntimeTypeHandleRegistry>,
 
     /// Debug state for debugger coordination (None = no debugger attached)
     pub debug_state: Mutex<Option<Arc<super::debug_state::DebugState>>>,
@@ -263,6 +407,7 @@ impl SharedVmState {
             classes: RwLock::new(ClassRegistry::new()),
             globals: RwLock::new(FxHashMap::default()),
             globals_by_index: RwLock::new(Vec::new()),
+            builtin_global_slots: RwLock::new(FxHashMap::default()),
             safepoint,
             tasks,
             promise_microtasks: Mutex::new(std::collections::VecDeque::new()),
@@ -279,7 +424,9 @@ impl SharedVmState {
             module_layouts: RwLock::new(FxHashMap::default()),
             structural_slot_views: RwLock::new(FxHashMap::default()),
             structural_shape_adapters: RwLock::new(FxHashMap::default()),
-            structural_object_shapes: RwLock::new(FxHashMap::default()),
+            structural_shape_names: RwLock::new(FxHashMap::default()),
+            structural_layout_shapes: RwLock::new(FxHashMap::default()),
+            type_handles: RwLock::new(RuntimeTypeHandleRegistry::new()),
             debug_state: Mutex::new(None),
             max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,
             preempt_threshold_ms: crate::vm::defaults::DEFAULT_PREEMPT_THRESHOLD_MS,
@@ -370,13 +517,41 @@ impl SharedVmState {
             .unwrap_or(local_slot)
     }
 
-    /// Resolve the absolute class ID for a module-local class ID.
-    pub fn resolve_class_id(&self, module: &Module, local_class_id: usize) -> usize {
-        self.module_layouts
-            .read()
-            .get(&module.checksum)
-            .map(|layout| layout.class_base + local_class_id)
-            .unwrap_or(local_class_id)
+    /// Store or update an ambient builtin global value.
+    /// Values are rooted through `globals_by_index` to keep GC visibility.
+    pub fn set_builtin_global(&self, name: impl Into<String>, value: Value) {
+        let name = name.into();
+        let mut slots = self.builtin_global_slots.write();
+        let mut globals = self.globals_by_index.write();
+        if let Some(&slot) = slots.get(&name) {
+            if slot < globals.len() {
+                globals[slot] = value;
+            } else {
+                globals.resize(slot + 1, Value::null());
+                globals[slot] = value;
+            }
+            return;
+        }
+        let slot = globals.len();
+        globals.push(value);
+        slots.insert(name, slot);
+    }
+
+    /// Load an ambient builtin global value by name.
+    pub fn get_builtin_global(&self, name: &str) -> Option<Value> {
+        let slot = self.builtin_global_slots.read().get(name).copied()?;
+        self.globals_by_index.read().get(slot).copied()
+    }
+
+    /// Resolve the absolute nominal type ID for a module-local nominal type ID.
+    pub fn resolve_nominal_type_id(
+        &self,
+        module: &Module,
+        local_nominal_type_id: usize,
+    ) -> Option<usize> {
+        let layout = self.module_layouts.read().get(&module.checksum)?.clone();
+        (local_nominal_type_id < layout.nominal_type_len)
+            .then_some(layout.nominal_type_base + local_nominal_type_id)
     }
 
     /// Fetch resolved native table for a module checksum.
@@ -386,6 +561,23 @@ impl SharedVmState {
             .get(&module.checksum)
             .map(|layout| layout.resolved_natives.clone())
             .unwrap_or_else(ResolvedNatives::empty)
+    }
+
+    /// Register a runtime-owned constructor/type handle.
+    pub fn register_type_handle(
+        &self,
+        nominal_type_id: NominalTypeId,
+        layout_id: LayoutId,
+        shape_id: Option<ShapeId>,
+    ) -> TypeHandleId {
+        self.type_handles
+            .write()
+            .register(nominal_type_id, layout_id, shape_id)
+    }
+
+    /// Resolve a runtime-owned constructor/type handle.
+    pub fn resolve_type_handle(&self, handle_id: TypeHandleId) -> Option<TypeHandleEntry> {
+        self.type_handles.read().get(handle_id)
     }
 
     /// Register a structural slot view for object access in `module`.
@@ -406,16 +598,15 @@ impl SharedVmState {
             provider_layout,
             required_shape,
         };
-        let slot_map = Arc::new(slot_map);
+        let adapter = Arc::new(ShapeAdapter::from_slot_map(
+            provider_layout,
+            required_shape,
+            &slot_map,
+        ));
         self.structural_shape_adapters
             .write()
-            .insert(adapter_key, slot_map.clone());
-        let is_identity = slot_map
-            .iter()
-            .enumerate()
-            .all(|(expected, binding)| {
-                matches!(binding, StructuralSlotBinding::Field(mapped) if *mapped == expected)
-            });
+            .insert(adapter_key, adapter.clone());
+        let is_identity = adapter.is_identity_field_projection();
         let key = (module.checksum, consumer_func_id, object_id);
         if is_identity {
             self.structural_slot_views.write().remove(&key);
@@ -424,6 +615,25 @@ impl SharedVmState {
         self.structural_slot_views
             .write()
             .insert(key, StructuralViewHandle { adapter_key });
+    }
+
+    /// Register canonical member names for a structural shape id.
+    pub fn register_structural_shape_names(&self, shape_id: ShapeId, member_names: &[String]) {
+        if member_names.is_empty() {
+            return;
+        }
+        self.structural_shape_names
+            .write()
+            .entry(shape_id)
+            .or_insert_with(|| member_names.to_vec());
+    }
+
+    /// Resolve canonical member names for a structural shape id.
+    pub fn structural_shape_names(&self, shape_id: ShapeId) -> Option<Vec<String>> {
+        self.structural_shape_names
+            .read()
+            .get(&shape_id)
+            .cloned()
     }
 
     /// Mark a module as initialized.
@@ -443,20 +653,20 @@ impl SharedVmState {
     }
 
     /// Register classes from a module
-    pub fn register_classes(&self, module: &Arc<Module>, class_base: usize) {
+    pub fn register_classes(&self, module: &Arc<Module>, nominal_type_base: usize) {
         let mut classes = self.classes.write();
         let mut class_metadata_registry = self.class_metadata.write();
         for (i, class_def) in module.classes.iter().enumerate() {
-            let global_class_id = class_base + i;
+            let global_class_id = nominal_type_base + i;
             let mut class = if let Some(parent_id) = class_def.parent_id {
                 let mut c = crate::vm::object::Class::with_parent(
                     global_class_id,
                     class_def.name.clone(),
                     class_def.field_count,
-                    class_base + parent_id as usize,
+                    nominal_type_base + parent_id as usize,
                 );
                 // Inherit parent vtable entries
-                if let Some(parent) = classes.get_class(class_base + parent_id as usize) {
+                if let Some(parent) = classes.get_class(nominal_type_base + parent_id as usize) {
                     for &method_id in &parent.vtable.methods {
                         c.add_method(method_id);
                     }
@@ -571,8 +781,8 @@ impl SharedVmState {
             }
             base
         };
-        let class_base = self.classes.read().next_class_id();
-        let class_len = module.classes.len();
+        let nominal_type_base = self.classes.read().next_class_id();
+        let nominal_type_len = module.classes.len();
         let resolved_natives = self.resolve_module_natives(&module)?;
 
         self.module_layouts.write().insert(
@@ -581,15 +791,15 @@ impl SharedVmState {
                 checksum: module.checksum,
                 global_base,
                 global_len,
-                class_base,
-                class_len,
+                nominal_type_base,
+                nominal_type_len,
                 resolved_natives: resolved_natives.clone(),
                 initialized: false,
             },
         );
 
         // Register classes from the module (rebased to global class IDs).
-        self.register_classes(&module, class_base);
+        self.register_classes(&module, nominal_type_base);
 
         Ok(())
     }
@@ -612,5 +822,77 @@ fn reflect_type_name_to_id(type_name: &str) -> u32 {
         "int" => 16,
         s if s.starts_with("type#") => s[5..].parse().unwrap_or(0),
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RuntimeTypeHandleRegistry, ShapeAdapter, ShapeId, StructuralSlotBinding};
+
+    #[test]
+    fn type_handle_registry_dedupes_equivalent_entries() {
+        let mut registry = RuntimeTypeHandleRegistry::new();
+        let shape_id: ShapeId = 0xDEADBEEF;
+        let first = registry.register(11, 11, Some(shape_id));
+        let second = registry.register(11, 11, Some(shape_id));
+
+        assert_eq!(first, second);
+        let entry = registry.get(first).expect("type handle entry");
+        assert_eq!(entry.nominal_type_id, 11);
+        assert_eq!(entry.layout_id, 11);
+        assert_eq!(entry.shape_id, Some(shape_id));
+    }
+
+    #[test]
+    fn type_handle_registry_distinguishes_shape_contracts() {
+        let mut registry = RuntimeTypeHandleRegistry::new();
+        let a = registry.register(7, 7, Some(1));
+        let b = registry.register(7, 7, Some(2));
+
+        assert_ne!(a, b);
+        assert_eq!(registry.get(a).map(|entry| entry.shape_id), Some(Some(1)));
+        assert_eq!(registry.get(b).map(|entry| entry.shape_id), Some(Some(2)));
+    }
+
+    #[test]
+    fn shape_adapter_splits_field_and_method_maps() {
+        let adapter = ShapeAdapter::from_slot_map(
+            11,
+            22,
+            &[
+                StructuralSlotBinding::Field(3),
+                StructuralSlotBinding::Method(5),
+                StructuralSlotBinding::Missing,
+            ],
+        );
+
+        assert_eq!(adapter.binding_for_slot(0), StructuralSlotBinding::Field(3));
+        assert_eq!(adapter.binding_for_slot(1), StructuralSlotBinding::Method(5));
+        assert_eq!(adapter.binding_for_slot(2), StructuralSlotBinding::Missing);
+        assert_eq!(adapter.len(), 3);
+        assert_eq!(adapter.epoch, 0);
+    }
+
+    #[test]
+    fn shape_adapter_detects_identity_projection() {
+        let adapter = ShapeAdapter::from_slot_map(
+            9,
+            10,
+            &[
+                StructuralSlotBinding::Field(0),
+                StructuralSlotBinding::Field(1),
+            ],
+        );
+        assert!(adapter.is_identity_field_projection());
+
+        let non_identity = ShapeAdapter::from_slot_map(
+            9,
+            10,
+            &[
+                StructuralSlotBinding::Field(1),
+                StructuralSlotBinding::Field(0),
+            ],
+        );
+        assert!(!non_identity.is_identity_field_projection());
     }
 }

@@ -222,6 +222,9 @@ pub struct Interpreter<'a> {
     /// Global variables by index
     pub(in crate::vm::interpreter) globals_by_index: &'a RwLock<Vec<Value>>,
 
+    /// Ambient builtin global slot mapping (name -> absolute global slot index).
+    pub(in crate::vm::interpreter) builtin_global_slots: &'a RwLock<FxHashMap<String, usize>>,
+
     /// Task registry (for spawn/await)
     pub(in crate::vm::interpreter) tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
 
@@ -240,10 +243,6 @@ pub struct Interpreter<'a> {
     #[allow(dead_code)]
     pub(in crate::vm::interpreter) native_handler: &'a Arc<dyn NativeHandler>,
 
-    /// Resolved native functions for ModuleNativeCall dispatch
-    pub(in crate::vm::interpreter) resolved_natives:
-        &'a RwLock<crate::vm::native_registry::ResolvedNatives>,
-
     /// Per-module runtime layouts (global slot base, class base, native table, init state).
     pub(in crate::vm::interpreter) module_layouts:
         &'a RwLock<FxHashMap<[u8; 32], crate::vm::interpreter::shared_state::ModuleRuntimeLayout>>,
@@ -259,13 +258,19 @@ pub struct Interpreter<'a> {
     pub(in crate::vm::interpreter) structural_shape_adapters: &'a RwLock<
         FxHashMap<
             crate::vm::interpreter::shared_state::StructuralAdapterKey,
-            Arc<Vec<crate::vm::interpreter::shared_state::StructuralSlotBinding>>,
+            Arc<crate::vm::interpreter::shared_state::ShapeAdapter>,
         >,
     >,
-    /// Canonical structural shapes for dynamic object-literal carriers
-    /// (objects without nominal type identity).
+    /// Canonical member names keyed by structural shape id.
+    pub(in crate::vm::interpreter) structural_shape_names:
+        &'a RwLock<FxHashMap<crate::vm::object::ShapeId, Vec<String>>>,
+    /// Canonical structural shapes for structural object layouts.
     pub(in crate::vm::interpreter) structural_object_shapes:
-        &'a RwLock<FxHashMap<u64, Vec<String>>>,
+        &'a RwLock<FxHashMap<crate::vm::object::LayoutId, Vec<String>>>,
+
+    /// Runtime-owned constructor/type handle registry for imported nominal types.
+    pub(in crate::vm::interpreter) type_handles:
+        &'a RwLock<crate::vm::interpreter::shared_state::RuntimeTypeHandleRegistry>,
 
     /// IO submission sender for NativeCallResult::Suspend (None in tests without reactor)
     pub(in crate::vm::interpreter) io_submit_tx:
@@ -338,16 +343,24 @@ impl<'a> Interpreter<'a> {
     }
 
     #[inline]
-    pub(in crate::vm::interpreter) fn resolve_class_id(
+    pub(in crate::vm::interpreter) fn resolve_nominal_type_id(
         &self,
         module: &Module,
-        local_class_id: usize,
-    ) -> usize {
+        local_nominal_type_id: usize,
+    ) -> Result<usize, VmError> {
         self.module_layouts
             .read()
             .get(&module.checksum)
-            .map(|layout| layout.class_base + local_class_id)
-            .unwrap_or(local_class_id)
+            .and_then(|layout| {
+                (local_nominal_type_id < layout.nominal_type_len)
+                    .then_some(layout.nominal_type_base + local_nominal_type_id)
+            })
+            .ok_or_else(|| {
+                VmError::RuntimeError(format!(
+                    "Invalid module-local nominal type id {} for module {}",
+                    local_nominal_type_id, module.metadata.name
+                ))
+            })
     }
 
     #[inline]
@@ -372,8 +385,8 @@ impl<'a> Interpreter<'a> {
         let debug_structural = std::env::var("RAYA_DEBUG_STRUCTURAL_VIEW").is_ok();
         let views = self.structural_slot_views.read();
         if let Some(handle) = views
-            .get(&(module.checksum, self.profiler_func_id, object.object_id))
-            .or_else(|| views.get(&(module.checksum, usize::MAX, object.object_id)))
+            .get(&(module.checksum, self.profiler_func_id, object.object_id()))
+            .or_else(|| views.get(&(module.checksum, usize::MAX, object.object_id())))
         {
             let adapters = self.structural_shape_adapters.read();
             let Some(slot_map) = adapters.get(&handle.adapter_key) else {
@@ -381,7 +394,7 @@ impl<'a> Interpreter<'a> {
                     eprintln!(
                         "[structural-view] remap stale-handle func={} obj={} layout={} shape={} expected_slot={}",
                         self.profiler_func_id,
-                        object.object_id,
+                        object.object_id(),
                         handle.adapter_key.provider_layout,
                         handle.adapter_key.required_shape,
                         expected_slot
@@ -393,26 +406,48 @@ impl<'a> Interpreter<'a> {
             };
             if debug_structural {
                 eprintln!(
-                    "[structural-view] remap hit func={} obj={} layout={} shape={} expected_slot={} map_len={}",
+                    "[structural-view] remap hit func={} obj={} layout={} shape={} expected_slot={} map_len={} epoch={}",
                     self.profiler_func_id,
-                    object.object_id,
+                    object.object_id(),
                     handle.adapter_key.provider_layout,
                     handle.adapter_key.required_shape,
                     expected_slot,
-                    slot_map.len()
+                    slot_map.len(),
+                    slot_map.epoch
                 );
             }
-            return slot_map.get(expected_slot).copied().unwrap_or(
-                crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(expected_slot),
-            );
+            return slot_map.binding_for_slot(expected_slot);
         }
         if debug_structural {
             eprintln!(
                 "[structural-view] remap miss func={} obj={} expected_slot={}",
-                self.profiler_func_id, object.object_id, expected_slot
+                self.profiler_func_id,
+                object.object_id(),
+                expected_slot
             );
         }
         crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(expected_slot)
+    }
+
+    #[inline]
+    pub(in crate::vm::interpreter) fn remap_shape_slot_binding(
+        &self,
+        object: &Object,
+        expected_shape: crate::vm::object::ShapeId,
+        expected_slot: usize,
+    ) -> crate::vm::interpreter::shared_state::StructuralSlotBinding {
+        let adapter_key = crate::vm::interpreter::shared_state::StructuralAdapterKey {
+            provider_layout: object.layout_id(),
+            required_shape: expected_shape,
+        };
+        if let Some(adapter) = self.structural_shape_adapters.read().get(&adapter_key).cloned() {
+            return adapter.binding_for_slot(expected_slot);
+        }
+        self.ensure_shape_adapter_for_object(object, expected_shape)
+            .map(|adapter| adapter.binding_for_slot(expected_slot))
+            .unwrap_or(crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(
+                expected_slot,
+            ))
     }
 
     #[inline]
@@ -513,12 +548,12 @@ impl<'a> Interpreter<'a> {
         mutex_registry: &'a MutexRegistry,
         safepoint: &'a SafepointCoordinator,
         globals_by_index: &'a RwLock<Vec<Value>>,
+        builtin_global_slots: &'a RwLock<FxHashMap<String, usize>>,
         tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
         injector: &'a Arc<Injector<Arc<Task>>>,
         metadata: &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
         class_metadata: &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
         native_handler: &'a Arc<dyn NativeHandler>,
-        resolved_natives: &'a RwLock<crate::vm::native_registry::ResolvedNatives>,
         module_layouts: &'a RwLock<
             FxHashMap<[u8; 32], crate::vm::interpreter::shared_state::ModuleRuntimeLayout>,
         >,
@@ -531,10 +566,16 @@ impl<'a> Interpreter<'a> {
         structural_shape_adapters: &'a RwLock<
             FxHashMap<
                 crate::vm::interpreter::shared_state::StructuralAdapterKey,
-                Arc<Vec<crate::vm::interpreter::shared_state::StructuralSlotBinding>>,
+                Arc<crate::vm::interpreter::shared_state::ShapeAdapter>,
             >,
         >,
-        structural_object_shapes: &'a RwLock<FxHashMap<u64, Vec<String>>>,
+        structural_shape_names:
+            &'a RwLock<FxHashMap<crate::vm::object::ShapeId, Vec<String>>>,
+        structural_object_shapes:
+            &'a RwLock<FxHashMap<crate::vm::object::LayoutId, Vec<String>>>,
+        type_handles: &'a RwLock<
+            crate::vm::interpreter::shared_state::RuntimeTypeHandleRegistry,
+        >,
         io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
         max_preemptions: u32,
         stack_pool: &'a crate::vm::scheduler::StackPool,
@@ -545,16 +586,18 @@ impl<'a> Interpreter<'a> {
             mutex_registry,
             safepoint,
             globals_by_index,
+            builtin_global_slots,
             tasks,
             injector,
             metadata,
             class_metadata,
             native_handler,
-            resolved_natives,
             module_layouts,
             structural_slot_views,
             structural_shape_adapters,
+            structural_shape_names,
             structural_object_shapes,
+            type_handles,
             io_submit_tx,
             max_preemptions,
             stack_pool,
@@ -953,6 +996,7 @@ impl<'a> Interpreter<'a> {
                     Opcode::Call
                         | Opcode::DynGet
                         | Opcode::LoadField
+                        | Opcode::LoadFieldShape
                         | Opcode::CallMethod
                         | Opcode::NativeCall
                 )
@@ -1542,8 +1586,11 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             Opcode::New
             | Opcode::LoadField
+            | Opcode::LoadFieldShape
             | Opcode::StoreField
+            | Opcode::StoreFieldShape
             | Opcode::OptionalField
+            | Opcode::OptionalFieldShape
             | Opcode::ObjectLiteral
             | Opcode::InitObject
             | Opcode::BindMethod => self.exec_object_ops(stack, ip, code, module, opcode),
@@ -1703,6 +1750,30 @@ impl<'a> Interpreter<'a> {
         }
         let value = u32::from_le_bytes([code[*ip], code[*ip + 1], code[*ip + 2], code[*ip + 3]]);
         *ip += 4;
+        Ok(value)
+    }
+
+    #[inline]
+    pub(in crate::vm::interpreter) fn read_u64(
+        code: &[u8],
+        ip: &mut usize,
+    ) -> Result<u64, VmError> {
+        if *ip + 7 >= code.len() {
+            return Err(VmError::RuntimeError(
+                "Unexpected end of bytecode".to_string(),
+            ));
+        }
+        let value = u64::from_le_bytes([
+            code[*ip],
+            code[*ip + 1],
+            code[*ip + 2],
+            code[*ip + 3],
+            code[*ip + 4],
+            code[*ip + 5],
+            code[*ip + 6],
+            code[*ip + 7],
+        ]);
+        *ip += 8;
         Ok(value)
     }
 

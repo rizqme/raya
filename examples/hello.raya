@@ -1,3 +1,0 @@
-import { Logger } from "std:logger";
-const log = new Logger("hello");
-log.info("Hello, world!");

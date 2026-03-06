@@ -286,8 +286,8 @@ mod tests {
     fn test_try_unwrap_proxy() {
         let mut gc = GarbageCollector::default();
 
-        let target = gc.allocate(Object::new(1, 2));
-        let handler = gc.allocate(Object::new(0, 4));
+        let target = gc.allocate(Object::new_synthetic_nominal(1, 2));
+        let handler = gc.allocate(Object::new_synthetic_structural(4));
 
         let target_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(target.as_ptr() as *mut Object).unwrap())
@@ -311,7 +311,7 @@ mod tests {
     fn test_is_proxy() {
         let mut gc = GarbageCollector::default();
 
-        let obj = gc.allocate(Object::new(1, 2));
+        let obj = gc.allocate(Object::new_synthetic_nominal(1, 2));
         let obj_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(obj.as_ptr() as *mut Object).unwrap())
         };
@@ -326,7 +326,7 @@ mod tests {
         assert!(!is_proxy(Value::i32(42)));
 
         // Actual proxy
-        let handler = gc.allocate(Object::new(0, 4));
+        let handler = gc.allocate(Object::new_synthetic_structural(4));
         let handler_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(handler.as_ptr() as *mut Object).unwrap())
         };
@@ -342,8 +342,8 @@ mod tests {
     fn test_unwrap_proxy_target() {
         let mut gc = GarbageCollector::default();
 
-        let target = gc.allocate(Object::new(42, 3));
-        let handler = gc.allocate(Object::new(0, 4));
+        let target = gc.allocate(Object::new_synthetic_nominal(42, 3));
+        let handler = gc.allocate(Object::new_synthetic_structural(4));
 
         let target_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(target.as_ptr() as *mut Object).unwrap())
@@ -372,7 +372,7 @@ mod tests {
         let mut gc = GarbageCollector::default();
 
         // Handler with no traps (all fields null)
-        let handler = gc.allocate(Object::new(0, 4));
+        let handler = gc.allocate(Object::new_synthetic_structural(4));
         let handler_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(handler.as_ptr() as *mut Object).unwrap())
         };

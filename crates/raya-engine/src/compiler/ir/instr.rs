@@ -174,9 +174,26 @@ pub enum IrInstr {
         optional: bool,
     },
 
+    /// Load a field or method through a structural shape contract.
+    LoadFieldShape {
+        dest: Register,
+        object: Register,
+        shape_id: u64,
+        field: u16,
+        optional: bool,
+    },
+
     /// Store object field: object.field = value
     StoreField {
         object: Register,
+        field: u16,
+        value: Register,
+    },
+
+    /// Store a field through a structural shape contract.
+    StoreFieldShape {
+        object: Register,
+        shape_id: u64,
         field: u16,
         value: Register,
     },
@@ -241,7 +258,7 @@ pub enum IrInstr {
     /// Object literal: dest = { field: value, ... }
     ObjectLiteral {
         dest: Register,
-        class: ClassId,
+        type_index: u32,
         fields: Vec<(u16, Register)>,
     },
 
@@ -398,6 +415,7 @@ impl IrInstr {
             | IrInstr::LoadArgLocal { dest, .. }
             | IrInstr::LoadGlobal { dest, .. }
             | IrInstr::LoadField { dest, .. }
+            | IrInstr::LoadFieldShape { dest, .. }
             | IrInstr::DynGetProp { dest, .. }
             | IrInstr::LoadElement { dest, .. }
             | IrInstr::NewObject { dest, .. }
@@ -433,6 +451,7 @@ impl IrInstr {
             IrInstr::StoreLocal { .. }
             | IrInstr::StoreGlobal { .. }
             | IrInstr::StoreField { .. }
+            | IrInstr::StoreFieldShape { .. }
             | IrInstr::DynSetProp { .. }
             | IrInstr::StoreElement { .. }
             | IrInstr::ArrayPush { .. }
@@ -464,6 +483,7 @@ impl IrInstr {
                 | IrInstr::PopToLocal { .. }
                 | IrInstr::StoreGlobal { .. }
                 | IrInstr::StoreField { .. }
+                | IrInstr::StoreFieldShape { .. }
                 | IrInstr::DynSetProp { .. }
                 | IrInstr::StoreElement { .. }
                 | IrInstr::ArrayPush { .. }

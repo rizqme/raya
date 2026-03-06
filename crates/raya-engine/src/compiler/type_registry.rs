@@ -257,6 +257,46 @@ impl TypeRegistry {
                     ("isCancelled", task::IS_CANCELLED),
                 ],
             ),
+            (
+                "Error",
+                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
+            ),
+            (
+                "TypeError",
+                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
+            ),
+            (
+                "RangeError",
+                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
+            ),
+            (
+                "ReferenceError",
+                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
+            ),
+            (
+                "SyntaxError",
+                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
+            ),
+            (
+                "URIError",
+                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
+            ),
+            (
+                "EvalError",
+                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
+            ),
+            (
+                "AggregateError",
+                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
+            ),
+            (
+                "ChannelClosedError",
+                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
+            ),
+            (
+                "AssertionError",
+                &[("toString", crate::compiler::native_id::ERROR_TO_STRING)],
+            ),
         ];
 
         for &(type_name, methods) in builtin_types {
@@ -274,8 +314,8 @@ impl TypeRegistry {
                     );
                 }
 
-                // Property-style native getters for handle-backed builtins in no-prelude mode.
-                // These mirror class fields that previously came from injected builtin classes.
+                // Property-style native getters for handle-backed ambient builtins.
+                // These mirror class fields when no concrete local class declaration exists.
                 let property_natives: &[(&str, u16)] = match type_name {
                     "Buffer" => &[("length", buffer::LENGTH)],
                     "Map" => &[("size", map::SIZE)],
@@ -307,8 +347,8 @@ impl TypeRegistry {
             }
         }
 
-        // Object constructor must exist in no-prelude mode even when Object is not
-        // materialized as a concrete class in the current module type context.
+        // Object constructor must exist even when Object is not materialized as a
+        // concrete class in the current module type context.
         self.constructors
             .entry("Object".to_string())
             .or_insert(crate::compiler::native_id::OBJECT_NEW);
@@ -467,6 +507,43 @@ impl TypeRegistry {
         self.constructors.get(type_name).copied()
     }
 
+    /// Returns true when a type name is handled by the builtin dispatch registry,
+    /// even if it has no module-local class ID.
+    pub fn has_builtin_dispatch_type(&self, type_name: &str) -> bool {
+        let mut candidate_ids = Vec::new();
+        if let Some(type_id) = canonical_dispatch_type_id(type_name) {
+            candidate_ids.push(type_id);
+        }
+        if let Some((&type_id, _)) = self
+            .type_names
+            .iter()
+            .find(|(_, known_name)| known_name.as_str() == type_name)
+        {
+            if !candidate_ids.contains(&type_id) {
+                candidate_ids.push(type_id);
+            }
+        }
+
+        self.builtin_primitives.contains(type_name)
+            || self.constructors.contains_key(type_name)
+            || candidate_ids.into_iter().any(|type_id| {
+                self.method_dispatch.contains_key(&type_id)
+                    || self.property_dispatch.contains_key(&type_id)
+            })
+    }
+
+    /// Resolve a native method ID from a runtime type name and method name.
+    ///
+    /// This powers late-bound runtime member calls so they can reuse the same
+    /// dispatch table as compile-time lowering.
+    pub fn native_method_id_for_type_name(&self, type_name: &str, method_name: &str) -> Option<u16> {
+        let type_id = canonical_dispatch_type_id(type_name)?;
+        match self.lookup_method(type_id, method_name) {
+            Some(DispatchAction::NativeCall(id)) => Some(id),
+            _ => None,
+        }
+    }
+
     /// Get the type name for a TypeId.
     pub fn type_name(&self, type_id: u32) -> Option<&str> {
         self.type_names.get(&type_id).map(|s| s.as_str())
@@ -545,7 +622,10 @@ impl TypeRegistry {
                     "string" => Ok(1),                         // Pre-interned: Primitive(String)
                     "RegExp" => Ok(8),                         // Pre-interned: Type::RegExp
                     "Array" => Ok(TypeContext::ARRAY_TYPE_ID), // 17
-                    _ => Ok(UNRESOLVED_TYPE_ID),
+                    _ => Ok(type_ctx
+                        .lookup_named_type(&class_type.name)
+                        .map(|id| id.as_u32())
+                        .unwrap_or(UNRESOLVED_TYPE_ID)),
                 }
             }
             _ => Ok(UNRESOLVED_TYPE_ID),

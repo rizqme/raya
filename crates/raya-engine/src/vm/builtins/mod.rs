@@ -1538,7 +1538,7 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     },
                     PropertySig {
                         name: "cause",
-                        ty: "Object | null",
+                        ty: "Error | null",
                         is_static: false,
                     },
                     PropertySig {
@@ -1731,7 +1731,7 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     },
                     PropertySig {
                         name: "errors",
-                        ty: "Object[]",
+                        ty: "Array<Error>",
                         is_static: false,
                     },
                 ],
@@ -1742,7 +1742,7 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     return_type: "string",
                     is_static: false,
                 }],
-                constructor: Some(&[("errors", "Object[]"), ("message", "string")]),
+                constructor: Some(&[("errors", "Array<Error>"), ("message", "string")]),
             },
             ClassSig {
                 name: "ChannelClosedError",

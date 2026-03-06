@@ -234,7 +234,10 @@ pub enum Opcode {
     LoadField = 0xB1,
     /// Store object field: pop value, pop object (operand: u16 fieldOffset)
     StoreField = 0xB2,
-    // 0xB3, 0xB4 were LOAD_FIELD_FAST/STORE_FIELD_FAST (removed; reserved).
+    /// Load a field through a structural shape contract (operands: u64 shapeId, u16 fieldOffset)
+    LoadFieldShape = 0xB3,
+    /// Store a field through a structural shape contract (operands: u64 shapeId, u16 fieldOffset)
+    StoreFieldShape = 0xB4,
     /// Create object literal (operands: u32 typeIndex, u16 fieldCount)
     ObjectLiteral = 0xB5,
     /// Initialize object fields: pop N values (operand: u16 count)
@@ -245,6 +248,8 @@ pub enum Opcode {
     LoadStatic = 0xB8,
     /// Store static field (operand: u32 staticIndex)
     StoreStatic = 0xB9,
+    /// Optional chaining structural field access (operands: u64 shapeId, u16 fieldOffset)
+    OptionalFieldShape = 0xBA,
 
     // ===== Array Operations (0xC0-0xCF) =====
     /// Create new array: pop length (operand: u32 typeIndex)
@@ -507,11 +512,14 @@ impl Opcode {
             0xB0 => Some(Self::New),
             0xB1 => Some(Self::LoadField),
             0xB2 => Some(Self::StoreField),
+            0xB3 => Some(Self::LoadFieldShape),
+            0xB4 => Some(Self::StoreFieldShape),
             0xB5 => Some(Self::ObjectLiteral),
             0xB6 => Some(Self::InitObject),
             0xB7 => Some(Self::OptionalField),
             0xB8 => Some(Self::LoadStatic),
             0xB9 => Some(Self::StoreStatic),
+            0xBA => Some(Self::OptionalFieldShape),
 
             // Array operations
             0xC0 => Some(Self::NewArray),
@@ -684,11 +692,14 @@ impl Opcode {
             Self::New => "NEW",
             Self::LoadField => "LOAD_FIELD",
             Self::StoreField => "STORE_FIELD",
+            Self::LoadFieldShape => "LOAD_FIELD_SHAPE",
+            Self::StoreFieldShape => "STORE_FIELD_SHAPE",
             Self::ObjectLiteral => "OBJECT_LITERAL",
             Self::InitObject => "INIT_OBJECT",
             Self::OptionalField => "OPTIONAL_FIELD",
             Self::LoadStatic => "LOAD_STATIC",
             Self::StoreStatic => "STORE_STATIC",
+            Self::OptionalFieldShape => "OPTIONAL_FIELD_SHAPE",
             Self::NewArray => "NEW_ARRAY",
             Self::LoadElem => "LOAD_ELEM",
             Self::StoreElem => "STORE_ELEM",
@@ -1029,11 +1040,14 @@ mod tests {
             Opcode::New,
             Opcode::LoadField,
             Opcode::StoreField,
+            Opcode::LoadFieldShape,
+            Opcode::StoreFieldShape,
             Opcode::ObjectLiteral,
             Opcode::InitObject,
             Opcode::OptionalField,
             Opcode::LoadStatic,
             Opcode::StoreStatic,
+            Opcode::OptionalFieldShape,
             Opcode::NewArray,
             Opcode::LoadElem,
             Opcode::StoreElem,

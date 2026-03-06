@@ -9,8 +9,8 @@ use crate::jit::runtime::trampoline::{RuntimeContext, RuntimeHelperTable};
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
 use crate::vm::gc::GarbageCollector;
 use crate::vm::interpreter::{
-    ClassRegistry, SafepointCoordinator, StructuralAdapterKey, StructuralSlotBinding,
-    StructuralViewHandle,
+    ClassRegistry, SafepointCoordinator, ShapeAdapter, StructuralAdapterKey,
+    StructuralSlotBinding, StructuralViewHandle,
 };
 use crate::vm::native_registry::ResolvedNatives;
 use crate::vm::object::{BoundMethod, Object};
@@ -38,7 +38,7 @@ pub struct JitRuntimeBridgeContext {
     pub structural_slot_views:
         *const parking_lot::RwLock<FxHashMap<([u8; 32], usize, u64), StructuralViewHandle>>,
     pub structural_shape_adapters: *const parking_lot::RwLock<
-        FxHashMap<StructuralAdapterKey, Arc<Vec<StructuralSlotBinding>>>,
+        FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
     pub io_submit_tx: *const crossbeam::channel::Sender<IoSubmission>,
 }
@@ -56,7 +56,7 @@ pub fn build_runtime_bridge_context(
         FxHashMap<([u8; 32], usize, u64), StructuralViewHandle>,
     >,
     structural_shape_adapters: &parking_lot::RwLock<
-        FxHashMap<StructuralAdapterKey, Arc<Vec<StructuralSlotBinding>>>,
+        FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
     io_submit_tx: Option<&crossbeam::channel::Sender<IoSubmission>>,
 ) -> JitRuntimeBridgeContext {
@@ -112,16 +112,16 @@ unsafe extern "C" fn helper_alloc_object(class_id: u32, shared_state: *mut ()) -
     }
 
     let class_id = class_id as usize;
-    let field_count = {
+    let (field_count, layout_id) = {
         let classes = (&*bridge.classes).read();
         match classes.get_class(class_id) {
-            Some(class) => class.field_count,
+            Some(class) => (class.field_count, class.layout_id),
             None => return std::ptr::null_mut(),
         }
     };
 
     let mut gc = (&*bridge.gc).lock();
-    let obj_ptr = gc.allocate(Object::new(class_id, field_count));
+    let obj_ptr = gc.allocate(Object::new_nominal(layout_id, class_id as u32, field_count));
     obj_ptr.as_ptr().cast::<()>()
 }
 
@@ -261,8 +261,8 @@ unsafe fn remap_structural_slot_binding(
 
     let views = (&*bridge.structural_slot_views).read();
     let handle = views
-        .get(&(module.checksum, func_id, object.object_id))
-        .or_else(|| views.get(&(module.checksum, usize::MAX, object.object_id)))
+        .get(&(module.checksum, func_id, object.object_id()))
+        .or_else(|| views.get(&(module.checksum, usize::MAX, object.object_id())))
         .copied();
     drop(views);
 
@@ -273,7 +273,7 @@ unsafe fn remap_structural_slot_binding(
     let adapters = (&*bridge.structural_shape_adapters).read();
     adapters
         .get(&handle.adapter_key)
-        .and_then(|slot_map: &Arc<Vec<StructuralSlotBinding>>| slot_map.get(expected_slot).copied())
+        .map(|adapter: &Arc<ShapeAdapter>| adapter.binding_for_slot(expected_slot))
         .unwrap_or(StructuralSlotBinding::Missing)
 }
 

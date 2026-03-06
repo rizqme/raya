@@ -297,10 +297,12 @@ fn test_ryb_with_separate_library() {
     let tmp_dir = std::env::temp_dir().join("raya-test-separate-lib");
     std::fs::create_dir_all(&tmp_dir).unwrap();
 
-    // Compile a library module
+    // Compile a library module from a file so the module name is deterministic.
     let lib_source =
         "function add(a: number, b: number): number { return a + b; }\nreturn add(10, 20);";
-    let lib_compiled = rt.compile(lib_source).expect("compile lib");
+    let lib_source_path = tmp_dir.join("mathlib.raya");
+    std::fs::write(&lib_source_path, lib_source).unwrap();
+    let lib_compiled = rt.compile_file(&lib_source_path).expect("compile lib");
     std::fs::write(tmp_dir.join("mathlib.ryb"), lib_compiled.encode()).unwrap();
 
     // The library .ryb can be loaded and executed independently
@@ -316,7 +318,9 @@ fn test_ryb_with_separate_library() {
 
     // Test execute_with_deps: load mathlib as a dep for another module
     let main_source = "return 42;";
-    let main_compiled = rt.compile(main_source).expect("compile main");
+    let main_source_path = tmp_dir.join("main.raya");
+    std::fs::write(&main_source_path, main_source).unwrap();
+    let main_compiled = rt.compile_file(&main_source_path).expect("compile main");
     let main_bytes = main_compiled.encode();
     std::fs::write(tmp_dir.join("main.ryb"), &main_bytes).unwrap();
 
@@ -1032,7 +1036,7 @@ main();
         .expect_err("duplicated top-level program should return a duplicate declaration error");
     let msg = err.to_string();
     assert!(
-        msg.contains("Duplicate function declaration"),
+        msg.contains("Duplicate symbol"),
         "Expected duplicate declaration error, got: {}",
         msg
     );
@@ -1073,7 +1077,7 @@ main();
         Err(err) => {
             let msg = err.to_string();
             assert!(
-                msg.contains("Duplicate function declaration"),
+                msg.contains("Duplicate symbol"),
                 "Expected duplicate declaration error, got: {}",
                 msg
             );

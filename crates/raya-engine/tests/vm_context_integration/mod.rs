@@ -32,13 +32,13 @@ fn test_multi_context_gc_isolation() {
     let mut gc2 = GarbageCollector::default();
 
     // Allocate in GC 1
-    let obj1 = Object::new(0, 2);
+    let obj1 = Object::new_synthetic_structural(2);
     let ptr1 = gc1.allocate(obj1);
     let val1 = unsafe { Value::from_ptr(NonNull::new(ptr1.as_ptr()).unwrap()) };
     gc1.add_root(val1);
 
     // Allocate in GC 2
-    let obj2 = Object::new(0, 2);
+    let obj2 = Object::new_synthetic_structural(2);
     let ptr2 = gc2.allocate(obj2);
     let val2 = unsafe { Value::from_ptr(NonNull::new(ptr2.as_ptr()).unwrap()) };
     gc2.add_root(val2);
@@ -117,8 +117,8 @@ fn test_context_gc_collect() {
     let mut ctx = VmContext::new();
 
     // Allocate objects
-    let obj1 = Object::new(0, 2);
-    let obj2 = Object::new(0, 2);
+    let obj1 = Object::new_synthetic_structural(2);
+    let obj2 = Object::new_synthetic_structural(2);
 
     let ptr1 = ctx.gc_mut().allocate(obj1);
     let _ptr2 = ctx.gc_mut().allocate(obj2);

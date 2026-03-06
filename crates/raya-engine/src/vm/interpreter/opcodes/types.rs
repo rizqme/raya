@@ -2,16 +2,20 @@
 //! DynSetKeyed, DynNewObject, DynKeys, DynHas, DynDelete, NewMutex, NewChannel, LoadStatic, StoreStatic
 
 use crate::compiler::{Module, Opcode};
+use crate::compiler::type_registry::TypeRegistry;
+use crate::parser::TypeContext;
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, BoundMethod, ChannelObject, Closure, Object, RayaString};
+use crate::vm::object::{
+    Array, BoundMethod, BoundNativeMethod, ChannelObject, Closure, Object, RayaString,
+};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
 use std::ptr::NonNull;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 const CAST_KIND_MASK_FLAG: u16 = 0x8000;
 const CAST_TUPLE_LEN_FLAG: u16 = 0x4000;
@@ -60,6 +64,7 @@ fn value_kind_mask(value: Value) -> u16 {
     }
     if header.type_id() == std::any::TypeId::of::<Closure>()
         || header.type_id() == std::any::TypeId::of::<BoundMethod>()
+        || header.type_id() == std::any::TypeId::of::<BoundNativeMethod>()
     {
         return CAST_KIND_FUNCTION;
     }
@@ -83,6 +88,16 @@ fn object_ptr_checked(value: Value) -> Option<NonNull<Object>> {
 }
 
 impl<'a> Interpreter<'a> {
+    fn builtin_native_method_for_class(class_name: &str, method_name: &str) -> Option<u16> {
+        static TYPE_REGISTRY: OnceLock<TypeRegistry> = OnceLock::new();
+        TYPE_REGISTRY
+            .get_or_init(|| {
+                let type_ctx = TypeContext::new();
+                TypeRegistry::new(&type_ctx)
+            })
+            .native_method_id_for_type_name(class_name, method_name)
+    }
+
     pub(in crate::vm::interpreter) fn exec_type_ops(
         &mut self,
         stack: &mut Stack,
@@ -98,7 +113,10 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let class_index = self.resolve_class_id(module, local_class_index);
+                let class_index = match self.resolve_nominal_type_id(module, local_class_index) {
+                    Ok(id) => id,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
                 let obj_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
@@ -319,7 +337,11 @@ impl<'a> Interpreter<'a> {
                 }
 
                 // Class-cast target is encoded as module-local class ID.
-                let cast_target_class = self.resolve_class_id(module, cast_target as usize);
+                let cast_target_class =
+                    match self.resolve_nominal_type_id(module, cast_target as usize) {
+                        Ok(id) => id,
+                        Err(error) => return OpcodeResult::Error(error),
+                    };
 
                 // Check if object is an instance of the target class
                 let valid_cast = if obj_val.is_ptr() {
@@ -444,10 +466,11 @@ impl<'a> Interpreter<'a> {
                             obj.get_field(index).unwrap_or(Value::null())
                         } else {
                             let classes = self.classes.read();
-                            let (func_id, method_module) = nominal_class_id
+                            let (func_id, method_module, class_name) = nominal_class_id
                                 .and_then(|class_id| classes.get_class(class_id))
-                                .map_or((None, None), |class| {
+                                .map_or((None, None, None), |class| {
                                     let method_module = class.module.clone();
+                                    let class_name = Some(class.name.clone());
                                     let search_module =
                                         method_module.as_ref().map_or(module, |m| m);
                                     let func_id = method_slot
@@ -472,7 +495,7 @@ impl<'a> Interpreter<'a> {
                                                     .unwrap_or(false)
                                             })
                                         });
-                                    (func_id, method_module)
+                                    (func_id, method_module, class_name)
                                 });
                             drop(classes);
                             if let Some(func_id) = func_id {
@@ -487,41 +510,59 @@ impl<'a> Interpreter<'a> {
                                     )
                                 }
                             } else {
-                                if std::env::var("RAYA_DEBUG_DYNGET").is_ok() {
-                                    let class_debug = nominal_class_id
-                                        .map(|id| id.to_string())
-                                        .unwrap_or_else(|| "structural".to_string());
-                                    let class_name = {
-                                        nominal_class_id.map_or_else(
-                                            || "<structural-object>".to_string(),
-                                            |class_id| {
-                                                let classes = self.classes.read();
-                                                classes
-                                                    .get_class(class_id)
-                                                    .map(|class| class.name.clone())
-                                                    .unwrap_or_else(|| "<unknown>".to_string())
-                                            },
+                                if let Some(native_id) =
+                                    class_name
+                                        .as_ref()
+                                        .and_then(|name| {
+                                            Self::builtin_native_method_for_class(name, &prop_name)
+                                        })
+                                {
+                                    let gc_ptr = self.gc.lock().allocate(BoundNativeMethod {
+                                        receiver: obj_val,
+                                        native_id,
+                                    });
+                                    unsafe {
+                                        Value::from_ptr(
+                                            std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
                                         )
-                                    };
-                                    let metadata_methods = {
-                                        let class_metadata = self.class_metadata.read();
-                                        nominal_class_id
-                                            .and_then(|class_id| class_metadata.get(class_id))
-                                            .map(|meta| {
-                                                meta.method_names
-                                                    .iter()
-                                                    .filter(|name| !name.is_empty())
-                                                    .cloned()
-                                                    .collect::<Vec<_>>()
-                                            })
-                                            .unwrap_or_default()
-                                    };
-                                    eprintln!(
-                                        "[dynget] unresolved struct member '{}.{}' class_id={} metadata_methods={:?}",
-                                        class_name, prop_name, class_debug, metadata_methods
-                                    );
+                                    }
+                                } else {
+                                    if std::env::var("RAYA_DEBUG_DYNGET").is_ok() {
+                                        let class_debug = nominal_class_id
+                                            .map(|id| id.to_string())
+                                            .unwrap_or_else(|| "structural".to_string());
+                                        let class_name = {
+                                            nominal_class_id.map_or_else(
+                                                || "<structural-object>".to_string(),
+                                                |class_id| {
+                                                    let classes = self.classes.read();
+                                                    classes
+                                                        .get_class(class_id)
+                                                        .map(|class| class.name.clone())
+                                                        .unwrap_or_else(|| "<unknown>".to_string())
+                                                },
+                                            )
+                                        };
+                                        let metadata_methods = {
+                                            let class_metadata = self.class_metadata.read();
+                                            nominal_class_id
+                                                .and_then(|class_id| class_metadata.get(class_id))
+                                                .map(|meta| {
+                                                    meta.method_names
+                                                        .iter()
+                                                        .filter(|name| !name.is_empty())
+                                                        .cloned()
+                                                        .collect::<Vec<_>>()
+                                                })
+                                                .unwrap_or_default()
+                                        };
+                                        eprintln!(
+                                            "[dynget] unresolved struct member '{}.{}' class_id={} metadata_methods={:?}",
+                                            class_name, prop_name, class_debug, metadata_methods
+                                        );
+                                    }
+                                    Value::null()
                                 }
-                                Value::null()
                             }
                         }
                     }
@@ -859,7 +900,10 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let class_index = self.resolve_class_id(module, local_class_index);
+                let class_index = match self.resolve_nominal_type_id(module, local_class_index) {
+                    Ok(id) => id,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
                 let field_offset = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
@@ -892,7 +936,10 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let class_index = self.resolve_class_id(module, local_class_index);
+                let class_index = match self.resolve_nominal_type_id(module, local_class_index) {
+                    Ok(id) => id,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
                 let field_offset = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),

@@ -76,18 +76,18 @@ Minimal = basic import works · Stub = throws or no-ops · Passthrough = delegat
 
 ```
 node:fs   ──┐
-node:path ──┤  include_str!()   ┌──────────────┐
-node:*    ──┴─────────────────► │ compile.rs    │──► bytecode
-                prepended as    │ (prelude      │
-                module prelude  │  injection)   │
-                                └──────┬───────┘
-                                       │
-                              __NATIVE_CALL() ──► raya-stdlib / raya-stdlib-posix
+node:path ──┤  declaration/source   ┌────────────────────┐
+node:*    ──┴─────────────────────► │ binary module graph │──► linked bytecode
+                resolution          │ + late hydration    │
+                                    └─────────┬──────────┘
+                                              │
+                                     __NATIVE_CALL() ──► raya-stdlib / raya-stdlib-posix
 ```
 
-Each `node:*` import resolves through `NODE_STD_ALIASES` in `compile.rs`. The module
-source is prepended to user code at compile time, making all exports available. Native
-operations use `__NATIVE_CALL()` to invoke registered Rust functions from `raya-stdlib`
+Each `node:*` import resolves through the binary module compiler's virtual module registry.
+Declarations are loaded first, module sources are compiled with preserved identity, and
+the linker hydrates exports/imports at runtime. Native operations use `__NATIVE_CALL()`
+to invoke registered Rust functions from `raya-stdlib`
 (cross-platform: time, crypto) and `raya-stdlib-posix` (fs, path, env, process, io).
 
 ## Key differences from Node.js

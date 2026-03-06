@@ -74,7 +74,7 @@ fn compile_and_extract(
 
     let symbols = {
         let mut binder = Binder::new(&mut type_ctx, &interner);
-        binder.skip_top_level_duplicate_detection();
+        binder.allow_duplicate_top_level_declarations();
 
         // Pre-register all builtin primitive type names so cross-references resolve
         // (e.g., string.raya references RegExp, array.raya references string)

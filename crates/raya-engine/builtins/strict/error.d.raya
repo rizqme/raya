@@ -33,7 +33,7 @@ export class Error {
     stack: string;
 
     /** Error cause (for chained failures) */
-    cause: ErrorLike | null;
+    cause: Error | null;
 
     /** Optional operational fields for system-like errors */
     code: string;

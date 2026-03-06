@@ -138,6 +138,11 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         // f64 operand
         Opcode::ConstF64 => 1 + 8,
 
+        // u64 + u16 operands
+        Opcode::LoadFieldShape | Opcode::StoreFieldShape | Opcode::OptionalFieldShape => {
+            1 + 8 + 2
+        }
+
         // u32 operand
         Opcode::LoadConst
         | Opcode::New

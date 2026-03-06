@@ -1,7 +1,0 @@
-
-        let marker = 1;
-        let p = Promise.resolve(41);
-        let q = p.finally((): void => { marker = marker + 1; });
-        let out = await q;
-        return out + marker;
-    
