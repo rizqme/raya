@@ -4366,7 +4366,7 @@ impl<'a> Lowerer<'a> {
             .map(|(idx, name)| (name.clone(), idx))
             .collect();
         self.register_object_fields.insert(dest.id, field_layout);
-        self.emit_structural_slot_registration_for_names(dest.clone(), field_names);
+        self.emit_structural_shape_name_registration_for_ordered_names(field_names);
 
         dest
     }
@@ -6076,7 +6076,7 @@ impl<'a> Lowerer<'a> {
                     named_fields.push(("errors".to_string(), 8));
                 }
                 self.register_object_fields.insert(dest.id, named_fields);
-                self.emit_structural_slot_registration_for_ordered_names(dest.clone(), ordered_names);
+                self.emit_structural_shape_name_registration_for_ordered_names(ordered_names);
 
                 return dest;
             }

@@ -784,6 +784,12 @@ impl<'a> Interpreter<'a> {
                             .write()
                             .entry(required_shape)
                             .or_insert_with(|| expected_names.clone());
+                        let derived_layout =
+                            Self::dynamic_layout_id_from_member_names(&expected_names);
+                        self.structural_object_shapes
+                            .write()
+                            .entry(derived_layout)
+                            .or_insert_with(|| expected_names.clone());
 
                         let object_val = args[0];
                         if object_val.is_null() {
