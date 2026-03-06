@@ -359,6 +359,38 @@ fn test_structural_field_load_projection_uses_shape_slots() {
 }
 
 #[test]
+fn test_structural_call_result_destructuring_uses_shape_slots() {
+    expect_i32(
+        "class Box {
+             c: number = 3;
+             b: number = 2;
+         }
+         function makeView(): { b: number; c: number } {
+             return new Box();
+         }
+         let { b, c } = makeView();
+         return b + c;",
+        5,
+    );
+}
+
+#[test]
+fn test_structural_conditional_result_destructuring_uses_shape_slots() {
+    expect_i32(
+        "class Box {
+             c: number = 3;
+             b: number = 2;
+         }
+         let fallback = { b: 1, c: 1 };
+         let { b, c } = true
+             ? (new Box() as { b: number; c: number })
+             : fallback;
+         return b + c;",
+        5,
+    );
+}
+
+#[test]
 fn test_structural_parameter_destructuring_uses_projected_shape_slots() {
     expect_i32(
         "class Box {

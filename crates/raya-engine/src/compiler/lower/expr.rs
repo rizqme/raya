@@ -41,26 +41,32 @@ enum SpreadSourceFields {
 }
 
 impl<'a> Lowerer<'a> {
+    fn projection_layout_u16_from_type_id(&self, ty: TypeId) -> Option<Vec<(String, u16)>> {
+        self.structural_projection_layout_from_type_id(ty).map(|layout| {
+            layout
+                .into_iter()
+                .filter_map(|(field_name, field_idx)| {
+                    u16::try_from(field_idx).ok().map(|slot| (field_name, slot))
+                })
+                .collect()
+        })
+    }
+
+    fn projected_structural_layout_from_alias_name(
+        &self,
+        alias_name: &str,
+    ) -> Option<Vec<(String, u16)>> {
+        self.type_alias_object_fields.get(alias_name).map(|fields| {
+            fields
+                .iter()
+                .map(|(field_name, field_idx, _)| (field_name.clone(), *field_idx))
+                .collect()
+        })
+    }
+
     fn prefers_structural_member_projection(&self, object_expr: &Expression) -> bool {
-        match object_expr {
-            Expression::Identifier(ident) => {
-                self.variable_structural_projection_fields
-                    .contains_key(&ident.name)
-                    || self.variable_object_type_aliases.contains_key(&ident.name)
-            }
-            Expression::TypeCast(cast) => {
-                self.try_extract_class_from_type(&cast.target_type).is_none()
-                    && self
-                        .structural_projection_layout_from_type_id(
-                            self.resolve_structural_slot_type_from_annotation(&cast.target_type),
-                        )
-                        .is_some()
-            }
-            Expression::Parenthesized(paren) => {
-                self.prefers_structural_member_projection(&paren.expression)
-            }
-            _ => false,
-        }
+        self.projected_structural_layout_from_expr(object_expr)
+            .is_some()
     }
 
     fn projected_structural_layout_from_expr(
@@ -78,18 +84,24 @@ impl<'a> Lowerer<'a> {
                             u16::try_from(*field_idx).ok().map(|slot| (field_name.clone(), slot))
                         })
                         .collect()
-                }),
+                })
+                .or_else(|| {
+                    self.variable_object_type_aliases
+                        .get(&ident.name)
+                        .and_then(|alias| self.projected_structural_layout_from_alias_name(alias))
+                })
+                .or_else(|| self.projection_layout_u16_from_type_id(self.get_expr_type(object_expr))),
             Expression::TypeCast(cast) => {
                 if self.try_extract_class_from_type(&cast.target_type).is_some() {
                     return None;
                 }
                 let target_ty = self.resolve_structural_slot_type_from_annotation(&cast.target_type);
-                self.structural_slot_layout_from_type(target_ty)
+                self.projection_layout_u16_from_type_id(target_ty)
             }
             Expression::Parenthesized(paren) => {
                 self.projected_structural_layout_from_expr(&paren.expression)
             }
-            _ => None,
+            _ => self.projection_layout_u16_from_type_id(self.get_expr_type(object_expr)),
         }
     }
 
@@ -105,6 +117,10 @@ impl<'a> Lowerer<'a> {
         {
             self.register_structural_projection_fields.insert(dest.id, fields);
         }
+    }
+
+    fn propagate_type_projection_to_register(&mut self, ty: TypeId, dest: &Register) {
+        let _ = self.emit_projected_shape_registration_for_register_type(dest, ty);
     }
 
     fn lower_unresolved_poison(&mut self) -> Register {
@@ -1461,6 +1477,7 @@ impl<'a> Lowerer<'a> {
                             func: effective_func_id,
                             args,
                         });
+                        self.propagate_type_projection_to_register(call_ty, &dest);
                     }
                     return dest;
                 }
@@ -1569,6 +1586,7 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 }
+                self.propagate_type_projection_to_register(dest.ty, &dest);
 
                 return dest;
             }
@@ -1636,6 +1654,7 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 }
+                self.propagate_type_projection_to_register(dest.ty, &dest);
 
                 return dest;
             }
@@ -1698,6 +1717,7 @@ impl<'a> Lowerer<'a> {
                     closure,
                     args,
                 });
+                self.propagate_type_projection_to_register(call_ty, &dest);
                 return dest;
             }
 
@@ -1750,6 +1770,7 @@ impl<'a> Lowerer<'a> {
                     closure,
                     args,
                 });
+                self.propagate_type_projection_to_register(call_ty, &dest);
                 return dest;
             }
         }
@@ -2278,6 +2299,7 @@ impl<'a> Lowerer<'a> {
                                 func: func_id,
                                 args,
                             });
+                            self.propagate_type_projection_to_register(call_ty, &dest);
                         }
                         return dest;
                     }
@@ -2311,6 +2333,7 @@ impl<'a> Lowerer<'a> {
                         closure,
                         args,
                     });
+                    self.propagate_type_projection_to_register(call_ty, &dest);
                 }
                 return dest;
             }
@@ -2388,6 +2411,7 @@ impl<'a> Lowerer<'a> {
                             closure: field_reg,
                             args,
                         });
+                        self.propagate_type_projection_to_register(call_ty, &dest);
                     }
                     return dest;
                 }
@@ -2480,6 +2504,7 @@ impl<'a> Lowerer<'a> {
                         method_name,
                         &member.object,
                     );
+                    self.propagate_type_projection_to_register(dest.ty, &dest);
 
                     return dest;
                 } else if let Some(slot) = self.find_method_slot(class_id, method_name_symbol) {
@@ -2505,6 +2530,7 @@ impl<'a> Lowerer<'a> {
                             }
                         }
                     }
+                    self.propagate_type_projection_to_register(dest.ty, &dest);
                     return dest;
                 }
             }
@@ -2549,6 +2575,7 @@ impl<'a> Lowerer<'a> {
                         closure,
                         args,
                     });
+                    self.propagate_type_projection_to_register(call_ty, &dest);
                 }
                 return dest;
             }
@@ -2585,6 +2612,7 @@ impl<'a> Lowerer<'a> {
                                     closure,
                                     args,
                                 });
+                                self.propagate_type_projection_to_register(call_ty, &dest);
                             }
                             return dest;
                         }
@@ -2690,6 +2718,7 @@ impl<'a> Lowerer<'a> {
                         closure,
                         args,
                     });
+                    self.propagate_type_projection_to_register(call_ty, &dest);
                 }
                 return dest;
             }
@@ -2954,6 +2983,7 @@ impl<'a> Lowerer<'a> {
                 closure,
                 args,
             });
+            self.propagate_type_projection_to_register(call_ty, &dest);
         }
         dest
     }
@@ -5137,6 +5167,7 @@ impl<'a> Lowerer<'a> {
                 (else_exit_block, else_result),
             ],
         });
+        self.propagate_type_projection_to_register(dest.ty, &dest);
 
         dest
     }
@@ -6207,6 +6238,7 @@ impl<'a> Lowerer<'a> {
                 dest: dest.clone(),
                 tasks: awaited_value,
             });
+            self.propagate_type_projection_to_register(dest.ty, &dest);
             return dest;
         }
 
@@ -6242,6 +6274,7 @@ impl<'a> Lowerer<'a> {
             dest: dest.clone(),
             task: awaited_value,
         });
+        self.propagate_type_projection_to_register(dest.ty, &dest);
         dest
     }
 
