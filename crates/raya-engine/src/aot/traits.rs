@@ -95,8 +95,25 @@ pub fn compile_to_state_machine(
     func: &dyn AotCompilable,
     function_id: u32,
 ) -> StateMachineFunction {
+    let debug = std::env::var_os("RAYA_DEBUG_AOT_DUMP").is_some();
     let analysis = func.analyze();
+    if debug {
+        eprintln!(
+            "\n=== AOT ANALYSIS fn={} name={:?} ===\n{:#?}",
+            function_id,
+            func.name(),
+            analysis
+        );
+    }
     let blocks = func.emit_blocks();
+    if debug {
+        eprintln!(
+            "\n=== AOT PRE-SM fn={} name={:?} ===\n{:#?}",
+            function_id,
+            func.name(),
+            blocks
+        );
+    }
     transform_to_state_machine(
         function_id,
         blocks,

@@ -47,8 +47,10 @@ mod aot_impl {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
-    use raya_engine::aot::bytecode_adapter::LiftedFunction;
-    use raya_engine::aot::codegen::{compile_functions, create_native_isa, CompilableFunction};
+    use raya_engine::aot::bytecode_adapter::{lift_bytecode_module, LiftedFunction};
+    use raya_engine::aot::codegen::{
+        compile_functions_with_profile, create_native_isa, CompilableFunction,
+    };
     use raya_engine::aot::traits::AotCompilable;
     use raya_engine::compiler::bytecode::Opcode;
     use raya_runtime::bundle::format::{
@@ -115,28 +117,26 @@ mod aot_impl {
         );
 
         // Step 2: Lift bytecode functions to AOT-compilable form
-        let lifted: Vec<LiftedFunction> = reachable
-            .iter()
-            .map(|&func_index| {
-                let f = &module.functions[func_index as usize];
-                let name = f.name.clone();
-                let param_count = f.param_count as u32;
-                let local_count = f.local_count as u32;
-                LiftedFunction {
-                    func_index,
-                    param_count,
-                    local_count,
-                    name: Some(name.clone()),
-                    #[cfg(all(feature = "aot", feature = "jit"))]
-                    jit_func: raya_engine::jit::ir::JitFunction::new(
-                        func_index,
-                        name,
-                        param_count as usize,
-                        local_count as usize,
-                    ),
-                }
-            })
+        let reachable_set: BTreeSet<u32> = reachable.iter().copied().collect();
+        let lifted_all = lift_bytecode_module(module)
+            .map_err(|e| anyhow::anyhow!("Failed to lift bytecode module for AOT: {}", e))?;
+        let lifted: Vec<LiftedFunction> = lifted_all
+            .into_iter()
+            .filter(|func| reachable_set.contains(&func.func_index))
             .collect();
+
+        if lifted.len() != reachable.len() {
+            let lifted_indices: BTreeSet<u32> = lifted.iter().map(|func| func.func_index).collect();
+            let missing = reachable
+                .iter()
+                .copied()
+                .filter(|func_index| !lifted_indices.contains(func_index))
+                .collect::<Vec<_>>();
+            anyhow::bail!(
+                "Failed to lift reachable bytecode function(s) for AOT: {:?}",
+                missing
+            );
+        }
 
         let compilables: Vec<CompilableFunction<'_>> = lifted
             .iter()
@@ -144,8 +144,20 @@ mod aot_impl {
                 func: lf as &dyn AotCompilable,
                 module_index: 0,
                 func_index: lf.func_index as u16,
+                module_checksum: module.checksum,
             })
             .collect();
+
+        let aot_profile = std::env::var("RAYA_AOT_PROFILE")
+            .ok()
+            .map(|path| {
+                let json = std::fs::read_to_string(&path)
+                    .map_err(|e| anyhow::anyhow!("Failed to read AOT profile '{}': {}", path, e))?;
+                serde_json::from_str::<raya_engine::aot::AotProfileData>(&json).map_err(|e| {
+                    anyhow::anyhow!("Failed to parse AOT profile '{}': {}", path, e)
+                })
+            })
+            .transpose()?;
 
         // Step 3: Compile to native machine code via Cranelift
         println!(
@@ -155,7 +167,7 @@ mod aot_impl {
         let isa = create_native_isa()
             .map_err(|e| anyhow::anyhow!("Failed to create native ISA: {}", e))?;
 
-        let aot_bundle = compile_functions(&compilables, isa)
+        let aot_bundle = compile_functions_with_profile(&compilables, isa, aot_profile.as_ref())
             .map_err(|e| anyhow::anyhow!("AOT compilation failed: {}", e))?;
 
         println!(
@@ -318,8 +330,6 @@ mod aot_impl {
             | Opcode::Throw
             | Opcode::DynGetKeyed
             | Opcode::DynSetKeyed
-            | Opcode::DynNewObject
-            | Opcode::DynKeys
             | Opcode::NewSemaphore
             | Opcode::SemAcquire
             | Opcode::SemRelease
@@ -355,7 +365,6 @@ mod aot_impl {
             | Opcode::CastObjectMinFields
             | Opcode::CastArrayElemKind
             | Opcode::CastKindMask
-            | Opcode::Cast
             | Opcode::CastNominal => 2,
             Opcode::ConstI32
             | Opcode::Jmp
@@ -370,10 +379,6 @@ mod aot_impl {
             | Opcode::NewArray
             | Opcode::LoadModule
             | Opcode::TaskThen
-            | Opcode::DynGet
-            | Opcode::DynSet
-            | Opcode::DynDelete
-            | Opcode::DynHas
             | Opcode::LoadStatic
             | Opcode::StoreStatic => 4,
             Opcode::LoadFieldShape | Opcode::StoreFieldShape | Opcode::OptionalFieldShape => 10,

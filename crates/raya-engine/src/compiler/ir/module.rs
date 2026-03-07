@@ -27,6 +27,10 @@ pub struct IrModule {
     /// Native function name table for ModuleNativeCall.
     /// Maps module-local index → symbolic name (e.g., "math.abs", "time.now").
     pub native_functions: Vec<String>,
+    /// Canonical structural shape metadata referenced by this module.
+    pub structural_shapes: FxHashMap<u64, Vec<String>>,
+    /// Physical structural layout metadata referenced by this module.
+    pub structural_layouts: FxHashMap<u32, Vec<String>>,
 }
 
 impl IrModule {
@@ -41,6 +45,8 @@ impl IrModule {
             class_map: FxHashMap::default(),
             type_alias_map: FxHashMap::default(),
             native_functions: Vec::new(),
+            structural_shapes: FxHashMap::default(),
+            structural_layouts: FxHashMap::default(),
         }
     }
 

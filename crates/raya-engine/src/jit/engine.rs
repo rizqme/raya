@@ -12,6 +12,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::Module as CraneliftModule;
 
 use crate::compiler::bytecode::Module;
+use crate::compiler::Opcode;
 use crate::jit::analysis::heuristics::HeuristicsAnalyzer;
 use crate::jit::backend::cranelift::lowering::{jit_entry_signature, LoweringContext};
 use crate::jit::backend::traits::{CodegenError, ExecutableCode};
@@ -19,7 +20,7 @@ use crate::jit::backend::CraneliftBackend;
 use crate::jit::ir::instr::JitFunction;
 use crate::jit::pipeline::prewarm::PrewarmConfig;
 use crate::jit::pipeline::JitPipeline;
-use crate::jit::runtime::code_cache::CodeCache;
+use crate::jit::runtime::code_cache::{CodeCache, LayoutDependency};
 
 /// Default code cache size: 64 MB
 const DEFAULT_CODE_CACHE_SIZE: usize = 64 * 1024 * 1024;
@@ -253,9 +254,63 @@ impl JitEngine {
             deopt_info: vec![],
         };
 
-        self.code_cache
-            .insert(module_id, func_idx as u32, executable);
+        let layout_dependencies = self.collect_layout_dependencies(module, func_idx);
+        self.code_cache.insert_with_dependencies(
+            module_id,
+            func_idx as u32,
+            executable,
+            layout_dependencies,
+        );
         Ok(())
+    }
+
+    fn collect_layout_dependencies(
+        &self,
+        module: &Module,
+        func_idx: usize,
+    ) -> Vec<LayoutDependency> {
+        let Some(function) = module.functions.get(func_idx) else {
+            return Vec::new();
+        };
+        let mut deps = std::collections::BTreeSet::new();
+        let mut ip = 0usize;
+        let code = &function.code;
+        while ip < code.len() {
+            let Some(opcode) = Opcode::from_u8(code[ip]) else {
+                break;
+            };
+            ip += 1;
+            match opcode {
+                Opcode::NewType
+                | Opcode::ConstructType
+                | Opcode::IsNominal
+                | Opcode::CastNominal
+                | Opcode::LoadFieldExact
+                | Opcode::StoreFieldExact
+                | Opcode::OptionalFieldExact
+                | Opcode::CallMethodExact
+                | Opcode::OptionalCallMethodExact
+                | Opcode::CallMethodShape
+                | Opcode::OptionalCallMethodShape
+                | Opcode::LoadFieldShape
+                | Opcode::StoreFieldShape
+                | Opcode::OptionalFieldShape
+                | Opcode::ImplementsShape
+                | Opcode::CastShape
+                | Opcode::DynGetKeyed
+                | Opcode::DynSetKeyed
+                | Opcode::ObjectLiteral
+                | Opcode::InitObject
+                | Opcode::BindMethod => {
+                    deps.insert(LayoutDependency::AnyLayout);
+                }
+                _ => {}
+            }
+            let operand_len =
+                crate::compiler::codegen::emit::opcode_size(opcode).saturating_sub(1);
+            ip = ip.saturating_add(operand_len.min(code.len().saturating_sub(ip)));
+        }
+        deps.into_iter().collect()
     }
 
     /// Get the shared code cache (for passing to interpreter threads)
@@ -384,6 +439,7 @@ mod tests {
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
                 structural_shapes: vec![],
+            structural_layouts: vec![],
             },
             exports: vec![],
             imports: vec![],

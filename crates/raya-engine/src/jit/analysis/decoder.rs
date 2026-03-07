@@ -200,12 +200,6 @@ fn decode_operands(
         | Opcode::TaskCancel
         | Opcode::DynGetKeyed
         | Opcode::DynSetKeyed
-        | Opcode::DynNewObject
-        | Opcode::DynKeys
-        | Opcode::DynHas
-        | Opcode::DynNewObject
-        | Opcode::DynKeys
-        | Opcode::DynKeys
         | Opcode::Throw
         | Opcode::EndTry
         | Opcode::Rethrow
@@ -239,7 +233,6 @@ fn decode_operands(
         | Opcode::CastObjectMinFields
         | Opcode::CastArrayElemKind
         | Opcode::CastKindMask
-        | Opcode::Cast
         | Opcode::CastNominal => {
             let v = read_u16(code, pos, offset)?;
             Ok(Operands::U16(v))
@@ -293,10 +286,7 @@ fn decode_operands(
         | Opcode::LoadGlobal
         | Opcode::StoreGlobal
         | Opcode::LoadStatic
-        | Opcode::StoreStatic
-        | Opcode::DynGet
-        | Opcode::DynSet
-        | Opcode::DynDelete => {
+        | Opcode::StoreStatic => {
             let v = read_u32(code, pos, offset)?;
             Ok(Operands::U32(v))
         }

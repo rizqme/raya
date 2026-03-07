@@ -91,8 +91,6 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::TaskCancel
         | Opcode::DynGetKeyed
         | Opcode::DynSetKeyed
-        | Opcode::DynNewObject
-        | Opcode::DynKeys
         | Opcode::Throw
         | Opcode::EndTry
         | Opcode::Rethrow
@@ -129,7 +127,6 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::CastObjectMinFields
         | Opcode::CastArrayElemKind
         | Opcode::CastKindMask
-        | Opcode::Cast
         | Opcode::CastNominal => 1 + 2,
 
         // i32 operand (jumps)
@@ -161,11 +158,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::LoadGlobal
         | Opcode::StoreGlobal
         | Opcode::LoadStatic
-        | Opcode::StoreStatic
-        | Opcode::DynGet
-        | Opcode::DynSet
-        | Opcode::DynDelete
-        | Opcode::DynHas => 1 + 4,
+        | Opcode::StoreStatic => 1 + 4,
 
         // u32 + u16 operands
         Opcode::Call

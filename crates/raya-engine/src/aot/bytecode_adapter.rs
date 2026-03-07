@@ -9,10 +9,12 @@
 //! trait as Path A (source IR) functions.
 
 use crate::compiler::bytecode::module::Module;
+use rustc_hash::FxHashMap;
 
 use super::analysis::{SuspensionAnalysis, SuspensionKind, SuspensionPoint};
 use super::statemachine::{
     SmBlock, SmBlockId, SmBlockKind, SmCmpOp, SmF64BinOp, SmI32BinOp, SmInstr, SmTerminator,
+    HelperCall,
 };
 use super::traits::AotCompilable;
 
@@ -20,6 +22,62 @@ use super::traits::AotCompilable;
 use crate::jit::ir::instr::{JitFunction, JitInstr, JitTerminator, Reg};
 #[cfg(all(feature = "aot", feature = "jit"))]
 use crate::jit::pipeline::{lifter, optimize::JitOptimizer};
+
+#[cfg(all(feature = "aot", feature = "jit"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExactLayout {
+    Structural(u32),
+    Nominal(u32),
+}
+
+#[cfg(all(feature = "aot", feature = "jit"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShapeFieldSpecialization {
+    ExactField(u16),
+}
+
+#[cfg(all(feature = "aot", feature = "jit"))]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LocalLayoutState {
+    slots: Vec<Option<ExactLayout>>,
+}
+
+#[cfg(all(feature = "aot", feature = "jit"))]
+impl LocalLayoutState {
+    fn new(slot_count: usize) -> Self {
+        Self {
+            slots: vec![None; slot_count],
+        }
+    }
+
+    fn get(&self, index: u16) -> Option<ExactLayout> {
+        self.slots.get(index as usize).and_then(|slot| *slot)
+    }
+
+    fn set(&mut self, index: u16, layout: Option<ExactLayout>) {
+        if let Some(slot) = self.slots.get_mut(index as usize) {
+            *slot = layout;
+        }
+    }
+
+    fn merge_from_predecessors(states: &[&LocalLayoutState]) -> Self {
+        let slot_count = states.first().map(|state| state.slots.len()).unwrap_or(0);
+        if states.is_empty() {
+            return Self::new(slot_count);
+        }
+        let mut merged = vec![None; slot_count];
+        for slot_idx in 0..slot_count {
+            let first = states[0].slots[slot_idx];
+            if states[1..]
+                .iter()
+                .all(|state| state.slots[slot_idx] == first)
+            {
+                merged[slot_idx] = first;
+            }
+        }
+        Self { slots: merged }
+    }
+}
 
 /// Errors that can occur during bytecode lifting.
 #[derive(Debug)]
@@ -69,6 +127,44 @@ impl std::error::Error for BytecodeAdapterError {}
 pub fn lift_bytecode_module(module: &Module) -> Result<Vec<LiftedFunction>, BytecodeAdapterError> {
     let optimizer = JitOptimizer::new();
     let mut lifted = Vec::new();
+    let structural_shapes = module
+        .metadata
+        .structural_shapes
+        .iter()
+        .map(|shape| {
+            (
+                crate::vm::object::shape_id_from_member_names(&shape.member_names),
+                shape.member_names.clone(),
+            )
+        })
+        .collect::<FxHashMap<_, _>>();
+    let structural_layouts = module
+        .metadata
+        .structural_layouts
+        .iter()
+        .map(|layout| (layout.layout_id, layout.member_names.clone()))
+        .collect::<FxHashMap<_, _>>();
+    let nominal_layouts = module
+        .reflection
+        .as_ref()
+        .map(|reflection| {
+            reflection
+                .classes
+                .iter()
+                .enumerate()
+                .map(|(nominal_type_id, class)| {
+                    (
+                        nominal_type_id as u32,
+                        class
+                            .fields
+                            .iter()
+                            .map(|field| field.name.clone())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<FxHashMap<_, _>>()
+        })
+        .unwrap_or_default();
 
     for (idx, func) in module.functions.iter().enumerate() {
         let mut jit_func = lifter::lift_function(func, module, idx as u32).map_err(|e| {
@@ -87,6 +183,9 @@ pub fn lift_bytecode_module(module: &Module) -> Result<Vec<LiftedFunction>, Byte
             param_count: func.param_count as u32,
             local_count: func.local_count as u32,
             name,
+            structural_shapes: structural_shapes.clone(),
+            structural_layouts: structural_layouts.clone(),
+            nominal_layouts: nominal_layouts.clone(),
             jit_func,
         });
     }
@@ -114,6 +213,15 @@ pub struct LiftedFunction {
 
     /// Function name (from module metadata, if available).
     pub name: Option<String>,
+
+    /// Canonical structural shape metadata for this module.
+    pub structural_shapes: FxHashMap<u64, Vec<String>>,
+
+    /// Physical structural layout metadata for this module.
+    pub structural_layouts: FxHashMap<u32, Vec<String>>,
+
+    /// Nominal type field layout metadata for this module.
+    pub nominal_layouts: FxHashMap<u32, Vec<String>>,
 
     /// The lifted JIT IR (only available when both aot and jit features are enabled).
     #[cfg(all(feature = "aot", feature = "jit"))]
@@ -145,6 +253,357 @@ fn classify_suspension(instr: &JitInstr) -> Option<SuspensionKind> {
         // JitInstr::ChannelRecv { .. } => Some(SuspensionKind::ChannelRecv),
         // JitInstr::ChannelSend { .. } => Some(SuspensionKind::ChannelSend),
         _ => None,
+    }
+}
+
+#[cfg(all(feature = "aot", feature = "jit"))]
+impl LiftedFunction {
+    fn local_slot_count(&self) -> usize {
+        self.local_count as usize
+    }
+
+    fn structural_shape_names(&self, shape_id: u64) -> Option<&[String]> {
+        self.structural_shapes.get(&shape_id).map(Vec::as_slice)
+    }
+
+    fn structural_layout_names(&self, layout_id: u32) -> Option<&[String]> {
+        self.structural_layouts.get(&layout_id).map(Vec::as_slice)
+    }
+
+    fn nominal_layout_names(&self, nominal_type_id: u32) -> Option<&[String]> {
+        self.nominal_layouts.get(&nominal_type_id).map(Vec::as_slice)
+    }
+
+    fn exact_layout_field_names(&self, exact: ExactLayout) -> Option<Vec<String>> {
+        match exact {
+            ExactLayout::Structural(layout_id) => {
+                self.structural_layout_names(layout_id).map(|names| names.to_vec())
+            }
+            ExactLayout::Nominal(nominal_type_id) => {
+                self.nominal_layout_names(nominal_type_id).map(|names| names.to_vec())
+            }
+        }
+    }
+
+    fn specialize_shape_field_access(
+        &self,
+        exact: ExactLayout,
+        shape_id: u64,
+        required_slot: u16,
+    ) -> Option<ShapeFieldSpecialization> {
+        let required_names = self.structural_shape_names(shape_id)?;
+        let required_name = required_names.get(required_slot as usize)?;
+        let provider_names = self.exact_layout_field_names(exact)?;
+        let provider_slot = provider_names
+            .iter()
+            .position(|name| name == required_name)?;
+        let provider_slot = u16::try_from(provider_slot).ok()?;
+        Some(ShapeFieldSpecialization::ExactField(provider_slot))
+    }
+
+    fn exact_layout_satisfies_shape_by_fields(&self, exact: ExactLayout, shape_id: u64) -> bool {
+        let Some(required_names) = self.structural_shape_names(shape_id) else {
+            return false;
+        };
+        let Some(provider_names) = self.exact_layout_field_names(exact) else {
+            return false;
+        };
+        required_names
+            .iter()
+            .all(|required| provider_names.iter().any(|provider| provider == required))
+    }
+
+    fn update_layout_tracking(
+        &self,
+        reg_state: &mut FxHashMap<Reg, ExactLayout>,
+        local_state: &mut LocalLayoutState,
+        global_state: &mut FxHashMap<u32, ExactLayout>,
+        instr: &JitInstr,
+    ) {
+        let reg_layout = |reg: Reg, reg_state: &FxHashMap<Reg, ExactLayout>| reg_state.get(&reg).copied();
+        match instr {
+            JitInstr::NewObject {
+                dest,
+                nominal_type_id,
+                ..
+            }
+            | JitInstr::ConstructType {
+                dest,
+                nominal_type_id,
+                ..
+            } => {
+                reg_state.insert(*dest, ExactLayout::Nominal(*nominal_type_id));
+            }
+            JitInstr::ObjectLiteral { dest, type_index, .. } => {
+                reg_state.insert(*dest, ExactLayout::Structural(*type_index));
+            }
+            JitInstr::DynNewObject { dest } => {
+                reg_state.insert(
+                    *dest,
+                    ExactLayout::Structural(crate::vm::object::layout_id_from_ordered_names(&[])),
+                );
+            }
+            JitInstr::CastShape { dest, object, .. }
+            | JitInstr::Move { dest, src: object }
+            | JitInstr::Cast { dest, object, .. } => {
+                if let Some(layout) = reg_layout(*object, reg_state) {
+                    reg_state.insert(*dest, layout);
+                }
+            }
+            JitInstr::LoadLocal { dest, index } => {
+                if let Some(layout) = local_state.get(*index) {
+                    reg_state.insert(*dest, layout);
+                }
+            }
+            JitInstr::LoadGlobal { dest, index } => {
+                if let Some(layout) = global_state.get(index).copied() {
+                    reg_state.insert(*dest, layout);
+                }
+            }
+            JitInstr::StoreLocal { index, value } => {
+                local_state.set(*index, reg_layout(*value, reg_state));
+            }
+            JitInstr::StoreGlobal { index, value } => {
+                if let Some(layout) = reg_layout(*value, reg_state) {
+                    global_state.insert(*index, layout);
+                }
+            }
+            JitInstr::Phi { dest, sources } => {
+                let first = sources
+                    .first()
+                    .and_then(|(_, reg)| reg_layout(*reg, reg_state));
+                if let Some(layout) = first.filter(|layout| {
+                    sources
+                        .iter()
+                        .all(|(_, reg)| reg_layout(*reg, reg_state) == Some(*layout))
+                }) {
+                    reg_state.insert(*dest, layout);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn analyze_block_local_layouts(&self) -> Vec<LocalLayoutState> {
+        let block_count = self.jit_func.blocks.len();
+        let slot_count = self.local_slot_count();
+        let mut entries = vec![LocalLayoutState::new(slot_count); block_count];
+        let mut exits = vec![LocalLayoutState::new(slot_count); block_count];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (block_idx, block) in self.jit_func.blocks.iter().enumerate() {
+                let merged = if block_idx == self.jit_func.entry.0 as usize {
+                    entries[block_idx].clone()
+                } else if block.predecessors.is_empty() {
+                    LocalLayoutState::new(slot_count)
+                } else {
+                    let pred_states = block
+                        .predecessors
+                        .iter()
+                        .map(|pred| &exits[pred.0 as usize])
+                        .collect::<Vec<_>>();
+                    LocalLayoutState::merge_from_predecessors(&pred_states)
+                };
+                if merged != entries[block_idx] {
+                    entries[block_idx] = merged.clone();
+                    changed = true;
+                }
+                let mut reg_state = FxHashMap::default();
+                let mut local_state = merged;
+                let mut global_state = FxHashMap::default();
+                for instr in &block.instrs {
+                    self.update_layout_tracking(
+                        &mut reg_state,
+                        &mut local_state,
+                        &mut global_state,
+                        instr,
+                    );
+                }
+                if exits[block_idx] != local_state {
+                    exits[block_idx] = local_state;
+                    changed = true;
+                }
+            }
+        }
+        entries
+    }
+
+    fn emit_instrs_for_block(
+        &self,
+        out: &mut Vec<SmInstr>,
+        instr: &JitInstr,
+        reg_state: &mut FxHashMap<Reg, ExactLayout>,
+        local_state: &mut LocalLayoutState,
+        global_state: &mut FxHashMap<u32, ExactLayout>,
+    ) {
+        let reg_layout = |reg: Reg, reg_state: &FxHashMap<Reg, ExactLayout>| reg_state.get(&reg).copied();
+        match instr {
+            JitInstr::NewObject { dest, nominal_type_id, .. } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::AllocObject,
+                args: vec![*nominal_type_id],
+            }),
+            JitInstr::LoadFieldExact { dest, object, offset } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::ObjectGetField,
+                args: vec![object.0, *offset as u32],
+            }),
+            JitInstr::LoadFieldShape {
+                dest,
+                object,
+                shape_id,
+                offset,
+                optional: _,
+                ..
+            } => {
+                if let Some(ShapeFieldSpecialization::ExactField(field)) =
+                    reg_layout(*object, reg_state)
+                        .and_then(|layout| self.specialize_shape_field_access(layout, *shape_id, *offset))
+                {
+                    out.push(SmInstr::CallHelper {
+                        dest: Some(dest.0),
+                        helper: HelperCall::ObjectGetField,
+                        args: vec![object.0, field as u32],
+                    });
+                } else {
+                    out.push(SmInstr::CallHelper {
+                        dest: Some(dest.0),
+                        helper: HelperCall::LoadFieldShape,
+                        args: vec![
+                            object.0,
+                            (*shape_id & 0xFFFF_FFFF) as u32,
+                            (*shape_id >> 32) as u32,
+                            *offset as u32,
+                        ],
+                    });
+                }
+            }
+            JitInstr::ImplementsShape { dest, object, shape_id } => {
+                if let Some(layout) = reg_layout(*object, reg_state) {
+                    out.push(SmInstr::ConstBool {
+                        dest: dest.0,
+                        value: self.exact_layout_satisfies_shape_by_fields(layout, *shape_id),
+                    });
+                } else {
+                    out.push(SmInstr::CallHelper {
+                        dest: Some(dest.0),
+                        helper: HelperCall::ImplementsShape,
+                        args: vec![
+                            object.0,
+                            (*shape_id & 0xFFFF_FFFF) as u32,
+                            (*shape_id >> 32) as u32,
+                        ],
+                    });
+                }
+            }
+            JitInstr::CastShape { dest, object, shape_id, .. } => {
+                if let Some(layout) = reg_layout(*object, reg_state)
+                    .filter(|layout| self.exact_layout_satisfies_shape_by_fields(*layout, *shape_id))
+                {
+                    let _ = layout;
+                    out.push(SmInstr::Move {
+                        dest: dest.0,
+                        src: object.0,
+                    });
+                } else {
+                    out.push(SmInstr::CallHelper {
+                        dest: Some(dest.0),
+                        helper: HelperCall::CastShape,
+                        args: vec![
+                            object.0,
+                            (*shape_id & 0xFFFF_FFFF) as u32,
+                            (*shape_id >> 32) as u32,
+                        ],
+                    });
+                }
+            }
+            JitInstr::StoreFieldExact { object, offset, value } => out.push(SmInstr::CallHelper {
+                dest: None,
+                helper: HelperCall::ObjectSetField,
+                args: vec![object.0, *offset as u32, value.0],
+            }),
+            JitInstr::StoreFieldShape {
+                object,
+                shape_id,
+                offset,
+                value,
+                ..
+            } => {
+                if let Some(ShapeFieldSpecialization::ExactField(field)) =
+                    reg_layout(*object, reg_state)
+                        .and_then(|layout| self.specialize_shape_field_access(layout, *shape_id, *offset))
+                {
+                    out.push(SmInstr::CallHelper {
+                        dest: None,
+                        helper: HelperCall::ObjectSetField,
+                        args: vec![object.0, field as u32, value.0],
+                    });
+                } else {
+                    out.push(SmInstr::CallHelper {
+                        dest: None,
+                        helper: HelperCall::StoreFieldShape,
+                        args: vec![
+                            object.0,
+                            (*shape_id & 0xFFFF_FFFF) as u32,
+                            (*shape_id >> 32) as u32,
+                            *offset as u32,
+                            value.0,
+                        ],
+                    });
+                }
+            }
+            JitInstr::InstanceOf { dest, object, nominal_type_id } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::InstanceOf,
+                args: vec![object.0, *nominal_type_id],
+            }),
+            JitInstr::Cast { dest, object, nominal_type_id, .. } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::Cast,
+                args: vec![object.0, *nominal_type_id],
+            }),
+            JitInstr::Typeof { dest, operand } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::Typeof,
+                args: vec![operand.0],
+            }),
+            JitInstr::ObjectLiteral { dest, type_index, fields } => {
+                out.push(SmInstr::CallHelper {
+                    dest: Some(dest.0),
+                    helper: HelperCall::AllocStructuralObject,
+                    args: vec![*type_index, fields.len() as u32],
+                });
+                for (field_index, value) in fields.iter().enumerate() {
+                    out.push(SmInstr::CallHelper {
+                        dest: None,
+                        helper: HelperCall::ObjectSetField,
+                        args: vec![dest.0, field_index as u32, value.0],
+                    });
+                }
+            }
+            JitInstr::DynGetKeyed { dest, object, index } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::DynGetProp,
+                args: vec![object.0, index.0],
+            }),
+            JitInstr::DynSetKeyed { object, index, value } => out.push(SmInstr::CallHelper {
+                dest: None,
+                helper: HelperCall::DynSetProp,
+                args: vec![object.0, index.0, value.0],
+            }),
+            JitInstr::DynNewObject { dest } => out.push(SmInstr::CallHelper {
+                dest: Some(dest.0),
+                helper: HelperCall::AllocStructuralObject,
+                args: vec![crate::vm::object::layout_id_from_ordered_names(&[]), 0],
+            }),
+            _ => {
+                if let Some(sm_instr) = map_jit_instr_to_sm(instr) {
+                    out.push(sm_instr);
+                }
+            }
+        }
+        self.update_layout_tracking(reg_state, local_state, global_state, instr);
     }
 }
 
@@ -196,21 +655,49 @@ impl AotCompilable for LiftedFunction {
 
     #[cfg(all(feature = "aot", feature = "jit"))]
     fn emit_blocks(&self) -> Vec<SmBlock> {
+        let debug = std::env::var_os("RAYA_DEBUG_AOT_DUMP").is_some();
+        if debug {
+            eprintln!(
+                "\n=== AOT LIFTED JIT fn={} name={:?} entry={} blocks={} ===\n{:#?}",
+                self.func_index,
+                self.name,
+                self.jit_func.entry.0,
+                self.jit_func.blocks.len(),
+                self.jit_func
+            );
+        }
+        let block_entry_states = self.analyze_block_local_layouts();
+        if debug {
+            eprintln!(
+                "\n=== AOT BLOCK ENTRY STATES fn={} name={:?} ===\n{:#?}",
+                self.func_index,
+                self.name,
+                block_entry_states
+            );
+        }
         self.jit_func
             .blocks
             .iter()
             .enumerate()
             .map(|(idx, jit_block)| {
                 let mut instructions = Vec::new();
+                let mut reg_state = FxHashMap::default();
+                let mut local_state = block_entry_states
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| LocalLayoutState::new(self.local_slot_count()));
+                let mut global_state = FxHashMap::default();
 
-                // Map each JitInstr to SmInstr
                 for instr in &jit_block.instrs {
-                    if let Some(sm_instr) = map_jit_instr_to_sm(instr) {
-                        instructions.push(sm_instr);
-                    }
+                    self.emit_instrs_for_block(
+                        &mut instructions,
+                        instr,
+                        &mut reg_state,
+                        &mut local_state,
+                        &mut global_state,
+                    );
                 }
 
-                // Map the terminator
                 let terminator = map_jit_terminator(&jit_block.terminator);
 
                 SmBlock {
@@ -441,6 +928,9 @@ mod tests {
                 param_count: 2,
                 local_count: 4,
                 name: Some("add".to_string()),
+                structural_shapes: FxHashMap::default(),
+                structural_layouts: FxHashMap::default(),
+                nominal_layouts: FxHashMap::default(),
                 jit_func,
             };
 

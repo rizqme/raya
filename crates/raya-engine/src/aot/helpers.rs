@@ -153,6 +153,21 @@ unsafe extern "C" fn helper_alloc_object(
     value.raw()
 }
 
+unsafe extern "C" fn helper_alloc_structural_object(
+    ctx: *mut AotTaskContext,
+    layout_id: u32,
+    field_count: u32,
+) -> u64 {
+    if ctx.is_null() || (*ctx).shared_state.is_null() || layout_id == 0 {
+        return abi::NULL_VALUE;
+    }
+    let shared = &*((*ctx).shared_state as *const SharedVmState);
+    let mut gc = shared.gc.lock();
+    let obj_ptr = gc.allocate(Object::new_structural(layout_id, field_count as usize));
+    let value = Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap());
+    value.raw()
+}
+
 unsafe extern "C" fn helper_alloc_array(
     ctx: *mut AotTaskContext,
     type_id: u32,
@@ -1168,6 +1183,7 @@ pub fn create_default_helper_table() -> AotHelperTable {
         free_frame: helper_free_frame,
         safepoint_poll: helper_safepoint_poll,
         alloc_object: helper_alloc_object,
+        alloc_structural_object: helper_alloc_structural_object,
         alloc_array: helper_alloc_array,
         alloc_string: helper_alloc_string,
         string_concat: helper_string_concat,

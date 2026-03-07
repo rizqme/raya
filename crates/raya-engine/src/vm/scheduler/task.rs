@@ -14,6 +14,7 @@
 use crate::vm::gc::Nursery;
 use crate::vm::interpreter::execution::ExecutionFrame;
 use crate::vm::snapshot::{BlockedReason, SerializedFrame, SerializedTask};
+use crate::vm::snapshot::SerializedValue;
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
@@ -855,6 +856,17 @@ impl Task {
     ///
     /// Must only be called when the task is paused (not actively executing on a worker).
     pub fn to_serialized(&self) -> SerializedTask {
+        self.to_serialized_with_values(|value| {
+            SerializedValue::from_live(value, &std::collections::HashMap::new())
+        })
+        .expect("task snapshot contains unsupported heap pointer without heap mapping")
+    }
+
+    /// Serialize this task using a snapshot-aware value mapper.
+    pub fn to_serialized_with_values<F>(&self, mut encode_value: F) -> std::io::Result<SerializedTask>
+    where
+        F: FnMut(Value) -> std::io::Result<SerializedValue>,
+    {
         let lc = self.lifecycle.lock();
         let state = lc.state;
         let result = lc.result;
@@ -862,21 +874,37 @@ impl Task {
         drop(lc);
 
         let ip = self.ip.load(Ordering::Relaxed);
-        let stack_values = self.stack.lock().unwrap().as_slice().to_vec();
+        let stack_guard = self.stack.lock().unwrap();
+        let stack_values = stack_guard.as_slice().to_vec();
         let execution_frames = self.calls.lock().execution_frames.clone();
         let current_module = self.current_module();
 
         // Map ExecutionFrame -> SerializedFrame
         let frames: Vec<SerializedFrame> = execution_frames
             .iter()
-            .map(|ef| SerializedFrame {
-                function_index: ef.func_id,
-                module_checksum: ef.module.checksum,
-                return_ip: ef.ip,
-                base_pointer: ef.locals_base,
-                locals: Vec::new(),
+            .map(|ef| -> std::io::Result<SerializedFrame> {
+                Ok(SerializedFrame {
+                    function_index: ef.func_id,
+                    module_checksum: ef.module.checksum,
+                    return_ip: ef.ip,
+                    base_pointer: ef.locals_base,
+                    locals: {
+                        let local_count = ef
+                            .module
+                            .functions
+                            .get(ef.func_id)
+                            .map(|function| function.local_count)
+                            .unwrap_or(0);
+                        let end = ef.locals_base.saturating_add(local_count).min(stack_values.len());
+                        stack_values[ef.locals_base.min(end)..end]
+                            .iter()
+                            .copied()
+                            .map(&mut encode_value)
+                            .collect::<std::io::Result<Vec<_>>>()?
+                    },
+                })
             })
-            .collect();
+            .collect::<std::io::Result<Vec<_>>>()?;
 
         // Map SuspendReason -> BlockedReason
         let blocked_on = suspend_reason.map(|reason| match reason {
@@ -894,18 +922,21 @@ impl Task {
             SuspendReason::IoWait => BlockedReason::Other("io_wait".to_string()),
         });
 
-        SerializedTask {
+        Ok(SerializedTask {
             task_id: self.id,
             state,
             function_index: self.function_id,
             module_checksum: current_module.checksum,
             ip,
             frames,
-            stack: stack_values,
-            result,
+            stack: stack_values
+                .into_iter()
+                .map(&mut encode_value)
+                .collect::<std::io::Result<Vec<_>>>()?,
+            result: result.map(&mut encode_value).transpose()?,
             parent: self.parent,
             blocked_on,
-        }
+        })
     }
 
     /// Restore a task from a `SerializedTask` and a module reference.
@@ -917,23 +948,47 @@ impl Task {
         module: Arc<crate::compiler::Module>,
     ) -> Self {
         let fallback_checksum = module.checksum;
-        Self::from_serialized_with_lookup(serialized, module.clone(), move |checksum| {
-            if *checksum == fallback_checksum {
-                Some(module.clone())
-            } else {
-                None
-            }
-        })
+        Self::from_serialized_with_lookup_and_values(
+            serialized,
+            module.clone(),
+            move |checksum| {
+                if *checksum == fallback_checksum {
+                    Some(module.clone())
+                } else {
+                    None
+                }
+            },
+            |value| value.to_live(&std::collections::HashMap::new()),
+        )
     }
 
     /// Restore a task from serialized state while resolving modules by checksum.
     pub fn from_serialized_with_lookup<F>(
         serialized: SerializedTask,
-        _module_for_restore_context: Arc<crate::compiler::Module>,
-        mut resolve_module: F,
+        module_for_restore_context: Arc<crate::compiler::Module>,
+        resolve_module: F,
     ) -> Self
     where
         F: FnMut(&[u8; 32]) -> Option<Arc<crate::compiler::Module>>,
+    {
+        Self::from_serialized_with_lookup_and_values(
+            serialized,
+            module_for_restore_context,
+            resolve_module,
+            |value| value.to_live(&std::collections::HashMap::new()),
+        )
+    }
+
+    /// Restore a task from serialized state while resolving modules and remapping heap values.
+    pub fn from_serialized_with_lookup_and_values<F, V>(
+        serialized: SerializedTask,
+        _module_for_restore_context: Arc<crate::compiler::Module>,
+        mut resolve_module: F,
+        mut decode_value: V,
+    ) -> Self
+    where
+        F: FnMut(&[u8; 32]) -> Option<Arc<crate::compiler::Module>>,
+        V: FnMut(&SerializedValue) -> std::io::Result<Value>,
     {
         fn checksum_is_set(checksum: &[u8; 32]) -> bool {
             checksum.iter().any(|b| *b != 0)
@@ -980,7 +1035,9 @@ impl Task {
         // Rebuild stack from serialized values
         let mut stack = Stack::new();
         for value in &serialized.stack {
-            let _ = stack.push(*value);
+            let decoded = decode_value(value)
+                .expect("snapshot restore failed: could not decode stack value");
+            let _ = stack.push(decoded);
         }
 
         // Map BlockedReason -> SuspendReason
@@ -1018,7 +1075,12 @@ impl Task {
                 suspend_reason,
                 resume_value: None,
                 start_time: None,
-                result: serialized.result,
+                result: serialized
+                    .result
+                    .as_ref()
+                    .map(&mut decode_value)
+                    .transpose()
+                    .expect("snapshot restore failed: could not decode task result"),
                 waiters: Vec::new(),
                 awaiting_task: None,
                 rejection_observed: false,
@@ -1388,7 +1450,7 @@ mod tests {
         let serialized = task.to_serialized();
 
         assert_eq!(serialized.state, TaskState::Completed);
-        assert_eq!(serialized.result, Some(Value::i32(42)));
+        assert_eq!(serialized.result, Some(SerializedValue::from(Value::i32(42))));
     }
 
     #[test]
@@ -1516,7 +1578,11 @@ mod tests {
         serialized.state = TaskState::Suspended;
         serialized.module_checksum = module.checksum;
         serialized.ip = 100;
-        serialized.stack = vec![Value::i32(1), Value::i32(2), Value::i32(3)];
+        serialized.stack = vec![
+            SerializedValue::from(Value::i32(1)),
+            SerializedValue::from(Value::i32(2)),
+            SerializedValue::from(Value::i32(3)),
+        ];
         serialized.parent = Some(parent_id);
 
         let task = Task::from_serialized(serialized, module);

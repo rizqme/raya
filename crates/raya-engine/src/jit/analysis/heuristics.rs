@@ -238,17 +238,7 @@ impl HeuristicsAnalyzer {
                 }
 
                 // === Penalties: JSON ops ===
-                Opcode::DynGet
-                | Opcode::DynSet
-                | Opcode::DynDelete
-                | Opcode::DynGetKeyed
-                | Opcode::DynSetKeyed
-                | Opcode::DynNewObject
-                | Opcode::DynKeys
-                | Opcode::DynHas
-                | Opcode::DynNewObject
-                | Opcode::DynKeys
-                | Opcode::DynKeys => {
+                Opcode::DynGetKeyed | Opcode::DynSetKeyed => {
                     score += PENALTY_JSON;
                 }
 
@@ -437,6 +427,7 @@ mod tests {
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
                 structural_shapes: vec![],
+            structural_layouts: vec![],
             },
             exports: vec![],
             imports: vec![],

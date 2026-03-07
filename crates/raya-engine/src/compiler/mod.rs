@@ -40,8 +40,8 @@ pub use module_builder::ModuleBuilder;
 pub use bytecode::{
     module_id_from_name, symbol_id_from_name, verify_module, BytecodeReader, BytecodeWriter,
     ClassDef, ConstantPool, DecodeError, Export, Function, Import, Metadata, Method, Module,
-    ModuleError, ModuleId, NominalTypeExport, Opcode, StructuralShapeInfo, SymbolId, SymbolScope,
-    SymbolType, TypeSignatureHash, VerifyError,
+    ModuleError, ModuleId, NominalTypeExport, Opcode, StructuralLayoutInfo, StructuralShapeInfo,
+    SymbolId, SymbolScope, SymbolType, TypeSignatureHash, VerifyError,
 };
 
 use crate::parser::ast;
@@ -207,13 +207,13 @@ impl<'a> Compiler<'a> {
     /// 3. Optimization passes
     pub fn compile_to_optimized_ir(&self, module: &ast::Module) -> CompileResult<ir::IrModule> {
         self.compile_to_optimized_ir_with_metadata(module)
-            .map(|(ir_module, _)| ir_module)
+            .map(|(ir_module, _, _)| ir_module)
     }
 
     fn compile_to_optimized_ir_with_metadata(
         &self,
         module: &ast::Module,
-    ) -> CompileResult<(ir::IrModule, Vec<StructuralShapeInfo>)> {
+    ) -> CompileResult<(ir::IrModule, Vec<StructuralShapeInfo>, Vec<StructuralLayoutInfo>)> {
         // Auto-enable sourcemap when debug dump env vars are active
         let dump_ir = std::env::var("RAYA_DEBUG_DUMP_IR").is_ok();
         let dump_bc = std::env::var("RAYA_DEBUG_DUMP_BYTECODE").is_ok();
@@ -237,6 +237,14 @@ impl<'a> Compiler<'a> {
             .structural_shape_member_sets()
             .into_iter()
             .map(|member_names| StructuralShapeInfo { member_names })
+            .collect::<Vec<_>>();
+        let structural_layouts = ir_module
+            .structural_layouts
+            .iter()
+            .map(|(layout_id, member_names)| StructuralLayoutInfo {
+                layout_id: *layout_id,
+                member_names: member_names.clone(),
+            })
             .collect::<Vec<_>>();
 
         // Check for lowerer errors (e.g., unresolved types at dispatch points)
@@ -277,7 +285,7 @@ impl<'a> Compiler<'a> {
             dump_type_table(&self.type_ctx);
         }
 
-        Ok((ir_module, structural_shapes))
+        Ok((ir_module, structural_shapes, structural_layouts))
     }
 
     /// Compile a module through the full IR pipeline to bytecode
@@ -293,7 +301,8 @@ impl<'a> Compiler<'a> {
             self.emit_sourcemap || dump_bc || std::env::var("RAYA_DEBUG_DUMP_IR").is_ok();
 
         // Get optimized IR (sourcemap enabling and IR dump happen inside)
-        let (ir_module, structural_shapes) = self.compile_to_optimized_ir_with_metadata(module)?;
+        let (ir_module, structural_shapes, structural_layouts) =
+            self.compile_to_optimized_ir_with_metadata(module)?;
 
         // Generate bytecode from IR
         let mut bytecode_module = codegen::generate(&ir_module, need_sourcemap)?;
@@ -309,6 +318,7 @@ impl<'a> Compiler<'a> {
                 monomorphize::collect_mono_debug_map(&ir_module);
         }
         bytecode_module.metadata.structural_shapes = structural_shapes;
+        bytecode_module.metadata.structural_layouts = structural_layouts;
         populate_symbol_link_metadata(&mut bytecode_module, module, self.interner);
 
         // Dump annotated bytecode to stderr when RAYA_DEBUG_DUMP_BYTECODE is set

@@ -143,6 +143,9 @@ pub struct AotHelperTable {
     /// Allocate a new nominal object: (ctx, local_nominal_type_index) -> NaN-boxed ptr
     pub alloc_object: unsafe extern "C" fn(*mut AotTaskContext, u32) -> u64,
 
+    /// Allocate a new structural object: (ctx, layout_id, field_count) -> NaN-boxed ptr
+    pub alloc_structural_object: unsafe extern "C" fn(*mut AotTaskContext, u32, u32) -> u64,
+
     /// Allocate a new array: (ctx, type_id, capacity) -> NaN-boxed ptr
     pub alloc_array: unsafe extern "C" fn(*mut AotTaskContext, u32, u32) -> u64,
 

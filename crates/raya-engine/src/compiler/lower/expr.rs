@@ -3986,8 +3986,12 @@ impl<'a> Lowerer<'a> {
         Some(layout)
     }
 
-    fn structural_layout_id_from_ordered_names(&self, ordered_names: &[String]) -> u32 {
-        crate::vm::object::layout_id_from_ordered_names(ordered_names)
+    fn structural_layout_id_from_ordered_names(&mut self, ordered_names: &[String]) -> u32 {
+        let layout_id = crate::vm::object::layout_id_from_ordered_names(ordered_names);
+        self.module_structural_layouts
+            .entry(layout_id)
+            .or_insert_with(|| ordered_names.to_vec());
+        layout_id
     }
 
     fn structural_slot_index_from_type(&self, ty_id: TypeId, prop_name: &str) -> Option<u16> {
@@ -6160,9 +6164,10 @@ impl<'a> Lowerer<'a> {
                     ordered_names.push("errors".to_string());
                 }
 
+                let type_index = self.structural_layout_id_from_ordered_names(&ordered_names);
                 self.emit(IrInstr::ObjectLiteral {
                     dest: dest.clone(),
-                    type_index: self.structural_layout_id_from_ordered_names(&ordered_names),
+                    type_index,
                     fields,
                 });
 
@@ -8184,9 +8189,10 @@ impl<'a> Lowerer<'a> {
 
         let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
         let ordered_names: Vec<String> = field_layout.iter().map(|(key, _)| key.clone()).collect();
+        let type_index = self.structural_layout_id_from_ordered_names(&ordered_names);
         self.emit(IrInstr::ObjectLiteral {
             dest: dest.clone(),
-            type_index: self.structural_layout_id_from_ordered_names(&ordered_names),
+            type_index,
             fields,
         });
 
@@ -8203,9 +8209,10 @@ impl<'a> Lowerer<'a> {
     fn lower_jsx_props_with_spread(&mut self, attributes: &[ast::JsxAttribute]) -> Register {
         // Start with an empty object
         let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+        let type_index = self.structural_layout_id_from_ordered_names(&[]);
         self.emit(IrInstr::ObjectLiteral {
             dest: dest.clone(),
-            type_index: self.structural_layout_id_from_ordered_names(&[]),
+            type_index,
             fields: vec![],
         });
 

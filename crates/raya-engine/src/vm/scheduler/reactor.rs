@@ -348,6 +348,7 @@ impl Reactor {
                 &state.structural_layout_shapes,
                 &state.type_handles,
                 &state.prop_keys,
+                &state.aot_profile,
                 Some(&io_submit_tx),
                 state.max_preemptions,
                 &state.stack_pool,
@@ -366,6 +367,7 @@ impl Reactor {
                     interpreter.set_module_profile(Some(profile.clone()));
                 }
                 drop(profiles);
+                interpreter.set_module_profiles_map(Some(&state.module_profiles));
 
                 let compiler = state.background_compiler.lock().clone();
                 if let Some(ref c) = compiler {

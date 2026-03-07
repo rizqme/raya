@@ -246,8 +246,6 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::Throw
         | Opcode::DynGetKeyed
         | Opcode::DynSetKeyed
-        | Opcode::DynNewObject
-        | Opcode::DynKeys
         | Opcode::NewSemaphore
         | Opcode::SemAcquire
         | Opcode::SemRelease
@@ -284,8 +282,7 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::CastTupleLen
         | Opcode::CastObjectMinFields
         | Opcode::CastArrayElemKind
-        | Opcode::CastKindMask
-        | Opcode::Cast => 2,
+        | Opcode::CastKindMask => 2,
 
         // 4-byte operands (i32 or u32)
         Opcode::ConstI32 => 4,
@@ -300,11 +297,7 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::StoreGlobal
         | Opcode::NewArray
         | Opcode::LoadModule
-        | Opcode::TaskThen
-        | Opcode::DynGet
-        | Opcode::DynSet
-        | Opcode::DynDelete
-        | Opcode::DynHas => 4,
+        | Opcode::TaskThen => 4,
 
         // 8-byte operands (f64 / u64)
         Opcode::ConstF64 | Opcode::CastShape | Opcode::ImplementsShape => 8,
@@ -503,15 +496,9 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::LoadRefCell => (1, 1), // Pop refcell ptr, push value
         Opcode::StoreRefCell => (2, 0), // Pop refcell ptr + value
 
-        // Dynamic-object operations (parse/stringify use NativeCall)
-        Opcode::DynGet => (1, 1),       // Pop object, push value
-        Opcode::DynSet => (2, 0),       // Pop value + object (mutates)
-        Opcode::DynDelete => (1, 0),    // Pop object (mutates)
-        Opcode::DynGetKeyed => (2, 1),  // Pop key + object, push value
-        Opcode::DynSetKeyed => (3, 0),  // Pop value + key + object (mutates)
-        Opcode::DynNewObject => (0, 1), // Push new empty object with dyn_map
-        Opcode::DynKeys => (1, 1),      // Pop object, push string array
-        Opcode::DynHas => (1, 1),       // Pop object, push bool
+        // Dynamic-object operations
+        Opcode::DynGetKeyed => (2, 1), // Pop key + object, push value
+        Opcode::DynSetKeyed => (3, 0), // Pop value + key + object (mutates)
 
         // Semaphore operations
         Opcode::NewSemaphore => (1, 1), // Pop permit count, push semaphore
@@ -535,8 +522,7 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
 
         // Type operations
         Opcode::IsNominal | Opcode::ImplementsShape => (1, 1), // Pop object, push bool
-        Opcode::Cast
-        | Opcode::CastNominal
+        Opcode::CastNominal
         | Opcode::CastShape
         | Opcode::CastTupleLen
         | Opcode::CastObjectMinFields

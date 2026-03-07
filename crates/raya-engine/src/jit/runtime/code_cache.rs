@@ -5,8 +5,9 @@
 
 use crate::jit::backend::traits::ExecutableCode;
 use crate::jit::runtime::trampoline::JitEntryFn;
+use crate::vm::object::LayoutId;
 use parking_lot::RwLock;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Composite key for the code cache: (module_id, func_index)
@@ -15,12 +16,22 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 /// the same function index. Assigned by the cache via an atomic counter.
 type CacheKey = (u64, u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub enum LayoutDependency {
+    AnyLayout,
+    Layout(LayoutId),
+}
+
 /// Entry in the code cache
 pub struct CacheEntry {
     /// The compiled executable code
     pub code: ExecutableCode,
     /// Whether this entry has been invalidated (e.g., function was recompiled)
     pub invalidated: AtomicBool,
+    /// Module checksum for profile/cache invalidation plumbing.
+    pub module_checksum: [u8; 32],
+    /// Layout dependencies for generated-code invalidation.
+    pub layout_dependencies: FxHashSet<LayoutDependency>,
 }
 
 /// Thread-safe cache of JIT-compiled function code
@@ -35,6 +46,11 @@ pub struct CodeCache {
     next_module_id: AtomicUsize,
     /// Module checksum → module_id mapping (for interpreter lookups)
     module_ids: RwLock<FxHashMap<[u8; 32], u64>>,
+    /// Reverse module_id → module checksum mapping.
+    module_checksums: RwLock<FxHashMap<u64, [u8; 32]>>,
+    /// Layout dependency → cached functions that should be invalidated when that
+    /// layout changes.
+    layout_dependents: RwLock<FxHashMap<LayoutDependency, FxHashSet<CacheKey>>>,
 }
 
 impl CodeCache {
@@ -46,6 +62,8 @@ impl CodeCache {
             max_size,
             next_module_id: AtomicUsize::new(0),
             module_ids: RwLock::new(FxHashMap::default()),
+            module_checksums: RwLock::new(FxHashMap::default()),
+            layout_dependents: RwLock::new(FxHashMap::default()),
         }
     }
 
@@ -66,6 +84,7 @@ impl CodeCache {
 
         let id = self.allocate_module_id();
         self.module_ids.write().insert(checksum, id);
+        self.module_checksums.write().insert(id, checksum);
         id
     }
 
@@ -79,19 +98,54 @@ impl CodeCache {
     /// Insert compiled code for a function
     ///
     /// Returns false if the cache is full and the entry was not inserted.
-    pub fn insert(&self, module_id: u64, func_index: u32, code: ExecutableCode) -> bool {
+    pub fn insert(
+        &self,
+        module_id: u64,
+        func_index: u32,
+        code: ExecutableCode,
+    ) -> bool {
+        self.insert_with_dependencies(module_id, func_index, code, std::iter::empty())
+    }
+
+    /// Insert compiled code and record layout dependencies for generated-code invalidation.
+    pub fn insert_with_dependencies<I>(
+        &self,
+        module_id: u64,
+        func_index: u32,
+        code: ExecutableCode,
+        dependencies: I,
+    ) -> bool
+    where
+        I: IntoIterator<Item = LayoutDependency>,
+    {
         let key = (module_id, func_index);
         let code_size = code.code_size;
         let current = self.total_code_size.load(Ordering::Relaxed);
         if current + code_size > self.max_size {
             return false;
         }
+        let module_checksum = self
+            .module_checksums
+            .read()
+            .get(&module_id)
+            .copied()
+            .unwrap_or([0; 32]);
+        let layout_dependencies: FxHashSet<_> = dependencies.into_iter().collect();
 
         let mut entries = self.entries.write();
         // Remove old entry size if replacing
         if let Some(old) = entries.remove(&key) {
             self.total_code_size
                 .fetch_sub(old.code.code_size, Ordering::Relaxed);
+            let mut dependents = self.layout_dependents.write();
+            for dep in old.layout_dependencies {
+                if let Some(keys) = dependents.get_mut(&dep) {
+                    keys.remove(&key);
+                    if keys.is_empty() {
+                        dependents.remove(&dep);
+                    }
+                }
+            }
         }
 
         self.total_code_size.fetch_add(code_size, Ordering::Relaxed);
@@ -100,8 +154,16 @@ impl CodeCache {
             CacheEntry {
                 code,
                 invalidated: AtomicBool::new(false),
+                module_checksum,
+                layout_dependencies: layout_dependencies.clone(),
             },
         );
+        if !layout_dependencies.is_empty() {
+            let mut dependents = self.layout_dependents.write();
+            for dep in layout_dependencies {
+                dependents.entry(dep).or_default().insert(key);
+            }
+        }
         true
     }
 
@@ -127,6 +189,33 @@ impl CodeCache {
         if let Some(entry) = entries.get(&key) {
             entry.invalidated.store(true, Ordering::Release);
         }
+    }
+
+    /// Invalidate every compiled function that depends on the given layout.
+    ///
+    /// Returns `(module_checksum, func_index)` pairs so external profiling state
+    /// can reset its `jit_available` flags too.
+    pub fn invalidate_layout(&self, layout_id: LayoutId) -> Vec<([u8; 32], u32)> {
+        let mut affected_keys: FxHashSet<CacheKey> = FxHashSet::default();
+        {
+            let dependents = self.layout_dependents.read();
+            if let Some(keys) = dependents.get(&LayoutDependency::AnyLayout) {
+                affected_keys.extend(keys.iter().copied());
+            }
+            if let Some(keys) = dependents.get(&LayoutDependency::Layout(layout_id)) {
+                affected_keys.extend(keys.iter().copied());
+            }
+        }
+
+        let entries = self.entries.read();
+        affected_keys
+            .into_iter()
+            .filter_map(|key| {
+                let entry = entries.get(&key)?;
+                entry.invalidated.store(true, Ordering::Release);
+                Some((entry.module_checksum, key.1))
+            })
+            .collect()
     }
 
     /// Check if a function has been compiled and is valid
@@ -243,5 +332,38 @@ mod tests {
         assert_eq!(id1, 0);
         assert_eq!(id2, 1);
         assert_eq!(id3, 2);
+    }
+
+    #[test]
+    fn test_invalidate_layout_marks_matching_entries() {
+        let cache = CodeCache::new(1024);
+        let checksum = [7; 32];
+        let mid = cache.register_module(checksum);
+        assert!(cache.insert_with_dependencies(
+            mid,
+            3,
+            make_dummy_code(64),
+            [LayoutDependency::Layout(42)]
+        ));
+        assert!(cache.contains(mid, 3));
+
+        let affected = cache.invalidate_layout(42);
+        assert_eq!(affected, vec![(checksum, 3)]);
+        assert!(!cache.contains(mid, 3));
+    }
+
+    #[test]
+    fn test_any_layout_dependency_invalidates_on_any_layout_change() {
+        let cache = CodeCache::new(1024);
+        let checksum = [9; 32];
+        let mid = cache.register_module(checksum);
+        assert!(cache.insert_with_dependencies(
+            mid,
+            1,
+            make_dummy_code(64),
+            [LayoutDependency::AnyLayout]
+        ));
+        let affected = cache.invalidate_layout(999);
+        assert_eq!(affected, vec![(checksum, 1)]);
     }
 }

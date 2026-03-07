@@ -25,6 +25,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 
 use super::lowering::{self, aot_entry_signature};
 use super::traits::{compile_to_state_machine, AotCompilable, AotError};
+use crate::aot::profile::AotProfileData;
 
 // =============================================================================
 // Public types
@@ -157,6 +158,8 @@ pub struct CompilableFunction<'a> {
     pub module_index: u16,
     /// Function index within the module.
     pub func_index: u16,
+    /// Module checksum used for offline AOT profile lookup.
+    pub module_checksum: [u8; 32],
 }
 
 /// Alignment for each function's code within the blob (16 bytes).
@@ -187,6 +190,16 @@ pub fn compile_functions(
     functions: &[CompilableFunction<'_>],
     isa: Arc<dyn TargetIsa>,
 ) -> Result<AotBundle, AotError> {
+    compile_functions_with_profile(functions, isa, None)
+}
+
+/// Compile a set of functions into an AOT bundle, optionally using an offline
+/// profile to prioritize hot functions in code layout.
+pub fn compile_functions_with_profile(
+    functions: &[CompilableFunction<'_>],
+    isa: Arc<dyn TargetIsa>,
+    profile: Option<&AotProfileData>,
+) -> Result<AotBundle, AotError> {
     let target_triple = isa.triple().to_string();
     let call_conv = isa.default_call_conv();
 
@@ -198,12 +211,31 @@ pub fn compile_functions(
     let mut func_table = Vec::new();
     let mut func_builder_ctx = FunctionBuilderContext::new();
 
-    for compilable in functions {
+    let mut ordered = functions.iter().collect::<Vec<_>>();
+    if let Some(profile) = profile {
+        ordered.sort_by_key(|compilable| {
+            std::cmp::Reverse(profile.function_hotness(
+                &compilable.module_checksum,
+                compilable.func_index as u32,
+            ))
+        });
+    }
+
+    for compilable in ordered {
         let global_id = GlobalFuncId::new(compilable.module_index, compilable.func_index);
         let func_name = compilable.func.name().unwrap_or("anon").to_string();
 
         // 1. Run through the full pipeline: analyze → emit → transform
         let sm_func = compile_to_state_machine(compilable.func, global_id.0);
+        if std::env::var_os("RAYA_DEBUG_AOT_DUMP").is_some() {
+            eprintln!(
+                "\n=== AOT SM {}::{:#06x} {} ===\n{:#?}",
+                compilable.module_index,
+                compilable.func_index,
+                func_name,
+                sm_func
+            );
+        }
 
         // 2. Build Cranelift IR
         let mut codegen_ctx = Context::new();
@@ -217,6 +249,15 @@ pub fn compile_functions(
             lowering::lower_function(&sm_func, builder).map_err(|e| {
                 AotError::LoweringFailed(format!("Failed to lower '{}': {}", func_name, e))
             })?;
+        }
+        if std::env::var_os("RAYA_DEBUG_AOT_DUMP").is_some() {
+            eprintln!(
+                "\n=== AOT CLIF {}::{:#06x} {} ===\n{}",
+                compilable.module_index,
+                compilable.func_index,
+                func_name,
+                codegen_ctx.func.display()
+            );
         }
 
         // 3. Compile to machine code
@@ -364,6 +405,7 @@ mod tests {
             func: &func,
             module_index: 0,
             func_index: 0,
+            module_checksum: [0; 32],
         }];
 
         let bundle = compile_functions(&functions, isa).expect("Compilation failed");
@@ -398,11 +440,13 @@ mod tests {
                 func: &func_a,
                 module_index: 0,
                 func_index: 0,
+                module_checksum: [0; 32],
             },
             CompilableFunction {
                 func: &func_b,
                 module_index: 0,
                 func_index: 1,
+                module_checksum: [0; 32],
             },
         ];
 
@@ -476,6 +520,7 @@ mod tests {
             func: &func,
             module_index: 0,
             func_index: 0,
+            module_checksum: [0; 32],
         }];
 
         let bundle = compile_functions(&functions, isa).expect("Compilation failed");

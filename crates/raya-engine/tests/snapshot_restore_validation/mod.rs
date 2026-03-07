@@ -19,7 +19,7 @@
 
 use raya_engine::vm::interpreter::{ResourceLimits, VmContext, VmOptions};
 use raya_engine::vm::scheduler::{Scheduler, TaskId};
-use raya_engine::vm::snapshot::{SerializedTask, SnapshotReader, SnapshotWriter};
+use raya_engine::vm::snapshot::{SerializedTask, SerializedValue, SnapshotReader, SnapshotWriter};
 use raya_engine::vm::value::Value;
 use std::io::Cursor;
 
@@ -90,10 +90,10 @@ fn test_task_snapshot_roundtrip_with_state() {
     task.parent = Some(TaskId::from_u64(99));
 
     // Add stack values
-    task.stack.push(Value::i32(10));
-    task.stack.push(Value::i32(20));
-    task.stack.push(Value::bool(true));
-    task.stack.push(Value::f64(3.14));
+    task.stack.push(SerializedValue::from(Value::i32(10)));
+    task.stack.push(SerializedValue::from(Value::i32(20)));
+    task.stack.push(SerializedValue::from(Value::bool(true)));
+    task.stack.push(SerializedValue::from(Value::f64(3.14)));
 
     // Write to snapshot
     let mut writer = SnapshotWriter::new();
@@ -140,7 +140,7 @@ fn test_multiple_tasks_snapshot_roundtrip() {
     // Task 3: Completed with result
     let mut task3 = SerializedTask::new(TaskId::from_u64(3), 2);
     task3.state = TaskState::Completed;
-    task3.result = Some(Value::i32(42));
+    task3.result = Some(SerializedValue::from(Value::i32(42)));
 
     writer.add_task(task1);
     writer.add_task(task2);
@@ -157,7 +157,13 @@ fn test_multiple_tasks_snapshot_roundtrip() {
     assert_eq!(reader.tasks()[0].state, TaskState::Running);
     assert_eq!(reader.tasks()[1].state, TaskState::Created);
     assert_eq!(reader.tasks()[2].state, TaskState::Completed);
-    assert_eq!(reader.tasks()[2].result.unwrap().as_i32(), Some(42));
+    assert_eq!(
+        reader.tasks()[2]
+            .result
+            .as_ref()
+            .and_then(|value| value.as_i32()),
+        Some(42)
+    );
 }
 
 // ===== Task Hierarchy Preservation Tests =====
@@ -267,7 +273,7 @@ fn test_deep_call_stack_snapshot() {
 
         // Add some locals
         for j in 0..5 {
-            frame.locals.push(Value::i32((i * 10 + j) as i32));
+            frame.locals.push(SerializedValue::from(Value::i32((i * 10 + j) as i32)));
         }
 
         task.frames.push(frame);
@@ -308,17 +314,17 @@ fn test_all_value_types_snapshot() {
     let mut task = SerializedTask::new(TaskId::from_u64(1), 0);
 
     // Add all value types to stack
-    task.stack.push(Value::null());
-    task.stack.push(Value::bool(true));
-    task.stack.push(Value::bool(false));
-    task.stack.push(Value::i32(42));
-    task.stack.push(Value::i32(-42));
-    task.stack.push(Value::i32(0));
-    task.stack.push(Value::f64(3.14));
-    task.stack.push(Value::f64(-3.14));
-    task.stack.push(Value::f64(0.0));
-    task.stack.push(Value::u32(100));
-    task.stack.push(Value::u64(1000));
+    task.stack.push(SerializedValue::from(Value::null()));
+    task.stack.push(SerializedValue::from(Value::bool(true)));
+    task.stack.push(SerializedValue::from(Value::bool(false)));
+    task.stack.push(SerializedValue::from(Value::i32(42)));
+    task.stack.push(SerializedValue::from(Value::i32(-42)));
+    task.stack.push(SerializedValue::from(Value::i32(0)));
+    task.stack.push(SerializedValue::from(Value::f64(3.14)));
+    task.stack.push(SerializedValue::from(Value::f64(-3.14)));
+    task.stack.push(SerializedValue::from(Value::f64(0.0)));
+    task.stack.push(SerializedValue::from(Value::u32(100)));
+    task.stack.push(SerializedValue::from(Value::u64(1000)));
 
     writer.add_task(task);
 
@@ -417,8 +423,8 @@ fn test_snapshot_data_corruption_detection() {
     let mut writer = SnapshotWriter::new();
 
     let mut task = SerializedTask::new(TaskId::from_u64(100), 5);
-    task.stack.push(Value::i32(42));
-    task.stack.push(Value::bool(true));
+    task.stack.push(SerializedValue::from(Value::i32(42)));
+    task.stack.push(SerializedValue::from(Value::bool(true)));
 
     writer.add_task(task);
 
@@ -452,7 +458,7 @@ fn test_snapshot_file_write_and_read() {
 
     for i in 0..10 {
         let mut task = SerializedTask::new(TaskId::from_u64(i), i as usize);
-        task.stack.push(Value::i32((i * 10) as i32));
+        task.stack.push(SerializedValue::from(Value::i32((i * 10) as i32)));
         writer.add_task(task);
     }
 
@@ -490,7 +496,7 @@ fn test_large_snapshot_with_many_tasks() {
 
         // Add varying amounts of stack data
         for j in 0..(i % 20) {
-            task.stack.push(Value::i32((i * 100 + j) as i32));
+            task.stack.push(SerializedValue::from(Value::i32((i * 100 + j) as i32)));
         }
 
         writer.add_task(task);
@@ -850,10 +856,10 @@ fn test_snapshot_with_max_values() {
 
     let mut task = SerializedTask::new(TaskId::from_u64(u64::MAX), usize::MAX);
     task.ip = usize::MAX;
-    task.stack.push(Value::i32(i32::MAX));
-    task.stack.push(Value::i32(i32::MIN));
-    task.stack.push(Value::u32(u32::MAX));
-    task.stack.push(Value::u64(U64_MAX_48BIT));
+    task.stack.push(SerializedValue::from(Value::i32(i32::MAX)));
+    task.stack.push(SerializedValue::from(Value::i32(i32::MIN)));
+    task.stack.push(SerializedValue::from(Value::u32(u32::MAX)));
+    task.stack.push(SerializedValue::from(Value::u64(U64_MAX_48BIT)));
 
     writer.add_task(task);
 

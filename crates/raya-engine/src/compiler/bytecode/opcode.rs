@@ -340,23 +340,12 @@ pub enum Opcode {
 
     // ===== Dynamic-object Operations (0xE0-0xEF) =====
     // Note: JSON.parse / JSON.stringify use NativeCall (0x0C00, 0x0C01) instead of opcodes
-    // 0xE0, 0xE1 reserved
-    /// Get dynamic property by const-pool name: pop object, push value  (operand: u32 nameIdx)
-    DynGet = 0xE2,
-    /// Set dynamic property by const-pool name: pop value, pop object  (operand: u32 nameIdx)
-    DynSet = 0xE3,
-    /// Delete dynamic property by const-pool name: pop object  (operand: u32 nameIdx)
-    DynDelete = 0xE4,
+    // 0xE0-0xE4 reserved
     /// Get property by runtime string key: pop key, pop object, push value  (no operand)
     DynGetKeyed = 0xE5,
     /// Set property by runtime string key: pop value, pop key, pop object  (no operand)
     DynSetKeyed = 0xE6,
-    /// Allocate empty dynamic object and push Value  (no operand)
-    DynNewObject = 0xE7,
-    /// Get dynamic object keys as Array<string>: pop object, push array  (no operand)
-    DynKeys = 0xE8,
-    /// Check object has property by const-pool name: pop object, push bool  (operand: u32 nameIdx)
-    DynHas = 0xE9,
+    // 0xE7-0xE9 reserved
     /// Check if object satisfies a structural shape (operand: u64 shapeId)
     ImplementsShape = 0xEA,
 
@@ -369,8 +358,7 @@ pub enum Opcode {
     CastNominal = 0xEB,
     /// Cast object to a structural shape (operand: u64 shapeId)
     CastShape = 0xEC,
-    /// Legacy generic cast opcode kept for decode compatibility only.
-    Cast = 0xEF,
+    // 0xEF reserved
 
     // ===== Closures & Modules (0xF0-0xF7) =====
     /// Create closure object (operands: u32 funcIndex, u16 captureCount)
@@ -586,14 +574,8 @@ impl Opcode {
             0xDE => Some(Self::StoreRefCell),
 
             // Dynamic-object operations (0xE0, 0xE1 reserved for NativeCall parse/stringify)
-            0xE2 => Some(Self::DynGet),
-            0xE3 => Some(Self::DynSet),
-            0xE4 => Some(Self::DynDelete),
             0xE5 => Some(Self::DynGetKeyed),
             0xE6 => Some(Self::DynSetKeyed),
-            0xE7 => Some(Self::DynNewObject),
-            0xE8 => Some(Self::DynKeys),
-            0xE9 => Some(Self::DynHas),
             0xEA => Some(Self::ImplementsShape),
             0xEB => Some(Self::CastNominal),
             0xEC => Some(Self::CastShape),
@@ -601,8 +583,6 @@ impl Opcode {
             // Task control & type operations
             0xED => Some(Self::TaskCancel),
             0xEE => Some(Self::IsNominal),
-            0xEF => Some(Self::Cast),
-
             // Closures & modules
             0xF0 => Some(Self::MakeClosure),
             0xF1 => Some(Self::CloseVar),
@@ -758,14 +738,8 @@ impl Opcode {
             Self::WaitAll => "WAIT_ALL",
             Self::SpawnClosure => "SPAWN_CLOSURE",
             Self::Sleep => "SLEEP",
-            Self::DynGet => "DYN_GET",
-            Self::DynSet => "DYN_SET",
-            Self::DynDelete => "DYN_DELETE",
             Self::DynGetKeyed => "DYN_GET_KEYED",
             Self::DynSetKeyed => "DYN_SET_KEYED",
-            Self::DynNewObject => "DYN_NEW_OBJECT",
-            Self::DynKeys => "DYN_KEYS",
-            Self::DynHas => "DYN_HAS",
             Self::ImplementsShape => "IMPLEMENTS_SHAPE",
             Self::TaskCancel => "TASK_CANCEL",
             Self::IsNominal => "IS_NOMINAL",
@@ -773,7 +747,6 @@ impl Opcode {
             Self::CastObjectMinFields => "CAST_OBJECT_MIN_FIELDS",
             Self::CastArrayElemKind => "CAST_ARRAY_ELEM_KIND",
             Self::CastKindMask => "CAST_KIND_MASK",
-            Self::Cast => "CAST",
             Self::CastNominal => "CAST_NOMINAL",
             Self::CastShape => "CAST_SHAPE",
             Self::MakeClosure => "MAKE_CLOSURE",
@@ -888,7 +861,10 @@ mod tests {
 
     #[test]
     fn test_invalid_opcode() {
-        let invalid_bytes = [0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x95, 0x96, 0x97, 0x98, 0x99, 0xE0, 0xE1, 0xFF];
+        let invalid_bytes = [
+            0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x95, 0x96, 0x97, 0x98, 0x99, 0xE0, 0xE1, 0xE2,
+            0xE3, 0xE4, 0xE7, 0xE8, 0xE9, 0xEF, 0xFF,
+        ];
         for byte in invalid_bytes {
             assert_eq!(Opcode::from_u8(byte), None, "0x{byte:02X} should be invalid");
         }
@@ -909,7 +885,6 @@ mod tests {
             Opcode::CastNominal,
             Opcode::CastShape,
             Opcode::IsNominal,
-            Opcode::Cast,
             Opcode::NewType,
             Opcode::NativeCall,
             Opcode::ArrayPush,
@@ -1107,14 +1082,8 @@ mod tests {
             Opcode::NewRefCell,
             Opcode::LoadRefCell,
             Opcode::StoreRefCell,
-            Opcode::DynGet,
-            Opcode::DynSet,
-            Opcode::DynDelete,
             Opcode::DynGetKeyed,
             Opcode::DynSetKeyed,
-            Opcode::DynNewObject,
-            Opcode::DynKeys,
-            Opcode::DynHas,
             Opcode::ImplementsShape,
             Opcode::IsNominal,
             Opcode::CastTupleLen,
@@ -1123,7 +1092,6 @@ mod tests {
             Opcode::CastKindMask,
             Opcode::CastNominal,
             Opcode::TaskCancel,
-            Opcode::Cast,
             Opcode::MakeClosure,
             Opcode::CloseVar,
             Opcode::LoadCaptured,

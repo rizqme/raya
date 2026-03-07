@@ -809,11 +809,20 @@ pub struct Metadata {
     pub mono_debug_map: Vec<MonoDebugEntry>,
     /// Canonical structural shapes referenced by this module.
     pub structural_shapes: Vec<StructuralShapeInfo>,
+    /// Physical structural layouts referenced by this module.
+    pub structural_layouts: Vec<StructuralLayoutInfo>,
 }
 
 /// Canonical structural shape metadata entry.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StructuralShapeInfo {
+    pub member_names: Vec<String>,
+}
+
+/// Physical structural layout metadata entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StructuralLayoutInfo {
+    pub layout_id: u32,
     pub member_names: Vec<String>,
 }
 
@@ -880,6 +889,10 @@ impl Metadata {
         for shape in &self.structural_shapes {
             shape.encode(writer);
         }
+        writer.emit_u32(self.structural_layouts.len() as u32);
+        for layout in &self.structural_layouts {
+            layout.encode(writer);
+        }
     }
 
     /// Decode metadata from binary
@@ -918,6 +931,11 @@ impl Metadata {
         for _ in 0..structural_shape_len {
             structural_shapes.push(StructuralShapeInfo::decode(reader)?);
         }
+        let structural_layout_len = reader.read_u32()? as usize;
+        let mut structural_layouts = Vec::with_capacity(structural_layout_len);
+        for _ in 0..structural_layout_len {
+            structural_layouts.push(StructuralLayoutInfo::decode(reader)?);
+        }
 
         Ok(Self {
             name,
@@ -926,6 +944,7 @@ impl Metadata {
             template_symbol_table,
             mono_debug_map,
             structural_shapes,
+            structural_layouts,
         })
     }
 }
@@ -946,6 +965,30 @@ impl StructuralShapeInfo {
             member_names.push(reader.read_string()?);
         }
         Ok(Self { member_names })
+    }
+}
+
+impl StructuralLayoutInfo {
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        writer.emit_u32(self.layout_id);
+        writer.emit_u32(self.member_names.len() as u32);
+        for name in &self.member_names {
+            writer.emit_u32(name.len() as u32);
+            writer.buffer.extend_from_slice(name.as_bytes());
+        }
+    }
+
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        let layout_id = reader.read_u32()?;
+        let member_count = reader.read_u32()? as usize;
+        let mut member_names = Vec::with_capacity(member_count);
+        for _ in 0..member_count {
+            member_names.push(reader.read_string()?);
+        }
+        Ok(Self {
+            layout_id,
+            member_names,
+        })
     }
 }
 
@@ -1356,6 +1399,7 @@ impl Module {
                 template_symbol_table: Vec::new(),
                 mono_debug_map: Vec::new(),
                 structural_shapes: Vec::new(),
+                structural_layouts: Vec::new(),
             },
             exports: Vec::new(),
             imports: Vec::new(),

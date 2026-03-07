@@ -2482,7 +2482,7 @@ impl<'a> Interpreter<'a> {
                 let def = builder.to_definition();
                 let mut classes_write = self.classes.write();
                 let next_id = classes_write.allocate_nominal_type_id();
-                let mut dyn_builder = crate::vm::reflect::DynamicClassBuilder::new(next_id);
+                let dyn_builder = crate::vm::reflect::DynamicClassBuilder::new();
 
                 let (new_class, new_metadata) = if let Some(parent_id) = builder.parent_id {
                     let parent = classes_write
@@ -2498,6 +2498,7 @@ impl<'a> Interpreter<'a> {
                     drop(class_metadata_guard);
 
                     let result = dyn_builder.create_subclass(
+                        next_id,
                         builder.name,
                         &parent,
                         parent_metadata.as_ref(),
@@ -2506,7 +2507,7 @@ impl<'a> Interpreter<'a> {
                     classes_write = self.classes.write();
                     result
                 } else {
-                    dyn_builder.create_root_class(builder.name, &def)
+                    dyn_builder.create_root_class(next_id, builder.name, &def)
                 };
 
                 drop(classes_write);

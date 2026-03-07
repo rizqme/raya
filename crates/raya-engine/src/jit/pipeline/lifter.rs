@@ -1060,12 +1060,6 @@ fn lift_instruction(
                 stack.push(dest);
             }
         }
-        Opcode::Cast => {
-            return Err(LiftError::UnsupportedOpcode {
-                opcode: instr.opcode,
-                offset: instr.offset,
-            });
-        }
         Opcode::CastTupleLen
         | Opcode::CastObjectMinFields
         | Opcode::CastArrayElemKind
@@ -1625,19 +1619,14 @@ fn lift_instruction(
         Opcode::ObjectLiteral => {
             if let Operands::Call {
                 func_index: type_index,
-                arg_count,
+                arg_count: _,
             } = instr.operands
             {
-                let mut fields = Vec::new();
-                for _ in 0..arg_count {
-                    fields.push(stack.pop(instr.offset)?);
-                }
-                fields.reverse();
                 let dest = func.alloc_reg(JitType::Ptr);
                 func.block_mut(block).instrs.push(JitInstr::ObjectLiteral {
                     dest,
                     type_index,
-                    fields,
+                    fields: Vec::new(),
                 });
                 stack.push(dest);
             }
@@ -1671,19 +1660,16 @@ fn lift_instruction(
             stack.push(dest);
         }
         Opcode::InitObject => {
-            if let Operands::U16(count) = instr.operands {
-                let mut fields = Vec::new();
-                for _ in 0..count {
-                    fields.push(stack.pop(instr.offset)?);
-                }
-                fields.reverse();
-                let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::InitObject {
-                    dest,
-                    count,
-                    fields,
+            if let Operands::U16(field_offset) = instr.operands {
+                let value = stack.pop(instr.offset)?;
+                let object = stack
+                    .peek()
+                    .ok_or(LiftError::StackUnderflow { offset: instr.offset })?;
+                func.block_mut(block).instrs.push(JitInstr::StoreFieldExact {
+                    object,
+                    offset: field_offset,
+                    value,
                 });
-                stack.push(dest);
             }
         }
         Opcode::InitTuple => {
@@ -1746,38 +1732,7 @@ fn lift_instruction(
             func.block_mut(block).instrs.push(JitInstr::Rethrow);
         }
 
-        // ===== JSON Operations =====
-        Opcode::DynGet => {
-            if let Operands::U32(key_index) = instr.operands {
-                let object = stack.pop(instr.offset)?;
-                let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::DynGet {
-                    dest,
-                    object,
-                    key_index,
-                });
-                stack.push(dest);
-            }
-        }
-        Opcode::DynSet => {
-            if let Operands::U32(key_index) = instr.operands {
-                let value = stack.pop(instr.offset)?;
-                let object = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::DynSet {
-                    object,
-                    key_index,
-                    value,
-                });
-            }
-        }
-        Opcode::DynDelete => {
-            if let Operands::U32(key_index) = instr.operands {
-                let object = stack.pop(instr.offset)?;
-                func.block_mut(block)
-                    .instrs
-                    .push(JitInstr::DynDelete { object, key_index });
-            }
-        }
+        // ===== Dynamic keyed operations =====
         Opcode::DynGetKeyed => {
             let index = stack.pop(instr.offset)?;
             let object = stack.pop(instr.offset)?;
@@ -1798,49 +1753,6 @@ fn lift_instruction(
                 index,
                 value,
             });
-        }
-        Opcode::DynNewObject => {
-            let value = stack.pop(instr.offset)?;
-            let array = stack.pop(instr.offset)?;
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::DynArrayPush { array, value });
-        }
-        Opcode::DynKeys => {
-            let array = stack.pop(instr.offset)?;
-            let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::DynArrayPop { dest, array });
-            stack.push(dest);
-        }
-        Opcode::DynHas => {
-            let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::DynHas { dest });
-            stack.push(dest);
-        }
-        Opcode::DynNewObject => {
-            let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::DynNewObject { dest });
-            stack.push(dest);
-        }
-        Opcode::DynKeys => {
-            let object = stack.pop(instr.offset)?;
-            let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::DynKeys { dest, object });
-            stack.push(dest);
-        }
-        Opcode::DynKeys => {
-            let object = stack.pop(instr.offset)?;
-            let dest = func.alloc_reg(JitType::I32);
-            func.block_mut(block)
-                .instrs
-                .push(JitInstr::DynKeysLen { dest, object });
-            stack.push(dest);
         }
 
         // ===== Control Flow (jumps handled as terminators, not instructions) =====
@@ -2071,6 +1983,7 @@ mod tests {
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
                 structural_shapes: vec![],
+            structural_layouts: vec![],
             },
             exports: vec![],
             imports: vec![],

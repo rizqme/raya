@@ -13,8 +13,10 @@ use std::collections::HashSet;
 use crate::compiler::ir::block::Terminator;
 use crate::compiler::ir::function::IrFunction;
 use crate::compiler::ir::instr::{BinaryOp, IrInstr, UnaryOp};
+use crate::compiler::ir::module::{IrClass, IrModule};
 use crate::compiler::ir::value::{IrConstant, IrValue};
 use crate::parser::TypeId;
+use rustc_hash::FxHashMap;
 
 use super::analysis::{SuspensionAnalysis, SuspensionKind, SuspensionPoint};
 use super::statemachine::*;
@@ -37,15 +39,76 @@ const CAST_ARRAY_ELEM_KIND_FLAG: u32 = 0x1000;
 const NULL_TYPE_ID: u32 = TypeContext::NULL_TYPE_ID;
 const INT_TYPE_ID: u32 = TypeContext::INT_TYPE_ID;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExactLayout {
+    Structural(u32),
+    Nominal(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShapeFieldSpecialization {
+    ExactField(u16),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LocalLayoutState {
+    slots: Vec<Option<ExactLayout>>,
+}
+
+impl LocalLayoutState {
+    fn new(slot_count: usize) -> Self {
+        Self {
+            slots: vec![None; slot_count],
+        }
+    }
+
+    fn get(&self, index: u16) -> Option<ExactLayout> {
+        self.slots.get(index as usize).and_then(|slot| *slot)
+    }
+
+    fn set(&mut self, index: u16, layout: Option<ExactLayout>) {
+        if let Some(slot) = self.slots.get_mut(index as usize) {
+            *slot = layout;
+        }
+    }
+
+    fn merge_from_predecessors(states: &[&LocalLayoutState]) -> Self {
+        let slot_count = states.first().map(|state| state.slots.len()).unwrap_or(0);
+        if states.is_empty() {
+            return Self::new(slot_count);
+        }
+        let mut merged = vec![None; slot_count];
+        for slot_idx in 0..slot_count {
+            let first = states[0].slots[slot_idx];
+            if states[1..]
+                .iter()
+                .all(|state| state.slots[slot_idx] == first)
+            {
+                merged[slot_idx] = first;
+            }
+        }
+        Self { slots: merged }
+    }
+}
+
 /// Adapter that wraps an `IrFunction` to implement `AotCompilable`.
 pub struct IrFunctionAdapter<'a> {
     func: &'a IrFunction,
+    module: Option<&'a IrModule>,
 }
 
 impl<'a> IrFunctionAdapter<'a> {
     /// Create a new adapter for the given IR function.
     pub fn new(func: &'a IrFunction) -> Self {
-        Self { func }
+        Self { func, module: None }
+    }
+
+    /// Create a new adapter for the given IR function with module metadata.
+    pub fn with_module(module: &'a IrModule, func: &'a IrFunction) -> Self {
+        Self {
+            func,
+            module: Some(module),
+        }
     }
 
     /// Check if a TypeId is the i32 integer type.
@@ -95,8 +158,280 @@ impl<'a> IrFunctionAdapter<'a> {
         next_temp.max(self.func.locals.len() as u32)
     }
 
+    fn local_slot_count(&self) -> usize {
+        let mut max_slot = self
+            .func
+            .params
+            .len()
+            .max(self.func.locals.len())
+            .saturating_sub(1);
+        for block in &self.func.blocks {
+            for instr in &block.instructions {
+                match instr {
+                    IrInstr::LoadLocal { index, .. } | IrInstr::StoreLocal { index, .. } => {
+                        max_slot = max_slot.max(*index as usize);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        max_slot.saturating_add(1)
+    }
+
+    fn structural_shape_names(&self, shape_id: u64) -> Option<&[String]> {
+        self.module
+            .and_then(|module| module.structural_shapes.get(&shape_id))
+            .map(Vec::as_slice)
+    }
+
+    fn structural_layout_names(&self, layout_id: u32) -> Option<&[String]> {
+        self.module
+            .and_then(|module| module.structural_layouts.get(&layout_id))
+            .map(Vec::as_slice)
+    }
+
+    fn nominal_class(&self, nominal_type_id: u32) -> Option<&IrClass> {
+        self.module
+            .and_then(|module| module.classes.get(nominal_type_id as usize))
+    }
+
+    fn exact_layout_field_names(&self, exact: ExactLayout) -> Option<Vec<String>> {
+        match exact {
+            ExactLayout::Structural(layout_id) => {
+                self.structural_layout_names(layout_id).map(|names| names.to_vec())
+            }
+            ExactLayout::Nominal(nominal_type_id) => {
+                let class = self.nominal_class(nominal_type_id)?;
+                let mut names = vec![String::new(); class.fields.len()];
+                for field in &class.fields {
+                    let index = field.index as usize;
+                    if index >= names.len() {
+                        return None;
+                    }
+                    names[index] = field.name.clone();
+                }
+                if names.iter().any(|name| name.is_empty()) {
+                    return None;
+                }
+                Some(names)
+            }
+        }
+    }
+
+    fn specialize_shape_field_access(
+        &self,
+        exact: ExactLayout,
+        shape_id: u64,
+        required_slot: u16,
+    ) -> Option<ShapeFieldSpecialization> {
+        let required_names = self.structural_shape_names(shape_id)?;
+        let required_name = required_names.get(required_slot as usize)?;
+        let provider_names = self.exact_layout_field_names(exact)?;
+        let provider_slot = provider_names
+            .iter()
+            .position(|name| name == required_name)?;
+        let provider_slot = u16::try_from(provider_slot).ok()?;
+        Some(ShapeFieldSpecialization::ExactField(provider_slot))
+    }
+
+    fn exact_layout_satisfies_shape_by_fields(&self, exact: ExactLayout, shape_id: u64) -> bool {
+        let Some(required_names) = self.structural_shape_names(shape_id) else {
+            return false;
+        };
+        let Some(provider_names) = self.exact_layout_field_names(exact) else {
+            return false;
+        };
+        required_names
+            .iter()
+            .all(|required| provider_names.iter().any(|name| name == required))
+    }
+
+    fn analyze_block_local_layouts(&self) -> Vec<LocalLayoutState> {
+        let block_count = self.func.blocks.len();
+        let slot_count = self.local_slot_count();
+        let mut preds: Vec<Vec<usize>> = vec![Vec::new(); block_count];
+        let mut block_index_by_id = FxHashMap::default();
+        for (idx, block) in self.func.blocks.iter().enumerate() {
+            block_index_by_id.insert(block.id, idx);
+        }
+        for (idx, block) in self.func.blocks.iter().enumerate() {
+            for succ in block.successors() {
+                if let Some(&succ_idx) = block_index_by_id.get(&succ) {
+                    preds[succ_idx].push(idx);
+                }
+            }
+        }
+
+        let mut entry_states = vec![LocalLayoutState::new(slot_count); block_count];
+        let mut exit_states = vec![LocalLayoutState::new(slot_count); block_count];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (block_idx, block) in self.func.blocks.iter().enumerate() {
+                let incoming = if preds[block_idx].is_empty() {
+                    LocalLayoutState::new(slot_count)
+                } else {
+                    let pred_states = preds[block_idx]
+                        .iter()
+                        .map(|pred| &exit_states[*pred])
+                        .collect::<Vec<_>>();
+                    LocalLayoutState::merge_from_predecessors(&pred_states)
+                };
+                if entry_states[block_idx] != incoming {
+                    entry_states[block_idx] = incoming.clone();
+                    changed = true;
+                }
+
+                let mut local_state = incoming;
+                let mut reg_state: FxHashMap<u32, ExactLayout> = FxHashMap::default();
+                for instr in &block.instructions {
+                    self.update_layout_tracking(instr, &mut reg_state, &mut local_state);
+                }
+                if exit_states[block_idx] != local_state {
+                    exit_states[block_idx] = local_state;
+                    changed = true;
+                }
+            }
+        }
+        entry_states
+    }
+
+    fn update_layout_tracking(
+        &self,
+        instr: &IrInstr,
+        reg_state: &mut FxHashMap<u32, ExactLayout>,
+        local_state: &mut LocalLayoutState,
+    ) {
+        fn set_reg_layout(
+            reg_state: &mut FxHashMap<u32, ExactLayout>,
+            reg: &crate::compiler::ir::value::Register,
+            layout: Option<ExactLayout>,
+        ) {
+            if let Some(layout) = layout {
+                reg_state.insert(reg.id.as_u32(), layout);
+            } else {
+                reg_state.remove(&reg.id.as_u32());
+            }
+        }
+
+        fn reg_layout(
+            reg_state: &FxHashMap<u32, ExactLayout>,
+            reg: &crate::compiler::ir::value::Register,
+        ) -> Option<ExactLayout> {
+            reg_state.get(&reg.id.as_u32()).copied()
+        }
+
+        match instr {
+            IrInstr::Assign { dest, value } => {
+                let layout = match value {
+                    IrValue::Register(src) => reg_layout(reg_state, src),
+                    IrValue::Constant(_) => None,
+                };
+                set_reg_layout(reg_state, dest, layout);
+            }
+            IrInstr::LoadLocal { dest, index } => {
+                set_reg_layout(reg_state, dest, local_state.get(*index));
+            }
+            IrInstr::StoreLocal { index, value } => {
+                local_state.set(*index, reg_layout(reg_state, value));
+            }
+            IrInstr::NewType {
+                dest,
+                nominal_type_id,
+            } => {
+                set_reg_layout(
+                    reg_state,
+                    dest,
+                    Some(ExactLayout::Nominal(nominal_type_id.as_u32())),
+                );
+            }
+            IrInstr::ConstructType { dest, object, .. } => {
+                set_reg_layout(reg_state, dest, reg_layout(reg_state, object));
+            }
+            IrInstr::ObjectLiteral {
+                dest, type_index, ..
+            } => {
+                set_reg_layout(reg_state, dest, Some(ExactLayout::Structural(*type_index)));
+            }
+            IrInstr::CastShape { dest, object, .. }
+            | IrInstr::CastNominal { dest, object, .. } => {
+                set_reg_layout(reg_state, dest, reg_layout(reg_state, object));
+            }
+            IrInstr::Phi { dest, .. }
+            | IrInstr::BinaryOp { dest, .. }
+            | IrInstr::UnaryOp { dest, .. }
+            | IrInstr::Call { dest: Some(dest), .. }
+            | IrInstr::CallMethodExact { dest: Some(dest), .. }
+            | IrInstr::CallMethodShape { dest: Some(dest), .. }
+            | IrInstr::BindMethod { dest, .. }
+            | IrInstr::NativeCall { dest: Some(dest), .. }
+            | IrInstr::ModuleNativeCall { dest: Some(dest), .. }
+            | IrInstr::IsNominal { dest, .. }
+            | IrInstr::ImplementsShape { dest, .. }
+            | IrInstr::CastTupleLen { dest, .. }
+            | IrInstr::CastObjectMinFields { dest, .. }
+            | IrInstr::CastArrayElemKind { dest, .. }
+            | IrInstr::CastKindMask { dest, .. }
+            | IrInstr::LoadArgCount { dest }
+            | IrInstr::LoadArgLocal { dest, .. }
+            | IrInstr::LoadGlobal { dest, .. }
+            | IrInstr::LoadFieldExact { dest, .. }
+            | IrInstr::LoadFieldShape { dest, .. }
+            | IrInstr::LoadElement { dest, .. }
+            | IrInstr::ArrayLiteral { dest, .. }
+            | IrInstr::NewArray { dest, .. }
+            | IrInstr::ArrayLen { dest, .. }
+            | IrInstr::ArrayPop { dest, .. }
+            | IrInstr::StringLen { dest, .. }
+            | IrInstr::Typeof { dest, .. }
+            | IrInstr::MakeClosure { dest, .. }
+            | IrInstr::NewRefCell { dest, .. }
+            | IrInstr::NewMutex { dest }
+            | IrInstr::NewChannel { dest, .. }
+            | IrInstr::Spawn { dest, .. }
+            | IrInstr::SpawnClosure { dest, .. }
+            | IrInstr::Await { dest, .. }
+            | IrInstr::AwaitAll { dest, .. } => {
+                set_reg_layout(reg_state, dest, None);
+            }
+            IrInstr::Yield
+            | IrInstr::Call { dest: None, .. }
+            | IrInstr::CallMethodExact { dest: None, .. }
+            | IrInstr::CallMethodShape { dest: None, .. }
+            | IrInstr::NativeCall { dest: None, .. }
+            | IrInstr::ModuleNativeCall { dest: None, .. }
+            | IrInstr::StoreGlobal { .. }
+            | IrInstr::StoreFieldExact { .. }
+            | IrInstr::StoreFieldShape { .. }
+            | IrInstr::StoreElement { .. }
+            | IrInstr::ArrayPush { .. }
+            | IrInstr::StoreCaptured { .. }
+            | IrInstr::SetClosureCapture { .. }
+            | IrInstr::PopToLocal { .. }
+            | IrInstr::MutexUnlock { .. }
+            | IrInstr::MutexLock { .. }
+            | IrInstr::Sleep { .. }
+            | IrInstr::TaskCancel { .. } => {}
+            IrInstr::LoadCaptured { dest, .. } => {
+                set_reg_layout(reg_state, dest, None);
+            }
+            _ => {}
+        }
+    }
+
     /// Translate a single IrInstr to SmInstr(s).
-    fn translate_instr(instr: &IrInstr, out: &mut Vec<SmInstr>, next_temp: &mut u32) {
+    fn translate_instr(
+        &self,
+        instr: &IrInstr,
+        out: &mut Vec<SmInstr>,
+        next_temp: &mut u32,
+        reg_state: &mut FxHashMap<u32, ExactLayout>,
+        local_state: &mut LocalLayoutState,
+    ) {
+        let reg_layout =
+            |reg: &crate::compiler::ir::value::Register,
+             reg_state: &FxHashMap<u32, ExactLayout>|
+             -> Option<ExactLayout> { reg_state.get(&reg.id.as_u32()).copied() };
         match instr {
             // === Assignment (constant or register copy) ===
             IrInstr::Assign { dest, value } => {
@@ -460,16 +795,27 @@ impl<'a> IrFunctionAdapter<'a> {
                 field,
                 optional: _,
             } => {
-                out.push(SmInstr::CallHelper {
-                    dest: Some(Self::reg(dest)),
-                    helper: HelperCall::LoadFieldShape,
-                    args: vec![
-                        Self::reg(object),
-                        (*shape_id & 0xFFFF_FFFF) as u32,
-                        (*shape_id >> 32) as u32,
-                        *field as u32,
-                    ],
-                });
+                if let Some(exact) = reg_layout(object, reg_state).and_then(|layout| {
+                    self.specialize_shape_field_access(layout, *shape_id, *field)
+                }) {
+                    let ShapeFieldSpecialization::ExactField(provider_slot) = exact;
+                    out.push(SmInstr::CallHelper {
+                        dest: Some(Self::reg(dest)),
+                        helper: HelperCall::ObjectGetField,
+                        args: vec![Self::reg(object), provider_slot as u32],
+                    });
+                } else {
+                    out.push(SmInstr::CallHelper {
+                        dest: Some(Self::reg(dest)),
+                        helper: HelperCall::LoadFieldShape,
+                        args: vec![
+                            Self::reg(object),
+                            (*shape_id & 0xFFFF_FFFF) as u32,
+                            (*shape_id >> 32) as u32,
+                            *field as u32,
+                        ],
+                    });
+                }
             }
             IrInstr::StoreFieldExact {
                 object,
@@ -488,17 +834,28 @@ impl<'a> IrFunctionAdapter<'a> {
                 field,
                 value,
             } => {
-                out.push(SmInstr::CallHelper {
-                    dest: None,
-                    helper: HelperCall::StoreFieldShape,
-                    args: vec![
-                        Self::reg(object),
-                        (*shape_id & 0xFFFF_FFFF) as u32,
-                        (*shape_id >> 32) as u32,
-                        *field as u32,
-                        Self::reg(value),
-                    ],
-                });
+                if let Some(exact) = reg_layout(object, reg_state).and_then(|layout| {
+                    self.specialize_shape_field_access(layout, *shape_id, *field)
+                }) {
+                    let ShapeFieldSpecialization::ExactField(provider_slot) = exact;
+                    out.push(SmInstr::CallHelper {
+                        dest: None,
+                        helper: HelperCall::ObjectSetField,
+                        args: vec![Self::reg(object), provider_slot as u32, Self::reg(value)],
+                    });
+                } else {
+                    out.push(SmInstr::CallHelper {
+                        dest: None,
+                        helper: HelperCall::StoreFieldShape,
+                        args: vec![
+                            Self::reg(object),
+                            (*shape_id & 0xFFFF_FFFF) as u32,
+                            (*shape_id >> 32) as u32,
+                            *field as u32,
+                            Self::reg(value),
+                        ],
+                    });
+                }
             }
 
             // === JSON Property Access ===
@@ -603,16 +960,18 @@ impl<'a> IrFunctionAdapter<'a> {
                 type_index,
                 fields,
             } => {
-                let mut args = vec![*type_index];
-                for (field_idx, reg) in fields {
-                    args.push(*field_idx as u32);
-                    args.push(Self::reg(reg));
-                }
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
-                    helper: HelperCall::ObjectLiteral,
-                    args,
+                    helper: HelperCall::AllocStructuralObject,
+                    args: vec![*type_index, fields.len() as u32],
                 });
+                for (field_idx, reg) in fields {
+                    out.push(SmInstr::CallHelper {
+                        dest: None,
+                        helper: HelperCall::ObjectSetField,
+                        args: vec![Self::reg(dest), *field_idx as u32, Self::reg(reg)],
+                    });
+                }
             }
 
             // === Array Operations ===
@@ -848,15 +1207,22 @@ impl<'a> IrFunctionAdapter<'a> {
                 object,
                 shape_id,
             } => {
-                out.push(SmInstr::CallHelper {
-                    dest: Some(Self::reg(dest)),
-                    helper: HelperCall::ImplementsShape,
-                    args: vec![
-                        Self::reg(object),
-                        (*shape_id & 0xFFFF_FFFF) as u32,
-                        (*shape_id >> 32) as u32,
-                    ],
-                });
+                if let Some(layout) = reg_layout(object, reg_state) {
+                    out.push(SmInstr::ConstBool {
+                        dest: Self::reg(dest),
+                        value: self.exact_layout_satisfies_shape_by_fields(layout, *shape_id),
+                    });
+                } else {
+                    out.push(SmInstr::CallHelper {
+                        dest: Some(Self::reg(dest)),
+                        helper: HelperCall::ImplementsShape,
+                        args: vec![
+                            Self::reg(object),
+                            (*shape_id & 0xFFFF_FFFF) as u32,
+                            (*shape_id >> 32) as u32,
+                        ],
+                    });
+                }
             }
             IrInstr::CastNominal {
                 dest,
@@ -874,15 +1240,25 @@ impl<'a> IrFunctionAdapter<'a> {
                 object,
                 shape_id,
             } => {
-                out.push(SmInstr::CallHelper {
-                    dest: Some(Self::reg(dest)),
-                    helper: HelperCall::CastShape,
-                    args: vec![
-                        Self::reg(object),
-                        (*shape_id & 0xFFFF_FFFF) as u32,
-                        (*shape_id >> 32) as u32,
-                    ],
-                });
+                if let Some(layout) = reg_layout(object, reg_state)
+                    .filter(|layout| self.exact_layout_satisfies_shape_by_fields(*layout, *shape_id))
+                {
+                    let _ = layout;
+                    out.push(SmInstr::Move {
+                        dest: Self::reg(dest),
+                        src: Self::reg(object),
+                    });
+                } else {
+                    out.push(SmInstr::CallHelper {
+                        dest: Some(Self::reg(dest)),
+                        helper: HelperCall::CastShape,
+                        args: vec![
+                            Self::reg(object),
+                            (*shape_id & 0xFFFF_FFFF) as u32,
+                            (*shape_id >> 32) as u32,
+                        ],
+                    });
+                }
             }
             IrInstr::CastTupleLen {
                 dest,
@@ -1239,14 +1615,27 @@ impl AotCompilable for IrFunctionAdapter<'_> {
     fn emit_blocks(&self) -> Vec<SmBlock> {
         let mut sm_blocks = Vec::with_capacity(self.func.blocks.len());
         let mut next_temp = self.base_reg_capacity();
+        let entry_local_states = self.analyze_block_local_layouts();
 
-        for block in &self.func.blocks {
+        for (block_idx, block) in self.func.blocks.iter().enumerate() {
             let mut instructions = Vec::new();
+            let mut reg_state: FxHashMap<u32, ExactLayout> = FxHashMap::default();
+            let mut local_state = entry_local_states
+                .get(block_idx)
+                .cloned()
+                .unwrap_or_else(|| LocalLayoutState::new(self.local_slot_count()));
 
             // Handle Throw terminator: emit the throw call as an instruction
             if let Terminator::Throw(reg) = &block.terminator {
                 for instr in &block.instructions {
-                    Self::translate_instr(instr, &mut instructions, &mut next_temp);
+                    self.translate_instr(
+                        instr,
+                        &mut instructions,
+                        &mut next_temp,
+                        &mut reg_state,
+                        &mut local_state,
+                    );
+                    self.update_layout_tracking(instr, &mut reg_state, &mut local_state);
                 }
                 instructions.push(SmInstr::CallHelper {
                     dest: None,
@@ -1255,7 +1644,14 @@ impl AotCompilable for IrFunctionAdapter<'_> {
                 });
             } else {
                 for instr in &block.instructions {
-                    Self::translate_instr(instr, &mut instructions, &mut next_temp);
+                    self.translate_instr(
+                        instr,
+                        &mut instructions,
+                        &mut next_temp,
+                        &mut reg_state,
+                        &mut local_state,
+                    );
+                    self.update_layout_tracking(instr, &mut reg_state, &mut local_state);
                 }
             }
 
@@ -1287,6 +1683,7 @@ impl AotCompilable for IrFunctionAdapter<'_> {
 mod tests {
     use super::*;
     use crate::compiler::ir::block::{BasicBlock, BasicBlockId};
+    use crate::compiler::ir::module::IrModule;
     use crate::compiler::ir::value::{IrConstant, IrValue, Register, RegisterId};
     use crate::parser::TypeId;
 
@@ -1453,5 +1850,83 @@ mod tests {
 
         assert_eq!(adapter.param_count(), 2);
         assert_eq!(adapter.name(), Some("add"));
+    }
+
+    #[test]
+    fn test_shape_field_load_specializes_to_exact_field_for_structural_layout() {
+        let mut module = IrModule::new("test");
+        let layout_id = 0xABCD_u32;
+        let shape_id = 0x1234_u64;
+        module
+            .structural_layouts
+            .insert(layout_id, vec!["b".to_string(), "a".to_string()]);
+        module
+            .structural_shapes
+            .insert(shape_id, vec!["a".to_string()]);
+
+        let mut func = IrFunction::new("test", vec![], TypeId::new(INT_TYPE_ID));
+        let mut block = BasicBlock::new(BasicBlockId(0));
+        block.add_instr(IrInstr::ObjectLiteral {
+            dest: make_int_reg(0),
+            type_index: layout_id,
+            fields: vec![],
+        });
+        block.add_instr(IrInstr::LoadFieldShape {
+            dest: make_int_reg(1),
+            object: make_int_reg(0),
+            shape_id,
+            field: 0,
+            optional: false,
+        });
+        block.set_terminator(Terminator::Return(Some(make_int_reg(1))));
+        func.add_block(block);
+
+        let adapter = IrFunctionAdapter::with_module(&module, &func);
+        let blocks = adapter.emit_blocks();
+
+        assert!(matches!(
+            &blocks[0].instructions[1],
+            SmInstr::CallHelper {
+                helper: HelperCall::ObjectGetField,
+                args,
+                ..
+            } if args == &vec![0, 1]
+        ));
+    }
+
+    #[test]
+    fn test_shape_cast_specializes_to_move_for_exact_structural_layout() {
+        let mut module = IrModule::new("test");
+        let layout_id = 0xBEEF_u32;
+        let shape_id = 0x5678_u64;
+        module
+            .structural_layouts
+            .insert(layout_id, vec!["a".to_string(), "b".to_string()]);
+        module
+            .structural_shapes
+            .insert(shape_id, vec!["a".to_string()]);
+
+        let mut func = IrFunction::new("test", vec![], TypeId::new(INT_TYPE_ID));
+        let mut block = BasicBlock::new(BasicBlockId(0));
+        block.add_instr(IrInstr::ObjectLiteral {
+            dest: make_int_reg(0),
+            type_index: layout_id,
+            fields: vec![],
+        });
+        block.add_instr(IrInstr::CastShape {
+            dest: make_int_reg(1),
+            object: make_int_reg(0),
+            shape_id,
+        });
+        block.set_terminator(Terminator::Return(Some(make_int_reg(1))));
+        func.add_block(block);
+
+        let adapter = IrFunctionAdapter::with_module(&module, &func);
+        let blocks = adapter.emit_blocks();
+
+        assert!(matches!(
+            &blocks[0].instructions[1],
+            SmInstr::Move { dest: 1, src: 0 }
+        ));
     }
 }

@@ -97,6 +97,13 @@ pub fn lower_function(
         let var = builder.declare_var(ty);
         reg_vars.insert(reg_id, var);
     }
+    if let Some(max_reg_id) = reg_types.keys().copied().max() {
+        for reg_id in 0..=max_reg_id {
+            reg_vars
+                .entry(reg_id)
+                .or_insert_with(|| builder.declare_var(types::I64));
+        }
+    }
 
     // Declare special variables for frame_ptr and ctx_ptr
     let frame_var = builder.declare_var(types::I64);
@@ -267,9 +274,13 @@ fn determine_reg_types(blocks: &[SmBlock]) -> HashMap<u32, ir::types::Type> {
                     types_map.insert(*dest, types::I64);
                 }
 
-                // Helper calls (return NaN-boxed I64)
-                SmInstr::CallHelper { dest: Some(d), .. } => {
-                    types_map.insert(*d, types::I64);
+                // Helper calls use helper-specific return types.
+                SmInstr::CallHelper {
+                    dest: Some(d),
+                    helper,
+                    ..
+                } => {
+                    types_map.insert(*d, helper_return_type(helper));
                 }
 
                 // AOT function calls (return NaN-boxed I64 or AOT_SUSPEND)
@@ -830,7 +841,13 @@ impl LoweringCtx {
 
             SmTerminator::Return { value } => {
                 let val = self.use_reg(builder, *value);
-                builder.ins().return_(&[val]);
+                let ret = match builder.func.dfg.value_type(val) {
+                    types::I32 => abi::emit_box_i32(builder, val),
+                    types::F64 => abi::emit_box_f64(builder, val),
+                    types::I8 => abi::emit_box_bool(builder, val),
+                    _ => val,
+                };
+                builder.ins().return_(&[ret]);
             }
 
             SmTerminator::Unreachable => {
@@ -981,7 +998,7 @@ impl LoweringCtx {
             let inst = self.call_helper_indirect(builder, fn_ptr, sig, &call_args);
 
             if let Some(d) = dest {
-                self.ensure_reg(builder, d, types::I64);
+                self.ensure_reg(builder, d, helper_return_type(helper));
                 let results = builder.inst_results(inst);
                 if !results.is_empty() {
                     self.def_reg(builder, d, results[0]);
@@ -1075,6 +1092,13 @@ impl LoweringCtx {
             HelperCall::AllocObject => {
                 let nominal_type = builder.ins().iconst(types::I32, args[0] as i64);
                 vec![ctx, nominal_type]
+            }
+
+            // (ctx, layout_id: u32, field_count: u32) -> u64
+            HelperCall::AllocStructuralObject => {
+                let layout_id = builder.ins().iconst(types::I32, args[0] as i64);
+                let field_count = builder.ins().iconst(types::I32, args[1] as i64);
+                vec![ctx, layout_id, field_count]
             }
 
             // (ctx, type_id: u32, capacity: u32) -> u64
@@ -1365,6 +1389,13 @@ fn helper_call_signature(helper: &HelperCall, call_conv: CallConv) -> ir::Signat
             sig.params.push(AbiParam::new(types::I32));
             sig.returns.push(AbiParam::new(types::I64));
         }
+        // (ctx: i64, layout_id: u32, field_count: u32) -> u64
+        HelperCall::AllocStructuralObject => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
         // (ctx: i64, type_id: u32, capacity: u32) -> u64
         HelperCall::AllocArray => {
             sig.params.push(AbiParam::new(types::I64));
@@ -1547,6 +1578,25 @@ fn helper_call_signature(helper: &HelperCall, call_conv: CallConv) -> ir::Signat
     sig
 }
 
+fn helper_return_type(helper: &HelperCall) -> ir::types::Type {
+    match helper {
+        HelperCall::GenericEquals
+        | HelperCall::GenericLessThan
+        | HelperCall::InstanceOf
+        | HelperCall::ImplementsShape
+        | HelperCall::IsNativeSuspend
+        | HelperCall::CheckPreemption => types::I8,
+        HelperCall::ObjectSetField
+        | HelperCall::ArraySet
+        | HelperCall::ArrayPush
+        | HelperCall::DynSetProp
+        | HelperCall::FreeFrame
+        | HelperCall::SafepointPoll
+        | HelperCall::ThrowException => types::I64,
+        _ => types::I64,
+    }
+}
+
 /// Get the byte offset of a helper within AotHelperTable.
 /// Returns None for compound operations that don't map to a table entry.
 fn helper_table_field_offset(helper: &HelperCall) -> Option<i32> {
@@ -1556,35 +1606,36 @@ fn helper_table_field_offset(helper: &HelperCall) -> Option<i32> {
         HelperCall::FreeFrame => 1,
         HelperCall::SafepointPoll => 2,
         HelperCall::AllocObject => 3,
-        HelperCall::AllocArray => 4,
-        HelperCall::AllocString => 5,
-        HelperCall::StringConcat => 6,
-        HelperCall::StringLen => 7,
-        HelperCall::ArrayLen => 8,
-        HelperCall::ArrayGet => 9,
-        HelperCall::ArraySet => 10,
-        HelperCall::ArrayPush => 11,
-        HelperCall::GenericEquals => 12,
-        HelperCall::GenericLessThan => 13,
-        HelperCall::ObjectGetField => 14,
-        HelperCall::ObjectSetField => 15,
-        HelperCall::InstanceOf => 16,
-        HelperCall::ImplementsShape => 17,
-        HelperCall::LoadFieldShape => 18,
-        HelperCall::StoreFieldShape => 19,
-        HelperCall::Cast => 20,
-        HelperCall::CastShape => 21,
-        HelperCall::DynGetProp => 22,
-        HelperCall::DynSetProp => 23,
-        HelperCall::NativeCall => 24,
-        HelperCall::IsNativeSuspend => 25,
-        HelperCall::Spawn => 26,
-        HelperCall::CheckPreemption => 27,
-        HelperCall::ThrowException => 28,
-        HelperCall::GetAotFuncPtr => 29,
-        HelperCall::LoadStringConstant => 30,
-        HelperCall::LoadI32Constant => 31,
-        HelperCall::LoadF64Constant => 32,
+        HelperCall::AllocStructuralObject => 4,
+        HelperCall::AllocArray => 5,
+        HelperCall::AllocString => 6,
+        HelperCall::StringConcat => 7,
+        HelperCall::StringLen => 8,
+        HelperCall::ArrayLen => 9,
+        HelperCall::ArrayGet => 10,
+        HelperCall::ArraySet => 11,
+        HelperCall::ArrayPush => 12,
+        HelperCall::GenericEquals => 13,
+        HelperCall::GenericLessThan => 14,
+        HelperCall::ObjectGetField => 15,
+        HelperCall::ObjectSetField => 16,
+        HelperCall::InstanceOf => 17,
+        HelperCall::ImplementsShape => 18,
+        HelperCall::LoadFieldShape => 19,
+        HelperCall::StoreFieldShape => 20,
+        HelperCall::Cast => 21,
+        HelperCall::CastShape => 22,
+        HelperCall::DynGetProp => 23,
+        HelperCall::DynSetProp => 24,
+        HelperCall::NativeCall => 25,
+        HelperCall::IsNativeSuspend => 26,
+        HelperCall::Spawn => 27,
+        HelperCall::CheckPreemption => 28,
+        HelperCall::ThrowException => 29,
+        HelperCall::GetAotFuncPtr => 30,
+        HelperCall::LoadStringConstant => 31,
+        HelperCall::LoadI32Constant => 32,
+        HelperCall::LoadF64Constant => 33,
         _ => return None, // Compound operation
     };
     Some(index * 8)

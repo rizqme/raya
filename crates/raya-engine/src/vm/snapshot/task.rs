@@ -1,7 +1,8 @@
 //! Task state serialization for snapshots
 
 use crate::vm::scheduler::{TaskId, TaskState};
-use crate::vm::value::Value;
+use crate::vm::snapshot::value::SerializedValue;
+    use crate::vm::value::Value;
 use std::io::{Read, Write};
 
 /// Serialized task state
@@ -26,10 +27,10 @@ pub struct SerializedTask {
     pub frames: Vec<SerializedFrame>,
 
     /// Operand stack
-    pub stack: Vec<Value>,
+    pub stack: Vec<SerializedValue>,
 
     /// Result (if completed)
-    pub result: Option<Value>,
+    pub result: Option<SerializedValue>,
 
     /// Parent task ID (if spawned from another task)
     pub parent: Option<TaskId>,
@@ -182,13 +183,13 @@ impl SerializedTask {
         // Read stack values
         let mut stack = Vec::with_capacity(stack_size);
         for _ in 0..stack_size {
-            stack.push(Value::decode_with_byteswap(reader, needs_byte_swap)?);
+            stack.push(SerializedValue::decode(reader, needs_byte_swap)?);
         }
 
         // Read result
         reader.read_exact(&mut state_buf)?;
         let result = if state_buf[0] == 1 {
-            Some(Value::decode_with_byteswap(reader, needs_byte_swap)?)
+            Some(SerializedValue::decode(reader, needs_byte_swap)?)
         } else {
             None
         };
@@ -244,7 +245,7 @@ pub struct SerializedFrame {
     pub base_pointer: usize,
 
     /// Local variables
-    pub locals: Vec<Value>,
+    pub locals: Vec<SerializedValue>,
 }
 
 impl SerializedFrame {
@@ -297,7 +298,7 @@ impl SerializedFrame {
 
         let mut locals = Vec::with_capacity(local_count);
         for _ in 0..local_count {
-            locals.push(Value::decode_with_byteswap(reader, needs_byte_swap)?);
+            locals.push(SerializedValue::decode(reader, needs_byte_swap)?);
         }
 
         Ok(Self {
@@ -388,6 +389,7 @@ impl BlockedReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::value::Value;
 
     #[test]
     fn test_serialized_task_encode_decode() {
@@ -395,8 +397,8 @@ mod tests {
         let mut task = SerializedTask::new(task_id, 10);
         task.state = TaskState::Running;
         task.ip = 100;
-        task.stack.push(Value::i32(42));
-        task.stack.push(Value::bool(true));
+        task.stack.push(SerializedValue::from(Value::i32(42)));
+        task.stack.push(SerializedValue::from(Value::bool(true)));
         task.module_checksum[0] = 7;
 
         let mut buf = Vec::new();
@@ -416,8 +418,8 @@ mod tests {
         let mut frame = SerializedFrame::new(5);
         frame.return_ip = 50;
         frame.base_pointer = 10;
-        frame.locals.push(Value::i32(100));
-        frame.locals.push(Value::null());
+        frame.locals.push(SerializedValue::from(Value::i32(100)));
+        frame.locals.push(SerializedValue::from(Value::null()));
         frame.module_checksum[0] = 11;
 
         let mut buf = Vec::new();

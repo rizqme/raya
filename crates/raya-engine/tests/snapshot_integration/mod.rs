@@ -3,7 +3,7 @@
 #![allow(clippy::identity_op)]
 
 use raya_engine::vm::scheduler::TaskId;
-use raya_engine::vm::snapshot::{SerializedTask, SnapshotReader, SnapshotWriter};
+use raya_engine::vm::snapshot::{SerializedTask, SerializedValue, SnapshotReader, SnapshotWriter};
 use raya_engine::vm::value::Value;
 use std::io::Cursor;
 
@@ -66,9 +66,9 @@ fn test_snapshot_with_task_state() {
     let mut task = SerializedTask::new(TaskId::from_u64(100), 5);
     task.state = TaskState::Running;
     task.ip = 42;
-    task.stack.push(Value::i32(10));
-    task.stack.push(Value::i32(20));
-    task.stack.push(Value::bool(true));
+    task.stack.push(SerializedValue::from(Value::i32(10)));
+    task.stack.push(SerializedValue::from(Value::i32(20)));
+    task.stack.push(SerializedValue::from(Value::bool(true)));
 
     writer.add_task(task);
 
@@ -96,7 +96,7 @@ fn test_snapshot_with_completed_task() {
 
     let mut task = SerializedTask::new(TaskId::from_u64(200), 0);
     task.state = TaskState::Completed;
-    task.result = Some(Value::i32(42));
+    task.result = Some(SerializedValue::from(Value::i32(42)));
 
     writer.add_task(task);
 
@@ -110,7 +110,7 @@ fn test_snapshot_with_completed_task() {
     let restored = &reader.tasks()[0];
     assert_eq!(restored.state, TaskState::Completed);
     assert!(restored.result.is_some());
-    assert_eq!(restored.result.unwrap().as_i32(), Some(42));
+    assert_eq!(restored.result.as_ref().and_then(|value| value.as_i32()), Some(42));
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn test_large_snapshot() {
 
         // Add some stack values
         for j in 0..10 {
-            task.stack.push(Value::i32((i * 10 + j) as i32));
+            task.stack.push(SerializedValue::from(Value::i32((i * 10 + j) as i32)));
         }
 
         writer.add_task(task);
@@ -331,13 +331,13 @@ fn test_snapshot_with_call_frames() {
     let mut frame1 = SerializedFrame::new(0);
     frame1.return_ip = 100;
     frame1.base_pointer = 0;
-    frame1.locals.push(Value::i32(10));
-    frame1.locals.push(Value::i32(20));
+    frame1.locals.push(SerializedValue::from(Value::i32(10)));
+    frame1.locals.push(SerializedValue::from(Value::i32(20)));
 
     let mut frame2 = SerializedFrame::new(1);
     frame2.return_ip = 200;
     frame2.base_pointer = 5;
-    frame2.locals.push(Value::bool(true));
+    frame2.locals.push(SerializedValue::from(Value::bool(true)));
 
     task.frames.push(frame1);
     task.frames.push(frame2);

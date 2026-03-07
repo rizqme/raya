@@ -291,6 +291,10 @@ pub struct Interpreter<'a> {
     pub(in crate::vm::interpreter) prop_keys:
         &'a RwLock<crate::vm::interpreter::shared_state::PropertyKeyRegistry>,
 
+    /// Offline AOT profile collector populated from interpreter execution.
+    pub(in crate::vm::interpreter) aot_profile:
+        &'a RwLock<crate::aot::profile::AotProfileCollector>,
+
     /// IO submission sender for NativeCallResult::Suspend (None in tests without reactor)
     pub(in crate::vm::interpreter) io_submit_tx:
         Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
@@ -310,6 +314,14 @@ pub struct Interpreter<'a> {
     #[cfg(feature = "jit")]
     pub(in crate::vm::interpreter) module_profile:
         Option<Arc<crate::jit::profiling::counters::ModuleProfile>>,
+
+    /// Global module-profile table used when layout changes invalidate compiled code.
+    #[cfg(feature = "jit")]
+    pub(in crate::vm::interpreter) module_profiles_map: Option<
+        &'a RwLock<
+            FxHashMap<[u8; 32], Arc<crate::jit::profiling::counters::ModuleProfile>>,
+        >,
+    >,
 
     /// Handle to submit compilation requests to the background JIT thread
     #[cfg(feature = "jit")]
@@ -345,6 +357,12 @@ pub struct Interpreter<'a> {
 
     /// Current function ID for profiler stack capture.
     pub(in crate::vm::interpreter) profiler_func_id: usize,
+
+    /// Current bytecode offset for offline AOT profile site recording.
+    pub(in crate::vm::interpreter) current_bytecode_offset_for_aot_profile: u32,
+
+    /// Current module checksum for offline AOT profile recording.
+    pub(in crate::vm::interpreter) current_module_checksum_for_aot_profile: [u8; 32],
 }
 
 impl<'a> Interpreter<'a> {
@@ -452,6 +470,7 @@ impl<'a> Interpreter<'a> {
         self.layouts
             .write()
             .register_layout_shape(layout_id, member_names);
+        self.invalidate_jit_for_layout(layout_id);
     }
 
     #[inline]
@@ -511,6 +530,9 @@ impl<'a> Interpreter<'a> {
         self.layouts
             .write()
             .register_nominal_layout(nominal_type_id, layout_id, field_count, name);
+        if layout_id != 0 {
+            self.invalidate_jit_for_layout(layout_id);
+        }
     }
 
     #[inline]
@@ -555,6 +577,7 @@ impl<'a> Interpreter<'a> {
         nominal_type_id: usize,
         field_count: usize,
     ) -> bool {
+        let layout_id = self.nominal_layout_id(nominal_type_id);
         let updated_layouts = self
             .layouts
             .write()
@@ -563,8 +586,33 @@ impl<'a> Interpreter<'a> {
             .classes
             .write()
             .set_nominal_field_count(nominal_type_id, field_count);
+        if (updated_layouts || updated_classes) && layout_id.is_some() {
+            self.invalidate_jit_for_layout(layout_id.unwrap());
+        }
         updated_layouts || updated_classes
     }
+
+    #[cfg(feature = "jit")]
+    fn invalidate_jit_for_layout(&self, layout_id: crate::vm::object::LayoutId) {
+        let Some(cache) = self.code_cache.as_ref() else {
+            return;
+        };
+        let affected = cache.invalidate_layout(layout_id);
+        let Some(profiles_map) = self.module_profiles_map else {
+            return;
+        };
+        let profiles = profiles_map.read();
+        for (checksum, func_index) in affected {
+            if let Some(profile) = profiles.get(&checksum) {
+                if let Some(func) = profile.get(func_index as usize) {
+                    func.invalidate_compiled_code();
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "jit"))]
+    fn invalidate_jit_for_layout(&self, _layout_id: crate::vm::object::LayoutId) {}
 
     #[inline]
     fn format_exception_value(exception: Value) -> String {
@@ -702,6 +750,7 @@ impl<'a> Interpreter<'a> {
         structural_object_shapes: &'a RwLock<FxHashMap<crate::vm::object::LayoutId, Vec<String>>>,
         type_handles: &'a RwLock<crate::vm::interpreter::shared_state::RuntimeTypeHandleRegistry>,
         prop_keys: &'a RwLock<crate::vm::interpreter::shared_state::PropertyKeyRegistry>,
+        aot_profile: &'a RwLock<crate::aot::profile::AotProfileCollector>,
         io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
         max_preemptions: u32,
         stack_pool: &'a crate::vm::scheduler::StackPool,
@@ -725,6 +774,7 @@ impl<'a> Interpreter<'a> {
             structural_object_shapes,
             type_handles,
             prop_keys,
+            aot_profile,
             io_submit_tx,
             max_preemptions,
             stack_pool,
@@ -733,6 +783,8 @@ impl<'a> Interpreter<'a> {
             code_cache: None,
             #[cfg(feature = "jit")]
             module_profile: None,
+            #[cfg(feature = "jit")]
+            module_profiles_map: None,
             #[cfg(feature = "jit")]
             background_compiler: None,
             #[cfg(feature = "jit")]
@@ -747,6 +799,8 @@ impl<'a> Interpreter<'a> {
             current_module_id_for_profiling: None,
             profiler: None,
             profiler_func_id: 0,
+            current_bytecode_offset_for_aot_profile: 0,
+            current_module_checksum_for_aot_profile: [0; 32],
         }
     }
 
@@ -778,6 +832,20 @@ impl<'a> Interpreter<'a> {
         profile: Option<Arc<crate::jit::profiling::counters::ModuleProfile>>,
     ) {
         self.module_profile = profile;
+    }
+
+    /// Set the global module profile map so layout invalidation can clear
+    /// per-function `jit_available` flags across modules.
+    #[cfg(feature = "jit")]
+    pub fn set_module_profiles_map(
+        &mut self,
+        profiles: Option<
+            &'a RwLock<
+                FxHashMap<[u8; 32], Arc<crate::jit::profiling::counters::ModuleProfile>>,
+            >,
+        >,
+    ) {
+        self.module_profiles_map = profiles;
     }
 
     /// Set the background compiler handle for submitting compilation requests.
@@ -1121,7 +1189,6 @@ impl<'a> Interpreter<'a> {
                 && matches!(
                     opcode,
                     Opcode::Call
-                        | Opcode::DynGet
                         | Opcode::DynGetKeyed
                         | Opcode::LoadFieldExact
                         | Opcode::LoadFieldShape
@@ -1144,6 +1211,9 @@ impl<'a> Interpreter<'a> {
                     opcode
                 );
             }
+
+            self.current_bytecode_offset_for_aot_profile = (ip - 1) as u32;
+            self.current_module_checksum_for_aot_profile = module.checksum;
 
             // Debug check: test breakpoints, step modes, and debugger statements
             // when a debugger is attached. The fast path (no debugger) is a single
@@ -1232,6 +1302,7 @@ impl<'a> Interpreter<'a> {
                     if !is_closure && jit_can_use_fast_path {
                         if let Some(ref profile) = self.module_profile {
                             let count = profile.record_call(func_id);
+                            self.aot_profile.write().record_call(module.checksum, func_id as u32);
                             if let Some(ref telemetry) = self.jit_telemetry {
                                 telemetry
                                     .call_samples
@@ -1297,6 +1368,7 @@ impl<'a> Interpreter<'a> {
                                         self.structural_shape_names,
                                         self.structural_object_shapes,
                                         self.structural_shape_adapters,
+                                        self.aot_profile,
                                         self.type_handles,
                                         self.prop_keys,
                                         self.stack_pool,
@@ -1852,14 +1924,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::CastObjectMinFields
             | Opcode::CastArrayElemKind
             | Opcode::CastKindMask
-            | Opcode::Cast
             | Opcode::CastNominal
-            | Opcode::DynGet
-            | Opcode::DynSet
-            | Opcode::DynDelete
-            | Opcode::DynNewObject
-            | Opcode::DynKeys
-            | Opcode::DynHas
             | Opcode::DynGetKeyed
             | Opcode::DynSetKeyed
             | Opcode::NewMutex
@@ -2335,6 +2400,10 @@ impl<'a> Interpreter<'a> {
     pub(in crate::vm::interpreter) fn record_loop_for_profiling(&self) {
         if let Some(ref profile) = self.module_profile {
             let count = profile.record_loop(self.current_func_id_for_profiling);
+            self.aot_profile.write().record_loop(
+                self.current_module_checksum_for_aot_profile,
+                self.current_func_id_for_profiling as u32,
+            );
             if let Some(ref telemetry) = self.jit_telemetry {
                 telemetry
                     .loop_samples
@@ -2353,5 +2422,20 @@ impl<'a> Interpreter<'a> {
                 }
             }
         }
+    }
+
+    #[inline]
+    pub(in crate::vm::interpreter) fn record_aot_shape_site(
+        &self,
+        kind: crate::aot::profile::AotSiteKind,
+        layout_id: crate::vm::object::LayoutId,
+    ) {
+        self.aot_profile.write().record_layout_site(
+            self.current_module_checksum_for_aot_profile,
+            self.current_func_id_for_profiling as u32,
+            self.current_bytecode_offset_for_aot_profile,
+            kind,
+            layout_id,
+        );
     }
 }

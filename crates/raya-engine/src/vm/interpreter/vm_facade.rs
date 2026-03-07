@@ -1,17 +1,27 @@
 //! Synchronous VM facade for testing and simple execution
 
-use super::SafepointCoordinator;
+use super::{SafepointCoordinator, SharedVmState};
 use crate::compiler::bytecode::verify::operand_size as bytecode_operand_size;
 use crate::compiler::bytecode::Opcode;
 use crate::compiler::Module;
 use crate::vm::{
-    object::{Object, RayaString},
+    gc::{GarbageCollector, GcHeader},
+    object::{
+        Array, BoundMethod, BoundNativeMethod, ChannelObject, Closure, Object, Proxy, RayaString,
+        RefCell,
+    },
     scheduler::{Scheduler, Task, TaskState},
-    snapshot::{SnapshotReader, SnapshotWriter},
+    snapshot::{
+        HeapSnapshot, ObjectId, SerializedDynEntry, SerializedHeapEntry, SerializedValue,
+        SnapshotReader, SnapshotWriter,
+    },
     value::Value,
     VmError, VmResult,
 };
+use std::any::TypeId;
+use std::collections::HashMap;
 use std::path::Path;
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 /// Statistics for a running VM
@@ -35,6 +45,401 @@ pub struct VmStats {
     /// Snapshot of JIT telemetry counters.
     #[cfg(feature = "jit")]
     pub jit_telemetry: crate::vm::interpreter::JitTelemetrySnapshot,
+}
+
+fn raw_heap_value_ptr(header_ptr: *mut GcHeader) -> usize {
+    let header = unsafe { &*header_ptr };
+    unsafe { (header_ptr as *mut u8).add(header.value_offset() as usize) as usize }
+}
+
+fn build_snapshot_pointer_map(gc: &GarbageCollector) -> HashMap<usize, ObjectId> {
+    let mut map = HashMap::new();
+    for header_ptr in gc.heap().iter_allocations() {
+        let header = unsafe { &*header_ptr };
+        let value_ptr = raw_heap_value_ptr(header_ptr);
+        let object_id = if header.type_id() == TypeId::of::<Object>() {
+            let object = unsafe { &*(value_ptr as *const Object) };
+            ObjectId::new(object.object_id())
+        } else {
+            ObjectId::new(value_ptr as u64)
+        };
+        map.insert(value_ptr, object_id);
+    }
+    map
+}
+
+fn serialize_heap(
+    shared: &SharedVmState,
+    gc: &GarbageCollector,
+    pointer_map: &HashMap<usize, ObjectId>,
+) -> VmResult<HeapSnapshot> {
+    let mut heap = HeapSnapshot::new();
+    for header_ptr in gc.heap().iter_allocations() {
+        let header = unsafe { &*header_ptr };
+        let value_ptr = raw_heap_value_ptr(header_ptr);
+        let object_id = *pointer_map
+            .get(&value_ptr)
+            .ok_or_else(|| VmError::RuntimeError(format!("missing snapshot object id for 0x{value_ptr:x}")))?;
+        let type_id = header.type_id();
+        let entry = if type_id == TypeId::of::<Object>() {
+            let object = unsafe { &*(value_ptr as *const Object) };
+            let dyn_entries = object
+                .dyn_map()
+                .map(|dyn_map| {
+                    dyn_map
+                        .iter()
+                        .map(|(key, value)| {
+                            let name = shared.prop_key_name(*key).ok_or_else(|| {
+                                VmError::RuntimeError(format!(
+                                    "snapshot missing dynamic property key name for id {}",
+                                    key
+                                ))
+                            })?;
+                            Ok(SerializedDynEntry {
+                                key: name,
+                                value: SerializedValue::from_live(*value, pointer_map)
+                                    .map_err(|e| VmError::IoError(e.to_string()))?,
+                            })
+                        })
+                        .collect::<VmResult<Vec<_>>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
+            SerializedHeapEntry::Object {
+                object_id,
+                layout_id: object.layout_id(),
+                nominal_type_id: object.nominal_type_id(),
+                flags: object.flags(),
+                fields: object
+                    .fields
+                    .iter()
+                    .copied()
+                    .map(|value| SerializedValue::from_live(value, pointer_map))
+                    .collect::<std::io::Result<Vec<_>>>()
+                    .map_err(|e| VmError::IoError(e.to_string()))?,
+                dyn_entries,
+            }
+        } else if type_id == TypeId::of::<Array>() {
+            let array = unsafe { &*(value_ptr as *const Array) };
+            SerializedHeapEntry::Array {
+                object_id,
+                type_id: array.type_id,
+                elements: array
+                    .elements
+                    .iter()
+                    .copied()
+                    .map(|value| SerializedValue::from_live(value, pointer_map))
+                    .collect::<std::io::Result<Vec<_>>>()
+                    .map_err(|e| VmError::IoError(e.to_string()))?,
+            }
+        } else if type_id == TypeId::of::<RayaString>() {
+            let string = unsafe { &*(value_ptr as *const RayaString) };
+            SerializedHeapEntry::String {
+                object_id,
+                data: string.data.clone(),
+            }
+        } else if type_id == TypeId::of::<Closure>() {
+            let closure = unsafe { &*(value_ptr as *const Closure) };
+            SerializedHeapEntry::Closure {
+                object_id,
+                func_id: closure.func_id,
+                captures: closure
+                    .captures
+                    .iter()
+                    .copied()
+                    .map(|value| SerializedValue::from_live(value, pointer_map))
+                    .collect::<std::io::Result<Vec<_>>>()
+                    .map_err(|e| VmError::IoError(e.to_string()))?,
+                module_checksum: closure.module.as_ref().map(|module| module.checksum),
+            }
+        } else if type_id == TypeId::of::<BoundMethod>() {
+            let method = unsafe { &*(value_ptr as *const BoundMethod) };
+            SerializedHeapEntry::BoundMethod {
+                object_id,
+                receiver: SerializedValue::from_live(method.receiver, pointer_map)
+                    .map_err(|e| VmError::IoError(e.to_string()))?,
+                func_id: method.func_id,
+                module_checksum: method.module.as_ref().map(|module| module.checksum),
+            }
+        } else if type_id == TypeId::of::<BoundNativeMethod>() {
+            let method = unsafe { &*(value_ptr as *const BoundNativeMethod) };
+            SerializedHeapEntry::BoundNativeMethod {
+                object_id,
+                receiver: SerializedValue::from_live(method.receiver, pointer_map)
+                    .map_err(|e| VmError::IoError(e.to_string()))?,
+                native_id: method.native_id,
+            }
+        } else if type_id == TypeId::of::<RefCell>() {
+            let cell = unsafe { &*(value_ptr as *const RefCell) };
+            SerializedHeapEntry::RefCell {
+                object_id,
+                value: SerializedValue::from_live(cell.value, pointer_map)
+                    .map_err(|e| VmError::IoError(e.to_string()))?,
+            }
+        } else if type_id == TypeId::of::<ChannelObject>() {
+            let channel = unsafe { &*(value_ptr as *const ChannelObject) };
+            SerializedHeapEntry::Channel {
+                object_id,
+                capacity: channel.capacity(),
+                queue: channel
+                    .queued_values()
+                    .into_iter()
+                    .map(|value| SerializedValue::from_live(value, pointer_map))
+                    .collect::<std::io::Result<Vec<_>>>()
+                    .map_err(|e| VmError::IoError(e.to_string()))?,
+                closed: channel.is_closed(),
+            }
+        } else if type_id == TypeId::of::<Proxy>() {
+            let proxy = unsafe { &*(value_ptr as *const Proxy) };
+            SerializedHeapEntry::Proxy {
+                object_id,
+                proxy_id: proxy.proxy_id,
+                target: SerializedValue::from_live(proxy.target, pointer_map)
+                    .map_err(|e| VmError::IoError(e.to_string()))?,
+                handler: SerializedValue::from_live(proxy.handler, pointer_map)
+                    .map_err(|e| VmError::IoError(e.to_string()))?,
+            }
+        } else {
+            return Err(VmError::RuntimeError(format!(
+                "snapshot does not yet support heap type {:?}",
+                type_id
+            )));
+        };
+        heap.add_entry(entry);
+    }
+    Ok(heap)
+}
+
+fn restore_heap_snapshot(
+    shared: &SharedVmState,
+    snapshot: &HeapSnapshot,
+) -> VmResult<HashMap<ObjectId, Value>> {
+    let module_registry = shared.module_registry.read();
+    let mut gc = shared.gc.lock();
+    let mut values = HashMap::new();
+
+    for entry in snapshot.entries() {
+        let value = match entry {
+            SerializedHeapEntry::Object {
+                object_id,
+                layout_id,
+                nominal_type_id,
+                flags,
+                fields,
+                dyn_entries,
+            } => {
+                let mut object = if let Some(nominal_type_id) = nominal_type_id {
+                    Object::new_nominal(*layout_id, *nominal_type_id, fields.len())
+                } else if dyn_entries.is_empty() {
+                    Object::new_structural(*layout_id, fields.len())
+                } else {
+                    Object::new_dynamic(*layout_id, fields.len())
+                };
+                object.header.object_id = object_id.as_u64();
+                object.header.flags = *flags;
+                if !dyn_entries.is_empty() {
+                    object.ensure_dyn_map();
+                }
+                let ptr = gc.allocate(object);
+                unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
+            }
+            SerializedHeapEntry::Array {
+                type_id,
+                elements,
+                ..
+            } => {
+                let ptr = gc.allocate(Array::new(*type_id, elements.len()));
+                unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
+            }
+            SerializedHeapEntry::String { data, .. } => {
+                let ptr = gc.allocate(RayaString::new(data.clone()));
+                unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
+            }
+            SerializedHeapEntry::Closure {
+                func_id,
+                captures,
+                module_checksum,
+                ..
+            } => {
+                let closure = Closure {
+                    func_id: *func_id,
+                    captures: vec![Value::null(); captures.len()],
+                    module: module_checksum
+                        .as_ref()
+                        .and_then(|checksum| module_registry.get_by_checksum(checksum).cloned()),
+                };
+                let ptr = gc.allocate(closure);
+                unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
+            }
+            SerializedHeapEntry::BoundMethod {
+                func_id,
+                module_checksum,
+                ..
+            } => {
+                let method = BoundMethod {
+                    receiver: Value::null(),
+                    func_id: *func_id,
+                    module: module_checksum
+                        .as_ref()
+                        .and_then(|checksum| module_registry.get_by_checksum(checksum).cloned()),
+                };
+                let ptr = gc.allocate(method);
+                unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
+            }
+            SerializedHeapEntry::BoundNativeMethod { native_id, .. } => {
+                let method = BoundNativeMethod {
+                    receiver: Value::null(),
+                    native_id: *native_id,
+                };
+                let ptr = gc.allocate(method);
+                unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
+            }
+            SerializedHeapEntry::RefCell { .. } => {
+                let ptr = gc.allocate(RefCell::new(Value::null()));
+                unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
+            }
+            SerializedHeapEntry::Channel { capacity, .. } => {
+                let ptr = gc.allocate(ChannelObject::new(*capacity));
+                unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
+            }
+            SerializedHeapEntry::Proxy { .. } => {
+                let ptr = gc.allocate(Proxy::new(Value::null(), Value::null()));
+                unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
+            }
+        };
+        values.insert(entry.object_id(), value);
+    }
+
+    for entry in snapshot.entries() {
+        let value = *values.get(&entry.object_id()).expect("snapshot object allocated");
+        match entry {
+            SerializedHeapEntry::Object {
+                object_id,
+                flags,
+                fields,
+                dyn_entries,
+                ..
+            } => {
+                let ptr = unsafe { value.as_ptr::<Object>() }.unwrap();
+                let object = unsafe { &mut *ptr.as_ptr() };
+                object.header.object_id = object_id.as_u64();
+                object.header.flags = *flags;
+                for (index, field) in fields.iter().enumerate() {
+                    let decoded: Value = field
+                        .to_live(&values)
+                        .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
+                    object.fields[index] = decoded;
+                }
+                if !dyn_entries.is_empty() {
+                    let dyn_map = object.ensure_dyn_map();
+                    dyn_map.clear();
+                    for entry in dyn_entries {
+                        let key = shared.intern_prop_key(&entry.key);
+                        dyn_map.insert(
+                            key,
+                            entry
+                                .value
+                                .to_live(&values)
+                                .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?,
+                        );
+                    }
+                }
+            }
+            SerializedHeapEntry::Array { elements, .. } => {
+                let ptr = unsafe { value.as_ptr::<Array>() }.unwrap();
+                let array = unsafe { &mut *ptr.as_ptr() };
+                for (index, element) in elements.iter().enumerate() {
+                    let decoded: Value = element
+                        .to_live(&values)
+                        .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
+                    array.elements[index] = decoded;
+                }
+            }
+            SerializedHeapEntry::String { .. } => {}
+            SerializedHeapEntry::Closure {
+                captures,
+                module_checksum,
+                ..
+            } => {
+                let ptr = unsafe { value.as_ptr::<Closure>() }.unwrap();
+                let closure = unsafe { &mut *ptr.as_ptr() };
+                for (index, capture) in captures.iter().enumerate() {
+                    let decoded: Value = capture
+                        .to_live(&values)
+                        .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
+                    closure.captures[index] = decoded;
+                }
+                closure.module = module_checksum
+                    .as_ref()
+                    .and_then(|checksum| module_registry.get_by_checksum(checksum).cloned());
+            }
+            SerializedHeapEntry::BoundMethod {
+                receiver,
+                module_checksum,
+                ..
+            } => {
+                let ptr = unsafe { value.as_ptr::<BoundMethod>() }.unwrap();
+                let method = unsafe { &mut *ptr.as_ptr() };
+                method.receiver = receiver
+                    .to_live(&values)
+                    .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
+                method.module = module_checksum
+                    .as_ref()
+                    .and_then(|checksum| module_registry.get_by_checksum(checksum).cloned());
+            }
+            SerializedHeapEntry::BoundNativeMethod { receiver, .. } => {
+                let ptr = unsafe { value.as_ptr::<BoundNativeMethod>() }.unwrap();
+                let method = unsafe { &mut *ptr.as_ptr() };
+                method.receiver = receiver
+                    .to_live(&values)
+                    .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
+            }
+            SerializedHeapEntry::RefCell { value: cell_value, .. } => {
+                let ptr = unsafe { value.as_ptr::<RefCell>() }.unwrap();
+                let cell = unsafe { &mut *ptr.as_ptr() };
+                cell.value = cell_value
+                    .to_live(&values)
+                    .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
+            }
+            SerializedHeapEntry::Channel {
+                queue, closed, ..
+            } => {
+                let ptr = unsafe { value.as_ptr::<ChannelObject>() }.unwrap();
+                let channel = unsafe { &mut *ptr.as_ptr() };
+                for queued in queue {
+                    let decoded: Value = queued
+                        .to_live(&values)
+                        .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
+                    if !channel.try_send(decoded) {
+                        return Err(VmError::RuntimeError(
+                            "snapshot restore failed: could not restore channel queue".to_string(),
+                        ));
+                    }
+                }
+                if *closed {
+                    channel.close();
+                }
+            }
+            SerializedHeapEntry::Proxy {
+                proxy_id,
+                target,
+                handler,
+                ..
+            } => {
+                let ptr = unsafe { value.as_ptr::<Proxy>() }.unwrap();
+                let proxy = unsafe { &mut *ptr.as_ptr() };
+                proxy.proxy_id = *proxy_id;
+                proxy.target = target
+                    .to_live(&values)
+                    .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
+                proxy.handler = handler
+                    .to_live(&values)
+                    .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
+            }
+        }
+    }
+
+    Ok(values)
 }
 
 /// Raya virtual machine
@@ -226,6 +631,22 @@ impl Vm {
     pub fn stop_profiling(&self) -> Option<crate::profiler::ProfileData> {
         let profiler = self.scheduler.shared_state().profiler.lock().take()?;
         Some(profiler.stop())
+    }
+
+    /// Snapshot the offline AOT profile collected by the interpreter.
+    pub fn snapshot_aot_profile(&self) -> crate::aot::profile::AotProfileData {
+        self.scheduler.shared_state().snapshot_aot_profile()
+    }
+
+    /// Write the offline AOT profile to disk as JSON.
+    pub fn write_aot_profile(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<(), String> {
+        let profile = self.snapshot_aot_profile();
+        let json = serde_json::to_string_pretty(&profile)
+            .map_err(|err| format!("Failed to encode AOT profile JSON: {err}"))?;
+        std::fs::write(path, json).map_err(|err| format!("Failed to write AOT profile: {err}"))
     }
 
     /// Enable JIT compilation with default configuration.
@@ -542,14 +963,21 @@ impl Vm {
     /// Build a SnapshotWriter from the current VM state.
     fn build_snapshot(&self) -> VmResult<SnapshotWriter> {
         let mut writer = SnapshotWriter::new();
+        let shared = self.scheduler.shared_state();
+        let gc = shared.gc.lock();
+        let pointer_map = build_snapshot_pointer_map(&gc);
+        let heap = serialize_heap(shared, &gc, &pointer_map)?;
+        drop(gc);
+        writer.set_heap(heap);
 
         // Serialize all tasks
-        let tasks = self.scheduler.shared_state().tasks.read();
+        let tasks = shared.tasks.read();
         for task in tasks.values() {
-            writer.add_task(task.to_serialized());
+            writer.add_task(
+                task.to_serialized_with_values(|value| SerializedValue::from_live(value, &pointer_map))
+                    .map_err(|e| VmError::IoError(e.to_string()))?,
+            );
         }
-
-        // Heap snapshot (placeholder — full heap serialization is future work)
 
         Ok(writer)
     }
@@ -575,11 +1003,13 @@ impl Vm {
     /// Apply a parsed snapshot to this VM.
     fn apply_snapshot(&mut self, reader: SnapshotReader) -> VmResult<()> {
         let shared = self.scheduler.shared_state();
+        let heap_values = restore_heap_snapshot(shared, reader.heap())?;
         let module_registry = shared.module_registry.read();
 
         // Restore tasks: look up each task's module from the registry
         let serialized_tasks = reader.tasks();
         let mut tasks_map = shared.tasks.write();
+        tasks_map.clear();
 
         let checksum_is_set = |checksum: &[u8; 32]| checksum.iter().any(|b| *b != 0);
         let format_checksum = |checksum: &[u8; 32]| -> String {
@@ -630,15 +1060,14 @@ impl Vm {
                 }
             }
 
-            let task = Arc::new(Task::from_serialized_with_lookup(
+            let task = Arc::new(Task::from_serialized_with_lookup_and_values(
                 stask.clone(),
                 module,
                 |checksum| module_registry.get_by_checksum(checksum).cloned(),
+                |value| value.to_live(&heap_values),
             ));
             tasks_map.insert(task.id(), task);
         }
-
-        // Heap restoration is future work — heap objects are not yet serialized
 
         Ok(())
     }

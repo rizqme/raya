@@ -320,6 +320,7 @@ pub enum HelperCall {
     FreeFrame,
     SafepointPoll,
     AllocObject,
+    AllocStructuralObject,
     AllocArray,
     AllocString,
     StringConcat,
@@ -540,6 +541,7 @@ struct StateMachineTransformer<'a> {
     input_blocks: Vec<SmBlock>,
     output_blocks: Vec<SmBlock>,
     next_block_id: u32,
+    continuation_block_ids: std::collections::HashMap<usize, SmBlockId>,
     /// Temporary register allocator (starts after local_count * 2 to avoid collisions).
     next_temp_reg: u32,
 }
@@ -563,6 +565,7 @@ impl<'a> StateMachineTransformer<'a> {
             input_blocks: blocks,
             output_blocks: Vec::new(),
             next_block_id: max_block + 1,
+            continuation_block_ids: std::collections::HashMap::new(),
             next_temp_reg: (local_count + 1) * 2 + 100,
         }
     }
@@ -650,7 +653,12 @@ impl<'a> StateMachineTransformer<'a> {
 
             // Find the continuation block for this suspension point.
             // The continuation is the block that was split after the suspension.
-            let continuation_id = SmBlockId(point.block_id * 1000 + point.instr_index + 1);
+            let continuation_id = if let Some(id) = self.continuation_block_ids.get(&idx).copied()
+            {
+                id
+            } else {
+                self.alloc_block_id()
+            };
 
             let mut restore_instrs = Vec::new();
 
@@ -705,7 +713,9 @@ impl<'a> StateMachineTransformer<'a> {
 
             // Create pre-suspend block with instructions up to the suspension point
             let save_block_id = self.alloc_block_id();
-            let continuation_id = SmBlockId(block.id.0 * 1000 + instr_idx + 1);
+            let continuation_id = self.alloc_block_id();
+            self.continuation_block_ids
+                .insert(suspend_idx, continuation_id);
 
             let pre_instrs: Vec<SmInstr> =
                 block.instructions[current_start as usize..instr_idx as usize].to_vec();

@@ -163,6 +163,7 @@ fn test_module_with_exports() {
         scope: SymbolScope::Module,
         signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
+        nominal_type: None,
     });
 
     let bytes = module.encode();
@@ -691,6 +692,7 @@ fn test_e2e_exports_survive_encode_decode() {
         signature_hash: test_symbol_id(module_id_from_name("export_mod"), "add", 0)
             ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
+        nominal_type: None,
     });
 
     // Encode → decode round-trip

@@ -585,6 +585,10 @@ impl<'a> Interpreter<'a> {
                 let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                self.record_aot_shape_site(
+                    crate::aot::profile::AotSiteKind::LoadFieldShape,
+                    obj.layout_id(),
+                );
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);
                 if let StructuralSlotBinding::Missing = slot_binding {
                     if let Err(e) = stack.push(Value::null()) {
@@ -761,6 +765,10 @@ impl<'a> Interpreter<'a> {
                 let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
+                self.record_aot_shape_site(
+                    crate::aot::profile::AotSiteKind::StoreFieldShape,
+                    obj.layout_id(),
+                );
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);
                 let field_offset = match slot_binding {
                     StructuralSlotBinding::Field(offset) => offset,

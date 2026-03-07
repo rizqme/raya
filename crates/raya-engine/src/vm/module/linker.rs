@@ -450,6 +450,7 @@ mod tests {
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
                 structural_shapes: vec![],
+            structural_layouts: vec![],
             },
             exports: vec![],
             imports: vec![],
@@ -551,6 +552,7 @@ mod tests {
             scope: SymbolScope::Module,
             signature_hash: 42,
             type_signature: Some("fn(min=0,params=[],rest=_,ret=number)".to_string()),
+            nominal_type: None,
         });
         linker.add_module(Arc::new(module)).unwrap();
 
@@ -586,6 +588,7 @@ mod tests {
             scope: SymbolScope::Module,
             signature_hash: crate::parser::types::signature_hash("number"),
             type_signature: Some("number".to_string()),
+            nominal_type: None,
         });
         linker.add_module(Arc::new(module)).unwrap();
 
@@ -626,6 +629,7 @@ mod tests {
             type_signature: Some(
                 "obj(prop:a:rw:req:number,prop:b:rw:req:string,prop:c:rw:req:string)".to_string(),
             ),
+            nominal_type: None,
         });
         linker.add_module(Arc::new(module)).unwrap();
 
@@ -657,6 +661,7 @@ mod tests {
             scope: SymbolScope::Module,
             signature_hash: signature_hash("number"),
             type_signature: Some("number".to_string()),
+            nominal_type: None,
         });
         linker.add_module(Arc::new(module)).unwrap();
 
@@ -694,6 +699,7 @@ mod tests {
             scope: SymbolScope::Module,
             signature_hash: signature_hash("fn(min=1,params=[number],rest=_,ret=number)"),
             type_signature: Some("fn(min=1,params=[number],rest=_,ret=number)".to_string()),
+            nominal_type: None,
         });
         linker.add_module(Arc::new(module)).unwrap();
 

@@ -62,6 +62,13 @@ impl FunctionProfile {
         self.compiling.store(false, Ordering::Release);
     }
 
+    /// Mark previously compiled code as no longer available due to runtime invalidation.
+    pub fn invalidate_compiled_code(&self) {
+        self.jit_available.store(false, Ordering::Release);
+        self.compile_failed.store(false, Ordering::Release);
+        self.compiling.store(false, Ordering::Release);
+    }
+
     /// Check if JIT code is available
     pub fn is_jit_available(&self) -> bool {
         self.jit_available.load(Ordering::Acquire)

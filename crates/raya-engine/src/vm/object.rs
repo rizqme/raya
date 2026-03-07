@@ -1561,6 +1561,11 @@ impl ChannelObject {
         self.inner.lock().closed
     }
 
+    /// Snapshot the buffered queue without mutating the live channel.
+    pub fn queued_values(&self) -> Vec<Value> {
+        self.inner.lock().queue.iter().copied().collect()
+    }
+
     /// Close the channel. Reactor handles waking any waiting tasks.
     pub fn close(&self) {
         self.inner.lock().closed = true;

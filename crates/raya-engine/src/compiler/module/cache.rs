@@ -203,6 +203,7 @@ mod tests {
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
                 structural_shapes: vec![],
+            structural_layouts: vec![],
             },
             native_functions: vec![],
             jit_hints: vec![],

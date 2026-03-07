@@ -413,6 +413,9 @@ pub struct SharedVmState {
     /// Set by `Vm::enable_profiling()`, cloned by worker threads.
     pub profiler: Mutex<Option<Arc<crate::profiler::Profiler>>>,
 
+    /// Offline AOT profile collector populated from interpreter execution.
+    pub aot_profile: RwLock<crate::aot::profile::AotProfileCollector>,
+
     /// JIT code cache — shared with interpreter threads for native dispatch.
     /// Set once by `Vm::enable_jit()`, then read by interpreter threads.
     #[cfg(feature = "jit")]
@@ -485,6 +488,7 @@ impl SharedVmState {
             max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,
             preempt_threshold_ms: crate::vm::defaults::DEFAULT_PREEMPT_THRESHOLD_MS,
             profiler: Mutex::new(None),
+            aot_profile: RwLock::new(crate::aot::profile::AotProfileCollector::default()),
             #[cfg(feature = "jit")]
             code_cache: Mutex::new(None),
             #[cfg(feature = "jit")]
@@ -697,6 +701,7 @@ impl SharedVmState {
         self.layouts
             .write()
             .register_layout_shape(layout_id, member_names);
+        self.invalidate_jit_for_layout(layout_id);
     }
 
     /// Resolve canonical member names for a physical structural layout.
@@ -738,6 +743,9 @@ impl SharedVmState {
         self.layouts
             .write()
             .register_nominal_layout(nominal_type_id, layout_id, field_count, name);
+        if layout_id != 0 {
+            self.invalidate_jit_for_layout(layout_id);
+        }
     }
 
     /// Resolve the physical layout ID for a nominal runtime type.
@@ -786,6 +794,7 @@ impl SharedVmState {
 
     /// Update instance field count metadata for a nominal runtime type.
     pub fn set_nominal_field_count(&self, nominal_type_id: usize, field_count: usize) -> bool {
+        let layout_id = self.nominal_layout_id(nominal_type_id);
         let updated_layouts = self
             .layouts
             .write()
@@ -794,7 +803,63 @@ impl SharedVmState {
             .classes
             .write()
             .set_nominal_field_count(nominal_type_id, field_count);
+        if (updated_layouts || updated_classes) && layout_id.is_some() {
+            self.invalidate_jit_for_layout(layout_id.unwrap());
+        }
         updated_layouts || updated_classes
+    }
+
+    #[cfg(feature = "jit")]
+    fn invalidate_jit_for_layout(&self, layout_id: LayoutId) {
+        let affected = self
+            .code_cache
+            .lock()
+            .as_ref()
+            .map(|cache| cache.invalidate_layout(layout_id))
+            .unwrap_or_default();
+        if affected.is_empty() {
+            return;
+        }
+        let profiles = self.module_profiles.read();
+        for (checksum, func_index) in affected {
+            if let Some(profile) = profiles.get(&checksum) {
+                if let Some(func) = profile.get(func_index as usize) {
+                    func.invalidate_compiled_code();
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "jit"))]
+    fn invalidate_jit_for_layout(&self, _layout_id: LayoutId) {}
+
+    pub fn record_aot_call(&self, checksum: [u8; 32], func_index: u32) {
+        self.aot_profile.write().record_call(checksum, func_index);
+    }
+
+    pub fn record_aot_loop(&self, checksum: [u8; 32], func_index: u32) {
+        self.aot_profile.write().record_loop(checksum, func_index);
+    }
+
+    pub fn record_aot_layout_site(
+        &self,
+        checksum: [u8; 32],
+        func_index: u32,
+        bytecode_offset: u32,
+        kind: crate::aot::profile::AotSiteKind,
+        layout_id: LayoutId,
+    ) {
+        self.aot_profile.write().record_layout_site(
+            checksum,
+            func_index,
+            bytecode_offset,
+            kind,
+            layout_id,
+        );
+    }
+
+    pub fn snapshot_aot_profile(&self) -> crate::aot::profile::AotProfileData {
+        self.aot_profile.read().snapshot()
     }
 
     /// Resolve canonical member names for a structural shape id.

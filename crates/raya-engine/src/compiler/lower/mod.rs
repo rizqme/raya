@@ -580,6 +580,8 @@ pub struct Lowerer<'a> {
     variable_structural_projection_fields: FxHashMap<Symbol, Vec<(String, usize)>>,
     /// Canonical structural shapes referenced by this module.
     module_structural_shapes: FxHashMap<u64, Vec<String>>,
+    /// Ordered structural layouts referenced by this module.
+    module_structural_layouts: FxHashMap<u32, Vec<String>>,
     /// For variables holding async-call Task results, tracks the awaited value alias type.
     /// Example: `const t = async listener.accept()` records `t -> "__t_m0_TcpStream"`.
     task_result_type_aliases: FxHashMap<Symbol, String>,
@@ -1117,6 +1119,7 @@ impl<'a> Lowerer<'a> {
             variable_object_type_aliases: FxHashMap::default(),
             variable_structural_projection_fields: FxHashMap::default(),
             module_structural_shapes: FxHashMap::default(),
+            module_structural_layouts: FxHashMap::default(),
             task_result_type_aliases: FxHashMap::default(),
             object_spread_target_filter: None,
             object_literal_target_layout: None,
@@ -2002,6 +2005,8 @@ impl<'a> Lowerer<'a> {
 
         // Transfer native function table to the IR module
         ir_module.native_functions = self.take_native_function_table();
+        ir_module.structural_shapes = self.module_structural_shapes.clone();
+        ir_module.structural_layouts = self.module_structural_layouts.clone();
 
         ir_module
     }

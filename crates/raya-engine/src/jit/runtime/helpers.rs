@@ -77,6 +77,7 @@ pub struct JitRuntimeBridgeContext {
     pub structural_shape_adapters: *const parking_lot::RwLock<
         FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
+    pub aot_profile: *const parking_lot::RwLock<crate::aot::profile::AotProfileCollector>,
     pub type_handles:
         *const parking_lot::RwLock<crate::vm::interpreter::RuntimeTypeHandleRegistry>,
     pub prop_keys: *const parking_lot::RwLock<crate::vm::interpreter::PropertyKeyRegistry>,
@@ -109,6 +110,7 @@ pub fn build_runtime_bridge_context(
     structural_shape_adapters: &parking_lot::RwLock<
         FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
+    aot_profile: &parking_lot::RwLock<crate::aot::profile::AotProfileCollector>,
     type_handles: &parking_lot::RwLock<crate::vm::interpreter::RuntimeTypeHandleRegistry>,
     prop_keys: &parking_lot::RwLock<crate::vm::interpreter::PropertyKeyRegistry>,
     stack_pool: &crate::vm::scheduler::StackPool,
@@ -136,6 +138,7 @@ pub fn build_runtime_bridge_context(
         structural_shape_names: structural_shape_names as *const _,
         structural_layout_shapes: structural_layout_shapes as *const _,
         structural_shape_adapters: structural_shape_adapters as *const _,
+        aot_profile: aot_profile as *const _,
         type_handles: type_handles as *const _,
         prop_keys: prop_keys as *const _,
         stack_pool: stack_pool as *const _,
@@ -444,6 +447,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         || bridge.structural_layout_shapes.is_null()
         || bridge.type_handles.is_null()
         || bridge.prop_keys.is_null()
+        || bridge.aot_profile.is_null()
         || bridge.stack_pool.is_null()
     {
         return None;
@@ -468,6 +472,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         unsafe { &*bridge.structural_layout_shapes },
         unsafe { &*bridge.type_handles },
         unsafe { &*bridge.prop_keys },
+        unsafe { &*bridge.aot_profile },
         if bridge.io_submit_tx.is_null() {
             None
         } else {
@@ -1598,6 +1603,7 @@ mod tests {
             &shared.structural_shape_names,
             &shared.structural_layout_shapes,
             &shared.structural_shape_adapters,
+            &shared.aot_profile,
             &shared.type_handles,
             &shared.prop_keys,
             &shared.stack_pool,
@@ -1660,6 +1666,7 @@ mod tests {
             &shared.structural_shape_names,
             &shared.structural_layout_shapes,
             &shared.structural_shape_adapters,
+            &shared.aot_profile,
             &shared.type_handles,
             &shared.prop_keys,
             &shared.stack_pool,
@@ -1748,6 +1755,7 @@ mod tests {
             &shared.structural_shape_names,
             &shared.structural_layout_shapes,
             &shared.structural_shape_adapters,
+            &shared.aot_profile,
             &shared.type_handles,
             &shared.prop_keys,
             &shared.stack_pool,

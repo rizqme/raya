@@ -222,27 +222,25 @@ impl Default for SubclassDefinition {
     }
 }
 
-/// Builder for creating dynamic classes at runtime
-pub struct DynamicClassBuilder {
-    /// Next nominal type ID to allocate
-    next_id: usize,
-}
+/// Builder for creating dynamic classes at runtime.
+///
+/// The builder no longer allocates nominal IDs itself. Callers must supply a
+/// registry-reserved nominal type ID for each class that is assembled.
+pub struct DynamicClassBuilder;
 
 impl DynamicClassBuilder {
-    /// Create a new builder with the next available nominal type ID
-    pub fn new(next_id: usize) -> Self {
-        Self { next_id }
+    /// Create a new dynamic class builder.
+    pub fn new() -> Self {
+        Self
     }
 
     /// Create a new root class (no parent)
     pub fn create_root_class(
-        &mut self,
+        &self,
+        nominal_type_id: usize,
         name: String,
         definition: &SubclassDefinition,
     ) -> (Class, ClassMetadata) {
-        let nominal_type_id = self.next_id;
-        self.next_id += 1;
-
         let instance_field_count = definition.instance_field_count();
         let static_field_count = definition.static_field_count();
 
@@ -278,15 +276,13 @@ impl DynamicClassBuilder {
 
     /// Create a subclass extending a parent class
     pub fn create_subclass(
-        &mut self,
+        &self,
+        nominal_type_id: usize,
         name: String,
         parent: &Class,
         parent_metadata: Option<&ClassMetadata>,
         definition: &SubclassDefinition,
     ) -> (Class, ClassMetadata) {
-        let nominal_type_id = self.next_id;
-        self.next_id += 1;
-
         // Calculate total field count (inherited + new)
         let inherited_fields = parent.field_count;
         let new_instance_fields = definition.instance_field_count();
@@ -324,14 +320,12 @@ impl DynamicClassBuilder {
 
     /// Extend an existing class with additional fields (creates a new class)
     pub fn extend_with_fields(
-        &mut self,
+        &self,
+        nominal_type_id: usize,
         original: &Class,
         original_metadata: Option<&ClassMetadata>,
         new_fields: &[FieldDefinition],
     ) -> (Class, ClassMetadata) {
-        let nominal_type_id = self.next_id;
-        self.next_id += 1;
-
         // Count new instance fields
         let new_instance_fields: usize = new_fields.iter().filter(|f| !f.is_static).count();
         let new_static_fields: usize = new_fields.iter().filter(|f| f.is_static).count();
@@ -630,15 +624,15 @@ mod tests {
 
     #[test]
     fn test_create_root_class() {
-        let mut builder = DynamicClassBuilder::new(0);
+        let builder = DynamicClassBuilder::new();
 
         let def = SubclassDefinition::new()
             .add_field(FieldDefinition::new("x".to_string(), "number"))
             .add_field(FieldDefinition::new("y".to_string(), "number"));
 
-        let (class, metadata) = builder.create_root_class("Point".to_string(), &def);
+        let (class, metadata) = builder.create_root_class(1, "Point".to_string(), &def);
 
-        assert_eq!(class.id, 0);
+        assert_eq!(class.id, 1);
         assert_eq!(class.name, "Point");
         assert_eq!(class.field_count, 2);
         assert!(class.parent_id.is_none());
@@ -651,29 +645,30 @@ mod tests {
 
     #[test]
     fn test_create_subclass() {
-        let mut builder = DynamicClassBuilder::new(0);
+        let builder = DynamicClassBuilder::new();
 
         // Create parent class
         let parent_def = SubclassDefinition::new()
             .add_field(FieldDefinition::new("x".to_string(), "number"))
             .add_field(FieldDefinition::new("y".to_string(), "number"));
         let (parent_class, parent_meta) =
-            builder.create_root_class("Point".to_string(), &parent_def);
+            builder.create_root_class(1, "Point".to_string(), &parent_def);
 
         // Create subclass
         let child_def = SubclassDefinition::new()
             .add_field(FieldDefinition::new("color".to_string(), "string"));
         let (child_class, child_meta) = builder.create_subclass(
+            2,
             "ColoredPoint".to_string(),
             &parent_class,
             Some(&parent_meta),
             &child_def,
         );
 
-        assert_eq!(child_class.id, 1);
+        assert_eq!(child_class.id, 2);
         assert_eq!(child_class.name, "ColoredPoint");
         assert_eq!(child_class.field_count, 3); // 2 inherited + 1 new
-        assert_eq!(child_class.parent_id, Some(0));
+        assert_eq!(child_class.parent_id, Some(1));
 
         // Check inherited fields
         assert!(child_meta.has_field("x"));
@@ -685,19 +680,19 @@ mod tests {
 
     #[test]
     fn test_extend_with_fields() {
-        let mut builder = DynamicClassBuilder::new(0);
+        let builder = DynamicClassBuilder::new();
 
         // Create original class
         let orig_def =
             SubclassDefinition::new().add_field(FieldDefinition::new("x".to_string(), "number"));
-        let (orig_class, orig_meta) = builder.create_root_class("Point".to_string(), &orig_def);
+        let (orig_class, orig_meta) = builder.create_root_class(1, "Point".to_string(), &orig_def);
 
         // Extend with new field
         let new_fields = vec![FieldDefinition::new("y".to_string(), "number")];
         let (extended_class, extended_meta) =
-            builder.extend_with_fields(&orig_class, Some(&orig_meta), &new_fields);
+            builder.extend_with_fields(2, &orig_class, Some(&orig_meta), &new_fields);
 
-        assert_eq!(extended_class.id, 1);
+        assert_eq!(extended_class.id, 2);
         assert_eq!(extended_class.name, "Point$Extended");
         assert_eq!(extended_class.field_count, 2);
 
