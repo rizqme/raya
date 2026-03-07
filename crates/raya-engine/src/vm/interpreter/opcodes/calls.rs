@@ -830,6 +830,98 @@ impl<'a> Interpreter<'a> {
                 }
             }
 
+            Opcode::ConstructType => {
+                self.safepoint.poll();
+                let local_nominal_type_index = match Self::read_u16(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let nominal_type_id =
+                    match self.resolve_nominal_type_id(module, local_nominal_type_index) {
+                        Ok(id) => id,
+                        Err(error) => return OpcodeResult::Error(error),
+                    };
+                let arg_count = match Self::read_u8(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    match stack.pop() {
+                        Ok(v) => args.push(v),
+                        Err(e) => return OpcodeResult::Error(e),
+                    }
+                }
+                args.reverse();
+
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let Some(object_ptr) = (unsafe { obj_val.as_ptr::<Object>() }) else {
+                    return OpcodeResult::Error(VmError::TypeError(format!(
+                        "ConstructType expected object receiver for nominal type {}",
+                        nominal_type_id
+                    )));
+                };
+                let obj = unsafe { &*object_ptr.as_ptr() };
+                let Some(object_nominal_type_id) = obj.nominal_type_id_usize() else {
+                    return OpcodeResult::Error(VmError::TypeError(format!(
+                        "ConstructType expected nominal object receiver for nominal type {}",
+                        nominal_type_id
+                    )));
+                };
+                if object_nominal_type_id != nominal_type_id {
+                    return OpcodeResult::Error(VmError::TypeError(format!(
+                        "ConstructType receiver nominal_type_id={} does not match target nominal_type_id={}",
+                        object_nominal_type_id, nominal_type_id
+                    )));
+                }
+
+                let classes = self.classes.read();
+                let class = match classes.get_class(nominal_type_id) {
+                    Some(c) => c,
+                    None => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Invalid nominal type id: {}",
+                            nominal_type_id
+                        )));
+                    }
+                };
+                let constructor_id = class.get_constructor();
+                let constructor_module = class.module.clone();
+                drop(classes);
+
+                let constructor_id = match constructor_id {
+                    Some(id) => id,
+                    None => {
+                        if let Err(e) = stack.push(obj_val) {
+                            return OpcodeResult::Error(e);
+                        }
+                        return OpcodeResult::Continue;
+                    }
+                };
+
+                if let Err(e) = stack.push(obj_val) {
+                    return OpcodeResult::Error(e);
+                }
+                for arg in args {
+                    if let Err(e) = stack.push(arg) {
+                        return OpcodeResult::Error(e);
+                    }
+                }
+
+                OpcodeResult::PushFrame {
+                    func_id: constructor_id,
+                    arg_count: arg_count + 1,
+                    is_closure: false,
+                    closure_val: None,
+                    module: constructor_module,
+                    return_action: ReturnAction::PushObject(obj_val),
+                }
+            }
+
             Opcode::CallSuper => {
                 let local_class_index = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,

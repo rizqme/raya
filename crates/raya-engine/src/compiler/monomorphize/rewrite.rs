@@ -92,6 +92,25 @@ impl<'a> CallSiteRewriter<'a> {
                 }
                 None
             }
+            IrInstr::ConstructType {
+                dest,
+                object,
+                nominal_type_id,
+                args,
+            } => {
+                if let Some(type_params) = self.generic_classes.get(nominal_type_id) {
+                    let key = MonoKey::class(*nominal_type_id, type_params.clone());
+                    if let Some(specialized_id) = self.mono_ctx.get_class(&key) {
+                        return Some(IrInstr::ConstructType {
+                            dest: dest.clone(),
+                            object: object.clone(),
+                            nominal_type_id: specialized_id,
+                            args: args.clone(),
+                        });
+                    }
+                }
+                None
+            }
             IrInstr::NewType {
                 dest,
                 nominal_type_id,
@@ -229,6 +248,26 @@ impl<'a> TypeAwareRewriter<'a> {
                         return Some(IrInstr::Call {
                             dest: dest.clone(),
                             func: specialized_id,
+                            args: args.clone(),
+                        });
+                    }
+                }
+                None
+            }
+            IrInstr::ConstructType {
+                dest,
+                object,
+                nominal_type_id,
+                args,
+            } => {
+                let type_args: Vec<TypeId> = args.iter().map(|a| a.ty).collect();
+                if !type_args.is_empty() {
+                    let key = MonoKey::class(*nominal_type_id, type_args);
+                    if let Some(specialized_id) = self.mono_ctx.get_class(&key) {
+                        return Some(IrInstr::ConstructType {
+                            dest: dest.clone(),
+                            object: object.clone(),
+                            nominal_type_id: specialized_id,
                             args: args.clone(),
                         });
                     }

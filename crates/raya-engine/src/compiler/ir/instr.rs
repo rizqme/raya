@@ -114,6 +114,14 @@ pub enum IrInstr {
         args: Vec<Register>,
     },
 
+    /// Nominal constructor call on an already-allocated object.
+    ConstructType {
+        dest: Register,
+        object: Register,
+        nominal_type_id: NominalTypeId,
+        args: Vec<Register>,
+    },
+
     /// Method call: dest = object.method(args)
     CallMethodExact {
         dest: Option<Register>,
@@ -517,6 +525,7 @@ impl IrInstr {
             | IrInstr::Cast { dest, .. }
             | IrInstr::LateBoundMember { dest, .. }
             | IrInstr::BindMethod { dest, .. } => Some(dest),
+            IrInstr::ConstructType { dest, .. } => Some(dest),
             IrInstr::Call { dest, .. }
             | IrInstr::CallMethodExact { dest, .. }
             | IrInstr::CallMethodShape { dest, .. }
@@ -551,6 +560,7 @@ impl IrInstr {
         matches!(
             self,
             IrInstr::Call { .. }
+                | IrInstr::ConstructType { .. }
                 | IrInstr::CallMethodExact { .. }
                 | IrInstr::CallMethodShape { .. }
                 | IrInstr::NativeCall { .. }

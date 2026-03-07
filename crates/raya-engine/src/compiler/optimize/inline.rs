@@ -120,6 +120,7 @@ impl Inliner {
             | IrInstr::BinaryOp { .. }
             | IrInstr::UnaryOp { .. }
             | IrInstr::Call { .. }
+            | IrInstr::ConstructType { .. }
             | IrInstr::CallMethodExact { .. }
             | IrInstr::CallClosure { .. }
             | IrInstr::NativeCall { .. }
@@ -527,6 +528,20 @@ impl Inliner {
                     .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
                 func: *func,
                 args: call_args
+                    .iter()
+                    .map(|a| self.rename_register(a, reg_map))
+                    .collect(),
+            }),
+            IrInstr::ConstructType {
+                dest,
+                object,
+                nominal_type_id,
+                args,
+            } => Some(IrInstr::ConstructType {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                object: self.rename_register(object, reg_map),
+                nominal_type_id: *nominal_type_id,
+                args: args
                     .iter()
                     .map(|a| self.rename_register(a, reg_map))
                     .collect(),

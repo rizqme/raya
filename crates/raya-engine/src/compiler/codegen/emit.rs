@@ -175,6 +175,9 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::TupleLiteral
         | Opcode::MakeClosure => 1 + 4 + 2,
 
+        // u16 + u8 operands
+        Opcode::ConstructType => 1 + 2 + 1,
+
         // u32 + u32 operands
         Opcode::ArrayLiteral => 1 + 4 + 4,
 

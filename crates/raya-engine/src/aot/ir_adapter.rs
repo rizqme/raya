@@ -624,6 +624,20 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: call_args,
                 });
             }
+            IrInstr::ConstructType {
+                dest,
+                object,
+                nominal_type_id,
+                args,
+            } => {
+                let mut call_args = vec![Self::reg(object), nominal_type_id.as_u32()];
+                call_args.extend(args.iter().map(Self::reg));
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::ConstructType,
+                    args: call_args,
+                });
+            }
             IrInstr::CallMethodExact {
                 dest,
                 object,

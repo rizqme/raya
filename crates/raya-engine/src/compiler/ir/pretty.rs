@@ -130,6 +130,21 @@ fn format_instr(instr: &IrInstr) -> String {
                 format!("call {}({})", func, args_str.join(", "))
             }
         }
+        IrInstr::ConstructType {
+            dest,
+            object,
+            nominal_type_id,
+            args,
+        } => {
+            let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+            format!(
+                "{} = construct_type nominal_type{} {}({})",
+                dest,
+                nominal_type_id.as_u32(),
+                object,
+                args_str.join(", ")
+            )
+        }
         IrInstr::CallMethodExact {
             dest,
             object,

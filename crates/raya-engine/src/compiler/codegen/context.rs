@@ -505,6 +505,23 @@ impl IrCodeGenerator {
                 }
             }
 
+            IrInstr::ConstructType {
+                dest,
+                object,
+                nominal_type_id,
+                args,
+            } => {
+                self.emit_load_register(ctx, object);
+                for arg in args {
+                    self.emit_load_register(ctx, arg);
+                }
+                ctx.emit(Opcode::ConstructType);
+                ctx.emit_u16(nominal_type_id.as_u32() as u16);
+                ctx.emit_u8(args.len() as u8);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
             IrInstr::CallMethodExact {
                 dest,
                 object,

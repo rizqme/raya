@@ -5974,15 +5974,16 @@ impl<'a> Lowerer<'a> {
                         }
                     }
 
-                    // Call the constructor (it doesn't return a value we care about)
-                    self.emit(IrInstr::Call {
-                        dest: None, // Constructor return value is discarded
-                        func: ctor_func_id,
-                        args,
+                    self.emit(IrInstr::ConstructType {
+                        dest: dest.clone(),
+                        object: dest.clone(),
+                        nominal_type_id,
+                        args: args.into_iter().skip(1).collect(),
                     });
                     if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                         eprintln!(
-                            "[lower] emitted constructor call func_id={}",
+                            "[lower] emitted construct_type nominal_type_id={} ctor_func_id={}",
+                            nominal_type_id.as_u32(),
                             ctor_func_id.as_u32()
                         );
                     }

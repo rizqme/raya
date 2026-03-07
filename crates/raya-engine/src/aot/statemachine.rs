@@ -384,6 +384,7 @@ pub enum HelperCall {
     // Type operations
     InstanceOf,
     ImplementsShape,
+    ConstructType,
     Cast,
     CastShape,
     Typeof,

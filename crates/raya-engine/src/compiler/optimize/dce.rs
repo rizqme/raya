@@ -70,6 +70,12 @@ impl DeadCodeEliminator {
                     used.insert(arg.id);
                 }
             }
+            IrInstr::ConstructType { object, args, .. } => {
+                used.insert(object.id);
+                for arg in args {
+                    used.insert(arg.id);
+                }
+            }
             IrInstr::CallMethodExact { object, args, .. } => {
                 used.insert(object.id);
                 for arg in args {

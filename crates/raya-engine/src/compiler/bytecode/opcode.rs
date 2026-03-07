@@ -231,6 +231,9 @@ pub enum Opcode {
     CallMethodShape = 0xA9,
     /// Optional chaining variant of CallMethodShape.
     OptionalCallMethodShape = 0xAA,
+    /// Invoke a nominal constructor on an existing object.
+    /// Operands: u16 nominalTypeIndex, u8 argCount
+    ConstructType = 0xAB,
 
     // ===== Object Operations (0xB0-0xBF) =====
     /// Allocate new nominal object (operand: u16 nominalTypeIndex)
@@ -519,6 +522,7 @@ impl Opcode {
             0xA8 => Some(Self::OptionalCallMethodExact),
             0xA9 => Some(Self::CallMethodShape),
             0xAA => Some(Self::OptionalCallMethodShape),
+            0xAB => Some(Self::ConstructType),
 
             // Object operations
             0xB0 => Some(Self::NewType),
@@ -700,6 +704,7 @@ impl Opcode {
             Self::OptionalCallMethodExact => "OPTIONAL_CALL_METHOD",
             Self::CallMethodShape => "CALL_METHOD_SHAPE",
             Self::OptionalCallMethodShape => "OPTIONAL_CALL_METHOD_SHAPE",
+            Self::ConstructType => "CONSTRUCT_TYPE",
             Self::Return => "RETURN",
             Self::ReturnVoid => "RETURN_VOID",
             Self::CallConstructor => "CALL_CONSTRUCTOR",
@@ -794,6 +799,7 @@ impl Opcode {
                 | Self::OptionalCallMethodExact
                 | Self::CallMethodShape
                 | Self::OptionalCallMethodShape
+                | Self::ConstructType
                 | Self::CallConstructor
                 | Self::CallSuper
                 | Self::CallStatic

@@ -1750,6 +1750,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::OptionalCallMethodExact
             | Opcode::CallMethodShape
             | Opcode::OptionalCallMethodShape
+            | Opcode::ConstructType
             | Opcode::CallConstructor
             | Opcode::CallSuper => self.exec_call_ops(stack, ip, code, module, task, opcode),
 

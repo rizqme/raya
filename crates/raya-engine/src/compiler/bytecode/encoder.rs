@@ -328,6 +328,13 @@ impl BytecodeWriter {
         self.emit_u16(arg_count);
     }
 
+    /// Emit CONSTRUCT_TYPE instruction
+    pub fn emit_construct_type(&mut self, nominal_type_index: u16, arg_count: u8) {
+        self.emit_opcode(Opcode::ConstructType);
+        self.emit_u16(nominal_type_index);
+        self.emit_u8(arg_count);
+    }
+
     /// Emit CALL_SUPER instruction
     pub fn emit_call_super(&mut self, super_ctor_index: u32, arg_count: u16) {
         self.emit_opcode(Opcode::CallSuper);

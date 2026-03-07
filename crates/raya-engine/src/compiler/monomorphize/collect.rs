@@ -125,6 +125,16 @@ impl<'a> InstantiationCollector<'a> {
                     }
                 }
             }
+            IrInstr::ConstructType {
+                nominal_type_id, ..
+            } => {
+                if let Some(info) = self.generic_classes.get(nominal_type_id) {
+                    let type_args = info.type_params.clone();
+                    if !type_args.is_empty() {
+                        self.add_class_instantiation(*nominal_type_id, type_args);
+                    }
+                }
+            }
             IrInstr::NewType {
                 nominal_type_id, ..
             } => {

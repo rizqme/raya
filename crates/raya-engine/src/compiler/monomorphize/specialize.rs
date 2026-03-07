@@ -138,6 +138,18 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
             }
+            IrInstr::ConstructType {
+                nominal_type_id, ..
+            } => {
+                if let Some(info) = self.generic_classes.get(nominal_type_id) {
+                    if !info.type_params.is_empty() {
+                        return Some(PendingInstantiation {
+                            key: MonoKey::class(*nominal_type_id, info.type_params.clone()),
+                            kind: InstantiationKind::Class(*nominal_type_id),
+                        });
+                    }
+                }
+            }
             IrInstr::NewType {
                 nominal_type_id, ..
             } => {

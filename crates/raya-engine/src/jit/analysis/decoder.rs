@@ -50,6 +50,8 @@ pub enum Operands {
     },
     /// NativeCall: native_id (u16) + arg_count (u8)
     NativeCall { native_id: u16, arg_count: u8 },
+    /// Nominal constructor on an existing object: nominal_type_id (u16) + arg_count (u8)
+    ConstructType { nominal_type_id: u16, arg_count: u8 },
     /// MakeClosure: func_index (u32) + capture_count (u16)
     MakeClosure { func_index: u32, capture_count: u16 },
     /// Spawn: func_index (u16) + arg_count (u16) (reused for SpawnClosure: arg_count u16)
@@ -306,6 +308,15 @@ fn decode_operands(
             let arg_count = read_u16(code, pos, offset)?;
             Ok(Operands::Call {
                 func_index,
+                arg_count,
+            })
+        }
+
+        Opcode::ConstructType => {
+            let nominal_type_id = read_u16(code, pos, offset)?;
+            let arg_count = read_u8(code, pos, offset)?;
+            Ok(Operands::ConstructType {
+                nominal_type_id,
                 arg_count,
             })
         }

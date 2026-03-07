@@ -104,6 +104,17 @@ impl TypeSubstitution {
                 func: *func,
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
             },
+            IrInstr::ConstructType {
+                dest,
+                object,
+                nominal_type_id,
+                args,
+            } => IrInstr::ConstructType {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                nominal_type_id: *nominal_type_id,
+                args: args.iter().map(|a| self.apply_register(a)).collect(),
+            },
             IrInstr::CallMethodExact {
                 dest,
                 object,

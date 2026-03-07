@@ -389,6 +389,7 @@ mod aot_impl {
             | Opcode::Spawn
             | Opcode::MakeClosure
             | Opcode::TupleLiteral => 6,
+            Opcode::ConstructType => 3,
             Opcode::NativeCall | Opcode::ModuleNativeCall => 3,
         }
     }

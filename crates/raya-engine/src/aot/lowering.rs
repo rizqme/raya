@@ -994,6 +994,7 @@ impl LoweringCtx {
             | HelperCall::StoreRefCell
             | HelperCall::InstanceOf
             | HelperCall::ImplementsShape
+            | HelperCall::ConstructType
             | HelperCall::Cast
             | HelperCall::CastShape
             | HelperCall::Typeof
