@@ -73,8 +73,30 @@ impl<'a> IrFunctionAdapter<'a> {
         SmBlockId(id.as_u32())
     }
 
+    fn base_reg_capacity(&self) -> u32 {
+        self.func
+            .params
+            .iter()
+            .chain(self.func.locals.iter())
+            .map(|reg| reg.id.as_u32() + 1)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn sm_local_count(&self) -> u32 {
+        let mut next_temp = self.base_reg_capacity();
+        for block in &self.func.blocks {
+            for instr in &block.instructions {
+                if matches!(instr, IrInstr::DynGetProp { .. } | IrInstr::DynSetProp { .. }) {
+                    next_temp = next_temp.saturating_add(1);
+                }
+            }
+        }
+        next_temp.max(self.func.locals.len() as u32)
+    }
+
     /// Translate a single IrInstr to SmInstr(s).
-    fn translate_instr(instr: &IrInstr, out: &mut Vec<SmInstr>) {
+    fn translate_instr(instr: &IrInstr, out: &mut Vec<SmInstr>, next_temp: &mut u32) {
         match instr {
             // === Assignment (constant or register copy) ===
             IrInstr::Assign { dest, value } => {
@@ -95,13 +117,10 @@ impl<'a> IrFunctionAdapter<'a> {
                         IrConstant::Null => out.push(SmInstr::ConstNull {
                             dest: Self::reg(dest),
                         }),
-                        IrConstant::String(_) => {
-                            // String constants go through the helper table
-                            // TODO: Map string to constant pool index
-                            out.push(SmInstr::CallHelper {
-                                dest: Some(Self::reg(dest)),
-                                helper: HelperCall::LoadStringConstant,
-                                args: vec![0], // placeholder constant index
+                        IrConstant::String(value) => {
+                            out.push(SmInstr::ConstString {
+                                dest: Self::reg(dest),
+                                value: value.clone(),
                             });
                         }
                     },
@@ -483,18 +502,38 @@ impl<'a> IrFunctionAdapter<'a> {
             }
 
             // === JSON Property Access ===
-            IrInstr::DynGetProp { dest, object, .. } => {
+            IrInstr::DynGetProp {
+                dest,
+                object,
+                property,
+            } => {
+                let key_reg = *next_temp;
+                *next_temp = next_temp.saturating_add(1);
+                out.push(SmInstr::ConstString {
+                    dest: key_reg,
+                    value: property.clone(),
+                });
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::DynGetProp,
-                    args: vec![Self::reg(object)], // TODO: property name materialization in AOT adapter
+                    args: vec![Self::reg(object), key_reg],
                 });
             }
-            IrInstr::DynSetProp { object, value, .. } => {
+            IrInstr::DynSetProp {
+                object,
+                property,
+                value,
+            } => {
+                let key_reg = *next_temp;
+                *next_temp = next_temp.saturating_add(1);
+                out.push(SmInstr::ConstString {
+                    dest: key_reg,
+                    value: property.clone(),
+                });
                 out.push(SmInstr::CallHelper {
                     dest: None,
                     helper: HelperCall::DynSetProp,
-                    args: vec![Self::reg(object), Self::reg(value)], // TODO: property name materialization in AOT adapter
+                    args: vec![Self::reg(object), key_reg, Self::reg(value)],
                 });
             }
             IrInstr::DynGetKeyed { dest, object, key } => {
@@ -1199,6 +1238,7 @@ impl AotCompilable for IrFunctionAdapter<'_> {
 
     fn emit_blocks(&self) -> Vec<SmBlock> {
         let mut sm_blocks = Vec::with_capacity(self.func.blocks.len());
+        let mut next_temp = self.base_reg_capacity();
 
         for block in &self.func.blocks {
             let mut instructions = Vec::new();
@@ -1206,7 +1246,7 @@ impl AotCompilable for IrFunctionAdapter<'_> {
             // Handle Throw terminator: emit the throw call as an instruction
             if let Terminator::Throw(reg) = &block.terminator {
                 for instr in &block.instructions {
-                    Self::translate_instr(instr, &mut instructions);
+                    Self::translate_instr(instr, &mut instructions, &mut next_temp);
                 }
                 instructions.push(SmInstr::CallHelper {
                     dest: None,
@@ -1215,7 +1255,7 @@ impl AotCompilable for IrFunctionAdapter<'_> {
                 });
             } else {
                 for instr in &block.instructions {
-                    Self::translate_instr(instr, &mut instructions);
+                    Self::translate_instr(instr, &mut instructions, &mut next_temp);
                 }
             }
 
@@ -1235,7 +1275,7 @@ impl AotCompilable for IrFunctionAdapter<'_> {
     }
 
     fn local_count(&self) -> u32 {
-        self.func.locals.len() as u32
+        self.sm_local_count()
     }
 
     fn name(&self) -> Option<&str> {

@@ -351,6 +351,10 @@ mod aot_impl {
             | Opcode::SpawnClosure
             | Opcode::NewType
             | Opcode::IsNominal
+            | Opcode::CastTupleLen
+            | Opcode::CastObjectMinFields
+            | Opcode::CastArrayElemKind
+            | Opcode::CastKindMask
             | Opcode::Cast
             | Opcode::CastNominal => 2,
             Opcode::ConstI32

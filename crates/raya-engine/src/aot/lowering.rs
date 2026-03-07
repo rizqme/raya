@@ -188,6 +188,9 @@ fn determine_reg_types(blocks: &[SmBlock]) -> HashMap<u32, ir::types::Type> {
                 SmInstr::ConstNull { dest } => {
                     types_map.insert(*dest, types::I64);
                 }
+                SmInstr::ConstString { dest, .. } => {
+                    types_map.insert(*dest, types::I64);
+                }
 
                 // Typed arithmetic
                 SmInstr::I32BinOp { dest, .. } => {
@@ -553,6 +556,32 @@ impl LoweringCtx {
                 self.ensure_reg(builder, *dest, types::I64);
                 let val = abi::emit_null(builder);
                 self.def_reg(builder, *dest, val);
+            }
+            SmInstr::ConstString { dest, value } => {
+                self.ensure_reg(builder, *dest, types::I64);
+                let bytes = value.as_bytes();
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    bytes.len() as u32,
+                    0,
+                ));
+                let base = builder.ins().stack_addr(types::I64, slot, 0);
+                for (i, byte) in bytes.iter().enumerate() {
+                    let raw = builder.ins().iconst(types::I8, *byte as i64);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), raw, base, i as i32);
+                }
+                let helper = self
+                    .load_helper_fn_ptr(builder, &HelperCall::AllocString)
+                    .ok_or_else(|| LoweringError::Unsupported("AllocString helper not found".into()))?;
+                let sig = helper_call_signature(&HelperCall::AllocString, self.call_conv);
+                let sig_ref = builder.import_signature(sig);
+                let ctx = self.ctx_ptr(builder);
+                let len = builder.ins().iconst(types::I32, bytes.len() as i64);
+                let inst = builder.ins().call_indirect(sig_ref, helper, &[ctx, base, len]);
+                let result = builder.inst_results(inst)[0];
+                self.def_reg(builder, *dest, result);
             }
 
             // ===== Typed Integer Arithmetic =====

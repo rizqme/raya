@@ -140,6 +140,9 @@ pub enum SmInstr {
     /// Load null.
     ConstNull { dest: u32 },
 
+    /// Materialize a UTF-8 string literal into a boxed runtime string value.
+    ConstString { dest: u32, value: String },
+
     // ===== Typed Integer Arithmetic (unboxed i32) =====
     /// dest = left `op` right (i32)
     I32BinOp {
