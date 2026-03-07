@@ -1045,7 +1045,7 @@ impl LoweringCtx {
             // (ctx: i64)
             HelperCall::SafepointPoll => vec![ctx],
 
-            // (ctx, class_id: u32) -> u64
+            // (ctx, local_nominal_type_index: u32) -> u64
             HelperCall::AllocObject => {
                 let mut v = vec![ctx];
                 for a in args {
@@ -1273,7 +1273,7 @@ fn helper_call_signature(helper: &HelperCall, call_conv: CallConv) -> ir::Signat
         HelperCall::SafepointPoll => {
             sig.params.push(AbiParam::new(types::I64));
         }
-        // (ctx: i64, class_id: u32) -> u64
+        // (ctx: i64, local_nominal_type_index: u32) -> u64
         HelperCall::AllocObject => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I32));

@@ -140,7 +140,7 @@ pub struct AotHelperTable {
     /// GC safepoint poll: (ctx)
     pub safepoint_poll: unsafe extern "C" fn(*mut AotTaskContext),
 
-    /// Allocate a new object: (ctx, class_id) -> NaN-boxed ptr
+    /// Allocate a new nominal object: (ctx, local_nominal_type_index) -> NaN-boxed ptr
     pub alloc_object: unsafe extern "C" fn(*mut AotTaskContext, u32) -> u64,
 
     /// Allocate a new array: (ctx, type_id, capacity) -> NaN-boxed ptr

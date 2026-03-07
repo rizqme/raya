@@ -99,7 +99,7 @@ pub fn runtime_helpers() -> RuntimeHelperTable {
     }
 }
 
-unsafe extern "C" fn helper_alloc_object(class_id: u32, shared_state: *mut ()) -> *mut () {
+unsafe extern "C" fn helper_alloc_object(nominal_type_id: u32, shared_state: *mut ()) -> *mut () {
     if shared_state.is_null() {
         return std::ptr::null_mut();
     }
@@ -108,17 +108,21 @@ unsafe extern "C" fn helper_alloc_object(class_id: u32, shared_state: *mut ()) -
         return std::ptr::null_mut();
     }
 
-    let class_id = class_id as usize;
+    let nominal_type_id = nominal_type_id as usize;
     let (field_count, layout_id) = {
         let layouts = (&*bridge.layouts).read();
-        match layouts.nominal_allocation(class_id) {
+        match layouts.nominal_allocation(nominal_type_id) {
             Some((layout_id, field_count)) => (field_count, layout_id),
             None => return std::ptr::null_mut(),
         }
     };
 
     let mut gc = (&*bridge.gc).lock();
-    let obj_ptr = gc.allocate(Object::new_nominal(layout_id, class_id as u32, field_count));
+    let obj_ptr = gc.allocate(Object::new_nominal(
+        layout_id,
+        nominal_type_id as u32,
+        field_count,
+    ));
     obj_ptr.as_ptr().cast::<()>()
 }
 

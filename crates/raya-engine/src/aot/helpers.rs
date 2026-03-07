@@ -107,21 +107,33 @@ unsafe extern "C" fn helper_safepoint_poll(_ctx: *mut AotTaskContext) {
     // TODO: Check GC safepoint, trigger collection if needed
 }
 
-unsafe extern "C" fn helper_alloc_object(ctx: *mut AotTaskContext, class_id: u32) -> u64 {
-    if ctx.is_null() || (*ctx).shared_state.is_null() {
+unsafe extern "C" fn helper_alloc_object(
+    ctx: *mut AotTaskContext,
+    local_nominal_type_index: u32,
+) -> u64 {
+    if ctx.is_null() || (*ctx).shared_state.is_null() || (*ctx).module.is_null() {
         return abi::NULL_VALUE;
     }
     let shared = &*((*ctx).shared_state as *const SharedVmState);
-    let class_id = class_id as usize;
+    let module = &*((*ctx).module as *const crate::compiler::Module);
+    let Some(nominal_type_id) =
+        shared.resolve_nominal_type_id(module, local_nominal_type_index as usize)
+    else {
+        return abi::NULL_VALUE;
+    };
     let (field_count, layout_id) = {
         let layouts = shared.layouts.read();
-        let Some((layout_id, field_count)) = layouts.nominal_allocation(class_id) else {
+        let Some((layout_id, field_count)) = layouts.nominal_allocation(nominal_type_id) else {
             return abi::NULL_VALUE;
         };
         (field_count, layout_id)
     };
     let mut gc = shared.gc.lock();
-    let obj_ptr = gc.allocate(Object::new_nominal(layout_id, class_id as u32, field_count));
+    let obj_ptr = gc.allocate(Object::new_nominal(
+        layout_id,
+        nominal_type_id as u32,
+        field_count,
+    ));
     let value = Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap());
     value.raw()
 }
@@ -454,6 +466,7 @@ pub fn create_default_helper_table() -> AotHelperTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::bytecode::{ClassDef, Module};
     use crate::vm::interpreter::SafepointCoordinator;
     use crate::vm::interpreter::SharedVmState;
     use crate::vm::native_registry::ResolvedNatives;
@@ -723,5 +736,69 @@ mod tests {
             submission.request,
             IoRequest::Sleep { duration_nanos: 1 }
         ));
+    }
+
+    #[test]
+    fn test_alloc_object_resolves_module_local_nominal_type_index() {
+        let safepoint = Arc::new(SafepointCoordinator::new(1));
+        let tasks = Arc::new(RwLock::new(FxHashMap::default()));
+        let injector = Arc::new(Injector::new());
+        let shared = Arc::new(SharedVmState::new(safepoint, tasks, injector));
+
+        let mut seed_module = Module::new("aot-seed".to_string());
+        seed_module.classes.push(ClassDef {
+            name: "Seed".to_string(),
+            field_count: 1,
+            parent_id: None,
+            methods: Vec::new(),
+        });
+        let seed_module = Arc::new(
+            Module::decode(&seed_module.encode()).expect("finalize seed module checksum"),
+        );
+        shared
+            .register_module(seed_module)
+            .expect("register seed module");
+
+        let mut target_module = Module::new("aot-target".to_string());
+        target_module.classes.push(ClassDef {
+            name: "Target".to_string(),
+            field_count: 3,
+            parent_id: None,
+            methods: Vec::new(),
+        });
+        let target_module = Arc::new(
+            Module::decode(&target_module.encode()).expect("finalize target module checksum"),
+        );
+        shared
+            .register_module(target_module.clone())
+            .expect("register target module");
+
+        let expected_nominal_type_id = shared
+            .resolve_nominal_type_id(&target_module, 0)
+            .expect("module-local nominal type id");
+
+        let preempt = AtomicBool::new(false);
+        let mut ctx = AotTaskContext {
+            preempt_requested: &preempt,
+            resume_value: abi::NULL_VALUE,
+            suspend_reason: SuspendReason::None,
+            suspend_payload: 0,
+            helpers: create_default_helper_table(),
+            shared_state: Arc::as_ptr(&shared) as *mut (),
+            current_task: ptr::null_mut(),
+            module: Arc::as_ptr(&target_module) as *const (),
+        };
+
+        let raw = unsafe { helper_alloc_object(&mut ctx, 0) };
+        let value = unsafe { Value::from_raw(raw) };
+        let obj_ptr = unsafe { value.as_ptr::<Object>() }.expect("allocated object");
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+
+        assert_eq!(
+            obj.nominal_class_id(),
+            Some(expected_nominal_type_id),
+            "AOT alloc helper must resolve module-local nominal type indices"
+        );
+        assert_eq!(obj.field_count(), 3);
     }
 }
