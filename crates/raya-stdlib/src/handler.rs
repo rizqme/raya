@@ -198,7 +198,7 @@ mod tests {
     use parking_lot::{Mutex, RwLock};
     use raya_engine::vm::abi::EngineContext;
     use raya_engine::vm::gc::GarbageCollector as Gc;
-    use raya_engine::vm::interpreter::{ClassRegistry, VmContextId};
+    use raya_engine::vm::interpreter::{ClassRegistry, RuntimeLayoutRegistry, VmContextId};
     use raya_engine::vm::reflect::ClassMetadataRegistry;
     use raya_engine::vm::scheduler::TaskId;
     use raya_engine::vm::types::TypeRegistry;
@@ -207,20 +207,22 @@ mod tests {
     fn create_test_context() -> (
         Mutex<Gc>,
         RwLock<ClassRegistry>,
+        RwLock<RuntimeLayoutRegistry>,
         RwLock<ClassMetadataRegistry>,
     ) {
         let context_id = VmContextId::new();
         let type_registry = Arc::new(TypeRegistry::new());
         let gc = Mutex::new(Gc::new(context_id, type_registry));
         let classes = RwLock::new(ClassRegistry::new());
+        let layouts = RwLock::new(RuntimeLayoutRegistry::new());
         let class_metadata = RwLock::new(ClassMetadataRegistry::new());
-        (gc, classes, class_metadata)
+        (gc, classes, layouts, class_metadata)
     }
 
     #[test]
     fn test_logger_info() {
-        let (gc, classes, class_metadata) = create_test_context();
-        let ctx = EngineContext::new(&gc, &classes, TaskId::from_u64(1), &class_metadata);
+        let (gc, classes, layouts, class_metadata) = create_test_context();
+        let ctx = EngineContext::new(&gc, &classes, &layouts, TaskId::from_u64(1), &class_metadata);
 
         // Allocate string arguments using the context
         let hello = ctx.create_string("hello");
@@ -233,8 +235,8 @@ mod tests {
 
     #[test]
     fn test_math_abs() {
-        let (gc, classes, class_metadata) = create_test_context();
-        let ctx = EngineContext::new(&gc, &classes, TaskId::from_u64(1), &class_metadata);
+        let (gc, classes, layouts, class_metadata) = create_test_context();
+        let ctx = EngineContext::new(&gc, &classes, &layouts, TaskId::from_u64(1), &class_metadata);
 
         let handler = StdNativeHandler;
         let result = handler.call(&ctx, 0x2000, &[NativeValue::f64(-5.0)]);
@@ -248,8 +250,8 @@ mod tests {
 
     #[test]
     fn test_math_pi() {
-        let (gc, classes, class_metadata) = create_test_context();
-        let ctx = EngineContext::new(&gc, &classes, TaskId::from_u64(1), &class_metadata);
+        let (gc, classes, layouts, class_metadata) = create_test_context();
+        let ctx = EngineContext::new(&gc, &classes, &layouts, TaskId::from_u64(1), &class_metadata);
 
         let handler = StdNativeHandler;
         let result = handler.call(&ctx, 0x2015, &[]);
@@ -264,8 +266,8 @@ mod tests {
 
     #[test]
     fn test_unhandled() {
-        let (gc, classes, class_metadata) = create_test_context();
-        let ctx = EngineContext::new(&gc, &classes, TaskId::from_u64(1), &class_metadata);
+        let (gc, classes, layouts, class_metadata) = create_test_context();
+        let ctx = EngineContext::new(&gc, &classes, &layouts, TaskId::from_u64(1), &class_metadata);
 
         let handler = StdNativeHandler;
         let result = handler.call(&ctx, 0xFFFF, &[]);

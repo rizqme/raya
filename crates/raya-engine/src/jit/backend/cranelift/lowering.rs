@@ -18,6 +18,7 @@ use crate::jit::ir::instr::{JitBlockId, JitFunction, JitInstr, JitTerminator, Re
 use crate::jit::runtime::helpers::{
     JIT_INTERPRETER_EXCEPTION_SENTINEL, JIT_INTERPRETER_FALLBACK_SENTINEL,
     JIT_NATIVE_SUSPEND_SENTINEL, JIT_SHAPE_FIELD_FALLBACK_SENTINEL,
+    JIT_STRING_LEN_FALLBACK_SENTINEL,
 };
 use crate::jit::runtime::trampoline::{JitExitKind, JitSuspendReason, JIT_EXIT_MAX_NATIVE_ARGS};
 
@@ -29,6 +30,8 @@ pub struct LoweringContext<'a> {
     block_map: FxHashMap<JitBlockId, ir::Block>,
     /// The JIT function being lowered
     func: &'a JitFunction,
+    /// The bytecode module providing constant-pool data.
+    module: &'a crate::compiler::bytecode::Module,
     /// Cranelift function parameters (args_ptr, arg_count, locals_ptr, local_count, ctx_ptr)
     params: FunctionParams,
     /// Phi resolution: for each block, a list of (phi_dest_reg, source_reg) to def_var before terminator
@@ -41,6 +44,8 @@ pub struct LoweringContext<'a> {
     sig_native_call_dispatch: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.alloc_object
     sig_alloc_object: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.alloc_string
+    sig_alloc_string: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.object_get_field
     sig_object_get_field: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.object_get_shape_field
@@ -53,6 +58,8 @@ pub struct LoweringContext<'a> {
     sig_object_is_nominal: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.interpreter_call
     sig_interpreter_call: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.string_len
+    sig_string_len: Option<ir::SigRef>,
 }
 
 /// The five parameters of the JIT entry function ABI
@@ -113,6 +120,7 @@ impl<'a> LoweringContext<'a> {
     /// Takes ownership of the FunctionBuilder since finalize() consumes it.
     pub fn lower(
         func: &'a JitFunction,
+        module: &'a crate::compiler::bytecode::Module,
         mut builder: FunctionBuilder<'_>,
     ) -> Result<(), LowerError> {
         // Create Cranelift blocks for each JIT block
@@ -152,18 +160,21 @@ impl<'a> LoweringContext<'a> {
             reg_vars: FxHashMap::default(),
             block_map,
             func,
+            module,
             params,
             phi_copies,
             sig_safepoint_poll: None,
             sig_check_preemption: None,
             sig_native_call_dispatch: None,
             sig_alloc_object: None,
+            sig_alloc_string: None,
             sig_object_get_field: None,
             sig_object_get_shape_field: None,
             sig_object_set_shape_field: None,
             sig_object_implements_shape: None,
             sig_object_is_nominal: None,
             sig_interpreter_call: None,
+            sig_string_len: None,
         };
 
         // Declare all registers as Cranelift variables
@@ -232,6 +243,21 @@ impl<'a> LoweringContext<'a> {
             crate::jit::ir::types::JitType::Bool => abi::emit_box_bool(builder, raw),
             crate::jit::ir::types::JitType::Ptr => abi::emit_box_ptr(builder, raw),
             _ => raw,
+        }
+    }
+
+    fn coerce_boxed_value_for_reg(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        reg: Reg,
+        boxed: ir::Value,
+    ) -> ir::Value {
+        match self.func.reg_type(reg) {
+            crate::jit::ir::types::JitType::I32 => abi::emit_unbox_i32(builder, boxed),
+            crate::jit::ir::types::JitType::F64 => abi::emit_unbox_f64(builder, boxed),
+            crate::jit::ir::types::JitType::Bool => abi::emit_unbox_bool(builder, boxed),
+            crate::jit::ir::types::JitType::Ptr => abi::emit_unbox_ptr(builder, boxed),
+            _ => boxed,
         }
     }
 
@@ -353,15 +379,20 @@ impl<'a> LoweringContext<'a> {
                 self.def_reg(builder, *dest, val);
             }
             JitInstr::ConstString { dest, pool_index } => {
-                // String constants remain as NaN-boxed values; load from constant pool
-                // For now, emit as a tagged constant with the pool index
-                // Real implementation would look up the string in the constant pool
-                let val = builder.ins().iconst(types::I64, *pool_index as i64);
-                self.def_reg(builder, *dest, val);
+                let text = self
+                    .module
+                    .constants
+                    .get_string(*pool_index)
+                    .unwrap_or_default();
+                self.lower_const_string_ptr(builder, *dest, text.as_bytes());
             }
             JitInstr::ConstStr { dest, str_index } => {
-                let val = builder.ins().iconst(types::I64, *str_index as i64);
-                self.def_reg(builder, *dest, val);
+                let text = self
+                    .module
+                    .constants
+                    .get_string(*str_index as u32)
+                    .unwrap_or_default();
+                self.lower_const_string_ptr(builder, *dest, text.as_bytes());
             }
 
             // ===== Integer Arithmetic =====
@@ -664,6 +695,60 @@ impl<'a> LoweringContext<'a> {
                     .store(MemFlags::trusted(), v, self.params.locals_ptr, offset);
             }
 
+            // ===== String Operations =====
+            JitInstr::SLen {
+                dest,
+                string,
+                stack,
+                bytecode_offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let done = builder.create_block();
+                builder.append_block_param(done, types::I32);
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let fn_ptr = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx, 160); // 24 + 136
+                let sig = self.string_len_sig(builder);
+                let string_val = self.boxed_reg_value(builder, *string);
+                let call = builder
+                    .ins()
+                    .call_indirect(sig, fn_ptr, &[string_val, shared_state]);
+                let result = builder.inst_results(call)[0];
+                let fallback = builder
+                    .ins()
+                    .iconst(types::I32, JIT_STRING_LEN_FALLBACK_SENTINEL as i64);
+                let is_fallback =
+                    builder
+                        .ins()
+                        .icmp(condcodes::IntCC::Equal, result, fallback);
+                let fast_continue = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_fallback, fallback_block, &[], fast_continue, &[]);
+                builder.seal_block(fast_continue);
+                builder.switch_to_block(fast_continue);
+                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+
+                builder.seal_block(fallback_block);
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+
+                builder.seal_block(done);
+                builder.switch_to_block(done);
+                let merged = builder.block_params(done)[0];
+                self.def_reg(builder, *dest, merged);
+            }
+
             // ===== Object Field Access (shape-aware helper path) =====
             JitInstr::LoadFieldExact {
                 dest,
@@ -737,7 +822,6 @@ impl<'a> LoweringContext<'a> {
                     .ins()
                     .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
-                builder.seal_block(fallback_block);
 
                 builder.switch_to_block(call_block);
                 let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
@@ -778,10 +862,12 @@ impl<'a> LoweringContext<'a> {
                 builder
                     .ins()
                     .brif(is_fallback, fallback_block, &[], fast_continue, &[]);
+                builder.seal_block(fallback_block);
                 builder.seal_block(fast_continue);
 
                 builder.switch_to_block(fast_continue);
                 builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.seal_block(done);
 
                 builder.switch_to_block(fallback_block);
                 self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
@@ -821,8 +907,8 @@ impl<'a> LoweringContext<'a> {
                 builder
                     .ins()
                     .brif(is_null, fallback_block, &[], success_block, &[]);
-                builder.seal_block(success_block);
                 builder.seal_block(fallback_block);
+                builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
                 self.emit_interpreter_boundary_exit(builder, &[], *bytecode_offset);
@@ -909,8 +995,8 @@ impl<'a> LoweringContext<'a> {
                 builder
                     .ins()
                     .brif(result, success_block, &[], fallback_block, &[]);
-                builder.seal_block(success_block);
                 builder.seal_block(fallback_block);
+                builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
                 self.emit_interpreter_boundary_exit(builder, &[*object], *bytecode_offset);
@@ -996,8 +1082,8 @@ impl<'a> LoweringContext<'a> {
                 builder
                     .ins()
                     .brif(result, success_block, &[], fallback_block, &[]);
-                builder.seal_block(success_block);
                 builder.seal_block(fallback_block);
+                builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
                 self.emit_interpreter_boundary_exit(builder, &[*object], *bytecode_offset);
@@ -1023,8 +1109,6 @@ impl<'a> LoweringContext<'a> {
                     .ins()
                     .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
-                builder.seal_block(fallback_block);
-                builder.seal_block(success_block);
 
                 builder.switch_to_block(call_block);
                 let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
@@ -1058,6 +1142,8 @@ impl<'a> LoweringContext<'a> {
                 builder
                     .ins()
                     .brif(is_success, success_block, &[], fallback_block, &[]);
+                builder.seal_block(fallback_block);
+                builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
                 self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
@@ -1082,9 +1168,6 @@ impl<'a> LoweringContext<'a> {
                 builder.append_block_param(done, types::I64);
                 builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
-                builder.seal_block(fallback_block);
-                builder.seal_block(exception_block);
-                builder.seal_block(success_block);
 
                 builder.switch_to_block(call_block);
                 let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
@@ -1141,6 +1224,9 @@ impl<'a> LoweringContext<'a> {
                 builder
                     .ins()
                     .brif(is_exception, exception_block, &[], success_block, &[]);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
                 self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
@@ -1177,9 +1263,6 @@ impl<'a> LoweringContext<'a> {
                 builder.append_block_param(done, types::I64);
                 builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
-                builder.seal_block(fallback_block);
-                builder.seal_block(exception_block);
-                builder.seal_block(success_block);
 
                 builder.switch_to_block(call_block);
                 let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
@@ -1241,6 +1324,9 @@ impl<'a> LoweringContext<'a> {
                 builder
                     .ins()
                     .brif(is_exception, exception_block, &[], success_block, &[]);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
                 self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
@@ -1275,9 +1361,6 @@ impl<'a> LoweringContext<'a> {
                 builder.append_block_param(done, types::I64);
                 builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
-                builder.seal_block(fallback_block);
-                builder.seal_block(exception_block);
-                builder.seal_block(success_block);
 
                 builder.switch_to_block(call_block);
                 let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
@@ -1339,6 +1422,9 @@ impl<'a> LoweringContext<'a> {
                 builder
                     .ins()
                     .brif(is_exception, exception_block, &[], success_block, &[]);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
                 self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
@@ -1371,9 +1457,6 @@ impl<'a> LoweringContext<'a> {
                 builder.append_block_param(done, types::I64);
                 builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
-                builder.seal_block(fallback_block);
-                builder.seal_block(exception_block);
-                builder.seal_block(success_block);
                 builder.switch_to_block(call_block);
                 let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
                 let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
@@ -1427,6 +1510,9 @@ impl<'a> LoweringContext<'a> {
                 builder
                     .ins()
                     .brif(is_exception, exception_block, &[], success_block, &[]);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
                 self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
@@ -1437,7 +1523,8 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(done);
                 builder.switch_to_block(done);
                 let merged = builder.block_params(done)[0];
-                self.def_reg(builder, *dest, merged);
+                let coerced = self.coerce_boxed_value_for_reg(builder, *dest, merged);
+                self.def_reg(builder, *dest, coerced);
             }
             JitInstr::CallConstructor {
                 dest,
@@ -1468,9 +1555,6 @@ impl<'a> LoweringContext<'a> {
                 builder.append_block_param(done, types::I64);
                 builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
-                builder.seal_block(fallback_block);
-                builder.seal_block(exception_block);
-                builder.seal_block(success_block);
 
                 builder.switch_to_block(call_block);
                 let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
@@ -1525,6 +1609,9 @@ impl<'a> LoweringContext<'a> {
                 builder
                     .ins()
                     .brif(is_exception, exception_block, &[], success_block, &[]);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
                 self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
@@ -1535,7 +1622,8 @@ impl<'a> LoweringContext<'a> {
                 builder.seal_block(done);
                 builder.switch_to_block(done);
                 let merged = builder.block_params(done)[0];
-                self.def_reg(builder, *dest, merged);
+                let coerced = self.coerce_boxed_value_for_reg(builder, *dest, merged);
+                self.def_reg(builder, *dest, coerced);
             }
             JitInstr::CallSuper {
                 dest,
@@ -1555,9 +1643,6 @@ impl<'a> LoweringContext<'a> {
                 builder.append_block_param(done, types::I64);
                 builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
-                builder.seal_block(fallback_block);
-                builder.seal_block(exception_block);
-                builder.seal_block(success_block);
                 builder.switch_to_block(call_block);
                 let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
                 let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
@@ -1611,6 +1696,9 @@ impl<'a> LoweringContext<'a> {
                 builder
                     .ins()
                     .brif(is_exception, exception_block, &[], success_block, &[]);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
 
                 builder.switch_to_block(fallback_block);
                 self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
@@ -2034,6 +2122,64 @@ impl<'a> LoweringContext<'a> {
         let sig_ref = builder.func.import_signature(sig);
         self.sig_interpreter_call = Some(sig_ref);
         sig_ref
+    }
+
+    fn string_len_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_string_len {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // string value
+        sig.params.push(AbiParam::new(types::I64)); // shared_state ptr
+        sig.returns.push(AbiParam::new(types::I32)); // string len or fallback sentinel
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_string_len = Some(sig_ref);
+        sig_ref
+    }
+
+    fn alloc_string_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_alloc_string {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // data_ptr
+        sig.params.push(AbiParam::new(types::I64)); // len
+        sig.params.push(AbiParam::new(types::I64)); // shared_state ptr
+        sig.returns.push(AbiParam::new(types::I64)); // string ptr
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_alloc_string = Some(sig_ref);
+        sig_ref
+    }
+
+    fn lower_const_string_ptr(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        dest: Reg,
+        bytes: &[u8],
+    ) {
+        let ctx = self.params.ctx_ptr;
+        let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+        let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 40);
+        let slot_size = bytes.len().max(1) as u32;
+        let data_slot = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            slot_size,
+            1,
+        ));
+        let data_ptr = builder.ins().stack_addr(types::I64, data_slot, 0);
+        for (i, byte) in bytes.iter().copied().enumerate() {
+            let value = builder.ins().iconst(types::I8, byte as i64);
+            builder
+                .ins()
+                .store(MemFlags::trusted(), value, data_ptr, i as i32);
+        }
+        let len = builder.ins().iconst(types::I64, bytes.len() as i64);
+        let sig = self.alloc_string_sig(builder);
+        let call = builder
+            .ins()
+            .call_indirect(sig, fn_ptr, &[data_ptr, len, shared_state]);
+        let string_ptr = builder.inst_results(call)[0];
+        self.def_reg(builder, dest, string_ptr);
     }
 
     fn object_get_field_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {

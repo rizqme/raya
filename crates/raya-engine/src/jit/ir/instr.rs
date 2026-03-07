@@ -488,6 +488,8 @@ pub enum JitInstr {
     SLen {
         dest: Reg,
         string: Reg,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
     },
     ToString {
         dest: Reg,

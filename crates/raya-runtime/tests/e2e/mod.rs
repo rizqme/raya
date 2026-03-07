@@ -34,6 +34,8 @@ mod inheritance;
 mod io;
 mod js_syntax_conformance;
 mod json;
+#[cfg(feature = "jit")]
+mod jit_runtime;
 mod literals;
 mod logger;
 mod loops;

@@ -332,6 +332,8 @@ pub fn function_supported_for_jit(func: &Function) -> bool {
                 | Opcode::ConstTrue
                 | Opcode::ConstFalse
                 | Opcode::ConstNull
+                | Opcode::ConstStr
+                | Opcode::LoadConst
                 | Opcode::LoadLocal
                 | Opcode::StoreLocal
                 | Opcode::LoadLocal0
@@ -374,6 +376,15 @@ pub fn function_supported_for_jit(func: &Function) -> bool {
                 | Opcode::Not
                 | Opcode::And
                 | Opcode::Or
+                | Opcode::Sconcat
+                | Opcode::Slen
+                | Opcode::Seq
+                | Opcode::Sne
+                | Opcode::Slt
+                | Opcode::Sle
+                | Opcode::Sgt
+                | Opcode::Sge
+                | Opcode::ToString
                 | Opcode::Jmp
                 | Opcode::JmpIfTrue
                 | Opcode::JmpIfFalse
@@ -381,6 +392,25 @@ pub fn function_supported_for_jit(func: &Function) -> bool {
                 | Opcode::JmpIfNotNull
                 | Opcode::NativeCall
                 | Opcode::ModuleNativeCall
+                | Opcode::NewType
+                | Opcode::IsNominal
+                | Opcode::CastNominal
+                | Opcode::CastShape
+                | Opcode::ImplementsShape
+                | Opcode::LoadFieldExact
+                | Opcode::OptionalFieldExact
+                | Opcode::LoadFieldShape
+                | Opcode::OptionalFieldShape
+                | Opcode::StoreFieldShape
+                | Opcode::Call
+                | Opcode::CallMethodExact
+                | Opcode::OptionalCallMethodExact
+                | Opcode::CallMethodShape
+                | Opcode::OptionalCallMethodShape
+                | Opcode::ConstructType
+                | Opcode::CallConstructor
+                | Opcode::CallSuper
+                | Opcode::CallStatic
                 | Opcode::Return
                 | Opcode::ReturnVoid
         )
@@ -406,6 +436,7 @@ mod tests {
                 generic_templates: vec![],
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
+                structural_shapes: vec![],
             },
             exports: vec![],
             imports: vec![],
@@ -759,13 +790,29 @@ mod tests {
     }
 
     #[test]
-    fn test_function_supported_for_jit_rejects_call_opcode() {
+    fn test_function_supported_for_jit_allows_helper_backed_call_opcode() {
         let mut code = Vec::new();
         emit_call(&mut code, 1, 0);
         emit(&mut code, Opcode::Return);
 
         let func = Function {
             name: "caller".to_string(),
+            param_count: 0,
+            local_count: 0,
+            code,
+        };
+
+        assert!(function_supported_for_jit(&func));
+    }
+
+    #[test]
+    fn test_function_supported_for_jit_rejects_spawn_opcode() {
+        let mut code = Vec::new();
+        code_push_spawn(&mut code);
+        emit(&mut code, Opcode::Return);
+
+        let func = Function {
+            name: "spawner".to_string(),
             param_count: 0,
             local_count: 0,
             code,

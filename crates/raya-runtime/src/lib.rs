@@ -1836,6 +1836,7 @@ impl Runtime {
             }
 
             let config = raya_engine::jit::JitConfig {
+                adaptive_compilation: true,
                 call_threshold: self.options.jit_threshold,
                 ..Default::default()
             };

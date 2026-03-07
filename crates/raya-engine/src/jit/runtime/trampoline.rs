@@ -149,4 +149,6 @@ pub struct RuntimeHelperTable {
     /// Shape-aware field store: (obj_val, shape_id, expected_slot, value, func_id, module_ptr, shared_state) -> status
     pub object_set_shape_field:
         unsafe extern "C" fn(u64, u64, u32, u64, u32, *const (), *mut ()) -> i8,
+    /// String length: (string_val, shared_state) -> len or i32::MIN fallback sentinel
+    pub string_len: unsafe extern "C" fn(u64, *mut ()) -> i32,
 }

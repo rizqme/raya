@@ -7,6 +7,7 @@ pub fn execute(
     print: bool,
     no_print: bool,
     no_jit: bool,
+    jit_threshold: u32,
     node_compat: bool,
     type_mode: TypeMode,
 ) -> anyhow::Result<()> {
@@ -15,6 +16,7 @@ pub fn execute(
     }
     let rt = Runtime::with_options(RuntimeOptions {
         no_jit,
+        jit_threshold,
         builtin_mode: if node_compat {
             BuiltinMode::NodeCompat
         } else {

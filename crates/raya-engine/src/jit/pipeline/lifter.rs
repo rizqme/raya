@@ -740,42 +740,42 @@ fn lift_instruction(
         })?,
 
         // ===== Float Comparison =====
-        Opcode::Feq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Feq => lift_binary_f64_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::FCmpEq {
                 dest: d,
                 left: l,
                 right: r,
             }
         })?,
-        Opcode::Fne => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Fne => lift_binary_f64_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::FCmpNe {
                 dest: d,
                 left: l,
                 right: r,
             }
         })?,
-        Opcode::Flt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Flt => lift_binary_f64_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::FCmpLt {
                 dest: d,
                 left: l,
                 right: r,
             }
         })?,
-        Opcode::Fle => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Fle => lift_binary_f64_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::FCmpLe {
                 dest: d,
                 left: l,
                 right: r,
             }
         })?,
-        Opcode::Fgt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Fgt => lift_binary_f64_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::FCmpGt {
                 dest: d,
                 left: l,
                 right: r,
             }
         })?,
-        Opcode::Fge => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Fge => lift_binary_f64_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::FCmpGe {
                 dest: d,
                 left: l,
@@ -894,11 +894,17 @@ fn lift_instruction(
             stack.push(dest);
         }
         Opcode::Slen => {
+            let pre_stack = stack.clone_state();
             let string = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::I32);
             func.block_mut(block)
                 .instrs
-                .push(JitInstr::SLen { dest, string });
+                .push(JitInstr::SLen {
+                    dest,
+                    string,
+                    stack: pre_stack,
+                    bytecode_offset: instr.offset as u32,
+                });
             stack.push(dest);
         }
         Opcode::ToString => {
@@ -1922,6 +1928,8 @@ fn lift_binary_f64(
 ) -> Result<(), LiftError> {
     let right = stack.pop(offset)?;
     let left = stack.pop(offset)?;
+    let left = coerce_to_f64(func, block, left);
+    let right = coerce_to_f64(func, block, right);
     let dest = func.alloc_reg(JitType::F64);
     func.block_mut(block)
         .instrs
@@ -1938,6 +1946,7 @@ fn lift_unary_f64(
     make_instr: impl FnOnce(Reg, Reg) -> JitInstr,
 ) -> Result<(), LiftError> {
     let operand = stack.pop(offset)?;
+    let operand = coerce_to_f64(func, block, operand);
     let dest = func.alloc_reg(JitType::F64);
     func.block_mut(block).instrs.push(make_instr(dest, operand));
     stack.push(dest);
@@ -1959,6 +1968,50 @@ fn lift_binary_bool(
         .push(make_instr(dest, left, right));
     stack.push(dest);
     Ok(())
+}
+
+fn lift_binary_f64_bool(
+    func: &mut JitFunction,
+    block: JitBlockId,
+    stack: &mut StackState,
+    offset: usize,
+    make_instr: impl FnOnce(Reg, Reg, Reg) -> JitInstr,
+) -> Result<(), LiftError> {
+    let right = stack.pop(offset)?;
+    let left = stack.pop(offset)?;
+    let left = coerce_to_f64(func, block, left);
+    let right = coerce_to_f64(func, block, right);
+    let dest = func.alloc_reg(JitType::Bool);
+    func.block_mut(block)
+        .instrs
+        .push(make_instr(dest, left, right));
+    stack.push(dest);
+    Ok(())
+}
+
+fn coerce_to_f64(func: &mut JitFunction, block: JitBlockId, src: Reg) -> Reg {
+    match func.reg_type(src) {
+        JitType::F64 => src,
+        JitType::Value => {
+            let dest = func.alloc_reg(JitType::F64);
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::UnboxF64 { dest, src });
+            dest
+        }
+        JitType::I32 => {
+            let boxed = func.alloc_reg(JitType::Value);
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::BoxI32 { dest: boxed, src });
+            let dest = func.alloc_reg(JitType::F64);
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::UnboxF64 { dest, src: boxed });
+            dest
+        }
+        _ => src,
+    }
 }
 
 fn lift_binary_i32_bool(
@@ -2008,6 +2061,7 @@ mod tests {
                 generic_templates: vec![],
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
+                structural_shapes: vec![],
             },
             exports: vec![],
             imports: vec![],

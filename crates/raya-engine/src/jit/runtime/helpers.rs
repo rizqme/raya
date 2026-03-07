@@ -15,7 +15,9 @@ use crate::vm::interpreter::{
 };
 use crate::vm::native_handler::NativeHandler;
 use crate::vm::native_registry::ResolvedNatives;
-use crate::vm::object::{global_layout_names, BoundMethod, BoundNativeMethod, Closure, Object};
+use crate::vm::object::{
+    global_layout_names, BoundMethod, BoundNativeMethod, Closure, Object, RayaString,
+};
 use crate::vm::reflect::ClassMetadataRegistry;
 use crate::vm::scheduler::IoSubmission;
 use crate::vm::scheduler::{Task, TaskId};
@@ -35,6 +37,7 @@ pub const JIT_NATIVE_SUSPEND_SENTINEL: u64 = 0xFFFF_DEAD_0000_0001;
 pub const JIT_INTERPRETER_FALLBACK_SENTINEL: u64 = 0xFFFF_DEAD_0000_0002;
 pub const JIT_INTERPRETER_EXCEPTION_SENTINEL: u64 = 0xFFFF_DEAD_0000_0003;
 pub const JIT_SHAPE_FIELD_FALLBACK_SENTINEL: u64 = 0xFFFF_DEAD_0000_0004;
+pub const JIT_STRING_LEN_FALLBACK_SENTINEL: i32 = i32::MIN;
 
 const JIT_STORE_SUCCESS: i8 = 1;
 const JIT_STORE_FALLBACK: i8 = 0;
@@ -163,6 +166,7 @@ pub fn runtime_helpers() -> RuntimeHelperTable {
         object_is_nominal: helper_object_is_nominal,
         object_get_shape_field: helper_object_get_shape_field,
         object_set_shape_field: helper_object_set_shape_field,
+        string_len: helper_string_len,
     }
 }
 
@@ -191,6 +195,30 @@ fn jit_layout_field_names(
         let layouts = unsafe { &*bridge.layouts }.read();
         if let Some(names) = layouts.layout_field_names(object.layout_id()) {
             return Some(names.to_vec());
+        }
+    }
+    if let Some(nominal_type_id) = object.nominal_type_id_usize() {
+        if !bridge.classes.is_null() {
+            let class_name = unsafe { &*bridge.classes }
+                .read()
+                .get_class(nominal_type_id)
+                .map(|class| class.name.clone());
+            if let Some(class_name) = class_name {
+                if let Some(builtin_names) =
+                    crate::vm::object::builtin_nominal_layout_field_names(&class_name)
+                {
+                    let owned_names = builtin_names
+                        .iter()
+                        .map(|name| (*name).to_string())
+                        .collect::<Vec<_>>();
+                    if !bridge.layouts.is_null() {
+                        unsafe { &*bridge.layouts }
+                            .write()
+                            .register_layout_shape(object.layout_id(), &owned_names);
+                    }
+                    return Some(owned_names);
+                }
+            }
         }
     }
     global_layout_names(object.layout_id())
@@ -903,11 +931,27 @@ unsafe extern "C" fn helper_alloc_array(
 }
 
 unsafe extern "C" fn helper_alloc_string(
-    _data_ptr: *const u8,
-    _len: usize,
-    _shared_state: *mut (),
+    data_ptr: *const u8,
+    len: usize,
+    shared_state: *mut (),
 ) -> *mut () {
-    std::ptr::null_mut()
+    if shared_state.is_null() || (len != 0 && data_ptr.is_null()) {
+        return std::ptr::null_mut();
+    }
+    let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
+    if bridge.gc.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let bytes = if len == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(data_ptr, len)
+    };
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    let mut gc = (&*bridge.gc).lock();
+    let string_ptr = gc.allocate(RayaString::new(text));
+    string_ptr.as_ptr().cast::<()>()
 }
 
 unsafe extern "C" fn helper_safepoint_poll(shared_state: *const ()) {
@@ -1026,6 +1070,11 @@ unsafe extern "C" fn helper_interpreter_call(
     };
 
     let mut stack = Stack::new();
+    if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
+        eprintln!(
+            "jit interpreter_call: opcode={opcode:?} operand_u32={operand_u32} operand_u64={operand_u64:#x} receiver=0x{receiver_raw:016x} argc={arg_count}"
+        );
+    }
     match opcode {
         Opcode::Call => {
             if operand_u32 == 0xFFFF_FFFF {
@@ -1093,13 +1142,24 @@ unsafe extern "C" fn helper_interpreter_call(
 
     let mut ip = 1usize;
     match interpreter.exec_call_ops(&mut stack, &mut ip, &code, module, task, opcode) {
-        crate::vm::interpreter::OpcodeResult::Continue => stack
-            .pop()
-            .unwrap_or_else(|_| Value::null())
-            .raw(),
-        crate::vm::interpreter::OpcodeResult::Return(value) => value.raw(),
+        crate::vm::interpreter::OpcodeResult::Continue => {
+            let value = stack.pop().unwrap_or_else(|_| Value::null());
+            if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
+                eprintln!("jit interpreter_call continue: opcode={opcode:?} result={value:?}");
+            }
+            value.raw()
+        }
+        crate::vm::interpreter::OpcodeResult::Return(value) => {
+            if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
+                eprintln!("jit interpreter_call return: opcode={opcode:?} result={value:?}");
+            }
+            value.raw()
+        }
         crate::vm::interpreter::OpcodeResult::Suspend(_) => JIT_INTERPRETER_FALLBACK_SENTINEL,
         crate::vm::interpreter::OpcodeResult::Error(error) => {
+            if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
+                eprintln!("jit interpreter_call error: opcode={opcode:?} error={error}");
+            }
             jit_raise_vm_error(bridge, error);
             JIT_INTERPRETER_EXCEPTION_SENTINEL
         }
@@ -1126,9 +1186,26 @@ unsafe extern "C" fn helper_interpreter_call(
                 closure_val,
                 return_action,
             ) {
-                JitNestedCallResult::Value(value) => value.raw(),
-                JitNestedCallResult::Fallback => JIT_INTERPRETER_FALLBACK_SENTINEL,
-                JitNestedCallResult::Exception => JIT_INTERPRETER_EXCEPTION_SENTINEL,
+                JitNestedCallResult::Value(value) => {
+                    if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
+                        eprintln!(
+                            "jit interpreter_call nested: opcode={opcode:?} result={value:?}"
+                        );
+                    }
+                    value.raw()
+                }
+                JitNestedCallResult::Fallback => {
+                    if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
+                        eprintln!("jit interpreter_call nested fallback: opcode={opcode:?}");
+                    }
+                    JIT_INTERPRETER_FALLBACK_SENTINEL
+                }
+                JitNestedCallResult::Exception => {
+                    if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
+                        eprintln!("jit interpreter_call nested exception: opcode={opcode:?}");
+                    }
+                    JIT_INTERPRETER_EXCEPTION_SENTINEL
+                }
             }
         }
     }
@@ -1144,6 +1221,21 @@ unsafe extern "C" fn helper_deoptimize(_bytecode_offset: u32, _shared_state: *mu
 
 unsafe extern "C" fn helper_string_concat(_left: u64, _right: u64, _shared_state: *mut ()) -> u64 {
     Value::null().raw()
+}
+
+unsafe extern "C" fn helper_string_len(string_raw: u64, _shared_state: *mut ()) -> i32 {
+    let value = Value::from_raw(string_raw);
+    let Some(string_ptr) = (unsafe { value.as_ptr::<RayaString>() }) else {
+        if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
+            eprintln!("jit string_len fallback: raw=0x{string_raw:016x} value={value:?}");
+        }
+        return JIT_STRING_LEN_FALLBACK_SENTINEL;
+    };
+    let string = unsafe { &*string_ptr.as_ptr() };
+    if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
+        eprintln!("jit string_len: len={} value={value:?}", string.len());
+    }
+    i32::try_from(string.len()).unwrap_or(JIT_STRING_LEN_FALLBACK_SENTINEL)
 }
 
 unsafe extern "C" fn helper_generic_equals(
@@ -1311,13 +1403,35 @@ unsafe extern "C" fn helper_object_get_shape_field(
         return Value::null().raw();
     }
     let Some(object_ptr) = jit_object_ptr_checked(object_val) else {
+        if std::env::var("RAYA_JIT_DEBUG_SHAPES").is_ok() {
+            eprintln!(
+                "jit shape field: non-object receiver raw=0x{object_raw:016x} shape={required_shape:#x} slot={expected_slot}"
+            );
+        }
         return JIT_SHAPE_FIELD_FALLBACK_SENTINEL;
     };
     let object = &*object_ptr.as_ptr();
     let Some(adapter) = jit_ensure_shape_adapter_for_object(bridge, object, required_shape) else {
+        if std::env::var("RAYA_JIT_DEBUG_SHAPES").is_ok() {
+            eprintln!(
+                "jit shape field: missing adapter nominal={:?} layout={} shape={required_shape:#x} slot={expected_slot}",
+                object.nominal_type_id_usize(),
+                object.layout_id(),
+            );
+        }
         return JIT_SHAPE_FIELD_FALLBACK_SENTINEL;
     };
-    match adapter.binding_for_slot(expected_slot as usize) {
+    let binding = adapter.binding_for_slot(expected_slot as usize);
+    if std::env::var("RAYA_JIT_DEBUG_SHAPES").is_ok() {
+        eprintln!(
+            "jit shape field: nominal={:?} layout={} shape={required_shape:#x} slot={} binding={:?}",
+            object.nominal_type_id_usize(),
+            object.layout_id(),
+            expected_slot,
+            binding,
+        );
+    }
+    match binding {
         StructuralSlotBinding::Field(slot) => object.get_field(slot).unwrap_or(Value::null()).raw(),
         StructuralSlotBinding::Dynamic(key) => object
             .dyn_map()

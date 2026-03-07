@@ -1272,8 +1272,10 @@ impl<'a> Interpreter<'a> {
 
                                 let func = &module.functions[func_id];
                                 let local_count = func.local_count;
-                                let extra_locals = local_count.saturating_sub(arg_count);
-                                let mut locals_buf = vec![0u64; extra_locals];
+                                let mut locals_buf = vec![Value::null().raw(); local_count];
+                                for (i, raw) in args.iter().copied().enumerate().take(local_count) {
+                                    locals_buf[i] = raw;
+                                }
                                 let mut exit_info =
                                     crate::jit::runtime::trampoline::JitExitInfo::default();
                                 let jit_resolved_natives =
@@ -1318,7 +1320,7 @@ impl<'a> Interpreter<'a> {
                                         args.as_ptr(),
                                         arg_count as u32,
                                         locals_buf.as_mut_ptr(),
-                                        extra_locals as u32,
+                                        local_count as u32,
                                         (&mut runtime_ctx as *mut _),
                                         (&mut exit_info as *mut _),
                                     )
@@ -1495,13 +1497,14 @@ impl<'a> Interpreter<'a> {
                     }
 
                     // First stack materialization piece:
-                    // if we resume interpreter from a JIT native-boundary suspension,
-                    // restore JIT-mutated non-arg locals into interpreter local slots.
+                    // if we resume interpreter from a JIT suspension, restore the
+                    // full boxed locals buffer exactly as JIT saw it. The buffer now
+                    // includes argument slots at the front, so restore from locals_base.
                     #[cfg(feature = "jit")]
                     if forced_callee_ip.is_some() {
                         if let Some(extra_locals) = forced_callee_extra_locals.as_ref() {
                             for (i, raw) in extra_locals.iter().enumerate() {
-                                let slot = locals_base + arg_count + i;
+                                let slot = locals_base + i;
                                 if slot >= stack_guard.depth() {
                                     break;
                                 }
@@ -1512,6 +1515,20 @@ impl<'a> Interpreter<'a> {
                                 }
                             }
                             if let Some(operand_vals) = forced_callee_operand_values.as_ref() {
+                                if std::env::var("RAYA_JIT_DEBUG_CALLS").is_ok() {
+                                    let rendered = operand_vals
+                                        .iter()
+                                        .map(|v| format!("{v:?}/0x{:016x}", v.raw()))
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    eprintln!(
+                                        "jit interpreter boundary resume: ip={} locals_base={} arg_count={} operands=[{}]",
+                                        forced_callee_ip.unwrap_or_default(),
+                                        locals_base,
+                                        arg_count,
+                                        rendered
+                                    );
+                                }
                                 for v in operand_vals {
                                     if let Err(e) = stack_guard.push(*v) {
                                         return ExecutionResult::Failed(e);

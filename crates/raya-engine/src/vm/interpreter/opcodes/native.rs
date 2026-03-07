@@ -834,47 +834,6 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    id if id == crate::compiler::native_id::OBJECT_REGISTER_STRUCTURAL_SHAPE => {
-                        if args.len() != 1 {
-                            return OpcodeResult::Error(VmError::RuntimeError(
-                                "registerStructuralShape requires (memberNames[])"
-                                    .to_string(),
-                            ));
-                        }
-
-                        let Some(names_ptr) = (unsafe { args[0].as_ptr::<Array>() }) else {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "registerStructuralShape expects array of member names"
-                                    .to_string(),
-                            ));
-                        };
-                        let names_array = unsafe { &*names_ptr.as_ptr() };
-                        let mut expected_names = Vec::with_capacity(names_array.elements.len());
-                        for element in &names_array.elements {
-                            let Some(name_ptr) = (unsafe { element.as_ptr::<RayaString>() }) else {
-                                return OpcodeResult::Error(VmError::TypeError(
-                                    "registerStructuralShape member names must be strings"
-                                        .to_string(),
-                                ));
-                            };
-                            expected_names.push(unsafe { &*name_ptr.as_ptr() }.data.clone());
-                        }
-
-                        let required_shape =
-                            crate::vm::object::shape_id_from_member_names(&expected_names);
-                        self.structural_shape_names
-                            .write()
-                            .entry(required_shape)
-                            .or_insert_with(|| expected_names.clone());
-                        let derived_layout =
-                            crate::vm::object::layout_id_from_ordered_names(&expected_names);
-                        self.register_structural_layout_shape(derived_layout, &expected_names);
-                        if let Err(error) = stack.push(Value::null()) {
-                            return OpcodeResult::Error(error);
-                        }
-                        OpcodeResult::Continue
-                    }
-
                     CHANNEL_NEW => {
                         // Create a new channel with given capacity
                         let capacity = args[0].as_i32().unwrap_or(0) as usize;

@@ -62,7 +62,7 @@ impl CodegenBackend for CraneliftBackend {
     fn compile_function(
         &self,
         func: &JitFunction,
-        _ctx: &ModuleContext<'_>,
+        ctx: &ModuleContext<'_>,
     ) -> Result<CompiledCode, CodegenError> {
         let mut codegen_ctx = Context::new();
         let mut func_builder_ctx = FunctionBuilderContext::new();
@@ -80,7 +80,7 @@ impl CodegenBackend for CraneliftBackend {
             );
 
             // lower() takes ownership of builder (finalize() consumes it)
-            LoweringContext::lower(func, builder)
+            LoweringContext::lower(func, ctx.module, builder)
                 .map_err(|e| CodegenError::BackendError(format!("Lowering failed: {}", e)))?;
         }
 
@@ -156,6 +156,7 @@ mod tests {
                 generic_templates: vec![],
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
+                structural_shapes: vec![],
             },
             exports: vec![],
             imports: vec![],

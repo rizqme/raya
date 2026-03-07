@@ -872,63 +872,43 @@ mod tests {
 
     #[test]
     fn test_invalid_opcode() {
-        // Test that unassigned opcodes return None
-        assert_eq!(Opcode::from_u8(0xFE), Some(Opcode::ModuleNativeCall));
-        assert_eq!(Opcode::from_u8(0xFF), None); // Unassigned
-        assert_eq!(Opcode::from_u8(0xB3), None); // Removed LOAD_FIELD_FAST
-        assert_eq!(Opcode::from_u8(0xB4), None); // Removed STORE_FIELD_FAST
-                                                 // Test that assigned opcodes return correct values
-        assert_eq!(
-            Opcode::from_u8(Opcode::NewChannel.to_u8()),
-            Some(Opcode::NewChannel)
-        );
-        assert_eq!(
-            Opcode::from_u8(Opcode::SetClosureCapture.to_u8()),
-            Some(Opcode::SetClosureCapture)
-        );
-        assert_eq!(
-            Opcode::from_u8(Opcode::SpawnClosure.to_u8()),
-            Some(Opcode::SpawnClosure)
-        );
-        assert_eq!(
-            Opcode::from_u8(Opcode::NewRefCell.to_u8()),
-            Some(Opcode::NewRefCell)
-        );
-        assert_eq!(
-            Opcode::from_u8(Opcode::LoadRefCell.to_u8()),
-            Some(Opcode::LoadRefCell)
-        );
-        assert_eq!(
-            Opcode::from_u8(Opcode::StoreRefCell.to_u8()),
-            Some(Opcode::StoreRefCell)
-        );
-        assert_eq!(Opcode::from_u8(Opcode::Sleep.to_u8()), Some(Opcode::Sleep));
-        assert_eq!(
-            Opcode::from_u8(Opcode::TaskCancel.to_u8()),
-            Some(Opcode::TaskCancel)
-        );
-        assert_eq!(
-            Opcode::from_u8(Opcode::IsNominal.to_u8()),
-            Some(Opcode::IsNominal)
-        );
-        assert_eq!(
-            Opcode::from_u8(Opcode::CastNominal.to_u8()),
-            Some(Opcode::CastNominal)
-        );
-        assert_eq!(Opcode::from_u8(Opcode::Cast.to_u8()), Some(Opcode::Cast));
-        assert_eq!(Opcode::from_u8(Opcode::NewType.to_u8()), Some(Opcode::NewType));
-        assert_eq!(
-            Opcode::from_u8(Opcode::NativeCall.to_u8()),
-            Some(Opcode::NativeCall)
-        );
-        assert_eq!(
-            Opcode::from_u8(Opcode::ArrayPush.to_u8()),
-            Some(Opcode::ArrayPush)
-        );
-        assert_eq!(
-            Opcode::from_u8(Opcode::ArrayPop.to_u8()),
-            Some(Opcode::ArrayPop)
-        );
+        let invalid_bytes = [0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x95, 0x96, 0x97, 0x98, 0x99, 0xE0, 0xE1, 0xFF];
+        for byte in invalid_bytes {
+            assert_eq!(Opcode::from_u8(byte), None, "0x{byte:02X} should be invalid");
+        }
+
+        let assigned_opcodes = [
+            Opcode::ModuleNativeCall,
+            Opcode::LoadFieldShape,
+            Opcode::StoreFieldShape,
+            Opcode::NewChannel,
+            Opcode::SetClosureCapture,
+            Opcode::SpawnClosure,
+            Opcode::NewRefCell,
+            Opcode::LoadRefCell,
+            Opcode::StoreRefCell,
+            Opcode::Sleep,
+            Opcode::TaskCancel,
+            Opcode::ImplementsShape,
+            Opcode::CastNominal,
+            Opcode::CastShape,
+            Opcode::IsNominal,
+            Opcode::Cast,
+            Opcode::NewType,
+            Opcode::NativeCall,
+            Opcode::ArrayPush,
+            Opcode::ArrayPop,
+        ];
+
+        for opcode in assigned_opcodes {
+            assert_eq!(
+                Opcode::from_u8(opcode.to_u8()),
+                Some(opcode),
+                "0x{:02X} should decode to {:?}",
+                opcode.to_u8(),
+                opcode
+            );
+        }
     }
 
     #[test]

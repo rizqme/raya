@@ -568,6 +568,8 @@ pub struct Lowerer<'a> {
     /// Explicit structural projection layout for variables whose static view should
     /// use shape-slot access instead of nominal class dispatch.
     variable_structural_projection_fields: FxHashMap<Symbol, Vec<(String, usize)>>,
+    /// Canonical structural shapes referenced by this module.
+    module_structural_shapes: FxHashMap<u64, Vec<String>>,
     /// For variables holding async-call Task results, tracks the awaited value alias type.
     /// Example: `const t = async listener.accept()` records `t -> "__t_m0_TcpStream"`.
     task_result_type_aliases: FxHashMap<Symbol, String>,
@@ -1103,6 +1105,7 @@ impl<'a> Lowerer<'a> {
             variable_nested_object_fields: FxHashMap::default(),
             variable_object_type_aliases: FxHashMap::default(),
             variable_structural_projection_fields: FxHashMap::default(),
+            module_structural_shapes: FxHashMap::default(),
             task_result_type_aliases: FxHashMap::default(),
             object_spread_target_filter: None,
             object_literal_target_layout: None,
@@ -1170,6 +1173,16 @@ impl<'a> Lowerer<'a> {
     /// Get collected compile errors
     pub fn errors(&self) -> &[super::error::CompileError] {
         &self.errors
+    }
+
+    pub fn structural_shape_member_sets(&self) -> Vec<Vec<String>> {
+        let mut entries = self
+            .module_structural_shapes
+            .iter()
+            .map(|(shape_id, names)| (*shape_id, names.clone()))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(shape_id, _)| *shape_id);
+        entries.into_iter().map(|(_, names)| names).collect()
     }
 
     /// Resolve a native function name to a module-local index.
@@ -4947,28 +4960,12 @@ impl<'a> Lowerer<'a> {
             return;
         }
 
-        let mut name_regs = Vec::with_capacity(ordered.len());
-        for name in ordered {
-            let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-            self.emit(IrInstr::Assign {
-                dest: name_reg.clone(),
-                value: IrValue::Constant(IrConstant::String(name)),
-            });
-            name_regs.push(name_reg);
-        }
-
-        let names_array = self.alloc_register(TypeId::new(ARRAY_TYPE_ID));
-        self.emit(IrInstr::ArrayLiteral {
-            dest: names_array.clone(),
-            elements: name_regs,
-            elem_ty: TypeId::new(STRING_TYPE_ID),
-        });
-
-        self.emit(IrInstr::NativeCall {
-            dest: None,
-            native_id: crate::compiler::native_id::OBJECT_REGISTER_STRUCTURAL_SHAPE,
-            args: vec![names_array],
-        });
+        let mut canonical = ordered;
+        canonical.sort_unstable();
+        let shape_id = crate::vm::object::shape_id_from_member_names(&canonical);
+        self.module_structural_shapes
+            .entry(shape_id)
+            .or_insert(canonical);
     }
 
     /// Register canonical member names for a structural shape without attaching

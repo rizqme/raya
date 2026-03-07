@@ -40,8 +40,8 @@ pub use module_builder::ModuleBuilder;
 pub use bytecode::{
     module_id_from_name, symbol_id_from_name, verify_module, BytecodeReader, BytecodeWriter,
     ClassDef, ConstantPool, DecodeError, Export, Function, Import, Metadata, Method, Module,
-    ModuleError, ModuleId, Opcode, SymbolId, SymbolScope, SymbolType, TypeSignatureHash,
-    TypeSymbolId, VerifyError,
+    ModuleError, ModuleId, Opcode, StructuralShapeInfo, SymbolId, SymbolScope, SymbolType,
+    TypeSignatureHash, TypeSymbolId, VerifyError,
 };
 
 use crate::parser::ast;
@@ -206,6 +206,14 @@ impl<'a> Compiler<'a> {
     /// 2. Monomorphization (generic specialization)
     /// 3. Optimization passes
     pub fn compile_to_optimized_ir(&self, module: &ast::Module) -> CompileResult<ir::IrModule> {
+        self.compile_to_optimized_ir_with_metadata(module)
+            .map(|(ir_module, _)| ir_module)
+    }
+
+    fn compile_to_optimized_ir_with_metadata(
+        &self,
+        module: &ast::Module,
+    ) -> CompileResult<(ir::IrModule, Vec<StructuralShapeInfo>)> {
         // Auto-enable sourcemap when debug dump env vars are active
         let dump_ir = std::env::var("RAYA_DEBUG_DUMP_IR").is_ok();
         let dump_bc = std::env::var("RAYA_DEBUG_DUMP_BYTECODE").is_ok();
@@ -225,6 +233,11 @@ impl<'a> Compiler<'a> {
         if let Some(module_identity) = &self.module_identity {
             ir_module.name = module_identity.clone();
         }
+        let structural_shapes = lowerer
+            .structural_shape_member_sets()
+            .into_iter()
+            .map(|member_names| StructuralShapeInfo { member_names })
+            .collect::<Vec<_>>();
 
         // Check for lowerer errors (e.g., unresolved types at dispatch points)
         if let Some(err) = lowerer.errors().first() {
@@ -264,7 +277,7 @@ impl<'a> Compiler<'a> {
             dump_type_table(&self.type_ctx);
         }
 
-        Ok(ir_module)
+        Ok((ir_module, structural_shapes))
     }
 
     /// Compile a module through the full IR pipeline to bytecode
@@ -280,7 +293,7 @@ impl<'a> Compiler<'a> {
             self.emit_sourcemap || dump_bc || std::env::var("RAYA_DEBUG_DUMP_IR").is_ok();
 
         // Get optimized IR (sourcemap enabling and IR dump happen inside)
-        let ir_module = self.compile_to_optimized_ir(module)?;
+        let (ir_module, structural_shapes) = self.compile_to_optimized_ir_with_metadata(module)?;
 
         // Generate bytecode from IR
         let mut bytecode_module = codegen::generate(&ir_module, need_sourcemap)?;
@@ -295,6 +308,7 @@ impl<'a> Compiler<'a> {
             bytecode_module.metadata.mono_debug_map =
                 monomorphize::collect_mono_debug_map(&ir_module);
         }
+        bytecode_module.metadata.structural_shapes = structural_shapes;
         populate_symbol_link_metadata(&mut bytecode_module, module, self.interner);
 
         // Dump annotated bytecode to stderr when RAYA_DEBUG_DUMP_BYTECODE is set

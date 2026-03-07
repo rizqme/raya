@@ -84,8 +84,21 @@ pub fn emit_box_f64(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Va
 ///
 /// f64 values are stored directly as bits (not tagged), so just bitcast.
 pub fn emit_unbox_f64(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
+    let i64_type = ir::types::I64;
     let f64_type = ir::types::F64;
-    builder.ins().bitcast(f64_type, ir::MemFlags::new(), val)
+
+    // Numbers may be represented either as raw f64 bits or as tagged i32 values.
+    let tag_mask = builder.ins().iconst(i64_type, 0xFFFF_0000_0000_0000u64 as i64);
+    let tagged = builder.ins().band(val, tag_mask);
+    let i32_tag = builder.ins().iconst(i64_type, I32_TAG_BASE as i64);
+    let is_i32 = builder
+        .ins()
+        .icmp(ir::condcodes::IntCC::Equal, tagged, i32_tag);
+
+    let as_i32 = emit_unbox_i32(builder, val);
+    let as_i32_f64 = builder.ins().fcvt_from_sint(f64_type, as_i32);
+    let as_f64 = builder.ins().bitcast(f64_type, ir::MemFlags::new(), val);
+    builder.ins().select(is_i32, as_i32_f64, as_f64)
 }
 
 /// Box a boolean into a NaN-boxed u64.
@@ -108,6 +121,13 @@ pub fn emit_box_ptr(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Va
     let payload = builder.ins().band(val, mask);
     let tag_base = builder.ins().iconst(i64_type, NAN_BOX_BASE as i64);
     builder.ins().bor(tag_base, payload)
+}
+
+/// Unbox a heap pointer from a NaN-boxed pointer value.
+pub fn emit_unbox_ptr(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
+    let i64_type = ir::types::I64;
+    let mask = builder.ins().iconst(i64_type, PAYLOAD_MASK as i64);
+    builder.ins().band(val, mask)
 }
 
 /// Unbox a boolean from a NaN-boxed u64.

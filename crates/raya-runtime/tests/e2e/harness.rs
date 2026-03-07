@@ -15,6 +15,9 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "jit")]
+use raya_engine::vm::interpreter::JitTelemetrySnapshot;
+
 thread_local! {
     /// Keeps a small ring of recently used VMs alive on each test thread so
     /// pointer values returned from `compile_and_run*` remain valid across
@@ -114,6 +117,23 @@ fn compile_program_with_mode(
     Ok((runtime, program))
 }
 
+#[cfg(feature = "jit")]
+fn compile_program_with_mode_jit(
+    source: &str,
+    mode: BuiltinMode,
+) -> E2EResult<(raya_runtime::Runtime, raya_runtime::CompiledProgram)> {
+    let runtime = raya_runtime::Runtime::with_options(raya_runtime::RuntimeOptions {
+        builtin_mode: mode,
+        no_jit: false,
+        jit_threshold: 1,
+        ..Default::default()
+    });
+    let program = runtime
+        .compile_program_source(source)
+        .map_err(|e| E2EError::TypeCheck(e.to_string()))?;
+    Ok((runtime, program))
+}
+
 fn map_runtime_error(error: raya_runtime::RuntimeError) -> E2EError {
     match error {
         raya_runtime::RuntimeError::Vm(vm_error) => E2EError::Vm(vm_error),
@@ -187,6 +207,63 @@ pub fn compile_and_run_runtime_with_mode(source: &str, mode: BuiltinMode) -> E2E
 
 pub fn compile_and_run_runtime_node_compat(source: &str) -> E2EResult<Value> {
     compile_and_run_runtime_with_mode(source, BuiltinMode::NodeCompat)
+}
+
+#[cfg(feature = "jit")]
+pub fn compile_and_run_runtime_with_mode_jit(
+    source: &str,
+    mode: BuiltinMode,
+) -> E2EResult<(Value, JitTelemetrySnapshot)> {
+    let (runtime, program) = compile_program_with_mode_jit(source, mode)?;
+
+    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+    {
+        let mut registry = vm.native_registry().write();
+        raya_stdlib::register_stdlib(&mut registry);
+        raya_stdlib_posix::register_posix(&mut registry);
+    }
+
+    let value = runtime
+        .execute_program_with_vm(&program, &mut vm)
+        .map_err(map_runtime_error)?;
+    let telemetry = vm.get_jit_telemetry();
+    keep_vm_alive(vm);
+    Ok((value, telemetry))
+}
+
+#[cfg(feature = "jit")]
+pub fn compile_and_run_runtime_jit(source: &str) -> E2EResult<(Value, JitTelemetrySnapshot)> {
+    compile_and_run_runtime_with_mode_jit(source, BuiltinMode::RayaStrict)
+}
+
+#[cfg(feature = "jit")]
+pub fn expect_i32_runtime_jit(source: &str, expected: i32) -> JitTelemetrySnapshot {
+    match compile_and_run_runtime_jit(source) {
+        Ok((value, telemetry)) => {
+            if let Some(actual) = value.as_i32() {
+                assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+                return telemetry;
+            }
+            if let Some(actual) = value.as_f64() {
+                let expected_f64 = expected as f64;
+                assert!(
+                    (actual - expected_f64).abs() < 1e-10 && actual.fract() == 0.0,
+                    "Expected {} (i32), got {} (f64) for:\n{}",
+                    expected,
+                    actual,
+                    source
+                );
+                return telemetry;
+            }
+            panic!(
+                "Expected i32 or f64 result, got {:?}\nSource:\n{}",
+                value, source
+            );
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
 }
 
 pub fn expect_i32_runtime_node_compat(source: &str, expected: i32) {

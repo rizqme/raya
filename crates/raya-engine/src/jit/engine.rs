@@ -193,7 +193,7 @@ impl JitEngine {
             .map_err(|e| format!("Lift/optimize failed: {}", e))?;
 
         // Step 2: Lower JIT IR → Cranelift IR → executable code via JITModule
-        self.compile_jit_function(&jit_func, func_idx, module_id)
+        self.compile_jit_function(&jit_func, func_idx, module, module_id)
     }
 
     /// Lower a JitFunction through the JITModule to produce executable code.
@@ -201,6 +201,7 @@ impl JitEngine {
         &mut self,
         jit_func: &JitFunction,
         func_idx: usize,
+        module: &Module,
         module_id: u64,
     ) -> Result<(), String> {
         let call_conv = self.jit_module.isa().default_call_conv();
@@ -222,7 +223,7 @@ impl JitEngine {
             let mut func_builder_ctx = cranelift_frontend::FunctionBuilderContext::new();
             let builder =
                 cranelift_frontend::FunctionBuilder::new(&mut ctx.func, &mut func_builder_ctx);
-            LoweringContext::lower(jit_func, builder)
+            LoweringContext::lower(jit_func, module, builder)
                 .map_err(|e| format!("Lowering failed: {}", e))?;
         }
 
@@ -382,6 +383,7 @@ mod tests {
                 generic_templates: vec![],
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
+                structural_shapes: vec![],
             },
             exports: vec![],
             imports: vec![],

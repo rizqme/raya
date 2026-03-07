@@ -23,6 +23,7 @@ fn create_module(name: &str) -> Module {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
+                structural_shapes: vec![],
         },
         exports: vec![],
         imports: vec![],

@@ -168,6 +168,9 @@ enum Commands {
         /// Disable JIT for the evaluated code
         #[arg(long)]
         no_jit: bool,
+        /// Call count threshold before adaptive JIT compilation
+        #[arg(long, default_value = "1000")]
+        jit_threshold: u32,
         /// Enable Node-compatible builtin API surface.
         #[arg(long)]
         node_compat: bool,
@@ -510,6 +513,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             print,
             no_print,
             no_jit,
+            jit_threshold,
             node_compat,
             mode,
         } => commands::eval::execute(
@@ -517,6 +521,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             print,
             no_print,
             no_jit,
+            jit_threshold,
             node_compat,
             parse_type_mode(&mode)?,
         ),

@@ -17,8 +17,6 @@ pub const OBJECT_GET_OWN_PROPERTY_DESCRIPTOR: u16 = 0x0005;
 pub const OBJECT_DEFINE_PROPERTIES: u16 = 0x0006;
 /// construct(typeHandle, ...args) for constructors loaded at runtime (e.g., imported classes)
 pub const OBJECT_CONSTRUCT_DYNAMIC_CLASS: u16 = 0x0007;
-/// registerStructuralShape(memberNames[]) for structural shape-name seeding
-pub const OBJECT_REGISTER_STRUCTURAL_SHAPE: u16 = 0x0008;
 /// construct plain Object descriptor instance with node-compat fields
 pub const OBJECT_NEW: u16 = 0x0009;
 /// load ambient builtin global value by name (e.g., ArrayBuffer, Reflect, Intl)

@@ -975,6 +975,17 @@ impl SharedVmState {
             },
         );
 
+        for shape in &module.metadata.structural_shapes {
+            if shape.member_names.is_empty() {
+                continue;
+            }
+            let names = &shape.member_names;
+            let shape_id = crate::vm::object::shape_id_from_member_names(names);
+            self.register_structural_shape_names(shape_id, names);
+            let layout_id = crate::vm::object::layout_id_from_ordered_names(names);
+            self.register_structural_layout_shape(layout_id, names);
+        }
+
         // Register classes from the module (rebased to global class IDs).
         self.register_classes(&module, nominal_type_base);
 

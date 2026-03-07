@@ -111,6 +111,10 @@ unsafe extern "C" fn stub_object_set_shape_field(
     0
 }
 
+unsafe extern "C" fn stub_string_len(_string_raw: u64, _shared_state: *mut ()) -> i32 {
+    i32::MIN
+}
+
 // ============================================================================
 // NaN-boxing decode helpers
 // ============================================================================
@@ -173,6 +177,7 @@ fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module 
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
+                structural_shapes: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -204,6 +209,7 @@ fn make_vm_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Modu
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
+                structural_shapes: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -229,6 +235,7 @@ fn make_custom_module(functions: Vec<Function>, classes: Vec<ClassDef>) -> Modul
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
+                structural_shapes: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -372,8 +379,22 @@ fn jit_compile_and_call_with_locals_and_exit(
     jit_compile_and_call_with_locals_exit_and_ctx(func, locals, std::ptr::null_mut())
 }
 
+fn dummy_lowering_module() -> Module {
+    make_custom_module(vec![], vec![])
+}
+
 fn jit_compile_and_call_with_locals_exit_and_ctx(
     func: &JitFunction,
+    locals: &mut [u64],
+    ctx_ptr: *mut RuntimeContext,
+) -> (u64, raya_engine::jit::runtime::trampoline::JitExitInfo) {
+    let module = dummy_lowering_module();
+    jit_compile_and_call_with_locals_exit_and_ctx_and_module(func, &module, locals, ctx_ptr)
+}
+
+fn jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+    func: &JitFunction,
+    module: &Module,
     locals: &mut [u64],
     ctx_ptr: *mut RuntimeContext,
 ) -> (u64, raya_engine::jit::runtime::trampoline::JitExitInfo) {
@@ -404,7 +425,7 @@ fn jit_compile_and_call_with_locals_exit_and_ctx(
     {
         let builder =
             cranelift_frontend::FunctionBuilder::new(&mut codegen_ctx.func, &mut func_builder_ctx);
-        LoweringContext::lower(func, builder).expect("Lowering failed");
+        LoweringContext::lower(func, module, builder).expect("Lowering failed");
     }
 
     // Define and finalize
@@ -687,8 +708,11 @@ fn jit_call_executes_sync_callee_via_runtime_helper() {
         Some(JitInstr::Call { func_index: 1, .. })
     ));
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
+        &jit_func,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -738,8 +762,11 @@ fn jit_call_static_executes_sync_callee_via_runtime_helper() {
     let mut ctx = raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
+        &jit_func,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -902,8 +929,11 @@ fn jit_call_method_exact_executes_via_runtime_helper() {
     let mut ctx = raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
+        &jit_func,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -967,7 +997,12 @@ fn jit_call_method_shape_executes_via_runtime_helper() {
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
     let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            &module,
+            &mut [],
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1029,7 +1064,12 @@ fn jit_construct_type_executes_constructor_via_runtime_helper() {
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
     let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            &module,
+            &mut [],
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1099,7 +1139,12 @@ fn jit_call_constructor_executes_via_runtime_helper() {
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
     let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            &module,
+            &mut [],
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1180,7 +1225,12 @@ fn jit_call_super_executes_via_runtime_helper() {
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
     let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            &module,
+            &mut [],
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1290,7 +1340,12 @@ fn jit_new_type_uses_alloc_object_helper() {
         raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
 
     let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            &module,
+            &mut [],
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1382,7 +1437,12 @@ fn jit_implements_shape_uses_runtime_helper() {
     let mut locals = vec![object_raw];
 
     let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut locals, (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            &module,
+            &mut locals,
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1470,7 +1530,12 @@ fn jit_cast_shape_uses_runtime_helper_fastpath() {
     let mut locals = vec![object_raw];
 
     let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut locals, (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            &module,
+            &mut locals,
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1552,7 +1617,12 @@ fn jit_cast_shape_failure_exits_with_interpreter_boundary() {
     let mut locals = vec![object_raw];
 
     let (_raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut locals, (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            module.as_ref(),
+            &mut locals,
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
@@ -1651,7 +1721,12 @@ fn jit_is_nominal_uses_runtime_helper() {
     let mut locals = vec![object_raw];
 
     let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut locals, (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            &module,
+            &mut locals,
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1759,7 +1834,12 @@ fn jit_cast_nominal_failure_exits_with_interpreter_boundary() {
     let mut locals = vec![object_raw];
 
     let (_raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut locals, (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            target_module.as_ref(),
+            &mut locals,
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
@@ -1873,11 +1953,15 @@ fn jit_native_call_zero_arg_ctx_fastpath_returns_value() {
             object_is_nominal: stub_object_is_nominal,
             object_get_shape_field: stub_object_get_shape_field,
             object_set_shape_field: stub_object_set_shape_field,
+            string_len: stub_string_len,
         },
     };
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
+        &jit_func,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert!(is_i32(raw));
     assert_eq!(decode_i32(raw), 42);
     assert_eq!(
@@ -1990,11 +2074,17 @@ fn jit_native_call_zero_arg_ctx_fastpath_sentinel_suspends() {
             object_is_nominal: stub_object_is_nominal,
             object_get_shape_field: stub_object_get_shape_field,
             object_set_shape_field: stub_object_set_shape_field,
+            string_len: stub_string_len,
         },
     };
 
     let (_raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            &module,
+            &mut [],
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
@@ -2113,11 +2203,15 @@ fn jit_native_call_args_ctx_fastpath_returns_value() {
             object_is_nominal: stub_object_is_nominal,
             object_get_shape_field: stub_object_get_shape_field,
             object_set_shape_field: stub_object_set_shape_field,
+            string_len: stub_string_len,
         },
     };
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
+        &jit_func,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert!(is_i32(raw));
     assert_eq!(decode_i32(raw), 99);
     assert_eq!(
@@ -2233,11 +2327,17 @@ fn jit_native_call_args_ctx_fastpath_sentinel_suspends() {
             object_is_nominal: stub_object_is_nominal,
             object_get_shape_field: stub_object_get_shape_field,
             object_set_shape_field: stub_object_set_shape_field,
+            string_len: stub_string_len,
         },
     };
 
     let (_raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+            &jit_func,
+            &module,
+            &mut [],
+            (&mut ctx as *mut _),
+        );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
@@ -2362,11 +2462,15 @@ fn jit_check_preemption_exits_with_suspend_kind_when_helper_requests_preempt() {
             object_is_nominal: stub_object_is_nominal,
             object_get_shape_field: stub_object_get_shape_field,
             object_set_shape_field: stub_object_set_shape_field,
+            string_len: stub_string_len,
         },
     };
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
+        &jit_func,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert_eq!(raw, NULL_VALUE);
     assert_eq!(
         exit.kind,
@@ -3490,6 +3594,7 @@ fn engine_prewarm_selects_hot() {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
+                structural_shapes: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -3733,6 +3838,7 @@ fn background_compiler_processes_request() {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
+                structural_shapes: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -3817,6 +3923,7 @@ fn jit_hints_encode_decode_roundtrip() {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
+                structural_shapes: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -3876,6 +3983,7 @@ fn jit_hints_absent_when_no_flag() {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
+                structural_shapes: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -3965,6 +4073,7 @@ fn prewarm_candidates_submitted_to_background() {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
+                structural_shapes: vec![],
         },
         exports: vec![],
         imports: vec![],

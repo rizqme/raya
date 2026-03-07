@@ -8,7 +8,7 @@ use thiserror::Error;
 pub const MAGIC: [u8; 4] = *b"RAYA";
 
 /// Current bytecode version
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 /// Stable module ID derived from canonical module identity.
 pub type ModuleId = u64;
@@ -798,6 +798,14 @@ pub struct Metadata {
     pub template_symbol_table: Vec<TemplateSymbolEntry>,
     /// Debug mapping from specialized symbols back to template + concrete args.
     pub mono_debug_map: Vec<MonoDebugEntry>,
+    /// Canonical structural shapes referenced by this module.
+    pub structural_shapes: Vec<StructuralShapeInfo>,
+}
+
+/// Canonical structural shape metadata entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StructuralShapeInfo {
+    pub member_names: Vec<String>,
 }
 
 /// Generic template metadata entry.
@@ -858,6 +866,11 @@ impl Metadata {
         for entry in &self.mono_debug_map {
             entry.encode(writer);
         }
+
+        writer.emit_u32(self.structural_shapes.len() as u32);
+        for shape in &self.structural_shapes {
+            shape.encode(writer);
+        }
     }
 
     /// Decode metadata from binary
@@ -891,13 +904,39 @@ impl Metadata {
             mono_debug_map.push(MonoDebugEntry::decode(reader)?);
         }
 
+        let structural_shape_len = reader.read_u32()? as usize;
+        let mut structural_shapes = Vec::with_capacity(structural_shape_len);
+        for _ in 0..structural_shape_len {
+            structural_shapes.push(StructuralShapeInfo::decode(reader)?);
+        }
+
         Ok(Self {
             name,
             source_file,
             generic_templates,
             template_symbol_table,
             mono_debug_map,
+            structural_shapes,
         })
+    }
+}
+
+impl StructuralShapeInfo {
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        writer.emit_u32(self.member_names.len() as u32);
+        for name in &self.member_names {
+            writer.emit_u32(name.len() as u32);
+            writer.buffer.extend_from_slice(name.as_bytes());
+        }
+    }
+
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        let count = reader.read_u32()? as usize;
+        let mut member_names = Vec::with_capacity(count);
+        for _ in 0..count {
+            member_names.push(reader.read_string()?);
+        }
+        Ok(Self { member_names })
     }
 }
 
@@ -1279,6 +1318,7 @@ impl Module {
                 generic_templates: Vec::new(),
                 template_symbol_table: Vec::new(),
                 mono_debug_map: Vec::new(),
+                structural_shapes: Vec::new(),
             },
             exports: Vec::new(),
             imports: Vec::new(),
