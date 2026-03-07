@@ -8,7 +8,9 @@
 //! 4. Native execution — comparisons, logic, branches
 //! 5. Full pipeline + VM integration
 
-use raya_engine::compiler::bytecode::{ConstantPool, Function, Metadata, Module, Opcode, VERSION};
+use raya_engine::compiler::bytecode::{
+    ClassDef, ConstantPool, Function, Metadata, Module, Opcode, VERSION,
+};
 use raya_engine::jit::backend::cranelift::lowering::{jit_entry_signature, LoweringContext};
 use raya_engine::jit::backend::cranelift::CraneliftBackend;
 use raya_engine::jit::backend::traits::CodegenBackend;
@@ -71,6 +73,15 @@ unsafe extern "C" fn stub_object_set_field(
 unsafe extern "C" fn stub_object_implements_shape(
     _object_raw: u64,
     _shape_id: u64,
+    _shared_state: *mut (),
+) -> bool {
+    false
+}
+
+unsafe extern "C" fn stub_object_is_nominal(
+    _object_raw: u64,
+    _local_nominal_type_index: u32,
+    _module_ptr: *const (),
     _shared_state: *mut (),
 ) -> bool {
     false
@@ -757,6 +768,189 @@ fn jit_cast_shape_failure_exits_with_interpreter_boundary() {
 }
 
 #[test]
+fn jit_is_nominal_uses_runtime_helper() {
+    let safepoint = std::sync::Arc::new(
+        raya_engine::vm::interpreter::SafepointCoordinator::new(1),
+    );
+    let tasks = std::sync::Arc::new(parking_lot::RwLock::new(FxHashMap::default()));
+    let injector = std::sync::Arc::new(crossbeam_deque::Injector::new());
+    let shared = std::sync::Arc::new(raya_engine::vm::interpreter::SharedVmState::new(
+        safepoint.clone(),
+        tasks,
+        injector,
+    ));
+
+    let mut code = Vec::new();
+    emit_load_local(&mut code, 0);
+    code.push(Opcode::IsNominal as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    emit(&mut code, Opcode::Return);
+
+    let mut module = make_module(code, 0, 1);
+    module.classes.push(ClassDef {
+        name: "Target".to_string(),
+        field_count: 0,
+        parent_id: None,
+        methods: Vec::new(),
+    });
+    let module = std::sync::Arc::new(
+        Module::decode(&module.encode()).expect("finalize target module checksum"),
+    );
+    shared
+        .register_module(module.clone())
+        .expect("register target module");
+
+    let func = &module.functions[0];
+    let jit_func = lift_function(func, &module, 0).expect("Lift failed");
+
+    let task = raya_engine::vm::scheduler::Task::new(0, module.clone(), None);
+    let resolved_natives = parking_lot::RwLock::new(shared.resolved_natives.read().clone());
+    let bridge = raya_engine::jit::runtime::helpers::build_runtime_bridge_context(
+        safepoint.as_ref(),
+        &task,
+        &shared.gc,
+        &shared.classes,
+        &shared.layouts,
+        &shared.module_layouts,
+        &shared.class_metadata,
+        &resolved_natives,
+        &shared.structural_shape_names,
+        &shared.structural_shape_adapters,
+        &shared.prop_keys,
+        None,
+    );
+    let object_ptr = unsafe {
+        (raya_engine::jit::runtime::helpers::runtime_helpers().alloc_object)(
+            0,
+            std::sync::Arc::as_ptr(&module) as *const (),
+            (&bridge as *const raya_engine::jit::runtime::helpers::JitRuntimeBridgeContext)
+                as *mut (),
+        )
+    };
+    assert!(!object_ptr.is_null());
+    let object_raw = unsafe {
+        raya_engine::vm::value::Value::from_ptr(
+            std::ptr::NonNull::new(object_ptr.cast::<raya_engine::vm::object::Object>()).unwrap(),
+        )
+        .raw()
+    };
+
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
+    let mut locals = vec![object_raw];
+
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut locals, (&mut ctx as *mut _));
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
+    );
+    assert!(is_bool(raw));
+    assert!(decode_bool(raw));
+}
+
+#[test]
+fn jit_cast_nominal_failure_exits_with_interpreter_boundary() {
+    let safepoint = std::sync::Arc::new(
+        raya_engine::vm::interpreter::SafepointCoordinator::new(1),
+    );
+    let tasks = std::sync::Arc::new(parking_lot::RwLock::new(FxHashMap::default()));
+    let injector = std::sync::Arc::new(crossbeam_deque::Injector::new());
+    let shared = std::sync::Arc::new(raya_engine::vm::interpreter::SharedVmState::new(
+        safepoint.clone(),
+        tasks,
+        injector,
+    ));
+
+    let mut source_module = make_module(vec![Opcode::Return as u8], 0, 0);
+    source_module.classes.push(ClassDef {
+        name: "Source".to_string(),
+        field_count: 0,
+        parent_id: None,
+        methods: Vec::new(),
+    });
+    let source_module = std::sync::Arc::new(
+        Module::decode(&source_module.encode()).expect("finalize source module checksum"),
+    );
+    shared
+        .register_module(source_module.clone())
+        .expect("register source module");
+
+    let mut code = Vec::new();
+    emit_load_local(&mut code, 0);
+    code.push(Opcode::CastNominal as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    emit(&mut code, Opcode::Return);
+
+    let mut target_module = make_module(code, 0, 1);
+    target_module.classes.push(ClassDef {
+        name: "Target".to_string(),
+        field_count: 0,
+        parent_id: None,
+        methods: Vec::new(),
+    });
+    let target_module = std::sync::Arc::new(
+        Module::decode(&target_module.encode()).expect("finalize target module checksum"),
+    );
+    shared
+        .register_module(target_module.clone())
+        .expect("register target module");
+
+    let func = &target_module.functions[0];
+    let jit_func = lift_function(func, &target_module, 0).expect("Lift failed");
+
+    let task = raya_engine::vm::scheduler::Task::new(0, target_module.clone(), None);
+    let resolved_natives = parking_lot::RwLock::new(shared.resolved_natives.read().clone());
+    let bridge = raya_engine::jit::runtime::helpers::build_runtime_bridge_context(
+        safepoint.as_ref(),
+        &task,
+        &shared.gc,
+        &shared.classes,
+        &shared.layouts,
+        &shared.module_layouts,
+        &shared.class_metadata,
+        &resolved_natives,
+        &shared.structural_shape_names,
+        &shared.structural_shape_adapters,
+        &shared.prop_keys,
+        None,
+    );
+    let object_ptr = unsafe {
+        (raya_engine::jit::runtime::helpers::runtime_helpers().alloc_object)(
+            0,
+            std::sync::Arc::as_ptr(&source_module) as *const (),
+            (&bridge as *const raya_engine::jit::runtime::helpers::JitRuntimeBridgeContext)
+                as *mut (),
+        )
+    };
+    assert!(!object_ptr.is_null());
+    let object_raw = unsafe {
+        raya_engine::vm::value::Value::from_ptr(
+            std::ptr::NonNull::new(object_ptr.cast::<raya_engine::vm::object::Object>()).unwrap(),
+        )
+        .raw()
+    };
+
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, target_module.as_ref());
+    let mut locals = vec![object_raw];
+
+    let (_raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut locals, (&mut ctx as *mut _));
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
+    );
+    assert_eq!(
+        exit.suspend_reason,
+        raya_engine::jit::runtime::trampoline::JitSuspendReason::InterpreterBoundary as u32
+    );
+    assert_eq!(exit.bytecode_offset, 3);
+    assert_eq!(exit.native_arg_count, 1);
+    assert_eq!(exit.native_args[0], object_raw);
+}
+
+#[test]
 fn jit_native_call_zero_arg_ctx_fastpath_returns_value() {
     unsafe extern "C" fn stub_alloc_object(
         _local_nominal_type_index: u32,
@@ -849,6 +1043,7 @@ fn jit_native_call_zero_arg_ctx_fastpath_returns_value() {
             object_get_field: stub_object_get_field,
             object_set_field: stub_object_set_field,
             object_implements_shape: stub_object_implements_shape,
+            object_is_nominal: stub_object_is_nominal,
         },
     };
 
@@ -959,6 +1154,7 @@ fn jit_native_call_zero_arg_ctx_fastpath_sentinel_suspends() {
             object_get_field: stub_object_get_field,
             object_set_field: stub_object_set_field,
             object_implements_shape: stub_object_implements_shape,
+            object_is_nominal: stub_object_is_nominal,
         },
     };
 
@@ -1075,6 +1271,7 @@ fn jit_native_call_args_ctx_fastpath_returns_value() {
             object_get_field: stub_object_get_field,
             object_set_field: stub_object_set_field,
             object_implements_shape: stub_object_implements_shape,
+            object_is_nominal: stub_object_is_nominal,
         },
     };
 
@@ -1188,6 +1385,7 @@ fn jit_native_call_args_ctx_fastpath_sentinel_suspends() {
             object_get_field: stub_object_get_field,
             object_set_field: stub_object_set_field,
             object_implements_shape: stub_object_implements_shape,
+            object_is_nominal: stub_object_is_nominal,
         },
     };
 
@@ -1310,6 +1508,7 @@ fn jit_check_preemption_exits_with_suspend_kind_when_helper_requests_preempt() {
             object_get_field: stub_object_get_field,
             object_set_field: stub_object_set_field,
             object_implements_shape: stub_object_implements_shape,
+            object_is_nominal: stub_object_is_nominal,
         },
     };
 

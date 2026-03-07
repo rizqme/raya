@@ -108,6 +108,7 @@ pub fn runtime_helpers() -> RuntimeHelperTable {
         object_get_field: helper_object_get_field,
         object_set_field: helper_object_set_field,
         object_implements_shape: helper_object_implements_shape,
+        object_is_nominal: helper_object_is_nominal,
     }
 }
 
@@ -250,6 +251,48 @@ fn jit_ensure_shape_adapter_for_object(
     )
 }
 
+fn jit_resolve_nominal_type_id(
+    bridge: &JitRuntimeBridgeContext,
+    module: &Module,
+    local_nominal_type_index: u32,
+) -> Option<usize> {
+    if bridge.module_layouts.is_null() {
+        return None;
+    }
+    let module_layouts = unsafe { &*bridge.module_layouts }.read();
+    let module_layout = module_layouts.get(&module.checksum)?;
+    if local_nominal_type_index as usize >= module_layout.nominal_type_len {
+        return None;
+    }
+    Some(module_layout.nominal_type_base + local_nominal_type_index as usize)
+}
+
+fn jit_object_matches_nominal_type(
+    bridge: &JitRuntimeBridgeContext,
+    object: &Object,
+    target_nominal_type_id: usize,
+) -> bool {
+    let Some(mut current_nominal_type_id) = object.nominal_type_id_usize() else {
+        return false;
+    };
+    if bridge.classes.is_null() {
+        return false;
+    }
+    let classes = unsafe { &*bridge.classes }.read();
+    loop {
+        if current_nominal_type_id == target_nominal_type_id {
+            return true;
+        }
+        let Some(class) = classes.get_class(current_nominal_type_id) else {
+            return false;
+        };
+        let Some(parent_id) = class.parent_id else {
+            return false;
+        };
+        current_nominal_type_id = parent_id;
+    }
+}
+
 unsafe extern "C" fn helper_alloc_object(
     local_nominal_type_index: u32,
     module_ptr: *const (),
@@ -264,15 +307,9 @@ unsafe extern "C" fn helper_alloc_object(
     }
 
     let module = &*(module_ptr.cast::<Module>());
-    let nominal_type_id = {
-        let module_layouts = (&*bridge.module_layouts).read();
-        let Some(module_layout) = module_layouts.get(&module.checksum) else {
-            return std::ptr::null_mut();
-        };
-        if local_nominal_type_index as usize >= module_layout.nominal_type_len {
-            return std::ptr::null_mut();
-        }
-        module_layout.nominal_type_base + local_nominal_type_index as usize
+    let Some(nominal_type_id) = jit_resolve_nominal_type_id(bridge, module, local_nominal_type_index)
+    else {
+        return std::ptr::null_mut();
     };
     let (field_count, layout_id) = {
         let layouts = (&*bridge.layouts).read();
@@ -529,6 +566,30 @@ unsafe extern "C" fn helper_object_implements_shape(
     (0..adapter.len()).all(|slot| {
         !matches!(adapter.binding_for_slot(slot), StructuralSlotBinding::Missing)
     })
+}
+
+unsafe extern "C" fn helper_object_is_nominal(
+    object_raw: u64,
+    local_nominal_type_index: u32,
+    module_ptr: *const (),
+    shared_state: *mut (),
+) -> bool {
+    if shared_state.is_null() || module_ptr.is_null() {
+        return false;
+    }
+    let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
+    let module = &*(module_ptr.cast::<Module>());
+    let Some(target_nominal_type_id) =
+        jit_resolve_nominal_type_id(bridge, module, local_nominal_type_index)
+    else {
+        return false;
+    };
+    let object_val = Value::from_raw(object_raw);
+    let Some(object_ptr) = jit_object_ptr_checked(object_val) else {
+        return false;
+    };
+    let object = &*object_ptr.as_ptr();
+    jit_object_matches_nominal_type(bridge, object, target_nominal_type_id)
 }
 
 #[cfg(test)]

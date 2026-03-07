@@ -416,6 +416,7 @@ pub enum JitInstr {
         dest: Reg,
         object: Reg,
         nominal_type_id: u32,
+        bytecode_offset: u32,
     },
     Typeof {
         dest: Reg,

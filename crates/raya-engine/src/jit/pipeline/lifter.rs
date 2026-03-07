@@ -1047,6 +1047,7 @@ fn lift_instruction(
                     dest,
                     object,
                     nominal_type_id: nominal_type_id as u32,
+                    bytecode_offset: instr.offset as u32,
                 });
                 stack.push(dest);
             }

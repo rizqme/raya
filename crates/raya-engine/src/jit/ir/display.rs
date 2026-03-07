@@ -246,6 +246,7 @@ impl fmt::Display for JitInstr {
                 dest,
                 object,
                 nominal_type_id,
+                ..
             } => write!(f, "{} = cast {}, @{}", dest, object, nominal_type_id),
             JitInstr::Typeof { dest, operand } => write!(f, "{} = typeof {}", dest, operand),
             JitInstr::OptionalFieldExact {

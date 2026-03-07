@@ -39,6 +39,8 @@ pub struct LoweringContext<'a> {
     sig_object_get_field: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.object_implements_shape
     sig_object_implements_shape: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.object_is_nominal
+    sig_object_is_nominal: Option<ir::SigRef>,
 }
 
 /// The five parameters of the JIT entry function ABI
@@ -145,6 +147,7 @@ impl<'a> LoweringContext<'a> {
             sig_native_call_dispatch: None,
             sig_object_get_field: None,
             sig_object_implements_shape: None,
+            sig_object_is_nominal: None,
         };
 
         // Declare all registers as Cranelift variables
@@ -668,6 +671,95 @@ impl<'a> LoweringContext<'a> {
                 let merged = builder.block_params(done)[0];
                 self.def_reg(builder, *dest, merged);
             }
+            JitInstr::InstanceOf {
+                dest,
+                object,
+                nominal_type_id,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let null_block = builder.create_block();
+                let done = builder.create_block();
+                builder.append_block_param(done, types::I8);
+                builder
+                    .ins()
+                    .brif(is_ctx_null, null_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+                builder.seal_block(null_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx, 136); // 24 + 112
+                let sig = self.object_is_nominal_sig(builder);
+                let object_val = self.boxed_reg_value(builder, *object);
+                let nominal_type_id_val = builder.ins().iconst(types::I32, *nominal_type_id as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[object_val, nominal_type_id_val, module_ptr, shared_state],
+                );
+                let result = builder.inst_results(call)[0];
+                let result_arg = [ir::BlockArg::Value(result)];
+                builder.ins().jump(done, &result_arg);
+
+                builder.switch_to_block(null_block);
+                let false_val = builder.ins().iconst(types::I8, 0);
+                let false_arg = [ir::BlockArg::Value(false_val)];
+                builder.ins().jump(done, &false_arg);
+
+                builder.seal_block(done);
+                builder.switch_to_block(done);
+                let merged = builder.block_params(done)[0];
+                self.def_reg(builder, *dest, merged);
+            }
+            JitInstr::Cast {
+                dest,
+                object,
+                nominal_type_id,
+                bytecode_offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let success_block = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx, 136); // 24 + 112
+                let sig = self.object_is_nominal_sig(builder);
+                let object_val = self.boxed_reg_value(builder, *object);
+                let nominal_type_id_val = builder.ins().iconst(types::I32, *nominal_type_id as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[object_val, nominal_type_id_val, module_ptr, shared_state],
+                );
+                let result = builder.inst_results(call)[0];
+                builder
+                    .ins()
+                    .brif(result, success_block, &[], fallback_block, &[]);
+                builder.seal_block(success_block);
+                builder.seal_block(fallback_block);
+
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, &[*object], *bytecode_offset);
+
+                builder.switch_to_block(success_block);
+                let object_val = self.boxed_reg_value(builder, *object);
+                self.def_reg(builder, *dest, object_val);
+            }
             JitInstr::ImplementsShape {
                 dest,
                 object,
@@ -1157,6 +1249,21 @@ impl<'a> LoweringContext<'a> {
         sig.returns.push(AbiParam::new(types::I8)); // bool result
         let sig_ref = builder.func.import_signature(sig);
         self.sig_object_implements_shape = Some(sig_ref);
+        sig_ref
+    }
+
+    fn object_is_nominal_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_object_is_nominal {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // object value
+        sig.params.push(AbiParam::new(types::I32)); // local nominal type index
+        sig.params.push(AbiParam::new(types::I64)); // module ptr
+        sig.params.push(AbiParam::new(types::I64)); // shared_state ptr
+        sig.returns.push(AbiParam::new(types::I8)); // bool result
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_object_is_nominal = Some(sig_ref);
         sig_ref
     }
 

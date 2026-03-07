@@ -139,4 +139,6 @@ pub struct RuntimeHelperTable {
     pub object_set_field: unsafe extern "C" fn(u64, u32, u64, u32, *const (), *mut ()) -> bool,
     /// Structural shape check: (obj_val, shape_id, shared_state) -> implements
     pub object_implements_shape: unsafe extern "C" fn(u64, u64, *mut ()) -> bool,
+    /// Nominal type check: (obj_val, local_nominal_type_index, module_ptr, shared_state) -> matches
+    pub object_is_nominal: unsafe extern "C" fn(u64, u32, *const (), *mut ()) -> bool,
 }
