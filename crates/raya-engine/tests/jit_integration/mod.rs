@@ -528,7 +528,7 @@ fn jit_construct_type_lifts_to_interpreter_boundary() {
 }
 
 #[test]
-fn jit_new_type_lifts_to_interpreter_boundary() {
+fn jit_new_type_lifts_to_new_object() {
     let mut code = Vec::new();
     code.push(Opcode::NewType as u8);
     code.extend_from_slice(&1u16.to_le_bytes());
@@ -540,8 +540,78 @@ fn jit_new_type_lifts_to_interpreter_boundary() {
 
     assert!(matches!(
         jit_func.blocks[0].instrs.first(),
-        Some(JitInstr::InterpreterBoundary { .. })
+        Some(JitInstr::NewObject { .. })
     ));
+}
+
+#[test]
+fn jit_new_type_uses_alloc_object_helper() {
+    let safepoint = std::sync::Arc::new(
+        raya_engine::vm::interpreter::SafepointCoordinator::new(1),
+    );
+    let tasks = std::sync::Arc::new(parking_lot::RwLock::new(FxHashMap::default()));
+    let injector = std::sync::Arc::new(crossbeam_deque::Injector::new());
+    let shared = std::sync::Arc::new(raya_engine::vm::interpreter::SharedVmState::new(
+        safepoint.clone(),
+        tasks,
+        injector,
+    ));
+
+    let mut code = Vec::new();
+    code.push(Opcode::NewType as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    emit(&mut code, Opcode::Return);
+
+    let mut module = make_module(code, 0, 0);
+    module.classes.push(ClassDef {
+        name: "Target".to_string(),
+        field_count: 0,
+        parent_id: None,
+        methods: Vec::new(),
+    });
+    let module = std::sync::Arc::new(
+        Module::decode(&module.encode()).expect("finalize target module checksum"),
+    );
+    shared
+        .register_module(module.clone())
+        .expect("register target module");
+
+    let expected_nominal_type_id = shared
+        .resolve_nominal_type_id(&module, 0)
+        .expect("module-local nominal type id");
+
+    let func = &module.functions[0];
+    let jit_func = lift_function(func, &module, 0).expect("Lift failed");
+
+    let task = raya_engine::vm::scheduler::Task::new(0, module.clone(), None);
+    let resolved_natives = parking_lot::RwLock::new(shared.resolved_natives.read().clone());
+    let bridge = raya_engine::jit::runtime::helpers::build_runtime_bridge_context(
+        safepoint.as_ref(),
+        &task,
+        &shared.gc,
+        &shared.classes,
+        &shared.layouts,
+        &shared.module_layouts,
+        &shared.class_metadata,
+        &resolved_natives,
+        &shared.structural_shape_names,
+        &shared.structural_shape_adapters,
+        &shared.prop_keys,
+        None,
+    );
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
+
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
+    );
+    assert_ne!(raw, 0);
+
+    let obj = unsafe { &*(raw as *const raya_engine::vm::object::Object) };
+    assert_eq!(obj.nominal_type_id_usize(), Some(expected_nominal_type_id));
 }
 
 #[test]

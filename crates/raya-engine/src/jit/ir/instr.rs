@@ -385,6 +385,7 @@ pub enum JitInstr {
     NewObject {
         dest: Reg,
         nominal_type_id: u32,
+        bytecode_offset: u32,
     },
     LoadFieldExact {
         dest: Reg,

@@ -215,6 +215,7 @@ impl fmt::Display for JitInstr {
             JitInstr::NewObject {
                 dest,
                 nominal_type_id,
+                ..
             } => write!(f, "{} = new.type @{}", dest, nominal_type_id),
             JitInstr::LoadFieldExact {
                 dest,

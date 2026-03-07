@@ -949,12 +949,10 @@ fn lift_instruction(
         // ===== Object Operations =====
         Opcode::NewType => {
             if let Operands::U16(nominal_type_id) = instr.operands {
-                let pre_stack = stack.clone_state();
                 let dest = func.alloc_reg(JitType::Ptr);
-                let _ = nominal_type_id;
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
-                    dest: Some(dest),
-                    stack: pre_stack,
+                func.block_mut(block).instrs.push(JitInstr::NewObject {
+                    dest,
+                    nominal_type_id: nominal_type_id as u32,
                     bytecode_offset: instr.offset as u32,
                 });
                 stack.push(dest);

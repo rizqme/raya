@@ -35,6 +35,8 @@ pub struct LoweringContext<'a> {
     sig_check_preemption: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.native_call_dispatch
     sig_native_call_dispatch: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.alloc_object
+    sig_alloc_object: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.object_get_field
     sig_object_get_field: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.object_implements_shape
@@ -145,6 +147,7 @@ impl<'a> LoweringContext<'a> {
             sig_safepoint_poll: None,
             sig_check_preemption: None,
             sig_native_call_dispatch: None,
+            sig_alloc_object: None,
             sig_object_get_field: None,
             sig_object_implements_shape: None,
             sig_object_is_nominal: None,
@@ -670,6 +673,46 @@ impl<'a> LoweringContext<'a> {
                 builder.switch_to_block(done);
                 let merged = builder.block_params(done)[0];
                 self.def_reg(builder, *dest, merged);
+            }
+            JitInstr::NewObject {
+                dest,
+                nominal_type_id,
+                bytecode_offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let success_block = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 24);
+                let sig = self.alloc_object_sig(builder);
+                let nominal_type_id_val = builder.ins().iconst(types::I32, *nominal_type_id as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[nominal_type_id_val, module_ptr, shared_state],
+                );
+                let object_ptr = builder.inst_results(call)[0];
+                let is_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, object_ptr, 0);
+                builder
+                    .ins()
+                    .brif(is_null, fallback_block, &[], success_block, &[]);
+                builder.seal_block(success_block);
+                builder.seal_block(fallback_block);
+
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, &[], *bytecode_offset);
+
+                builder.switch_to_block(success_block);
+                self.def_reg(builder, *dest, object_ptr);
             }
             JitInstr::InstanceOf {
                 dest,
@@ -1219,6 +1262,20 @@ impl<'a> LoweringContext<'a> {
         sig.returns.push(AbiParam::new(types::I64)); // NaN-boxed value or suspend sentinel
         let sig_ref = builder.func.import_signature(sig);
         self.sig_native_call_dispatch = Some(sig_ref);
+        sig_ref
+    }
+
+    fn alloc_object_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_alloc_object {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I32)); // local nominal type index
+        sig.params.push(AbiParam::new(types::I64)); // module ptr
+        sig.params.push(AbiParam::new(types::I64)); // shared_state ptr
+        sig.returns.push(AbiParam::new(types::I64)); // object ptr
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_alloc_object = Some(sig_ref);
         sig_ref
     }
 
