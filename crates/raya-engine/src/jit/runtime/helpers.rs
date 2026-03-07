@@ -4,80 +4,132 @@
 //! - wire safepoint + preemption helpers used by lowered machine-code branches
 //! - provide conservative stubs for not-yet-lowered runtime helpers
 
-use crate::compiler::Module;
+use crate::compiler::{Module, Opcode};
 use crate::jit::runtime::trampoline::{RuntimeContext, RuntimeHelperTable};
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
 use crate::vm::gc::GarbageCollector;
 use crate::vm::interpreter::{
-    ClassRegistry, ModuleRuntimeLayout, RuntimeLayoutRegistry, SafepointCoordinator, ShapeAdapter,
-    StructuralAdapterKey, StructuralSlotBinding,
+    ClassRegistry, ExecutionFrame, Interpreter, ModuleRuntimeLayout, ReturnAction,
+    RuntimeLayoutRegistry, SafepointCoordinator, ShapeAdapter, StructuralAdapterKey,
+    StructuralSlotBinding,
 };
+use crate::vm::native_handler::NativeHandler;
 use crate::vm::native_registry::ResolvedNatives;
-use crate::vm::object::{global_layout_names, BoundMethod, Object};
+use crate::vm::object::{global_layout_names, BoundMethod, BoundNativeMethod, Closure, Object};
 use crate::vm::reflect::ClassMetadataRegistry;
 use crate::vm::scheduler::IoSubmission;
-use crate::vm::scheduler::Task;
+use crate::vm::scheduler::{Task, TaskId};
+use crate::vm::stack::Stack;
+use crate::vm::sync::MutexRegistry;
 use crate::vm::value::Value;
+use crate::vm::VmError;
+use crossbeam_deque::Injector;
 use raya_sdk::NativeCallResult;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
 /// Sentinel returned by JIT native helper dispatch when the native call suspended.
 /// Distinct from valid NaN-boxed Values.
 pub const JIT_NATIVE_SUSPEND_SENTINEL: u64 = 0xFFFF_DEAD_0000_0001;
+pub const JIT_INTERPRETER_FALLBACK_SENTINEL: u64 = 0xFFFF_DEAD_0000_0002;
+pub const JIT_INTERPRETER_EXCEPTION_SENTINEL: u64 = 0xFFFF_DEAD_0000_0003;
+pub const JIT_SHAPE_FIELD_FALLBACK_SENTINEL: u64 = 0xFFFF_DEAD_0000_0004;
+
+const JIT_STORE_SUCCESS: i8 = 1;
+const JIT_STORE_FALLBACK: i8 = 0;
 
 #[repr(C)]
 pub struct JitRuntimeBridgeContext {
     pub safepoint: *const SafepointCoordinator,
     pub task: *const Task,
+    pub task_arc: *const Arc<Task>,
     pub gc: *const parking_lot::Mutex<GarbageCollector>,
     pub classes: *const parking_lot::RwLock<ClassRegistry>,
     pub layouts: *const parking_lot::RwLock<RuntimeLayoutRegistry>,
+    pub mutex_registry: *const MutexRegistry,
+    pub globals_by_index: *const parking_lot::RwLock<Vec<Value>>,
+    pub builtin_global_slots: *const parking_lot::RwLock<FxHashMap<String, usize>>,
+    pub tasks: *const Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
+    pub injector: *const Arc<Injector<Arc<Task>>>,
     pub module_layouts:
         *const parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
+    pub metadata: *const parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
     pub class_metadata: *const parking_lot::RwLock<ClassMetadataRegistry>,
+    pub native_handler: *const Arc<dyn NativeHandler>,
     pub resolved_natives: *const parking_lot::RwLock<ResolvedNatives>,
     pub structural_shape_names:
         *const parking_lot::RwLock<FxHashMap<u64, Vec<String>>>,
+    pub structural_layout_shapes:
+        *const parking_lot::RwLock<FxHashMap<crate::vm::object::LayoutId, Vec<String>>>,
     pub structural_shape_adapters: *const parking_lot::RwLock<
         FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
+    pub type_handles:
+        *const parking_lot::RwLock<crate::vm::interpreter::RuntimeTypeHandleRegistry>,
     pub prop_keys: *const parking_lot::RwLock<crate::vm::interpreter::PropertyKeyRegistry>,
+    pub stack_pool: *const crate::vm::scheduler::StackPool,
     pub io_submit_tx: *const crossbeam::channel::Sender<IoSubmission>,
+    pub max_preemptions: u32,
+    pub current_frame_depth: usize,
 }
 
 /// Build a runtime context for a JIT invocation running inside interpreter thread loop.
 #[inline]
 pub fn build_runtime_bridge_context(
     safepoint: &SafepointCoordinator,
-    task: &Task,
+    task: &Arc<Task>,
     gc: &parking_lot::Mutex<GarbageCollector>,
     classes: &parking_lot::RwLock<ClassRegistry>,
     layouts: &parking_lot::RwLock<RuntimeLayoutRegistry>,
+    mutex_registry: &MutexRegistry,
+    globals_by_index: &parking_lot::RwLock<Vec<Value>>,
+    builtin_global_slots: &parking_lot::RwLock<FxHashMap<String, usize>>,
+    tasks: &Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
+    injector: &Arc<Injector<Arc<Task>>>,
     module_layouts: &parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
+    metadata: &parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
     class_metadata: &parking_lot::RwLock<ClassMetadataRegistry>,
+    native_handler: &Arc<dyn NativeHandler>,
     resolved_natives: &parking_lot::RwLock<ResolvedNatives>,
     structural_shape_names: &parking_lot::RwLock<FxHashMap<u64, Vec<String>>>,
+    structural_layout_shapes: &parking_lot::RwLock<FxHashMap<crate::vm::object::LayoutId, Vec<String>>>,
     structural_shape_adapters: &parking_lot::RwLock<
         FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
+    type_handles: &parking_lot::RwLock<crate::vm::interpreter::RuntimeTypeHandleRegistry>,
     prop_keys: &parking_lot::RwLock<crate::vm::interpreter::PropertyKeyRegistry>,
+    stack_pool: &crate::vm::scheduler::StackPool,
+    max_preemptions: u32,
+    current_frame_depth: usize,
     io_submit_tx: Option<&crossbeam::channel::Sender<IoSubmission>>,
 ) -> JitRuntimeBridgeContext {
     JitRuntimeBridgeContext {
         safepoint: safepoint as *const SafepointCoordinator,
-        task: task as *const Task,
+        task: task.as_ref() as *const Task,
+        task_arc: task as *const Arc<Task>,
         gc: gc as *const _,
         classes: classes as *const _,
         layouts: layouts as *const _,
+        mutex_registry: mutex_registry as *const _,
+        globals_by_index: globals_by_index as *const _,
+        builtin_global_slots: builtin_global_slots as *const _,
+        tasks: tasks as *const _,
+        injector: injector as *const _,
         module_layouts: module_layouts as *const _,
+        metadata: metadata as *const _,
         class_metadata: class_metadata as *const _,
+        native_handler: native_handler as *const _,
         resolved_natives: resolved_natives as *const _,
         structural_shape_names: structural_shape_names as *const _,
+        structural_layout_shapes: structural_layout_shapes as *const _,
         structural_shape_adapters: structural_shape_adapters as *const _,
+        type_handles: type_handles as *const _,
         prop_keys: prop_keys as *const _,
+        stack_pool: stack_pool as *const _,
         io_submit_tx: io_submit_tx.map_or(std::ptr::null(), |tx| tx as *const _),
+        max_preemptions,
+        current_frame_depth,
     }
 }
 
@@ -109,6 +161,8 @@ pub fn runtime_helpers() -> RuntimeHelperTable {
         object_set_field: helper_object_set_field,
         object_implements_shape: helper_object_implements_shape,
         object_is_nominal: helper_object_is_nominal,
+        object_get_shape_field: helper_object_get_shape_field,
+        object_set_shape_field: helper_object_set_shape_field,
     }
 }
 
@@ -293,6 +347,518 @@ fn jit_object_matches_nominal_type(
     }
 }
 
+fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Interpreter<'a>> {
+    if bridge.gc.is_null()
+        || bridge.classes.is_null()
+        || bridge.layouts.is_null()
+        || bridge.mutex_registry.is_null()
+        || bridge.safepoint.is_null()
+        || bridge.globals_by_index.is_null()
+        || bridge.builtin_global_slots.is_null()
+        || bridge.tasks.is_null()
+        || bridge.injector.is_null()
+        || bridge.metadata.is_null()
+        || bridge.class_metadata.is_null()
+        || bridge.native_handler.is_null()
+        || bridge.module_layouts.is_null()
+        || bridge.structural_shape_adapters.is_null()
+        || bridge.structural_shape_names.is_null()
+        || bridge.structural_layout_shapes.is_null()
+        || bridge.type_handles.is_null()
+        || bridge.prop_keys.is_null()
+        || bridge.stack_pool.is_null()
+    {
+        return None;
+    }
+
+    Some(Interpreter::new(
+        unsafe { &*bridge.gc },
+        unsafe { &*bridge.classes },
+        unsafe { &*bridge.layouts },
+        unsafe { &*bridge.mutex_registry },
+        unsafe { &*bridge.safepoint },
+        unsafe { &*bridge.globals_by_index },
+        unsafe { &*bridge.builtin_global_slots },
+        unsafe { &*bridge.tasks },
+        unsafe { &*bridge.injector },
+        unsafe { &*bridge.metadata },
+        unsafe { &*bridge.class_metadata },
+        unsafe { &*bridge.native_handler },
+        unsafe { &*bridge.module_layouts },
+        unsafe { &*bridge.structural_shape_adapters },
+        unsafe { &*bridge.structural_shape_names },
+        unsafe { &*bridge.structural_layout_shapes },
+        unsafe { &*bridge.type_handles },
+        unsafe { &*bridge.prop_keys },
+        if bridge.io_submit_tx.is_null() {
+            None
+        } else {
+            Some(unsafe { &*bridge.io_submit_tx })
+        },
+        bridge.max_preemptions,
+        unsafe { &*bridge.stack_pool },
+    ))
+}
+
+fn jit_raise_vm_error(bridge: &JitRuntimeBridgeContext, error: VmError) {
+    if bridge.task.is_null() || bridge.gc.is_null() {
+        return;
+    }
+    let task = unsafe { &*bridge.task };
+    if task.has_exception() {
+        return;
+    }
+    let raya_string = crate::vm::object::RayaString::new(error.to_string());
+    let gc_ptr = unsafe { &*bridge.gc }.lock().allocate(raya_string);
+    let exc_val = unsafe { Value::from_ptr(NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+    task.set_exception(exc_val);
+}
+
+#[derive(Clone, Copy)]
+struct JitTaskStateSnapshot {
+    exception_handler_count: usize,
+    call_frame_count: usize,
+    closure_count: usize,
+    held_mutex_count: usize,
+    current_exception: Option<Value>,
+    caught_exception: Option<Value>,
+}
+
+fn jit_snapshot_task_state(task: &Task) -> JitTaskStateSnapshot {
+    JitTaskStateSnapshot {
+        exception_handler_count: task.exception_handler_count(),
+        call_frame_count: task.call_frame_count(),
+        closure_count: task.closure_count(),
+        held_mutex_count: task.held_mutex_count(),
+        current_exception: task.current_exception(),
+        caught_exception: task.caught_exception(),
+    }
+}
+
+fn jit_restore_task_exceptions(
+    task: &Task,
+    current_exception: Option<Value>,
+    caught_exception: Option<Value>,
+) {
+    if let Some(exception) = current_exception {
+        task.set_exception(exception);
+    } else {
+        task.clear_exception();
+    }
+    if let Some(exception) = caught_exception {
+        task.set_caught_exception(exception);
+    } else {
+        task.clear_caught_exception();
+    }
+}
+
+fn jit_rollback_mutexes(
+    bridge: &JitRuntimeBridgeContext,
+    task: &Task,
+    snapshot: &JitTaskStateSnapshot,
+) {
+    let released = task.take_mutexes_since(snapshot.held_mutex_count);
+    if released.is_empty() || bridge.mutex_registry.is_null() {
+        return;
+    }
+
+    let registry = unsafe { &*bridge.mutex_registry };
+    for mutex_id in released.into_iter().rev() {
+        let Some(mutex) = registry.get(mutex_id) else {
+            continue;
+        };
+        let Ok(next_waiter) = mutex.unlock(task.id()) else {
+            continue;
+        };
+        if let Some(waiter_id) = next_waiter {
+            if bridge.tasks.is_null() || bridge.injector.is_null() {
+                continue;
+            }
+            let tasks = unsafe { &*bridge.tasks }.read();
+            if let Some(waiter_task) = tasks.get(&waiter_id) {
+                waiter_task.add_held_mutex(mutex_id);
+                waiter_task.set_state(crate::vm::scheduler::TaskState::Resumed);
+                waiter_task.clear_suspend_reason();
+                unsafe { &*bridge.injector }.push(waiter_task.clone());
+            }
+        }
+    }
+}
+
+fn jit_restore_task_state(
+    bridge: &JitRuntimeBridgeContext,
+    task: &Task,
+    snapshot: &JitTaskStateSnapshot,
+    preserve_current_exception: bool,
+) {
+    while task.exception_handler_count() > snapshot.exception_handler_count {
+        let _ = task.pop_exception_handler();
+    }
+    while task.call_frame_count() > snapshot.call_frame_count {
+        let _ = task.pop_call_frame();
+    }
+    while task.closure_count() > snapshot.closure_count {
+        let _ = task.pop_closure();
+    }
+    jit_rollback_mutexes(bridge, task, snapshot);
+
+    let current_exception = if preserve_current_exception {
+        task.current_exception().or(snapshot.current_exception)
+    } else {
+        snapshot.current_exception
+    };
+    jit_restore_task_exceptions(task, current_exception, snapshot.caught_exception);
+}
+
+fn jit_function_is_sync_safe(
+    module: &Module,
+    func_id: usize,
+    visiting: &mut FxHashSet<([u8; 32], usize)>,
+) -> bool {
+    let key = (module.checksum, func_id);
+    if !visiting.insert(key) {
+        return true;
+    }
+    let Some(func) = module.functions.get(func_id) else {
+        return false;
+    };
+    let Ok(instrs) = crate::jit::analysis::decoder::decode_function(&func.code) else {
+        return false;
+    };
+    for instr in instrs {
+        use crate::jit::analysis::decoder::Operands;
+        match instr.opcode {
+            Opcode::Await
+            | Opcode::WaitAll
+            | Opcode::Sleep
+            | Opcode::MutexLock
+            | Opcode::Yield
+            | Opcode::NativeCall
+            | Opcode::ModuleNativeCall
+            | Opcode::Spawn
+            | Opcode::SpawnClosure
+            | Opcode::TaskCancel => return false,
+            Opcode::Call => match instr.operands {
+                Operands::Call {
+                    func_index: 0xFFFF_FFFF,
+                    ..
+                } => return false,
+                Operands::Call { func_index, .. } => {
+                    if !jit_function_is_sync_safe(module, func_index as usize, visiting) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            },
+            Opcode::CallStatic => match instr.operands {
+                Operands::Call { func_index, .. } => {
+                    if !jit_function_is_sync_safe(module, func_index as usize, visiting) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            },
+            Opcode::CallMethodExact
+            | Opcode::OptionalCallMethodExact
+            | Opcode::CallMethodShape
+            | Opcode::OptionalCallMethodShape
+            | Opcode::CallConstructor
+            | Opcode::ConstructType
+            | Opcode::CallSuper => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+enum JitNestedCallResult {
+    Value(Value),
+    Fallback,
+    Exception,
+}
+
+fn jit_apply_return_action(
+    stack: &mut Stack,
+    return_value: Value,
+    return_action: ReturnAction,
+) -> Result<Option<Value>, VmError> {
+    match return_action {
+        ReturnAction::PushReturnValue => {
+            stack.push(return_value)?;
+            Ok(None)
+        }
+        ReturnAction::PushObject(obj) => {
+            stack.push(obj)?;
+            Ok(None)
+        }
+        ReturnAction::Discard => Ok(None),
+    }
+}
+
+fn jit_execute_sync_frame(
+    interpreter: &mut Interpreter<'_>,
+    bridge: &JitRuntimeBridgeContext,
+    stack: &mut Stack,
+    initial_module: Arc<Module>,
+    initial_func_id: usize,
+    initial_arg_count: usize,
+    initial_is_closure: bool,
+    initial_closure_val: Option<Value>,
+    initial_return_action: ReturnAction,
+) -> JitNestedCallResult {
+    let Some(task) = (!bridge.task_arc.is_null()).then(|| unsafe { &*bridge.task_arc }) else {
+        return JitNestedCallResult::Fallback;
+    };
+    let task_snapshot = jit_snapshot_task_state(task.as_ref());
+
+    let mut frames: Vec<ExecutionFrame> = Vec::new();
+    let mut module = initial_module;
+    let mut current_func_id = initial_func_id;
+    let mut ip = 0usize;
+    let mut current_arg_count = initial_arg_count;
+    let mut current_is_closure = initial_is_closure;
+    let mut current_return_action = initial_return_action;
+
+    macro_rules! finish_nested_call {
+        ($result:expr, $preserve_exception:expr) => {{
+            jit_restore_task_state(bridge, task.as_ref(), &task_snapshot, $preserve_exception);
+            return $result;
+        }};
+    }
+
+    task.push_call_frame(current_func_id);
+    if let Some(closure_val) = initial_closure_val {
+        task.push_closure(closure_val);
+    }
+
+    let mut locals_base = stack.depth().saturating_sub(initial_arg_count);
+    let local_count = module
+        .functions
+        .get(current_func_id)
+        .map(|f| f.local_count)
+        .unwrap_or(initial_arg_count);
+    for _ in 0..local_count.saturating_sub(initial_arg_count) {
+        if let Err(error) = stack.push(Value::null()) {
+            jit_raise_vm_error(bridge, error);
+            finish_nested_call!(JitNestedCallResult::Exception, true);
+        }
+    }
+
+    loop {
+        let code = &module.functions[current_func_id].code;
+        if ip >= code.len() {
+            let return_value = if stack.depth() > locals_base + module.functions[current_func_id].local_count
+            {
+                stack.pop().unwrap_or_else(|_| Value::null())
+            } else {
+                Value::null()
+            };
+            while stack.depth() > locals_base {
+                let _ = stack.pop();
+            }
+            task.pop_call_frame();
+            if current_is_closure {
+                task.pop_closure();
+            }
+            if let Some(frame) = frames.pop() {
+                if let Err(error) = jit_apply_return_action(stack, return_value, current_return_action)
+                {
+                    jit_raise_vm_error(bridge, error);
+                    finish_nested_call!(JitNestedCallResult::Exception, true);
+                }
+                module = frame.module;
+                current_func_id = frame.func_id;
+                ip = frame.ip;
+                locals_base = frame.locals_base;
+                current_is_closure = frame.is_closure;
+                current_return_action = frame.return_action;
+                current_arg_count = frame.arg_count;
+                continue;
+            }
+            finish_nested_call!(
+                match current_return_action {
+                ReturnAction::PushReturnValue => JitNestedCallResult::Value(return_value),
+                ReturnAction::PushObject(obj) => JitNestedCallResult::Value(obj),
+                ReturnAction::Discard => JitNestedCallResult::Value(Value::null()),
+            },
+                false
+            );
+        }
+
+        let opcode = match Opcode::from_u8(code[ip]) {
+            Some(op) => op,
+            None => {
+                jit_raise_vm_error(bridge, VmError::InvalidOpcode(code[ip]));
+                finish_nested_call!(JitNestedCallResult::Exception, true);
+            }
+        };
+        ip += 1;
+
+        let frame_depth = bridge.current_frame_depth + 1 + frames.len();
+        match interpreter.execute_opcode(
+            task,
+            stack,
+            &mut ip,
+            code,
+            module.as_ref(),
+            opcode,
+            locals_base,
+            frame_depth,
+            current_arg_count,
+            ) {
+            crate::vm::interpreter::OpcodeResult::Continue => {}
+            crate::vm::interpreter::OpcodeResult::Return(return_value) => {
+                while stack.depth() > locals_base {
+                    let _ = stack.pop();
+                }
+                task.pop_call_frame();
+                if current_is_closure {
+                    task.pop_closure();
+                }
+                if let Some(frame) = frames.pop() {
+                    if let Err(error) = jit_apply_return_action(stack, return_value, current_return_action)
+                    {
+                        jit_raise_vm_error(bridge, error);
+                        finish_nested_call!(JitNestedCallResult::Exception, true);
+                    }
+                    module = frame.module;
+                    current_func_id = frame.func_id;
+                    ip = frame.ip;
+                    locals_base = frame.locals_base;
+                    current_is_closure = frame.is_closure;
+                    current_return_action = frame.return_action;
+                    current_arg_count = frame.arg_count;
+                } else {
+                    finish_nested_call!(
+                        match current_return_action {
+                        ReturnAction::PushReturnValue => JitNestedCallResult::Value(return_value),
+                        ReturnAction::PushObject(obj) => JitNestedCallResult::Value(obj),
+                        ReturnAction::Discard => JitNestedCallResult::Value(Value::null()),
+                    },
+                        false
+                    );
+                }
+            }
+            crate::vm::interpreter::OpcodeResult::Suspend(_) => {
+                finish_nested_call!(JitNestedCallResult::Fallback, false);
+            }
+            crate::vm::interpreter::OpcodeResult::PushFrame {
+                func_id,
+                arg_count,
+                is_closure,
+                closure_val,
+                module: callee_module,
+                return_action,
+            } => {
+                let callee_module = callee_module.unwrap_or_else(|| module.clone());
+                if !jit_function_is_sync_safe(
+                    callee_module.as_ref(),
+                    func_id,
+                    &mut FxHashSet::default(),
+                ) {
+                    finish_nested_call!(JitNestedCallResult::Fallback, false);
+                }
+
+                frames.push(ExecutionFrame {
+                    module: module.clone(),
+                    func_id: current_func_id,
+                    ip,
+                    locals_base,
+                    is_closure: current_is_closure,
+                    return_action: current_return_action,
+                    arg_count: current_arg_count,
+                });
+                task.push_call_frame(func_id);
+                if let Some(cv) = closure_val {
+                    task.push_closure(cv);
+                }
+
+                locals_base = stack.depth().saturating_sub(arg_count);
+                let local_count = callee_module
+                    .functions
+                    .get(func_id)
+                    .map(|f| f.local_count)
+                    .unwrap_or(arg_count);
+                for _ in 0..local_count.saturating_sub(arg_count) {
+                    if let Err(error) = stack.push(Value::null()) {
+                        jit_raise_vm_error(bridge, error);
+                        finish_nested_call!(JitNestedCallResult::Exception, true);
+                    }
+                }
+
+                module = callee_module;
+                current_func_id = func_id;
+                ip = 0;
+                current_arg_count = arg_count;
+                current_is_closure = is_closure;
+                current_return_action = return_action;
+            }
+            crate::vm::interpreter::OpcodeResult::Error(error) => {
+                if !task.has_exception() {
+                    jit_raise_vm_error(bridge, error);
+                }
+
+                let exception = task.current_exception().unwrap_or_else(Value::null);
+                let mut handled = false;
+                'exception_search: loop {
+                    let current_frame_depth = bridge.current_frame_depth + 1 + frames.len();
+                    while let Some(handler) = task.peek_exception_handler() {
+                        if handler.frame_count != current_frame_depth {
+                            break;
+                        }
+
+                        while stack.depth() > handler.stack_size {
+                            let _ = stack.pop();
+                        }
+
+                        if handler.catch_offset != -1 {
+                            task.pop_exception_handler();
+                            task.set_caught_exception(exception);
+                            task.clear_exception();
+                            if let Err(push_error) = stack.push(exception) {
+                                jit_raise_vm_error(bridge, push_error);
+                                finish_nested_call!(JitNestedCallResult::Exception, true);
+                            }
+                            ip = handler.catch_offset as usize;
+                            handled = true;
+                            break 'exception_search;
+                        }
+
+                        if handler.finally_offset != -1 {
+                            task.pop_exception_handler();
+                            ip = handler.finally_offset as usize;
+                            handled = true;
+                            break 'exception_search;
+                        }
+
+                        task.pop_exception_handler();
+                    }
+
+                    if let Some(frame) = frames.pop() {
+                        task.pop_call_frame();
+                        if current_is_closure {
+                            task.pop_closure();
+                        }
+                        module = frame.module;
+                        current_func_id = frame.func_id;
+                        ip = frame.ip;
+                        locals_base = frame.locals_base;
+                        current_is_closure = frame.is_closure;
+                        current_return_action = frame.return_action;
+                        current_arg_count = frame.arg_count;
+                    } else {
+                        break;
+                    }
+                }
+
+                if !handled {
+                    finish_nested_call!(JitNestedCallResult::Exception, true);
+                }
+            }
+        }
+    }
+}
+
 unsafe extern "C" fn helper_alloc_object(
     local_nominal_type_index: u32,
     module_ptr: *const (),
@@ -425,12 +991,147 @@ unsafe extern "C" fn helper_native_call_dispatch(
 }
 
 unsafe extern "C" fn helper_interpreter_call(
-    _func_index: u32,
-    _args_ptr: *const u64,
-    _arg_count: u16,
-    _shared_state: *mut (),
+    opcode_raw: u8,
+    operand_u64: u64,
+    operand_u32: u32,
+    receiver_raw: u64,
+    args_ptr: *const u64,
+    arg_count: u16,
+    module_ptr: *const (),
+    shared_state: *mut (),
 ) -> u64 {
-    Value::null().raw()
+    if shared_state.is_null() || module_ptr.is_null() {
+        return JIT_INTERPRETER_FALLBACK_SENTINEL;
+    }
+    let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
+    let Some(opcode) = Opcode::from_u8(opcode_raw) else {
+        return JIT_INTERPRETER_FALLBACK_SENTINEL;
+    };
+    let module = &*(module_ptr.cast::<Module>());
+    let Some(task) = (!bridge.task_arc.is_null()).then(|| unsafe { &*bridge.task_arc }) else {
+        return JIT_INTERPRETER_FALLBACK_SENTINEL;
+    };
+    let Some(mut interpreter) = jit_build_interpreter(bridge) else {
+        return JIT_INTERPRETER_FALLBACK_SENTINEL;
+    };
+
+    let args: Vec<Value> = if arg_count == 0 || args_ptr.is_null() {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(args_ptr, arg_count as usize)
+            .iter()
+            .copied()
+            .map(|raw| unsafe { Value::from_raw(raw) })
+            .collect()
+    };
+
+    let mut stack = Stack::new();
+    match opcode {
+        Opcode::Call => {
+            if operand_u32 == 0xFFFF_FFFF {
+                if stack.push(Value::from_raw(receiver_raw)).is_err() {
+                    return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+                }
+            }
+            for arg in &args {
+                if stack.push(*arg).is_err() {
+                    return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+                }
+            }
+        }
+        Opcode::CallMethodExact
+        | Opcode::OptionalCallMethodExact
+        | Opcode::CallMethodShape
+        | Opcode::OptionalCallMethodShape
+        | Opcode::ConstructType
+        | Opcode::CallSuper => {
+            if stack.push(Value::from_raw(receiver_raw)).is_err() {
+                return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+            }
+            for arg in &args {
+                if stack.push(*arg).is_err() {
+                    return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+                }
+            }
+        }
+        Opcode::CallConstructor | Opcode::CallStatic => {
+            for arg in &args {
+                if stack.push(*arg).is_err() {
+                    return JIT_INTERPRETER_EXCEPTION_SENTINEL;
+                }
+            }
+        }
+        _ => {
+            return JIT_INTERPRETER_FALLBACK_SENTINEL;
+        }
+    }
+
+    let mut code = vec![opcode_raw];
+    match opcode {
+        Opcode::Call
+        | Opcode::CallMethodExact
+        | Opcode::OptionalCallMethodExact
+        | Opcode::CallStatic => {
+            code.extend_from_slice(&operand_u32.to_le_bytes());
+            code.extend_from_slice(&arg_count.to_le_bytes());
+        }
+        Opcode::CallConstructor | Opcode::CallSuper => {
+            code.extend_from_slice(&operand_u32.to_le_bytes());
+            code.extend_from_slice(&arg_count.to_le_bytes());
+        }
+        Opcode::ConstructType => {
+            code.extend_from_slice(&(operand_u32 as u16).to_le_bytes());
+            code.push(arg_count as u8);
+        }
+        Opcode::CallMethodShape | Opcode::OptionalCallMethodShape => {
+            code.extend_from_slice(&operand_u64.to_le_bytes());
+            code.extend_from_slice(&(operand_u32 as u16).to_le_bytes());
+            code.extend_from_slice(&arg_count.to_le_bytes());
+        }
+        _ => {}
+    }
+
+    let mut ip = 1usize;
+    match interpreter.exec_call_ops(&mut stack, &mut ip, &code, module, task, opcode) {
+        crate::vm::interpreter::OpcodeResult::Continue => stack
+            .pop()
+            .unwrap_or_else(|_| Value::null())
+            .raw(),
+        crate::vm::interpreter::OpcodeResult::Return(value) => value.raw(),
+        crate::vm::interpreter::OpcodeResult::Suspend(_) => JIT_INTERPRETER_FALLBACK_SENTINEL,
+        crate::vm::interpreter::OpcodeResult::Error(error) => {
+            jit_raise_vm_error(bridge, error);
+            JIT_INTERPRETER_EXCEPTION_SENTINEL
+        }
+        crate::vm::interpreter::OpcodeResult::PushFrame {
+            func_id,
+            arg_count,
+            is_closure,
+            closure_val,
+            module: callee_module,
+            return_action,
+        } => {
+            let callee_module = callee_module.unwrap_or_else(|| Arc::new(module.clone()));
+            if !jit_function_is_sync_safe(callee_module.as_ref(), func_id, &mut FxHashSet::default()) {
+                return JIT_INTERPRETER_FALLBACK_SENTINEL;
+            }
+            match jit_execute_sync_frame(
+                &mut interpreter,
+                bridge,
+                &mut stack,
+                callee_module,
+                func_id,
+                arg_count,
+                is_closure,
+                closure_val,
+                return_action,
+            ) {
+                JitNestedCallResult::Value(value) => value.raw(),
+                JitNestedCallResult::Fallback => JIT_INTERPRETER_FALLBACK_SENTINEL,
+                JitNestedCallResult::Exception => JIT_INTERPRETER_EXCEPTION_SENTINEL,
+            }
+        }
+    }
 }
 
 unsafe extern "C" fn helper_throw_exception(_exception_value: u64, _shared_state: *mut ()) {
@@ -592,6 +1293,98 @@ unsafe extern "C" fn helper_object_is_nominal(
     jit_object_matches_nominal_type(bridge, object, target_nominal_type_id)
 }
 
+unsafe extern "C" fn helper_object_get_shape_field(
+    object_raw: u64,
+    required_shape: u64,
+    expected_slot: u32,
+    optional: u8,
+    _func_id: u32,
+    _module_ptr: *const (),
+    shared_state: *mut (),
+) -> u64 {
+    if shared_state.is_null() {
+        return JIT_SHAPE_FIELD_FALLBACK_SENTINEL;
+    }
+    let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
+    let object_val = Value::from_raw(object_raw);
+    if optional != 0 && object_val.is_null() {
+        return Value::null().raw();
+    }
+    let Some(object_ptr) = jit_object_ptr_checked(object_val) else {
+        return JIT_SHAPE_FIELD_FALLBACK_SENTINEL;
+    };
+    let object = &*object_ptr.as_ptr();
+    let Some(adapter) = jit_ensure_shape_adapter_for_object(bridge, object, required_shape) else {
+        return JIT_SHAPE_FIELD_FALLBACK_SENTINEL;
+    };
+    match adapter.binding_for_slot(expected_slot as usize) {
+        StructuralSlotBinding::Field(slot) => object.get_field(slot).unwrap_or(Value::null()).raw(),
+        StructuralSlotBinding::Dynamic(key) => object
+            .dyn_map()
+            .and_then(|dyn_map| dyn_map.get(&key).copied())
+            .unwrap_or(Value::null())
+            .raw(),
+        StructuralSlotBinding::Method(method_slot) => {
+            let Some(nominal_type_id) = object.nominal_type_id_usize() else {
+                return JIT_SHAPE_FIELD_FALLBACK_SENTINEL;
+            };
+            let (func_id, method_module) = {
+                let classes = (&*bridge.classes).read();
+                let Some(class) = classes.get_class(nominal_type_id) else {
+                    return JIT_SHAPE_FIELD_FALLBACK_SENTINEL;
+                };
+                let Some(fid) = class.vtable.get_method(method_slot) else {
+                    return JIT_SHAPE_FIELD_FALLBACK_SENTINEL;
+                };
+                (fid, class.module.clone())
+            };
+            let bound = BoundMethod {
+                receiver: object_val,
+                func_id,
+                module: method_module,
+            };
+            let mut gc = (&*bridge.gc).lock();
+            let bm_ptr = gc.allocate(bound);
+            Value::from_ptr(NonNull::new(bm_ptr.as_ptr()).unwrap()).raw()
+        }
+        StructuralSlotBinding::Missing => Value::null().raw(),
+    }
+}
+
+unsafe extern "C" fn helper_object_set_shape_field(
+    object_raw: u64,
+    required_shape: u64,
+    expected_slot: u32,
+    value_raw: u64,
+    _func_id: u32,
+    _module_ptr: *const (),
+    shared_state: *mut (),
+) -> i8 {
+    if shared_state.is_null() {
+        return JIT_STORE_FALLBACK;
+    }
+    let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
+    let object_val = Value::from_raw(object_raw);
+    let Some(object_ptr) = jit_object_ptr_checked(object_val) else {
+        return JIT_STORE_FALLBACK;
+    };
+    let object = &mut *object_ptr.as_ptr();
+    let Some(adapter) = jit_ensure_shape_adapter_for_object(bridge, object, required_shape) else {
+        return JIT_STORE_FALLBACK;
+    };
+    match adapter.binding_for_slot(expected_slot as usize) {
+        StructuralSlotBinding::Field(slot) => object
+            .set_field(slot, Value::from_raw(value_raw))
+            .map(|_| JIT_STORE_SUCCESS)
+            .unwrap_or(JIT_STORE_FALLBACK),
+        StructuralSlotBinding::Dynamic(key) => {
+            object.ensure_dyn_map().insert(key, Value::from_raw(value_raw));
+            JIT_STORE_SUCCESS
+        }
+        StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => JIT_STORE_FALLBACK,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,19 +1414,31 @@ mod tests {
         }
 
         let module = Arc::new(Module::new("jit-test".to_string()));
-        let task = Task::new(0, module, None);
+        let task = Arc::new(Task::new(0, module, None));
         let bridge = build_runtime_bridge_context(
             safepoint.as_ref(),
             &task,
             &shared.gc,
             &shared.classes,
             &shared.layouts,
+            &shared.mutex_registry,
+            &shared.globals_by_index,
+            &shared.builtin_global_slots,
+            &shared.tasks,
+            &shared.injector,
             &shared.module_layouts,
+            &shared.metadata,
             &shared.class_metadata,
+            &shared.native_handler,
             &shared.resolved_natives,
             &shared.structural_shape_names,
+            &shared.structural_layout_shapes,
             &shared.structural_shape_adapters,
+            &shared.type_handles,
             &shared.prop_keys,
+            &shared.stack_pool,
+            shared.max_preemptions,
+            0,
             None,
         );
 
@@ -671,19 +1476,31 @@ mod tests {
         }
 
         let module = Arc::new(Module::new("jit-test".to_string()));
-        let task = Task::new(0, module, None);
+        let task = Arc::new(Task::new(0, module, None));
         let bridge = build_runtime_bridge_context(
             safepoint.as_ref(),
             &task,
             &shared.gc,
             &shared.classes,
             &shared.layouts,
+            &shared.mutex_registry,
+            &shared.globals_by_index,
+            &shared.builtin_global_slots,
+            &shared.tasks,
+            &shared.injector,
             &shared.module_layouts,
+            &shared.metadata,
             &shared.class_metadata,
+            &shared.native_handler,
             &shared.resolved_natives,
             &shared.structural_shape_names,
+            &shared.structural_layout_shapes,
             &shared.structural_shape_adapters,
+            &shared.type_handles,
             &shared.prop_keys,
+            &shared.stack_pool,
+            shared.max_preemptions,
+            0,
             Some(&tx),
         );
 
@@ -747,19 +1564,31 @@ mod tests {
             .resolve_nominal_type_id(&target_module, 0)
             .expect("module-local nominal type id");
 
-        let task = Task::new(0, target_module.clone(), None);
+        let task = Arc::new(Task::new(0, target_module.clone(), None));
         let bridge = build_runtime_bridge_context(
             safepoint.as_ref(),
             &task,
             &shared.gc,
             &shared.classes,
             &shared.layouts,
+            &shared.mutex_registry,
+            &shared.globals_by_index,
+            &shared.builtin_global_slots,
+            &shared.tasks,
+            &shared.injector,
             &shared.module_layouts,
+            &shared.metadata,
             &shared.class_metadata,
+            &shared.native_handler,
             &shared.resolved_natives,
             &shared.structural_shape_names,
+            &shared.structural_layout_shapes,
             &shared.structural_shape_adapters,
+            &shared.type_handles,
             &shared.prop_keys,
+            &shared.stack_pool,
+            shared.max_preemptions,
+            0,
             None,
         );
 

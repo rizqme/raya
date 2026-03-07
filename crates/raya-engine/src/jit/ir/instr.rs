@@ -392,6 +392,15 @@ pub enum JitInstr {
         object: Reg,
         offset: u16,
     },
+    LoadFieldShape {
+        dest: Reg,
+        object: Reg,
+        shape_id: u64,
+        offset: u16,
+        optional: bool,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
+    },
     ImplementsShape {
         dest: Reg,
         object: Reg,
@@ -407,6 +416,14 @@ pub enum JitInstr {
         object: Reg,
         offset: u16,
         value: Reg,
+    },
+    StoreFieldShape {
+        object: Reg,
+        shape_id: u64,
+        offset: u16,
+        value: Reg,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
     },
     InstanceOf {
         dest: Reg,
@@ -488,28 +505,59 @@ pub enum JitInstr {
     Call {
         dest: Option<Reg>,
         func_index: u32,
+        closure: Option<Reg>,
         args: Vec<Reg>,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
     },
     CallMethodExact {
         dest: Option<Reg>,
         method_index: u32,
         receiver: Reg,
         args: Vec<Reg>,
+        optional: bool,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
+    },
+    CallMethodShape {
+        dest: Option<Reg>,
+        shape_id: u64,
+        method_index: u16,
+        receiver: Reg,
+        args: Vec<Reg>,
+        optional: bool,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
+    },
+    ConstructType {
+        dest: Reg,
+        nominal_type_id: u32,
+        object: Reg,
+        args: Vec<Reg>,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
     },
     CallConstructor {
         dest: Reg,
         nominal_type_id: u32,
         args: Vec<Reg>,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
     },
     CallSuper {
         dest: Option<Reg>,
-        method_index: u32,
+        nominal_type_id: u32,
+        receiver: Reg,
         args: Vec<Reg>,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
     },
     CallStatic {
         dest: Option<Reg>,
         func_index: u32,
         args: Vec<Reg>,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
     },
     CallNative {
         dest: Option<Reg>,
@@ -521,6 +569,8 @@ pub enum JitInstr {
         dest: Option<Reg>,
         closure: Reg,
         args: Vec<Reg>,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
     },
 
     // ===== Closures =====
@@ -820,6 +870,7 @@ impl JitInstr {
             | JitInstr::LoadStatic { dest, .. }
             | JitInstr::NewObject { dest, .. }
             | JitInstr::LoadFieldExact { dest, .. }
+            | JitInstr::LoadFieldShape { dest, .. }
             | JitInstr::ImplementsShape { dest, .. }
             | JitInstr::CastShape { dest, .. }
             | JitInstr::InstanceOf { dest, .. }
@@ -844,11 +895,14 @@ impl JitInstr {
             // Calls
             JitInstr::Call { dest, .. }
             | JitInstr::CallMethodExact { dest, .. }
+            | JitInstr::CallMethodShape { dest, .. }
             | JitInstr::CallSuper { dest, .. }
             | JitInstr::CallStatic { dest, .. }
             | JitInstr::CallNative { dest, .. }
             | JitInstr::CallClosure { dest, .. } => *dest,
-            JitInstr::CallConstructor { dest, .. } => Some(*dest),
+            JitInstr::ConstructType { dest, .. } | JitInstr::CallConstructor { dest, .. } => {
+                Some(*dest)
+            }
 
             // Closures
             JitInstr::MakeClosure { dest, .. } | JitInstr::LoadCaptured { dest, .. } => Some(*dest),
@@ -892,6 +946,7 @@ impl JitInstr {
             | JitInstr::StoreGlobal { .. }
             | JitInstr::StoreStatic { .. }
             | JitInstr::StoreFieldExact { .. }
+            | JitInstr::StoreFieldShape { .. }
             | JitInstr::StoreElem { .. }
             | JitInstr::ArrayPush { .. }
             | JitInstr::StoreCaptured { .. }
@@ -987,6 +1042,7 @@ impl JitInstr {
             | JitInstr::LoadGlobal { .. }
             | JitInstr::LoadStatic { .. }
             | JitInstr::LoadFieldExact { .. }
+            | JitInstr::LoadFieldShape { .. }
             | JitInstr::ImplementsShape { .. }
             | JitInstr::LoadElem { .. }
             | JitInstr::ArrayLen { .. }

@@ -101,6 +101,15 @@ pub fn emit_box_bool(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::V
     builder.ins().bor(tag_base, extended)
 }
 
+/// Box a raw heap pointer into a NaN-boxed pointer value.
+pub fn emit_box_ptr(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
+    let i64_type = ir::types::I64;
+    let mask = builder.ins().iconst(i64_type, PAYLOAD_MASK as i64);
+    let payload = builder.ins().band(val, mask);
+    let tag_base = builder.ins().iconst(i64_type, NAN_BOX_BASE as i64);
+    builder.ins().bor(tag_base, payload)
+}
+
 /// Unbox a boolean from a NaN-boxed u64.
 ///
 /// Cranelift IR equivalent of: `(val & 1) != 0`

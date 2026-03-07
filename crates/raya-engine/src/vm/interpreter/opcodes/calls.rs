@@ -12,7 +12,7 @@ use crate::vm::VmError;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
-    pub(in crate::vm::interpreter) fn exec_call_ops(
+    pub(crate) fn exec_call_ops(
         &mut self,
         stack: &mut Stack,
         ip: &mut usize,
@@ -212,6 +212,27 @@ impl<'a> Interpreter<'a> {
                         module: None,
                         return_action: ReturnAction::PushReturnValue,
                     }
+                }
+            }
+
+            Opcode::CallStatic => {
+                self.safepoint.poll();
+                let func_index = match Self::read_u32(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let arg_count = match Self::read_u16(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                OpcodeResult::PushFrame {
+                    func_id: func_index,
+                    arg_count,
+                    is_closure: false,
+                    closure_val: None,
+                    module: None,
+                    return_action: ReturnAction::PushReturnValue,
                 }
             }
 
@@ -744,7 +765,7 @@ impl<'a> Interpreter<'a> {
 
             Opcode::CallConstructor => {
                 self.safepoint.poll();
-                let local_class_index = match Self::read_u16(code, ip) {
+                let local_class_index = match Self::read_u32(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -753,7 +774,7 @@ impl<'a> Interpreter<'a> {
                     Ok(id) => id,
                     Err(error) => return OpcodeResult::Error(error),
                 };
-                let arg_count = match Self::read_u8(code, ip) {
+                let arg_count = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -923,7 +944,7 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::CallSuper => {
-                let local_class_index = match Self::read_u16(code, ip) {
+                let local_class_index = match Self::read_u32(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -932,7 +953,7 @@ impl<'a> Interpreter<'a> {
                     Ok(id) => id,
                     Err(error) => return OpcodeResult::Error(error),
                 };
-                let arg_count = match Self::read_u8(code, ip) {
+                let arg_count = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };

@@ -13,8 +13,12 @@ use cranelift_frontend::{FunctionBuilder, Variable};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::abi;
+use crate::compiler::Opcode;
 use crate::jit::ir::instr::{JitBlockId, JitFunction, JitInstr, JitTerminator, Reg};
-use crate::jit::runtime::helpers::JIT_NATIVE_SUSPEND_SENTINEL;
+use crate::jit::runtime::helpers::{
+    JIT_INTERPRETER_EXCEPTION_SENTINEL, JIT_INTERPRETER_FALLBACK_SENTINEL,
+    JIT_NATIVE_SUSPEND_SENTINEL, JIT_SHAPE_FIELD_FALLBACK_SENTINEL,
+};
 use crate::jit::runtime::trampoline::{JitExitKind, JitSuspendReason, JIT_EXIT_MAX_NATIVE_ARGS};
 
 /// State maintained during lowering of a single function
@@ -39,10 +43,16 @@ pub struct LoweringContext<'a> {
     sig_alloc_object: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.object_get_field
     sig_object_get_field: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.object_get_shape_field
+    sig_object_get_shape_field: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.object_set_shape_field
+    sig_object_set_shape_field: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.object_implements_shape
     sig_object_implements_shape: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.object_is_nominal
     sig_object_is_nominal: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.interpreter_call
+    sig_interpreter_call: Option<ir::SigRef>,
 }
 
 /// The five parameters of the JIT entry function ABI
@@ -149,8 +159,11 @@ impl<'a> LoweringContext<'a> {
             sig_native_call_dispatch: None,
             sig_alloc_object: None,
             sig_object_get_field: None,
+            sig_object_get_shape_field: None,
+            sig_object_set_shape_field: None,
             sig_object_implements_shape: None,
             sig_object_is_nominal: None,
+            sig_interpreter_call: None,
         };
 
         // Declare all registers as Cranelift variables
@@ -217,6 +230,7 @@ impl<'a> LoweringContext<'a> {
             crate::jit::ir::types::JitType::I32 => abi::emit_box_i32(builder, raw),
             crate::jit::ir::types::JitType::F64 => abi::emit_box_f64(builder, raw),
             crate::jit::ir::types::JitType::Bool => abi::emit_box_bool(builder, raw),
+            crate::jit::ir::types::JitType::Ptr => abi::emit_box_ptr(builder, raw),
             _ => raw,
         }
     }
@@ -246,6 +260,35 @@ impl<'a> LoweringContext<'a> {
             builder,
             JitExitKind::Suspended as i64,
             JitSuspendReason::InterpreterBoundary as i64,
+            bytecode_offset as i64,
+        );
+    }
+
+    fn emit_failed_exit(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        regs: &[Reg],
+        bytecode_offset: u32,
+    ) {
+        let count = regs.len().min(JIT_EXIT_MAX_NATIVE_ARGS) as i64;
+        let count_val = builder.ins().iconst(types::I32, count);
+        builder.ins().store(
+            MemFlags::trusted(),
+            count_val,
+            self.params.exit_info_ptr,
+            40,
+        );
+        for (i, reg) in regs.iter().take(JIT_EXIT_MAX_NATIVE_ARGS).enumerate() {
+            let boxed = self.boxed_reg_value(builder, *reg);
+            let off = 48 + (i as i32) * 8;
+            builder
+                .ins()
+                .store(MemFlags::trusted(), boxed, self.params.exit_info_ptr, off);
+        }
+        self.emit_exit_return(
+            builder,
+            JitExitKind::Failed as i64,
+            0,
             bytecode_offset as i64,
         );
     }
@@ -612,6 +655,7 @@ impl<'a> LoweringContext<'a> {
                     crate::jit::ir::types::JitType::I32 => abi::emit_box_i32(builder, raw),
                     crate::jit::ir::types::JitType::F64 => abi::emit_box_f64(builder, raw),
                     crate::jit::ir::types::JitType::Bool => abi::emit_box_bool(builder, raw),
+                    crate::jit::ir::types::JitType::Ptr => abi::emit_box_ptr(builder, raw),
                     _ => raw,
                 };
                 let offset = (*index as i32) * 8;
@@ -670,6 +714,78 @@ impl<'a> LoweringContext<'a> {
                 builder.ins().jump(done, &null_arg);
 
                 builder.seal_block(done);
+                builder.switch_to_block(done);
+                let merged = builder.block_params(done)[0];
+                self.def_reg(builder, *dest, merged);
+            }
+            JitInstr::LoadFieldShape {
+                dest,
+                object,
+                shape_id,
+                offset,
+                optional,
+                stack,
+                bytecode_offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let done = builder.create_block();
+                builder.append_block_param(done, types::I64);
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+                builder.seal_block(fallback_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx, 144); // 24 + 120
+                let sig = self.object_get_shape_field_sig(builder);
+                let object_val = self.boxed_reg_value(builder, *object);
+                let shape_val = builder.ins().iconst(types::I64, *shape_id as i64);
+                let slot_val = builder.ins().iconst(types::I32, *offset as i64);
+                let optional_val = builder.ins().iconst(types::I8, if *optional { 1 } else { 0 });
+                let func_id = builder
+                    .ins()
+                    .iconst(types::I32, self.func.func_index as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[
+                        object_val,
+                        shape_val,
+                        slot_val,
+                        optional_val,
+                        func_id,
+                        module_ptr,
+                        shared_state,
+                    ],
+                );
+                let result = builder.inst_results(call)[0];
+                let fallback = builder
+                    .ins()
+                    .iconst(types::I64, JIT_SHAPE_FIELD_FALLBACK_SENTINEL as i64);
+                let is_fallback =
+                    builder
+                        .ins()
+                        .icmp(condcodes::IntCC::Equal, result, fallback);
+                let fast_continue = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_fallback, fallback_block, &[], fast_continue, &[]);
+                builder.seal_block(fast_continue);
+
+                builder.switch_to_block(fast_continue);
+                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+
                 builder.switch_to_block(done);
                 let merged = builder.block_params(done)[0];
                 self.def_reg(builder, *dest, merged);
@@ -890,6 +1006,625 @@ impl<'a> LoweringContext<'a> {
                 let object_val = self.boxed_reg_value(builder, *object);
                 self.def_reg(builder, *dest, object_val);
             }
+            JitInstr::StoreFieldShape {
+                object,
+                shape_id,
+                offset,
+                value,
+                stack,
+                bytecode_offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let success_block = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+                builder.seal_block(fallback_block);
+                builder.seal_block(success_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx, 152); // 24 + 128
+                let sig = self.object_set_shape_field_sig(builder);
+                let object_val = self.boxed_reg_value(builder, *object);
+                let shape_val = builder.ins().iconst(types::I64, *shape_id as i64);
+                let slot_val = builder.ins().iconst(types::I32, *offset as i64);
+                let value_val = self.boxed_reg_value(builder, *value);
+                let func_id = builder
+                    .ins()
+                    .iconst(types::I32, self.func.func_index as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[
+                        object_val,
+                        shape_val,
+                        slot_val,
+                        value_val,
+                        func_id,
+                        module_ptr,
+                        shared_state,
+                    ],
+                );
+                let result = builder.inst_results(call)[0];
+                let is_success = builder.ins().icmp_imm(condcodes::IntCC::Equal, result, 1);
+                builder
+                    .ins()
+                    .brif(is_success, success_block, &[], fallback_block, &[]);
+
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+
+                builder.switch_to_block(success_block);
+            }
+            JitInstr::Call {
+                dest,
+                func_index,
+                closure,
+                args,
+                stack,
+                bytecode_offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let exception_block = builder.create_block();
+                let success_block = builder.create_block();
+                let done = builder.create_block();
+                builder.append_block_param(done, types::I64);
+                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 72);
+                let sig = self.interpreter_call_sig(builder);
+                let arg_count = args.len().min(u16::MAX as usize);
+                let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (arg_count * 8) as u32,
+                    3,
+                ));
+                let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+                for (i, reg) in args.iter().take(arg_count).enumerate() {
+                    let boxed = self.boxed_reg_value(builder, *reg);
+                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                }
+                let opcode_val = builder.ins().iconst(types::I8, Opcode::Call as u8 as i64);
+                let operand_u64 = builder.ins().iconst(types::I64, 0);
+                let operand_u32 = builder.ins().iconst(types::I32, *func_index as i64);
+                let receiver_val = closure
+                    .map(|reg| self.boxed_reg_value(builder, reg))
+                    .unwrap_or_else(|| abi::emit_null(builder));
+                let arg_count_val = builder.ins().iconst(types::I16, arg_count as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[
+                        opcode_val,
+                        operand_u64,
+                        operand_u32,
+                        receiver_val,
+                        args_ptr,
+                        arg_count_val,
+                        module_ptr,
+                        shared_state,
+                    ],
+                );
+                let result = builder.inst_results(call)[0];
+                let fallback = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
+                let exception = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
+                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let after_fallback_check = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                builder.seal_block(after_fallback_check);
+                builder.switch_to_block(after_fallback_check);
+                builder
+                    .ins()
+                    .brif(is_exception, exception_block, &[], success_block, &[]);
+
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+
+                builder.switch_to_block(exception_block);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
+
+                builder.switch_to_block(success_block);
+                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+
+                builder.seal_block(done);
+                builder.switch_to_block(done);
+                if let Some(dest) = dest {
+                    let merged = builder.block_params(done)[0];
+                    self.def_reg(builder, *dest, merged);
+                }
+            }
+            JitInstr::CallMethodExact {
+                dest,
+                method_index,
+                receiver,
+                args,
+                optional,
+                stack,
+                bytecode_offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let exception_block = builder.create_block();
+                let success_block = builder.create_block();
+                let done = builder.create_block();
+                builder.append_block_param(done, types::I64);
+                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 72);
+                let sig = self.interpreter_call_sig(builder);
+                let arg_count = args.len().min(u16::MAX as usize);
+                let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (arg_count * 8) as u32,
+                    3,
+                ));
+                let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+                for (i, reg) in args.iter().take(arg_count).enumerate() {
+                    let boxed = self.boxed_reg_value(builder, *reg);
+                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                }
+                let opcode_val = builder.ins().iconst(
+                    types::I8,
+                    if *optional {
+                        Opcode::OptionalCallMethodExact as u8 as i64
+                    } else {
+                        Opcode::CallMethodExact as u8 as i64
+                    },
+                );
+                let operand_u64 = builder.ins().iconst(types::I64, 0);
+                let operand_u32 = builder.ins().iconst(types::I32, *method_index as i64);
+                let receiver_val = self.boxed_reg_value(builder, *receiver);
+                let arg_count_val = builder.ins().iconst(types::I16, arg_count as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[
+                        opcode_val,
+                        operand_u64,
+                        operand_u32,
+                        receiver_val,
+                        args_ptr,
+                        arg_count_val,
+                        module_ptr,
+                        shared_state,
+                    ],
+                );
+                let result = builder.inst_results(call)[0];
+                let fallback = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
+                let exception = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
+                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let after_fallback_check = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                builder.seal_block(after_fallback_check);
+                builder.switch_to_block(after_fallback_check);
+                builder
+                    .ins()
+                    .brif(is_exception, exception_block, &[], success_block, &[]);
+
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                builder.switch_to_block(exception_block);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
+                builder.switch_to_block(success_block);
+                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.seal_block(done);
+                builder.switch_to_block(done);
+                if let Some(dest) = dest {
+                    let merged = builder.block_params(done)[0];
+                    self.def_reg(builder, *dest, merged);
+                }
+            }
+            JitInstr::CallMethodShape {
+                dest,
+                shape_id,
+                method_index,
+                receiver,
+                args,
+                optional,
+                stack,
+                bytecode_offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let exception_block = builder.create_block();
+                let success_block = builder.create_block();
+                let done = builder.create_block();
+                builder.append_block_param(done, types::I64);
+                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 72);
+                let sig = self.interpreter_call_sig(builder);
+                let arg_count = args.len().min(u16::MAX as usize);
+                let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (arg_count * 8) as u32,
+                    3,
+                ));
+                let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+                for (i, reg) in args.iter().take(arg_count).enumerate() {
+                    let boxed = self.boxed_reg_value(builder, *reg);
+                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                }
+                let opcode_val = builder.ins().iconst(
+                    types::I8,
+                    if *optional {
+                        Opcode::OptionalCallMethodShape as u8 as i64
+                    } else {
+                        Opcode::CallMethodShape as u8 as i64
+                    },
+                );
+                let operand_u64 = builder.ins().iconst(types::I64, *shape_id as i64);
+                let operand_u32 = builder.ins().iconst(types::I32, *method_index as i64);
+                let receiver_val = self.boxed_reg_value(builder, *receiver);
+                let arg_count_val = builder.ins().iconst(types::I16, arg_count as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[
+                        opcode_val,
+                        operand_u64,
+                        operand_u32,
+                        receiver_val,
+                        args_ptr,
+                        arg_count_val,
+                        module_ptr,
+                        shared_state,
+                    ],
+                );
+                let result = builder.inst_results(call)[0];
+                let fallback = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
+                let exception = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
+                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let after_fallback_check = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                builder.seal_block(after_fallback_check);
+                builder.switch_to_block(after_fallback_check);
+                builder
+                    .ins()
+                    .brif(is_exception, exception_block, &[], success_block, &[]);
+
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                builder.switch_to_block(exception_block);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
+                builder.switch_to_block(success_block);
+                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.seal_block(done);
+                builder.switch_to_block(done);
+                if let Some(dest) = dest {
+                    let merged = builder.block_params(done)[0];
+                    self.def_reg(builder, *dest, merged);
+                }
+            }
+            JitInstr::ConstructType {
+                dest,
+                nominal_type_id,
+                object,
+                args,
+                stack,
+                bytecode_offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let exception_block = builder.create_block();
+                let success_block = builder.create_block();
+                let done = builder.create_block();
+                builder.append_block_param(done, types::I64);
+                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 72);
+                let sig = self.interpreter_call_sig(builder);
+                let arg_count = args.len().min(u16::MAX as usize);
+                let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (arg_count * 8) as u32,
+                    3,
+                ));
+                let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+                for (i, reg) in args.iter().take(arg_count).enumerate() {
+                    let boxed = self.boxed_reg_value(builder, *reg);
+                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                }
+                let opcode_val = builder.ins().iconst(types::I8, Opcode::ConstructType as u8 as i64);
+                let operand_u64 = builder.ins().iconst(types::I64, 0);
+                let operand_u32 = builder.ins().iconst(types::I32, *nominal_type_id as i64);
+                let receiver_val = self.boxed_reg_value(builder, *object);
+                let arg_count_val = builder.ins().iconst(types::I16, arg_count as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[
+                        opcode_val,
+                        operand_u64,
+                        operand_u32,
+                        receiver_val,
+                        args_ptr,
+                        arg_count_val,
+                        module_ptr,
+                        shared_state,
+                    ],
+                );
+                let result = builder.inst_results(call)[0];
+                let fallback = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
+                let exception = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
+                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let after_fallback_check = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                builder.seal_block(after_fallback_check);
+                builder.switch_to_block(after_fallback_check);
+                builder
+                    .ins()
+                    .brif(is_exception, exception_block, &[], success_block, &[]);
+
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                builder.switch_to_block(exception_block);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
+                builder.switch_to_block(success_block);
+                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.seal_block(done);
+                builder.switch_to_block(done);
+                let merged = builder.block_params(done)[0];
+                self.def_reg(builder, *dest, merged);
+            }
+            JitInstr::CallConstructor {
+                dest,
+                nominal_type_id,
+                args,
+                stack,
+                bytecode_offset,
+            }
+            | JitInstr::CallStatic {
+                dest: Some(dest),
+                func_index: nominal_type_id,
+                args,
+                stack,
+                bytecode_offset,
+            } => {
+                let call_opcode = if matches!(instr, JitInstr::CallConstructor { .. }) {
+                    Opcode::CallConstructor
+                } else {
+                    Opcode::CallStatic
+                };
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let exception_block = builder.create_block();
+                let success_block = builder.create_block();
+                let done = builder.create_block();
+                builder.append_block_param(done, types::I64);
+                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 72);
+                let sig = self.interpreter_call_sig(builder);
+                let arg_count = args.len().min(u16::MAX as usize);
+                let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (arg_count * 8) as u32,
+                    3,
+                ));
+                let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+                for (i, reg) in args.iter().take(arg_count).enumerate() {
+                    let boxed = self.boxed_reg_value(builder, *reg);
+                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                }
+                let opcode_val = builder.ins().iconst(types::I8, call_opcode as u8 as i64);
+                let operand_u64 = builder.ins().iconst(types::I64, 0);
+                let operand_u32 = builder.ins().iconst(types::I32, *nominal_type_id as i64);
+                let receiver_val = abi::emit_null(builder);
+                let arg_count_val = builder.ins().iconst(types::I16, arg_count as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[
+                        opcode_val,
+                        operand_u64,
+                        operand_u32,
+                        receiver_val,
+                        args_ptr,
+                        arg_count_val,
+                        module_ptr,
+                        shared_state,
+                    ],
+                );
+                let result = builder.inst_results(call)[0];
+                let fallback = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
+                let exception = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
+                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let after_fallback_check = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                builder.seal_block(after_fallback_check);
+                builder.switch_to_block(after_fallback_check);
+                builder
+                    .ins()
+                    .brif(is_exception, exception_block, &[], success_block, &[]);
+
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                builder.switch_to_block(exception_block);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
+                builder.switch_to_block(success_block);
+                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.seal_block(done);
+                builder.switch_to_block(done);
+                let merged = builder.block_params(done)[0];
+                self.def_reg(builder, *dest, merged);
+            }
+            JitInstr::CallSuper {
+                dest,
+                nominal_type_id,
+                receiver,
+                args,
+                stack,
+                bytecode_offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let exception_block = builder.create_block();
+                let success_block = builder.create_block();
+                let done = builder.create_block();
+                builder.append_block_param(done, types::I64);
+                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+                builder.seal_block(fallback_block);
+                builder.seal_block(exception_block);
+                builder.seal_block(success_block);
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let module_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 16);
+                let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 72);
+                let sig = self.interpreter_call_sig(builder);
+                let arg_count = args.len().min(u16::MAX as usize);
+                let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (arg_count * 8) as u32,
+                    3,
+                ));
+                let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+                for (i, reg) in args.iter().take(arg_count).enumerate() {
+                    let boxed = self.boxed_reg_value(builder, *reg);
+                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                }
+                let opcode_val = builder.ins().iconst(types::I8, Opcode::CallSuper as u8 as i64);
+                let operand_u64 = builder.ins().iconst(types::I64, 0);
+                let operand_u32 = builder.ins().iconst(types::I32, *nominal_type_id as i64);
+                let receiver_val = self.boxed_reg_value(builder, *receiver);
+                let arg_count_val = builder.ins().iconst(types::I16, arg_count as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[
+                        opcode_val,
+                        operand_u64,
+                        operand_u32,
+                        receiver_val,
+                        args_ptr,
+                        arg_count_val,
+                        module_ptr,
+                        shared_state,
+                    ],
+                );
+                let result = builder.inst_results(call)[0];
+                let fallback = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_FALLBACK_SENTINEL as i64);
+                let exception = builder
+                    .ins()
+                    .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
+                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let after_fallback_check = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_fallback, fallback_block, &[], after_fallback_check, &[]);
+                builder.seal_block(after_fallback_check);
+                builder.switch_to_block(after_fallback_check);
+                builder
+                    .ins()
+                    .brif(is_exception, exception_block, &[], success_block, &[]);
+
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
+                builder.switch_to_block(exception_block);
+                self.emit_failed_exit(builder, stack, *bytecode_offset);
+                builder.switch_to_block(success_block);
+                builder.ins().jump(done, &[ir::BlockArg::Value(result)]);
+                builder.seal_block(done);
+                builder.switch_to_block(done);
+                if let Some(dest) = dest {
+                    let merged = builder.block_params(done)[0];
+                    self.def_reg(builder, *dest, merged);
+                }
+            }
 
             JitInstr::InterpreterBoundary {
                 bytecode_offset,
@@ -1080,6 +1815,7 @@ impl<'a> LoweringContext<'a> {
                             crate::jit::ir::types::JitType::Bool => {
                                 abi::emit_box_bool(builder, raw)
                             }
+                            crate::jit::ir::types::JitType::Ptr => abi::emit_box_ptr(builder, raw),
                             _ => raw,
                         };
                         builder
@@ -1131,6 +1867,7 @@ impl<'a> LoweringContext<'a> {
                             crate::jit::ir::types::JitType::Bool => {
                                 abi::emit_box_bool(builder, raw)
                             }
+                            crate::jit::ir::types::JitType::Ptr => abi::emit_box_ptr(builder, raw),
                             _ => raw,
                         };
                         let off = 48 + (i as i32) * 8;
@@ -1165,6 +1902,7 @@ impl<'a> LoweringContext<'a> {
                             crate::jit::ir::types::JitType::Bool => {
                                 abi::emit_box_bool(builder, raw)
                             }
+                            crate::jit::ir::types::JitType::Ptr => abi::emit_box_ptr(builder, raw),
                             _ => raw,
                         };
                         let off = 48 + (i as i32) * 8;
@@ -1279,6 +2017,25 @@ impl<'a> LoweringContext<'a> {
         sig_ref
     }
 
+    fn interpreter_call_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_interpreter_call {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I8)); // opcode
+        sig.params.push(AbiParam::new(types::I64)); // operand_u64
+        sig.params.push(AbiParam::new(types::I32)); // operand_u32
+        sig.params.push(AbiParam::new(types::I64)); // receiver value
+        sig.params.push(AbiParam::new(types::I64)); // args ptr
+        sig.params.push(AbiParam::new(types::I16)); // arg_count
+        sig.params.push(AbiParam::new(types::I64)); // module ptr
+        sig.params.push(AbiParam::new(types::I64)); // shared_state ptr
+        sig.returns.push(AbiParam::new(types::I64)); // value/sentinel
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_interpreter_call = Some(sig_ref);
+        sig_ref
+    }
+
     fn object_get_field_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
         if let Some(sig) = self.sig_object_get_field {
             return sig;
@@ -1321,6 +2078,42 @@ impl<'a> LoweringContext<'a> {
         sig.returns.push(AbiParam::new(types::I8)); // bool result
         let sig_ref = builder.func.import_signature(sig);
         self.sig_object_is_nominal = Some(sig_ref);
+        sig_ref
+    }
+
+    fn object_get_shape_field_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_object_get_shape_field {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // object value
+        sig.params.push(AbiParam::new(types::I64)); // shape id
+        sig.params.push(AbiParam::new(types::I32)); // expected slot
+        sig.params.push(AbiParam::new(types::I8)); // optional
+        sig.params.push(AbiParam::new(types::I32)); // function id
+        sig.params.push(AbiParam::new(types::I64)); // module ptr
+        sig.params.push(AbiParam::new(types::I64)); // shared_state
+        sig.returns.push(AbiParam::new(types::I64)); // value/sentinel
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_object_get_shape_field = Some(sig_ref);
+        sig_ref
+    }
+
+    fn object_set_shape_field_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_object_set_shape_field {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // object value
+        sig.params.push(AbiParam::new(types::I64)); // shape id
+        sig.params.push(AbiParam::new(types::I32)); // expected slot
+        sig.params.push(AbiParam::new(types::I64)); // value
+        sig.params.push(AbiParam::new(types::I32)); // function id
+        sig.params.push(AbiParam::new(types::I64)); // module ptr
+        sig.params.push(AbiParam::new(types::I64)); // shared_state
+        sig.returns.push(AbiParam::new(types::I8)); // status
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_object_set_shape_field = Some(sig_ref);
         sig_ref
     }
 
@@ -1379,6 +2172,7 @@ impl<'a> LoweringContext<'a> {
                     crate::jit::ir::types::JitType::I32 => abi::emit_box_i32(builder, val),
                     crate::jit::ir::types::JitType::F64 => abi::emit_box_f64(builder, val),
                     crate::jit::ir::types::JitType::Bool => abi::emit_box_bool(builder, val),
+                    crate::jit::ir::types::JitType::Ptr => abi::emit_box_ptr(builder, val),
                     _ => val, // Already i64/Value
                 };
                 builder.ins().return_(&[ret_val]);

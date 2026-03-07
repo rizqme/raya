@@ -738,6 +738,16 @@ impl Task {
         self.calls.lock().call_stack.clone()
     }
 
+    /// Get the current call-frame depth.
+    pub fn call_frame_count(&self) -> usize {
+        self.calls.lock().call_stack.len()
+    }
+
+    /// Get the current closure-stack depth.
+    pub fn closure_count(&self) -> usize {
+        self.calls.lock().closure_stack.len()
+    }
+
     /// Take the execution frames (drains them from the task)
     pub fn take_execution_frames(&self) -> Vec<ExecutionFrame> {
         std::mem::take(&mut self.calls.lock().execution_frames)

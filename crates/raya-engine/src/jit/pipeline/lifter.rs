@@ -986,13 +986,16 @@ fn lift_instruction(
             }
         }
         Opcode::LoadFieldShape | Opcode::OptionalFieldShape => {
-            if let Operands::ShapeSlot { .. } = instr.operands {
+            if let Operands::ShapeSlot { shape_id, slot } = instr.operands {
                 let pre_stack = stack.clone_state();
                 let object = stack.pop(instr.offset)?;
-                let _ = object;
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
-                    dest: Some(dest),
+                func.block_mut(block).instrs.push(JitInstr::LoadFieldShape {
+                    dest,
+                    object,
+                    shape_id,
+                    offset: slot,
+                    optional: matches!(instr.opcode, Opcode::OptionalFieldShape),
                     stack: pre_stack,
                     bytecode_offset: instr.offset as u32,
                 });
@@ -1000,14 +1003,15 @@ fn lift_instruction(
             }
         }
         Opcode::StoreFieldShape => {
-            if let Operands::ShapeSlot { .. } = instr.operands {
+            if let Operands::ShapeSlot { shape_id, slot } = instr.operands {
                 let pre_stack = stack.clone_state();
                 let value = stack.pop(instr.offset)?;
                 let object = stack.pop(instr.offset)?;
-                let _ = value;
-                let _ = object;
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
-                    dest: None,
+                func.block_mut(block).instrs.push(JitInstr::StoreFieldShape {
+                    object,
+                    shape_id,
+                    offset: slot,
+                    value,
                     stack: pre_stack,
                     bytecode_offset: instr.offset as u32,
                 });
@@ -1181,12 +1185,18 @@ fn lift_instruction(
                 }
                 args.reverse();
                 let dest = func.alloc_reg(JitType::Value);
-                let _ = args;
+                let closure = if target == 0xFFFF_FFFF {
+                    Some(stack.pop(instr.offset)?)
+                } else {
+                    None
+                };
                 if target == 0xFFFF_FFFF {
-                    let _closure = stack.pop(instr.offset)?;
                 }
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
+                func.block_mut(block).instrs.push(JitInstr::Call {
                     dest: Some(dest),
+                    func_index: target,
+                    closure,
+                    args,
                     stack: pre_stack,
                     bytecode_offset: instr.offset as u32,
                 });
@@ -1207,11 +1217,12 @@ fn lift_instruction(
                 args.reverse();
                 let receiver = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                let _ = method_index;
-                let _ = receiver;
-                let _ = args;
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
+                func.block_mut(block).instrs.push(JitInstr::CallMethodExact {
                     dest: Some(dest),
+                    method_index,
+                    receiver,
+                    args,
+                    optional: false,
                     stack: pre_stack,
                     bytecode_offset: instr.offset as u32,
                 });
@@ -1219,7 +1230,11 @@ fn lift_instruction(
             }
         }
         Opcode::OptionalCallMethodExact => {
-            if let Operands::Call { arg_count, .. } = instr.operands {
+            if let Operands::Call {
+                func_index: method_index,
+                arg_count,
+            } = instr.operands
+            {
                 let pre_stack = stack.clone_state();
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
@@ -1228,10 +1243,12 @@ fn lift_instruction(
                 args.reverse();
                 let receiver = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                let _ = receiver;
-                let _ = args;
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
+                func.block_mut(block).instrs.push(JitInstr::CallMethodExact {
                     dest: Some(dest),
+                    method_index,
+                    receiver,
+                    args,
+                    optional: true,
                     stack: pre_stack,
                     bytecode_offset: instr.offset as u32,
                 });
@@ -1239,7 +1256,12 @@ fn lift_instruction(
             }
         }
         Opcode::CallMethodShape | Opcode::OptionalCallMethodShape => {
-            if let Operands::ShapeMethodCall { arg_count, .. } = instr.operands {
+            if let Operands::ShapeMethodCall {
+                shape_id,
+                slot,
+                arg_count,
+            } = instr.operands
+            {
                 let pre_stack = stack.clone_state();
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
@@ -1248,10 +1270,13 @@ fn lift_instruction(
                 args.reverse();
                 let receiver = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                let _ = receiver;
-                let _ = args;
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
+                func.block_mut(block).instrs.push(JitInstr::CallMethodShape {
                     dest: Some(dest),
+                    shape_id,
+                    method_index: slot,
+                    receiver,
+                    args,
+                    optional: matches!(instr.opcode, Opcode::OptionalCallMethodShape),
                     stack: pre_stack,
                     bytecode_offset: instr.offset as u32,
                 });
@@ -1259,7 +1284,11 @@ fn lift_instruction(
             }
         }
         Opcode::ConstructType => {
-            if let Operands::ConstructType { arg_count, .. } = instr.operands {
+            if let Operands::ConstructType {
+                nominal_type_id,
+                arg_count,
+            } = instr.operands
+            {
                 let pre_stack = stack.clone_state();
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
@@ -1267,9 +1296,11 @@ fn lift_instruction(
                 }
                 args.reverse();
                 let object = stack.pop(instr.offset)?;
-                let _ = args;
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
-                    dest: Some(object),
+                func.block_mut(block).instrs.push(JitInstr::ConstructType {
+                    dest: object,
+                    nominal_type_id: nominal_type_id as u32,
+                    object,
+                    args,
                     stack: pre_stack,
                     bytecode_offset: instr.offset as u32,
                 });
@@ -1289,10 +1320,10 @@ fn lift_instruction(
                 }
                 args.reverse();
                 let dest = func.alloc_reg(JitType::Ptr);
-                let _ = nominal_type_id;
-                let _ = args;
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
-                    dest: Some(dest),
+                func.block_mut(block).instrs.push(JitInstr::CallConstructor {
+                    dest,
+                    nominal_type_id,
+                    args,
                     stack: pre_stack,
                     bytecode_offset: instr.offset as u32,
                 });
@@ -1311,15 +1342,15 @@ fn lift_instruction(
                     args.push(stack.pop(instr.offset)?);
                 }
                 args.reverse();
-                let dest = func.alloc_reg(JitType::Value);
-                let _ = method_index;
-                let _ = args;
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
-                    dest: Some(dest),
+                let receiver = stack.pop(instr.offset)?;
+                func.block_mut(block).instrs.push(JitInstr::CallSuper {
+                    dest: None,
+                    nominal_type_id: method_index,
+                    receiver,
+                    args,
                     stack: pre_stack,
                     bytecode_offset: instr.offset as u32,
                 });
-                stack.push(dest);
             }
         }
         Opcode::CallStatic => {
@@ -1335,10 +1366,10 @@ fn lift_instruction(
                 }
                 args.reverse();
                 let dest = func.alloc_reg(JitType::Value);
-                let _ = target;
-                let _ = args;
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
+                func.block_mut(block).instrs.push(JitInstr::CallStatic {
                     dest: Some(dest),
+                    func_index: target,
+                    args,
                     stack: pre_stack,
                     bytecode_offset: instr.offset as u32,
                 });

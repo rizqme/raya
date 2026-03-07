@@ -222,6 +222,21 @@ impl fmt::Display for JitInstr {
                 object,
                 offset,
             } => write!(f, "{} = load.field {}.{}", dest, object, offset),
+            JitInstr::LoadFieldShape {
+                dest,
+                object,
+                shape_id,
+                offset,
+                optional,
+                ..
+            } => {
+                let op = if *optional {
+                    "optional.field.shape"
+                } else {
+                    "load.field.shape"
+                };
+                write!(f, "{} = {} {}.@{:016x}.{}", dest, op, object, shape_id, offset)
+            }
             JitInstr::ImplementsShape {
                 dest,
                 object,
@@ -238,6 +253,17 @@ impl fmt::Display for JitInstr {
                 offset,
                 value,
             } => write!(f, "store.field {}.{}, {}", object, offset, value),
+            JitInstr::StoreFieldShape {
+                object,
+                shape_id,
+                offset,
+                value,
+                ..
+            } => write!(
+                f,
+                "store.field.shape {}.@{:016x}.{}, {}",
+                object, shape_id, offset, value
+            ),
             JitInstr::InstanceOf {
                 dest,
                 object,
@@ -333,12 +359,18 @@ impl fmt::Display for JitInstr {
             JitInstr::Call {
                 dest,
                 func_index,
+                closure,
                 args,
+                ..
             } => {
                 if let Some(d) = dest {
                     write!(f, "{} = ", d)?;
                 }
-                write!(f, "call @{} (", func_index)?;
+                if let Some(closure) = closure {
+                    write!(f, "call.closureish @{} {} (", func_index, closure)?;
+                } else {
+                    write!(f, "call @{} (", func_index)?;
+                }
                 format_args_list(f, args)?;
                 write!(f, ")")
             }
@@ -347,11 +379,50 @@ impl fmt::Display for JitInstr {
                 method_index,
                 receiver,
                 args,
+                optional,
+                ..
             } => {
                 if let Some(d) = dest {
                     write!(f, "{} = ", d)?;
                 }
-                write!(f, "call.method {}.@{} (", receiver, method_index)?;
+                let op = if *optional {
+                    "optional.call.method"
+                } else {
+                    "call.method"
+                };
+                write!(f, "{} {}.@{} (", op, receiver, method_index)?;
+                format_args_list(f, args)?;
+                write!(f, ")")
+            }
+            JitInstr::CallMethodShape {
+                dest,
+                shape_id,
+                method_index,
+                receiver,
+                args,
+                optional,
+                ..
+            } => {
+                if let Some(d) = dest {
+                    write!(f, "{} = ", d)?;
+                }
+                let op = if *optional {
+                    "optional.call.method.shape"
+                } else {
+                    "call.method.shape"
+                };
+                write!(f, "{} {}.@{:016x}.{} (", op, receiver, shape_id, method_index)?;
+                format_args_list(f, args)?;
+                write!(f, ")")
+            }
+            JitInstr::ConstructType {
+                dest,
+                nominal_type_id,
+                object,
+                args,
+                ..
+            } => {
+                write!(f, "{} = construct.type @{} {} (", dest, nominal_type_id, object)?;
                 format_args_list(f, args)?;
                 write!(f, ")")
             }
@@ -359,6 +430,7 @@ impl fmt::Display for JitInstr {
                 dest,
                 nominal_type_id,
                 args,
+                ..
             } => {
                 write!(f, "{} = call.constructor @{} (", dest, nominal_type_id)?;
                 format_args_list(f, args)?;
@@ -366,13 +438,15 @@ impl fmt::Display for JitInstr {
             }
             JitInstr::CallSuper {
                 dest,
-                method_index,
+                nominal_type_id,
+                receiver,
                 args,
+                ..
             } => {
                 if let Some(d) = dest {
                     write!(f, "{} = ", d)?;
                 }
-                write!(f, "call.super @{} (", method_index)?;
+                write!(f, "call.super @{} {} (", nominal_type_id, receiver)?;
                 format_args_list(f, args)?;
                 write!(f, ")")
             }
@@ -380,6 +454,7 @@ impl fmt::Display for JitInstr {
                 dest,
                 func_index,
                 args,
+                ..
             } => {
                 if let Some(d) = dest {
                     write!(f, "{} = ", d)?;
@@ -405,6 +480,7 @@ impl fmt::Display for JitInstr {
                 dest,
                 closure,
                 args,
+                ..
             } => {
                 if let Some(d) = dest {
                     write!(f, "{} = ", d)?;

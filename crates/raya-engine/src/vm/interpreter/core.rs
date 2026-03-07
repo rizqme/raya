@@ -1285,12 +1285,24 @@ impl<'a> Interpreter<'a> {
                                         self.gc,
                                         self.classes,
                                         self.layouts,
+                                        self.mutex_registry,
+                                        self.globals_by_index,
+                                        self.builtin_global_slots,
+                                        self.tasks,
+                                        self.injector,
                                         self.module_layouts,
+                                        self.metadata,
                                         self.class_metadata,
+                                        self.native_handler,
                                         &jit_resolved_natives,
                                         self.structural_shape_names,
+                                        self.structural_object_shapes,
                                         self.structural_shape_adapters,
+                                        self.type_handles,
                                         self.prop_keys,
+                                        self.stack_pool,
+                                        self.max_preemptions,
+                                        frames.len(),
                                         self.io_submit_tx,
                                     );
                                 let mut runtime_ctx =
@@ -1620,7 +1632,7 @@ impl<'a> Interpreter<'a> {
 
     /// Execute a single opcode
     #[allow(clippy::too_many_arguments)]
-    fn execute_opcode(
+    pub(crate) fn execute_opcode(
         &mut self,
         task: &Arc<Task>,
         stack: &mut Stack,

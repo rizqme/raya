@@ -544,7 +544,8 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
             used.insert(*value);
         }
 
-        JitInstr::StoreFieldExact { object, value, .. } => {
+        JitInstr::StoreFieldExact { object, value, .. }
+        | JitInstr::StoreFieldShape { object, value, .. } => {
             used.insert(*object);
             used.insert(*value);
         }
@@ -559,6 +560,7 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
         }
 
         JitInstr::LoadFieldExact { object, .. }
+        | JitInstr::LoadFieldShape { object, .. }
         | JitInstr::OptionalFieldExact { object, .. }
         | JitInstr::ArrayLen { array: object, .. }
         | JitInstr::ArrayPop { array: object, .. }
@@ -576,15 +578,28 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
             used.insert(*index);
         }
 
-        JitInstr::Call { args, .. }
+        JitInstr::Call { closure: None, args, .. }
         | JitInstr::CallStatic { args, .. }
         | JitInstr::CallSuper { args, .. } => {
             for arg in args {
                 used.insert(*arg);
             }
         }
-        JitInstr::CallMethodExact { receiver, args, .. } => {
+        JitInstr::Call { closure: Some(closure), args, .. } => {
+            used.insert(*closure);
+            for arg in args {
+                used.insert(*arg);
+            }
+        }
+        JitInstr::CallMethodExact { receiver, args, .. }
+        | JitInstr::CallMethodShape { receiver, args, .. } => {
             used.insert(*receiver);
+            for arg in args {
+                used.insert(*arg);
+            }
+        }
+        JitInstr::ConstructType { object, args, .. } => {
+            used.insert(*object);
             for arg in args {
                 used.insert(*arg);
             }

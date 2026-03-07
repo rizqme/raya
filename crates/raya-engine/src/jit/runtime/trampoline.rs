@@ -123,8 +123,10 @@ pub struct RuntimeHelperTable {
     pub check_preemption: unsafe extern "C" fn(*const ()) -> bool,
     /// Dispatch a native call: (native_id, args_ptr, arg_count, shared_state) -> result
     pub native_call_dispatch: unsafe extern "C" fn(u16, *const u64, u8, *mut ()) -> u64,
-    /// Call an interpreted function: (func_index, args_ptr, arg_count, shared_state) -> result
-    pub interpreter_call: unsafe extern "C" fn(u32, *const u64, u16, *mut ()) -> u64,
+    /// Execute a call-family opcode through the interpreter runtime:
+    /// (opcode, operand_u64, operand_u32, receiver, args_ptr, arg_count, module_ptr, shared_state) -> result/sentinel
+    pub interpreter_call:
+        unsafe extern "C" fn(u8, u64, u32, u64, *const u64, u16, *const (), *mut ()) -> u64,
     /// Throw an exception: (exception_value, shared_state) -> !
     pub throw_exception: unsafe extern "C" fn(u64, *mut ()),
     /// Deoptimize: (bytecode_offset, shared_state) -> !
@@ -141,4 +143,10 @@ pub struct RuntimeHelperTable {
     pub object_implements_shape: unsafe extern "C" fn(u64, u64, *mut ()) -> bool,
     /// Nominal type check: (obj_val, local_nominal_type_index, module_ptr, shared_state) -> matches
     pub object_is_nominal: unsafe extern "C" fn(u64, u32, *const (), *mut ()) -> bool,
+    /// Shape-aware field load: (obj_val, shape_id, expected_slot, optional, func_id, module_ptr, shared_state) -> result/sentinel
+    pub object_get_shape_field:
+        unsafe extern "C" fn(u64, u64, u32, u8, u32, *const (), *mut ()) -> u64,
+    /// Shape-aware field store: (obj_val, shape_id, expected_slot, value, func_id, module_ptr, shared_state) -> status
+    pub object_set_shape_field:
+        unsafe extern "C" fn(u64, u64, u32, u64, u32, *const (), *mut ()) -> i8,
 }
