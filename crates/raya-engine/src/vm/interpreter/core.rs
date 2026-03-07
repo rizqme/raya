@@ -1247,6 +1247,7 @@ impl<'a> Interpreter<'a> {
                                         self.gc,
                                         self.classes,
                                         self.layouts,
+                                        self.module_layouts,
                                         self.class_metadata,
                                         &jit_resolved_natives,
                                         self.structural_shape_adapters,

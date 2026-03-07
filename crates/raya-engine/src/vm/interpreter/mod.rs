@@ -31,6 +31,7 @@ pub use safepoint::{SafepointCoordinator, StopReason};
 #[cfg(feature = "jit")]
 pub use shared_state::{JitTelemetry, JitTelemetrySnapshot};
 pub use shared_state::{
-    PromiseMicrotask, ShapeAdapter, SharedVmState, StructuralAdapterKey, StructuralSlotBinding,
+    ModuleRuntimeLayout, PromiseMicrotask, ShapeAdapter, SharedVmState,
+    StructuralAdapterKey, StructuralSlotBinding,
 };
 pub use vm_facade::{Vm, VmStats};

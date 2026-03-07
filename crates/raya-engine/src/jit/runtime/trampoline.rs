@@ -110,8 +110,8 @@ pub struct RuntimeContext {
 /// All functions take raw pointers and NaN-boxed u64 values.
 #[repr(C)]
 pub struct RuntimeHelperTable {
-    /// Allocate a new nominal object: (nominal_type_id, shared_state) -> obj_ptr
-    pub alloc_object: unsafe extern "C" fn(u32, *mut ()) -> *mut (),
+    /// Allocate a new nominal object: (local_nominal_type_index, module_ptr, shared_state) -> obj_ptr
+    pub alloc_object: unsafe extern "C" fn(u32, *const (), *mut ()) -> *mut (),
     /// Allocate a new array: (type_id, capacity, shared_state) -> array_ptr
     pub alloc_array: unsafe extern "C" fn(u32, usize, *mut ()) -> *mut (),
     /// Allocate a new string: (data_ptr, len, shared_state) -> string_ptr

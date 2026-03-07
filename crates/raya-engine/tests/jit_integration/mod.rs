@@ -430,7 +430,11 @@ fn jit_native_call_materializes_operands_truncated_to_exit_cap() {
 
 #[test]
 fn jit_native_call_zero_arg_ctx_fastpath_returns_value() {
-    unsafe extern "C" fn stub_alloc_object(_class_id: u32, _shared_state: *mut ()) -> *mut () {
+    unsafe extern "C" fn stub_alloc_object(
+        _local_nominal_type_index: u32,
+        _module_ptr: *const (),
+        _shared_state: *mut (),
+    ) -> *mut () {
         std::ptr::null_mut()
     }
     unsafe extern "C" fn stub_alloc_array(
@@ -535,7 +539,11 @@ fn jit_native_call_zero_arg_ctx_fastpath_returns_value() {
 
 #[test]
 fn jit_native_call_zero_arg_ctx_fastpath_sentinel_suspends() {
-    unsafe extern "C" fn stub_alloc_object(_class_id: u32, _shared_state: *mut ()) -> *mut () {
+    unsafe extern "C" fn stub_alloc_object(
+        _local_nominal_type_index: u32,
+        _module_ptr: *const (),
+        _shared_state: *mut (),
+    ) -> *mut () {
         std::ptr::null_mut()
     }
     unsafe extern "C" fn stub_alloc_array(
@@ -639,7 +647,11 @@ fn jit_native_call_zero_arg_ctx_fastpath_sentinel_suspends() {
 
 #[test]
 fn jit_native_call_args_ctx_fastpath_returns_value() {
-    unsafe extern "C" fn stub_alloc_object(_class_id: u32, _shared_state: *mut ()) -> *mut () {
+    unsafe extern "C" fn stub_alloc_object(
+        _local_nominal_type_index: u32,
+        _module_ptr: *const (),
+        _shared_state: *mut (),
+    ) -> *mut () {
         std::ptr::null_mut()
     }
     unsafe extern "C" fn stub_alloc_array(
@@ -747,7 +759,11 @@ fn jit_native_call_args_ctx_fastpath_returns_value() {
 
 #[test]
 fn jit_native_call_args_ctx_fastpath_sentinel_suspends() {
-    unsafe extern "C" fn stub_alloc_object(_class_id: u32, _shared_state: *mut ()) -> *mut () {
+    unsafe extern "C" fn stub_alloc_object(
+        _local_nominal_type_index: u32,
+        _module_ptr: *const (),
+        _shared_state: *mut (),
+    ) -> *mut () {
         std::ptr::null_mut()
     }
     unsafe extern "C" fn stub_alloc_array(
@@ -860,7 +876,11 @@ fn jit_native_call_args_ctx_fastpath_sentinel_suspends() {
 
 #[test]
 fn jit_check_preemption_exits_with_suspend_kind_when_helper_requests_preempt() {
-    unsafe extern "C" fn stub_alloc_object(_class_id: u32, _shared_state: *mut ()) -> *mut () {
+    unsafe extern "C" fn stub_alloc_object(
+        _local_nominal_type_index: u32,
+        _module_ptr: *const (),
+        _shared_state: *mut (),
+    ) -> *mut () {
         std::ptr::null_mut()
     }
     unsafe extern "C" fn stub_alloc_array(

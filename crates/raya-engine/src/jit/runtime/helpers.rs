@@ -9,7 +9,7 @@ use crate::jit::runtime::trampoline::{RuntimeContext, RuntimeHelperTable};
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
 use crate::vm::gc::GarbageCollector;
 use crate::vm::interpreter::{
-    ClassRegistry, RuntimeLayoutRegistry, SafepointCoordinator, ShapeAdapter,
+    ClassRegistry, ModuleRuntimeLayout, RuntimeLayoutRegistry, SafepointCoordinator, ShapeAdapter,
     StructuralAdapterKey, StructuralSlotBinding,
 };
 use crate::vm::native_registry::ResolvedNatives;
@@ -34,6 +34,8 @@ pub struct JitRuntimeBridgeContext {
     pub gc: *const parking_lot::Mutex<GarbageCollector>,
     pub classes: *const parking_lot::RwLock<ClassRegistry>,
     pub layouts: *const parking_lot::RwLock<RuntimeLayoutRegistry>,
+    pub module_layouts:
+        *const parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
     pub class_metadata: *const parking_lot::RwLock<ClassMetadataRegistry>,
     pub resolved_natives: *const parking_lot::RwLock<ResolvedNatives>,
     pub structural_shape_adapters: *const parking_lot::RwLock<
@@ -50,6 +52,7 @@ pub fn build_runtime_bridge_context(
     gc: &parking_lot::Mutex<GarbageCollector>,
     classes: &parking_lot::RwLock<ClassRegistry>,
     layouts: &parking_lot::RwLock<RuntimeLayoutRegistry>,
+    module_layouts: &parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
     class_metadata: &parking_lot::RwLock<ClassMetadataRegistry>,
     resolved_natives: &parking_lot::RwLock<ResolvedNatives>,
     structural_shape_adapters: &parking_lot::RwLock<
@@ -63,6 +66,7 @@ pub fn build_runtime_bridge_context(
         gc: gc as *const _,
         classes: classes as *const _,
         layouts: layouts as *const _,
+        module_layouts: module_layouts as *const _,
         class_metadata: class_metadata as *const _,
         resolved_natives: resolved_natives as *const _,
         structural_shape_adapters: structural_shape_adapters as *const _,
@@ -99,16 +103,30 @@ pub fn runtime_helpers() -> RuntimeHelperTable {
     }
 }
 
-unsafe extern "C" fn helper_alloc_object(nominal_type_id: u32, shared_state: *mut ()) -> *mut () {
-    if shared_state.is_null() {
+unsafe extern "C" fn helper_alloc_object(
+    local_nominal_type_index: u32,
+    module_ptr: *const (),
+    shared_state: *mut (),
+) -> *mut () {
+    if shared_state.is_null() || module_ptr.is_null() {
         return std::ptr::null_mut();
     }
     let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
-    if bridge.gc.is_null() || bridge.layouts.is_null() {
+    if bridge.gc.is_null() || bridge.layouts.is_null() || bridge.module_layouts.is_null() {
         return std::ptr::null_mut();
     }
 
-    let nominal_type_id = nominal_type_id as usize;
+    let module = &*(module_ptr.cast::<Module>());
+    let nominal_type_id = {
+        let module_layouts = (&*bridge.module_layouts).read();
+        let Some(module_layout) = module_layouts.get(&module.checksum) else {
+            return std::ptr::null_mut();
+        };
+        if local_nominal_type_index as usize >= module_layout.nominal_type_len {
+            return std::ptr::null_mut();
+        }
+        module_layout.nominal_type_base + local_nominal_type_index as usize
+    };
     let (field_count, layout_id) = {
         let layouts = (&*bridge.layouts).read();
         match layouts.nominal_allocation(nominal_type_id) {
@@ -347,6 +365,7 @@ unsafe extern "C" fn helper_object_set_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::bytecode::ClassDef;
     use crossbeam::channel::unbounded;
     use crossbeam_deque::Injector;
     use parking_lot::RwLock;
@@ -379,6 +398,7 @@ mod tests {
             &shared.gc,
             &shared.classes,
             &shared.layouts,
+            &shared.module_layouts,
             &shared.class_metadata,
             &shared.resolved_natives,
             &shared.structural_shape_adapters,
@@ -426,6 +446,7 @@ mod tests {
             &shared.gc,
             &shared.classes,
             &shared.layouts,
+            &shared.module_layouts,
             &shared.class_metadata,
             &shared.resolved_natives,
             &shared.structural_shape_adapters,
@@ -447,5 +468,76 @@ mod tests {
             submission.request,
             raya_sdk::IoRequest::Sleep { duration_nanos: 1 }
         ));
+    }
+
+    #[test]
+    fn jit_helper_alloc_object_resolves_module_local_nominal_type_index() {
+        let safepoint = Arc::new(SafepointCoordinator::new(1));
+        let tasks = Arc::new(RwLock::new(FxHashMap::default()));
+        let injector = Arc::new(Injector::new());
+        let shared = Arc::new(crate::vm::interpreter::SharedVmState::new(
+            safepoint.clone(),
+            tasks,
+            injector,
+        ));
+
+        let mut seed_module = Module::new("jit-seed".to_string());
+        seed_module.classes.push(ClassDef {
+            name: "Seed".to_string(),
+            field_count: 1,
+            parent_id: None,
+            methods: Vec::new(),
+        });
+        let seed_module = Arc::new(
+            Module::decode(&seed_module.encode()).expect("finalize seed module checksum"),
+        );
+        shared
+            .register_module(seed_module)
+            .expect("register seed module");
+
+        let mut target_module = Module::new("jit-target".to_string());
+        target_module.classes.push(ClassDef {
+            name: "Target".to_string(),
+            field_count: 2,
+            parent_id: None,
+            methods: Vec::new(),
+        });
+        let target_module = Arc::new(
+            Module::decode(&target_module.encode()).expect("finalize target module checksum"),
+        );
+        shared
+            .register_module(target_module.clone())
+            .expect("register target module");
+
+        let expected_nominal_type_id = shared
+            .resolve_nominal_type_id(&target_module, 0)
+            .expect("module-local nominal type id");
+
+        let task = Task::new(0, target_module.clone(), None);
+        let bridge = build_runtime_bridge_context(
+            safepoint.as_ref(),
+            &task,
+            &shared.gc,
+            &shared.classes,
+            &shared.layouts,
+            &shared.module_layouts,
+            &shared.class_metadata,
+            &shared.resolved_natives,
+            &shared.structural_shape_adapters,
+            None,
+        );
+
+        let object_ptr = unsafe {
+            helper_alloc_object(
+                0,
+                Arc::as_ptr(&target_module) as *const (),
+                (&bridge as *const JitRuntimeBridgeContext) as *mut (),
+            )
+        };
+        assert!(!object_ptr.is_null());
+
+        let obj = unsafe { &*(object_ptr.cast::<Object>()) };
+        assert_eq!(obj.nominal_class_id(), Some(expected_nominal_type_id));
+        assert_eq!(obj.field_count(), 2);
     }
 }
