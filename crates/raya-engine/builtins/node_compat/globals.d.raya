@@ -22,12 +22,18 @@ export class Proxy<T extends Object> {
     getHandler(): Object | null;
 }
 
+export interface ReflectTarget {}
+
 export interface ReflectAPI {
-    get(target: Proxy<Object> | Object, key: string): Object | string | number | boolean | null;
-    set(target: Proxy<Object> | Object, key: string, value: Object | string | number | boolean | null): boolean;
-    has(target: Proxy<Object> | Object, key: string): boolean;
-    isProxy(obj: Proxy<Object> | Object): boolean;
-    getProxyTarget(proxy: Proxy<Object> | Object): Object | null;
+    get(target: Proxy<Object> | Object | ReflectTarget, key: string): Object | string | number | boolean | null;
+    set(target: Proxy<Object> | Object | ReflectTarget, key: string, value: Object | string | number | boolean | null): boolean;
+    has(target: Proxy<Object> | Object | ReflectTarget, key: string): boolean;
+    getFieldNames(target: Proxy<Object> | Object | ReflectTarget): string[];
+    getFieldInfo(target: Proxy<Object> | Object | ReflectTarget, key: string): Object | null;
+    getFields(target: Proxy<Object> | Object | ReflectTarget): Object[];
+    hasMethod(target: Proxy<Object> | Object | ReflectTarget, key: string): boolean;
+    isProxy(obj: Proxy<Object> | Object | ReflectTarget): boolean;
+    getProxyTarget(proxy: Proxy<Object> | Object | ReflectTarget): Object | null;
 }
 
 export const Reflect: ReflectAPI;

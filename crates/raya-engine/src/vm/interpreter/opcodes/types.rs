@@ -1,8 +1,8 @@
 //! Type operation opcode handlers: InstanceOf, Cast, Typeof, DynGet, DynSet, DynGetKeyed,
 //! DynSetKeyed, DynNewObject, DynKeys, DynHas, DynDelete, NewMutex, NewChannel, LoadStatic, StoreStatic
 
-use crate::compiler::{Module, Opcode};
 use crate::compiler::type_registry::TypeRegistry;
+use crate::compiler::{Module, Opcode};
 use crate::parser::TypeContext;
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::OpcodeResult;
@@ -85,6 +85,29 @@ fn object_ptr_checked(value: Value) -> Option<NonNull<Object>> {
         unsafe { value.as_ptr::<Object>() }
     } else {
         None
+    }
+}
+
+fn dyn_key_parts(key_val: Value) -> Result<(Option<String>, Option<usize>), VmError> {
+    use crate::vm::json::view::{js_classify, JSView};
+
+    match js_classify(key_val) {
+        JSView::Str(ptr) => {
+            let key = unsafe { &*ptr }.data.clone();
+            let index = key.parse::<usize>().ok();
+            Ok((Some(key), index))
+        }
+        JSView::Int(index) if index >= 0 => {
+            let index = index as usize;
+            Ok((Some(index.to_string()), Some(index)))
+        }
+        JSView::Number(number) if number.is_finite() && number.fract() == 0.0 && number >= 0.0 => {
+            let index = number as usize;
+            Ok((Some(index.to_string()), Some(index)))
+        }
+        _ => Err(VmError::TypeError(
+            "DynGetKeyed key must be a string or non-negative integer".to_string(),
+        )),
     }
 }
 
@@ -223,13 +246,13 @@ impl<'a> Interpreter<'a> {
                             )));
                         };
                         let obj = unsafe { &*object_ptr.as_ptr() };
-                        let effective_field_count =
-                            obj.field_count().max(obj.dyn_map().map(|dyn_map| dyn_map.len()).unwrap_or(0));
+                        let effective_field_count = obj
+                            .field_count()
+                            .max(obj.dyn_map().map(|dyn_map| dyn_map.len()).unwrap_or(0));
                         if effective_field_count < required_fields {
                             return OpcodeResult::Error(VmError::TypeError(format!(
                                 "Cannot cast object(field_count={}) to required field count {}",
-                                effective_field_count,
-                                required_fields
+                                effective_field_count, required_fields
                             )));
                         }
                         if let Err(e) = stack.push(obj_val) {
@@ -513,13 +536,9 @@ impl<'a> Interpreter<'a> {
                                     )
                                 }
                             } else {
-                                if let Some(native_id) =
-                                    class_name
-                                        .as_ref()
-                                        .and_then(|name| {
-                                            Self::builtin_native_method_for_class(name, &prop_name)
-                                        })
-                                {
+                                if let Some(native_id) = class_name.as_ref().and_then(|name| {
+                                    Self::builtin_native_method_for_class(name, &prop_name)
+                                }) {
                                     let gc_ptr = self.gc.lock().allocate(BoundNativeMethod {
                                         receiver: obj_val,
                                         native_id,
@@ -532,8 +551,7 @@ impl<'a> Interpreter<'a> {
                                 } else {
                                     let dyn_value = {
                                         let key = self.intern_prop_key(&prop_name);
-                                        obj.dyn_map()
-                                            .and_then(|dyn_map| dyn_map.get(&key).copied())
+                                        obj.dyn_map().and_then(|dyn_map| dyn_map.get(&key).copied())
                                     };
                                     if let Some(value) = dyn_value {
                                         value
@@ -550,14 +568,18 @@ impl<'a> Interpreter<'a> {
                                                         classes
                                                             .get_class(class_id)
                                                             .map(|class| class.name.clone())
-                                                            .unwrap_or_else(|| "<unknown>".to_string())
+                                                            .unwrap_or_else(|| {
+                                                                "<unknown>".to_string()
+                                                            })
                                                     },
                                                 )
                                             };
                                             let metadata_methods = {
                                                 let class_metadata = self.class_metadata.read();
                                                 nominal_class_id
-                                                    .and_then(|class_id| class_metadata.get(class_id))
+                                                    .and_then(|class_id| {
+                                                        class_metadata.get(class_id)
+                                                    })
                                                     .map(|meta| {
                                                         meta.method_names
                                                             .iter()
@@ -672,7 +694,10 @@ impl<'a> Interpreter<'a> {
                 match js_classify(obj_val) {
                     JSView::Struct { ptr, .. } => {
                         let obj = unsafe { &mut *(ptr as *mut Object) };
-                        if self.get_field_index_for_value(obj_val, &prop_name).is_none() {
+                        if self
+                            .get_field_index_for_value(obj_val, &prop_name)
+                            .is_none()
+                        {
                             let key = self.intern_prop_key(&prop_name);
                             if let Some(dyn_map) = obj.dyn_map_mut() {
                                 dyn_map.remove(&key);
@@ -686,7 +711,6 @@ impl<'a> Interpreter<'a> {
 
             Opcode::DynGetKeyed => {
                 use crate::vm::json::view::{js_classify, JSView};
-                use crate::vm::object::RayaString;
 
                 // Stack: [..., object, key] → key popped first
                 let key_val = match stack.pop() {
@@ -698,19 +722,27 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                // Extract string key
-                let key_str = match js_classify(key_val) {
-                    JSView::Str(ptr) => unsafe { &*ptr }.data.clone(),
-                    _ => {
-                        return OpcodeResult::Error(VmError::TypeError(
-                            "DynGetKeyed key must be a string".to_string(),
-                        ))
-                    }
+                let (key_str, array_index) = match dyn_key_parts(key_val) {
+                    Ok(parts) => parts,
+                    Err(error) => return OpcodeResult::Error(error),
                 };
 
                 let result = match js_classify(obj_val) {
+                    JSView::Arr(ptr) => {
+                        let arr = unsafe { &*ptr };
+                        if let Some(index) = array_index {
+                            arr.get(index).unwrap_or(Value::null())
+                        } else if key_str.as_deref() == Some("length") {
+                            Value::i32(arr.len() as i32)
+                        } else {
+                            Value::null()
+                        }
+                    }
                     JSView::Struct { ptr, .. } => {
                         let obj = unsafe { &*ptr };
+                        let key_str = key_str
+                            .as_deref()
+                            .expect("dyn object property access should always have a key string");
                         let field_index = self.get_field_index_for_value(obj_val, &key_str);
                         if let Some(index) = field_index {
                             obj.get_field(index).unwrap_or(Value::null())
@@ -747,18 +779,30 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                let key_str = match js_classify(key_val) {
-                    JSView::Str(ptr) => unsafe { &*ptr }.data.clone(),
-                    _ => {
-                        return OpcodeResult::Error(VmError::TypeError(
-                            "DynSetKeyed key must be a string".to_string(),
-                        ))
-                    }
+                let (key_str, array_index) = match dyn_key_parts(key_val) {
+                    Ok(parts) => parts,
+                    Err(error) => return OpcodeResult::Error(error),
                 };
 
                 match js_classify(obj_val) {
+                    JSView::Arr(ptr) => {
+                        let Some(index) = array_index else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "DynSetKeyed array index must be a non-negative integer"
+                                    .to_string(),
+                            ));
+                        };
+                        let arr = unsafe { &mut *(ptr as *mut Array) };
+                        if index >= arr.elements.len() {
+                            arr.elements.resize(index + 1, Value::null());
+                        }
+                        arr.elements[index] = value;
+                    }
                     JSView::Struct { ptr, .. } => {
                         let obj = unsafe { &mut *(ptr as *mut Object) };
+                        let key_str = key_str
+                            .as_deref()
+                            .expect("dyn object property access should always have a key string");
                         let field_index = self.get_field_index_for_value(obj_val, &key_str);
                         if let Some(index) = field_index {
                             let _ = obj.set_field(index, value);
@@ -811,7 +855,8 @@ impl<'a> Interpreter<'a> {
                                         .cloned(),
                                 );
                             }
-                        } else if let Some(layout_names) = self.structural_layout_names(obj.layout_id())
+                        } else if let Some(layout_names) =
+                            self.structural_layout_names(obj.layout_id())
                         {
                             names.extend(layout_names);
                         }
@@ -875,7 +920,10 @@ impl<'a> Interpreter<'a> {
                 };
                 let has = match js_classify(obj_val) {
                     JSView::Struct { ptr, .. } => {
-                        if self.get_field_index_for_value(obj_val, &prop_name).is_some() {
+                        if self
+                            .get_field_index_for_value(obj_val, &prop_name)
+                            .is_some()
+                        {
                             true
                         } else {
                             let obj = unsafe { &*ptr };

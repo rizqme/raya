@@ -53,12 +53,15 @@ pub use session::Session;
 use raya_engine::compiler::module::{
     builtin_global_exports, BuiltinSurfaceMode, LateLinkRequirement, LateLinkSymbolRequirement,
 };
-use raya_engine::compiler::{module_id_from_name, Export, Import, SymbolType};
+use raya_engine::compiler::{
+    module_id_from_name, symbol_id_from_name, Export, Import, SymbolScope, SymbolType,
+};
+use raya_engine::parser::ast::{Pattern, Statement};
+use raya_engine::parser::checker::SymbolKind;
 use raya_engine::parser::types::{
     signature_hash, structural_signature_is_assignable, try_hydrate_type_from_canonical_signature,
     Type, TypeContext,
 };
-use raya_engine::parser::ast::{Pattern, Statement};
 use raya_engine::parser::{Interner, Parser};
 use raya_engine::vm::json::JSView;
 use raya_engine::vm::module::{ModuleLinker, ResolvedSymbol};
@@ -701,13 +704,11 @@ impl Runtime {
         let mut names = exports
             .symbols
             .iter()
-            .filter_map(|(name, exported)| {
-                match exported.kind {
-                    raya_engine::parser::checker::SymbolKind::TypeAlias
-                    | raya_engine::parser::checker::SymbolKind::TypeParameter
-                    | raya_engine::parser::checker::SymbolKind::Interface => None,
-                    _ => Some(name.clone()),
-                }
+            .filter_map(|(name, exported)| match exported.kind {
+                raya_engine::parser::checker::SymbolKind::TypeAlias
+                | raya_engine::parser::checker::SymbolKind::TypeParameter
+                | raya_engine::parser::checker::SymbolKind::Interface => None,
+                _ => Some(name.clone()),
             })
             .collect::<Vec<_>>();
         names.sort();
@@ -778,6 +779,118 @@ impl Runtime {
         Ok(names)
     }
 
+    fn collect_module_global_slots(
+        ast: &raya_engine::parser::ast::Module,
+        interner: &Interner,
+    ) -> HashMap<String, u32> {
+        let mut slots = HashMap::new();
+        let mut next_slot = 0u32;
+
+        for stmt in &ast.statements {
+            if let Statement::ImportDecl(import_decl) = stmt {
+                for spec in &import_decl.specifiers {
+                    let local_name = match spec {
+                        raya_engine::parser::ast::ImportSpecifier::Named { name, alias } => alias
+                            .as_ref()
+                            .map(|a| interner.resolve(a.name).to_string())
+                            .unwrap_or_else(|| interner.resolve(name.name).to_string()),
+                        raya_engine::parser::ast::ImportSpecifier::Default(local) => {
+                            interner.resolve(local.name).to_string()
+                        }
+                        raya_engine::parser::ast::ImportSpecifier::Namespace(alias) => {
+                            interner.resolve(alias.name).to_string()
+                        }
+                    };
+                    slots.entry(local_name).or_insert_with(|| {
+                        let slot = next_slot;
+                        next_slot = next_slot.saturating_add(1);
+                        slot
+                    });
+                }
+            }
+            if matches!(
+                stmt,
+                Statement::ExportDecl(raya_engine::parser::ast::ExportDecl::Default { .. })
+            ) {
+                slots.entry("default".to_string()).or_insert_with(|| {
+                    let slot = next_slot;
+                    next_slot = next_slot.saturating_add(1);
+                    slot
+                });
+            }
+        }
+
+        for stmt in &ast.statements {
+            if let Statement::VariableDecl(variable) = stmt {
+                let mut names = Vec::new();
+                Self::collect_pattern_names(&variable.pattern, interner, &mut names);
+                for name in names {
+                    slots.entry(name).or_insert_with(|| {
+                        let slot = next_slot;
+                        next_slot = next_slot.saturating_add(1);
+                        slot
+                    });
+                }
+            }
+        }
+
+        slots
+    }
+
+    fn export_symbol_type(kind: SymbolKind) -> Option<SymbolType> {
+        match kind {
+            SymbolKind::Function => Some(SymbolType::Function),
+            SymbolKind::Class | SymbolKind::Interface => Some(SymbolType::Class),
+            SymbolKind::Variable | SymbolKind::EnumMember => Some(SymbolType::Constant),
+            SymbolKind::TypeAlias | SymbolKind::TypeParameter => None,
+        }
+    }
+
+    fn populate_builtin_runtime_exports(
+        module: &mut Module,
+        ast: &raya_engine::parser::ast::Module,
+        interner: &Interner,
+        declared_exports: &raya_engine::compiler::module::ModuleExports,
+        export_names: &[String],
+    ) {
+        module.exports.clear();
+        let module_global_slots = Self::collect_module_global_slots(ast, interner);
+        let module_name = module.metadata.name.clone();
+
+        for export_name in export_names {
+            let Some(declared) = declared_exports.symbols.get(export_name) else {
+                continue;
+            };
+            let Some(symbol_type) = Self::export_symbol_type(declared.kind) else {
+                continue;
+            };
+
+            let index = match symbol_type {
+                SymbolType::Function => {
+                    module.functions.iter().position(|f| f.name == *export_name)
+                }
+                SymbolType::Class => module.classes.iter().position(|c| c.name == *export_name),
+                SymbolType::Constant => module_global_slots
+                    .get(export_name)
+                    .copied()
+                    .map(|slot| slot as usize),
+            };
+            let Some(index) = index else {
+                continue;
+            };
+
+            module.exports.push(Export {
+                name: export_name.clone(),
+                symbol_type,
+                index,
+                symbol_id: symbol_id_from_name(&module_name, SymbolScope::Module, export_name),
+                scope: SymbolScope::Module,
+                type_symbol_id: declared.type_symbol_id,
+                type_signature: Some(declared.type_signature.clone()),
+            });
+        }
+    }
+
     fn compiled_builtin_runtime_modules(mode: BuiltinMode) -> Result<Vec<Module>, RuntimeError> {
         let cache = match mode {
             BuiltinMode::RayaStrict => &STRICT_BUILTIN_RUNTIME_MODULES,
@@ -785,19 +898,38 @@ impl Runtime {
         };
 
         let cached = cache.get_or_init(|| {
-            let ambient_names = match Self::ambient_builtin_export_names(mode) {
+            let declared_exports =
+                match builtin_global_exports(Self::builtin_surface_mode_for_runtime(mode)) {
+                    Ok(exports) => exports,
+                    Err(error) => return Err(error.to_string()),
+                };
+            let ambient_names = declared_exports
+                .symbols
+                .iter()
+                .filter_map(|(name, exported)| match exported.kind {
+                    SymbolKind::TypeAlias | SymbolKind::TypeParameter | SymbolKind::Interface => {
+                        None
+                    }
+                    _ => Some(name.clone()),
+                })
+                .collect::<Vec<_>>();
+            let ambient_names = {
+                let mut names = ambient_names;
+                names.sort();
+                names.dedup();
+                names
+            };
+            let ambient_names = match Ok::<Vec<String>, RuntimeError>(ambient_names) {
                 Ok(names) => names,
                 Err(error) => return Err(error.to_string()),
             };
             // Phase 1: declaration contract (declared ambient builtin symbols).
-            let declared_name_set = ambient_names
-                .iter()
-                .cloned()
-                .collect::<HashSet<_>>();
+            let declared_name_set = ambient_names.iter().cloned().collect::<HashSet<_>>();
             struct ParsedBuiltinUnit {
                 logical_path: &'static str,
                 ast: raya_engine::parser::ast::Module,
                 interner: Interner,
+                export_names: Vec<String>,
             }
 
             let checker_mode = match compile::default_type_mode_for_builtin(mode) {
@@ -805,7 +937,8 @@ impl Runtime {
                 TypeMode::Js => raya_engine::parser::checker::TypeSystemMode::Js,
                 TypeMode::Ts => raya_engine::parser::checker::TypeSystemMode::Ts,
             };
-            let checker_policy = raya_engine::parser::checker::CheckerPolicy::for_mode(checker_mode);
+            let checker_policy =
+                raya_engine::parser::checker::CheckerPolicy::for_mode(checker_mode);
 
             // Phase 2a: parse/materialize each builtin source module with explicit exports.
             let mut parsed_units = Vec::new();
@@ -863,16 +996,19 @@ impl Runtime {
                     logical_path,
                     ast,
                     interner,
+                    export_names,
                 });
             }
 
             // Phase 2b: bind declarations for the whole builtin content graph first.
             let mut shared_type_ctx = TypeContext::new();
             for unit in &parsed_units {
-                let mut binder =
-                    raya_engine::parser::checker::binder::Binder::new(&mut shared_type_ctx, &unit.interner)
-                        .with_mode(checker_mode)
-                        .with_policy(checker_policy);
+                let mut binder = raya_engine::parser::checker::binder::Binder::new(
+                    &mut shared_type_ctx,
+                    &unit.interner,
+                )
+                .with_mode(checker_mode)
+                .with_policy(checker_policy);
                 if let Err(errors) = binder.bind_module(&unit.ast) {
                     return Err(format!(
                         "Failed to bind builtin source '{}': {}",
@@ -895,7 +1031,7 @@ impl Runtime {
                         .with_module_identity(module_identity)
                         .with_js_this_binding_compat(true)
                         .with_ambient_builtin_globals(declared_name_set.clone());
-                let module = match compiler.compile_via_ir(&unit.ast) {
+                let mut module = match compiler.compile_via_ir(&unit.ast) {
                     Ok(module) => module,
                     Err(error) => {
                         return Err(format!(
@@ -904,6 +1040,13 @@ impl Runtime {
                         ))
                     }
                 };
+                Self::populate_builtin_runtime_exports(
+                    &mut module,
+                    &unit.ast,
+                    &unit.interner,
+                    &declared_exports,
+                    &unit.export_names,
+                );
                 let encoded = module.encode();
                 let finalized = match Module::decode(&encoded) {
                     Ok(module) => module,
@@ -959,7 +1102,8 @@ impl Runtime {
 
             for export in &builtin_module.exports {
                 let value = Self::materialize_export_value(vm, &builtin_module, export)?;
-                vm.shared_state().set_builtin_global(export.name.clone(), value);
+                vm.shared_state()
+                    .set_builtin_global(export.name.clone(), value);
             }
         }
 
@@ -1201,12 +1345,12 @@ impl Runtime {
                     let rebased = vm
                         .shared_state()
                         .resolve_nominal_type_id(module, export.index)
-                        .ok_or_else(|| RuntimeError::Dependency(
-                            format!(
+                        .ok_or_else(|| {
+                            RuntimeError::Dependency(format!(
                                 "invalid module-local nominal type id {} for export '{}'",
                                 export.index, export.name
-                            )
-                        ))?;
+                            ))
+                        })?;
                     let classes = vm.shared_state().classes.read();
                     let rebased_ok = classes.get_class(rebased).is_some_and(|class| {
                         class.name == class_name
@@ -1283,8 +1427,12 @@ impl Runtime {
                 let class_layout_id = layout_id_from_ordered_names(&static_method_names);
                 let mut class_object =
                     Object::new_dynamic(class_layout_id, static_method_names.len());
-                let handle_key = vm.shared_state().intern_prop_key(IMPORTED_CLASS_TYPE_HANDLE_KEY);
-                class_object.ensure_dyn_map().insert(handle_key, handle_value);
+                let handle_key = vm
+                    .shared_state()
+                    .intern_prop_key(IMPORTED_CLASS_TYPE_HANDLE_KEY);
+                class_object
+                    .ensure_dyn_map()
+                    .insert(handle_key, handle_value);
 
                 for (function_id, function) in module.functions.iter().enumerate() {
                     let Some(method_name) = function.name.strip_prefix(&static_prefix) else {
@@ -1404,7 +1552,8 @@ impl Runtime {
         else {
             return Ok(value);
         };
-        let Some(actual_sig_layout) = Self::structural_member_layout_from_signature(actual_sig) else {
+        let Some(actual_sig_layout) = Self::structural_member_layout_from_signature(actual_sig)
+        else {
             return Ok(value);
         };
         if expected_layout.is_empty() {
@@ -1491,8 +1640,11 @@ impl Runtime {
         };
         let _ = consumer_module;
         let _ = source.object_id();
-        vm.shared_state()
-            .register_structural_shape_adapter(provider_layout, required_shape, slot_map);
+        vm.shared_state().register_structural_shape_adapter(
+            provider_layout,
+            required_shape,
+            slot_map,
+        );
         Ok(value)
     }
 

@@ -2177,6 +2177,71 @@ fn test_node_compat_reflect_global_basic_ops() {
 }
 
 #[test]
+fn test_node_compat_reflect_structural_object_ops() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let o = { a: 1 };
+        let okSetFixed = Reflect.set(o, "a", 7);
+        let okSetDyn = Reflect.set(o, "extra", 9);
+        let names = Reflect.getFieldNames(o);
+        let sawA = false;
+        let sawExtra = false;
+        for (let i = 0; i < names.length; i = i + 1) {
+            if (names[i] == "a") sawA = true;
+            if (names[i] == "extra") sawExtra = true;
+        }
+        return okSetFixed
+            && okSetDyn
+            && Reflect.get(o, "a") == 7
+            && Reflect.get(o, "extra") == 9
+            && Reflect.has(o, "a")
+            && Reflect.has(o, "extra")
+            && sawA
+            && sawExtra;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_reflect_descriptor_uses_layout_field_names() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let d = Object.getOwnPropertyDescriptor({ a: 1 }, "a");
+        if (d == null) return false;
+        let names = Reflect.getFieldNames(d);
+        let sawValue = false;
+        let sawWritable = false;
+        for (let i = 0; i < names.length; i = i + 1) {
+            if (names[i] == "value") sawValue = true;
+            if (names[i] == "writable") sawWritable = true;
+        }
+        return Reflect.get(d, "value") == 1
+            && Reflect.has(d, "configurable")
+            && Reflect.getFieldInfo(d, "value") != null
+            && sawValue
+            && sawWritable;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_reflect_has_method_on_callable_structural_field() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let o = {
+            run: (): number => {
+                return 1;
+            }
+        };
+        return Reflect.hasMethod(o, "run") && Reflect.get(o, "run") != null;
+    "#,
+        true,
+    );
+}
+
+#[test]
 fn test_node_compat_proxy_reflect_runtime_integration() {
     expect_bool_runtime_node_compat(
         r#"

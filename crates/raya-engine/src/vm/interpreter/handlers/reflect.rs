@@ -1,31 +1,29 @@
 //! Reflect built-in method handlers and helpers
 
 use crate::compiler::Module;
+use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, BoundMethod, Closure, MapObject, Object, Proxy, RayaString};
+use crate::vm::object::{
+    Array, BoundMethod, BoundNativeMethod, Closure, MapObject, Object, Proxy, RayaString,
+};
 use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
-    fn reflect_object_snapshot_descriptor(&self, value: Value) -> (String, Vec<String>) {
-        let Some(ptr) = (unsafe { value.as_ptr::<Object>() }) else {
-            return ("unknown".to_string(), Vec::new());
-        };
-        let obj = unsafe { &*ptr.as_ptr() };
-        let classes = self.classes.read();
-        let class_metadata = self.class_metadata.read();
+    fn reflect_object_ptr(value: Value) -> Option<NonNull<Object>> {
+        unsafe { value.as_ptr::<Object>() }
+    }
 
-        if let Some(class_id) = obj.nominal_class_id() {
-            let class_name = classes
-                .get_class(class_id)
-                .map(|class| class.name.clone())
-                .unwrap_or_else(|| format!("Class{}", class_id));
-            let field_names = class_metadata
+    fn reflect_object_field_names(&self, obj: &Object) -> Vec<String> {
+        let mut field_names = if let Some(class_id) = obj.nominal_class_id() {
+            let class_metadata = self.class_metadata.read();
+            class_metadata
                 .get(class_id)
                 .map(|meta| {
                     meta.field_names
@@ -40,24 +38,171 @@ impl<'a> Interpreter<'a> {
                         })
                         .collect::<Vec<_>>()
                 })
+                .filter(|names| !names.is_empty())
                 .unwrap_or_else(|| {
-                    self.nominal_allocation(class_id)
-                        .map(|(_, field_count)| {
-                            (0..field_count)
-                                .map(|i| format!("field_{}", i))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
-                });
-            return (class_name, field_names);
+                    self.layout_field_names_for_object(obj).unwrap_or_else(|| {
+                        (0..obj.field_count())
+                            .map(|index| format!("field_{}", index))
+                            .collect::<Vec<_>>()
+                    })
+                })
+        } else {
+            self.layout_field_names_for_object(obj).unwrap_or_else(|| {
+                (0..obj.field_count())
+                    .map(|index| format!("field_{}", index))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        if let Some(dyn_map) = obj.dyn_map() {
+            for key in dyn_map.keys() {
+                let Some(name) = self.prop_key_name(*key) else {
+                    continue;
+                };
+                if !field_names.iter().any(|existing| existing == &name) {
+                    field_names.push(name);
+                }
+            }
         }
 
-        let layout_id = obj.layout_id();
-        let field_names = self
-            .structural_layout_names(layout_id)
-            .or_else(|| self.layouts.read().layout_field_names(layout_id).map(|names| names.to_vec()))
-            .unwrap_or_default();
-        (format!("Layout{}", layout_id), field_names)
+        field_names
+    }
+
+    fn reflect_object_class_name(&self, obj: &Object) -> String {
+        if let Some(class_id) = obj.nominal_class_id() {
+            return self
+                .classes
+                .read()
+                .get_class(class_id)
+                .map(|class| class.name.clone())
+                .unwrap_or_else(|| format!("Class{}", class_id));
+        }
+        format!("Layout{}", obj.layout_id())
+    }
+
+    fn reflect_property_value(&self, target: Value, property_key: &str) -> Option<Value> {
+        let obj_ptr = Self::reflect_object_ptr(target)?;
+        let obj = unsafe { obj_ptr.as_ref() };
+        if let Some(index) = self.get_field_index_for_value(target, property_key) {
+            return obj.get_field(index);
+        }
+        let prop_key = self.intern_prop_key(property_key);
+        obj.dyn_map()
+            .and_then(|dyn_map| dyn_map.get(&prop_key).copied())
+    }
+
+    fn reflect_set_property_value(&self, target: Value, property_key: &str, value: Value) -> bool {
+        let Some(mut obj_ptr) = Self::reflect_object_ptr(target) else {
+            return false;
+        };
+        let obj = unsafe { obj_ptr.as_mut() };
+        if let Some(index) = self.get_field_index_for_value(target, property_key) {
+            return obj.set_field(index, value).is_ok();
+        }
+        obj.ensure_dyn_map()
+            .insert(self.intern_prop_key(property_key), value);
+        true
+    }
+
+    fn reflect_method_slot_for_object(&self, obj: &Object, property_key: &str) -> Option<usize> {
+        let class_id = obj.nominal_class_id()?;
+        let class_metadata = self.class_metadata.read();
+        class_metadata
+            .get(class_id)
+            .and_then(|meta| meta.get_method_index(property_key))
+    }
+
+    fn reflect_is_callable_value(value: Value) -> bool {
+        if !value.is_ptr() {
+            return false;
+        }
+        let header = unsafe {
+            let hp = (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
+            &*(hp as *const GcHeader)
+        };
+        header.type_id() == std::any::TypeId::of::<Closure>()
+            || header.type_id() == std::any::TypeId::of::<BoundMethod>()
+            || header.type_id() == std::any::TypeId::of::<BoundNativeMethod>()
+    }
+
+    fn reflect_has_property(&self, target: Value, property_key: &str) -> bool {
+        let Some(obj_ptr) = Self::reflect_object_ptr(target) else {
+            return false;
+        };
+        let obj = unsafe { obj_ptr.as_ref() };
+        if self
+            .get_field_index_for_value(target, property_key)
+            .is_some()
+        {
+            return true;
+        }
+        let prop_key = self.intern_prop_key(property_key);
+        if obj
+            .dyn_map()
+            .is_some_and(|dyn_map| dyn_map.contains_key(&prop_key))
+        {
+            return true;
+        }
+        self.reflect_method_slot_for_object(obj, property_key)
+            .is_some()
+    }
+
+    fn reflect_alloc_string_value(&self, value: impl Into<String>) -> Value {
+        let gc_ptr = self.gc.lock().allocate(RayaString::new(value.into()));
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+    }
+
+    fn reflect_alloc_field_info_map(
+        &self,
+        name: &str,
+        type_name: &str,
+        field_index: Option<usize>,
+        is_static: bool,
+        is_readonly: bool,
+        declaring_class_id: Option<usize>,
+    ) -> Value {
+        let mut map = MapObject::new();
+        map.set(
+            self.reflect_alloc_string_value("name"),
+            self.reflect_alloc_string_value(name),
+        );
+        map.set(
+            self.reflect_alloc_string_value("type"),
+            self.reflect_alloc_string_value(type_name),
+        );
+        map.set(
+            self.reflect_alloc_string_value("index"),
+            field_index
+                .map(|index| Value::i32(index as i32))
+                .unwrap_or(Value::null()),
+        );
+        map.set(
+            self.reflect_alloc_string_value("isStatic"),
+            Value::bool(is_static),
+        );
+        map.set(
+            self.reflect_alloc_string_value("isReadonly"),
+            Value::bool(is_readonly),
+        );
+        map.set(
+            self.reflect_alloc_string_value("declaringClass"),
+            declaring_class_id
+                .map(|id| Value::i32(id as i32))
+                .unwrap_or(Value::null()),
+        );
+        let gc_ptr = self.gc.lock().allocate(map);
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+    }
+
+    fn reflect_object_snapshot_descriptor(&self, value: Value) -> (String, Vec<String>) {
+        let Some(ptr) = Self::reflect_object_ptr(value) else {
+            return ("unknown".to_string(), Vec::new());
+        };
+        let obj = unsafe { ptr.as_ref() };
+        (
+            self.reflect_object_class_name(obj),
+            self.reflect_object_field_names(obj),
+        )
     }
 
     /// Handle built-in Reflect methods
@@ -424,35 +569,14 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
 
-                // Get class ID from object
-                let class_id = crate::vm::reflect::get_class_id(target).ok_or_else(|| {
-                    VmError::TypeError("get: target is not a class instance".to_string())
-                })?;
-
-                // Look up field index from class metadata
-                let class_metadata = self.class_metadata.read();
-                let field_index = class_metadata
-                    .get(class_id)
-                    .and_then(|meta| meta.get_field_index(&property_key));
-                drop(class_metadata);
-
-                if let Some(index) = field_index {
-                    let obj_ptr = unsafe { target.as_ptr::<Object>() };
-                    let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
-                    obj.get_field(index).unwrap_or(Value::null())
+                if let Some(value) = self.reflect_property_value(target, &property_key) {
+                    value
                 } else {
-                    // Field not found; allow method fallback for dynamic member access.
-                    // This makes Reflect.get(obj, "methodName") usable at runtime when
-                    // compile-time class identity is unavailable but the receiver is a class object.
-                    let class_metadata = self.class_metadata.read();
-                    let method_slot = class_metadata
-                        .get(class_id)
-                        .and_then(|meta| meta.get_method_index(&property_key));
-                    drop(class_metadata);
-
-                    if let Some(slot) = method_slot {
-                        let obj_ptr = unsafe { target.as_ptr::<Object>() };
-                        let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                    let obj_ptr = Self::reflect_object_ptr(target).ok_or_else(|| {
+                        VmError::TypeError("get: target must be an object".to_string())
+                    })?;
+                    let obj = unsafe { obj_ptr.as_ref() };
+                    if let Some(slot) = self.reflect_method_slot_for_object(obj, &property_key) {
                         let Some(runtime_class_id) = obj.nominal_class_id() else {
                             return Err(VmError::RuntimeError(
                                 "Method fallback requires nominal runtime type".to_string(),
@@ -510,29 +634,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
 
-                // Get class ID from object
-                let class_id = crate::vm::reflect::get_class_id(target).ok_or_else(|| {
-                    VmError::TypeError("set: target is not a class instance".to_string())
-                })?;
-
-                // Look up field index from class metadata
-                let class_metadata = self.class_metadata.read();
-                let field_index = class_metadata
-                    .get(class_id)
-                    .and_then(|meta| meta.get_field_index(&property_key));
-                drop(class_metadata);
-
-                if let Some(index) = field_index {
-                    let obj_ptr = unsafe { target.as_ptr::<Object>() };
-                    let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
-                    match obj.set_field(index, value) {
-                        Ok(()) => Value::bool(true),
-                        Err(_) => Value::bool(false),
-                    }
-                } else {
-                    // Field not found in metadata
-                    Value::bool(false)
-                }
+                Value::bool(self.reflect_set_property_value(target, &property_key, value))
             }
 
             reflect::HAS => {
@@ -545,18 +647,7 @@ impl<'a> Interpreter<'a> {
                 let target = args[0];
                 let property_key = get_string(args[1])?;
 
-                if !target.is_ptr() {
-                    Value::bool(false)
-                } else if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
-                    let class_metadata = self.class_metadata.read();
-                    let has_field = class_metadata
-                        .get(class_id)
-                        .map(|meta| meta.has_field(&property_key))
-                        .unwrap_or(false);
-                    Value::bool(has_field)
-                } else {
-                    Value::bool(false)
-                }
+                Value::bool(self.reflect_has_property(target, &property_key))
             }
 
             reflect::GET_FIELD_NAMES => {
@@ -568,15 +659,12 @@ impl<'a> Interpreter<'a> {
                 }
                 let target = args[0];
 
-                let field_names = if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
-                    let class_metadata = self.class_metadata.read();
-                    class_metadata
-                        .get(class_id)
-                        .map(|meta| meta.field_names.clone())
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
+                let field_names = Self::reflect_object_ptr(target)
+                    .map(|ptr| {
+                        let obj = unsafe { ptr.as_ref() };
+                        self.reflect_object_field_names(obj)
+                    })
+                    .unwrap_or_default();
 
                 // Create array of strings
                 let mut arr = Array::new(0, field_names.len());
@@ -604,92 +692,46 @@ impl<'a> Interpreter<'a> {
                 let target = args[0];
                 let property_key = get_string(args[1])?;
 
-                if !target.is_ptr() {
-                    Value::null()
-                } else if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
-                    let class_metadata = self.class_metadata.read();
-                    if let Some(meta) = class_metadata.get(class_id) {
-                        if let Some(field_info) = meta.get_field_info(&property_key) {
-                            // Create a MapObject with field info properties
-                            let mut map = MapObject::new();
+                if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
+                    let obj = unsafe { obj_ptr.as_ref() };
 
-                            // Add field properties
-                            let name_str = RayaString::new(field_info.name.clone());
-                            let name_gc = self.gc.lock().allocate(name_str);
-                            let name_val = unsafe {
-                                Value::from_ptr(std::ptr::NonNull::new(name_gc.as_ptr()).unwrap())
-                            };
-
-                            let type_str = RayaString::new(field_info.type_info.name.clone());
-                            let type_gc = self.gc.lock().allocate(type_str);
-                            let type_val = unsafe {
-                                Value::from_ptr(std::ptr::NonNull::new(type_gc.as_ptr()).unwrap())
-                            };
-
-                            let key_name = RayaString::new("name".to_string());
-                            let key_name_gc = self.gc.lock().allocate(key_name);
-                            let key_name_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_name_gc.as_ptr()).unwrap(),
-                                )
-                            };
-                            map.set(key_name_val, name_val);
-
-                            let key_type = RayaString::new("type".to_string());
-                            let key_type_gc = self.gc.lock().allocate(key_type);
-                            let key_type_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_type_gc.as_ptr()).unwrap(),
-                                )
-                            };
-                            map.set(key_type_val, type_val);
-
-                            let key_index = RayaString::new("index".to_string());
-                            let key_index_gc = self.gc.lock().allocate(key_index);
-                            let key_index_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_index_gc.as_ptr()).unwrap(),
-                                )
-                            };
-                            map.set(key_index_val, Value::i32(field_info.field_index as i32));
-
-                            let key_static = RayaString::new("isStatic".to_string());
-                            let key_static_gc = self.gc.lock().allocate(key_static);
-                            let key_static_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_static_gc.as_ptr()).unwrap(),
-                                )
-                            };
-                            map.set(key_static_val, Value::bool(field_info.is_static));
-
-                            let key_readonly = RayaString::new("isReadonly".to_string());
-                            let key_readonly_gc = self.gc.lock().allocate(key_readonly);
-                            let key_readonly_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_readonly_gc.as_ptr()).unwrap(),
-                                )
-                            };
-                            map.set(key_readonly_val, Value::bool(field_info.is_readonly));
-
-                            let key_class = RayaString::new("declaringClass".to_string());
-                            let key_class_gc = self.gc.lock().allocate(key_class);
-                            let key_class_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_class_gc.as_ptr()).unwrap(),
-                                )
-                            };
-                            map.set(
-                                key_class_val,
-                                Value::i32(field_info.declaring_class_id as i32),
-                            );
-
-                            let map_gc = self.gc.lock().allocate(map);
-                            unsafe {
-                                Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap())
-                            }
+                    if let Some(class_id) = obj.nominal_class_id() {
+                        let class_metadata = self.class_metadata.read();
+                        if let Some(field_info) = class_metadata
+                            .get(class_id)
+                            .and_then(|meta| meta.get_field_info(&property_key))
+                        {
+                            self.reflect_alloc_field_info_map(
+                                &field_info.name,
+                                &field_info.type_info.name,
+                                Some(field_info.field_index),
+                                field_info.is_static,
+                                field_info.is_readonly,
+                                Some(field_info.declaring_class_id),
+                            )
+                        } else if let Some(value) =
+                            self.reflect_property_value(target, &property_key)
+                        {
+                            self.reflect_alloc_field_info_map(
+                                &property_key,
+                                &crate::vm::reflect::get_type_info_for_value(value).name,
+                                self.get_field_index_for_value(target, &property_key),
+                                false,
+                                false,
+                                Some(class_id),
+                            )
                         } else {
                             Value::null()
                         }
+                    } else if let Some(value) = self.reflect_property_value(target, &property_key) {
+                        self.reflect_alloc_field_info_map(
+                            &property_key,
+                            &crate::vm::reflect::get_type_info_for_value(value).name,
+                            self.get_field_index_for_value(target, &property_key),
+                            false,
+                            false,
+                            obj.nominal_class_id(),
+                        )
                     } else {
                         Value::null()
                     }
@@ -707,100 +749,110 @@ impl<'a> Interpreter<'a> {
                 }
                 let target = args[0];
 
-                if !target.is_ptr() {
-                    let arr = Array::new(0, 0);
-                    let arr_gc = self.gc.lock().allocate(arr);
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
-                } else if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
-                    let class_metadata = self.class_metadata.read();
-                    if let Some(meta) = class_metadata.get(class_id) {
-                        let fields = meta.get_all_field_infos();
-                        let mut arr = Array::new(fields.len(), 0);
+                if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
+                    let obj = unsafe { obj_ptr.as_ref() };
 
-                        for (i, field_info) in fields.iter().enumerate() {
-                            // Create a MapObject for each field
-                            let mut map = MapObject::new();
+                    if let Some(class_id) = obj.nominal_class_id() {
+                        let class_metadata = self.class_metadata.read();
+                        if let Some(meta) = class_metadata.get(class_id) {
+                            let fields = meta.get_all_field_infos();
+                            if !fields.is_empty() {
+                                let mut arr = Array::new(0, fields.len());
+                                for (i, field_info) in fields.iter().enumerate() {
+                                    let map_val = self.reflect_alloc_field_info_map(
+                                        &field_info.name,
+                                        &field_info.type_info.name,
+                                        Some(field_info.field_index),
+                                        field_info.is_static,
+                                        field_info.is_readonly,
+                                        Some(field_info.declaring_class_id),
+                                    );
+                                    arr.set(i, map_val).ok();
+                                }
 
-                            let key_name = RayaString::new("name".to_string());
-                            let key_name_gc = self.gc.lock().allocate(key_name);
-                            let key_name_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_name_gc.as_ptr()).unwrap(),
-                                )
-                            };
-
-                            let name_str = RayaString::new(field_info.name.clone());
-                            let name_gc = self.gc.lock().allocate(name_str);
-                            let name_val = unsafe {
-                                Value::from_ptr(std::ptr::NonNull::new(name_gc.as_ptr()).unwrap())
-                            };
-                            map.set(key_name_val, name_val);
-
-                            let key_type = RayaString::new("type".to_string());
-                            let key_type_gc = self.gc.lock().allocate(key_type);
-                            let key_type_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_type_gc.as_ptr()).unwrap(),
-                                )
-                            };
-
-                            let type_str = RayaString::new(field_info.type_info.name.clone());
-                            let type_gc = self.gc.lock().allocate(type_str);
-                            let type_val = unsafe {
-                                Value::from_ptr(std::ptr::NonNull::new(type_gc.as_ptr()).unwrap())
-                            };
-                            map.set(key_type_val, type_val);
-
-                            let key_index = RayaString::new("index".to_string());
-                            let key_index_gc = self.gc.lock().allocate(key_index);
-                            let key_index_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_index_gc.as_ptr()).unwrap(),
-                                )
-                            };
-                            map.set(key_index_val, Value::i32(field_info.field_index as i32));
-
-                            let key_static = RayaString::new("isStatic".to_string());
-                            let key_static_gc = self.gc.lock().allocate(key_static);
-                            let key_static_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_static_gc.as_ptr()).unwrap(),
-                                )
-                            };
-                            map.set(key_static_val, Value::bool(field_info.is_static));
-
-                            let key_readonly = RayaString::new("isReadonly".to_string());
-                            let key_readonly_gc = self.gc.lock().allocate(key_readonly);
-                            let key_readonly_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_readonly_gc.as_ptr()).unwrap(),
-                                )
-                            };
-                            map.set(key_readonly_val, Value::bool(field_info.is_readonly));
-
-                            let key_class = RayaString::new("declaringClass".to_string());
-                            let key_class_gc = self.gc.lock().allocate(key_class);
-                            let key_class_val = unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(key_class_gc.as_ptr()).unwrap(),
-                                )
-                            };
-                            map.set(
-                                key_class_val,
-                                Value::i32(field_info.declaring_class_id as i32),
-                            );
-
-                            let map_gc = self.gc.lock().allocate(map);
-                            let map_val = unsafe {
-                                Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap())
-                            };
-                            arr.set(i, map_val).ok();
+                                let arr_gc = self.gc.lock().allocate(arr);
+                                unsafe {
+                                    Value::from_ptr(
+                                        std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap(),
+                                    )
+                                }
+                            } else {
+                                let field_values = self
+                                    .reflect_object_field_names(obj)
+                                    .into_iter()
+                                    .filter_map(|name| {
+                                        self.reflect_property_value(target, &name).map(|value| {
+                                            self.reflect_alloc_field_info_map(
+                                                &name,
+                                                &crate::vm::reflect::get_type_info_for_value(value)
+                                                    .name,
+                                                self.get_field_index_for_value(target, &name),
+                                                false,
+                                                false,
+                                                Some(class_id),
+                                            )
+                                        })
+                                    })
+                                    .collect::<Vec<_>>();
+                                let mut arr = Array::new(0, field_values.len());
+                                for (i, value) in field_values.into_iter().enumerate() {
+                                    arr.set(i, value).ok();
+                                }
+                                let arr_gc = self.gc.lock().allocate(arr);
+                                unsafe {
+                                    Value::from_ptr(
+                                        std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap(),
+                                    )
+                                }
+                            }
+                        } else {
+                            let field_values = self
+                                .reflect_object_field_names(obj)
+                                .into_iter()
+                                .filter_map(|name| {
+                                    self.reflect_property_value(target, &name).map(|value| {
+                                        self.reflect_alloc_field_info_map(
+                                            &name,
+                                            &crate::vm::reflect::get_type_info_for_value(value)
+                                                .name,
+                                            self.get_field_index_for_value(target, &name),
+                                            false,
+                                            false,
+                                            Some(class_id),
+                                        )
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            let mut arr = Array::new(0, field_values.len());
+                            for (i, value) in field_values.into_iter().enumerate() {
+                                arr.set(i, value).ok();
+                            }
+                            let arr_gc = self.gc.lock().allocate(arr);
+                            unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
+                            }
                         }
-
-                        let arr_gc = self.gc.lock().allocate(arr);
-                        unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
                     } else {
-                        let arr = Array::new(0, 0);
+                        let field_values = self
+                            .reflect_object_field_names(obj)
+                            .into_iter()
+                            .filter_map(|name| {
+                                self.reflect_property_value(target, &name).map(|value| {
+                                    self.reflect_alloc_field_info_map(
+                                        &name,
+                                        &crate::vm::reflect::get_type_info_for_value(value).name,
+                                        self.get_field_index_for_value(target, &name),
+                                        false,
+                                        false,
+                                        obj.nominal_class_id(),
+                                    )
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        let mut arr = Array::new(0, field_values.len());
+                        for (i, value) in field_values.into_iter().enumerate() {
+                            arr.set(i, value).ok();
+                        }
                         let arr_gc = self.gc.lock().allocate(arr);
                         unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
                     }
@@ -825,7 +877,7 @@ impl<'a> Interpreter<'a> {
                 let class_metadata = self.class_metadata.read();
                 if let Some(meta) = class_metadata.get(class_id) {
                     let names = &meta.static_field_names;
-                    let mut arr = Array::new(names.len(), 0);
+                    let mut arr = Array::new(0, names.len());
                     for (i, name) in names.iter().enumerate() {
                         if !name.is_empty() {
                             let s = RayaString::new(name.clone());
@@ -864,18 +916,17 @@ impl<'a> Interpreter<'a> {
                 let target = args[0];
                 let method_name = get_string(args[1])?;
 
-                if !target.is_ptr() {
-                    Value::bool(false)
-                } else if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
-                    let class_metadata = self.class_metadata.read();
-                    let has_method = class_metadata
-                        .get(class_id)
-                        .map(|meta| meta.has_method(&method_name))
-                        .unwrap_or(false);
-                    Value::bool(has_method)
-                } else {
-                    Value::bool(false)
-                }
+                let has_method = Self::reflect_object_ptr(target)
+                    .map(|ptr| {
+                        let obj = unsafe { ptr.as_ref() };
+                        self.reflect_method_slot_for_object(obj, &method_name)
+                            .is_some()
+                            || self
+                                .reflect_property_value(target, &method_name)
+                                .is_some_and(Self::reflect_is_callable_value)
+                    })
+                    .unwrap_or(false);
+                Value::bool(has_method)
             }
 
             reflect::GET_METHODS
@@ -914,9 +965,10 @@ impl<'a> Interpreter<'a> {
                     VmError::TypeError("construct: classId must be a number".to_string())
                 })? as usize;
 
-                let (layout_id, field_count) = self.nominal_allocation(class_id).ok_or_else(|| {
-                    VmError::RuntimeError(format!("Class {} not found", class_id))
-                })?;
+                let (layout_id, field_count) =
+                    self.nominal_allocation(class_id).ok_or_else(|| {
+                        VmError::RuntimeError(format!("Class {} not found", class_id))
+                    })?;
 
                 // Allocate new object
                 let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
@@ -937,9 +989,10 @@ impl<'a> Interpreter<'a> {
                     VmError::TypeError("allocate: classId must be a number".to_string())
                 })? as usize;
 
-                let (layout_id, field_count) = self.nominal_allocation(class_id).ok_or_else(|| {
-                    VmError::RuntimeError(format!("Class {} not found", class_id))
-                })?;
+                let (layout_id, field_count) =
+                    self.nominal_allocation(class_id).ok_or_else(|| {
+                        VmError::RuntimeError(format!("Class {} not found", class_id))
+                    })?;
 
                 // Allocate new object (uninitialized - fields are null)
                 let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
@@ -2743,34 +2796,22 @@ impl<'a> Interpreter<'a> {
         }
 
         // Object
-        if let Some(class_id) = crate::vm::reflect::get_class_id(value) {
-            let classes = self.classes.read();
-            let class_name = classes
-                .get_class(class_id)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| format!("Class{}", class_id));
-            drop(classes);
+        if let Some(ptr) = Self::reflect_object_ptr(value) {
+            let obj = unsafe { ptr.as_ref() };
+            let class_name = self.reflect_object_class_name(obj);
 
             if depth >= max_depth {
                 return Ok(format!("{} {{}}", class_name));
             }
 
-            let class_metadata = self.class_metadata.read();
-            if let Some(meta) = class_metadata.get(class_id) {
-                let obj_ptr = unsafe { value.as_ptr::<Object>() };
-                if let Some(ptr) = obj_ptr {
-                    let obj = unsafe { &*ptr.as_ptr() };
-                    let mut fields = Vec::new();
-                    for (i, name) in meta.field_names.iter().enumerate() {
-                        if let Some(&field_val) = obj.fields.get(i) {
-                            let val_str = self.inspect_value(field_val, depth + 1, max_depth)?;
-                            fields.push(format!("{}: {}", name, val_str));
-                        }
-                    }
-                    return Ok(format!("{} {{ {} }}", class_name, fields.join(", ")));
+            let mut fields = Vec::new();
+            for name in self.reflect_object_field_names(obj) {
+                if let Some(field_val) = self.reflect_property_value(value, &name) {
+                    let val_str = self.inspect_value(field_val, depth + 1, max_depth)?;
+                    fields.push(format!("{}: {}", name, val_str));
                 }
             }
-            return Ok(format!("{} {{ ... }}", class_name));
+            return Ok(format!("{} {{ {} }}", class_name, fields.join(", ")));
         }
 
         Ok("<ptr>".to_string())
@@ -2921,25 +2962,17 @@ impl<'a> Interpreter<'a> {
         }
 
         // Object
-        if let Some(class_id) = crate::vm::reflect::get_class_id(value) {
-            let class_metadata = self.class_metadata.read();
-            if let Some(meta) = class_metadata.get(class_id) {
-                let obj_ptr = unsafe { value.as_ptr::<Object>() };
-                if let Some(ptr) = obj_ptr {
-                    let obj = unsafe { &*ptr.as_ptr() };
-                    let mut fields = Vec::new();
-                    for (i, name) in meta.field_names.iter().enumerate() {
-                        if let Some(&field_val) = obj.fields.get(i) {
-                            let val_json = self.value_to_json(field_val, visited)?;
-                            fields.push(format!("\"{}\":{}", name, val_json));
-                        }
-                    }
-                    visited.pop();
-                    return Ok(format!("{{{}}}", fields.join(",")));
+        if let Some(ptr) = Self::reflect_object_ptr(value) {
+            let obj = unsafe { ptr.as_ref() };
+            let mut fields = Vec::new();
+            for name in self.reflect_object_field_names(obj) {
+                if let Some(field_val) = self.reflect_property_value(value, &name) {
+                    let val_json = self.value_to_json(field_val, visited)?;
+                    fields.push(format!("\"{}\":{}", name, val_json));
                 }
             }
             visited.pop();
-            return Ok("{}".to_string());
+            return Ok(format!("{{{}}}", fields.join(",")));
         }
 
         visited.pop();
@@ -3180,8 +3213,7 @@ impl<'a> Interpreter<'a> {
         // Sort changes by name for consistent ordering
         let mut change_names: Vec<_> = changes.keys().collect();
         change_names.sort();
-        let ordered_names: Vec<String> =
-            change_names.iter().map(|name| (*name).clone()).collect();
+        let ordered_names: Vec<String> = change_names.iter().map(|name| (*name).clone()).collect();
         let mut obj = Object::new_structural(
             crate::vm::object::layout_id_from_ordered_names(&ordered_names),
             change_count,

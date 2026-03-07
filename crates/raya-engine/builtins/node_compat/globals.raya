@@ -7,6 +7,10 @@ const __DIGITS: string = "0123456789abcdefghijklmnopqrstuvwxyz";
 const globalThis: Object = new Object();
 
 // Reflect/Proxy native IDs (same internal primitives used by std:reflect).
+const NC_REFLECT_GET_FIELD_NAMES: number = 0x0D23;
+const NC_REFLECT_GET_FIELD_INFO: number = 0x0D24;
+const NC_REFLECT_GET_FIELDS: number = 0x0D25;
+const NC_REFLECT_HAS_METHOD: number = 0x0D35;
 const NC_REFLECT_CREATE_PROXY: number = 0x0DB0;
 const NC_REFLECT_IS_PROXY: number = 0x0DB1;
 const NC_REFLECT_GET_PROXY_TARGET: number = 0x0DB2;
@@ -215,6 +219,22 @@ class __NodeCompatReflect {
             return proxyTarget[key] != null;
         }
         return target[key] != null;
+    }
+
+    getFieldNames(target: Proxy<Object> | Object): string[] {
+        return __NATIVE_CALL<string[]>(NC_REFLECT_GET_FIELD_NAMES, target);
+    }
+
+    getFieldInfo(target: Proxy<Object> | Object, key: string): Object | null {
+        return __NATIVE_CALL<Object | null>(NC_REFLECT_GET_FIELD_INFO, target, key);
+    }
+
+    getFields(target: Proxy<Object> | Object): Object[] {
+        return __NATIVE_CALL<Object[]>(NC_REFLECT_GET_FIELDS, target);
+    }
+
+    hasMethod(target: Proxy<Object> | Object, key: string): boolean {
+        return __NATIVE_CALL<boolean>(NC_REFLECT_HAS_METHOD, target, key);
     }
 
     isProxy(obj: Proxy<Object> | Object): boolean {

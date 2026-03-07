@@ -553,6 +553,57 @@ impl<'a> Interpreter<'a> {
         Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
     }
 
+    fn synthesize_data_property_descriptor(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(obj_ptr) = (unsafe { target.as_ptr::<Object>() }) else {
+            return Ok(None);
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+
+        let fixed_value = self
+            .get_field_index_for_value(target, key)
+            .and_then(|index| obj.get_field(index));
+        let dynamic_value = obj
+            .dyn_map()
+            .and_then(|dyn_map| dyn_map.get(&self.intern_prop_key(key)).copied());
+        let Some(value) = fixed_value.or(dynamic_value) else {
+            return Ok(None);
+        };
+
+        let descriptor = self.alloc_object_descriptor()?;
+        let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() }) else {
+            return Ok(None);
+        };
+        let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
+
+        if let Some(value_index) = self.get_field_index_for_value(descriptor, "value") {
+            descriptor_obj
+                .set_field(value_index, value)
+                .map_err(VmError::RuntimeError)?;
+        }
+        if let Some(writable_index) = self.get_field_index_for_value(descriptor, "writable") {
+            descriptor_obj
+                .set_field(writable_index, Value::bool(true))
+                .map_err(VmError::RuntimeError)?;
+        }
+        if let Some(configurable_index) = self.get_field_index_for_value(descriptor, "configurable")
+        {
+            descriptor_obj
+                .set_field(configurable_index, Value::bool(true))
+                .map_err(VmError::RuntimeError)?;
+        }
+        if let Some(enumerable_index) = self.get_field_index_for_value(descriptor, "enumerable") {
+            descriptor_obj
+                .set_field(enumerable_index, Value::bool(true))
+                .map_err(VmError::RuntimeError)?;
+        }
+
+        Ok(Some(descriptor))
+    }
+
     pub(in crate::vm::interpreter) fn exec_native_ops(
         &mut self,
         stack: &mut Stack,
@@ -714,10 +765,12 @@ impl<'a> Interpreter<'a> {
                         let constructor_module = class.module.clone();
                         let (layout_id, field_count) = match self.nominal_allocation(class_id) {
                             Some(allocation) => allocation,
-                            None => return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            None => {
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
                                 "Invalid class allocation metadata for dynamic construction: {}",
                                 class_id
-                            ))),
+                            )))
+                            }
                         };
                         drop(classes);
 
@@ -2171,9 +2224,14 @@ impl<'a> Interpreter<'a> {
                                 "Object.getOwnPropertyDescriptor key must be a string".to_string(),
                             ));
                         };
-                        let value = self
-                            .get_descriptor_metadata(target, &key)
-                            .unwrap_or(Value::null());
+                        let value = match self.get_descriptor_metadata(target, &key) {
+                            Some(descriptor) => descriptor,
+                            None => match self.synthesize_data_property_descriptor(target, &key) {
+                                Ok(Some(descriptor)) => descriptor,
+                                Ok(None) => Value::null(),
+                                Err(error) => return OpcodeResult::Error(error),
+                            },
+                        };
                         if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
                         }
