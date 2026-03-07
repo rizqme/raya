@@ -37,6 +37,8 @@ pub struct LoweringContext<'a> {
     sig_native_call_dispatch: Option<ir::SigRef>,
     /// Imported signature for RuntimeHelperTable.object_get_field
     sig_object_get_field: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.object_implements_shape
+    sig_object_implements_shape: Option<ir::SigRef>,
 }
 
 /// The five parameters of the JIT entry function ABI
@@ -142,6 +144,7 @@ impl<'a> LoweringContext<'a> {
             sig_check_preemption: None,
             sig_native_call_dispatch: None,
             sig_object_get_field: None,
+            sig_object_implements_shape: None,
         };
 
         // Declare all registers as Cranelift variables
@@ -626,6 +629,88 @@ impl<'a> LoweringContext<'a> {
                 let merged = builder.block_params(done)[0];
                 self.def_reg(builder, *dest, merged);
             }
+            JitInstr::ImplementsShape {
+                dest,
+                object,
+                shape_id,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let null_block = builder.create_block();
+                let done = builder.create_block();
+                builder.append_block_param(done, types::I8);
+                builder
+                    .ins()
+                    .brif(is_ctx_null, null_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+                builder.seal_block(null_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let fn_ptr = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx, 128); // 24 + 104
+                let sig = self.object_implements_shape_sig(builder);
+                let object_val = self.use_reg(builder, *object);
+                let shape_id_val = builder.ins().iconst(types::I64, *shape_id as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[object_val, shape_id_val, shared_state],
+                );
+                let result = builder.inst_results(call)[0];
+                let result_arg = [ir::BlockArg::Value(result)];
+                builder.ins().jump(done, &result_arg);
+
+                builder.switch_to_block(null_block);
+                let false_val = builder.ins().iconst(types::I8, 0);
+                let false_arg = [ir::BlockArg::Value(false_val)];
+                builder.ins().jump(done, &false_arg);
+
+                builder.seal_block(done);
+                builder.switch_to_block(done);
+                let merged = builder.block_params(done)[0];
+                self.def_reg(builder, *dest, merged);
+            }
+
+            JitInstr::InterpreterBoundary {
+                bytecode_offset,
+                stack,
+                ..
+            } => {
+                let count = stack.len().min(JIT_EXIT_MAX_NATIVE_ARGS) as i64;
+                let count_val = builder.ins().iconst(types::I32, count);
+                builder.ins().store(
+                    MemFlags::trusted(),
+                    count_val,
+                    self.params.exit_info_ptr,
+                    40,
+                );
+                for (i, reg) in stack.iter().take(JIT_EXIT_MAX_NATIVE_ARGS).enumerate() {
+                    let raw = self.use_reg(builder, *reg);
+                    let boxed = match self.func.reg_type(*reg) {
+                        crate::jit::ir::types::JitType::I32 => abi::emit_box_i32(builder, raw),
+                        crate::jit::ir::types::JitType::F64 => abi::emit_box_f64(builder, raw),
+                        crate::jit::ir::types::JitType::Bool => abi::emit_box_bool(builder, raw),
+                        _ => raw,
+                    };
+                    let off = 48 + (i as i32) * 8;
+                    builder.ins().store(
+                        MemFlags::trusted(),
+                        boxed,
+                        self.params.exit_info_ptr,
+                        off,
+                    );
+                }
+                self.emit_exit_return(
+                    builder,
+                    JitExitKind::Suspended as i64,
+                    JitSuspendReason::InterpreterCallBoundary as i64,
+                    *bytecode_offset as i64,
+                );
+                return Ok(true);
+            }
 
             // ===== Move / Phi =====
             JitInstr::Move { dest, src } => {
@@ -1005,6 +1090,20 @@ impl<'a> LoweringContext<'a> {
         sig.returns.push(AbiParam::new(types::I64)); // loaded value
         let sig_ref = builder.func.import_signature(sig);
         self.sig_object_get_field = Some(sig_ref);
+        sig_ref
+    }
+
+    fn object_implements_shape_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_object_implements_shape {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // object value
+        sig.params.push(AbiParam::new(types::I64)); // shape id
+        sig.params.push(AbiParam::new(types::I64)); // shared_state ptr
+        sig.returns.push(AbiParam::new(types::I8)); // bool result
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_object_implements_shape = Some(sig_ref);
         sig_ref
     }
 

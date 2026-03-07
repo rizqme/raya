@@ -200,6 +200,25 @@ mod tests {
         };
         assert!(Interpreter::materialize_native_resume_operands(&func, &exit).is_none());
     }
+
+    #[test]
+    fn interpreter_boundary_materialization_restores_full_stack() {
+        let mut exit = JitExitInfo {
+            bytecode_offset: 12,
+            native_arg_count: 3,
+            ..Default::default()
+        };
+        exit.native_args[0] = Value::i32(1).raw();
+        exit.native_args[1] = Value::i32(2).raw();
+        exit.native_args[2] = Value::i32(3).raw();
+
+        let vals = Interpreter::materialize_interpreter_resume_stack(&exit)
+            .expect("expected full stack materialization");
+        assert_eq!(vals.len(), 3);
+        assert_eq!(vals[0].as_i32(), Some(1));
+        assert_eq!(vals[1].as_i32(), Some(2));
+        assert_eq!(vals[2].as_i32(), Some(3));
+    }
 }
 
 /// Task interpreter that can suspend and resume
@@ -618,6 +637,24 @@ impl<'a> Interpreter<'a> {
         let mat_count = exit_info.native_arg_count as usize;
         let max_native_args = crate::jit::runtime::trampoline::JIT_EXIT_MAX_NATIVE_ARGS;
         if mat_count != expected_arg_count as usize || mat_count > max_native_args {
+            return None;
+        }
+
+        let mut vals = Vec::with_capacity(mat_count);
+        for i in 0..mat_count {
+            vals.push(unsafe { Value::from_raw(exit_info.native_args[i]) });
+        }
+        Some(vals)
+    }
+
+    #[cfg(feature = "jit")]
+    #[inline]
+    fn materialize_interpreter_resume_stack(
+        exit_info: &crate::jit::runtime::trampoline::JitExitInfo,
+    ) -> Option<Vec<Value>> {
+        let mat_count = exit_info.native_arg_count as usize;
+        let max_native_args = crate::jit::runtime::trampoline::JIT_EXIT_MAX_NATIVE_ARGS;
+        if mat_count > max_native_args {
             return None;
         }
 
@@ -1251,7 +1288,9 @@ impl<'a> Interpreter<'a> {
                                         self.module_layouts,
                                         self.class_metadata,
                                         &jit_resolved_natives,
+                                        self.structural_shape_names,
                                         self.structural_shape_adapters,
+                                        self.prop_keys,
                                         self.io_submit_tx,
                                     );
                                 let mut runtime_ctx =
@@ -1351,6 +1390,22 @@ impl<'a> Interpreter<'a> {
                                                     &self.jit_telemetry,
                                                     resumed,
                                                 );
+                                            }
+                                            x if x
+                                                == crate::jit::runtime::trampoline::JitSuspendReason::InterpreterCallBoundary
+                                                    as u32 =>
+                                            {
+                                                if let Some(vals) =
+                                                    Self::materialize_interpreter_resume_stack(
+                                                        &exit_info,
+                                                    )
+                                                {
+                                                    forced_callee_ip =
+                                                        Some(exit_info.bytecode_offset as usize);
+                                                    forced_callee_extra_locals =
+                                                        Some(locals_buf.clone());
+                                                    forced_callee_operand_values = Some(vals);
+                                                }
                                             }
                                             _ => {}
                                         }

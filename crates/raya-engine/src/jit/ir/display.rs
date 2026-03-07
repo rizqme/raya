@@ -221,6 +221,11 @@ impl fmt::Display for JitInstr {
                 object,
                 offset,
             } => write!(f, "{} = load.field {}.{}", dest, object, offset),
+            JitInstr::ImplementsShape {
+                dest,
+                object,
+                shape_id,
+            } => write!(f, "{} = implements.shape {}, @{shape_id:016x}", dest, object),
             JitInstr::StoreFieldExact {
                 object,
                 offset,
@@ -293,6 +298,28 @@ impl fmt::Display for JitInstr {
             }
             JitInstr::SLen { dest, string } => write!(f, "{} = slen {}", dest, string),
             JitInstr::ToString { dest, value } => write!(f, "{} = tostring {}", dest, value),
+
+            // Interpreter boundary
+            JitInstr::InterpreterBoundary {
+                dest,
+                stack,
+                bytecode_offset,
+            } => {
+                let rendered = stack
+                    .iter()
+                    .map(|reg| reg.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if let Some(dest) = dest {
+                    write!(
+                        f,
+                        "{} = boundary.resume @{} [{}]",
+                        dest, bytecode_offset, rendered
+                    )
+                } else {
+                    write!(f, "boundary.resume @{} [{}]", bytecode_offset, rendered)
+                }
+            }
 
             // Calls
             JitInstr::Call {

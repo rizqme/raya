@@ -391,6 +391,11 @@ pub enum JitInstr {
         object: Reg,
         offset: u16,
     },
+    ImplementsShape {
+        dest: Reg,
+        object: Reg,
+        shape_id: u64,
+    },
     StoreFieldExact {
         object: Reg,
         offset: u16,
@@ -462,6 +467,13 @@ pub enum JitInstr {
     ToString {
         dest: Reg,
         value: Reg,
+    },
+
+    // ===== Interpreter Resume Boundary =====
+    InterpreterBoundary {
+        dest: Option<Reg>,
+        stack: Vec<Reg>,
+        bytecode_offset: u32,
     },
 
     // ===== Function Calls =====
@@ -800,6 +812,7 @@ impl JitInstr {
             | JitInstr::LoadStatic { dest, .. }
             | JitInstr::NewObject { dest, .. }
             | JitInstr::LoadFieldExact { dest, .. }
+            | JitInstr::ImplementsShape { dest, .. }
             | JitInstr::InstanceOf { dest, .. }
             | JitInstr::Cast { dest, .. }
             | JitInstr::Typeof { dest, .. }
@@ -815,6 +828,9 @@ impl JitInstr {
             JitInstr::SConcat { dest, .. }
             | JitInstr::SLen { dest, .. }
             | JitInstr::ToString { dest, .. } => Some(*dest),
+
+            // Interpreter boundary
+            JitInstr::InterpreterBoundary { dest, .. } => *dest,
 
             // Calls
             JitInstr::Call { dest, .. }
@@ -962,6 +978,7 @@ impl JitInstr {
             | JitInstr::LoadGlobal { .. }
             | JitInstr::LoadStatic { .. }
             | JitInstr::LoadFieldExact { .. }
+            | JitInstr::ImplementsShape { .. }
             | JitInstr::LoadElem { .. }
             | JitInstr::ArrayLen { .. }
             | JitInstr::LoadCaptured { .. }

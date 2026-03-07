@@ -34,6 +34,7 @@ pub enum JitSuspendReason {
     None = 0,
     Preemption = 1,
     NativeCallBoundary = 2,
+    InterpreterCallBoundary = 3,
 }
 
 /// Minimal native-frame snapshot to support resume/deopt plumbing.
@@ -48,8 +49,8 @@ pub struct JitMachineFrameSnapshot {
     pub frame_ptr: u64,
 }
 
-/// Out-parameter written by JIT entry to describe exit behavior.
-pub const JIT_EXIT_MAX_NATIVE_ARGS: usize = 8;
+/// Maximum operand materialization supported when handing control back to the interpreter.
+pub const JIT_EXIT_MAX_NATIVE_ARGS: usize = 32;
 
 /// Out-parameter written by JIT entry to describe exit behavior.
 #[repr(C)]
@@ -65,11 +66,11 @@ pub struct JitExitInfo {
     pub _reserved: u32,
     /// Captured native frame metadata.
     pub frame: JitMachineFrameSnapshot,
-    /// Materialized operand count for NativeCallBoundary resume handoff.
+    /// Materialized operand count for interpreter-boundary resume handoff.
     pub native_arg_count: u32,
     /// Reserved for alignment/extension.
     pub _native_reserved: u32,
-    /// Materialized NativeCall operands (NaN-boxed values).
+    /// Materialized operands (NaN-boxed values) for interpreter resume.
     pub native_args: [u64; JIT_EXIT_MAX_NATIVE_ARGS],
 }
 
@@ -136,4 +137,6 @@ pub struct RuntimeHelperTable {
     pub object_get_field: unsafe extern "C" fn(u64, u32, u32, *const (), *mut ()) -> u64,
     /// Structural/nominal field store: (obj_val, expected_slot, value, func_id, module_ptr, shared_state) -> success
     pub object_set_field: unsafe extern "C" fn(u64, u32, u64, u32, *const (), *mut ()) -> bool,
+    /// Structural shape check: (obj_val, shape_id, shared_state) -> implements
+    pub object_implements_shape: unsafe extern "C" fn(u64, u64, *mut ()) -> bool,
 }

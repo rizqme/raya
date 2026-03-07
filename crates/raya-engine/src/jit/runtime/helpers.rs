@@ -13,7 +13,7 @@ use crate::vm::interpreter::{
     StructuralAdapterKey, StructuralSlotBinding,
 };
 use crate::vm::native_registry::ResolvedNatives;
-use crate::vm::object::{BoundMethod, Object};
+use crate::vm::object::{global_layout_names, BoundMethod, Object};
 use crate::vm::reflect::ClassMetadataRegistry;
 use crate::vm::scheduler::IoSubmission;
 use crate::vm::scheduler::Task;
@@ -38,9 +38,12 @@ pub struct JitRuntimeBridgeContext {
         *const parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
     pub class_metadata: *const parking_lot::RwLock<ClassMetadataRegistry>,
     pub resolved_natives: *const parking_lot::RwLock<ResolvedNatives>,
+    pub structural_shape_names:
+        *const parking_lot::RwLock<FxHashMap<u64, Vec<String>>>,
     pub structural_shape_adapters: *const parking_lot::RwLock<
         FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
+    pub prop_keys: *const parking_lot::RwLock<crate::vm::interpreter::PropertyKeyRegistry>,
     pub io_submit_tx: *const crossbeam::channel::Sender<IoSubmission>,
 }
 
@@ -55,9 +58,11 @@ pub fn build_runtime_bridge_context(
     module_layouts: &parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
     class_metadata: &parking_lot::RwLock<ClassMetadataRegistry>,
     resolved_natives: &parking_lot::RwLock<ResolvedNatives>,
+    structural_shape_names: &parking_lot::RwLock<FxHashMap<u64, Vec<String>>>,
     structural_shape_adapters: &parking_lot::RwLock<
         FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
+    prop_keys: &parking_lot::RwLock<crate::vm::interpreter::PropertyKeyRegistry>,
     io_submit_tx: Option<&crossbeam::channel::Sender<IoSubmission>>,
 ) -> JitRuntimeBridgeContext {
     JitRuntimeBridgeContext {
@@ -69,7 +74,9 @@ pub fn build_runtime_bridge_context(
         module_layouts: module_layouts as *const _,
         class_metadata: class_metadata as *const _,
         resolved_natives: resolved_natives as *const _,
+        structural_shape_names: structural_shape_names as *const _,
         structural_shape_adapters: structural_shape_adapters as *const _,
+        prop_keys: prop_keys as *const _,
         io_submit_tx: io_submit_tx.map_or(std::ptr::null(), |tx| tx as *const _),
     }
 }
@@ -100,7 +107,147 @@ pub fn runtime_helpers() -> RuntimeHelperTable {
         generic_equals: helper_generic_equals,
         object_get_field: helper_object_get_field,
         object_set_field: helper_object_set_field,
+        object_implements_shape: helper_object_implements_shape,
     }
+}
+
+#[inline]
+unsafe fn jit_object_ptr_checked(value: Value) -> Option<NonNull<Object>> {
+    if !value.is_ptr() {
+        return None;
+    }
+    let ptr = value.as_ptr::<u8>()?;
+    let header = {
+        let hp = ptr.as_ptr().sub(std::mem::size_of::<crate::vm::gc::GcHeader>());
+        &*(hp as *const crate::vm::gc::GcHeader)
+    };
+    if header.type_id() == std::any::TypeId::of::<Object>() {
+        value.as_ptr::<Object>()
+    } else {
+        None
+    }
+}
+
+fn jit_layout_field_names(
+    bridge: &JitRuntimeBridgeContext,
+    object: &Object,
+) -> Option<Vec<String>> {
+    if !bridge.layouts.is_null() {
+        let layouts = unsafe { &*bridge.layouts }.read();
+        if let Some(names) = layouts.layout_field_names(object.layout_id()) {
+            return Some(names.to_vec());
+        }
+    }
+    global_layout_names(object.layout_id())
+}
+
+fn jit_build_shape_slot_map_for_object(
+    bridge: &JitRuntimeBridgeContext,
+    object: &Object,
+    required_names: &[String],
+) -> Option<Vec<StructuralSlotBinding>> {
+    let layout_names = jit_layout_field_names(bridge, object);
+    let dynamic_binding_for = |name: &str| -> Option<StructuralSlotBinding> {
+        if bridge.prop_keys.is_null() {
+            return None;
+        }
+        let key = unsafe { &*bridge.prop_keys }.write().intern(name);
+        object
+            .dyn_map()
+            .and_then(|dyn_map| dyn_map.contains_key(&key).then_some(StructuralSlotBinding::Dynamic(key)))
+    };
+
+    if let Some(nominal_type_id) = object.nominal_type_id_usize() {
+        let class_meta = if bridge.class_metadata.is_null() {
+            None
+        } else {
+            unsafe { &*bridge.class_metadata }.read().get(nominal_type_id).cloned()
+        };
+        return Some(
+            required_names
+                .iter()
+                .map(|name| {
+                    class_meta
+                        .as_ref()
+                        .and_then(|meta| meta.get_field_index(name))
+                        .and_then(|index| {
+                            (index < object.field_count()).then_some(StructuralSlotBinding::Field(index))
+                        })
+                        .or_else(|| {
+                            layout_names
+                                .as_ref()
+                                .and_then(|names| names.iter().position(|actual| actual == name))
+                                .map(StructuralSlotBinding::Field)
+                        })
+                        .or_else(|| {
+                            class_meta
+                                .as_ref()
+                                .and_then(|meta| meta.get_method_index(name))
+                                .map(StructuralSlotBinding::Method)
+                        })
+                        .or_else(|| dynamic_binding_for(name))
+                        .unwrap_or(StructuralSlotBinding::Missing)
+                })
+                .collect(),
+        );
+    }
+
+    Some(
+        required_names
+            .iter()
+            .map(|name| {
+                layout_names
+                    .as_ref()
+                    .and_then(|names| names.iter().position(|actual| actual == name))
+                    .map(StructuralSlotBinding::Field)
+                    .or_else(|| dynamic_binding_for(name))
+                    .unwrap_or(StructuralSlotBinding::Missing)
+            })
+            .collect(),
+    )
+}
+
+fn jit_ensure_shape_adapter_for_object(
+    bridge: &JitRuntimeBridgeContext,
+    object: &Object,
+    required_shape: u64,
+) -> Option<Arc<ShapeAdapter>> {
+    if bridge.structural_shape_adapters.is_null() {
+        return None;
+    }
+
+    let adapter_key = StructuralAdapterKey {
+        provider_layout: object.layout_id(),
+        required_shape,
+    };
+    if let Some(adapter) = unsafe { &*bridge.structural_shape_adapters }
+        .read()
+        .get(&adapter_key)
+        .cloned()
+    {
+        return Some(adapter);
+    }
+
+    if bridge.structural_shape_names.is_null() {
+        return None;
+    }
+    let required_names = unsafe { &*bridge.structural_shape_names }
+        .read()
+        .get(&required_shape)
+        .cloned()?;
+    let slot_map = jit_build_shape_slot_map_for_object(bridge, object, &required_names)?;
+    let adapter = Arc::new(ShapeAdapter::from_slot_map(
+        object.layout_id(),
+        required_shape,
+        &slot_map,
+    ));
+    let mut adapters = unsafe { &*bridge.structural_shape_adapters }.write();
+    Some(
+        adapters
+            .entry(adapter_key)
+            .or_insert_with(|| adapter.clone())
+            .clone(),
+    )
 }
 
 unsafe extern "C" fn helper_alloc_object(
@@ -285,7 +432,7 @@ unsafe extern "C" fn helper_object_get_field(
     }
 
     let object_val = Value::from_raw(object_raw);
-    let Some(object_ptr) = object_val.as_ptr::<Object>() else {
+    let Some(object_ptr) = jit_object_ptr_checked(object_val) else {
         return Value::null().raw();
     };
     let object = &*object_ptr.as_ptr();
@@ -342,7 +489,7 @@ unsafe extern "C" fn helper_object_set_field(
     }
     let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
     let object_val = Value::from_raw(object_raw);
-    let Some(object_ptr) = object_val.as_ptr::<Object>() else {
+    let Some(object_ptr) = jit_object_ptr_checked(object_val) else {
         return false;
     };
     let object = &mut *object_ptr.as_ptr();
@@ -360,6 +507,28 @@ unsafe extern "C" fn helper_object_set_field(
         }
         StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => false,
     }
+}
+
+unsafe extern "C" fn helper_object_implements_shape(
+    object_raw: u64,
+    required_shape: u64,
+    shared_state: *mut (),
+) -> bool {
+    if shared_state.is_null() {
+        return false;
+    }
+    let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
+    let object_val = Value::from_raw(object_raw);
+    let Some(object_ptr) = jit_object_ptr_checked(object_val) else {
+        return false;
+    };
+    let object = &*object_ptr.as_ptr();
+    let Some(adapter) = jit_ensure_shape_adapter_for_object(bridge, object, required_shape) else {
+        return false;
+    };
+    (0..adapter.len()).all(|slot| {
+        !matches!(adapter.binding_for_slot(slot), StructuralSlotBinding::Missing)
+    })
 }
 
 #[cfg(test)]
@@ -401,7 +570,9 @@ mod tests {
             &shared.module_layouts,
             &shared.class_metadata,
             &shared.resolved_natives,
+            &shared.structural_shape_names,
             &shared.structural_shape_adapters,
+            &shared.prop_keys,
             None,
         );
 
@@ -449,7 +620,9 @@ mod tests {
             &shared.module_layouts,
             &shared.class_metadata,
             &shared.resolved_natives,
+            &shared.structural_shape_names,
             &shared.structural_shape_adapters,
+            &shared.prop_keys,
             Some(&tx),
         );
 
@@ -523,7 +696,9 @@ mod tests {
             &shared.module_layouts,
             &shared.class_metadata,
             &shared.resolved_natives,
+            &shared.structural_shape_names,
             &shared.structural_shape_adapters,
+            &shared.prop_keys,
             None,
         );
 

@@ -260,7 +260,8 @@ fn replace_reg_uses(instr: &mut JitInstr, subs: &rustc_hash::FxHashMap<Reg, Reg>
         JitInstr::INeg { operand, .. }
         | JitInstr::INot { operand, .. }
         | JitInstr::FNeg { operand, .. }
-        | JitInstr::Not { operand, .. } => {
+        | JitInstr::Not { operand, .. }
+        | JitInstr::ImplementsShape { object: operand, .. } => {
             sub(operand, subs);
         }
 
@@ -287,6 +288,12 @@ fn replace_reg_uses(instr: &mut JitInstr, subs: &rustc_hash::FxHashMap<Reg, Reg>
         // Phi nodes: substitute sources
         JitInstr::Phi { sources, .. } => {
             for (_, reg) in sources.iter_mut() {
+                sub(reg, subs);
+            }
+        }
+
+        JitInstr::InterpreterBoundary { stack, .. } => {
+            for reg in stack.iter_mut() {
                 sub(reg, subs);
             }
         }
