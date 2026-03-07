@@ -12,6 +12,54 @@ use crate::vm::VmError;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
+    fn reflect_object_snapshot_descriptor(&self, value: Value) -> (String, Vec<String>) {
+        let Some(ptr) = (unsafe { value.as_ptr::<Object>() }) else {
+            return ("unknown".to_string(), Vec::new());
+        };
+        let obj = unsafe { &*ptr.as_ptr() };
+        let classes = self.classes.read();
+        let class_metadata = self.class_metadata.read();
+
+        if let Some(class_id) = obj.nominal_class_id() {
+            let class_name = classes
+                .get_class(class_id)
+                .map(|class| class.name.clone())
+                .unwrap_or_else(|| format!("Class{}", class_id));
+            let field_names = class_metadata
+                .get(class_id)
+                .map(|meta| {
+                    meta.field_names
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| {
+                            if name.is_empty() {
+                                format!("field_{}", index)
+                            } else {
+                                name.clone()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| {
+                    self.nominal_allocation(class_id)
+                        .map(|(_, field_count)| {
+                            (0..field_count)
+                                .map(|i| format!("field_{}", i))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                });
+            return (class_name, field_names);
+        }
+
+        let layout_id = obj.layout_id();
+        let field_names = self
+            .structural_layout_names(layout_id)
+            .or_else(|| self.layouts.read().layout_field_names(layout_id).map(|names| names.to_vec()))
+            .unwrap_or_default();
+        (format!("Layout{}", layout_id), field_names)
+    }
+
     /// Handle built-in Reflect methods
     pub(in crate::vm::interpreter) fn call_reflect_method(
         &mut self,
@@ -866,13 +914,9 @@ impl<'a> Interpreter<'a> {
                     VmError::TypeError("construct: classId must be a number".to_string())
                 })? as usize;
 
-                let classes = self.classes.read();
-                let class = classes.get_class(class_id).ok_or_else(|| {
+                let (layout_id, field_count) = self.nominal_allocation(class_id).ok_or_else(|| {
                     VmError::RuntimeError(format!("Class {} not found", class_id))
                 })?;
-                let field_count = class.field_count;
-                let layout_id = class.layout_id;
-                drop(classes);
 
                 // Allocate new object
                 let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
@@ -893,13 +937,9 @@ impl<'a> Interpreter<'a> {
                     VmError::TypeError("allocate: classId must be a number".to_string())
                 })? as usize;
 
-                let classes = self.classes.read();
-                let class = classes.get_class(class_id).ok_or_else(|| {
+                let (layout_id, field_count) = self.nominal_allocation(class_id).ok_or_else(|| {
                     VmError::RuntimeError(format!("Class {} not found", class_id))
                 })?;
-                let field_count = class.field_count;
-                let layout_id = class.layout_id;
-                drop(classes);
 
                 // Allocate new object (uninitialized - fields are null)
                 let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
@@ -1406,25 +1446,7 @@ impl<'a> Interpreter<'a> {
                 let mut ctx = SnapshotContext::new(10);
 
                 // Get class name if it's an object
-                let (class_name, field_names) =
-                    if let Some(ptr) = unsafe { target.as_ptr::<Object>() } {
-                        let obj = unsafe { &*ptr.as_ptr() };
-                        let class_registry = self.classes.read();
-                        if let Some(class_id) = obj.nominal_class_id() {
-                            if let Some(class) = class_registry.get_class(class_id) {
-                                let names: Vec<String> = (0..class.field_count)
-                                    .map(|i| format!("field_{}", i))
-                                    .collect();
-                                (class.name.clone(), names)
-                            } else {
-                                (format!("Class{}", class_id), Vec::new())
-                            }
-                        } else {
-                            (format!("Layout{}", obj.layout_id()), Vec::new())
-                        }
-                    } else {
-                        ("unknown".to_string(), Vec::new())
-                    };
+                let (class_name, field_names) = self.reflect_object_snapshot_descriptor(target);
 
                 // Capture the snapshot
                 let snapshot = ctx.capture_object_with_names(target, &field_names, &class_name);
@@ -1446,45 +1468,8 @@ impl<'a> Interpreter<'a> {
                 // Capture both objects as snapshots
                 let mut ctx = SnapshotContext::new(10);
 
-                let (class_name_a, field_names_a) =
-                    if let Some(ptr) = unsafe { obj_a.as_ptr::<Object>() } {
-                        let obj = unsafe { &*ptr.as_ptr() };
-                        let class_registry = self.classes.read();
-                        if let Some(class_id) = obj.nominal_class_id() {
-                            if let Some(class) = class_registry.get_class(class_id) {
-                                let names: Vec<String> = (0..class.field_count)
-                                    .map(|i| format!("field_{}", i))
-                                    .collect();
-                                (class.name.clone(), names)
-                            } else {
-                                (format!("Class{}", class_id), Vec::new())
-                            }
-                        } else {
-                            (format!("Layout{}", obj.layout_id()), Vec::new())
-                        }
-                    } else {
-                        ("unknown".to_string(), Vec::new())
-                    };
-
-                let (class_name_b, field_names_b) =
-                    if let Some(ptr) = unsafe { obj_b.as_ptr::<Object>() } {
-                        let obj = unsafe { &*ptr.as_ptr() };
-                        let class_registry = self.classes.read();
-                        if let Some(class_id) = obj.nominal_class_id() {
-                            if let Some(class) = class_registry.get_class(class_id) {
-                                let names: Vec<String> = (0..class.field_count)
-                                    .map(|i| format!("field_{}", i))
-                                    .collect();
-                                (class.name.clone(), names)
-                            } else {
-                                (format!("Class{}", class_id), Vec::new())
-                            }
-                        } else {
-                            (format!("Layout{}", obj.layout_id()), Vec::new())
-                        }
-                    } else {
-                        ("unknown".to_string(), Vec::new())
-                    };
+                let (class_name_a, field_names_a) = self.reflect_object_snapshot_descriptor(obj_a);
+                let (class_name_b, field_names_b) = self.reflect_object_snapshot_descriptor(obj_b);
 
                 let snapshot_a =
                     ctx.capture_object_with_names(obj_a, &field_names_a, &class_name_a);
@@ -2524,7 +2509,7 @@ impl<'a> Interpreter<'a> {
 
                 let def = builder.to_definition();
                 let mut classes_write = self.classes.write();
-                let next_id = classes_write.next_class_id();
+                let next_id = classes_write.allocate_nominal_type_id();
                 let mut dyn_builder = crate::vm::reflect::DynamicClassBuilder::new(next_id);
 
                 let (new_class, new_metadata) = if let Some(parent_id) = builder.parent_id {
@@ -2552,9 +2537,8 @@ impl<'a> Interpreter<'a> {
                     dyn_builder.create_root_class(builder.name, &def)
                 };
 
-                let new_class_id = new_class.id;
-                classes_write.register_class(new_class);
                 drop(classes_write);
+                let new_class_id = self.register_runtime_class(new_class);
 
                 let mut class_metadata_write = self.class_metadata.write();
                 class_metadata_write.register(new_class_id, new_metadata);

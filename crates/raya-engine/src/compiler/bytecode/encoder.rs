@@ -303,6 +303,14 @@ impl BytecodeWriter {
         self.emit_u16(arg_count);
     }
 
+    /// Emit CALL_METHOD_SHAPE instruction
+    pub fn emit_call_method_shape(&mut self, shape_id: u64, method_index: u16, arg_count: u16) {
+        self.emit_opcode(Opcode::CallMethodShape);
+        self.emit_u64(shape_id);
+        self.emit_u16(method_index);
+        self.emit_u16(arg_count);
+    }
+
     /// Emit RETURN instruction
     pub fn emit_return(&mut self) {
         self.emit_opcode(Opcode::Return);

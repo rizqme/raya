@@ -536,6 +536,34 @@ impl IrCodeGenerator {
                 }
             }
 
+            IrInstr::CallMethodShape {
+                dest,
+                object,
+                shape_id,
+                method,
+                args,
+                optional,
+            } => {
+                self.emit_load_register(ctx, object);
+                for arg in args {
+                    self.emit_load_register(ctx, arg);
+                }
+                if *optional {
+                    ctx.emit(Opcode::OptionalCallMethodShape);
+                } else {
+                    ctx.emit(Opcode::CallMethodShape);
+                }
+                ctx.emit_u64(*shape_id);
+                ctx.emit_u16(*method);
+                ctx.emit_u16(args.len() as u16);
+                if let Some(dest) = dest {
+                    let slot = ctx.get_or_alloc_slot(dest);
+                    self.emit_store_local(ctx, slot);
+                } else {
+                    ctx.emit(Opcode::Pop);
+                }
+            }
+
             IrInstr::NativeCall {
                 dest,
                 native_id,
@@ -730,7 +758,7 @@ impl IrCodeGenerator {
                 object,
                 property,
             } => {
-                // Get DynObject property by const-pool name
+                // Get dynamic property by const-pool name
                 self.emit_load_register(ctx, object);
                 let str_index = self.module_builder.add_string(property.clone())?;
                 ctx.emit(Opcode::DynGet);
@@ -744,12 +772,27 @@ impl IrCodeGenerator {
                 property,
                 value,
             } => {
-                // Set DynObject property by const-pool name
+                // Set dynamic property by const-pool name
                 self.emit_load_register(ctx, object);
                 self.emit_load_register(ctx, value);
                 let str_index = self.module_builder.add_string(property.clone())?;
                 ctx.emit(Opcode::DynSet);
                 ctx.emit_u32(str_index as u32);
+            }
+
+            IrInstr::DynGetKeyed { dest, object, key } => {
+                self.emit_load_register(ctx, object);
+                self.emit_load_register(ctx, key);
+                ctx.emit(Opcode::DynGetKeyed);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::DynSetKeyed { object, key, value } => {
+                self.emit_load_register(ctx, object);
+                self.emit_load_register(ctx, key);
+                self.emit_load_register(ctx, value);
+                ctx.emit(Opcode::DynSetKeyed);
             }
 
             IrInstr::LoadElement { dest, array, index } => {

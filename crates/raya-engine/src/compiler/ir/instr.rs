@@ -103,6 +103,16 @@ pub enum IrInstr {
         optional: bool,
     },
 
+    /// Structural method call through a shape contract.
+    CallMethodShape {
+        dest: Option<Register>,
+        object: Register,
+        shape_id: u64,
+        method: u16,
+        args: Vec<Register>,
+        optional: bool,
+    },
+
     /// Bind a method to its receiver, creating a callable BoundMethod.
     /// dest = bind_method(object, method_slot)
     BindMethod {
@@ -198,7 +208,7 @@ pub enum IrInstr {
         value: Register,
     },
 
-    /// Get DynObject property by const-pool name: dest = dyn_object[property_name]
+    /// Get dynamic property by const-pool name: dest = object[property_name]
     DynGetProp {
         dest: Register,
         object: Register,
@@ -206,11 +216,25 @@ pub enum IrInstr {
         property: String,
     },
 
-    /// Set DynObject property by const-pool name: dyn_object[property_name] = value
+    /// Set dynamic property by const-pool name: object[property_name] = value
     DynSetProp {
         object: Register,
         /// Property name (interned string)
         property: String,
+        value: Register,
+    },
+
+    /// Get dynamic property by runtime-computed key: dest = object[key]
+    DynGetKeyed {
+        dest: Register,
+        object: Register,
+        key: Register,
+    },
+
+    /// Set dynamic property by runtime-computed key: object[key] = value
+    DynSetKeyed {
+        object: Register,
+        key: Register,
         value: Register,
     },
 
@@ -417,6 +441,7 @@ impl IrInstr {
             | IrInstr::LoadField { dest, .. }
             | IrInstr::LoadFieldShape { dest, .. }
             | IrInstr::DynGetProp { dest, .. }
+            | IrInstr::DynGetKeyed { dest, .. }
             | IrInstr::LoadElement { dest, .. }
             | IrInstr::NewObject { dest, .. }
             | IrInstr::NewArray { dest, .. }
@@ -445,6 +470,7 @@ impl IrInstr {
             | IrInstr::BindMethod { dest, .. } => Some(dest),
             IrInstr::Call { dest, .. }
             | IrInstr::CallMethod { dest, .. }
+            | IrInstr::CallMethodShape { dest, .. }
             | IrInstr::NativeCall { dest, .. }
             | IrInstr::ModuleNativeCall { dest, .. }
             | IrInstr::CallClosure { dest, .. } => dest.as_ref(),
@@ -453,6 +479,7 @@ impl IrInstr {
             | IrInstr::StoreField { .. }
             | IrInstr::StoreFieldShape { .. }
             | IrInstr::DynSetProp { .. }
+            | IrInstr::DynSetKeyed { .. }
             | IrInstr::StoreElement { .. }
             | IrInstr::ArrayPush { .. }
             | IrInstr::StoreCaptured { .. }
@@ -476,6 +503,7 @@ impl IrInstr {
             self,
             IrInstr::Call { .. }
                 | IrInstr::CallMethod { .. }
+                | IrInstr::CallMethodShape { .. }
                 | IrInstr::NativeCall { .. }
                 | IrInstr::ModuleNativeCall { .. }
                 | IrInstr::CallClosure { .. }
@@ -485,6 +513,7 @@ impl IrInstr {
                 | IrInstr::StoreField { .. }
                 | IrInstr::StoreFieldShape { .. }
                 | IrInstr::DynSetProp { .. }
+                | IrInstr::DynSetKeyed { .. }
                 | IrInstr::StoreElement { .. }
                 | IrInstr::ArrayPush { .. }
                 | IrInstr::ArrayPop { .. }

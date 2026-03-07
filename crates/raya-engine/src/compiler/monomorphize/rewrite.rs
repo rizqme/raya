@@ -117,6 +117,14 @@ impl<'a> CallSiteRewriter<'a> {
                 // For now, we just pass through
                 None
             }
+            IrInstr::CallMethodShape {
+                dest: _,
+                object: _,
+                shape_id: _,
+                method: _,
+                args: _,
+                optional: _,
+            } => None,
             IrInstr::LoadField {
                 dest: _,
                 object: _,

@@ -53,6 +53,28 @@ fn test_namespace_std_import_executes() {
 }
 
 #[test]
+fn test_namespace_std_math_shape_access_executes() {
+    expect_bool_with_builtins(
+        r#"
+        import * as mathNs from "std:math";
+        return mathNs.PI > 3;
+        "#,
+        true,
+    );
+}
+
+#[test]
+fn test_named_std_math_constant_import_executes() {
+    expect_bool_with_builtins(
+        r#"
+        import { PI } from "std:math";
+        return PI > 3;
+        "#,
+        true,
+    );
+}
+
+#[test]
 fn test_std_env_default_import_member_call_compiles() {
     let result = compile_with_builtins(
         r#"
@@ -181,6 +203,19 @@ fn test_default_import_cast_preserves_identity() {
         type MathLike = { PI: number; floor: (x: number) => number };
         const casted = (math as MathLike);
         return casted == math;
+        "#,
+        true,
+    );
+}
+
+#[test]
+fn test_default_import_structural_cast_uses_shape_adapter_without_view_binding() {
+    expect_bool_with_builtins(
+        r#"
+        import math from "std:math";
+        type MathLike = { PI: number; floor: (x: number) => number };
+        const casted = (math as MathLike);
+        return casted == math && casted.PI > 3 && casted.floor(1.9) == 1;
         "#,
         true,
     );

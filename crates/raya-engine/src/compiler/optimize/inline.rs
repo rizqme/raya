@@ -349,6 +349,20 @@ impl Inliner {
                     f(arg.id.as_u32());
                 }
             }
+            IrInstr::CallMethodShape {
+                dest,
+                object,
+                args: method_args,
+                ..
+            } => {
+                if let Some(d) = dest {
+                    f(d.id.as_u32());
+                }
+                f(object.id.as_u32());
+                for arg in method_args {
+                    f(arg.id.as_u32());
+                }
+            }
             IrInstr::StoreGlobal { value, .. } => f(value.id.as_u32()),
             IrInstr::LoadGlobal { dest, .. } => f(dest.id.as_u32()),
             // Add other cases as needed; these are the main ones for small inlinable functions
@@ -672,6 +686,26 @@ impl Inliner {
                     .as_ref()
                     .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
                 object: self.rename_register(object, reg_map),
+                method: *method,
+                args: method_args
+                    .iter()
+                    .map(|a| self.rename_register(a, reg_map))
+                    .collect(),
+                optional: *optional,
+            }),
+            IrInstr::CallMethodShape {
+                dest,
+                object,
+                shape_id,
+                method,
+                args: method_args,
+                optional,
+            } => Some(IrInstr::CallMethodShape {
+                dest: dest
+                    .as_ref()
+                    .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
+                object: self.rename_register(object, reg_map),
+                shape_id: *shape_id,
                 method: *method,
                 args: method_args
                     .iter()

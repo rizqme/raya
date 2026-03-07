@@ -162,6 +162,41 @@ fn format_instr(instr: &IrInstr) -> String {
                 )
             }
         }
+        IrInstr::CallMethodShape {
+            dest,
+            object,
+            shape_id,
+            method,
+            args,
+            optional,
+        } => {
+            let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+            let op = if *optional {
+                "optional_call_method_shape"
+            } else {
+                "call_method_shape"
+            };
+            if let Some(d) = dest {
+                format!(
+                    "{} = {} {}.shape({:016x})[{}]({})",
+                    d,
+                    op,
+                    object,
+                    shape_id,
+                    method,
+                    args_str.join(", ")
+                )
+            } else {
+                format!(
+                    "{} {}.shape({:016x})[{}]({})",
+                    op,
+                    object,
+                    shape_id,
+                    method,
+                    args_str.join(", ")
+                )
+            }
+        }
         IrInstr::NativeCall {
             dest,
             native_id,
@@ -303,6 +338,12 @@ fn format_instr(instr: &IrInstr) -> String {
             value,
         } => {
             format!("json_set {}.\"{}\" = {}", object, property, value)
+        }
+        IrInstr::DynGetKeyed { dest, object, key } => {
+            format!("{} = dyn_get_keyed {}[{}]", dest, object, key)
+        }
+        IrInstr::DynSetKeyed { object, key, value } => {
+            format!("dyn_set_keyed {}[{}] = {}", object, key, value)
         }
         IrInstr::LateBoundMember {
             dest,

@@ -114,11 +114,11 @@ unsafe extern "C" fn helper_alloc_object(ctx: *mut AotTaskContext, class_id: u32
     let shared = &*((*ctx).shared_state as *const SharedVmState);
     let class_id = class_id as usize;
     let (field_count, layout_id) = {
-        let classes = shared.classes.read();
-        let Some(class) = classes.get_class(class_id) else {
+        let layouts = shared.layouts.read();
+        let Some((layout_id, field_count)) = layouts.nominal_allocation(class_id) else {
             return abi::NULL_VALUE;
         };
-        (class.field_count, class.layout_id)
+        (field_count, layout_id)
     };
     let mut gc = shared.gc.lock();
     let obj_ptr = gc.allocate(Object::new_nominal(layout_id, class_id as u32, field_count));
@@ -249,8 +249,13 @@ unsafe extern "C" fn helper_native_call(
             // Fallback for tests/partial contexts without a task pointer.
             crate::vm::scheduler::TaskId::from_u64(0)
         };
-        let engine_ctx =
-            EngineContext::new(&shared.gc, &shared.classes, task_id, &shared.class_metadata);
+        let engine_ctx = EngineContext::new(
+            &shared.gc,
+            &shared.classes,
+            &shared.layouts,
+            task_id,
+            &shared.class_metadata,
+        );
 
         // Convert NaN-boxed args into NativeValue slice.
         let value_args: Vec<Value> = if argc == 0 {

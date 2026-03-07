@@ -107,6 +107,20 @@ fn test_type_alias_with_method_signature() {
 }
 
 #[test]
+fn test_structural_method_signature_accepts_callable_field() {
+    expect_i32(
+        "type Computable = {
+             compute(a: number, b: number): number;
+         };
+         let c: Computable = {
+             compute: (a: number, b: number): number => a + b
+         };
+         return c.compute(20, 22);",
+        42,
+    );
+}
+
+#[test]
 fn test_type_alias_function_type() {
     expect_i32(
         "type Transform = (x: number) => number;
@@ -370,6 +384,33 @@ fn test_structural_call_result_destructuring_uses_shape_slots() {
          }
          let { b, c } = makeView();
          return b + c;",
+        5,
+    );
+}
+
+#[test]
+fn test_structural_object_literal_call_result_destructuring_uses_shape_slots() {
+    expect_i32(
+        "function makeView(): { a: number; b: number } {
+             return { a: 2, b: 3 };
+         }
+         let { a, b } = makeView();
+         return a + b;",
+        5,
+    );
+}
+
+#[test]
+fn test_structural_object_literal_branch_result_destructuring_uses_shape_slots() {
+    expect_i32(
+        "function pick(flag: boolean): { a: number; b: number } {
+             if (flag) {
+                 return { a: 2, b: 3 };
+             }
+             return { b: 3, a: 2 };
+         }
+         let { a, b } = pick(true);
+         return a + b;",
         5,
     );
 }

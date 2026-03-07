@@ -224,6 +224,8 @@ impl HeuristicsAnalyzer {
                 }
                 Opcode::Call
                 | Opcode::CallMethod
+                | Opcode::CallMethodShape
+                | Opcode::OptionalCallMethodShape
                 | Opcode::CallConstructor
                 | Opcode::CallSuper
                 | Opcode::CallStatic => {

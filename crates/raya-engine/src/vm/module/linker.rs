@@ -109,6 +109,38 @@ pub struct ModuleLinker {
 }
 
 impl ModuleLinker {
+    fn escape_signature_atom(value: &str) -> String {
+        value
+            .replace('\\', "\\\\")
+            .replace(':', "\\:")
+            .replace(',', "\\,")
+            .replace('|', "\\|")
+    }
+
+    fn namespace_signature_for_module(
+        module: &Module,
+    ) -> Result<(TypeSignatureHash, String), LinkError> {
+        let mut members = Vec::new();
+        for export in &module.exports {
+            let Some(type_signature) = export.type_signature.as_deref() else {
+                return Err(LinkError::MissingTypeSignature {
+                    symbol: format!("{}::{}", module.metadata.name, export.name),
+                    import_hash: 0,
+                    export_hash: export.type_symbol_id,
+                });
+            };
+            members.push(format!(
+                "prop:{}:ro:req:{}",
+                Self::escape_signature_atom(&export.name),
+                type_signature
+            ));
+        }
+        members.sort();
+        let signature = format!("obj({})", members.join(","));
+        let hash = crate::parser::types::signature_hash(&signature);
+        Ok((hash, signature))
+    }
+
     /// Create a new module linker
     pub fn new() -> Self {
         Self {
@@ -192,6 +224,32 @@ impl ModuleLinker {
             .ok_or(LinkError::ModuleIdNotFound(target_module_id))?;
 
         if import.symbol == "*" {
+            let (actual_hash, actual_signature) = Self::namespace_signature_for_module(module)?;
+            let Some(expected_signature) = import.type_signature.as_deref() else {
+                return Err(LinkError::MissingTypeSignature {
+                    symbol: format!("{}::*", module.metadata.name),
+                    import_hash: import.type_symbol_id,
+                    export_hash: actual_hash,
+                });
+            };
+            if import.type_symbol_id == 0 {
+                return Err(LinkError::MissingTypeSignature {
+                    symbol: format!("{}::*", module.metadata.name),
+                    import_hash: import.type_symbol_id,
+                    export_hash: actual_hash,
+                });
+            }
+            if import.type_symbol_id != actual_hash
+                && !structural_signature_is_assignable(expected_signature, &actual_signature)
+            {
+                return Err(LinkError::TypeSignatureMismatch {
+                    symbol: format!("{}::*", module.metadata.name),
+                    expected_hash: import.type_symbol_id,
+                    actual_hash,
+                    expected_pretty: expected_signature.to_string(),
+                    actual_pretty: actual_signature.clone(),
+                });
+            }
             return Ok(ResolvedSymbol {
                 module: module.clone(),
                 export: Export {
@@ -200,8 +258,8 @@ impl ModuleLinker {
                     index: 0,
                     symbol_id: 0,
                     scope: import.scope,
-                    type_symbol_id: 0,
-                    type_signature: None,
+                    type_symbol_id: actual_hash,
+                    type_signature: Some(actual_signature),
                 },
                 index: 0,
             });
@@ -512,6 +570,41 @@ mod tests {
             result,
             Err(LinkError::MissingTypeSignature { .. })
         ));
+    }
+
+    #[test]
+    fn test_resolve_namespace_import_validates_structural_signature() {
+        let mut linker = ModuleLinker::new();
+        let mut module = create_test_module("typed");
+        module.exports.push(Export {
+            name: "answer".to_string(),
+            symbol_type: SymbolType::Constant,
+            index: 0,
+            symbol_id: 1,
+            scope: SymbolScope::Module,
+            type_symbol_id: crate::parser::types::signature_hash("number"),
+            type_signature: Some("number".to_string()),
+        });
+        linker.add_module(Arc::new(module)).unwrap();
+
+        let expected_signature = "obj(prop:answer:ro:req:number)".to_string();
+        let import = Import {
+            module_specifier: "typed".to_string(),
+            symbol: "*".to_string(),
+            alias: Some("typedNs".to_string()),
+            module_id: module_id_from_name("typed"),
+            symbol_id: 0,
+            scope: crate::compiler::SymbolScope::Module,
+            type_symbol_id: crate::parser::types::signature_hash(&expected_signature),
+            type_signature: Some(expected_signature.clone()),
+            runtime_global_slot: Some(0),
+        };
+
+        let resolved = linker
+            .resolve_import(&import, "main")
+            .expect("resolve namespace import");
+        assert_eq!(resolved.export.type_signature.as_deref(), Some(expected_signature.as_str()));
+        assert_eq!(resolved.export.type_symbol_id, import.type_symbol_id);
     }
 
     #[test]

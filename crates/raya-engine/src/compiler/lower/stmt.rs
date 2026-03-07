@@ -1299,12 +1299,16 @@ impl<'a> Lowerer<'a> {
             ast::Pattern::Object(obj_pat) => {
                 // Object destructuring
                 // Prefer statically known field layout; otherwise use Reflect.get by property name.
-                let field_layout: Option<Vec<(String, usize)>> =
-                    self.register_object_fields.get(&value_reg.id).cloned();
+                let field_layout: Option<Vec<(String, usize)>> = self
+                    .register_object_fields
+                    .get(&value_reg.id)
+                    .cloned()
+                    .or_else(|| self.object_layout_from_type(value_reg.ty));
                 let projected_layout: Option<Vec<(String, usize)>> = self
                     .register_structural_projection_fields
                     .get(&value_reg.id)
-                    .cloned();
+                    .cloned()
+                    .or_else(|| self.structural_projection_layout_from_type_id(value_reg.ty));
                 let projected_shape_id = projected_layout.as_ref().map(|layout| {
                     let names = layout
                         .iter()
@@ -1908,13 +1912,26 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Check for compile-time constant: const with literal initializer
-        // These are folded at compile time and emit no runtime code
+        // Check for compile-time constant: const with literal initializer.
+        // Most are folded away, but module-scope globals still need runtime materialization
+        // so binary export/import hydration can read a stable global slot.
         if decl.kind == crate::parser::ast::VariableKind::Const {
             if let Some(init) = &decl.initializer {
                 if let Some(const_val) = self.try_eval_constant(init) {
-                    // Store constant value for later inlining - no runtime code emitted
-                    self.constant_map.insert(name, const_val);
+                    // Preserve compile-time constant folding for local use sites, but
+                    // still materialize module-scope globals so binary exports/imports
+                    // can hydrate named constants from stable runtime slots.
+                    self.constant_map.insert(name, const_val.clone());
+                    if self.function_depth == 0 && self.block_depth == 0 {
+                        if let Some(&global_idx) = self.module_var_globals.get(&name) {
+                            let value = self.emit_constant_value(&const_val);
+                            self.global_type_map.insert(global_idx, value.ty);
+                            self.emit(IrInstr::StoreGlobal {
+                                index: global_idx,
+                                value,
+                            });
+                        }
+                    }
                     return;
                 }
             }

@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, RwLock};
 
 /// Physical object-layout identity used for slot dispatch and structural adapters.
 pub type LayoutId = u32;
@@ -42,6 +42,9 @@ pub struct TypeHandle {
 
 /// Global counter for generating unique object IDs
 static NEXT_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
+/// Process-local fallback registry for structural layout names used outside a live VM.
+static GLOBAL_LAYOUT_NAMES: LazyLock<RwLock<FxHashMap<LayoutId, Vec<String>>>> =
+    LazyLock::new(|| RwLock::new(FxHashMap::default()));
 
 /// Generate a new unique object ID
 fn generate_object_id() -> u64 {
@@ -62,6 +65,51 @@ pub fn shape_id_from_member_names(names: &[String]) -> ShapeId {
     canonical.dedup();
     let payload = format!("shape{{{}}}", canonical.join(","));
     crate::parser::types::signature_hash(&payload)
+}
+
+/// Builtin nominal runtime layouts that do not carry compiler-emitted field metadata.
+pub fn builtin_nominal_layout_field_names(class_name: &str) -> Option<&'static [&'static str]> {
+    match class_name {
+        "Object" => Some(&[
+            "value",
+            "writable",
+            "configurable",
+            "enumerable",
+            "get",
+            "set",
+        ]),
+        "Map" => Some(&["mapPtr", "size"]),
+        "Set" => Some(&["setPtr", "size"]),
+        "Buffer" => Some(&["bufferPtr", "length"]),
+        "AggregateError" => Some(&[
+            "message", "name", "stack", "cause", "code", "errno", "syscall", "path", "errors",
+        ]),
+        "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError" | "URIError"
+        | "EvalError" | "ChannelClosedError" | "AssertionError" => Some(&[
+            "message", "name", "stack", "cause", "code", "errno", "syscall", "path",
+        ]),
+        _ => None,
+    }
+}
+
+/// Register structural layout names in the process-local fallback registry.
+pub fn register_global_layout_names(layout_id: LayoutId, names: &[String]) {
+    if layout_id == 0 {
+        return;
+    }
+    let mut registry = GLOBAL_LAYOUT_NAMES
+        .write()
+        .expect("global layout registry poisoned");
+    registry.entry(layout_id).or_insert_with(|| names.to_vec());
+}
+
+/// Resolve structural layout names from the process-local fallback registry.
+pub fn global_layout_names(layout_id: LayoutId) -> Option<Vec<String>> {
+    GLOBAL_LAYOUT_NAMES
+        .read()
+        .expect("global layout registry poisoned")
+        .get(&layout_id)
+        .cloned()
 }
 
 /// Immutable identity header for runtime objects.
@@ -142,10 +190,7 @@ impl Object {
         object
     }
 
-    fn synthetic_nominal_layout_id(
-        nominal_type_id: NominalTypeId,
-        field_count: usize,
-    ) -> LayoutId {
+    fn synthetic_nominal_layout_id(nominal_type_id: NominalTypeId, field_count: usize) -> LayoutId {
         let payload = format!("test_nominal_layout:{nominal_type_id}:{field_count}");
         let raw = crate::parser::types::signature_hash(&payload) as LayoutId;
         (raw & !STRUCTURAL_LAYOUT_ID_TAG).max(1)
@@ -281,54 +326,6 @@ impl Object {
     }
 }
 
-/// Dynamic (hashmap-backed) object for JSON.parse() results and JsonObject-typed values.
-///
-/// Unlike `Object` which has a fixed field schema indexed by slot, `DynObject`
-/// stores all properties by name. It is the runtime representation of
-/// `JsonObject = {[key: string]: Json}`.
-///
-/// GC marks all values in `props` (see collector.rs `"DynObject"` case).
-#[derive(Debug, Clone)]
-pub struct DynObject {
-    /// Named properties
-    pub props: FxHashMap<String, Value>,
-}
-
-impl DynObject {
-    /// Create an empty dynamic object
-    pub fn new() -> Self {
-        Self {
-            props: FxHashMap::default(),
-        }
-    }
-
-    /// Get a property value by name
-    pub fn get(&self, key: &str) -> Option<Value> {
-        self.props.get(key).copied()
-    }
-
-    /// Set a property value by name
-    pub fn set(&mut self, key: String, val: Value) {
-        self.props.insert(key, val);
-    }
-
-    /// Delete a property, returns true if it existed
-    pub fn delete(&mut self, key: &str) -> bool {
-        self.props.remove(key).is_some()
-    }
-
-    /// Check if a property exists
-    pub fn has(&self, key: &str) -> bool {
-        self.props.contains_key(key)
-    }
-}
-
-impl Default for DynObject {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Class definition metadata
 #[derive(Debug, Clone)]
 pub struct Class {
@@ -457,7 +454,11 @@ impl Class {
 impl Object {
     /// Create a nominal object using the runtime class metadata.
     pub fn new_from_class(class: &Class) -> Self {
-        Self::new_nominal(class.layout_id, class.id as NominalTypeId, class.field_count)
+        Self::new_nominal(
+            class.layout_id,
+            class.id as NominalTypeId,
+            class.field_count,
+        )
     }
 }
 
@@ -1746,7 +1747,10 @@ mod tests {
     fn test_structural_layout_ids_use_tagged_domain() {
         let layout_id = layout_id_from_ordered_names(&["a".to_string(), "b".to_string()]);
         assert_ne!(layout_id, 0);
-        assert_eq!(layout_id & STRUCTURAL_LAYOUT_ID_TAG, STRUCTURAL_LAYOUT_ID_TAG);
+        assert_eq!(
+            layout_id & STRUCTURAL_LAYOUT_ID_TAG,
+            STRUCTURAL_LAYOUT_ID_TAG
+        );
     }
 
     #[test]

@@ -199,11 +199,8 @@ impl Vm {
 
     /// Register a class with the VM's shared class registry
     pub fn register_class(&self, class: crate::vm::object::Class) {
-        self.scheduler
-            .shared_state()
-            .classes
-            .write()
-            .register_class(class);
+        let shared = self.scheduler.shared_state();
+        shared.register_runtime_class(class);
     }
 
     /// Trigger garbage collection on the shared GC

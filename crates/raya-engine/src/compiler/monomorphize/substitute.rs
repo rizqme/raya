@@ -117,6 +117,21 @@ impl TypeSubstitution {
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
                 optional: *optional,
             },
+            IrInstr::CallMethodShape {
+                dest,
+                object,
+                shape_id,
+                method,
+                args,
+                optional,
+            } => IrInstr::CallMethodShape {
+                dest: dest.as_ref().map(|d| self.apply_register(d)),
+                object: self.apply_register(object),
+                shape_id: *shape_id,
+                method: *method,
+                args: args.iter().map(|a| self.apply_register(a)).collect(),
+                optional: *optional,
+            },
             IrInstr::NativeCall {
                 dest,
                 native_id,
@@ -236,6 +251,16 @@ impl TypeSubstitution {
             } => IrInstr::DynSetProp {
                 object: self.apply_register(object),
                 property: property.clone(),
+                value: self.apply_register(value),
+            },
+            IrInstr::DynGetKeyed { dest, object, key } => IrInstr::DynGetKeyed {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                key: self.apply_register(key),
+            },
+            IrInstr::DynSetKeyed { object, key, value } => IrInstr::DynSetKeyed {
+                object: self.apply_register(object),
+                key: self.apply_register(key),
                 value: self.apply_register(value),
             },
             IrInstr::LateBoundMember {

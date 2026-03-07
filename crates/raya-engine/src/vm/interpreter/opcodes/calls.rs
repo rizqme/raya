@@ -215,6 +215,198 @@ impl<'a> Interpreter<'a> {
                 }
             }
 
+            Opcode::CallMethodShape | Opcode::OptionalCallMethodShape => {
+                self.safepoint.poll();
+                let optional = matches!(opcode, Opcode::OptionalCallMethodShape);
+                let shape_id = match Self::read_u64(code, ip) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let method_index = match Self::read_u16(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let arg_count = match Self::read_u16(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                let receiver_pos = match stack.depth().checked_sub(arg_count + 1) {
+                    Some(pos) => pos,
+                    None => return OpcodeResult::Error(VmError::StackUnderflow),
+                };
+                let receiver_val = match stack.peek_at(receiver_pos) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                if optional && receiver_val.is_null() {
+                    for _ in 0..(arg_count + 1) {
+                        if let Err(e) = stack.pop() {
+                            return OpcodeResult::Error(e);
+                        }
+                    }
+                    if let Err(e) = stack.push(Value::null()) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                }
+
+                let receiver_val =
+                    match crate::vm::interpreter::Interpreter::ensure_object_receiver(
+                        receiver_val,
+                        "shape method call",
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => return OpcodeResult::Error(e),
+                    };
+                let actual_receiver = crate::vm::reflect::unwrap_proxy_target(receiver_val);
+                let obj_ptr = unsafe { actual_receiver.as_ptr::<Object>() };
+                let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                let slot_binding = self.remap_shape_slot_binding(obj, shape_id, method_index);
+
+                match slot_binding {
+                    crate::vm::interpreter::shared_state::StructuralSlotBinding::Method(
+                        method_slot,
+                    ) => {
+                        let class_id = match obj.nominal_class_id() {
+                            Some(id) => id,
+                            None => {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "Cannot call structural method on non-nominal object value"
+                                        .to_string(),
+                                ))
+                            }
+                        };
+                        let classes = self.classes.read();
+                        let class = match classes.get_class(class_id) {
+                            Some(c) => c,
+                            None => {
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Invalid class ID: {}",
+                                    class_id
+                                )))
+                            }
+                        };
+                        let function_id = match class.vtable.get_method(method_slot) {
+                            Some(id) => id,
+                            None => {
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Method index {} not found in vtable for class '{}' (id={}, vtable_size={})",
+                                    method_slot,
+                                    class.name,
+                                    class_id,
+                                    class.vtable.method_count()
+                                )))
+                            }
+                        };
+                        let method_module = class.module.clone();
+                        drop(classes);
+
+                        let mut args = Vec::with_capacity(arg_count);
+                        for _ in 0..arg_count {
+                            match stack.pop() {
+                                Ok(v) => args.push(v),
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+                        match stack.pop() {
+                            Ok(_) => {}
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+
+                        if let Err(e) = stack.push(actual_receiver) {
+                            return OpcodeResult::Error(e);
+                        }
+                        for arg in args.into_iter().rev() {
+                            if let Err(e) = stack.push(arg) {
+                                return OpcodeResult::Error(e);
+                            }
+                        }
+
+                        OpcodeResult::PushFrame {
+                            func_id: function_id,
+                            arg_count: arg_count + 1,
+                            is_closure: false,
+                            closure_val: None,
+                            module: method_module,
+                            return_action: ReturnAction::PushReturnValue,
+                        }
+                    }
+                    crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(
+                        field_offset,
+                    ) => {
+                        let mut args = Vec::with_capacity(arg_count);
+                        for _ in 0..arg_count {
+                            match stack.pop() {
+                                Ok(v) => args.push(v),
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+                        match stack.pop() {
+                            Ok(_) => {}
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+
+                        let callable = obj.get_field(field_offset).unwrap_or(Value::null());
+                        match self.callable_frame_for_value(
+                            callable,
+                            stack,
+                            &args.into_iter().rev().collect::<Vec<_>>(),
+                            ReturnAction::PushReturnValue,
+                        ) {
+                            Ok(Some(frame)) => frame,
+                            Ok(None) => {
+                                return OpcodeResult::Error(VmError::TypeError(format!(
+                                    "Structural slot {} is not callable",
+                                    method_index
+                                )));
+                            }
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                    }
+                    crate::vm::interpreter::shared_state::StructuralSlotBinding::Dynamic(key) => {
+                        let mut args = Vec::with_capacity(arg_count);
+                        for _ in 0..arg_count {
+                            match stack.pop() {
+                                Ok(v) => args.push(v),
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+                        match stack.pop() {
+                            Ok(_) => {}
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+
+                        let callable = obj
+                            .dyn_map()
+                            .and_then(|dyn_map| dyn_map.get(&key).copied())
+                            .unwrap_or(Value::null());
+                        match self.callable_frame_for_value(
+                            callable,
+                            stack,
+                            &args.into_iter().rev().collect::<Vec<_>>(),
+                            ReturnAction::PushReturnValue,
+                        ) {
+                            Ok(Some(frame)) => frame,
+                            Ok(None) => {
+                                return OpcodeResult::Error(VmError::TypeError(format!(
+                                    "Structural method slot {} is not callable",
+                                    method_index
+                                )));
+                            }
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                    }
+                    crate::vm::interpreter::shared_state::StructuralSlotBinding::Missing => {
+                        return OpcodeResult::Error(VmError::TypeError(format!(
+                            "Structural method slot {} is not present on receiver layout",
+                            method_index
+                        )));
+                    }
+                }
+            }
+
             Opcode::CallMethod | Opcode::OptionalCallMethod => {
                 self.safepoint.poll();
                 let optional = matches!(opcode, Opcode::OptionalCallMethod);
@@ -586,10 +778,17 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
-                let field_count = class.field_count;
-                let layout_id = class.layout_id;
                 let constructor_id = class.get_constructor();
                 let constructor_module = class.module.clone();
+                let (layout_id, field_count) = match self.nominal_allocation(class_index) {
+                    Some(allocation) => allocation,
+                    None => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Invalid class allocation metadata: {}",
+                            class_index
+                        )));
+                    }
+                };
                 drop(classes);
 
                 // Create the object

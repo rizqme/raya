@@ -49,7 +49,7 @@ impl<'a> Interpreter<'a> {
         Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
     }
 
-    fn callable_frame_for_value(
+    pub(in crate::vm::interpreter) fn callable_frame_for_value(
         &self,
         callable: Value,
         stack: &mut Stack,
@@ -95,115 +95,6 @@ impl<'a> Interpreter<'a> {
             }));
         }
         Ok(None)
-    }
-
-    fn builtin_field_name_for_class_name(class_name: &str, field_offset: usize) -> Option<String> {
-        let name = match class_name {
-            "Object" => match field_offset {
-                0 => "value",
-                1 => "writable",
-                2 => "configurable",
-                3 => "enumerable",
-                4 => "get",
-                5 => "set",
-                _ => return None,
-            },
-            "Map" => match field_offset {
-                0 => "mapPtr",
-                1 => "size",
-                _ => return None,
-            },
-            "Set" => match field_offset {
-                0 => "setPtr",
-                1 => "size",
-                _ => return None,
-            },
-            "Buffer" => match field_offset {
-                0 => "bufferPtr",
-                1 => "length",
-                _ => return None,
-            },
-            "AggregateError" => match field_offset {
-                0 => "message",
-                1 => "name",
-                2 => "stack",
-                3 => "cause",
-                4 => "code",
-                5 => "errno",
-                6 => "syscall",
-                7 => "path",
-                8 => "errors",
-                _ => return None,
-            },
-            "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError"
-            | "URIError" | "EvalError" | "ChannelClosedError" | "AssertionError" => match field_offset {
-                0 => "message",
-                1 => "name",
-                2 => "stack",
-                3 => "cause",
-                4 => "code",
-                5 => "errno",
-                6 => "syscall",
-                7 => "path",
-                _ => return None,
-            },
-            _ => return None,
-        };
-        Some(name.to_string())
-    }
-
-    fn builtin_field_index_for_class_name(class_name: &str, field_name: &str) -> Option<usize> {
-        match class_name {
-            "Object" => match field_name {
-                "value" => Some(0),
-                "writable" => Some(1),
-                "configurable" => Some(2),
-                "enumerable" => Some(3),
-                "get" => Some(4),
-                "set" => Some(5),
-                _ => None,
-            },
-            "Map" => match field_name {
-                "mapPtr" => Some(0),
-                "size" => Some(1),
-                _ => None,
-            },
-            "Set" => match field_name {
-                "setPtr" => Some(0),
-                "size" => Some(1),
-                _ => None,
-            },
-            "Buffer" => match field_name {
-                "bufferPtr" => Some(0),
-                "length" => Some(1),
-                _ => None,
-            },
-            "AggregateError" => match field_name {
-                "message" => Some(0),
-                "name" => Some(1),
-                "stack" => Some(2),
-                "cause" => Some(3),
-                "code" => Some(4),
-                "errno" => Some(5),
-                "syscall" => Some(6),
-                "path" => Some(7),
-                "errors" => Some(8),
-                _ => None,
-            },
-            "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError"
-            | "URIError" | "EvalError" | "ChannelClosedError" | "AssertionError" => match field_name {
-                "message" => Some(0),
-                "name" => Some(1),
-                "stack" => Some(2),
-                "cause" => Some(3),
-                "code" => Some(4),
-                "errno" => Some(5),
-                "syscall" => Some(6),
-                "path" => Some(7),
-                _ => None,
-            },
-            _ => None,
-        }
     }
 
     fn legacy_field_name_for_layout(field_offset: usize, field_count: usize) -> Option<String> {
@@ -257,27 +148,10 @@ impl<'a> Interpreter<'a> {
         if from_metadata.is_some() {
             return from_metadata;
         }
-        if obj.is_structural() {
-            if let Some(name) = self
-                .structural_object_shapes
-                .read()
-                .get(&obj.layout_id())
-                .and_then(|names| names.get(field_offset))
-                .cloned()
-            {
-                return Some(name);
-            }
-        }
-        let class_id = nominal_class_id?;
-        let classes = self.classes.read();
-        let class_name = classes.get_class(class_id)?.name.as_str();
-        if class_name == "Object" && obj.field_count() <= 4 {
-            if let Some(name) = Self::legacy_field_name_for_layout(field_offset, obj.field_count())
-            {
-                return Some(name);
-            }
-        }
-        if let Some(name) = Self::builtin_field_name_for_class_name(class_name, field_offset) {
+        if let Some(name) = self
+            .layout_field_names_for_object(obj)
+            .and_then(|names| names.get(field_offset).cloned())
+        {
             return Some(name);
         }
         Self::legacy_field_name_for_layout(field_offset, obj.field_count())
@@ -294,26 +168,10 @@ impl<'a> Interpreter<'a> {
         if from_metadata.is_some() {
             return from_metadata;
         }
-        if obj.is_structural() {
-            if let Some(index) = self
-                .structural_object_shapes
-                .read()
-                .get(&obj.layout_id())
-                .and_then(|names| names.iter().position(|name| name == field_name))
-            {
-                return Some(index);
-            }
-        }
-        let class_id = nominal_class_id?;
-        let classes = self.classes.read();
-        let class_name = classes.get_class(class_id)?.name.as_str();
-        if class_name == "Object" && obj.field_count() <= 4 {
-            if let Some(index) = Self::legacy_field_index_for_layout(field_name, obj.field_count())
-            {
-                return Some(index);
-            }
-        }
-        if let Some(index) = Self::builtin_field_index_for_class_name(class_name, field_name) {
+        if let Some(index) = self
+            .layout_field_names_for_object(obj)
+            .and_then(|names| names.iter().position(|name| name == field_name))
+        {
             return Some(index);
         }
         Self::legacy_field_index_for_layout(field_name, obj.field_count())
@@ -324,14 +182,20 @@ impl<'a> Interpreter<'a> {
         obj: &Object,
         required_names: &[String],
     ) -> Option<Vec<StructuralSlotBinding>> {
+        let dynamic_binding_for = |name: &str| -> Option<StructuralSlotBinding> {
+            let key = self.intern_prop_key(name);
+            obj.dyn_map().and_then(|dyn_map| {
+                dyn_map
+                    .contains_key(&key)
+                    .then_some(StructuralSlotBinding::Dynamic(key))
+            })
+        };
+        let layout_names = self.layout_field_names_for_object(obj);
+
         if let Some(class_id) = obj.nominal_class_id() {
             let class_metadata = self.class_metadata.read();
             let class_meta = class_metadata.get(class_id).cloned();
             drop(class_metadata);
-            let class_name = {
-                let classes = self.classes.read();
-                classes.get_class(class_id).map(|class| class.name.clone())
-            };
             return Some(
                 required_names
                     .iter()
@@ -340,7 +204,16 @@ impl<'a> Interpreter<'a> {
                             .as_ref()
                             .and_then(|meta| meta.get_field_index(name))
                             .and_then(|index| {
-                                (index < obj.field_count()).then_some(StructuralSlotBinding::Field(index))
+                                (index < obj.field_count())
+                                    .then_some(StructuralSlotBinding::Field(index))
+                            })
+                            .or_else(|| {
+                                layout_names
+                                    .as_ref()
+                                    .and_then(|names| {
+                                        names.iter().position(|actual| actual == name)
+                                    })
+                                    .map(StructuralSlotBinding::Field)
                             })
                             .or_else(|| {
                                 class_meta
@@ -348,31 +221,23 @@ impl<'a> Interpreter<'a> {
                                     .and_then(|meta| meta.get_method_index(name))
                                     .map(StructuralSlotBinding::Method)
                             })
-                            .or_else(|| {
-                                class_name.as_ref().and_then(|class_name| {
-                                    Self::builtin_field_index_for_class_name(class_name, name)
-                                        .map(StructuralSlotBinding::Field)
-                                })
-                            })
+                            .or_else(|| dynamic_binding_for(name))
                             .unwrap_or(StructuralSlotBinding::Missing)
                     })
                     .collect(),
             );
         }
 
-        let actual_names = self
-            .structural_object_shapes
-            .read()
-            .get(&obj.layout_id())
-            .cloned()?;
+        let actual_names = layout_names;
         Some(
             required_names
                 .iter()
                 .map(|name| {
                     actual_names
-                        .iter()
-                        .position(|actual| actual == name)
+                        .as_ref()
+                        .and_then(|names| names.iter().position(|actual| actual == name))
                         .map(StructuralSlotBinding::Field)
+                        .or_else(|| dynamic_binding_for(name))
                         .unwrap_or(StructuralSlotBinding::Missing)
                 })
                 .collect(),
@@ -384,11 +249,17 @@ impl<'a> Interpreter<'a> {
         obj: &Object,
         required_shape: crate::vm::object::ShapeId,
     ) -> Option<Arc<ShapeAdapter>> {
+        let debug_structural = std::env::var("RAYA_DEBUG_STRUCTURAL_VIEW").is_ok();
         let adapter_key = StructuralAdapterKey {
             provider_layout: obj.layout_id(),
             required_shape,
         };
-        if let Some(adapter) = self.structural_shape_adapters.read().get(&adapter_key).cloned() {
+        if let Some(adapter) = self
+            .structural_shape_adapters
+            .read()
+            .get(&adapter_key)
+            .cloned()
+        {
             return Some(adapter);
         }
 
@@ -396,8 +267,49 @@ impl<'a> Interpreter<'a> {
             .structural_shape_names
             .read()
             .get(&required_shape)
-            .cloned()?;
-        let slot_map = self.build_shape_slot_map_for_object(obj, &required_names)?;
+            .cloned();
+        let Some(required_names) = required_names else {
+            if debug_structural {
+                eprintln!(
+                    "[structural-shape] missing shape names layout={} shape={}",
+                    obj.layout_id(),
+                    required_shape
+                );
+            }
+            return None;
+        };
+        let slot_map = self.build_shape_slot_map_for_object(obj, &required_names);
+        let Some(slot_map) = slot_map else {
+            if debug_structural {
+                eprintln!(
+                    "[structural-shape] cannot build slot map layout={} shape={} names=[{}]",
+                    obj.layout_id(),
+                    required_shape,
+                    required_names.join(",")
+                );
+            }
+            return None;
+        };
+        if debug_structural {
+            let rendered = slot_map
+                .iter()
+                .enumerate()
+                .map(|(idx, binding)| match binding {
+                    StructuralSlotBinding::Field(slot) => format!("{idx}->f{slot}"),
+                    StructuralSlotBinding::Method(slot) => format!("{idx}->m{slot}"),
+                    StructuralSlotBinding::Dynamic(key) => format!("{idx}->d{key}"),
+                    StructuralSlotBinding::Missing => format!("{idx}->missing"),
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            eprintln!(
+                "[structural-shape] build layout={} shape={} names=[{}] map=[{}]",
+                obj.layout_id(),
+                required_shape,
+                required_names.join(","),
+                rendered
+            );
+        }
         let adapter = Arc::new(ShapeAdapter::from_slot_map(
             obj.layout_id(),
             required_shape,
@@ -472,7 +384,10 @@ impl<'a> Interpreter<'a> {
         Some(accessor)
     }
 
-    fn ensure_object_receiver(value: Value, context: &'static str) -> Result<Value, VmError> {
+    pub(in crate::vm::interpreter) fn ensure_object_receiver(
+        value: Value,
+        context: &'static str,
+    ) -> Result<Value, VmError> {
         if !value.is_ptr() {
             return Err(VmError::TypeError(format!(
                 "Expected object for {}",
@@ -527,8 +442,8 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let classes = self.classes.read();
-                let class = match classes.get_class(class_index) {
-                    Some(c) => c,
+                let (layout_id, field_count) = match self.nominal_allocation(class_index) {
+                    Some(allocation) => allocation,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
                             "Invalid class index: {}",
@@ -536,8 +451,6 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
-                let field_count = class.field_count;
-                let layout_id = class.layout_id;
                 drop(classes);
 
                 let obj = Object::new_nominal(layout_id, class_index as u32, field_count);
@@ -571,7 +484,7 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
-                let slot_binding = self.remap_structural_slot_binding(module, obj, field_offset);
+                let slot_binding = StructuralSlotBinding::Field(field_offset);
                 if let StructuralSlotBinding::Missing = slot_binding {
                     if let Err(e) = stack.push(Value::null()) {
                         return OpcodeResult::Error(e);
@@ -590,7 +503,9 @@ impl<'a> Interpreter<'a> {
                 }
                 let field_offset = match slot_binding {
                     StructuralSlotBinding::Field(offset) => offset,
-                    StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => {
+                    StructuralSlotBinding::Method(_)
+                    | StructuralSlotBinding::Dynamic(_)
+                    | StructuralSlotBinding::Missing => {
                         unreachable!()
                     }
                 };
@@ -665,6 +580,16 @@ impl<'a> Interpreter<'a> {
                     }
                     return OpcodeResult::Continue;
                 }
+                if let StructuralSlotBinding::Dynamic(key) = slot_binding {
+                    let value = obj
+                        .dyn_map()
+                        .and_then(|dyn_map| dyn_map.get(&key).copied())
+                        .unwrap_or(Value::null());
+                    if let Err(e) = stack.push(value) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                }
                 if let StructuralSlotBinding::Method(method_slot) = slot_binding {
                     let bound = match self.bound_method_value_for_slot(actual_obj, method_slot) {
                         Ok(value) => value,
@@ -677,7 +602,9 @@ impl<'a> Interpreter<'a> {
                 }
                 let field_offset = match slot_binding {
                     StructuralSlotBinding::Field(offset) => offset,
-                    StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => {
+                    StructuralSlotBinding::Method(_)
+                    | StructuralSlotBinding::Dynamic(_)
+                    | StructuralSlotBinding::Missing => {
                         unreachable!()
                     }
                 };
@@ -732,9 +659,15 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
-                let slot_binding = self.remap_structural_slot_binding(module, obj, field_offset);
+                let slot_binding = StructuralSlotBinding::Field(field_offset);
                 let field_offset = match slot_binding {
                     StructuralSlotBinding::Field(offset) => offset,
+                    StructuralSlotBinding::Dynamic(_) => {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "Cannot assign to dynamic binding through fixed field store"
+                                .to_string(),
+                        ));
+                    }
                     StructuralSlotBinding::Method(_) => {
                         return OpcodeResult::Error(VmError::TypeError(
                             "Cannot assign to structural method slot".to_string(),
@@ -819,6 +752,10 @@ impl<'a> Interpreter<'a> {
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);
                 let field_offset = match slot_binding {
                     StructuralSlotBinding::Field(offset) => offset,
+                    StructuralSlotBinding::Dynamic(key) => {
+                        obj.ensure_dyn_map().insert(key, value);
+                        return OpcodeResult::Continue;
+                    }
                     StructuralSlotBinding::Method(_) => {
                         return OpcodeResult::Error(VmError::TypeError(
                             "Cannot assign to structural method slot".to_string(),
@@ -902,7 +839,7 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
-                let slot_binding = self.remap_structural_slot_binding(module, obj, field_offset);
+                let slot_binding = StructuralSlotBinding::Field(field_offset);
                 if let StructuralSlotBinding::Missing = slot_binding {
                     if let Err(e) = stack.push(Value::null()) {
                         return OpcodeResult::Error(e);
@@ -921,7 +858,9 @@ impl<'a> Interpreter<'a> {
                 }
                 let field_offset = match slot_binding {
                     StructuralSlotBinding::Field(offset) => offset,
-                    StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => {
+                    StructuralSlotBinding::Method(_)
+                    | StructuralSlotBinding::Dynamic(_)
+                    | StructuralSlotBinding::Missing => {
                         unreachable!()
                     }
                 };
@@ -953,11 +892,11 @@ impl<'a> Interpreter<'a> {
                     return OpcodeResult::Continue;
                 }
 
-                let obj_val = match Self::ensure_object_receiver(obj_val, "optional shape field access")
-                {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
+                let obj_val =
+                    match Self::ensure_object_receiver(obj_val, "optional shape field access") {
+                        Ok(v) => v,
+                        Err(e) => return OpcodeResult::Error(e),
+                    };
 
                 let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
@@ -965,6 +904,16 @@ impl<'a> Interpreter<'a> {
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);
                 if let StructuralSlotBinding::Missing = slot_binding {
                     if let Err(e) = stack.push(Value::null()) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                }
+                if let StructuralSlotBinding::Dynamic(key) = slot_binding {
+                    let value = obj
+                        .dyn_map()
+                        .and_then(|dyn_map| dyn_map.get(&key).copied())
+                        .unwrap_or(Value::null());
+                    if let Err(e) = stack.push(value) {
                         return OpcodeResult::Error(e);
                     }
                     return OpcodeResult::Continue;
@@ -981,7 +930,9 @@ impl<'a> Interpreter<'a> {
                 }
                 let field_offset = match slot_binding {
                     StructuralSlotBinding::Field(offset) => offset,
-                    StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => {
+                    StructuralSlotBinding::Method(_)
+                    | StructuralSlotBinding::Dynamic(_)
+                    | StructuralSlotBinding::Missing => {
                         unreachable!()
                     }
                 };

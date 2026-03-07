@@ -17,7 +17,7 @@ mod vm_facade;
 
 pub use capabilities::{Capability, CapabilityError, CapabilityRegistry};
 pub use capabilities::{HttpCapability, LogCapability, ReadCapability};
-pub use class_registry::ClassRegistry;
+pub use class_registry::{ClassRegistry, RuntimeLayoutRegistry};
 pub use context::{
     ContextRegistry, ResourceCounters, ResourceLimits, VmContext, VmContextId, VmOptions,
 };
@@ -32,6 +32,5 @@ pub use safepoint::{SafepointCoordinator, StopReason};
 pub use shared_state::{JitTelemetry, JitTelemetrySnapshot};
 pub use shared_state::{
     PromiseMicrotask, ShapeAdapter, SharedVmState, StructuralAdapterKey, StructuralSlotBinding,
-    StructuralViewHandle,
 };
 pub use vm_facade::{Vm, VmStats};

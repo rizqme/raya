@@ -147,7 +147,7 @@ impl<'a> SubtypingContext<'a> {
                 true
             }
 
-            // json is a dynamic duck-typed value from JSON.parse()/decode.
+            // json is a dynamic duck-typed value from JSON.parse().
             // Allow bidirectional compatibility with other types to support
             // gradual typing and explicit target annotations.
             (Type::Json, _) => true,

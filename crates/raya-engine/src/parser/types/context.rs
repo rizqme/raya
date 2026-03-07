@@ -114,7 +114,8 @@ impl TypeContext {
         let json_array = ctx.intern(Type::Array(super::ty::ArrayType { element: json }));
         ctx.register_named_type("JsonArray".into(), json_array);
 
-        // JsonObject = {[key: string]: Json} — dynamic string-keyed map (runtime: DynObject)
+        // JsonObject = {[key: string]: Json} — dynamic string-keyed map
+        // (runtime: Object + dyn_map)
         let json_object = ctx.intern(Type::Object(super::ty::ObjectType {
             properties: vec![],
             index_signature: Some(("string".into(), json)),

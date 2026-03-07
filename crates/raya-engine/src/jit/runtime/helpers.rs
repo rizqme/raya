@@ -9,8 +9,8 @@ use crate::jit::runtime::trampoline::{RuntimeContext, RuntimeHelperTable};
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
 use crate::vm::gc::GarbageCollector;
 use crate::vm::interpreter::{
-    ClassRegistry, SafepointCoordinator, ShapeAdapter, StructuralAdapterKey,
-    StructuralSlotBinding, StructuralViewHandle,
+    ClassRegistry, RuntimeLayoutRegistry, SafepointCoordinator, ShapeAdapter,
+    StructuralAdapterKey, StructuralSlotBinding,
 };
 use crate::vm::native_registry::ResolvedNatives;
 use crate::vm::object::{BoundMethod, Object};
@@ -33,10 +33,9 @@ pub struct JitRuntimeBridgeContext {
     pub task: *const Task,
     pub gc: *const parking_lot::Mutex<GarbageCollector>,
     pub classes: *const parking_lot::RwLock<ClassRegistry>,
+    pub layouts: *const parking_lot::RwLock<RuntimeLayoutRegistry>,
     pub class_metadata: *const parking_lot::RwLock<ClassMetadataRegistry>,
     pub resolved_natives: *const parking_lot::RwLock<ResolvedNatives>,
-    pub structural_slot_views:
-        *const parking_lot::RwLock<FxHashMap<([u8; 32], usize, u64), StructuralViewHandle>>,
     pub structural_shape_adapters: *const parking_lot::RwLock<
         FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
@@ -50,11 +49,9 @@ pub fn build_runtime_bridge_context(
     task: &Task,
     gc: &parking_lot::Mutex<GarbageCollector>,
     classes: &parking_lot::RwLock<ClassRegistry>,
+    layouts: &parking_lot::RwLock<RuntimeLayoutRegistry>,
     class_metadata: &parking_lot::RwLock<ClassMetadataRegistry>,
     resolved_natives: &parking_lot::RwLock<ResolvedNatives>,
-    structural_slot_views: &parking_lot::RwLock<
-        FxHashMap<([u8; 32], usize, u64), StructuralViewHandle>,
-    >,
     structural_shape_adapters: &parking_lot::RwLock<
         FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
@@ -65,9 +62,9 @@ pub fn build_runtime_bridge_context(
         task: task as *const Task,
         gc: gc as *const _,
         classes: classes as *const _,
+        layouts: layouts as *const _,
         class_metadata: class_metadata as *const _,
         resolved_natives: resolved_natives as *const _,
-        structural_slot_views: structural_slot_views as *const _,
         structural_shape_adapters: structural_shape_adapters as *const _,
         io_submit_tx: io_submit_tx.map_or(std::ptr::null(), |tx| tx as *const _),
     }
@@ -107,15 +104,15 @@ unsafe extern "C" fn helper_alloc_object(class_id: u32, shared_state: *mut ()) -
         return std::ptr::null_mut();
     }
     let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
-    if bridge.gc.is_null() || bridge.classes.is_null() {
+    if bridge.gc.is_null() || bridge.layouts.is_null() {
         return std::ptr::null_mut();
     }
 
     let class_id = class_id as usize;
     let (field_count, layout_id) = {
-        let classes = (&*bridge.classes).read();
-        match classes.get_class(class_id) {
-            Some(class) => (class.field_count, class.layout_id),
+        let layouts = (&*bridge.layouts).read();
+        match layouts.nominal_allocation(class_id) {
+            Some((layout_id, field_count)) => (field_count, layout_id),
             None => return std::ptr::null_mut(),
         }
     };
@@ -171,6 +168,7 @@ unsafe extern "C" fn helper_native_call_dispatch(
         let bridge = &*(shared_state.cast::<JitRuntimeBridgeContext>());
         if !bridge.gc.is_null()
             && !bridge.classes.is_null()
+            && !bridge.layouts.is_null()
             && !bridge.class_metadata.is_null()
             && !bridge.resolved_natives.is_null()
         {
@@ -183,6 +181,7 @@ unsafe extern "C" fn helper_native_call_dispatch(
             let ctx = EngineContext::new(
                 &*bridge.gc,
                 &*bridge.classes,
+                &*bridge.layouts,
                 task_id,
                 &*bridge.class_metadata,
             );
@@ -248,35 +247,6 @@ unsafe extern "C" fn helper_generic_equals(
     false
 }
 
-unsafe fn remap_structural_slot_binding(
-    bridge: &JitRuntimeBridgeContext,
-    module: &Module,
-    func_id: usize,
-    object: &Object,
-    expected_slot: usize,
-) -> StructuralSlotBinding {
-    if bridge.structural_slot_views.is_null() || bridge.structural_shape_adapters.is_null() {
-        return StructuralSlotBinding::Field(expected_slot);
-    }
-
-    let views = (&*bridge.structural_slot_views).read();
-    let handle = views
-        .get(&(module.checksum, func_id, object.object_id()))
-        .or_else(|| views.get(&(module.checksum, usize::MAX, object.object_id())))
-        .copied();
-    drop(views);
-
-    let Some(handle) = handle else {
-        return StructuralSlotBinding::Field(expected_slot);
-    };
-
-    let adapters = (&*bridge.structural_shape_adapters).read();
-    adapters
-        .get(&handle.adapter_key)
-        .map(|adapter: &Arc<ShapeAdapter>| adapter.binding_for_slot(expected_slot))
-        .unwrap_or(StructuralSlotBinding::Missing)
-}
-
 unsafe extern "C" fn helper_object_get_field(
     object_raw: u64,
     expected_slot: u32,
@@ -297,14 +267,10 @@ unsafe extern "C" fn helper_object_get_field(
         return Value::null().raw();
     };
     let object = &*object_ptr.as_ptr();
-    let module = &*(module_ptr.cast::<Module>());
-    let binding = remap_structural_slot_binding(
-        bridge,
-        module,
-        func_id as usize,
-        object,
-        expected_slot as usize,
-    );
+    let _ = bridge;
+    let _ = module_ptr;
+    let _ = func_id;
+    let binding = StructuralSlotBinding::Field(expected_slot as usize);
 
     match binding {
         StructuralSlotBinding::Field(slot) => object.get_field(slot).unwrap_or(Value::null()).raw(),
@@ -332,6 +298,11 @@ unsafe extern "C" fn helper_object_get_field(
             let bm_ptr = gc.allocate(bound);
             Value::from_ptr(NonNull::new(bm_ptr.as_ptr()).unwrap()).raw()
         }
+        StructuralSlotBinding::Dynamic(key) => object
+            .dyn_map()
+            .and_then(|dyn_map| dyn_map.get(&key).copied())
+            .unwrap_or(Value::null())
+            .raw(),
         StructuralSlotBinding::Missing => Value::null().raw(),
     }
 }
@@ -353,17 +324,17 @@ unsafe extern "C" fn helper_object_set_field(
         return false;
     };
     let object = &mut *object_ptr.as_ptr();
-    let module = &*(module_ptr.cast::<Module>());
-    let binding = remap_structural_slot_binding(
-        bridge,
-        module,
-        func_id as usize,
-        object,
-        expected_slot as usize,
-    );
+    let _ = bridge;
+    let _ = module_ptr;
+    let _ = func_id;
+    let binding = StructuralSlotBinding::Field(expected_slot as usize);
     match binding {
         StructuralSlotBinding::Field(slot) => {
             object.set_field(slot, Value::from_raw(value_raw)).is_ok()
+        }
+        StructuralSlotBinding::Dynamic(key) => {
+            object.ensure_dyn_map().insert(key, Value::from_raw(value_raw));
+            true
         }
         StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => false,
     }
@@ -403,9 +374,9 @@ mod tests {
             &task,
             &shared.gc,
             &shared.classes,
+            &shared.layouts,
             &shared.class_metadata,
             &shared.resolved_natives,
-            &shared.structural_slot_views,
             &shared.structural_shape_adapters,
             None,
         );
@@ -450,9 +421,9 @@ mod tests {
             &task,
             &shared.gc,
             &shared.classes,
+            &shared.layouts,
             &shared.class_metadata,
             &shared.resolved_natives,
-            &shared.structural_slot_views,
             &shared.structural_shape_adapters,
             Some(&tx),
         );

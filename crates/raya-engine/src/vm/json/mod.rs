@@ -2,14 +2,14 @@
 //!
 //! # Design
 //!
-//! - `parser::parse()` produces native VM `Value` using `DynObject`/`Array`/`RayaString`
+//! - `parser::parse()` produces native VM `Value` using `Object`/`Array`/`RayaString`
 //! - `stringify::stringify()` uses `js_classify()` for dispatch
 //! - `JSView` / `js_classify()` are the single dispatch entry point for all type checks
 //! - `JsonValue` is kept as a **stack-only** internal type for the `cast` module
 //!   (never GC-heap-allocated)
 
 use crate::vm::gc::{GarbageCollector, GcPtr};
-use crate::vm::object::{Array, RayaString};
+use crate::vm::object::{global_layout_names, Array, LayoutId, PropKeyId, RayaString};
 use crate::vm::value::Value;
 
 pub mod cast;
@@ -18,7 +18,9 @@ pub mod stringify;
 pub mod view;
 
 // Re-export key types and functions
-pub use cast::{validate_cast, TypeKind, TypeSchema, TypeSchemaRegistry};
+pub use cast::{
+    validate_cast, validate_cast_with_runtime_metadata, TypeKind, TypeSchema, TypeSchemaRegistry,
+};
 pub use view::{js_classify, JSView};
 
 /// Stack-only representation of a JSON value.
@@ -46,10 +48,10 @@ pub enum JsonValue {
     /// JSON array — points to a GC-managed Array of Values
     Array(GcPtr<Array>),
 
-    /// JSON object — represented as a DynObject value
+    /// JSON object — represented as a runtime `Value`.
     ///
-    /// We store it as a `Value` (pointer to GcPtr<DynObject>) so that cast.rs
-    /// can pass it to property accessors without knowing the concrete type.
+    /// The underlying carrier is now always `Object`, either with fixed
+    /// structural fields or with a dynamic property lane.
     Object(Value),
 
     /// Undefined (missing property)
@@ -57,24 +59,68 @@ pub enum JsonValue {
 }
 
 impl JsonValue {
-    /// Get a property from a JSON object.
-    pub fn get_property(&self, key: &str) -> JsonValue {
+    fn get_property_impl<FP, FL>(
+        &self,
+        key: &str,
+        resolve_prop_key: &mut FP,
+        resolve_layout_names: &mut FL,
+    ) -> JsonValue
+    where
+        FP: FnMut(&str) -> Option<PropKeyId>,
+        FL: FnMut(LayoutId) -> Option<Vec<String>>,
+    {
         match self {
             JsonValue::Object(val) => {
                 use view::JSView;
                 match js_classify(*val) {
-                    JSView::Dyn(ptr) => {
+                    JSView::Struct { ptr, layout_id, .. } => {
                         let obj = unsafe { &*ptr };
-                        match obj.get(key) {
-                            Some(v) => value_to_json_stack(v),
-                            None => JsonValue::Undefined,
+                        if let Some(field_names) =
+                            resolve_layout_names(layout_id).or_else(|| global_layout_names(layout_id))
+                        {
+                            if let Some(index) = field_names.iter().position(|name| name == key) {
+                                return obj
+                                    .get_field(index)
+                                    .map(value_to_json_stack)
+                                    .unwrap_or(JsonValue::Undefined);
+                            }
                         }
+                        let Some(prop_key) = resolve_prop_key(key) else {
+                            return JsonValue::Undefined;
+                        };
+                        obj.dyn_map()
+                            .and_then(|dyn_map| dyn_map.get(&prop_key).copied())
+                            .map(value_to_json_stack)
+                            .unwrap_or(JsonValue::Undefined)
                     }
                     _ => JsonValue::Undefined,
                 }
             }
             _ => JsonValue::Undefined,
         }
+    }
+
+    /// Get a property from a JSON object without runtime metadata.
+    ///
+    /// This supports standalone structural objects via the process-local layout
+    /// registry. Dynamic-property-only carriers still require the resolver-aware
+    /// variant below so property keys can be mapped back to names.
+    pub fn get_property(&self, key: &str) -> JsonValue {
+        self.get_property_impl(key, &mut |_| None, &mut |_| None)
+    }
+
+    /// Get a property from a JSON object using runtime metadata resolvers.
+    pub fn get_property_with_runtime_metadata<FP, FL>(
+        &self,
+        key: &str,
+        resolve_prop_key: &mut FP,
+        resolve_layout_names: &mut FL,
+    ) -> JsonValue
+    where
+        FP: FnMut(&str) -> Option<PropKeyId>,
+        FL: FnMut(LayoutId) -> Option<Vec<String>>,
+    {
+        self.get_property_impl(key, resolve_prop_key, resolve_layout_names)
     }
 
     /// Get an element from a JSON array by index.
@@ -230,7 +276,6 @@ pub fn value_to_json_stack(value: Value) -> JsonValue {
             let gc_ptr = unsafe { GcPtr::new(std::ptr::NonNull::new(ptr as *mut Array).unwrap()) };
             JsonValue::Array(gc_ptr)
         }
-        JSView::Dyn(_) => JsonValue::Object(value),
         JSView::Struct { .. } => JsonValue::Object(value),
         JSView::Other => JsonValue::Null,
     }

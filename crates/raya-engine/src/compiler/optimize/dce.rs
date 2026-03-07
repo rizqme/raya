@@ -96,6 +96,12 @@ impl DeadCodeEliminator {
             IrInstr::LoadFieldShape { object, .. } => {
                 used.insert(object.id);
             }
+            IrInstr::CallMethodShape { object, args, .. } => {
+                used.insert(object.id);
+                for arg in args {
+                    used.insert(arg.id);
+                }
+            }
             IrInstr::StoreField { object, value, .. } => {
                 used.insert(object.id);
                 used.insert(value.id);
@@ -107,8 +113,17 @@ impl DeadCodeEliminator {
             IrInstr::DynGetProp { object, .. } => {
                 used.insert(object.id);
             }
+            IrInstr::DynGetKeyed { object, key, .. } => {
+                used.insert(object.id);
+                used.insert(key.id);
+            }
             IrInstr::DynSetProp { object, value, .. } => {
                 used.insert(object.id);
+                used.insert(value.id);
+            }
+            IrInstr::DynSetKeyed { object, key, value } => {
+                used.insert(object.id);
+                used.insert(key.id);
                 used.insert(value.id);
             }
             IrInstr::LateBoundMember { object, .. } => {

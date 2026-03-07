@@ -305,6 +305,9 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         // 10-byte operands (u64 + u16)
         Opcode::LoadFieldShape | Opcode::StoreFieldShape | Opcode::OptionalFieldShape => 10,
 
+        // 12-byte operands (u64 + u16 + u16)
+        Opcode::CallMethodShape | Opcode::OptionalCallMethodShape => 12,
+
         // 6-byte operands (u32 + u16)
         Opcode::Call
         | Opcode::CallMethod
@@ -439,7 +442,10 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::Return => (1, 0),
         Opcode::ReturnVoid => (0, 0),
         Opcode::Call => (0, 1), // Simplified - actual depends on arg count
-        Opcode::CallMethod | Opcode::OptionalCallMethod => (1, 1), // Simplified
+        Opcode::CallMethod
+        | Opcode::OptionalCallMethod
+        | Opcode::CallMethodShape
+        | Opcode::OptionalCallMethodShape => (1, 1), // Simplified
         Opcode::CallConstructor | Opcode::CallSuper | Opcode::CallStatic => (0, 1),
         Opcode::New => (0, 1),
         Opcode::LoadField => (1, 1),
@@ -487,14 +493,14 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::StoreRefCell => (2, 0), // Pop refcell ptr + value
 
         // Dynamic-object operations (parse/stringify use NativeCall)
-        Opcode::DynGet => (1, 1),       // Pop DynObject, push value
+        Opcode::DynGet => (1, 1),       // Pop object, push value
         Opcode::DynSet => (2, 0),       // Pop value + object (mutates)
         Opcode::DynDelete => (1, 0),    // Pop object (mutates)
         Opcode::DynGetKeyed => (2, 1),  // Pop key + object, push value
         Opcode::DynSetKeyed => (3, 0),  // Pop value + key + object (mutates)
-        Opcode::DynNewObject => (0, 1), // Push new empty DynObject
-        Opcode::DynKeys => (1, 1),      // Pop DynObject, push string array
-        Opcode::DynHas => (1, 1),       // Pop DynObject, push bool
+        Opcode::DynNewObject => (0, 1), // Push new empty object with dyn_map
+        Opcode::DynKeys => (1, 1),      // Pop object, push string array
+        Opcode::DynHas => (1, 1),       // Pop object, push bool
 
         // Semaphore operations
         Opcode::NewSemaphore => (1, 1), // Pop permit count, push semaphore

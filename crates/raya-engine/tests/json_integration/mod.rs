@@ -13,7 +13,10 @@
 use raya_engine::vm::gc::GarbageCollector;
 use raya_engine::vm::json::view::{js_classify, JSView};
 use raya_engine::vm::json::{parser, stringify};
-use raya_engine::vm::object::{Array, DynObject, RayaString};
+use raya_engine::vm::object::{
+    global_layout_names, layout_id_from_ordered_names, register_global_layout_names, Array,
+    Object, RayaString,
+};
 use raya_engine::vm::value::Value;
 
 // ============================================================================
@@ -30,9 +33,9 @@ fn is_array(val: Value) -> bool {
     matches!(js_classify(val), JSView::Arr(_))
 }
 
-/// Returns true if the value is an object (DynObject or typed struct).
+/// Returns true if the value is an object.
 fn is_object(val: Value) -> bool {
-    matches!(js_classify(val), JSView::Dyn(_) | JSView::Struct { .. })
+    matches!(js_classify(val), JSView::Struct { .. })
 }
 
 /// Returns the numeric value (handles both Int and Number variants).
@@ -60,10 +63,16 @@ fn get_array_ptr(val: Value) -> Option<*const Array> {
     }
 }
 
-/// Returns the property value from a DynObject, or null if not found.
+/// Returns the property value from an object, or null if not found.
 fn get_property(val: Value, key: &str) -> Value {
     match js_classify(val) {
-        JSView::Dyn(ptr) => unsafe { &*ptr }.get(key).unwrap_or(Value::null()),
+        JSView::Struct { ptr, layout_id, .. } => {
+            let obj = unsafe { &*ptr };
+            global_layout_names(layout_id)
+                .and_then(|field_names| field_names.iter().position(|name| name == key))
+                .and_then(|index| obj.get_field(index))
+                .unwrap_or(Value::null())
+        }
         _ => Value::null(),
     }
 }
@@ -418,7 +427,9 @@ fn test_stringify_preserves_types() {
     assert_eq!(stringify::stringify(arr_val).unwrap(), "[]");
 
     // Empty object
-    let empty_obj = DynObject::new();
+    let empty_layout = layout_id_from_ordered_names(&[]);
+    register_global_layout_names(empty_layout, &[]);
+    let empty_obj = Object::new_structural(empty_layout, 0);
     let obj_ptr = gc.allocate(empty_obj);
     let obj_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) };
     assert_eq!(stringify::stringify(obj_val).unwrap(), "{}");

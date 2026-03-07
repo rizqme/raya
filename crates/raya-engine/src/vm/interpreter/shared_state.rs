@@ -6,7 +6,9 @@
 use crate::compiler::Module;
 use crate::compiler::Opcode;
 use crate::vm::gc::GarbageCollector;
-use crate::vm::interpreter::{ClassRegistry, ModuleRegistry, SafepointCoordinator};
+use crate::vm::interpreter::{
+    ClassRegistry, ModuleRegistry, RuntimeLayoutRegistry, SafepointCoordinator,
+};
 use crate::vm::native_handler::{NativeHandler, NoopNativeHandler};
 use crate::vm::native_registry::{NativeFunctionRegistry, ResolvedNatives};
 use crate::vm::reflect::{ClassMetadata, ClassMetadataRegistry, MetadataStore};
@@ -54,6 +56,8 @@ pub enum StructuralSlotBinding {
     Field(usize),
     /// Expected slot maps to a class vtable method slot.
     Method(usize),
+    /// Expected slot maps to a dynamic property key on the object's dyn lane.
+    Dynamic(PropKeyId),
     /// Expected slot is not present on the provider type.
     Missing,
 }
@@ -65,6 +69,7 @@ pub struct ShapeAdapter {
     pub required_shape: ShapeId,
     pub field_map: Vec<Option<usize>>,
     pub method_map: Vec<Option<usize>>,
+    pub dynamic_key_map: Vec<Option<PropKeyId>>,
     pub epoch: u32,
 }
 
@@ -76,19 +81,28 @@ impl ShapeAdapter {
     ) -> Self {
         let mut field_map = Vec::with_capacity(slot_map.len());
         let mut method_map = Vec::with_capacity(slot_map.len());
+        let mut dynamic_key_map = Vec::with_capacity(slot_map.len());
         for binding in slot_map {
             match binding {
                 StructuralSlotBinding::Field(slot) => {
                     field_map.push(Some(*slot));
                     method_map.push(None);
+                    dynamic_key_map.push(None);
                 }
                 StructuralSlotBinding::Method(slot) => {
                     field_map.push(None);
                     method_map.push(Some(*slot));
+                    dynamic_key_map.push(None);
+                }
+                StructuralSlotBinding::Dynamic(key) => {
+                    field_map.push(None);
+                    method_map.push(None);
+                    dynamic_key_map.push(Some(*key));
                 }
                 StructuralSlotBinding::Missing => {
                     field_map.push(None);
                     method_map.push(None);
+                    dynamic_key_map.push(None);
                 }
             }
         }
@@ -97,6 +111,7 @@ impl ShapeAdapter {
             required_shape,
             field_map,
             method_map,
+            dynamic_key_map,
             epoch: 0,
         }
     }
@@ -108,11 +123,17 @@ impl ShapeAdapter {
         if let Some(Some(slot)) = self.method_map.get(expected_slot) {
             return StructuralSlotBinding::Method(*slot);
         }
+        if let Some(Some(key)) = self.dynamic_key_map.get(expected_slot) {
+            return StructuralSlotBinding::Dynamic(*key);
+        }
         StructuralSlotBinding::Missing
     }
 
     pub fn len(&self) -> usize {
-        self.field_map.len().max(self.method_map.len())
+        self.field_map
+            .len()
+            .max(self.method_map.len())
+            .max(self.dynamic_key_map.len())
     }
 
     pub fn is_identity_field_projection(&self) -> bool {
@@ -121,6 +142,7 @@ impl ShapeAdapter {
             .enumerate()
             .all(|(expected, binding)| binding == &Some(expected))
             && self.method_map.iter().all(|binding| binding.is_none())
+            && self.dynamic_key_map.iter().all(|binding| binding.is_none())
     }
 }
 
@@ -132,6 +154,42 @@ pub type ShapeId = crate::vm::object::ShapeId;
 pub type TypeHandleId = crate::vm::object::TypeHandleId;
 /// Stable nominal runtime type identity.
 pub type NominalTypeId = crate::vm::object::NominalTypeId;
+/// Stable interned property-key identity.
+pub type PropKeyId = crate::vm::object::PropKeyId;
+
+/// Runtime-local property key interner for `Object::dyn_map`.
+#[derive(Debug, Default)]
+pub struct PropertyKeyRegistry {
+    next_id: PropKeyId,
+    by_name: FxHashMap<String, PropKeyId>,
+    by_id: FxHashMap<PropKeyId, String>,
+}
+
+impl PropertyKeyRegistry {
+    pub fn new() -> Self {
+        Self {
+            next_id: 1,
+            by_name: FxHashMap::default(),
+            by_id: FxHashMap::default(),
+        }
+    }
+
+    pub fn intern(&mut self, name: &str) -> PropKeyId {
+        if let Some(&id) = self.by_name.get(name) {
+            return id;
+        }
+        let id = self.next_id.max(1);
+        self.next_id = self.next_id.saturating_add(1).max(1);
+        let owned = name.to_string();
+        self.by_name.insert(owned.clone(), id);
+        self.by_id.insert(id, owned);
+        id
+    }
+
+    pub fn resolve(&self, id: PropKeyId) -> Option<&str> {
+        self.by_id.get(&id).map(String::as_str)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct TypeHandleKey {
@@ -205,12 +263,6 @@ pub struct StructuralAdapterKey {
     pub required_shape: ShapeId,
 }
 
-/// Per-object structural view points to a shared adapter entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StructuralViewHandle {
-    pub adapter_key: StructuralAdapterKey,
-}
-
 #[cfg(feature = "jit")]
 #[derive(Default)]
 pub struct JitTelemetry {
@@ -271,6 +323,9 @@ pub struct SharedVmState {
     /// Class registry (mostly read, occasionally written during class registration)
     pub classes: RwLock<ClassRegistry>,
 
+    /// Physical runtime layout registry for nominal and structural object storage.
+    pub layouts: RwLock<RuntimeLayoutRegistry>,
+
     /// Global variables by name
     pub globals: RwLock<FxHashMap<String, Value>>,
 
@@ -324,15 +379,9 @@ pub struct SharedVmState {
     /// Per-module runtime layouts (globals/classes/natives/init state).
     pub module_layouts: RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
 
-    /// Structural slot translation views for imported/structural objects.
-    /// Key: (consumer module checksum, consumer function id, object_id).
-    /// Value: shared adapter handle.
-    pub structural_slot_views: RwLock<FxHashMap<([u8; 32], usize, u64), StructuralViewHandle>>,
-
     /// Shared adapter cache keyed by provider layout + required structural shape.
     /// Value: cached adapter with split field/method maps.
-    pub structural_shape_adapters:
-        RwLock<FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>>,
+    pub structural_shape_adapters: RwLock<FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>>,
 
     /// Canonical member names keyed by structural shape id.
     pub structural_shape_names: RwLock<FxHashMap<ShapeId, Vec<String>>>,
@@ -344,6 +393,9 @@ pub struct SharedVmState {
 
     /// Runtime-owned constructor/type handles used for imported/exported nominal types.
     pub type_handles: RwLock<RuntimeTypeHandleRegistry>,
+
+    /// Runtime-local property key interner for dynamic object lanes.
+    pub prop_keys: RwLock<PropertyKeyRegistry>,
 
     /// Debug state for debugger coordination (None = no debugger attached)
     pub debug_state: Mutex<Option<Arc<super::debug_state::DebugState>>>,
@@ -405,6 +457,7 @@ impl SharedVmState {
         Self {
             gc: Mutex::new(GarbageCollector::default()),
             classes: RwLock::new(ClassRegistry::new()),
+            layouts: RwLock::new(RuntimeLayoutRegistry::new()),
             globals: RwLock::new(FxHashMap::default()),
             globals_by_index: RwLock::new(Vec::new()),
             builtin_global_slots: RwLock::new(FxHashMap::default()),
@@ -422,11 +475,11 @@ impl SharedVmState {
             native_registry: RwLock::new(NativeFunctionRegistry::new()),
             module_registry: RwLock::new(ModuleRegistry::new()),
             module_layouts: RwLock::new(FxHashMap::default()),
-            structural_slot_views: RwLock::new(FxHashMap::default()),
             structural_shape_adapters: RwLock::new(FxHashMap::default()),
             structural_shape_names: RwLock::new(FxHashMap::default()),
             structural_layout_shapes: RwLock::new(FxHashMap::default()),
             type_handles: RwLock::new(RuntimeTypeHandleRegistry::new()),
+            prop_keys: RwLock::new(PropertyKeyRegistry::new()),
             debug_state: Mutex::new(None),
             max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,
             preempt_threshold_ms: crate::vm::defaults::DEFAULT_PREEMPT_THRESHOLD_MS,
@@ -580,13 +633,20 @@ impl SharedVmState {
         self.type_handles.read().get(handle_id)
     }
 
+    /// Intern a dynamic property name.
+    pub fn intern_prop_key(&self, name: &str) -> PropKeyId {
+        self.prop_keys.write().intern(name)
+    }
+
+    /// Resolve an interned property key back to its string name.
+    pub fn prop_key_name(&self, key: PropKeyId) -> Option<String> {
+        self.prop_keys.read().resolve(key).map(str::to_string)
+    }
+
     /// Register a structural slot view for object access in `module`.
     /// The map translates consumer slot indices into provider slot indices.
-    pub fn register_structural_slot_view(
+    pub fn register_structural_shape_adapter(
         &self,
-        module: &Module,
-        consumer_func_id: usize,
-        object_id: u64,
         provider_layout: LayoutId,
         required_shape: ShapeId,
         slot_map: Vec<StructuralSlotBinding>,
@@ -605,16 +665,7 @@ impl SharedVmState {
         ));
         self.structural_shape_adapters
             .write()
-            .insert(adapter_key, adapter.clone());
-        let is_identity = adapter.is_identity_field_projection();
-        let key = (module.checksum, consumer_func_id, object_id);
-        if is_identity {
-            self.structural_slot_views.write().remove(&key);
-            return;
-        }
-        self.structural_slot_views
-            .write()
-            .insert(key, StructuralViewHandle { adapter_key });
+            .insert(adapter_key, adapter);
     }
 
     /// Register canonical member names for a structural shape id.
@@ -628,12 +679,130 @@ impl SharedVmState {
             .or_insert_with(|| member_names.to_vec());
     }
 
+    /// Register canonical member names for a physical structural layout.
+    ///
+    /// This keeps the dedicated structural-layout cache and the runtime layout
+    /// registry in sync so later layout-based queries do not need to infer
+    /// structure through nominal class metadata.
+    pub fn register_structural_layout_shape(&self, layout_id: LayoutId, member_names: &[String]) {
+        if layout_id == 0 {
+            return;
+        }
+        self.structural_layout_shapes
+            .write()
+            .entry(layout_id)
+            .or_insert_with(|| member_names.to_vec());
+        self.layouts
+            .write()
+            .register_layout_shape(layout_id, member_names);
+    }
+
+    /// Resolve canonical member names for a physical structural layout.
+    pub fn structural_layout_names(&self, layout_id: LayoutId) -> Option<Vec<String>> {
+        if let Some(names) = self
+            .layouts
+            .read()
+            .layout_field_names(layout_id)
+            .map(|names| names.to_vec())
+        {
+            return Some(names);
+        }
+        self.structural_layout_shapes
+            .read()
+            .get(&layout_id)
+            .cloned()
+    }
+
+    /// Resolve canonical layout member names for an object, lazily seeding
+    /// builtin nominal layouts into the layout registry when needed.
+    pub fn layout_field_names_for_object(
+        &self,
+        object: &crate::vm::object::Object,
+    ) -> Option<Vec<String>> {
+        if let Some(names) = self.structural_layout_names(object.layout_id()) {
+            return Some(names);
+        }
+        let nominal_type_id = object.nominal_class_id()?;
+        let class_name = self
+            .classes
+            .read()
+            .get_class(nominal_type_id)
+            .map(|class| class.name.clone())?;
+        let builtin_names = crate::vm::object::builtin_nominal_layout_field_names(&class_name)?;
+        let owned_names = builtin_names
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        self.register_structural_layout_shape(object.layout_id(), &owned_names);
+        Some(owned_names)
+    }
+
+    /// Record physical layout metadata for a nominal runtime type.
+    pub fn register_nominal_layout(
+        &self,
+        nominal_type_id: usize,
+        layout_id: LayoutId,
+        field_count: usize,
+        name: impl Into<Option<String>>,
+    ) {
+        self.layouts
+            .write()
+            .register_nominal_layout(nominal_type_id, layout_id, field_count, name);
+    }
+
+    /// Allocate one fresh nominal object layout ID.
+    pub fn allocate_nominal_layout_id(&self) -> LayoutId {
+        self.layouts.write().allocate_nominal_layout_id()
+    }
+
+    /// Register a runtime class after ensuring it has an assigned nominal layout.
+    pub fn register_runtime_class(&self, mut class: crate::vm::object::Class) -> usize {
+        if class.layout_id == 0 {
+            let layout_id = self.allocate_nominal_layout_id();
+            class.set_layout_id(layout_id);
+        }
+        let id = self.classes.write().register_class(class);
+        if let Some(registered) = self.classes.read().get_class(id).cloned() {
+            self.register_nominal_layout(
+                id,
+                registered.layout_id,
+                registered.field_count,
+                Some(registered.name.clone()),
+            );
+            if let Some(field_names) =
+                crate::vm::object::builtin_nominal_layout_field_names(&registered.name)
+            {
+                let owned_names = field_names
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect::<Vec<_>>();
+                self.register_structural_layout_shape(registered.layout_id, &owned_names);
+            }
+        }
+        id
+    }
+
+    /// Resolve the physical allocation metadata for a nominal runtime type.
+    pub fn nominal_allocation(&self, nominal_type_id: usize) -> Option<(LayoutId, usize)> {
+        self.layouts.read().nominal_allocation(nominal_type_id)
+    }
+
+    /// Update instance field count metadata for a nominal runtime type.
+    pub fn set_nominal_field_count(&self, nominal_type_id: usize, field_count: usize) -> bool {
+        let updated_layouts = self
+            .layouts
+            .write()
+            .set_nominal_field_count(nominal_type_id, field_count);
+        let updated_classes = self
+            .classes
+            .write()
+            .set_nominal_field_count(nominal_type_id, field_count);
+        updated_layouts || updated_classes
+    }
+
     /// Resolve canonical member names for a structural shape id.
     pub fn structural_shape_names(&self, shape_id: ShapeId) -> Option<Vec<String>> {
-        self.structural_shape_names
-            .read()
-            .get(&shape_id)
-            .cloned()
+        self.structural_shape_names.read().get(&shape_id).cloned()
     }
 
     /// Mark a module as initialized.
@@ -704,7 +873,17 @@ impl SharedVmState {
                 class.set_constructor(constructor_id);
             }
 
+            let layout_id = self.allocate_nominal_layout_id();
+            class.set_layout_id(layout_id);
             classes.register_class(class);
+            if let Some(registered_class) = classes.get_class(global_class_id) {
+                self.layouts.write().register_nominal_layout(
+                    global_class_id,
+                    registered_class.layout_id,
+                    registered_class.field_count,
+                    Some(registered_class.name.clone()),
+                );
+            }
 
             // Populate runtime metadata for dynamic property lookups.
             // Prefer rich reflection data when present, and always seed method slot names
@@ -781,8 +960,11 @@ impl SharedVmState {
             }
             base
         };
-        let nominal_type_base = self.classes.read().next_class_id();
         let nominal_type_len = module.classes.len();
+        let nominal_type_base = self
+            .classes
+            .write()
+            .reserve_nominal_type_range(nominal_type_len);
         let resolved_natives = self.resolve_module_natives(&module)?;
 
         self.module_layouts.write().insert(
@@ -827,7 +1009,10 @@ fn reflect_type_name_to_id(type_name: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeTypeHandleRegistry, ShapeAdapter, ShapeId, StructuralSlotBinding};
+    use super::{
+        PropertyKeyRegistry, RuntimeTypeHandleRegistry, ShapeAdapter, ShapeId,
+        StructuralSlotBinding,
+    };
 
     #[test]
     fn type_handle_registry_dedupes_equivalent_entries() {
@@ -862,14 +1047,22 @@ mod tests {
             &[
                 StructuralSlotBinding::Field(3),
                 StructuralSlotBinding::Method(5),
+                StructuralSlotBinding::Dynamic(9),
                 StructuralSlotBinding::Missing,
             ],
         );
 
         assert_eq!(adapter.binding_for_slot(0), StructuralSlotBinding::Field(3));
-        assert_eq!(adapter.binding_for_slot(1), StructuralSlotBinding::Method(5));
-        assert_eq!(adapter.binding_for_slot(2), StructuralSlotBinding::Missing);
-        assert_eq!(adapter.len(), 3);
+        assert_eq!(
+            adapter.binding_for_slot(1),
+            StructuralSlotBinding::Method(5)
+        );
+        assert_eq!(
+            adapter.binding_for_slot(2),
+            StructuralSlotBinding::Dynamic(9)
+        );
+        assert_eq!(adapter.binding_for_slot(3), StructuralSlotBinding::Missing);
+        assert_eq!(adapter.len(), 4);
         assert_eq!(adapter.epoch, 0);
     }
 
@@ -894,5 +1087,18 @@ mod tests {
             ],
         );
         assert!(!non_identity.is_identity_field_projection());
+    }
+
+    #[test]
+    fn property_key_registry_dedupes_names() {
+        let mut registry = PropertyKeyRegistry::new();
+        let first = registry.intern("name");
+        let second = registry.intern("name");
+        let third = registry.intern("other");
+
+        assert_eq!(first, second);
+        assert_ne!(first, third);
+        assert_eq!(registry.resolve(first), Some("name"));
+        assert_eq!(registry.resolve(third), Some("other"));
     }
 }

@@ -143,6 +143,9 @@ pub fn opcode_size(opcode: Opcode) -> usize {
             1 + 8 + 2
         }
 
+        // u64 + u16 + u16 operands
+        Opcode::CallMethodShape | Opcode::OptionalCallMethodShape => 1 + 8 + 2 + 2,
+
         // u32 operand
         Opcode::LoadConst
         | Opcode::New

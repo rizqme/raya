@@ -373,7 +373,7 @@ impl<'a> Lowerer<'a> {
 
     /// Emit a compile-time constant value as an IR instruction
     /// Used for constant folding - inlines the constant directly
-    fn emit_constant_value(&mut self, const_val: &ConstantValue) -> Register {
+    pub(super) fn emit_constant_value(&mut self, const_val: &ConstantValue) -> Register {
         match const_val {
             ConstantValue::I64(v) => {
                 let ty = TypeId::new(NUMBER_TYPE_ID); // Number type
@@ -2271,7 +2271,7 @@ impl<'a> Lowerer<'a> {
                     .is_some()
             {
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    if let Expression::Identifier(obj_ident) = &*member.object {
+                if let Expression::Identifier(obj_ident) = &*member.object {
                         eprintln!(
                             "[lower] structural member call '{}.{}(...)' via shape projection",
                             self.interner.resolve(obj_ident.name),
@@ -2279,8 +2279,28 @@ impl<'a> Lowerer<'a> {
                         );
                     }
                 }
+                let async_call =
+                    self.late_bound_member_call_is_async(&member.object, &call.callee, method_name);
+                if !async_call {
+                    if let Some((shape_id, slot)) =
+                        self.structural_shape_slot_from_expr(&member.object, method_name)
+                    {
+                        let object = self.lower_expr(&member.object);
+                        self.emit_structural_shape_name_registration_for_expr(&member.object);
+                        self.emit(IrInstr::CallMethodShape {
+                            dest: Some(dest.clone()),
+                            object,
+                            shape_id,
+                            method: slot,
+                            args,
+                            optional: member.optional,
+                        });
+                        self.propagate_type_projection_to_register(call_ty, &dest);
+                        return dest;
+                    }
+                }
                 let closure = self.lower_member(member);
-                if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
+                if async_call {
                     self.emit(IrInstr::SpawnClosure {
                         dest: dest.clone(),
                         closure,
@@ -2521,8 +2541,28 @@ impl<'a> Lowerer<'a> {
                         );
                     }
                 }
+                let async_call =
+                    self.late_bound_member_call_is_async(&member.object, &call.callee, method_name);
+                if !async_call {
+                    if let Some((shape_id, slot)) =
+                        self.structural_shape_slot_from_expr(&member.object, method_name)
+                    {
+                        let object = self.lower_expr(&member.object);
+                        self.emit_structural_shape_name_registration_for_expr(&member.object);
+                        self.emit(IrInstr::CallMethodShape {
+                            dest: Some(dest.clone()),
+                            object,
+                            shape_id,
+                            method: slot,
+                            args,
+                            optional: member.optional,
+                        });
+                        self.propagate_type_projection_to_register(call_ty, &dest);
+                        return dest;
+                    }
+                }
                 let closure = self.lower_member(member);
-                if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
+                if async_call {
                     self.emit(IrInstr::SpawnClosure {
                         dest: dest.clone(),
                         closure,
@@ -3346,6 +3386,7 @@ impl<'a> Lowerer<'a> {
                         obj_name, prop_name, field_index, shape_id
                     );
                 }
+                self.emit_structural_shape_name_registration_for_expr(&member.object);
                 self.emit(IrInstr::LoadFieldShape {
                     dest: dest.clone(),
                     object,
@@ -3426,17 +3467,55 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_index(&mut self, index: &ast::IndexExpression, full_expr: &Expression) -> Register {
-        let array = self.lower_expr(&index.object);
+        let object = self.lower_expr(&index.object);
         let idx = self.lower_expr(&index.index);
         let elem_ty = self.get_expr_type(full_expr);
         let dest = self.alloc_register(elem_ty);
 
-        self.emit(IrInstr::LoadElement {
-            dest: dest.clone(),
-            array,
-            index: idx,
-        });
+        if self.index_uses_dynamic_keyed_access(self.get_expr_type(&index.object)) {
+            self.emit(IrInstr::DynGetKeyed {
+                dest: dest.clone(),
+                object,
+                key: idx,
+            });
+        } else {
+            self.emit(IrInstr::LoadElement {
+                dest: dest.clone(),
+                array: object,
+                index: idx,
+            });
+        }
         dest
+    }
+
+    fn index_uses_dynamic_keyed_access(&self, object_ty: TypeId) -> bool {
+        use crate::parser::types::{PrimitiveType, Type};
+
+        match self.type_ctx.get(object_ty) {
+            Some(Type::Array(_)) | Some(Type::Tuple(_)) => false,
+            Some(Type::Primitive(PrimitiveType::String)) => false,
+            Some(Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .map(|inner| self.index_uses_dynamic_keyed_access(inner))
+                .unwrap_or(true),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.index_uses_dynamic_keyed_access(member)),
+            Some(Type::Generic(generic)) => self.index_uses_dynamic_keyed_access(generic.base),
+            Some(Type::TypeVar(type_var)) => type_var
+                .constraint
+                .or(type_var.default)
+                .map(|inner| self.index_uses_dynamic_keyed_access(inner))
+                .unwrap_or(true),
+            Some(Type::JSObject)
+            | Some(Type::Any)
+            | Some(Type::Object(_))
+            | Some(Type::Class(_)) => true,
+            _ => true,
+        }
     }
 
     fn is_append_index_pattern(&self, target: &Expression, index: &Expression) -> bool {
@@ -3949,6 +4028,29 @@ impl<'a> Lowerer<'a> {
         Some((shape_id, slot))
     }
 
+    fn emit_structural_shape_name_registration_for_expr(
+        &mut self,
+        object_expr: &Expression,
+    ) -> bool {
+        if let Some(layout) = self.projected_structural_layout_from_expr(object_expr) {
+            let names = layout
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>();
+            self.emit_structural_shape_name_registration_for_ordered_names(names);
+            return true;
+        }
+
+        let expr_ty = self.get_expr_type(object_expr);
+        let Some(layout) = self.structural_slot_layout_from_type(expr_ty) else {
+            return false;
+        };
+        self.emit_structural_shape_name_registration_for_ordered_names(
+            layout.into_iter().map(|(name, _)| name).collect(),
+        );
+        true
+    }
+
     fn emit_member_store(
         &mut self,
         object_expr: &Expression,
@@ -3969,6 +4071,7 @@ impl<'a> Lowerer<'a> {
                     obj_name, prop_name, slot, shape_id
                 );
             }
+            self.emit_structural_shape_name_registration_for_expr(object_expr);
             self.emit(IrInstr::StoreFieldShape {
                 object,
                 shape_id,
@@ -4647,19 +4750,27 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 Expression::Index(index) => {
-                    let array = self.lower_expr(&index.object);
+                    let object = self.lower_expr(&index.object);
                     if self.is_append_index_pattern(&index.object, &index.index) {
                         self.emit(IrInstr::ArrayPush {
-                            array,
+                            array: object,
                             element: rhs,
                         });
                     } else {
                         let idx = self.lower_expr(&index.index);
-                        self.emit(IrInstr::StoreElement {
-                            array,
-                            index: idx,
-                            value: rhs,
-                        });
+                        if self.index_uses_dynamic_keyed_access(self.get_expr_type(&index.object)) {
+                            self.emit(IrInstr::DynSetKeyed {
+                                object,
+                                key: idx,
+                                value: rhs,
+                            });
+                        } else {
+                            self.emit(IrInstr::StoreElement {
+                                array: object,
+                                index: idx,
+                                value: rhs,
+                            });
+                        }
                     }
                 }
                 _ => {}
@@ -5060,19 +5171,27 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expression::Index(index) => {
-                let array = self.lower_expr(&index.object);
+                let object = self.lower_expr(&index.object);
                 if self.is_append_index_pattern(&index.object, &index.index) {
                     self.emit(IrInstr::ArrayPush {
-                        array,
+                        array: object,
                         element: value.clone(),
                     });
                 } else {
                     let idx = self.lower_expr(&index.index);
-                    self.emit(IrInstr::StoreElement {
-                        array,
-                        index: idx,
-                        value: value.clone(),
-                    });
+                    if self.index_uses_dynamic_keyed_access(self.get_expr_type(&index.object)) {
+                        self.emit(IrInstr::DynSetKeyed {
+                            object,
+                            key: idx,
+                            value: value.clone(),
+                        });
+                    } else {
+                        self.emit(IrInstr::StoreElement {
+                            array: object,
+                            index: idx,
+                            value: value.clone(),
+                        });
+                    }
                 }
             }
             _ => {}
@@ -6659,6 +6778,20 @@ impl<'a> Lowerer<'a> {
         if let Some(layout) = self.structural_projection_layout_from_type_id(target_ty) {
             self.register_structural_projection_fields
                 .insert(dest.id, layout);
+        } else if let ast::Type::Reference(type_ref) = &cast.target_type.ty {
+            let alias_name = self.interner.resolve(type_ref.name.name);
+            if let Some(layout) = self
+                .projected_structural_layout_from_alias_name(alias_name)
+                .map(|layout| {
+                    layout
+                        .into_iter()
+                        .map(|(field_name, field_idx)| (field_name, field_idx as usize))
+                        .collect::<Vec<_>>()
+                })
+            {
+                self.register_structural_projection_fields
+                    .insert(dest.id, layout);
+            }
         }
 
         // If lowering already propagated a concrete field layout for this value,

@@ -193,7 +193,7 @@ impl TypeRegistryBuilder {
 
 /// Create a standard type registry with built-in types
 pub fn create_standard_registry() -> TypeRegistry {
-    use crate::vm::object::{Array, DynObject, Object, RayaString};
+    use crate::vm::object::{Array, Object, RayaString};
 
     TypeRegistry::builder()
         // Primitives (no pointers)
@@ -209,8 +209,6 @@ pub fn create_standard_registry() -> TypeRegistry {
         .register::<Object>("Object", PointerMap::none())
         .register::<Array>("Array", PointerMap::none())
         .register::<RayaString>("RayaString", PointerMap::none())
-        // Dynamic hashmap object — special GC handling marks props values
-        .register::<DynObject>("DynObject", PointerMap::none())
         .build()
 }
 

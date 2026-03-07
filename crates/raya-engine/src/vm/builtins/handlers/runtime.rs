@@ -15,7 +15,7 @@ use crate::parser::checker::{Binder, ScopeId, TypeChecker};
 use crate::parser::{Interner, Parser, TypeContext, TypeId};
 use crate::vm::builtin::runtime;
 use crate::vm::gc::GarbageCollector as Gc;
-use crate::vm::interpreter::ClassRegistry;
+use crate::vm::interpreter::{ClassRegistry, RuntimeLayoutRegistry};
 use crate::vm::object::{Buffer, Class, Object, RayaString};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -348,6 +348,7 @@ static VM_START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
 pub struct RuntimeHandlerContext<'a> {
     pub gc: &'a Mutex<Gc>,
     pub classes: &'a RwLock<ClassRegistry>,
+    pub layouts: &'a RwLock<RuntimeLayoutRegistry>,
 }
 
 // ============================================================================
@@ -1960,15 +1961,52 @@ fn allocate_string(ctx: &RuntimeHandlerContext<'_>, s: String) -> Value {
     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
 }
 
+fn register_runtime_class(ctx: &RuntimeHandlerContext<'_>, mut class: Class) -> usize {
+    if class.layout_id == 0 {
+        let layout_id = ctx.layouts.write().allocate_nominal_layout_id();
+        class.set_layout_id(layout_id);
+    }
+    let id = ctx.classes.write().register_class(class);
+    if let Some(registered) = ctx.classes.read().get_class(id).cloned() {
+        ctx.layouts.write().register_nominal_layout(
+            id,
+            registered.layout_id,
+            registered.field_count,
+            Some(registered.name.clone()),
+        );
+        if let Some(field_names) =
+            crate::vm::object::builtin_nominal_layout_field_names(&registered.name)
+        {
+            let owned_names = field_names
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>();
+            ctx.layouts
+                .write()
+                .register_layout_shape(registered.layout_id, &owned_names);
+        }
+    }
+    id
+}
+
 fn ensure_buffer_class_layout(ctx: &RuntimeHandlerContext<'_>) -> (usize, usize, u32) {
     let mut classes = ctx.classes.write();
-    if let Some(class) = classes.get_class_by_name("Buffer") {
-        (class.id, class.field_count.max(2), class.layout_id)
+    if let Some(id) = classes.get_class_by_name("Buffer").map(|class| class.id) {
+        let (layout_id, field_count) = ctx
+            .layouts
+            .read()
+            .nominal_allocation(id)
+            .expect("registered Buffer allocation");
+        (id, field_count.max(2), layout_id)
     } else {
-        let id = classes.next_class_id();
-        classes.register_class(Class::new(id, "Buffer".to_string(), 2));
-        let class = classes.get_class(id).expect("registered Buffer class");
-        (id, 2, class.layout_id)
+        drop(classes);
+        let id = register_runtime_class(ctx, Class::new(0, "Buffer".to_string(), 2));
+        let (layout_id, field_count) = ctx
+            .layouts
+            .read()
+            .nominal_allocation(id)
+            .expect("registered Buffer allocation");
+        (id, field_count.max(2), layout_id)
     }
 }
 
@@ -1983,8 +2021,7 @@ fn allocate_buffer_object(ctx: &RuntimeHandlerContext<'_>, data: &[u8]) -> Resul
     let buffer_ptr = gc.allocate(buffer);
     let handle = buffer_ptr.as_ptr() as u64;
 
-    let mut obj =
-        Object::new_nominal(buffer_layout_id, buffer_class_id as u32, buffer_field_count);
+    let mut obj = Object::new_nominal(buffer_layout_id, buffer_class_id as u32, buffer_field_count);
     obj.set_field(0, Value::u64(handle))
         .map_err(VmError::RuntimeError)?;
     if buffer_field_count > 1 {

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use raya_sdk::{AbiResult, ClassInfo, NativeContext, NativeValue};
 
 use crate::vm::gc::GarbageCollector as Gc;
-use crate::vm::interpreter::ClassRegistry;
+use crate::vm::interpreter::{ClassRegistry, RuntimeLayoutRegistry};
 use crate::vm::object::{Array, Buffer, ChannelObject, Class, Object, RayaString};
 use crate::vm::reflect::ClassMetadataRegistry;
 use crate::vm::scheduler::TaskId;
@@ -57,6 +57,9 @@ pub struct EngineContext<'a> {
     /// Class registry for type information and instance creation
     pub(crate) classes: &'a RwLock<ClassRegistry>,
 
+    /// Physical runtime layout registry for object allocation metadata.
+    pub(crate) layouts: &'a RwLock<RuntimeLayoutRegistry>,
+
     /// Current task ID
     pub(crate) current_task: TaskId,
 
@@ -70,12 +73,14 @@ impl<'a> EngineContext<'a> {
     pub fn new(
         gc: &'a Mutex<Gc>,
         classes: &'a RwLock<ClassRegistry>,
+        layouts: &'a RwLock<RuntimeLayoutRegistry>,
         current_task: TaskId,
         class_metadata: &'a RwLock<ClassMetadataRegistry>,
     ) -> Self {
         Self {
             gc,
             classes,
+            layouts,
             current_task,
             class_metadata,
         }
@@ -86,6 +91,34 @@ impl<'a> EngineContext<'a> {
         let gc_ptr = self.gc.lock().allocate(obj);
         let ptr = NonNull::new(gc_ptr.as_ptr()).unwrap();
         value_to_native(unsafe { Value::from_ptr(ptr) })
+    }
+
+    fn register_runtime_class(&self, mut class: Class) -> usize {
+        if class.layout_id == 0 {
+            let layout_id = self.layouts.write().allocate_nominal_layout_id();
+            class.set_layout_id(layout_id);
+        }
+        let id = self.classes.write().register_class(class);
+        if let Some(registered) = self.classes.read().get_class(id).cloned() {
+            self.layouts.write().register_nominal_layout(
+                id,
+                registered.layout_id,
+                registered.field_count,
+                Some(registered.name.clone()),
+            );
+            if let Some(field_names) =
+                crate::vm::object::builtin_nominal_layout_field_names(&registered.name)
+            {
+                let owned_names = field_names
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect::<Vec<_>>();
+                self.layouts
+                    .write()
+                    .register_layout_shape(registered.layout_id, &owned_names);
+            }
+        }
+        id
     }
 
     fn read_buffer_from_handle(&self, handle: u64) -> AbiResult<Vec<u8>> {
@@ -148,13 +181,22 @@ impl NativeContext for EngineContext<'_> {
         // Buffer values are always wrapped as Buffer class objects.
         let (buffer_class_id, buffer_field_count, buffer_layout_id) = {
             let mut classes = self.classes.write();
-            if let Some(class) = classes.get_class_by_name("Buffer") {
-                (class.id, class.field_count.max(2), class.layout_id)
+            if let Some(id) = classes.get_class_by_name("Buffer").map(|class| class.id) {
+                let (layout_id, field_count) = self
+                    .layouts
+                    .read()
+                    .nominal_allocation(id)
+                    .expect("registered Buffer allocation");
+                (id, field_count.max(2), layout_id)
             } else {
-                let id = classes.next_class_id();
-                classes.register_class(Class::new(id, "Buffer".to_string(), 2));
-                let class = classes.get_class(id).expect("registered Buffer class");
-                (id, 2, class.layout_id)
+                drop(classes);
+                let id = self.register_runtime_class(Class::new(0, "Buffer".to_string(), 2));
+                let (layout_id, field_count) = self
+                    .layouts
+                    .read()
+                    .nominal_allocation(id)
+                    .expect("registered Buffer allocation");
+                (id, field_count.max(2), layout_id)
             }
         };
 
@@ -163,11 +205,8 @@ impl NativeContext for EngineContext<'_> {
             let buf_ptr = gc.allocate(buffer);
             let handle = buf_ptr.as_ptr() as u64;
 
-            let mut obj = Object::new_nominal(
-                buffer_layout_id,
-                buffer_class_id as u32,
-                buffer_field_count,
-            );
+            let mut obj =
+                Object::new_nominal(buffer_layout_id, buffer_class_id as u32, buffer_field_count);
             let _ = obj.set_field(0, Value::u64(handle));
             let _ = obj.set_field(1, Value::i32(data.len() as i32));
             gc.allocate(obj)
@@ -186,13 +225,11 @@ impl NativeContext for EngineContext<'_> {
     }
 
     fn create_object_by_id(&self, class_id: usize) -> AbiResult<NativeValue> {
-        let (field_count, layout_id) = {
-            let classes = self.classes.read();
-            let class = classes
-                .get_class(class_id)
-                .ok_or_else(|| format!("Class {} not found", class_id))?;
-            (class.field_count, class.layout_id)
-        };
+        let (layout_id, field_count) = self
+            .layouts
+            .read()
+            .nominal_allocation(class_id)
+            .ok_or_else(|| format!("Class {} not found", class_id))?;
         let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
         Ok(self.alloc_ptr(obj))
     }
@@ -582,15 +619,13 @@ pub fn object_class_id(val: NativeValue) -> AbiResult<usize> {
 pub fn object_allocate(
     ctx: &EngineContext<'_>,
     class_id: usize,
-    field_count: usize,
+    _field_count: usize,
 ) -> NativeValue {
-    let layout_id = {
-        let classes = ctx.classes.read();
-        classes
-            .get_class(class_id)
-            .map(|class| class.layout_id)
-            .unwrap_or_else(|| panic!("Class {} not found", class_id))
-    };
+    let (layout_id, field_count) = ctx
+        .layouts
+        .read()
+        .nominal_allocation(class_id)
+        .unwrap_or_else(|| panic!("Class {} not found", class_id));
     let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
     ctx.alloc_ptr(obj)
 }

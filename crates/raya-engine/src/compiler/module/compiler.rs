@@ -126,6 +126,42 @@ pub struct ModuleCompiler {
 }
 
 impl ModuleCompiler {
+    fn escape_signature_atom(value: &str) -> String {
+        value
+            .replace('\\', "\\\\")
+            .replace(':', "\\:")
+            .replace(',', "\\,")
+            .replace('|', "\\|")
+    }
+
+    fn namespace_contract_from_exports(module_exports: &ModuleExports) -> (u64, String) {
+        let mut members = module_exports
+            .symbols
+            .values()
+            .filter(|exported| {
+                exported.scope == SymbolScope::Module
+                    && matches!(
+                        exported.kind,
+                        SymbolKind::Function
+                            | SymbolKind::Class
+                            | SymbolKind::Variable
+                            | SymbolKind::EnumMember
+                    )
+            })
+            .map(|exported| {
+                format!(
+                    "prop:{}:ro:req:{}",
+                    Self::escape_signature_atom(&exported.name),
+                    exported.type_signature
+                )
+            })
+            .collect::<Vec<_>>();
+        members.sort();
+        let signature = format!("obj({})", members.join(","));
+        let hash = crate::parser::types::signature_hash(&signature);
+        (hash, signature)
+    }
+
     fn apply_default_export_type_overrides(
         ast: &AstModule,
         symbols: &mut crate::parser::checker::SymbolTable,
@@ -1133,9 +1169,14 @@ impl ModuleCompiler {
                                 for export_name in export_names {
                                     if let Some(exported) = module_exports.symbols.get(&export_name)
                                     {
+                                        if exported.scope != SymbolScope::Module {
+                                            continue;
+                                        }
                                         if matches!(
                                             exported.kind,
-                                            SymbolKind::TypeAlias | SymbolKind::TypeParameter
+                                            SymbolKind::TypeAlias
+                                                | SymbolKind::TypeParameter
+                                                | SymbolKind::Interface
                                         ) {
                                             continue;
                                         }
@@ -1696,6 +1737,17 @@ impl ModuleCompiler {
                                 });
                             }
                             ImportSpecifier::Namespace(alias) => {
+                                let Some(target_exports) = self.exports.get(&resolved_path) else {
+                                    return Err(ModuleCompileError::TypeError {
+                                        path: current_path.to_path_buf(),
+                                        message: format!(
+                                            "Missing export metadata for namespace import '{}'",
+                                            specifier
+                                        ),
+                                    });
+                                };
+                                let (namespace_hash, namespace_signature) =
+                                    Self::namespace_contract_from_exports(target_exports);
                                 let alias_name = interner.resolve(alias.name).to_string();
                                 let namespace_symbol = "*".to_string();
                                 bytecode.imports.push(Import {
@@ -1706,8 +1758,8 @@ impl ModuleCompiler {
                                     // Namespace imports are resolved by module_id at link/hydration time.
                                     symbol_id: 0,
                                     scope: SymbolScope::Module,
-                                    type_symbol_id: 0,
-                                    type_signature: None,
+                                    type_symbol_id: namespace_hash,
+                                    type_signature: Some(namespace_signature),
                                     runtime_global_slot: module_global_slots
                                         .get(interner.resolve(alias.name))
                                         .copied()
@@ -1781,6 +1833,17 @@ impl ModuleCompiler {
                     else {
                         continue;
                     };
+                    let Some(target_exports) = self.exports.get(&resolved_path) else {
+                        return Err(ModuleCompileError::TypeError {
+                            path: current_path.to_path_buf(),
+                            message: format!(
+                                "Missing export metadata for namespace re-export '{}'",
+                                specifier
+                            ),
+                        });
+                    };
+                    let (namespace_hash, namespace_signature) =
+                        Self::namespace_contract_from_exports(target_exports);
                     let target_module_name = self.module_identity(&resolved_path);
                     let target_module_id = module_id_from_name(&target_module_name);
                     let namespace_symbol = "*".to_string();
@@ -1795,8 +1858,8 @@ impl ModuleCompiler {
                             &namespace_symbol,
                         ),
                         scope: SymbolScope::Module,
-                        type_symbol_id: 0,
-                        type_signature: None,
+                        type_symbol_id: namespace_hash,
+                        type_signature: Some(namespace_signature),
                         runtime_global_slot: None,
                     });
                 }
@@ -2265,6 +2328,41 @@ mod tests {
                 other
             ),
         }
+    }
+
+    #[test]
+    fn test_namespace_import_emits_structural_signature_metadata() {
+        let temp_dir = create_test_project();
+        let main_path = temp_dir.path().join("main.raya");
+        let dep_path = temp_dir.path().join("dep.raya");
+
+        fs::write(
+            &main_path,
+            r#"
+            import * as depNs from "./dep";
+            return depNs.answer;
+            "#,
+        )
+        .unwrap();
+        fs::write(&dep_path, "export const answer: number = 42;").unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let compiled = compiler.compile(&main_path).expect("compile namespace import");
+        let main_module = compiled
+            .iter()
+            .find(|module| module.path == main_path.canonicalize().unwrap())
+            .expect("main module");
+        let namespace_import = main_module
+            .bytecode
+            .imports
+            .iter()
+            .find(|import| import.symbol == "*")
+            .expect("namespace import metadata");
+        assert_ne!(namespace_import.type_symbol_id, 0);
+        assert_eq!(
+            namespace_import.type_signature.as_deref(),
+            Some("obj(prop:answer:ro:req:number)")
+        );
     }
 
     #[test]

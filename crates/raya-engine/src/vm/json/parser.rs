@@ -3,11 +3,14 @@
 //! This parser is optimized for performance:
 //! - Single-pass parsing
 //! - Minimal allocations
-//! - Direct GC allocation of native types (DynObject, Array, RayaString)
+//! - Direct GC allocation of native types (Object, Array, RayaString)
 //! - No intermediate representations
 
 use crate::vm::gc::GarbageCollector;
-use crate::vm::object::{Array, DynObject, RayaString};
+use crate::vm::object::{
+    layout_id_from_ordered_names, register_global_layout_names, Array, Object, PropKeyId,
+    RayaString,
+};
 use crate::vm::value::Value;
 use crate::vm::{VmError, VmResult};
 
@@ -19,9 +22,28 @@ use crate::vm::{VmError, VmResult};
 /// - number → `Value::f64(n)` (JSON numbers are floating-point)
 /// - string → `GcPtr<RayaString>` → `Value`
 /// - array → `GcPtr<Array>` with elements as `Value` → `Value`
-/// - object → `GcPtr<DynObject>` with props as `Value` → `Value`
+/// - object → `GcPtr<Object>` with structural fields and/or dynamic props as `Value` → `Value`
 pub fn parse(input: &str, gc: &mut GarbageCollector) -> VmResult<Value> {
-    let mut parser = Parser::new(input, gc);
+    let mut parser = Parser::new(input, gc, None);
+    let val = parser.parse_value()?;
+    parser.skip_whitespace();
+    if parser.pos < parser.bytes.len() {
+        return Err(VmError::RuntimeError(format!(
+            "Unexpected trailing characters at position {}",
+            parser.pos
+        )));
+    }
+    Ok(val)
+}
+
+/// Parse JSON directly into unified `Object + dyn_map` carriers by interning
+/// dynamic property keys through the provided callback.
+pub fn parse_with_prop_key_interner(
+    input: &str,
+    gc: &mut GarbageCollector,
+    intern_prop_key: &mut dyn FnMut(&str) -> PropKeyId,
+) -> VmResult<Value> {
+    let mut parser = Parser::new(input, gc, Some(intern_prop_key));
     let val = parser.parse_value()?;
     parser.skip_whitespace();
     if parser.pos < parser.bytes.len() {
@@ -39,15 +61,21 @@ struct Parser<'a> {
     bytes: &'a [u8],
     pos: usize,
     gc: &'a mut GarbageCollector,
+    intern_prop_key: Option<&'a mut dyn FnMut(&str) -> PropKeyId>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(input: &'a str, gc: &'a mut GarbageCollector) -> Self {
+    fn new(
+        input: &'a str,
+        gc: &'a mut GarbageCollector,
+        intern_prop_key: Option<&'a mut dyn FnMut(&str) -> PropKeyId>,
+    ) -> Self {
         Self {
             input,
             bytes: input.as_bytes(),
             pos: 0,
             gc,
+            intern_prop_key,
         }
     }
 
@@ -330,14 +358,11 @@ impl<'a> Parser<'a> {
         self.pos += 1;
         self.skip_whitespace();
 
-        let mut obj = DynObject::new();
+        let mut entries = Vec::new();
 
         if self.pos < self.bytes.len() && self.bytes[self.pos] == b'}' {
             self.pos += 1;
-            let obj_ptr = self.gc.allocate(obj);
-            return Ok(unsafe {
-                Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap())
-            });
+            return self.allocate_object(entries);
         }
 
         loop {
@@ -362,7 +387,7 @@ impl<'a> Parser<'a> {
 
             self.skip_whitespace();
             let value = self.parse_value()?;
-            obj.set(key, value);
+            entries.push((key, value));
 
             self.skip_whitespace();
 
@@ -377,10 +402,7 @@ impl<'a> Parser<'a> {
                 }
                 b'}' => {
                     self.pos += 1;
-                    let obj_ptr = self.gc.allocate(obj);
-                    return Ok(unsafe {
-                        Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap())
-                    });
+                    return self.allocate_object(entries);
                 }
                 c => {
                     return Err(VmError::RuntimeError(format!(
@@ -389,6 +411,34 @@ impl<'a> Parser<'a> {
                     )))
                 }
             }
+        }
+    }
+
+    fn allocate_object(&mut self, entries: Vec<(String, Value)>) -> VmResult<Value> {
+        if let Some(intern_prop_key) = self.intern_prop_key.as_deref_mut() {
+            let mut obj = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
+            {
+                let dyn_map = obj.ensure_dyn_map();
+                for (key, value) in entries {
+                    dyn_map.insert(intern_prop_key(&key), value);
+                }
+            }
+            let obj_ptr = self.gc.allocate(obj);
+            Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
+        } else {
+            let mut field_names = entries.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>();
+            field_names.sort_unstable();
+            field_names.dedup();
+            let layout_id = layout_id_from_ordered_names(&field_names);
+            register_global_layout_names(layout_id, &field_names);
+            let mut obj = Object::new_structural(layout_id, field_names.len());
+            for (key, value) in entries {
+                if let Some(index) = field_names.iter().position(|name| name == &key) {
+                    let _ = obj.set_field(index, value);
+                }
+            }
+            let obj_ptr = self.gc.allocate(obj);
+            Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
         }
     }
 
@@ -502,12 +552,15 @@ mod tests {
         let mut gc = GarbageCollector::default();
         let result = parse(r#"{"name": "Alice", "age": 30}"#, &mut gc).unwrap();
         match js_classify(result) {
-            JSView::Dyn(ptr) => {
+            JSView::Struct { ptr, layout_id, .. } => {
                 let obj = unsafe { &*ptr };
-                assert!(obj.has("name"));
-                assert_eq!(obj.get("age").and_then(|v| v.as_f64()), Some(30.0));
+                let names = crate::vm::object::global_layout_names(layout_id).expect("layout names");
+                let name_index = names.iter().position(|name| name == "name").expect("name field");
+                let age_index = names.iter().position(|name| name == "age").expect("age field");
+                assert!(obj.get_field(name_index).is_some());
+                assert_eq!(obj.get_field(age_index).and_then(|v| v.as_f64()), Some(30.0));
             }
-            _ => panic!("Expected DynObject"),
+            _ => panic!("Expected Object"),
         }
     }
 
@@ -516,8 +569,8 @@ mod tests {
         let mut gc = GarbageCollector::default();
         let result = parse("{}", &mut gc).unwrap();
         match js_classify(result) {
-            JSView::Dyn(ptr) => assert!(unsafe { &*ptr }.props.is_empty()),
-            _ => panic!("Expected DynObject"),
+            JSView::Struct { ptr, .. } => assert_eq!(unsafe { &*ptr }.field_count(), 0),
+            _ => panic!("Expected Object"),
         }
     }
 
@@ -527,14 +580,24 @@ mod tests {
         let json = r#"{"user": {"name": "Alice", "tags": ["admin", "user"]}, "count": 42}"#;
         let result = parse(json, &mut gc).unwrap();
         match js_classify(result) {
-            JSView::Dyn(ptr) => {
+            JSView::Struct { ptr, layout_id, .. } => {
                 let obj = unsafe { &*ptr };
-                let user_val = obj.get("user").unwrap();
+                let names = crate::vm::object::global_layout_names(layout_id).expect("layout names");
+                let user_val = obj
+                    .get_field(names.iter().position(|name| name == "user").expect("user"))
+                    .unwrap();
                 match js_classify(user_val) {
-                    JSView::Dyn(user_ptr) => {
+                    JSView::Struct {
+                        ptr: user_ptr,
+                        layout_id: user_layout,
+                        ..
+                    } => {
                         let user_obj = unsafe { &*user_ptr };
-                        assert!(user_obj.has("name"));
-                        let tags_val = user_obj.get("tags").unwrap();
+                        let user_names =
+                            crate::vm::object::global_layout_names(user_layout).expect("user names");
+                        let tags_val = user_obj
+                            .get_field(user_names.iter().position(|name| name == "tags").expect("tags"))
+                            .unwrap();
                         match js_classify(tags_val) {
                             JSView::Arr(tags_ptr) => {
                                 assert_eq!(unsafe { &*tags_ptr }.len(), 2);
@@ -542,11 +605,14 @@ mod tests {
                             _ => panic!("Expected array for tags"),
                         }
                     }
-                    _ => panic!("Expected DynObject for user"),
+                    _ => panic!("Expected Object for user"),
                 }
-                assert_eq!(obj.get("count").and_then(|v| v.as_f64()), Some(42.0));
+                let count_val = obj
+                    .get_field(names.iter().position(|name| name == "count").expect("count"))
+                    .unwrap();
+                assert_eq!(count_val.as_f64(), Some(42.0));
             }
-            _ => panic!("Expected DynObject"),
+            _ => panic!("Expected Object"),
         }
     }
 

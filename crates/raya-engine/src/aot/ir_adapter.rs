@@ -480,6 +480,20 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![Self::reg(object), Self::reg(value)],
                 });
             }
+            IrInstr::DynGetKeyed { dest, object, key } => {
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::DynGetProp,
+                    args: vec![Self::reg(object), Self::reg(key)],
+                });
+            }
+            IrInstr::DynSetKeyed { object, key, value } => {
+                out.push(SmInstr::CallHelper {
+                    dest: None,
+                    helper: HelperCall::DynSetProp,
+                    args: vec![Self::reg(object), Self::reg(key), Self::reg(value)],
+                });
+            }
 
             // === Array/Element Access ===
             IrInstr::LoadElement { dest, array, index } => {
@@ -610,6 +624,22 @@ impl<'a> IrFunctionAdapter<'a> {
             IrInstr::CallMethod {
                 dest,
                 object,
+                method,
+                args,
+                optional: _,
+            } => {
+                let mut call_args = vec![Self::reg(object), *method as u32];
+                call_args.extend(args.iter().map(Self::reg));
+                out.push(SmInstr::CallHelper {
+                    dest: dest.as_ref().map(Self::reg),
+                    helper: HelperCall::NativeCall,
+                    args: call_args,
+                });
+            }
+            IrInstr::CallMethodShape {
+                dest,
+                object,
+                shape_id: _,
                 method,
                 args,
                 optional: _,
@@ -991,7 +1021,9 @@ impl<'a> IrFunctionAdapter<'a> {
             IrInstr::NativeCall { .. } => Some(SuspensionKind::NativeCall),
             IrInstr::ModuleNativeCall { .. } => Some(SuspensionKind::NativeCall),
             IrInstr::Call { .. } => Some(SuspensionKind::AotCall),
-            IrInstr::CallMethod { .. } => Some(SuspensionKind::NativeCall),
+            IrInstr::CallMethod { .. } | IrInstr::CallMethodShape { .. } => {
+                Some(SuspensionKind::NativeCall)
+            }
             IrInstr::CallClosure { .. } => Some(SuspensionKind::AotCall),
             IrInstr::MutexLock { .. } => Some(SuspensionKind::MutexLock),
             _ => None,

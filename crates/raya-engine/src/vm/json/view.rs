@@ -9,7 +9,7 @@
 use std::any::TypeId;
 
 use crate::vm::gc::GcHeader;
-use crate::vm::object::{Array, DynObject, LayoutId, NominalTypeId, Object, RayaString};
+use crate::vm::object::{Array, LayoutId, NominalTypeId, Object, RayaString};
 use crate::vm::value::Value;
 
 /// Stack-only view of a `Value`'s type.
@@ -35,8 +35,6 @@ pub enum JSView {
         layout_id: LayoutId,
         nominal_type_id: Option<NominalTypeId>,
     },
-    /// Dynamic hashmap object (JSON.parse result, `JsonObject`-typed).
-    Dyn(*const DynObject),
     /// Any other heap type (Closure, BoundMethod, RefCell, Channel, …).
     Other,
 }
@@ -93,8 +91,6 @@ pub fn js_classify(val: Value) -> JSView {
             layout_id,
             nominal_type_id,
         }
-    } else if type_id == TypeId::of::<DynObject>() {
-        JSView::Dyn(ptr as *const DynObject)
     } else {
         JSView::Other
     }

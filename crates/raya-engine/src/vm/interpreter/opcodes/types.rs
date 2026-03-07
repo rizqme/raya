@@ -8,7 +8,8 @@ use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    Array, BoundMethod, BoundNativeMethod, ChannelObject, Closure, Object, RayaString,
+    layout_id_from_ordered_names, Array, BoundMethod, BoundNativeMethod, ChannelObject, Closure,
+    Object, RayaString,
 };
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
@@ -222,10 +223,12 @@ impl<'a> Interpreter<'a> {
                             )));
                         };
                         let obj = unsafe { &*object_ptr.as_ptr() };
-                        if obj.field_count() < required_fields {
+                        let effective_field_count =
+                            obj.field_count().max(obj.dyn_map().map(|dyn_map| dyn_map.len()).unwrap_or(0));
+                        if effective_field_count < required_fields {
                             return OpcodeResult::Error(VmError::TypeError(format!(
                                 "Cannot cast object(field_count={}) to required field count {}",
-                                obj.field_count(),
+                                effective_field_count,
                                 required_fields
                             )));
                         }
@@ -527,52 +530,53 @@ impl<'a> Interpreter<'a> {
                                         )
                                     }
                                 } else {
-                                    if std::env::var("RAYA_DEBUG_DYNGET").is_ok() {
-                                        let class_debug = nominal_class_id
-                                            .map(|id| id.to_string())
-                                            .unwrap_or_else(|| "structural".to_string());
-                                        let class_name = {
-                                            nominal_class_id.map_or_else(
-                                                || "<structural-object>".to_string(),
-                                                |class_id| {
-                                                    let classes = self.classes.read();
-                                                    classes
-                                                        .get_class(class_id)
-                                                        .map(|class| class.name.clone())
-                                                        .unwrap_or_else(|| "<unknown>".to_string())
-                                                },
-                                            )
-                                        };
-                                        let metadata_methods = {
-                                            let class_metadata = self.class_metadata.read();
-                                            nominal_class_id
-                                                .and_then(|class_id| class_metadata.get(class_id))
-                                                .map(|meta| {
-                                                    meta.method_names
-                                                        .iter()
-                                                        .filter(|name| !name.is_empty())
-                                                        .cloned()
-                                                        .collect::<Vec<_>>()
-                                                })
-                                                .unwrap_or_default()
-                                        };
-                                        eprintln!(
-                                            "[dynget] unresolved struct member '{}.{}' class_id={} metadata_methods={:?}",
-                                            class_name, prop_name, class_debug, metadata_methods
-                                        );
+                                    let dyn_value = {
+                                        let key = self.intern_prop_key(&prop_name);
+                                        obj.dyn_map()
+                                            .and_then(|dyn_map| dyn_map.get(&key).copied())
+                                    };
+                                    if let Some(value) = dyn_value {
+                                        value
+                                    } else {
+                                        if std::env::var("RAYA_DEBUG_DYNGET").is_ok() {
+                                            let class_debug = nominal_class_id
+                                                .map(|id| id.to_string())
+                                                .unwrap_or_else(|| "structural".to_string());
+                                            let class_name = {
+                                                nominal_class_id.map_or_else(
+                                                    || "<structural-object>".to_string(),
+                                                    |class_id| {
+                                                        let classes = self.classes.read();
+                                                        classes
+                                                            .get_class(class_id)
+                                                            .map(|class| class.name.clone())
+                                                            .unwrap_or_else(|| "<unknown>".to_string())
+                                                    },
+                                                )
+                                            };
+                                            let metadata_methods = {
+                                                let class_metadata = self.class_metadata.read();
+                                                nominal_class_id
+                                                    .and_then(|class_id| class_metadata.get(class_id))
+                                                    .map(|meta| {
+                                                        meta.method_names
+                                                            .iter()
+                                                            .filter(|name| !name.is_empty())
+                                                            .cloned()
+                                                            .collect::<Vec<_>>()
+                                                    })
+                                                    .unwrap_or_default()
+                                            };
+                                            eprintln!(
+                                                "[dynget] unresolved struct member '{}.{}' class_id={} metadata_methods={:?}",
+                                                class_name, prop_name, class_debug, metadata_methods
+                                            );
+                                        }
+                                        Value::null()
                                     }
-                                    Value::null()
                                 }
                             }
                         }
-                    }
-                    JSView::Dyn(ptr) => {
-                        // DynObject: hashmap lookup
-                        let value = unsafe { (*ptr).get(&prop_name) }.unwrap_or(Value::null());
-                        if value.is_null() && std::env::var("RAYA_DEBUG_DYNGET").is_ok() {
-                            eprintln!("[dynget] unresolved dyn member '.{}'", prop_name);
-                        }
-                        value
                     }
                     _ => {
                         if std::env::var("RAYA_DEBUG_DYNGET").is_ok() {
@@ -590,7 +594,6 @@ impl<'a> Interpreter<'a> {
 
             Opcode::DynSet => {
                 use crate::vm::json::view::{js_classify, JSView};
-                use crate::vm::object::DynObject;
 
                 // Read property name index from constant pool
                 let prop_index = match Self::read_u32(code, ip) {
@@ -632,15 +635,9 @@ impl<'a> Interpreter<'a> {
                         if let Some(index) = field_index {
                             let _ = obj.set_field(index, value);
                         } else {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Field '{}' not found on object",
-                                prop_name
-                            )));
+                            let key = self.intern_prop_key(&prop_name);
+                            obj.ensure_dyn_map().insert(key, value);
                         }
-                    }
-                    JSView::Dyn(ptr) => {
-                        let obj = unsafe { &mut *(ptr as *mut DynObject) };
-                        obj.set(prop_name, value);
                     }
                     _ => {
                         return OpcodeResult::Error(VmError::TypeError(
@@ -654,7 +651,6 @@ impl<'a> Interpreter<'a> {
 
             Opcode::DynDelete => {
                 use crate::vm::json::view::{js_classify, JSView};
-                use crate::vm::object::DynObject;
 
                 let prop_index = match Self::read_u32(code, ip) {
                     Ok(v) => v,
@@ -673,10 +669,17 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let JSView::Dyn(ptr) = js_classify(obj_val) {
-                    unsafe { &mut *(ptr as *mut DynObject) }
-                        .props
-                        .remove(&prop_name);
+                match js_classify(obj_val) {
+                    JSView::Struct { ptr, .. } => {
+                        let obj = unsafe { &mut *(ptr as *mut Object) };
+                        if self.get_field_index_for_value(obj_val, &prop_name).is_none() {
+                            let key = self.intern_prop_key(&prop_name);
+                            if let Some(dyn_map) = obj.dyn_map_mut() {
+                                dyn_map.remove(&key);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 OpcodeResult::Continue
             }
@@ -706,14 +709,16 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let result = match js_classify(obj_val) {
-                    JSView::Dyn(ptr) => unsafe { (*ptr).get(&key_str) }.unwrap_or(Value::null()),
                     JSView::Struct { ptr, .. } => {
                         let obj = unsafe { &*ptr };
                         let field_index = self.get_field_index_for_value(obj_val, &key_str);
                         if let Some(index) = field_index {
                             obj.get_field(index).unwrap_or(Value::null())
                         } else {
-                            Value::null()
+                            let key = self.intern_prop_key(&key_str);
+                            obj.dyn_map()
+                                .and_then(|dyn_map| dyn_map.get(&key).copied())
+                                .unwrap_or(Value::null())
                         }
                     }
                     _ => Value::null(),
@@ -727,7 +732,6 @@ impl<'a> Interpreter<'a> {
 
             Opcode::DynSetKeyed => {
                 use crate::vm::json::view::{js_classify, JSView};
-                use crate::vm::object::DynObject;
 
                 // Stack: [..., object, key, value] → value popped first
                 let value = match stack.pop() {
@@ -753,20 +757,14 @@ impl<'a> Interpreter<'a> {
                 };
 
                 match js_classify(obj_val) {
-                    JSView::Dyn(ptr) => {
-                        let obj = unsafe { &mut *(ptr as *mut DynObject) };
-                        obj.set(key_str, value);
-                    }
                     JSView::Struct { ptr, .. } => {
                         let obj = unsafe { &mut *(ptr as *mut Object) };
                         let field_index = self.get_field_index_for_value(obj_val, &key_str);
                         if let Some(index) = field_index {
                             let _ = obj.set_field(index, value);
                         } else {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Field '{}' not found on struct",
-                                key_str
-                            )));
+                            let key = self.intern_prop_key(&key_str);
+                            obj.ensure_dyn_map().insert(key, value);
                         }
                     }
                     _ => {
@@ -779,10 +777,9 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::DynNewObject => {
-                use crate::vm::object::DynObject;
-
-                let dyn_obj = DynObject::new();
-                let gc_ptr = self.gc.lock().allocate(dyn_obj);
+                let empty_layout = layout_id_from_ordered_names(&[]);
+                let obj = Object::new_dynamic(empty_layout, 0);
+                let gc_ptr = self.gc.lock().allocate(obj);
                 let val =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 if let Err(e) = stack.push(val) {
@@ -801,12 +798,36 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let keys: Vec<Value> = match js_classify(obj_val) {
-                    JSView::Dyn(ptr) => {
+                    JSView::Struct { ptr, .. } => {
                         let obj = unsafe { &*ptr };
-                        obj.props
-                            .keys()
-                            .map(|k| {
-                                let raya_str = RayaString::new(k.clone());
+                        let mut names = Vec::new();
+                        if let Some(class_id) = obj.nominal_class_id() {
+                            let class_metadata = self.class_metadata.read();
+                            if let Some(meta) = class_metadata.get(class_id) {
+                                names.extend(
+                                    meta.field_names
+                                        .iter()
+                                        .filter(|name| !name.is_empty())
+                                        .cloned(),
+                                );
+                            }
+                        } else if let Some(layout_names) = self.structural_layout_names(obj.layout_id())
+                        {
+                            names.extend(layout_names);
+                        }
+                        if let Some(dyn_map) = obj.dyn_map() {
+                            for key in dyn_map.keys() {
+                                if let Some(name) = self.prop_key_name(*key) {
+                                    if !names.iter().any(|existing| existing == &name) {
+                                        names.push(name);
+                                    }
+                                }
+                            }
+                        }
+                        names
+                            .into_iter()
+                            .map(|name| {
+                                let raya_str = RayaString::new(name);
                                 let gc_ptr = self.gc.lock().allocate(raya_str);
                                 unsafe {
                                     Value::from_ptr(
@@ -853,7 +874,17 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let has = match js_classify(obj_val) {
-                    JSView::Dyn(ptr) => unsafe { &*ptr }.has(&prop_name),
+                    JSView::Struct { ptr, .. } => {
+                        if self.get_field_index_for_value(obj_val, &prop_name).is_some() {
+                            true
+                        } else {
+                            let obj = unsafe { &*ptr };
+                            let key = self.intern_prop_key(&prop_name);
+                            obj.dyn_map()
+                                .map(|dyn_map| dyn_map.contains_key(&key))
+                                .unwrap_or(false)
+                        }
+                    }
                     _ => false,
                 };
                 if let Err(e) = stack.push(Value::bool(has)) {

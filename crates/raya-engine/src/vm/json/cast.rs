@@ -26,7 +26,7 @@
 
 use super::JsonValue;
 use crate::vm::gc::GarbageCollector;
-use crate::vm::object::Object;
+use crate::vm::object::{LayoutId, Object, PropKeyId};
 use crate::vm::value::Value;
 use crate::vm::{VmError, VmResult};
 use rustc_hash::FxHashMap;
@@ -157,19 +157,57 @@ pub fn validate_cast(
     schema_registry: &TypeSchemaRegistry,
     gc: &mut GarbageCollector,
 ) -> VmResult<Value> {
-    validate_cast_impl(json, schema, schema_registry, gc, 0)
+    validate_cast_with_runtime_metadata(
+        json,
+        schema,
+        schema_registry,
+        gc,
+        &mut |_| None,
+        &mut |_| None,
+    )
+}
+
+/// Validate and cast a JSON value to a typed object using runtime metadata
+/// resolvers for unified object carriers.
+pub fn validate_cast_with_runtime_metadata<FP, FL>(
+    json: &JsonValue,
+    schema: &TypeSchema,
+    schema_registry: &TypeSchemaRegistry,
+    gc: &mut GarbageCollector,
+    resolve_prop_key: &mut FP,
+    resolve_layout_names: &mut FL,
+) -> VmResult<Value>
+where
+    FP: FnMut(&str) -> Option<PropKeyId>,
+    FL: FnMut(LayoutId) -> Option<Vec<String>>,
+{
+    validate_cast_impl(
+        json,
+        schema,
+        schema_registry,
+        gc,
+        0,
+        resolve_prop_key,
+        resolve_layout_names,
+    )
 }
 
 /// Internal recursive validation implementation
 ///
 /// Tracks recursion depth to prevent stack overflow.
-fn validate_cast_impl(
+fn validate_cast_impl<FP, FL>(
     json: &JsonValue,
     schema: &TypeSchema,
     schema_registry: &TypeSchemaRegistry,
     gc: &mut GarbageCollector,
     depth: usize,
-) -> VmResult<Value> {
+    resolve_prop_key: &mut FP,
+    resolve_layout_names: &mut FL,
+) -> VmResult<Value>
+where
+    FP: FnMut(&str) -> Option<PropKeyId>,
+    FL: FnMut(LayoutId) -> Option<Vec<String>>,
+{
     // Check recursion depth
     if depth > MAX_VALIDATION_DEPTH {
         return Err(VmError::StackOverflow);
@@ -188,10 +226,28 @@ fn validate_cast_impl(
             class_id,
             layout_id,
             fields,
-        } => validate_interface(json, *class_id, *layout_id, fields, schema_registry, gc, depth),
+        } => validate_interface(
+            json,
+            *class_id,
+            *layout_id,
+            fields,
+            schema_registry,
+            gc,
+            depth,
+            resolve_prop_key,
+            resolve_layout_names,
+        ),
 
         TypeKind::Array { element_type_id } => {
-            validate_array(json, *element_type_id, schema_registry, gc, depth)
+            validate_array(
+                json,
+                *element_type_id,
+                schema_registry,
+                gc,
+                depth,
+                resolve_prop_key,
+                resolve_layout_names,
+            )
         }
 
         TypeKind::Union {
@@ -204,6 +260,8 @@ fn validate_cast_impl(
             schema_registry,
             gc,
             depth,
+            resolve_prop_key,
+            resolve_layout_names,
         ),
     }
 }
@@ -259,7 +317,7 @@ fn validate_string(json: &JsonValue, _gc: &mut GarbageCollector) -> VmResult<Val
 }
 
 /// Validate interface/class type
-fn validate_interface(
+fn validate_interface<FP, FL>(
     json: &JsonValue,
     class_id: usize,
     layout_id: crate::vm::object::LayoutId,
@@ -267,7 +325,13 @@ fn validate_interface(
     schema_registry: &TypeSchemaRegistry,
     gc: &mut GarbageCollector,
     depth: usize,
-) -> VmResult<Value> {
+    resolve_prop_key: &mut FP,
+    resolve_layout_names: &mut FL,
+) -> VmResult<Value>
+where
+    FP: FnMut(&str) -> Option<PropKeyId>,
+    FL: FnMut(LayoutId) -> Option<Vec<String>>,
+{
     // Must be an object
     if !json.is_object() {
         return Err(VmError::TypeError(format!(
@@ -280,7 +344,8 @@ fn validate_interface(
     let mut field_values = Vec::with_capacity(fields.len());
 
     for (field_name, field_type_id) in fields {
-        let field_json = json.get_property(field_name);
+        let field_json =
+            json.get_property_with_runtime_metadata(field_name, resolve_prop_key, resolve_layout_names);
         if field_json.is_undefined() {
             return Err(VmError::TypeError(format!("Missing field: {}", field_name)));
         }
@@ -291,8 +356,15 @@ fn validate_interface(
             .ok_or_else(|| VmError::TypeError(format!("Unknown type ID: {}", field_type_id)))?;
 
         // Recursively validate field
-        let field_value =
-            validate_cast_impl(&field_json, &field_schema, schema_registry, gc, depth + 1)?;
+        let field_value = validate_cast_impl(
+            &field_json,
+            &field_schema,
+            schema_registry,
+            gc,
+            depth + 1,
+            resolve_prop_key,
+            resolve_layout_names,
+        )?;
 
         field_values.push(field_value);
     }
@@ -307,13 +379,19 @@ fn validate_interface(
 }
 
 /// Validate array type
-fn validate_array(
+fn validate_array<FP, FL>(
     json: &JsonValue,
     element_type_id: usize,
     schema_registry: &TypeSchemaRegistry,
     gc: &mut GarbageCollector,
     depth: usize,
-) -> VmResult<Value> {
+    resolve_prop_key: &mut FP,
+    resolve_layout_names: &mut FL,
+) -> VmResult<Value>
+where
+    FP: FnMut(&str) -> Option<PropKeyId>,
+    FL: FnMut(LayoutId) -> Option<Vec<String>>,
+{
     // Must be an array
     if !json.is_array() {
         return Err(VmError::TypeError(format!(
@@ -333,8 +411,15 @@ fn validate_array(
 
     for i in 0..len {
         let json_elem = json.get_index(i);
-        let elem_value =
-            validate_cast_impl(&json_elem, &element_schema, schema_registry, gc, depth + 1)?;
+        let elem_value = validate_cast_impl(
+            &json_elem,
+            &element_schema,
+            schema_registry,
+            gc,
+            depth + 1,
+            resolve_prop_key,
+            resolve_layout_names,
+        )?;
         element_values.push(elem_value);
     }
 
@@ -350,14 +435,20 @@ fn validate_array(
 }
 
 /// Validate union type
-fn validate_union(
+fn validate_union<FP, FL>(
     json: &JsonValue,
     variant_type_ids: &[usize],
     discriminant: Option<&str>,
     schema_registry: &TypeSchemaRegistry,
     gc: &mut GarbageCollector,
     depth: usize,
-) -> VmResult<Value> {
+    resolve_prop_key: &mut FP,
+    resolve_layout_names: &mut FL,
+) -> VmResult<Value>
+where
+    FP: FnMut(&str) -> Option<PropKeyId>,
+    FL: FnMut(LayoutId) -> Option<Vec<String>>,
+{
     // If discriminant is specified, use it to select the variant
     if let Some(disc_field) = discriminant {
         // Must be an object with the discriminant field
@@ -370,7 +461,8 @@ fn validate_union(
         }
 
         // Get discriminant value using get_property() (returns JsonValue)
-        let disc_value = json.get_property(disc_field);
+        let disc_value =
+            json.get_property_with_runtime_metadata(disc_field, resolve_prop_key, resolve_layout_names);
         if disc_value.is_undefined() {
             return Err(VmError::TypeError(format!(
                 "Missing discriminant field: {}",
@@ -400,7 +492,15 @@ fn validate_union(
 
             // Try to validate against this variant
             if let Ok(value) =
-                validate_cast_impl(json, &variant_schema, schema_registry, gc, depth + 1)
+                validate_cast_impl(
+                    json,
+                    &variant_schema,
+                    schema_registry,
+                    gc,
+                    depth + 1,
+                    resolve_prop_key,
+                    resolve_layout_names,
+                )
             {
                 return Ok(value);
             }
@@ -419,7 +519,15 @@ fn validate_union(
 
             // Try to validate against this variant
             if let Ok(value) =
-                validate_cast_impl(json, &variant_schema, schema_registry, gc, depth + 1)
+                validate_cast_impl(
+                    json,
+                    &variant_schema,
+                    schema_registry,
+                    gc,
+                    depth + 1,
+                    resolve_prop_key,
+                    resolve_layout_names,
+                )
             {
                 return Ok(value);
             }
@@ -435,6 +543,9 @@ fn validate_union(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::json::value_to_json_stack;
+    use crate::vm::object::{layout_id_from_ordered_names, Object, RayaString};
+    use rustc_hash::FxHashMap;
 
     #[test]
     fn test_validate_null() {
@@ -505,14 +616,139 @@ mod tests {
         let mut registry = TypeSchemaRegistry::new();
         registry.register(5, schema.clone());
         let mut gc = GarbageCollector::default();
+        let mut no_prop_keys = |_name: &str| None;
+        let mut no_layout_names = |_layout_id: LayoutId| None;
 
         // Validate at exactly max depth should work
-        let result = validate_cast_impl(&json, &schema, &registry, &mut gc, MAX_VALIDATION_DEPTH);
+        let result = validate_cast_impl(
+            &json,
+            &schema,
+            &registry,
+            &mut gc,
+            MAX_VALIDATION_DEPTH,
+            &mut no_prop_keys,
+            &mut no_layout_names,
+        );
         assert!(result.is_err()); // Will fail due to type mismatch, but not depth
 
         // Validate beyond max depth should fail with StackOverflow
-        let result =
-            validate_cast_impl(&json, &schema, &registry, &mut gc, MAX_VALIDATION_DEPTH + 1);
+        let result = validate_cast_impl(
+            &json,
+            &schema,
+            &registry,
+            &mut gc,
+            MAX_VALIDATION_DEPTH + 1,
+            &mut no_prop_keys,
+            &mut no_layout_names,
+        );
         assert!(matches!(result, Err(VmError::StackOverflow)));
+    }
+
+    fn make_string(gc: &mut GarbageCollector, s: &str) -> Value {
+        let raya_str = RayaString::new(s.to_string());
+        let ptr = gc.allocate(raya_str);
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()) }
+    }
+
+    fn user_schema_registry() -> (TypeSchemaRegistry, TypeSchema) {
+        let mut registry = TypeSchemaRegistry::new();
+        registry.register(
+            1,
+            TypeSchema {
+                type_id: 1,
+                kind: TypeKind::String,
+            },
+        );
+        registry.register(
+            2,
+            TypeSchema {
+                type_id: 2,
+                kind: TypeKind::Number,
+            },
+        );
+        let schema = TypeSchema {
+            type_id: 3,
+            kind: TypeKind::Interface {
+                class_id: 9,
+                layout_id: layout_id_from_ordered_names(&["name".to_string(), "age".to_string()]),
+                fields: vec![("name".to_string(), 1), ("age".to_string(), 2)],
+            },
+        };
+        registry.register(3, schema.clone());
+        (registry, schema)
+    }
+
+    #[test]
+    fn test_validate_interface_with_unified_dynamic_object_metadata() {
+        let mut gc = GarbageCollector::default();
+        let mut prop_keys: FxHashMap<String, PropKeyId> = FxHashMap::default();
+        let name_key: PropKeyId = 1;
+        let age_key: PropKeyId = 2;
+        prop_keys.insert("name".to_string(), name_key);
+        prop_keys.insert("age".to_string(), age_key);
+        let mut object = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
+        {
+            let dyn_map = object.ensure_dyn_map();
+            dyn_map.insert(name_key, make_string(&mut gc, "Alice"));
+            dyn_map.insert(age_key, Value::f64(30.0));
+        }
+        let object_ptr = gc.allocate(object);
+        let json = value_to_json_stack(unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(object_ptr.as_ptr()).unwrap())
+        });
+        let (registry, schema) = user_schema_registry();
+
+        let mut resolve_prop_key = |name: &str| prop_keys.get(name).copied();
+        let mut resolve_layout_names = |_layout_id: LayoutId| None;
+        let result = validate_cast_with_runtime_metadata(
+            &json,
+            &schema,
+            &registry,
+            &mut gc,
+            &mut resolve_prop_key,
+            &mut resolve_layout_names,
+        )
+        .expect("validated cast");
+
+        let obj = unsafe { &*result.as_ptr::<Object>().unwrap().as_ptr() };
+        assert_eq!(obj.field_count(), 2);
+        let name = unsafe { &*obj.get_field(0).unwrap().as_ptr::<RayaString>().unwrap().as_ptr() };
+        assert_eq!(name.data, "Alice");
+        assert_eq!(obj.get_field(1).unwrap().as_f64(), Some(30.0));
+    }
+
+    #[test]
+    fn test_validate_interface_with_structural_layout_metadata() {
+        let mut gc = GarbageCollector::default();
+        let names = vec!["name".to_string(), "age".to_string()];
+        let layout_id = layout_id_from_ordered_names(&names);
+        let mut object = Object::new_structural(layout_id, 2);
+        object.set_field(0, make_string(&mut gc, "Bob")).unwrap();
+        object.set_field(1, Value::f64(25.0)).unwrap();
+        let object_ptr = gc.allocate(object);
+        let json = value_to_json_stack(unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(object_ptr.as_ptr()).unwrap())
+        });
+        let (registry, schema) = user_schema_registry();
+
+        let mut resolve_prop_key = |_name: &str| None;
+        let layout_names = names.clone();
+        let mut resolve_layout_names = move |candidate: LayoutId| {
+            (candidate == layout_id).then_some(layout_names.clone())
+        };
+        let result = validate_cast_with_runtime_metadata(
+            &json,
+            &schema,
+            &registry,
+            &mut gc,
+            &mut resolve_prop_key,
+            &mut resolve_layout_names,
+        )
+        .expect("validated cast");
+
+        let obj = unsafe { &*result.as_ptr::<Object>().unwrap().as_ptr() };
+        let name = unsafe { &*obj.get_field(0).unwrap().as_ptr::<RayaString>().unwrap().as_ptr() };
+        assert_eq!(name.data, "Bob");
+        assert_eq!(obj.get_field(1).unwrap().as_f64(), Some(25.0));
     }
 }

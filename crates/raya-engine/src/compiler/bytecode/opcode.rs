@@ -226,6 +226,11 @@ pub enum Opcode {
     /// Call method on object with optional chaining semantics.
     /// If receiver is null, pops receiver + args and pushes null.
     OptionalCallMethod = 0xA8,
+    /// Call a structurally projected method through a shape contract.
+    /// Operands: u64 shapeId, u16 methodSlot, u16 argCount
+    CallMethodShape = 0xA9,
+    /// Optional chaining variant of CallMethodShape.
+    OptionalCallMethodShape = 0xAA,
 
     // ===== Object Operations (0xB0-0xBF) =====
     /// Allocate new object (operand: u32 classIndex)
@@ -325,21 +330,21 @@ pub enum Opcode {
     // ===== Dynamic-object Operations (0xE0-0xEF) =====
     // Note: JSON.parse / JSON.stringify use NativeCall (0x0C00, 0x0C01) instead of opcodes
     // 0xE0, 0xE1 reserved
-    /// Get property of DynObject by const-pool name: pop object, push value  (operand: u32 nameIdx)
+    /// Get dynamic property by const-pool name: pop object, push value  (operand: u32 nameIdx)
     DynGet = 0xE2,
-    /// Set property of DynObject by const-pool name: pop value, pop object  (operand: u32 nameIdx)
+    /// Set dynamic property by const-pool name: pop value, pop object  (operand: u32 nameIdx)
     DynSet = 0xE3,
-    /// Delete property from DynObject by const-pool name: pop object  (operand: u32 nameIdx)
+    /// Delete dynamic property by const-pool name: pop object  (operand: u32 nameIdx)
     DynDelete = 0xE4,
     /// Get property by runtime string key: pop key, pop object, push value  (no operand)
     DynGetKeyed = 0xE5,
     /// Set property by runtime string key: pop value, pop key, pop object  (no operand)
     DynSetKeyed = 0xE6,
-    /// Allocate empty DynObject and push Value  (no operand)
+    /// Allocate empty dynamic object and push Value  (no operand)
     DynNewObject = 0xE7,
-    /// Get DynObject keys as Array<string>: pop object, push array  (no operand)
+    /// Get dynamic object keys as Array<string>: pop object, push array  (no operand)
     DynKeys = 0xE8,
-    /// Check DynObject has property by const-pool name: pop object, push bool  (operand: u32 nameIdx)
+    /// Check object has property by const-pool name: pop object, push bool  (operand: u32 nameIdx)
     DynHas = 0xE9,
     // 0xEA, 0xEB, 0xEC freed (JsonNewArray, JsonKeys, JsonLength removed)
 
@@ -507,6 +512,8 @@ impl Opcode {
             0xA6 => Some(Self::CallStatic),
             0xA7 => Some(Self::BindMethod),
             0xA8 => Some(Self::OptionalCallMethod),
+            0xA9 => Some(Self::CallMethodShape),
+            0xAA => Some(Self::OptionalCallMethodShape),
 
             // Object operations
             0xB0 => Some(Self::New),
@@ -684,6 +691,8 @@ impl Opcode {
             Self::Call => "CALL",
             Self::CallMethod => "CALL_METHOD",
             Self::OptionalCallMethod => "OPTIONAL_CALL_METHOD",
+            Self::CallMethodShape => "CALL_METHOD_SHAPE",
+            Self::OptionalCallMethodShape => "OPTIONAL_CALL_METHOD_SHAPE",
             Self::Return => "RETURN",
             Self::ReturnVoid => "RETURN_VOID",
             Self::CallConstructor => "CALL_CONSTRUCTOR",
@@ -773,6 +782,8 @@ impl Opcode {
             Self::Call
                 | Self::CallMethod
                 | Self::OptionalCallMethod
+                | Self::CallMethodShape
+                | Self::OptionalCallMethodShape
                 | Self::CallConstructor
                 | Self::CallSuper
                 | Self::CallStatic
@@ -925,6 +936,8 @@ mod tests {
         assert!(Opcode::Call.is_call());
         assert!(Opcode::CallMethod.is_call());
         assert!(Opcode::OptionalCallMethod.is_call());
+        assert!(Opcode::CallMethodShape.is_call());
+        assert!(Opcode::OptionalCallMethodShape.is_call());
         assert!(Opcode::CallConstructor.is_call());
         assert!(Opcode::CallSuper.is_call());
         assert!(Opcode::CallStatic.is_call());
@@ -1032,6 +1045,8 @@ mod tests {
             Opcode::Call,
             Opcode::CallMethod,
             Opcode::OptionalCallMethod,
+            Opcode::CallMethodShape,
+            Opcode::OptionalCallMethodShape,
             Opcode::Return,
             Opcode::ReturnVoid,
             Opcode::CallConstructor,

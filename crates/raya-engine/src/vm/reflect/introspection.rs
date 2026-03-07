@@ -16,7 +16,8 @@
 //! | 0x0D17 | getTypeInfoProperty         | Get type info for property           |
 
 use crate::vm::interpreter::ClassRegistry;
-use crate::vm::object::{Class, Object};
+use crate::vm::json::view::{js_classify, JSView};
+use crate::vm::object::{Class, LayoutId};
 use crate::vm::value::Value;
 
 /// Runtime type information (simplified for basic introspection)
@@ -26,8 +27,10 @@ pub struct TypeInfo {
     pub kind: TypeKind,
     /// Type name
     pub name: String,
-    /// Class ID (for class types)
-    pub class_id: Option<usize>,
+    /// Nominal runtime type identity (for class types)
+    pub nominal_type_id: Option<usize>,
+    /// Physical layout identity for structural/runtime object layouts
+    pub layout_id: Option<LayoutId>,
     /// Element type (for arrays)
     pub element_type: Option<Box<TypeInfo>>,
     /// Union member types
@@ -61,7 +64,8 @@ impl TypeInfo {
         Self {
             kind: TypeKind::Primitive,
             name: name.to_string(),
-            class_id: None,
+            nominal_type_id: None,
+            layout_id: None,
             element_type: None,
             union_members: None,
             type_arguments: None,
@@ -73,7 +77,21 @@ impl TypeInfo {
         Self {
             kind: TypeKind::Class,
             name: name.to_string(),
-            class_id: Some(class_id),
+            nominal_type_id: Some(class_id),
+            layout_id: None,
+            element_type: None,
+            union_members: None,
+            type_arguments: None,
+        }
+    }
+
+    /// Create a structural object type info with physical layout identity.
+    pub fn structural_object(layout_id: LayoutId) -> Self {
+        Self {
+            kind: TypeKind::Class,
+            name: "object".to_string(),
+            nominal_type_id: None,
+            layout_id: Some(layout_id),
             element_type: None,
             union_members: None,
             type_arguments: None,
@@ -85,7 +103,8 @@ impl TypeInfo {
         Self {
             kind: TypeKind::Array,
             name: format!("{}[]", element_type.name),
-            class_id: None,
+            nominal_type_id: None,
+            layout_id: None,
             element_type: Some(Box::new(element_type)),
             union_members: None,
             type_arguments: None,
@@ -189,17 +208,13 @@ pub struct DecoratorInfo {
 ///
 /// Returns the class ID if the value is an object, None otherwise.
 pub fn get_class_id(obj: Value) -> Option<usize> {
-    if !obj.is_ptr() {
-        return None;
+    if let JSView::Struct {
+        nominal_type_id: Some(id),
+        ..
+    } = js_classify(obj)
+    {
+        return Some(id as usize);
     }
-
-    // Try to interpret as Object
-    let obj_ptr = unsafe { obj.as_ptr::<Object>() };
-    if let Some(ptr) = obj_ptr {
-        let obj_ref = unsafe { &*ptr.as_ptr() };
-        return obj_ref.nominal_class_id();
-    }
-
     None
 }
 
@@ -274,25 +289,26 @@ pub fn get_class_hierarchy(registry: &ClassRegistry, class_id: usize) -> Vec<&Cl
 
 /// Get the type info for a value (basic implementation)
 pub fn get_type_info_for_value(obj: Value) -> TypeInfo {
-    if obj.is_null() {
-        TypeInfo::primitive("null")
-    } else if obj.as_bool().is_some() {
-        TypeInfo::primitive("boolean")
-    } else if obj.as_i32().is_some() || obj.as_f64().is_some() {
-        TypeInfo::primitive("number")
-    } else if obj.is_ptr() {
-        // Could be string, array, object, etc.
-        // For now, return a generic object type
-        TypeInfo {
-            kind: TypeKind::Class,
-            name: "object".to_string(),
-            class_id: None,
-            element_type: None,
-            union_members: None,
-            type_arguments: None,
+    match js_classify(obj) {
+        JSView::Null => TypeInfo::primitive("null"),
+        JSView::Bool(_) => TypeInfo::primitive("boolean"),
+        JSView::Int(_) | JSView::Number(_) => TypeInfo::primitive("number"),
+        JSView::Str(_) => TypeInfo::primitive("string"),
+        JSView::Arr(_) => TypeInfo::array(TypeInfo::primitive("unknown")),
+        JSView::Struct {
+            layout_id,
+            nominal_type_id,
+            ..
+        } => {
+            if let Some(nominal_type_id) = nominal_type_id {
+                let mut info = TypeInfo::class("object", nominal_type_id as usize);
+                info.layout_id = Some(layout_id);
+                info
+            } else {
+                TypeInfo::structural_object(layout_id)
+            }
         }
-    } else {
-        TypeInfo::primitive("unknown")
+        JSView::Other => TypeInfo::primitive("unknown"),
     }
 }
 
@@ -301,12 +317,30 @@ mod tests {
     use super::*;
     use crate::vm::object::Object;
 
+    fn class_with_layout(id: usize, name: &str, field_count: usize) -> Class {
+        let mut class = Class::new(id, name.to_string(), field_count);
+        class.set_layout_id(id as u32);
+        class
+    }
+
+    fn class_with_parent_and_layout(
+        id: usize,
+        name: &str,
+        field_count: usize,
+        parent_id: usize,
+    ) -> Class {
+        let mut class = Class::with_parent(id, name.to_string(), field_count, parent_id);
+        class.set_layout_id(id as u32);
+        class
+    }
+
     #[test]
     fn test_type_info_primitive() {
         let info = TypeInfo::primitive("number");
         assert_eq!(info.kind, TypeKind::Primitive);
         assert_eq!(info.name, "number");
-        assert!(info.class_id.is_none());
+        assert!(info.nominal_type_id.is_none());
+        assert!(info.layout_id.is_none());
     }
 
     #[test]
@@ -314,7 +348,8 @@ mod tests {
         let info = TypeInfo::class("User", 5);
         assert_eq!(info.kind, TypeKind::Class);
         assert_eq!(info.name, "User");
-        assert_eq!(info.class_id, Some(5));
+        assert_eq!(info.nominal_type_id, Some(5));
+        assert!(info.layout_id.is_none());
     }
 
     #[test]
@@ -353,8 +388,8 @@ mod tests {
         let mut registry = ClassRegistry::new();
 
         // Create class hierarchy: Animal -> Dog
-        let animal = Class::new(1, "Animal".to_string(), 1);
-        let dog = Class::with_parent(2, "Dog".to_string(), 2, 1);
+        let animal = class_with_layout(1, "Animal", 1);
+        let dog = class_with_parent_and_layout(2, "Dog", 2, 1);
 
         registry.register_class(animal);
         registry.register_class(dog);
@@ -371,8 +406,8 @@ mod tests {
     fn test_get_all_classes() {
         let mut registry = ClassRegistry::new();
 
-        let class1 = Class::new(1, "Foo".to_string(), 1);
-        let class2 = Class::new(2, "Bar".to_string(), 2);
+        let class1 = class_with_layout(1, "Foo", 1);
+        let class2 = class_with_layout(2, "Bar", 2);
 
         registry.register_class(class1);
         registry.register_class(class2);
@@ -390,13 +425,36 @@ mod tests {
     }
 
     #[test]
+    fn test_get_type_info_for_structural_object_exposes_layout_id() {
+        use crate::vm::gc::GarbageCollector;
+        use crate::vm::interpreter::VmContextId;
+        use crate::vm::types::create_standard_registry;
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+
+        let obj = Object::new_synthetic_structural(2);
+        let expected_layout = obj.layout_id();
+        let context_id = VmContextId::new();
+        let type_registry = Arc::new(create_standard_registry());
+        let gc = Arc::new(Mutex::new(GarbageCollector::new(context_id, type_registry)));
+        let ptr = gc.lock().allocate(obj);
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()) };
+
+        let info = get_type_info_for_value(value);
+        assert_eq!(info.kind, TypeKind::Class);
+        assert_eq!(info.name, "object");
+        assert!(info.nominal_type_id.is_none());
+        assert_eq!(info.layout_id, Some(expected_layout));
+    }
+
+    #[test]
     fn test_get_class_hierarchy() {
         let mut registry = ClassRegistry::new();
 
         // Create class hierarchy: Animal -> Dog -> Labrador
-        let animal = Class::new(1, "Animal".to_string(), 1);
-        let dog = Class::with_parent(2, "Dog".to_string(), 2, 1);
-        let labrador = Class::with_parent(3, "Labrador".to_string(), 3, 2);
+        let animal = class_with_layout(1, "Animal", 1);
+        let dog = class_with_parent_and_layout(2, "Dog", 2, 1);
+        let labrador = class_with_parent_and_layout(3, "Labrador", 3, 2);
 
         registry.register_class(animal);
         registry.register_class(dog);
@@ -419,8 +477,8 @@ mod tests {
     fn test_get_class_by_name() {
         let mut registry = ClassRegistry::new();
 
-        let point = Class::new(1, "Point".to_string(), 2);
-        let circle = Class::new(2, "Circle".to_string(), 3);
+        let point = class_with_layout(1, "Point", 2);
+        let circle = class_with_layout(2, "Circle", 3);
 
         registry.register_class(point);
         registry.register_class(circle);
@@ -443,7 +501,7 @@ mod tests {
     fn test_get_class() {
         let mut registry = ClassRegistry::new();
 
-        let user = Class::new(1, "User".to_string(), 3);
+        let user = class_with_layout(1, "User", 3);
         registry.register_class(user);
 
         // Get by ID
@@ -495,9 +553,9 @@ mod tests {
         let mut registry = ClassRegistry::new();
 
         // Create class hierarchy: Animal (1) -> Dog (2) -> Labrador (3)
-        let animal = Class::new(1, "Animal".to_string(), 1);
-        let dog = Class::with_parent(2, "Dog".to_string(), 2, 1);
-        let labrador = Class::with_parent(3, "Labrador".to_string(), 3, 2);
+        let animal = class_with_layout(1, "Animal", 1);
+        let dog = class_with_parent_and_layout(2, "Dog", 2, 1);
+        let labrador = class_with_parent_and_layout(3, "Labrador", 3, 2);
 
         registry.register_class(animal);
         registry.register_class(dog);
@@ -537,11 +595,11 @@ mod tests {
         let mut registry = ClassRegistry::new();
 
         // Create deep hierarchy: A (1) -> B (2) -> C (3) -> D (4) -> E (5)
-        let a = Class::new(1, "A".to_string(), 1);
-        let b = Class::with_parent(2, "B".to_string(), 1, 1);
-        let c = Class::with_parent(3, "C".to_string(), 1, 2);
-        let d = Class::with_parent(4, "D".to_string(), 1, 3);
-        let e = Class::with_parent(5, "E".to_string(), 1, 4);
+        let a = class_with_layout(1, "A", 1);
+        let b = class_with_parent_and_layout(2, "B", 1, 1);
+        let c = class_with_parent_and_layout(3, "C", 1, 2);
+        let d = class_with_parent_and_layout(4, "D", 1, 3);
+        let e = class_with_parent_and_layout(5, "E", 1, 4);
 
         registry.register_class(a);
         registry.register_class(b);
@@ -586,7 +644,8 @@ mod tests {
             let info = TypeInfo::primitive(type_name);
             assert_eq!(info.kind, TypeKind::Primitive);
             assert_eq!(info.name, *type_name);
-            assert!(info.class_id.is_none());
+            assert!(info.nominal_type_id.is_none());
+            assert!(info.layout_id.is_none());
             assert!(info.element_type.is_none());
             assert!(info.union_members.is_none());
             assert!(info.type_arguments.is_none());
@@ -598,7 +657,8 @@ mod tests {
         let info = TypeInfo::class("MyClass", 42);
         assert_eq!(info.kind, TypeKind::Class);
         assert_eq!(info.name, "MyClass");
-        assert_eq!(info.class_id, Some(42));
+        assert_eq!(info.nominal_type_id, Some(42));
+        assert!(info.layout_id.is_none());
         assert!(info.element_type.is_none());
         assert!(info.union_members.is_none());
     }
@@ -626,7 +686,7 @@ mod tests {
     fn test_is_assignable_same_type() {
         // Same type is always assignable to itself
         let mut registry = ClassRegistry::new();
-        let user = Class::new(1, "User".to_string(), 2);
+        let user = class_with_layout(1, "User", 2);
         registry.register_class(user);
 
         // Same class should be assignable to itself
@@ -644,8 +704,8 @@ mod tests {
         let mut registry = ClassRegistry::new();
 
         // Animal (1) -> Dog (2)
-        let animal = Class::new(1, "Animal".to_string(), 1);
-        let dog = Class::with_parent(2, "Dog".to_string(), 2, 1);
+        let animal = class_with_layout(1, "Animal", 1);
+        let dog = class_with_parent_and_layout(2, "Dog", 2, 1);
         registry.register_class(animal);
         registry.register_class(dog);
 

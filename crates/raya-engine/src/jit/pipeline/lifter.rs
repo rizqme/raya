@@ -1156,6 +1156,12 @@ fn lift_instruction(
                 offset: instr.offset,
             });
         }
+        Opcode::CallMethodShape | Opcode::OptionalCallMethodShape => {
+            return Err(LiftError::UnsupportedOpcode {
+                opcode: instr.opcode,
+                offset: instr.offset,
+            });
+        }
         Opcode::CallConstructor => {
             if let Operands::Call {
                 func_index: class_id,

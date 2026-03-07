@@ -325,15 +325,6 @@ impl GarbageCollector {
                     self.mark_value(bm.receiver);
                     return;
                 }
-                "DynObject" => {
-                    // Cast to DynObject and mark each property value
-                    let obj = unsafe { &*(ptr as *const crate::vm::object::DynObject) };
-                    let values: Vec<Value> = obj.props.values().copied().collect();
-                    for v in values {
-                        self.mark_value(v);
-                    }
-                    return;
-                }
                 _ => {
                     // Use normal pointer map traversal for other types
                 }

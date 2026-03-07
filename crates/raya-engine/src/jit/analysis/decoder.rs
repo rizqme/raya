@@ -56,6 +56,12 @@ pub enum Operands {
     ArrayLiteral { type_index: u32, length: u32 },
     /// Structural shape field op: shape_id (u64) + slot (u16)
     ShapeSlot { shape_id: u64, slot: u16 },
+    /// Structural shape method call: shape_id (u64) + slot (u16) + arg_count (u16)
+    ShapeMethodCall {
+        shape_id: u64,
+        slot: u16,
+        arg_count: u16,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -359,6 +365,17 @@ fn decode_operands(
             let shape_id = read_u64(code, pos, offset)?;
             let slot = read_u16(code, pos, offset)?;
             Ok(Operands::ShapeSlot { shape_id, slot })
+        }
+
+        Opcode::CallMethodShape | Opcode::OptionalCallMethodShape => {
+            let shape_id = read_u64(code, pos, offset)?;
+            let slot = read_u16(code, pos, offset)?;
+            let arg_count = read_u16(code, pos, offset)?;
+            Ok(Operands::ShapeMethodCall {
+                shape_id,
+                slot,
+                arg_count,
+            })
         }
     }
 }

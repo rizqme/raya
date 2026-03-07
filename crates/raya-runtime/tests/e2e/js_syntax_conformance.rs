@@ -292,3 +292,18 @@ fn test_delete_operator_parse() {
         true,
     );
 }
+
+#[test]
+fn test_dynamic_keyed_property_on_class_instance() {
+    expect_i32(
+        "
+        class Obj {
+            x: number = 10;
+        }
+        let o = new Obj();
+        o[\"extra\"] = 7;
+        return o.x + o[\"extra\"];
+    ",
+        17,
+    );
+}

@@ -62,7 +62,9 @@ use raya_engine::parser::ast::{Pattern, Statement};
 use raya_engine::parser::{Interner, Parser};
 use raya_engine::vm::json::JSView;
 use raya_engine::vm::module::{ModuleLinker, ResolvedSymbol};
-use raya_engine::vm::object::{Closure, DynObject, RayaString, TypeHandle};
+use raya_engine::vm::object::{
+    layout_id_from_ordered_names, Closure, Object, RayaString, TypeHandle,
+};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -1068,7 +1070,12 @@ impl Runtime {
                 .resolve_global_slot(module, local_global_slot);
 
             let value = if import.symbol == "*" {
-                Self::materialize_namespace_import_value(vm, &resolved_symbol.module)?
+                Self::materialize_namespace_import_value(
+                    vm,
+                    module,
+                    import,
+                    &resolved_symbol.module,
+                )?
             } else {
                 Self::materialize_import_value(vm, module, import, resolved_symbol)?
             };
@@ -1104,18 +1111,64 @@ impl Runtime {
 
     fn materialize_namespace_import_value(
         vm: &mut raya_engine::vm::Vm,
+        consumer_module: &Module,
+        import: &Import,
         module: &Arc<Module>,
     ) -> Result<Value, RuntimeError> {
-        let mut namespace = DynObject::new();
+        let export_names: Vec<String> = module
+            .exports
+            .iter()
+            .filter(|export| export.name != "*")
+            .map(|export| export.name.clone())
+            .collect();
+        let layout_id = layout_id_from_ordered_names(&export_names);
+        let mut namespace = Object::new_structural(layout_id, export_names.len());
         for export in &module.exports {
             if export.name == "*" {
                 continue;
             }
             let value = Self::materialize_export_value(vm, module, export)?;
-            namespace.set(export.name.clone(), value);
+            let slot = export_names
+                .iter()
+                .position(|name| name == &export.name)
+                .expect("namespace export slot");
+            namespace
+                .set_field(slot, value)
+                .map_err(raya_engine::vm::VmError::RuntimeError)
+                .map_err(RuntimeError::Vm)?;
         }
+        vm.shared_state()
+            .register_structural_layout_shape(layout_id, &export_names);
         let gc_ptr = vm.shared_state().gc.lock().allocate(namespace);
-        Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+
+        let Some(expected_sig) = import.type_signature.as_deref() else {
+            return Err(RuntimeError::Dependency(format!(
+                "Namespace import '{}::*' in '{}' is missing structural signature metadata",
+                module.metadata.name, consumer_module.metadata.name
+            )));
+        };
+        let Some(expected_layout) = Self::structural_member_layout_from_signature(expected_sig)
+        else {
+            return Err(RuntimeError::Dependency(format!(
+                "Namespace import '{}::*' in '{}' has an invalid structural signature",
+                module.metadata.name, consumer_module.metadata.name
+            )));
+        };
+        let required_shape = Self::shape_id_for_member_names(&expected_layout);
+        vm.shared_state()
+            .register_structural_shape_names(required_shape, &expected_layout);
+        let slot_map = Self::slot_map_from_layouts(&expected_layout, &export_names)
+            .into_iter()
+            .map(|mapped| {
+                mapped
+                    .map(raya_engine::vm::interpreter::StructuralSlotBinding::Field)
+                    .unwrap_or(raya_engine::vm::interpreter::StructuralSlotBinding::Missing)
+            })
+            .collect();
+        vm.shared_state()
+            .register_structural_shape_adapter(layout_id, required_shape, slot_map);
+        Ok(value)
     }
 
     fn materialize_export_value(
@@ -1215,10 +1268,24 @@ impl Runtime {
                 // Class imports hydrate as class objects carrying:
                 // - hidden constructor handle for `new ImportedClass(...)`
                 // - static methods as callable closures
-                let mut class_object = DynObject::new();
-                class_object.set(IMPORTED_CLASS_TYPE_HANDLE_KEY.to_string(), handle_value);
-
                 let static_prefix = format!("{}::static::", class_name);
+                let static_method_names: Vec<String> = module
+                    .functions
+                    .iter()
+                    .filter_map(|function| {
+                        function
+                            .name
+                            .strip_prefix(&static_prefix)
+                            .map(str::to_string)
+                            .filter(|name| !name.is_empty())
+                    })
+                    .collect();
+                let class_layout_id = layout_id_from_ordered_names(&static_method_names);
+                let mut class_object =
+                    Object::new_dynamic(class_layout_id, static_method_names.len());
+                let handle_key = vm.shared_state().intern_prop_key(IMPORTED_CLASS_TYPE_HANDLE_KEY);
+                class_object.ensure_dyn_map().insert(handle_key, handle_value);
+
                 for (function_id, function) in module.functions.iter().enumerate() {
                     let Some(method_name) = function.name.strip_prefix(&static_prefix) else {
                         continue;
@@ -1231,8 +1298,17 @@ impl Runtime {
                     let closure_value = unsafe {
                         Value::from_ptr(std::ptr::NonNull::new(closure_gc.as_ptr()).unwrap())
                     };
-                    class_object.set(method_name.to_string(), closure_value);
+                    let slot = static_method_names
+                        .iter()
+                        .position(|name| name == method_name)
+                        .expect("class static method slot");
+                    class_object
+                        .set_field(slot, closure_value)
+                        .map_err(raya_engine::vm::VmError::RuntimeError)
+                        .map_err(RuntimeError::Vm)?;
                 }
+                vm.shared_state()
+                    .register_structural_layout_shape(class_layout_id, &static_method_names);
 
                 let class_gc = vm.shared_state().gc.lock().allocate(class_object);
                 Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(class_gc.as_ptr()).unwrap()) })
@@ -1324,17 +1400,19 @@ impl Runtime {
         let Some(actual_sig) = resolved.export.type_signature.as_deref() else {
             return Ok(value);
         };
-        let Some(expected_layout) = Self::structural_slot_layout_from_signature(expected_sig)
+        let Some(expected_layout) = Self::structural_member_layout_from_signature(expected_sig)
         else {
             return Ok(value);
         };
-        let Some(actual_layout) = Self::structural_slot_layout_from_signature(actual_sig) else {
+        let Some(actual_sig_layout) = Self::structural_member_layout_from_signature(actual_sig) else {
             return Ok(value);
         };
         if expected_layout.is_empty() {
             return Ok(value);
         }
         let required_shape = Self::shape_id_for_member_names(&expected_layout);
+        vm.shared_state()
+            .register_structural_shape_names(required_shape, &expected_layout);
         let expected_methods =
             Self::structural_method_layout_from_signature(expected_sig).unwrap_or_default();
 
@@ -1353,6 +1431,17 @@ impl Runtime {
             return Err(RuntimeError::Vm(raya_engine::vm::VmError::RuntimeError(
                 "structural export value is missing a physical layout id".to_string(),
             )));
+        }
+        let actual_layout = if nominal_type_id.is_none() {
+            vm.shared_state()
+                .structural_layout_names(provider_layout)
+                .unwrap_or(actual_sig_layout)
+        } else {
+            actual_sig_layout
+        };
+        if nominal_type_id.is_none() {
+            vm.shared_state()
+                .register_structural_layout_shape(provider_layout, &actual_layout);
         }
         let slot_map = if let Some(class_id) = nominal_type_id {
             let class_metadata = vm.shared_state().class_metadata.read();
@@ -1400,14 +1489,10 @@ impl Runtime {
                 })
                 .collect()
         };
-        vm.shared_state().register_structural_slot_view(
-            consumer_module,
-            usize::MAX,
-            source.object_id(),
-            provider_layout,
-            required_shape,
-            slot_map,
-        );
+        let _ = consumer_module;
+        let _ = source.object_id();
+        vm.shared_state()
+            .register_structural_shape_adapter(provider_layout, required_shape, slot_map);
         Ok(value)
     }
 
@@ -1532,9 +1617,22 @@ impl Runtime {
         Some(methods.into_iter().collect())
     }
 
+    fn structural_member_layout(
+        type_ctx: &TypeContext,
+        ty: raya_engine::parser::TypeId,
+    ) -> Option<Vec<String>> {
+        let mut members = BTreeSet::new();
+        let found_fields = Self::collect_structural_field_names(type_ctx, ty, &mut members);
+        let found_methods = Self::collect_structural_method_names(type_ctx, ty, &mut members);
+        if !found_fields && !found_methods {
+            return None;
+        }
+        Some(members.into_iter().collect())
+    }
+
     fn structural_slot_map(expected_sig: &str, actual_sig: &str) -> Option<Vec<Option<usize>>> {
-        let expected_layout = Self::structural_slot_layout_from_signature(expected_sig)?;
-        let actual_layout = Self::structural_slot_layout_from_signature(actual_sig)?;
+        let expected_layout = Self::structural_member_layout_from_signature(expected_sig)?;
+        let actual_layout = Self::structural_member_layout_from_signature(actual_sig)?;
         Some(Self::slot_map_from_layouts(
             &expected_layout,
             &actual_layout,
@@ -1568,6 +1666,12 @@ impl Runtime {
         let mut type_ctx = TypeContext::new();
         let ty = try_hydrate_type_from_canonical_signature(signature, &mut type_ctx)?;
         Self::structural_method_layout(&type_ctx, ty)
+    }
+
+    fn structural_member_layout_from_signature(signature: &str) -> Option<Vec<String>> {
+        let mut type_ctx = TypeContext::new();
+        let ty = try_hydrate_type_from_canonical_signature(signature, &mut type_ctx)?;
+        Self::structural_member_layout(&type_ctx, ty)
     }
 
     fn dynamic_layout_id_from_member_names(names: &[String]) -> u32 {

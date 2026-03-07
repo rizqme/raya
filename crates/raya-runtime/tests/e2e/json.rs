@@ -193,6 +193,50 @@ fn test_json_parse_null_object_property_access() {
     expect_null(source);
 }
 
+#[test]
+fn test_json_parse_then_stringify_round_trip_single_property() {
+    expect_string(
+        r#"return JSON.stringify(JSON.parse('{"name":"Alice"}'));"#,
+        r#"{"name":"Alice"}"#,
+    );
+}
+
+#[test]
+fn test_json_parse_then_stringify_round_trip_empty_object() {
+    expect_string(r#"return JSON.stringify(JSON.parse('{}'));"#, "{}");
+}
+
+#[test]
+fn test_json_parse_structural_cast_projects_dynamic_properties() {
+    let source = r#"
+        const data = JSON.parse('{"name":"Alice","age":30}');
+        const user = data as { name: string; age: number };
+        return user.name;
+    "#;
+    expect_string(source, "Alice");
+}
+
+#[test]
+fn test_json_parse_nested_structural_cast_projects_dynamic_properties() {
+    let source = r#"
+        const data = JSON.parse('{"user":{"name":"Charlie"}}');
+        const typed = data as { user: { name: string } };
+        return typed.user.name;
+    "#;
+    expect_string(source, "Charlie");
+}
+
+#[test]
+fn test_json_parse_structural_cast_can_be_spread_into_structural_object() {
+    let source = r#"
+        let dest = { a: 0 };
+        let src = JSON.parse('{"a":2,"b":3}') as { a: number; b: number };
+        let merged = { ...dest, ...src };
+        return merged.a == 2 && merged.b == 3;
+    "#;
+    expect_bool(source, true);
+}
+
 // ============================================================================
 // Primitive Type Regression
 // ============================================================================

@@ -1440,7 +1440,7 @@ impl<'a> Lowerer<'a> {
                     visitor.visit_class_decl(class);
                 }
                 Statement::TypeAliasDecl(type_alias) => {
-                    // Register type alias for JSON decode support
+                    // Register the alias so JSON.parse() results can be cast/projected through it
                     let type_alias_id = TypeAliasId::new(self.next_type_alias_id);
                     self.next_type_alias_id += 1;
                     self.type_alias_map
@@ -4976,11 +4976,12 @@ impl<'a> Lowerer<'a> {
         });
     }
 
-    /// Register runtime structural slot bindings for an object value against an expected type.
+    /// Seed canonical structural projection metadata for a value against an expected type.
     ///
-    /// Emits:
-    /// `__registerStructuralView(object, ["memberA", "memberB", ...])`
-    /// where member names are canonicalized (sorted + deduped) from the expected type.
+    /// This records the projected slot layout on the lowering side and emits the
+    /// canonical member-name registration needed for runtime `(layout_id, shape_id)`
+    /// adapter construction. It intentionally avoids installing object-bound view
+    /// handles on the legacy `structural_slot_views` path.
     fn emit_structural_slot_registration_for_ordered_names(
         &mut self,
         object: Register,
@@ -5049,8 +5050,7 @@ impl<'a> Lowerer<'a> {
             .is_some()
         {
             // Concrete class member loads/stores use fixed class field indices in IR.
-            // Installing structural slot remaps for those values can corrupt accesses
-            // (especially when the public structural projection omits private fields).
+            // Treat them as nominal/exact, not structural projections.
             if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                 eprintln!(
                     "[lower] skip registerStructuralView for concrete class-ish type reg={} expected_ty={}",
@@ -5065,7 +5065,7 @@ impl<'a> Lowerer<'a> {
         };
         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
             eprintln!(
-                "[lower] registerStructuralView reg={} expected_ty={} layout=[{}]",
+                "[lower] seed structural projection reg={} expected_ty={} layout=[{}]",
                 object.id,
                 self.type_ctx.format_type(expected_ty),
                 layout
@@ -5075,8 +5075,14 @@ impl<'a> Lowerer<'a> {
                     .join(",")
             );
         }
-        self.emit_structural_slot_registration_for_names(
-            object,
+        self.register_structural_projection_fields.insert(
+            object.id,
+            layout
+                .iter()
+                .map(|(name, idx)| (name.clone(), *idx as usize))
+                .collect(),
+        );
+        self.emit_structural_shape_name_registration_for_ordered_names(
             layout.into_iter().map(|(name, _)| name).collect(),
         );
     }
