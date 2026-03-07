@@ -11,13 +11,13 @@ use crate::value::NativeValue;
 #[derive(Debug, Clone)]
 pub struct ClassInfo {
     /// Class ID in the registry
-    pub class_id: usize,
+    pub nominal_type_id: usize,
     /// Number of instance fields
     pub field_count: usize,
     /// Class name
     pub name: String,
     /// Parent class ID (if any)
-    pub parent_id: Option<usize>,
+    pub parent_nominal_type_id: Option<usize>,
     /// Constructor function ID (if any)
     pub constructor_id: Option<usize>,
     /// Number of methods in vtable
@@ -50,7 +50,7 @@ pub trait NativeContext {
     fn create_array(&self, items: &[NativeValue]) -> NativeValue;
 
     /// Allocate a new object instance by class ID
-    fn create_object_by_id(&self, class_id: usize) -> AbiResult<NativeValue>;
+    fn create_object_by_nominal_type_id(&self, nominal_type_id: usize) -> AbiResult<NativeValue>;
 
     // ========================================================================
     // Value Reading
@@ -84,23 +84,23 @@ pub trait NativeContext {
         -> AbiResult<()>;
 
     /// Get object's class ID
-    fn object_class_id(&self, val: NativeValue) -> AbiResult<usize>;
+    fn object_nominal_type_id(&self, val: NativeValue) -> AbiResult<usize>;
 
     // ========================================================================
     // Class Operations
     // ========================================================================
 
     /// Get class info by ID
-    fn class_info(&self, class_id: usize) -> AbiResult<ClassInfo>;
+    fn nominal_type_info(&self, nominal_type_id: usize) -> AbiResult<ClassInfo>;
 
     /// Find class by name (searches exported classes)
     fn class_by_name(&self, name: &str) -> AbiResult<ClassInfo>;
 
     /// Get class field names and their indices
-    fn class_field_names(&self, class_id: usize) -> AbiResult<Vec<(String, usize)>>;
+    fn nominal_type_field_names(&self, nominal_type_id: usize) -> AbiResult<Vec<(String, usize)>>;
 
     /// Get class method names and their vtable indices
-    fn class_method_entries(&self, class_id: usize) -> AbiResult<Vec<(String, usize)>>;
+    fn nominal_type_method_entries(&self, nominal_type_id: usize) -> AbiResult<Vec<(String, usize)>>;
 
     // ========================================================================
     // Task Operations
@@ -132,7 +132,7 @@ pub trait NativeContext {
     fn call_method(
         &self,
         receiver: NativeValue,
-        class_id: usize,
+        nominal_type_id: usize,
         method_name: &str,
         args: &[NativeValue],
     ) -> AbiResult<NativeValue>;

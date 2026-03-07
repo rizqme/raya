@@ -11,6 +11,137 @@ use crate::vm::VmError;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
+    fn legacy_error_field_index(field_name: &str, field_count: usize) -> Option<usize> {
+        let idx = match field_name {
+            "message" => 0,
+            "name" => 1,
+            "stack" => 2,
+            "cause" => 3,
+            "code" => 4,
+            "errno" => 5,
+            "syscall" => 6,
+            "path" => 7,
+            "errors" => 8,
+            _ => return None,
+        };
+        (idx < field_count).then_some(idx)
+    }
+
+    pub(in crate::vm::interpreter) fn get_object_named_field_index(
+        &self,
+        object: &Object,
+        field_name: &str,
+    ) -> Option<usize> {
+        if let Some(nominal_type_id) = object.nominal_type_id_usize() {
+            let class_metadata = self.class_metadata.read();
+            if let Some(index) = class_metadata
+                .get(nominal_type_id)
+                .and_then(|meta| meta.get_field_index(field_name))
+            {
+                return Some(index);
+            }
+        }
+        if let Some(index) = self
+            .layout_field_names_for_object(object)
+            .and_then(|names| names.iter().position(|name| name == field_name))
+        {
+            return Some(index);
+        }
+        Self::legacy_error_field_index(field_name, object.field_count())
+    }
+
+    pub(in crate::vm::interpreter) fn get_object_named_field_value(
+        &self,
+        object: &Object,
+        field_name: &str,
+    ) -> Option<Value> {
+        if let Some(index) = self.get_object_named_field_index(object, field_name) {
+            if let Some(value) = object.get_field(index) {
+                return Some(value);
+            }
+        }
+        let key = self.intern_prop_key(field_name);
+        object.dyn_map().and_then(|map| map.get(&key).copied())
+    }
+
+    pub(in crate::vm::interpreter) fn has_object_named_field(
+        &self,
+        object: &Object,
+        field_name: &str,
+    ) -> bool {
+        if self.get_object_named_field_index(object, field_name).is_some() {
+            return true;
+        }
+        let Some(map) = object.dyn_map() else {
+            return false;
+        };
+        let key = self.intern_prop_key(field_name);
+        map.contains_key(&key)
+    }
+
+    pub(in crate::vm::interpreter) fn set_object_named_field_value(
+        &self,
+        object: &mut Object,
+        field_name: &str,
+        value: Value,
+    ) -> bool {
+        if let Some(index) = self.get_object_named_field_index(object, field_name) {
+            return object.set_field(index, value).is_ok();
+        }
+        let Some(map) = object.dyn_map_mut() else {
+            return false;
+        };
+        let key = self.intern_prop_key(field_name);
+        if map.contains_key(&key) {
+            map.insert(key, value);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn value_to_plain_string(value: Value) -> Option<String> {
+        if value.is_null() {
+            return Some(String::new());
+        }
+        if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
+            return Some(unsafe { &*ptr.as_ptr() }.data.clone());
+        }
+        if let Some(i) = value.as_i32() {
+            return Some(i.to_string());
+        }
+        if let Some(f) = value.as_f64() {
+            if f.fract() == 0.0 {
+                return Some(format!("{}", f as i64));
+            }
+            return Some(f.to_string());
+        }
+        if let Some(b) = value.as_bool() {
+            return Some(b.to_string());
+        }
+        None
+    }
+
+    fn exception_surface(&self, object: &Object) -> Option<(String, String)> {
+        let has_message = self.has_object_named_field(object, "message");
+        let has_name = self.has_object_named_field(object, "name");
+        let has_stack = self.has_object_named_field(object, "stack");
+        if !(has_message || has_name || has_stack) {
+            return None;
+        }
+
+        let error_name = self
+            .get_object_named_field_value(object, "name")
+            .and_then(Self::value_to_plain_string)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Error".to_string());
+        let error_message = self
+            .get_object_named_field_value(object, "message")
+            .and_then(Self::value_to_plain_string)
+            .unwrap_or_default();
+        Some((error_name, error_message))
+    }
+
     pub(in crate::vm::interpreter) fn exec_exception_ops(
         &mut self,
         stack: &mut Stack,
@@ -64,81 +195,35 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                // If exception is an Error object, set its stack property
+                // Populate stack on any error-like object with a structural
+                // `name` / `message` / `stack` surface.
                 if exception.is_ptr() {
                     if let Some(obj_ptr) = unsafe { exception.as_ptr::<Object>() } {
                         let obj = unsafe { &mut *obj_ptr.as_ptr() };
-                        let classes = self.classes.read();
-
-                        // Check if this is an Error or subclass (Error class has "name" and "stack" fields)
-                        // Error fields: 0=message, 1=name, 2=stack
-                        if let Some(class_id) = obj.nominal_class_id() {
-                            if let Some(class) = classes.get_class(class_id) {
-                                // Check if class is Error or inherits from Error
-                                let is_error = class.name == "Error"
-                                    || class.name == "TypeError"
-                                    || class.name == "RangeError"
-                                    || class.name == "ReferenceError"
-                                    || class.name == "SyntaxError"
-                                    || class.name == "ChannelClosedError"
-                                    || class.name == "AssertionError"
-                                    || class.parent_id.is_some(); // Subclasses have parent
-
-                                if is_error && obj.fields.len() >= 3 {
-                                    // Get error name and message
-                                    let error_name = if let Some(name_ptr) =
-                                        unsafe { obj.fields[1].as_ptr::<RayaString>() }
-                                    {
-                                        unsafe { &*name_ptr.as_ptr() }.data.clone()
-                                    } else {
-                                        "Error".to_string()
-                                    };
-
-                                    let error_message = if let Some(msg_ptr) =
-                                        unsafe { obj.fields[0].as_ptr::<RayaString>() }
-                                    {
-                                        unsafe { &*msg_ptr.as_ptr() }.data.clone()
-                                    } else {
-                                        String::new()
-                                    };
-
-                                    drop(classes);
-
-                                    // Build stack trace
-                                    let stack_trace =
-                                        task.build_stack_trace(&error_name, &error_message);
-
-                                    // Allocate stack trace string
-                                    let raya_string = RayaString::new(stack_trace);
-                                    let gc_ptr = self.gc.lock().allocate(raya_string);
-                                    let stack_value = unsafe {
-                                        Value::from_ptr(
-                                            std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
-                                        )
-                                    };
-
-                                    // Set stack field (index 2)
-                                    obj.fields[2] = stack_value;
-                                }
-                            }
+                        if let Some((error_name, error_message)) = self.exception_surface(obj) {
+                            let stack_trace = task.build_stack_trace(&error_name, &error_message);
+                            let raya_string = RayaString::new(stack_trace);
+                            let gc_ptr = self.gc.lock().allocate(raya_string);
+                            let stack_value = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                            };
+                            let _ = self.set_object_named_field_value(obj, "stack", stack_value);
                         }
                     }
                 }
 
-                // Extract error message for the VmError if it's an Error object
+                // Extract a structural `message` field when present.
                 let error_msg = if exception.is_ptr() {
                     if let Some(obj_ptr) = unsafe { exception.as_ptr::<Object>() } {
                         let obj = unsafe { &*obj_ptr.as_ptr() };
-                        if !obj.fields.is_empty() {
-                            if let Some(msg_ptr) = unsafe { obj.fields[0].as_ptr::<RayaString>() } {
-                                let msg = unsafe { &*msg_ptr.as_ptr() }.data.clone();
-                                if msg.is_empty() {
-                                    "throw".to_string()
-                                } else {
-                                    msg
-                                }
-                            } else {
+                        if let Some(msg) = self
+                            .get_object_named_field_value(obj, "message")
+                            .and_then(Self::value_to_plain_string)
+                        {
+                            if msg.is_empty() {
                                 "throw".to_string()
+                            } else {
+                                msg
                             }
                         } else {
                             "throw".to_string()

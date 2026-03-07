@@ -965,8 +965,8 @@ fn test_class_builder_build() {
         import { ClassBuilder } from "std:runtime";
         let cb: ClassBuilder = new ClassBuilder("Simple");
         cb.addField("value", "number", false, false);
-        let classId: number = cb.build();
-        return classId > 0;
+        let nominalTypeId: number = cb.build();
+        return nominalTypeId > 0;
     "#,
         true,
     );
@@ -1082,10 +1082,10 @@ fn test_dynamic_module_add_class() {
         import { ClassBuilder, DynamicModule } from "std:runtime";
         let cb: ClassBuilder = new ClassBuilder("Widget");
         cb.addField("width", "number", false, false);
-        let classId: number = cb.build();
+        let nominalTypeId: number = cb.build();
 
         let dm: DynamicModule = new DynamicModule("widgets");
-        dm.addClass(classId, "Widget");
+        dm.addClass(nominalTypeId, "Widget");
         dm.seal();
         return 1;
     "#,
@@ -1342,11 +1342,11 @@ fn test_class_builder_with_dynamic_module() {
         let cb: ClassBuilder = new ClassBuilder("Entity");
         cb.addField("hp", "number", false, false);
         cb.addField("name", "string", false, false);
-        let classId: number = cb.build();
+        let nominalTypeId: number = cb.build();
 
         let dm: DynamicModule = new DynamicModule("game");
         dm.addFunction(fid);
-        dm.addClass(classId, "Entity");
+        dm.addClass(nominalTypeId, "Entity");
         dm.seal();
         return 1;
     "#,

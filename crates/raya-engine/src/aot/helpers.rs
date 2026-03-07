@@ -795,7 +795,7 @@ mod tests {
         let obj = unsafe { &*obj_ptr.as_ptr() };
 
         assert_eq!(
-            obj.nominal_class_id(),
+            obj.nominal_type_id_usize(),
             Some(expected_nominal_type_id),
             "AOT alloc helper must resolve module-local nominal type indices"
         );

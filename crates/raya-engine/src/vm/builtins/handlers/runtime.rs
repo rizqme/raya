@@ -1961,30 +1961,25 @@ fn allocate_string(ctx: &RuntimeHandlerContext<'_>, s: String) -> Value {
     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
 }
 
-fn register_runtime_class(ctx: &RuntimeHandlerContext<'_>, mut class: Class) -> usize {
-    if class.layout_id == 0 {
-        let layout_id = ctx.layouts.write().allocate_nominal_layout_id();
-        class.set_layout_id(layout_id);
-    }
-    let id = ctx.classes.write().register_class(class);
-    if let Some(registered) = ctx.classes.read().get_class(id).cloned() {
-        ctx.layouts.write().register_nominal_layout(
-            id,
-            registered.layout_id,
-            registered.field_count,
-            Some(registered.name.clone()),
-        );
-        if let Some(field_names) =
-            crate::vm::object::builtin_nominal_layout_field_names(&registered.name)
-        {
-            let owned_names = field_names
+fn register_runtime_class(ctx: &RuntimeHandlerContext<'_>, class: Class) -> usize {
+    let layout_id = ctx.layouts.write().allocate_nominal_layout_id();
+    let field_count = class.field_count;
+    let class_name = class.name.clone();
+    let builtin_layout_names = crate::vm::object::builtin_nominal_layout_field_names(&class_name)
+        .map(|field_names| {
+            field_names
                 .iter()
                 .map(|name| (*name).to_string())
-                .collect::<Vec<_>>();
-            ctx.layouts
-                .write()
-                .register_layout_shape(registered.layout_id, &owned_names);
-        }
+                .collect::<Vec<_>>()
+        });
+    let id = ctx.classes.write().register_class(class);
+    ctx.layouts
+        .write()
+        .register_nominal_layout(id, layout_id, field_count, Some(class_name));
+    if let Some(owned_names) = builtin_layout_names.as_ref() {
+        ctx.layouts
+            .write()
+            .register_layout_shape(layout_id, owned_names);
     }
     id
 }
@@ -2047,12 +2042,12 @@ fn read_buffer_bytes(
     let obj_ptr = unsafe { value.as_ptr::<Object>() }
         .ok_or_else(|| VmError::TypeError(format!("Expected Buffer for {}", arg_name)))?;
     let obj = unsafe { &*obj_ptr.as_ptr() };
-    let class_id = obj
-        .nominal_class_id()
+    let nominal_type_id = obj
+        .nominal_type_id_usize()
         .ok_or_else(|| VmError::TypeError(format!("Expected Buffer for {}", arg_name)))?;
     let classes = ctx.classes.read();
     let class = classes
-        .get_class(class_id)
+        .get_class(nominal_type_id)
         .ok_or_else(|| VmError::RuntimeError("Buffer class metadata missing".to_string()))?;
     if class.name != "Buffer" {
         return Err(VmError::TypeError(format!(

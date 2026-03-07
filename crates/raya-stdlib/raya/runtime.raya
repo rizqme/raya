@@ -273,8 +273,8 @@ class ClassBuilder {
         __NATIVE_CALL<number>(CB_SET_CONSTRUCTOR, this._id, functionId);
     }
 
-    setParent(parentClassId: number): void {
-        __NATIVE_CALL<number>(CB_SET_PARENT, this._id, parentClassId);
+    setParent(parentNominalTypeId: number): void {
+        __NATIVE_CALL<number>(CB_SET_PARENT, this._id, parentNominalTypeId);
     }
 
     addInterface(interfaceName: string): void {
@@ -301,8 +301,8 @@ class DynamicModule {
         __NATIVE_CALL<number>(DM_ADD_FUNCTION, this._id, functionId);
     }
 
-    addClass(classId: number, name: string): void {
-        __NATIVE_CALL<number>(DM_ADD_CLASS, this._id, classId, name);
+    addClass(nominalTypeId: number, name: string): void {
+        __NATIVE_CALL<number>(DM_ADD_CLASS, this._id, nominalTypeId, name);
     }
 
     addGlobal(name: string, value: number): void {

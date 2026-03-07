@@ -73,11 +73,11 @@ impl TypeInfo {
     }
 
     /// Create a class type info
-    pub fn class(name: &str, class_id: usize) -> Self {
+    pub fn class(name: &str, nominal_type_id: usize) -> Self {
         Self {
             kind: TypeKind::Class,
             name: name.to_string(),
-            nominal_type_id: Some(class_id),
+            nominal_type_id: Some(nominal_type_id),
             layout_id: None,
             element_type: None,
             union_members: None,
@@ -119,8 +119,8 @@ pub struct FieldInfo {
     pub name: String,
     /// Field type info
     pub type_info: TypeInfo,
-    /// Declaring class ID
-    pub declaring_class_id: usize,
+    /// Declaring nominal type ID
+    pub declaring_nominal_type_id: usize,
     /// Field index within the class
     pub field_index: usize,
     /// Whether the field is static
@@ -138,8 +138,8 @@ pub struct MethodInfo {
     pub return_type: TypeInfo,
     /// Parameter infos
     pub parameters: Vec<ParameterInfo>,
-    /// Declaring class ID
-    pub declaring_class_id: usize,
+    /// Declaring nominal type ID
+    pub declaring_nominal_type_id: usize,
     /// Method index in vtable
     pub method_index: usize,
     /// Whether the method is static
@@ -153,8 +153,8 @@ pub struct MethodInfo {
 pub struct ConstructorInfo {
     /// Parameter infos
     pub parameters: Vec<ParameterInfo>,
-    /// Declaring class ID
-    pub declaring_class_id: usize,
+    /// Declaring nominal type ID
+    pub declaring_nominal_type_id: usize,
     /// Constructor function ID
     pub function_id: usize,
 }
@@ -204,10 +204,8 @@ pub struct DecoratorInfo {
 // Introspection Functions
 // ============================================================================
 
-/// Get class ID from an object
-///
-/// Returns the class ID if the value is an object, None otherwise.
-pub fn get_class_id(obj: Value) -> Option<usize> {
+/// Get the nominal runtime type ID from an object value.
+pub fn get_nominal_type_id(obj: Value) -> Option<usize> {
     if let JSView::Struct {
         nominal_type_id: Some(id),
         ..
@@ -218,9 +216,17 @@ pub fn get_class_id(obj: Value) -> Option<usize> {
     None
 }
 
-/// Get class by ID from registry
-pub fn get_class(registry: &ClassRegistry, class_id: usize) -> Option<&Class> {
-    registry.get_class(class_id)
+/// Get the physical layout ID from an object value.
+pub fn get_layout_id(obj: Value) -> Option<LayoutId> {
+    if let JSView::Struct { layout_id, .. } = js_classify(obj) {
+        return Some(layout_id);
+    }
+    None
+}
+
+/// Get class by nominal type ID from registry.
+pub fn get_class(registry: &ClassRegistry, nominal_type_id: usize) -> Option<&Class> {
+    registry.get_class(nominal_type_id)
 }
 
 /// Get class by name from registry
@@ -233,20 +239,20 @@ pub fn get_all_classes(registry: &ClassRegistry) -> Vec<&Class> {
     registry.iter().map(|(_, class)| class).collect()
 }
 
-/// Check if a class is a subclass of another class
+/// Check if one nominal type is a subclass of another.
 pub fn is_subclass_of(
     registry: &ClassRegistry,
-    sub_class_id: usize,
-    super_class_id: usize,
+    sub_nominal_type_id: usize,
+    super_nominal_type_id: usize,
 ) -> bool {
-    if sub_class_id == super_class_id {
+    if sub_nominal_type_id == super_nominal_type_id {
         return true;
     }
 
-    let mut current_id = sub_class_id;
+    let mut current_id = sub_nominal_type_id;
     while let Some(class) = registry.get_class(current_id) {
         if let Some(parent_id) = class.parent_id {
-            if parent_id == super_class_id {
+            if parent_id == super_nominal_type_id {
                 return true;
             }
             current_id = parent_id;
@@ -258,22 +264,22 @@ pub fn is_subclass_of(
     false
 }
 
-/// Check if a value is an instance of a class
-pub fn is_instance_of(registry: &ClassRegistry, obj: Value, class_id: usize) -> bool {
-    if let Some(obj_class_id) = get_class_id(obj) {
-        is_subclass_of(registry, obj_class_id, class_id)
+/// Check if a value is an instance of a nominal type.
+pub fn is_instance_of(registry: &ClassRegistry, obj: Value, nominal_type_id: usize) -> bool {
+    if let Some(object_nominal_type_id) = get_nominal_type_id(obj) {
+        is_subclass_of(registry, object_nominal_type_id, nominal_type_id)
     } else {
         false
     }
 }
 
-/// Get the class hierarchy (inheritance chain) for a class
+/// Get the class hierarchy (inheritance chain) for a nominal type.
 ///
-/// Returns a vector of classes from the given class up to the root.
-/// The first element is the class itself, the last is the root ancestor.
-pub fn get_class_hierarchy(registry: &ClassRegistry, class_id: usize) -> Vec<&Class> {
+/// Returns a vector of classes from the given nominal type up to the root.
+/// The first element is the type itself, the last is the root ancestor.
+pub fn get_class_hierarchy(registry: &ClassRegistry, nominal_type_id: usize) -> Vec<&Class> {
     let mut hierarchy = Vec::new();
-    let mut current_id = Some(class_id);
+    let mut current_id = Some(nominal_type_id);
 
     while let Some(id) = current_id {
         if let Some(class) = registry.get_class(id) {
@@ -318,9 +324,7 @@ mod tests {
     use crate::vm::object::Object;
 
     fn class_with_layout(id: usize, name: &str, field_count: usize) -> Class {
-        let mut class = Class::new(id, name.to_string(), field_count);
-        class.set_layout_id(id as u32);
-        class
+        Class::new(id, name.to_string(), field_count)
     }
 
     fn class_with_parent_and_layout(
@@ -329,9 +333,7 @@ mod tests {
         field_count: usize,
         parent_id: usize,
     ) -> Class {
-        let mut class = Class::with_parent(id, name.to_string(), field_count, parent_id);
-        class.set_layout_id(id as u32);
-        class
+        Class::with_parent(id, name.to_string(), field_count, parent_id)
     }
 
     #[test]
@@ -374,7 +376,7 @@ mod tests {
         let field = FieldInfo {
             name: "age".to_string(),
             type_info: TypeInfo::primitive("number"),
-            declaring_class_id: 0,
+            declaring_nominal_type_id: 0,
             field_index: 0,
             is_static: false,
             is_readonly: false,
@@ -516,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_class_id_for_object() {
+    fn test_get_nominal_type_id_for_object() {
         use crate::vm::gc::GarbageCollector;
         use crate::vm::interpreter::VmContextId;
         use crate::vm::types::create_standard_registry;
@@ -532,14 +534,16 @@ mod tests {
         let gc_ptr = gc.lock().allocate(obj);
         let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
 
-        // Get class ID from the object value
-        let class_id = get_class_id(value);
-        assert_eq!(class_id, Some(5));
+        // Get nominal runtime type ID from the object value
+        let nominal_type_id = get_nominal_type_id(value);
+        assert_eq!(nominal_type_id, Some(5));
+        assert!(get_layout_id(value).is_some());
 
-        // Primitives don't have class IDs
-        assert!(get_class_id(Value::null()).is_none());
-        assert!(get_class_id(Value::i32(42)).is_none());
-        assert!(get_class_id(Value::bool(true)).is_none());
+        // Primitives don't have nominal runtime type IDs
+        assert!(get_nominal_type_id(Value::null()).is_none());
+        assert!(get_nominal_type_id(Value::i32(42)).is_none());
+        assert!(get_nominal_type_id(Value::bool(true)).is_none());
+        assert!(get_layout_id(Value::null()).is_none());
     }
 
     #[test]
@@ -561,11 +565,11 @@ mod tests {
         registry.register_class(dog);
         registry.register_class(labrador);
 
-        // Create a Labrador instance (class_id = 3)
+        // Create a Labrador instance (nominal_type_id = 3)
         let context_id = VmContextId::new();
         let type_registry = Arc::new(create_standard_registry());
         let gc = Arc::new(Mutex::new(GarbageCollector::new(context_id, type_registry)));
-        let obj = Object::new_synthetic_nominal(3, 3); // class_id = 3 (Labrador)
+        let obj = Object::new_synthetic_nominal(3, 3); // nominal_type_id = 3 (Labrador)
         let gc_ptr = gc.lock().allocate(obj);
         let lab_value =
             unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
@@ -713,7 +717,7 @@ mod tests {
         let context_id = VmContextId::new();
         let type_registry = Arc::new(create_standard_registry());
         let gc = Arc::new(Mutex::new(GarbageCollector::new(context_id, type_registry)));
-        let dog_obj = Object::new_synthetic_nominal(2, 2); // class_id = 2 (Dog)
+        let dog_obj = Object::new_synthetic_nominal(2, 2); // nominal_type_id = 2 (Dog)
         let dog_ptr = gc.lock().allocate(dog_obj);
         let dog_value =
             unsafe { Value::from_ptr(std::ptr::NonNull::new(dog_ptr.as_ptr()).unwrap()) };
@@ -724,7 +728,7 @@ mod tests {
         assert!(is_instance_of(&registry, dog_value, 2));
 
         // Create an Animal instance
-        let animal_obj = Object::new_synthetic_nominal(1, 1); // class_id = 1 (Animal)
+        let animal_obj = Object::new_synthetic_nominal(1, 1); // nominal_type_id = 1 (Animal)
         let animal_ptr = gc.lock().allocate(animal_obj);
         let animal_value =
             unsafe { Value::from_ptr(std::ptr::NonNull::new(animal_ptr.as_ptr()).unwrap()) };

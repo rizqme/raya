@@ -223,7 +223,7 @@ impl HeuristicsAnalyzer {
                     score += PENALTY_NATIVE_CALL;
                 }
                 Opcode::Call
-                | Opcode::CallMethod
+                | Opcode::CallMethodExact
                 | Opcode::CallMethodShape
                 | Opcode::OptionalCallMethodShape
                 | Opcode::CallConstructor

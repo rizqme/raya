@@ -208,7 +208,7 @@ pub enum Opcode {
     /// Call function (operands: u32 funcIndex, u16 argCount)
     Call = 0xA0,
     /// Call method on object (operands: u32 methodIndex, u16 argCount)
-    CallMethod = 0xA1,
+    CallMethodExact = 0xA1,
     /// Return from function (pop return value)
     Return = 0xA2,
     /// Return from void function
@@ -225,7 +225,7 @@ pub enum Opcode {
     BindMethod = 0xA7,
     /// Call method on object with optional chaining semantics.
     /// If receiver is null, pops receiver + args and pushes null.
-    OptionalCallMethod = 0xA8,
+    OptionalCallMethodExact = 0xA8,
     /// Call a structurally projected method through a shape contract.
     /// Operands: u64 shapeId, u16 methodSlot, u16 argCount
     CallMethodShape = 0xA9,
@@ -233,12 +233,12 @@ pub enum Opcode {
     OptionalCallMethodShape = 0xAA,
 
     // ===== Object Operations (0xB0-0xBF) =====
-    /// Allocate new object (operand: u32 classIndex)
-    New = 0xB0,
+    /// Allocate new nominal object (operand: u16 nominalTypeIndex)
+    NewType = 0xB0,
     /// Load object field: pop object, push field (operand: u16 fieldOffset)
-    LoadField = 0xB1,
+    LoadFieldExact = 0xB1,
     /// Store object field: pop value, pop object (operand: u16 fieldOffset)
-    StoreField = 0xB2,
+    StoreFieldExact = 0xB2,
     /// Load a field through a structural shape contract (operands: u64 shapeId, u16 fieldOffset)
     LoadFieldShape = 0xB3,
     /// Store a field through a structural shape contract (operands: u64 shapeId, u16 fieldOffset)
@@ -248,7 +248,7 @@ pub enum Opcode {
     /// Initialize object fields: pop N values (operand: u16 count)
     InitObject = 0xB6,
     /// Optional chaining field access (operand: u16 offset)
-    OptionalField = 0xB7,
+    OptionalFieldExact = 0xB7,
     /// Load static field (operand: u32 staticIndex)
     LoadStatic = 0xB8,
     /// Store static field (operand: u32 staticIndex)
@@ -346,15 +346,20 @@ pub enum Opcode {
     DynKeys = 0xE8,
     /// Check object has property by const-pool name: pop object, push bool  (operand: u32 nameIdx)
     DynHas = 0xE9,
-    // 0xEA, 0xEB, 0xEC freed (JsonNewArray, JsonKeys, JsonLength removed)
+    /// Check if object satisfies a structural shape (operand: u64 shapeId)
+    ImplementsShape = 0xEA,
 
     // ===== Task Control & Type Operations (0xED-0xEF) =====
     /// Cancel a task: pop TaskHandle, task is marked for cancellation
     TaskCancel = 0xED,
-    /// Check if object is instance of class: pop class_id, pop obj, push bool
-    InstanceOf = 0xEE,
-    /// Cast object to type: pop class_id, pop obj, push obj (throws TypeError if invalid)
+    /// Check if object is instance of a nominal type (operand: u16 nominalTypeIndex)
+    IsNominal = 0xEE,
+    /// Cast object to type: pop object, push object (throws TypeError if invalid)
     Cast = 0xEF,
+    /// Cast object to a nominal type (operand: u16 nominalTypeIndex)
+    CastNominal = 0xEB,
+    /// Cast object to a structural shape (operand: u64 shapeId)
+    CastShape = 0xEC,
 
     // ===== Closures & Modules (0xF0-0xF7) =====
     /// Create closure object (operands: u32 funcIndex, u16 captureCount)
@@ -504,26 +509,26 @@ impl Opcode {
 
             // Function calls
             0xA0 => Some(Self::Call),
-            0xA1 => Some(Self::CallMethod),
+            0xA1 => Some(Self::CallMethodExact),
             0xA2 => Some(Self::Return),
             0xA3 => Some(Self::ReturnVoid),
             0xA4 => Some(Self::CallConstructor),
             0xA5 => Some(Self::CallSuper),
             0xA6 => Some(Self::CallStatic),
             0xA7 => Some(Self::BindMethod),
-            0xA8 => Some(Self::OptionalCallMethod),
+            0xA8 => Some(Self::OptionalCallMethodExact),
             0xA9 => Some(Self::CallMethodShape),
             0xAA => Some(Self::OptionalCallMethodShape),
 
             // Object operations
-            0xB0 => Some(Self::New),
-            0xB1 => Some(Self::LoadField),
-            0xB2 => Some(Self::StoreField),
+            0xB0 => Some(Self::NewType),
+            0xB1 => Some(Self::LoadFieldExact),
+            0xB2 => Some(Self::StoreFieldExact),
             0xB3 => Some(Self::LoadFieldShape),
             0xB4 => Some(Self::StoreFieldShape),
             0xB5 => Some(Self::ObjectLiteral),
             0xB6 => Some(Self::InitObject),
-            0xB7 => Some(Self::OptionalField),
+            0xB7 => Some(Self::OptionalFieldExact),
             0xB8 => Some(Self::LoadStatic),
             0xB9 => Some(Self::StoreStatic),
             0xBA => Some(Self::OptionalFieldShape),
@@ -573,11 +578,13 @@ impl Opcode {
             0xE7 => Some(Self::DynNewObject),
             0xE8 => Some(Self::DynKeys),
             0xE9 => Some(Self::DynHas),
-            // 0xEA, 0xEB, 0xEC freed
+            0xEA => Some(Self::ImplementsShape),
+            0xEB => Some(Self::CastNominal),
+            0xEC => Some(Self::CastShape),
 
             // Task control & type operations
             0xED => Some(Self::TaskCancel),
-            0xEE => Some(Self::InstanceOf),
+            0xEE => Some(Self::IsNominal),
             0xEF => Some(Self::Cast),
 
             // Closures & modules
@@ -689,8 +696,8 @@ impl Opcode {
             Self::JmpIfNull => "JMP_IF_NULL",
             Self::JmpIfNotNull => "JMP_IF_NOT_NULL",
             Self::Call => "CALL",
-            Self::CallMethod => "CALL_METHOD",
-            Self::OptionalCallMethod => "OPTIONAL_CALL_METHOD",
+            Self::CallMethodExact => "CALL_METHOD",
+            Self::OptionalCallMethodExact => "OPTIONAL_CALL_METHOD",
             Self::CallMethodShape => "CALL_METHOD_SHAPE",
             Self::OptionalCallMethodShape => "OPTIONAL_CALL_METHOD_SHAPE",
             Self::Return => "RETURN",
@@ -698,14 +705,14 @@ impl Opcode {
             Self::CallConstructor => "CALL_CONSTRUCTOR",
             Self::CallSuper => "CALL_SUPER",
             Self::CallStatic => "CALL_STATIC",
-            Self::New => "NEW",
-            Self::LoadField => "LOAD_FIELD",
-            Self::StoreField => "STORE_FIELD",
+            Self::NewType => "NEW_TYPE",
+            Self::LoadFieldExact => "LOAD_FIELD",
+            Self::StoreFieldExact => "STORE_FIELD",
             Self::LoadFieldShape => "LOAD_FIELD_SHAPE",
             Self::StoreFieldShape => "STORE_FIELD_SHAPE",
             Self::ObjectLiteral => "OBJECT_LITERAL",
             Self::InitObject => "INIT_OBJECT",
-            Self::OptionalField => "OPTIONAL_FIELD",
+            Self::OptionalFieldExact => "OPTIONAL_FIELD",
             Self::LoadStatic => "LOAD_STATIC",
             Self::StoreStatic => "STORE_STATIC",
             Self::OptionalFieldShape => "OPTIONAL_FIELD_SHAPE",
@@ -742,9 +749,12 @@ impl Opcode {
             Self::DynNewObject => "DYN_NEW_OBJECT",
             Self::DynKeys => "DYN_KEYS",
             Self::DynHas => "DYN_HAS",
+            Self::ImplementsShape => "IMPLEMENTS_SHAPE",
             Self::TaskCancel => "TASK_CANCEL",
-            Self::InstanceOf => "INSTANCE_OF",
+            Self::IsNominal => "IS_NOMINAL",
             Self::Cast => "CAST",
+            Self::CastNominal => "CAST_NOMINAL",
+            Self::CastShape => "CAST_SHAPE",
             Self::MakeClosure => "MAKE_CLOSURE",
             Self::CloseVar => "CLOSE_VAR",
             Self::LoadCaptured => "LOAD_CAPTURED",
@@ -780,8 +790,8 @@ impl Opcode {
         matches!(
             self,
             Self::Call
-                | Self::CallMethod
-                | Self::OptionalCallMethod
+                | Self::CallMethodExact
+                | Self::OptionalCallMethodExact
                 | Self::CallMethodShape
                 | Self::OptionalCallMethodShape
                 | Self::CallConstructor
@@ -892,10 +902,15 @@ mod tests {
             Some(Opcode::TaskCancel)
         );
         assert_eq!(
-            Opcode::from_u8(Opcode::InstanceOf.to_u8()),
-            Some(Opcode::InstanceOf)
+            Opcode::from_u8(Opcode::IsNominal.to_u8()),
+            Some(Opcode::IsNominal)
+        );
+        assert_eq!(
+            Opcode::from_u8(Opcode::CastNominal.to_u8()),
+            Some(Opcode::CastNominal)
         );
         assert_eq!(Opcode::from_u8(Opcode::Cast.to_u8()), Some(Opcode::Cast));
+        assert_eq!(Opcode::from_u8(Opcode::NewType.to_u8()), Some(Opcode::NewType));
         assert_eq!(
             Opcode::from_u8(Opcode::NativeCall.to_u8()),
             Some(Opcode::NativeCall)
@@ -934,8 +949,8 @@ mod tests {
     #[test]
     fn test_call_detection() {
         assert!(Opcode::Call.is_call());
-        assert!(Opcode::CallMethod.is_call());
-        assert!(Opcode::OptionalCallMethod.is_call());
+        assert!(Opcode::CallMethodExact.is_call());
+        assert!(Opcode::OptionalCallMethodExact.is_call());
         assert!(Opcode::CallMethodShape.is_call());
         assert!(Opcode::OptionalCallMethodShape.is_call());
         assert!(Opcode::CallConstructor.is_call());
@@ -1043,8 +1058,8 @@ mod tests {
             Opcode::JmpIfNull,
             Opcode::JmpIfNotNull,
             Opcode::Call,
-            Opcode::CallMethod,
-            Opcode::OptionalCallMethod,
+            Opcode::CallMethodExact,
+            Opcode::OptionalCallMethodExact,
             Opcode::CallMethodShape,
             Opcode::OptionalCallMethodShape,
             Opcode::Return,
@@ -1052,17 +1067,17 @@ mod tests {
             Opcode::CallConstructor,
             Opcode::CallSuper,
             Opcode::CallStatic,
-            Opcode::New,
-            Opcode::LoadField,
-            Opcode::StoreField,
+            Opcode::LoadFieldExact,
+            Opcode::StoreFieldExact,
             Opcode::LoadFieldShape,
             Opcode::StoreFieldShape,
             Opcode::ObjectLiteral,
             Opcode::InitObject,
-            Opcode::OptionalField,
+            Opcode::OptionalFieldExact,
             Opcode::LoadStatic,
             Opcode::StoreStatic,
             Opcode::OptionalFieldShape,
+            Opcode::NewType,
             Opcode::NewArray,
             Opcode::LoadElem,
             Opcode::StoreElem,
@@ -1098,8 +1113,10 @@ mod tests {
             Opcode::DynNewObject,
             Opcode::DynKeys,
             Opcode::DynHas,
+            Opcode::ImplementsShape,
+            Opcode::IsNominal,
+            Opcode::CastNominal,
             Opcode::TaskCancel,
-            Opcode::InstanceOf,
             Opcode::Cast,
             Opcode::MakeClosure,
             Opcode::CloseVar,

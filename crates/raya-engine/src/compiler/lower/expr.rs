@@ -8,7 +8,8 @@ use super::{
     STRING_TYPE_ID, TASK_TYPE_ID, UNKNOWN_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
 };
 use crate::compiler::ir::{
-    BinaryOp, ClassId, FunctionId, IrConstant, IrInstr, IrValue, Register, Terminator, UnaryOp,
+    BinaryOp, NominalTypeId, FunctionId, IrConstant, IrInstr, IrValue, Register,
+    RuntimeCastTarget, Terminator, UnaryOp,
 };
 use crate::compiler::CompileError;
 use crate::parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
@@ -52,7 +53,7 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    fn projected_structural_layout_from_alias_name(
+    pub(super) fn projected_structural_layout_from_alias_name(
         &self,
         alias_name: &str,
     ) -> Option<Vec<(String, u16)>> {
@@ -323,22 +324,22 @@ impl<'a> Lowerer<'a> {
 
         // Prefer class construction when RegExp class metadata exists so literals
         // produce proper objects (matching `new RegExp(...)`) rather than raw handles.
-        let regexp_class_id = self.class_map.iter().find_map(|(sym, class_id)| {
-            (self.interner.resolve(*sym) == TC::REGEXP_TYPE_NAME).then_some(*class_id)
+        let regexp_nominal_type_id = self.class_map.iter().find_map(|(sym, nominal_type_id)| {
+            (self.interner.resolve(*sym) == TC::REGEXP_TYPE_NAME).then_some(*nominal_type_id)
         });
 
-        if let Some(class_id) = regexp_class_id {
+        if let Some(nominal_type_id) = regexp_nominal_type_id {
             let dest = self.alloc_register(UNRESOLVED);
-            self.emit(IrInstr::NewObject {
+            self.emit(IrInstr::NewType {
                 dest: dest.clone(),
-                class: class_id,
+                nominal_type_id: nominal_type_id,
             });
 
-            let all_fields = self.get_all_fields(class_id);
+            let all_fields = self.get_all_fields(nominal_type_id);
             for field in &all_fields {
                 if let Some(ref init_expr) = field.initializer {
                     let value = self.lower_expr(init_expr);
-                    self.emit(IrInstr::StoreField {
+                    self.emit(IrInstr::StoreFieldExact {
                         object: dest.clone(),
                         field: field.index,
                         value,
@@ -348,7 +349,7 @@ impl<'a> Lowerer<'a> {
 
             if let Some(ctor_func_id) = self
                 .class_info_map
-                .get(&class_id)
+                .get(&nominal_type_id)
                 .and_then(|info| info.constructor)
             {
                 self.emit(IrInstr::Call {
@@ -651,11 +652,11 @@ impl<'a> Lowerer<'a> {
         // Class identifiers may legitimately appear in value position
         // (e.g., class aliasing/import scaffolding). Class values are resolved
         // through class maps at use sites (new/static/member), not as plain locals.
-        if let Some(&class_id) = self.class_map.get(&ident.name) {
+        if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
             let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
             self.emit(IrInstr::Assign {
                 dest: dest.clone(),
-                value: IrValue::Constant(IrConstant::I32(class_id.as_u32() as i32)),
+                value: IrValue::Constant(IrConstant::I32(nominal_type_id.as_u32() as i32)),
             });
             return dest;
         }
@@ -798,10 +799,10 @@ impl<'a> Lowerer<'a> {
         // delete on member expressions: set the property to null (pragmatic delete)
         if let Expression::Member(member) = &*unary.operand {
             let prop_name = self.interner.resolve(member.property.name).to_string();
-            let class_id = if self.prefers_structural_member_projection(&member.object) {
+            let nominal_type_id = if self.prefers_structural_member_projection(&member.object) {
                 None
             } else {
-                self.infer_class_id(&member.object)
+                self.infer_nominal_type_id(&member.object)
             };
             let object = self.lower_expr(&member.object);
             let obj_ty_id = {
@@ -827,15 +828,15 @@ impl<'a> Lowerer<'a> {
                 value: IrValue::Constant(IrConstant::Null),
             });
 
-            // If we know the class, resolve field index and use StoreField
-            if let Some(cid) = class_id {
+            // If we know the class, resolve field index and use StoreFieldExact
+            if let Some(cid) = nominal_type_id {
                 let all_fields = self.get_all_fields(cid);
                 if let Some(field) = all_fields
                     .iter()
                     .rev()
                     .find(|f| self.interner.resolve(f.name) == prop_name)
                 {
-                    self.emit(IrInstr::StoreField {
+                    self.emit(IrInstr::StoreFieldExact {
                         object,
                         field: field.index,
                         value: null_reg,
@@ -1020,11 +1021,11 @@ impl<'a> Lowerer<'a> {
 
         // Handle super() constructor call
         if let Expression::Super(_) = &*call.callee {
-            if let Some(current_class_id) = self.current_class {
+            if let Some(current_nominal_type_id) = self.current_class {
                 // Get parent class
                 if let Some(parent_id) = self
                     .class_info_map
-                    .get(&current_class_id)
+                    .get(&current_nominal_type_id)
                     .and_then(|info| info.parent_class)
                 {
                     // Get parent's constructor
@@ -1051,11 +1052,11 @@ impl<'a> Lowerer<'a> {
         if let Expression::Member(member) = &*call.callee {
             if let Expression::Super(_) = &*member.object {
                 let method_name_symbol = member.property.name;
-                if let Some(current_class_id) = self.current_class {
+                if let Some(current_nominal_type_id) = self.current_class {
                     // Get parent class
                     if let Some(parent_id) = self
                         .class_info_map
-                        .get(&current_class_id)
+                        .get(&current_nominal_type_id)
                         .and_then(|info| info.parent_class)
                     {
                         // Look up method in parent class
@@ -1084,10 +1085,10 @@ impl<'a> Lowerer<'a> {
                 let bind_name = self.interner.resolve(bind_member.property.name);
                 if bind_name == "bind" {
                     if let Expression::Member(target_member) = &*bind_member.object {
-                        if let Some(class_id) = self.infer_class_id(&target_member.object) {
+                        if let Some(nominal_type_id) = self.infer_nominal_type_id(&target_member.object) {
                             if let Some(&slot) = self
                                 .method_slot_map
-                                .get(&(class_id, target_member.property.name))
+                                .get(&(nominal_type_id, target_member.property.name))
                             {
                                 // Only handle receiver binding here.
                                 // Partial argument binding still follows existing generic path.
@@ -1578,8 +1579,8 @@ impl<'a> Lowerer<'a> {
                 });
 
                 // Propagate return type for bound method calls
-                if let Some(&(class_id, method_name)) = self.bound_method_vars.get(&ident.name) {
-                    if let Some(&ret_ty) = self.method_return_type_map.get(&(class_id, method_name))
+                if let Some(&(nominal_type_id, method_name)) = self.bound_method_vars.get(&ident.name) {
+                    if let Some(&ret_ty) = self.method_return_type_map.get(&(nominal_type_id, method_name))
                     {
                         if ret_ty != UNRESOLVED {
                             dest.ty = ret_ty;
@@ -1646,8 +1647,8 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Propagate return type for bound method calls (global variable path)
-                if let Some(&(class_id, method_name)) = self.bound_method_vars.get(&ident.name) {
-                    if let Some(&ret_ty) = self.method_return_type_map.get(&(class_id, method_name))
+                if let Some(&(nominal_type_id, method_name)) = self.bound_method_vars.get(&ident.name) {
+                    if let Some(&ret_ty) = self.method_return_type_map.get(&(nominal_type_id, method_name))
                     {
                         if ret_ty != UNRESOLVED {
                             dest.ty = ret_ty;
@@ -1820,7 +1821,7 @@ impl<'a> Lowerer<'a> {
             // Intercept promise-like methods before object dispatch.
             let object_ty = self.get_expr_type(&member.object);
             let inferred_is_promise_class =
-                self.infer_class_id(&member.object).is_some_and(|cid| {
+                self.infer_nominal_type_id(&member.object).is_some_and(|cid| {
                     self.class_map
                         .iter()
                         .any(|(&sym, &id)| id == cid && self.interner.resolve(sym) == "Promise")
@@ -2181,9 +2182,9 @@ impl<'a> Lowerer<'a> {
                 if let (Expression::Member(inner_member), Some(bound_receiver)) =
                     (&*member.object, args.first().cloned())
                 {
-                    if let Some(class_id) = self.infer_class_id(&inner_member.object) {
+                    if let Some(nominal_type_id) = self.infer_nominal_type_id(&inner_member.object) {
                         if let Some(method_slot) =
-                            self.find_method_slot(class_id, inner_member.property.name)
+                            self.find_method_slot(nominal_type_id, inner_member.property.name)
                         {
                             self.emit(IrInstr::BindMethod {
                                 dest: dest.clone(),
@@ -2233,10 +2234,10 @@ impl<'a> Lowerer<'a> {
                     return dest;
                 }
 
-                if let Some(&class_id) = self.class_map.get(&ident.name) {
+                if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
                     // This is a class identifier, check for static methods
                     if let Some(&func_id) =
-                        self.static_method_map.get(&(class_id, method_name_symbol))
+                        self.static_method_map.get(&(nominal_type_id, method_name_symbol))
                     {
                         // Static method call - no 'this' parameter
                         // Check if async method - emit Spawn instead of Call
@@ -2318,11 +2319,11 @@ impl<'a> Lowerer<'a> {
             }
 
             // Try to determine the class type of the object for method resolution
-            let mut class_id = self.infer_class_id(&member.object);
+            let mut nominal_type_id = self.infer_nominal_type_id(&member.object);
 
-            // If class_id is not found, check if this is a Channel type parameter
+            // If nominal_type_id is not found, check if this is a Channel type parameter
             // Parameters with Channel<T> type annotation aren't in variable_class_map
-            if class_id.is_none() {
+            if nominal_type_id.is_none() {
                 if let Expression::Identifier(ident) = &*member.object {
                     // Check if this identifier is a local variable with Channel type
                     if let Some(&local_idx) = self.local_map.get(&ident.name) {
@@ -2331,7 +2332,7 @@ impl<'a> Lowerer<'a> {
                                 // This is a Channel type - look up Channel class by finding it in class_map
                                 for (&sym, &cid) in &self.class_map {
                                     if self.interner.resolve(sym) == TC::CHANNEL_TYPE_NAME {
-                                        class_id = Some(cid);
+                                        nominal_type_id = Some(cid);
                                         break;
                                     }
                                 }
@@ -2340,28 +2341,28 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
-            let inferred_class_id = class_id;
+            let inferred_nominal_type_id = nominal_type_id;
 
             // Skip class dispatch for builtin primitive types — their methods
             // are dispatched via the type registry (native calls / class methods)
-            if let Some(cid) = class_id {
+            if let Some(cid) = nominal_type_id {
                 let is_builtin = self.class_map.iter().any(|(&sym, &id)| {
                     id == cid && matches!(self.interner.resolve(sym), "string" | "number" | "Array")
                 });
                 if is_builtin {
-                    class_id = None;
+                    nominal_type_id = None;
                 }
             }
 
             // Check if this is a user-defined class method (including inherited methods)
-            if let Some(class_id) = class_id {
+            if let Some(nominal_type_id) = nominal_type_id {
                 // Check if this is a function-typed FIELD (not a method)
-                // Fields should be loaded via GetField + CallClosure, not CallMethod
-                let all_fields = self.get_all_fields(class_id);
+                // Fields should be loaded via GetField + CallClosure, not CallMethodExact
+                let all_fields = self.get_all_fields(nominal_type_id);
                 let is_field = all_fields
                     .iter()
                     .any(|f| self.interner.resolve(f.name) == method_name);
-                let is_method = self.find_method(class_id, method_name_symbol).is_some();
+                let is_method = self.find_method(nominal_type_id, method_name_symbol).is_some();
 
                 if is_field && !is_method {
                     // Function-typed field: emit GetField + CallClosure
@@ -2372,7 +2373,7 @@ impl<'a> Lowerer<'a> {
                         .find(|f| self.interner.resolve(f.name) == method_name)
                         .unwrap();
                     let field_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                    self.emit(IrInstr::LoadField {
+                    self.emit(IrInstr::LoadFieldExact {
                         dest: field_reg.clone(),
                         object,
                         field: field_info.index,
@@ -2395,14 +2396,14 @@ impl<'a> Lowerer<'a> {
                     return dest;
                 }
 
-                if let Some(func_id) = self.find_method(class_id, method_name_symbol) {
+                if let Some(func_id) = self.find_method(nominal_type_id, method_name_symbol) {
                     if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                         if let Expression::Identifier(obj_ident) = &*member.object {
                             eprintln!(
-                                "[lower] class member call '{}.{}(...)' class_id={} func_id={}",
+                                "[lower] class member call '{}.{}(...)' nominal_type_id={} func_id={}",
                                 self.interner.resolve(obj_ident.name),
                                 method_name,
-                                class_id.as_u32(),
+                                nominal_type_id.as_u32(),
                                 func_id.as_u32()
                             );
                         }
@@ -2428,8 +2429,8 @@ impl<'a> Lowerer<'a> {
                     }
 
                     // Use virtual dispatch via vtable slot
-                    if let Some(slot) = self.find_method_slot(class_id, method_name_symbol) {
-                        self.emit(IrInstr::CallMethod {
+                    if let Some(slot) = self.find_method_slot(nominal_type_id, method_name_symbol) {
+                        self.emit(IrInstr::CallMethodExact {
                             dest: Some(dest.clone()),
                             object,
                             method: slot,
@@ -2441,13 +2442,13 @@ impl<'a> Lowerer<'a> {
                             .class_map
                             .iter()
                             .find_map(|(&sym, &id)| {
-                                if id == class_id {
+                                if id == nominal_type_id {
                                     Some(self.interner.resolve(sym).to_string())
                                 } else {
                                     None
                                 }
                             })
-                            .unwrap_or_else(|| format!("class#{}", class_id.as_u32()));
+                            .unwrap_or_else(|| format!("class#{}", nominal_type_id.as_u32()));
                         self.errors
                             .push(crate::compiler::CompileError::InternalError {
                                 message: format!(
@@ -2468,7 +2469,7 @@ impl<'a> Lowerer<'a> {
                     if dest.ty.as_u32() == super::UNRESOLVED_TYPE_ID {
                         if let Some(&ret_ty) = self
                             .method_return_type_map
-                            .get(&(class_id, method_name_symbol))
+                            .get(&(nominal_type_id, method_name_symbol))
                         {
                             if ret_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
                                 dest.ty = ret_ty;
@@ -2479,18 +2480,18 @@ impl<'a> Lowerer<'a> {
                     // Propagate generic return type for Map/Set methods
                     self.propagate_container_return_type(
                         &mut dest,
-                        class_id,
+                        nominal_type_id,
                         method_name,
                         &member.object,
                     );
                     self.propagate_type_projection_to_register(dest.ty, &dest);
 
                     return dest;
-                } else if let Some(slot) = self.find_method_slot(class_id, method_name_symbol) {
+                } else if let Some(slot) = self.find_method_slot(nominal_type_id, method_name_symbol) {
                     // Abstract method with vtable slot - use virtual dispatch.
                     // The actual implementation is provided by a derived class.
                     let object = self.lower_expr(&member.object);
-                    self.emit(IrInstr::CallMethod {
+                    self.emit(IrInstr::CallMethodExact {
                         dest: Some(dest.clone()),
                         object,
                         method: slot,
@@ -2502,7 +2503,7 @@ impl<'a> Lowerer<'a> {
                     if dest.ty.as_u32() == super::UNRESOLVED_TYPE_ID {
                         if let Some(&ret_ty) = self
                             .method_return_type_map
-                            .get(&(class_id, method_name_symbol))
+                            .get(&(nominal_type_id, method_name_symbol))
                         {
                             if ret_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
                                 dest.ty = ret_ty;
@@ -2517,7 +2518,7 @@ impl<'a> Lowerer<'a> {
             // Structural object-call path: `obj.f(...)` where `f` is function-typed.
             // Keep slot-based lowering; runtime structural slot views map interface
             // slots to concrete field/method bindings.
-            if class_id.is_none()
+            if nominal_type_id.is_none()
                 && self.is_structural_object_type(self.get_expr_type(&member.object))
                 && self.type_is_callable(self.get_expr_type(&call.callee))
             {
@@ -2527,7 +2528,7 @@ impl<'a> Lowerer<'a> {
                     if let Expression::Identifier(obj_ident) = &*member.object {
                         let in_vcm = self.variable_class_map.contains_key(&obj_ident.name);
                         eprintln!(
-                            "[lower] structural member call '{}.{}(...)' — obj type_id={} in_variable_class_map={} (WILL USE LoadField+CallClosure)",
+                            "[lower] structural member call '{}.{}(...)' — obj type_id={} in_variable_class_map={} (WILL USE LoadFieldExact+CallClosure)",
                             self.interner.resolve(obj_ident.name),
                             method_name,
                             obj_type_str,
@@ -2535,7 +2536,7 @@ impl<'a> Lowerer<'a> {
                         );
                     } else {
                         eprintln!(
-                            "[lower] structural member call '<expr>.{}(...)' — obj type_id={} (WILL USE LoadField+CallClosure)",
+                            "[lower] structural member call '<expr>.{}(...)' — obj type_id={} (WILL USE LoadFieldExact+CallClosure)",
                             method_name,
                             obj_type_str
                         );
@@ -2583,13 +2584,13 @@ impl<'a> Lowerer<'a> {
             // identifier with a known field layout (variable_object_fields) but the checker
             // type is unresolved (e.g. captured from an outer scope inside a nested function).
             // This avoids falling into JsonGet when the object is a stdlib module default export.
-            if class_id.is_none() {
+            if nominal_type_id.is_none() {
                 if let Expression::Identifier(obj_ident) = &*member.object {
                     if let Some(fields) = self.variable_object_fields.get(&obj_ident.name) {
                         if fields.iter().any(|(n, _)| n == method_name) {
                             if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                 eprintln!(
-                                    "[lower] concrete-layout member call '{}.{}(...)' via variable_object_fields (WILL USE LoadField+CallClosure)",
+                                    "[lower] concrete-layout member call '{}.{}(...)' via variable_object_fields (WILL USE LoadFieldExact+CallClosure)",
                                     self.interner.resolve(obj_ident.name),
                                     method_name
                                 );
@@ -2656,7 +2657,7 @@ impl<'a> Lowerer<'a> {
                 self.identifier_requires_late_bound_dispatch(obj_ident.name)
             } else {
                 false
-            } || (class_id.is_none()
+            } || (nominal_type_id.is_none()
                 && (self.type_requires_late_bound_dispatch(object.ty)
                     || self.type_requires_late_bound_dispatch(self.get_expr_type(&member.object))));
 
@@ -2689,7 +2690,7 @@ impl<'a> Lowerer<'a> {
 
             // Imported-constructor objects (without local class metadata) must use
             // late-bound member lookup regardless of primitive checker fallbacks.
-            if class_id.is_none() && receiver_requires_late_bound {
+            if nominal_type_id.is_none() && receiver_requires_late_bound {
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                     if let Expression::Identifier(obj_ident) = &*member.object {
                         eprintln!(
@@ -2837,7 +2838,7 @@ impl<'a> Lowerer<'a> {
                 if let Some(field_index) = field_index {
                     let object = self.lower_expr(&member.object);
                     let closure = self.alloc_register(UNRESOLVED);
-                    self.emit(IrInstr::LoadField {
+                    self.emit(IrInstr::LoadFieldExact {
                         dest: closure.clone(),
                         object,
                         field: field_index,
@@ -2867,7 +2868,7 @@ impl<'a> Lowerer<'a> {
             // Unknown/dynamic receiver fallback: lower `obj.m(...)` as
             // `CallClosure(LateBoundMember(obj, "m"), args)` so strict mode
             // can still compile unresolved-but-valid dynamic patterns.
-            if class_id.is_none() && (obj_type_id == UNRESOLVED_TYPE_ID || obj_type_id == 6) {
+            if nominal_type_id.is_none() && (obj_type_id == UNRESOLVED_TYPE_ID || obj_type_id == 6) {
                 let closure = self.alloc_register(UNRESOLVED);
                 self.emit(IrInstr::LateBoundMember {
                     dest: closure.clone(),
@@ -2890,7 +2891,7 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
-            let class_name = inferred_class_id.and_then(|cid| {
+            let class_name = inferred_nominal_type_id.and_then(|cid| {
                 self.class_map.iter().find_map(|(&sym, &id)| {
                     if id == cid {
                         Some(self.interner.resolve(sym).to_string())
@@ -3022,10 +3023,10 @@ impl<'a> Lowerer<'a> {
 
         // Check if this is a static field access (e.g., Math.PI where Math is a class)
         if let Expression::Identifier(ident) = &*member.object {
-            if let Some(&class_id) = self.class_map.get(&ident.name) {
+            if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
                 // This is a class identifier, check for static fields
                 // Extract global_index first to avoid borrow conflict
-                let global_index = self.class_info_map.get(&class_id).and_then(|class_info| {
+                let global_index = self.class_info_map.get(&nominal_type_id).and_then(|class_info| {
                     class_info
                         .static_fields
                         .iter()
@@ -3047,10 +3048,10 @@ impl<'a> Lowerer<'a> {
 
         // Try to determine the class type of the object for field resolution.
         // Explicit structural alias projections must not reuse provider field indices.
-        let class_id = if self.prefers_structural_member_projection(&member.object) {
+        let nominal_type_id = if self.prefers_structural_member_projection(&member.object) {
             None
         } else {
-            self.infer_class_id(&member.object)
+            self.infer_nominal_type_id(&member.object)
         };
 
         let object = self.lower_expr(&member.object);
@@ -3139,9 +3140,9 @@ impl<'a> Lowerer<'a> {
             },
         }
 
-        let resolved_field = if let Some(class_id) = class_id {
+        let resolved_field = if let Some(nominal_type_id) = nominal_type_id {
             // Get all fields including parent fields
-            let all_fields = self.get_all_fields(class_id);
+            let all_fields = self.get_all_fields(nominal_type_id);
             // Use .rev() so child fields shadow parent fields with the same name
             if let Some(field) = all_fields
                 .iter()
@@ -3158,7 +3159,7 @@ impl<'a> Lowerer<'a> {
                         .class_map
                         .iter()
                         .find_map(|(&sym, &id)| {
-                            (id == class_id).then(|| self.interner.resolve(sym))
+                            (id == nominal_type_id).then(|| self.interner.resolve(sym))
                         })
                         .unwrap_or("<unknown>");
                     let field_list = all_fields
@@ -3172,7 +3173,7 @@ impl<'a> Lowerer<'a> {
                     );
                 }
                 // Field not found — check if it's a method (bound method extraction)
-                if let Some(slot) = self.find_method_slot(class_id, member.property.name) {
+                if let Some(slot) = self.find_method_slot(nominal_type_id, member.property.name) {
                     let member_ty = {
                         let member_expr = Expression::Member(member.clone());
                         let inferred = self.get_expr_type(&member_expr);
@@ -3183,7 +3184,7 @@ impl<'a> Lowerer<'a> {
                         }
                     };
                     if self.js_this_binding_compat {
-                        if let Some(func_id) = self.find_method(class_id, member.property.name) {
+                        if let Some(func_id) = self.find_method(nominal_type_id, member.property.name) {
                             let dest = self.alloc_register(member_ty);
                             self.emit(IrInstr::MakeClosure {
                                 dest: dest.clone(),
@@ -3305,7 +3306,7 @@ impl<'a> Lowerer<'a> {
 
         // Check if the object is a TypeVar (generic parameter) — emit LateBoundMember
         // so the post-monomorphization pass can resolve to the correct opcode.
-        if obj_ty_id == UNRESOLVED_TYPE_ID && class_id.is_none() {
+        if obj_ty_id == UNRESOLVED_TYPE_ID && nominal_type_id.is_none() {
             let expr_ty = self.get_expr_type(&member.object);
             let is_typevar = self
                 .type_ctx
@@ -3350,11 +3351,11 @@ impl<'a> Lowerer<'a> {
                         _ => "<expr>".to_string(),
                     };
                     eprintln!(
-                        "[lower] LoadField: {}.{} field_index={}",
+                        "[lower] LoadFieldExact: {}.{} field_index={}",
                         obj_name, prop_name, field_index
                     );
                 }
-                self.emit(IrInstr::LoadField {
+                self.emit(IrInstr::LoadFieldExact {
                     dest: dest.clone(),
                     object,
                     field: field_index,
@@ -3399,14 +3400,14 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        if class_id.is_none() && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+        if nominal_type_id.is_none() && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
             eprintln!(
                 "[lower] unresolved member object AST: {:?}",
                 &*member.object
             );
         }
 
-        let class_name = class_id.and_then(|cid| {
+        let class_name = nominal_type_id.and_then(|cid| {
             self.class_map.iter().find_map(|(&sym, &id)| {
                 if id == cid {
                     Some(self.interner.resolve(sym).to_string())
@@ -3431,10 +3432,10 @@ impl<'a> Lowerer<'a> {
                 self.identifier_requires_late_bound_dispatch(obj_ident.name)
             }
             _ => false,
-        } || (class_id.is_none()
+        } || (nominal_type_id.is_none()
             && (self.type_requires_late_bound_dispatch(object.ty)
                 || self.type_requires_late_bound_dispatch(self.get_expr_type(&member.object))));
-        if class_id.is_none() && receiver_requires_late_bound {
+        if nominal_type_id.is_none() && receiver_requires_late_bound {
             let dest = self.alloc_register(UNRESOLVED);
             self.emit(IrInstr::LateBoundMember {
                 dest: dest.clone(),
@@ -3446,7 +3447,7 @@ impl<'a> Lowerer<'a> {
 
         // Dynamic/member-latebound fallback: when receiver typing remains unresolved
         // (unknown/any/jsobject/etc), preserve runtime behavior instead of hard ICE.
-        if class_id.is_none() && (obj_ty_id == UNRESOLVED_TYPE_ID || obj_ty_id == 6) {
+        if nominal_type_id.is_none() && (obj_ty_id == UNRESOLVED_TYPE_ID || obj_ty_id == 6) {
             let dest = self.alloc_register(UNRESOLVED);
             self.emit(IrInstr::LateBoundMember {
                 dest: dest.clone(),
@@ -3837,7 +3838,7 @@ impl<'a> Lowerer<'a> {
         let ty = self.type_ctx.get(ty_id)?;
         match ty {
             crate::parser::types::Type::Class(class_ty) => self
-                .class_id_from_type_name(&class_ty.name)
+                .nominal_type_id_from_type_name(&class_ty.name)
                 .map(|_| ty_id),
             crate::parser::types::Type::Reference(reference) => self
                 .type_ctx
@@ -4001,6 +4002,9 @@ impl<'a> Lowerer<'a> {
             .into_iter()
             .map(|(name, _)| name)
             .collect::<Vec<_>>();
+        if names.is_empty() {
+            return None;
+        }
         Some(crate::vm::object::shape_id_from_member_names(&names))
     }
 
@@ -4079,7 +4083,7 @@ impl<'a> Lowerer<'a> {
                 value,
             });
         } else {
-            self.emit(IrInstr::StoreField {
+            self.emit(IrInstr::StoreFieldExact {
                 object,
                 field: fallback_field,
                 value,
@@ -4208,9 +4212,9 @@ impl<'a> Lowerer<'a> {
                 Some(SpreadSourceFields::Shape { shape_id, fields })
             }
             crate::parser::types::Type::Class(_) => {
-                let class_id = self.class_id_from_type_id(ty)?;
+                let nominal_type_id = self.nominal_type_id_from_type_id(ty)?;
                 Some(SpreadSourceFields::Concrete(
-                    self.get_all_fields(class_id)
+                    self.get_all_fields(nominal_type_id)
                         .into_iter()
                         .map(|f| (self.interner.resolve(f.name).to_string(), f.index))
                         .collect(),
@@ -4258,9 +4262,9 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        if let Some(class_id) = self.infer_class_id(spread_expr) {
+        if let Some(nominal_type_id) = self.infer_nominal_type_id(spread_expr) {
             return Some(SpreadSourceFields::Concrete(
-                self.get_all_fields(class_id)
+                self.get_all_fields(nominal_type_id)
                     .into_iter()
                     .map(|f| (self.interner.resolve(f.name).to_string(), f.index))
                     .collect(),
@@ -4383,7 +4387,7 @@ impl<'a> Lowerer<'a> {
                         self.register_nested_array_element_object_fields
                             .insert((dest.id, field_index as u16), elem_layout);
                     }
-                    self.emit(IrInstr::StoreField {
+                    self.emit(IrInstr::StoreFieldExact {
                         object: dest.clone(),
                         field: field_index as u16,
                         value,
@@ -4421,7 +4425,7 @@ impl<'a> Lowerer<'a> {
                                 optional: false,
                             });
                         } else {
-                            self.emit(IrInstr::LoadField {
+                            self.emit(IrInstr::LoadFieldExact {
                                 dest: field_val.clone(),
                                 object: spread_reg.clone(),
                                 field: src_field_idx,
@@ -4444,7 +4448,7 @@ impl<'a> Lowerer<'a> {
                             self.register_nested_array_element_object_fields
                                 .insert((dest.id, dest_idx as u16), elem_layout);
                         }
-                        self.emit(IrInstr::StoreField {
+                        self.emit(IrInstr::StoreFieldExact {
                             object: dest.clone(),
                             field: dest_idx as u16,
                             value: field_val,
@@ -4638,10 +4642,10 @@ impl<'a> Lowerer<'a> {
                 }
                 Expression::Member(member) => {
                     let prop_name = self.interner.resolve(member.property.name);
-                    let class_id = if self.prefers_structural_member_projection(&member.object) {
+                    let nominal_type_id = if self.prefers_structural_member_projection(&member.object) {
                         None
                     } else {
-                        self.infer_class_id(&member.object)
+                        self.infer_nominal_type_id(&member.object)
                     };
                     let object = self.lower_expr(&member.object);
                     let checker_obj_ty = self.get_expr_type(&member.object);
@@ -4662,14 +4666,14 @@ impl<'a> Lowerer<'a> {
                             UNRESOLVED_TYPE_ID
                         }
                     };
-                    if let Some(class_id) = class_id {
+                    if let Some(nominal_type_id) = nominal_type_id {
                         if let Some(field) = self
-                            .get_all_fields(class_id)
+                            .get_all_fields(nominal_type_id)
                             .iter()
                             .rev()
                             .find(|f| self.interner.resolve(f.name) == prop_name)
                         {
-                            self.emit(IrInstr::StoreField {
+                            self.emit(IrInstr::StoreFieldExact {
                                 object,
                                 field: field.index,
                                 value: rhs,
@@ -4693,13 +4697,13 @@ impl<'a> Lowerer<'a> {
                                     .class_map
                                     .iter()
                                     .find_map(|(&sym, &id)| {
-                                        if id == class_id {
+                                        if id == nominal_type_id {
                                             Some(self.interner.resolve(sym).to_string())
                                         } else {
                                             None
                                         }
                                     })
-                                    .unwrap_or_else(|| format!("class#{}", class_id.as_u32()));
+                                    .unwrap_or_else(|| format!("class#{}", nominal_type_id.as_u32()));
                                 self.errors
                                     .push(crate::compiler::CompileError::InternalError {
                                         message: format!(
@@ -5032,8 +5036,8 @@ impl<'a> Lowerer<'a> {
 
                 // Check for static field write: ClassName.staticField = value
                 if let Expression::Identifier(ident) = &*member.object {
-                    if let Some(&class_id) = self.class_map.get(&ident.name) {
-                        let global_index = self.class_info_map.get(&class_id).and_then(|info| {
+                    if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
+                        let global_index = self.class_info_map.get(&nominal_type_id).and_then(|info| {
                             info.static_fields
                                 .iter()
                                 .find(|f| self.interner.resolve(f.name) == prop_name)
@@ -5050,10 +5054,10 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Instance/object field write
-                let class_id = if self.prefers_structural_member_projection(&member.object) {
+                let nominal_type_id = if self.prefers_structural_member_projection(&member.object) {
                     None
                 } else {
-                    self.infer_class_id(&member.object)
+                    self.infer_nominal_type_id(&member.object)
                 };
                 let object = self.lower_expr(&member.object);
                 let checker_obj_ty = self.get_expr_type(&member.object);
@@ -5075,14 +5079,14 @@ impl<'a> Lowerer<'a> {
                     }
                 };
 
-                if let Some(class_id) = class_id {
+                if let Some(nominal_type_id) = nominal_type_id {
                     if let Some(field) = self
-                        .get_all_fields(class_id)
+                        .get_all_fields(nominal_type_id)
                         .iter()
                         .rev()
                         .find(|f| self.interner.resolve(f.name) == prop_name)
                     {
-                        self.emit(IrInstr::StoreField {
+                        self.emit(IrInstr::StoreFieldExact {
                             object,
                             field: field.index,
                             value: value.clone(),
@@ -5104,13 +5108,13 @@ impl<'a> Lowerer<'a> {
                                 .class_map
                                 .iter()
                                 .find_map(|(&sym, &id)| {
-                                    if id == class_id {
+                                    if id == nominal_type_id {
                                         Some(self.interner.resolve(sym).to_string())
                                     } else {
                                         None
                                     }
                                 })
-                                .unwrap_or_else(|| format!("class#{}", class_id.as_u32()));
+                                .unwrap_or_else(|| format!("class#{}", nominal_type_id.as_u32()));
                             self.errors
                                 .push(crate::compiler::CompileError::InternalError {
                                     message: format!(
@@ -5441,8 +5445,8 @@ impl<'a> Lowerer<'a> {
                 // Track class type for parameters with class type annotations
                 // so method calls can be statically resolved
                 if let Some(type_ann) = &param.type_annotation {
-                    if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
-                        self.variable_class_map.insert(ident.name, class_id);
+                    if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
+                        self.variable_class_map.insert(ident.name, nominal_type_id);
                     }
                     self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                     if self.type_annotation_is_callable(type_ann) {
@@ -5899,29 +5903,29 @@ impl<'a> Lowerer<'a> {
             }
 
             // Look up class ID from known class symbols or class-typed aliases.
-            let class_id_opt = self
+            let nominal_type_id_opt = self
                 .class_map
                 .get(&ident.name)
                 .copied()
                 .or_else(|| self.variable_class_map.get(&ident.name).copied());
-            if let Some(class_id) = class_id_opt {
+            if let Some(nominal_type_id) = nominal_type_id_opt {
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    eprintln!("[lower] new {} -> class_id={}", name, class_id.as_u32());
+                    eprintln!("[lower] new {} -> nominal_type_id={}", name, nominal_type_id.as_u32());
                 }
                 // Create the object
-                self.emit(IrInstr::NewObject {
+                self.emit(IrInstr::NewType {
                     dest: dest.clone(),
-                    class: class_id,
+                    nominal_type_id: nominal_type_id,
                 });
 
                 // Initialize all fields (including inherited parent fields) with default values
-                let all_fields = self.get_all_fields(class_id);
+                let all_fields = self.get_all_fields(nominal_type_id);
                 for field in &all_fields {
                     if let Some(ref init_expr) = field.initializer {
                         // Lower the initializer expression
                         let value = self.lower_expr(init_expr);
                         // Store it to the field
-                        self.emit(IrInstr::StoreField {
+                        self.emit(IrInstr::StoreFieldExact {
                             object: dest.clone(),
                             field: field.index,
                             value,
@@ -5931,7 +5935,7 @@ impl<'a> Lowerer<'a> {
 
                 let constructor_func_id = self
                     .class_info_map
-                    .get(&class_id)
+                    .get(&nominal_type_id)
                     .and_then(|info| info.constructor);
 
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
@@ -5947,7 +5951,7 @@ impl<'a> Lowerer<'a> {
                     // Get constructor parameter info for default values
                     let ctor_params = self
                         .class_info_map
-                        .get(&class_id)
+                        .get(&nominal_type_id)
                         .map(|info| info.constructor_params.clone())
                         .unwrap_or_default();
 
@@ -6001,9 +6005,9 @@ impl<'a> Lowerer<'a> {
                     .first_construct_signature_return_type(callee_ty)
                     .unwrap_or(UNRESOLVED);
                 let ctor_dest = self.alloc_register(return_ty);
-                let class_id = self.lower_expr(&new_expr.callee);
+                let nominal_type_id = self.lower_expr(&new_expr.callee);
                 let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
-                native_args.push(class_id);
+                native_args.push(nominal_type_id);
                 for arg in &new_expr.arguments {
                     native_args.push(self.lower_expr(arg));
                 }
@@ -6205,9 +6209,9 @@ impl<'a> Lowerer<'a> {
                     .first_construct_signature_return_type(callee_ty)
                     .unwrap_or(UNRESOLVED);
                 let ctor_dest = self.alloc_register(return_ty);
-                let class_id = self.lower_expr(&new_expr.callee);
+                let nominal_type_id = self.lower_expr(&new_expr.callee);
                 let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
-                native_args.push(class_id);
+                native_args.push(nominal_type_id);
                 for arg in &new_expr.arguments {
                     native_args.push(self.lower_expr(arg));
                 }
@@ -6445,9 +6449,9 @@ impl<'a> Lowerer<'a> {
 
             // Check if it's a static method call
             if let Expression::Identifier(ident) = &*member.object {
-                if let Some(&class_id) = self.class_map.get(&ident.name) {
+                if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
                     if let Some(&func_id) =
-                        self.static_method_map.get(&(class_id, method_name_symbol))
+                        self.static_method_map.get(&(nominal_type_id, method_name_symbol))
                     {
                         // Spawn static method
                         self.emit(IrInstr::Spawn {
@@ -6461,9 +6465,9 @@ impl<'a> Lowerer<'a> {
             }
 
             // Instance method - find the method and spawn with 'this'
-            let class_id = self.infer_class_id(&member.object);
-            if let Some(class_id) = class_id {
-                if let Some(func_id) = self.find_method(class_id, method_name_symbol) {
+            let nominal_type_id = self.infer_nominal_type_id(&member.object);
+            if let Some(nominal_type_id) = nominal_type_id {
+                if let Some(func_id) = self.find_method(nominal_type_id, method_name_symbol) {
                     let object = self.lower_expr(&member.object);
                     let mut method_args = vec![object];
                     method_args.extend(args);
@@ -6589,11 +6593,42 @@ impl<'a> Lowerer<'a> {
         let object = self.lower_expr(&instanceof.object);
         let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
 
-        if let Some(class_id) = self.resolve_class_from_type(&instanceof.type_name) {
-            self.emit(IrInstr::InstanceOf {
+        let mut target_ty = self.resolve_structural_slot_type_from_annotation(&instanceof.type_name);
+        if target_ty == UNRESOLVED {
+            if let ast::Type::Reference(type_ref) = &instanceof.type_name.ty {
+                let name = self.interner.resolve(type_ref.name.name);
+                if let Some(named) = self.type_ctx.lookup_named_type(name) {
+                    target_ty = named;
+                }
+            }
+        }
+
+        if let Some(nominal_type_id) = self.resolve_class_from_type(&instanceof.type_name) {
+            self.emit(IrInstr::IsNominal {
                 dest: dest.clone(),
                 object,
-                class_id,
+                nominal_type_id,
+            });
+            return dest;
+        }
+
+        let structural_layout = self
+            .structural_slot_layout_from_type(target_ty)
+            .or_else(|| {
+                self.try_extract_object_alias_name_from_type(&instanceof.type_name)
+                    .and_then(|alias_name| self.projected_structural_layout_from_alias_name(&alias_name))
+            });
+        if let Some(layout) = structural_layout {
+            let shape_id = crate::vm::object::shape_id_from_member_names(
+                &layout.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>(),
+            );
+            self.emit_structural_shape_name_registration_for_ordered_names(
+                layout.into_iter().map(|(name, _)| name).collect(),
+            );
+            self.emit(IrInstr::ImplementsShape {
+                dest: dest.clone(),
+                object,
+                shape_id,
             });
             return dest;
         }
@@ -6617,7 +6652,8 @@ impl<'a> Lowerer<'a> {
 
         self.errors
             .push(crate::compiler::CompileError::InternalError {
-                message: "unresolved class in `instanceof` type annotation".to_string(),
+                message: "unresolved nominal or structural target in `instanceof` type annotation"
+                    .to_string(),
             });
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
@@ -6666,42 +6702,60 @@ impl<'a> Lowerer<'a> {
 
         // Runtime cast checks are currently supported for class-reference targets.
         // Non-class targets use compile-time cast typing only.
-        if let Some(class_id) = self.resolve_class_from_type(&cast.target_type) {
+        if let Some(nominal_type_id) = self.resolve_class_from_type(&cast.target_type) {
             if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                 match &*cast.object {
                     Expression::Member(member) => {
                         if let Expression::Identifier(obj_ident) = &*member.object {
                             eprintln!(
-                                "[lower] cast member '{}.{}' -> class_id={}",
+                                "[lower] cast member '{}.{}' -> nominal_type_id={}",
                                 self.interner.resolve(obj_ident.name),
                                 self.interner.resolve(member.property.name),
-                                class_id.as_u32()
+                                nominal_type_id.as_u32()
                             );
                         } else {
                             eprintln!(
-                                "[lower] cast <member expr> -> class_id={}",
-                                class_id.as_u32()
+                                "[lower] cast <member expr> -> nominal_type_id={}",
+                                nominal_type_id.as_u32()
                             );
                         }
                     }
                     Expression::Identifier(ident) => eprintln!(
-                        "[lower] cast ident '{}' -> class_id={}",
+                        "[lower] cast ident '{}' -> nominal_type_id={}",
                         self.interner.resolve(ident.name),
-                        class_id.as_u32()
+                        nominal_type_id.as_u32()
                     ),
-                    _ => eprintln!("[lower] cast expr -> class_id={}", class_id.as_u32()),
+                    _ => eprintln!(
+                        "[lower] cast expr -> nominal_type_id={}",
+                        nominal_type_id.as_u32()
+                    ),
                 }
             }
-            self.emit(IrInstr::Cast {
+            self.emit(IrInstr::CastNominal {
                 dest: dest.clone(),
                 object,
-                class_id,
+                nominal_type_id,
             });
-        } else if let Some(class_id) = self.resolve_nullable_class_from_union(&cast.target_type) {
-            self.emit(IrInstr::Cast {
+        } else if let Some(nominal_type_id) =
+            self.resolve_nullable_class_from_union(&cast.target_type)
+        {
+            self.emit(IrInstr::CastNominal {
                 dest: dest.clone(),
                 object,
-                class_id,
+                nominal_type_id,
+            });
+        } else if let Some(shape_id) = self.structural_shape_id_from_type(target_ty) {
+            if let Some(layout) = self.structural_slot_layout_from_type(target_ty) {
+                let names = layout
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>();
+                self.emit_structural_shape_name_registration_for_ordered_names(names);
+            }
+            self.emit(IrInstr::CastShape {
+                dest: dest.clone(),
+                object,
+                shape_id,
             });
         } else if let Some(tuple_len_encoded) =
             self.resolve_runtime_tuple_len_cast_target(&cast.target_type)
@@ -6709,7 +6763,7 @@ impl<'a> Lowerer<'a> {
             self.emit(IrInstr::Cast {
                 dest: dest.clone(),
                 object,
-                class_id: ClassId::new(tuple_len_encoded as u32),
+                target: RuntimeCastTarget::new(tuple_len_encoded as u32),
             });
         } else if let Some(object_min_fields_encoded) =
             self.resolve_runtime_object_min_fields_cast_target(&cast.target_type)
@@ -6717,7 +6771,7 @@ impl<'a> Lowerer<'a> {
             self.emit(IrInstr::Cast {
                 dest: dest.clone(),
                 object,
-                class_id: ClassId::new(object_min_fields_encoded as u32),
+                target: RuntimeCastTarget::new(object_min_fields_encoded as u32),
             });
         } else if let Some(array_elem_kind_encoded) =
             self.resolve_runtime_array_element_kind_cast_target(&cast.target_type)
@@ -6725,13 +6779,13 @@ impl<'a> Lowerer<'a> {
             self.emit(IrInstr::Cast {
                 dest: dest.clone(),
                 object,
-                class_id: ClassId::new(array_elem_kind_encoded as u32),
+                target: RuntimeCastTarget::new(array_elem_kind_encoded as u32),
             });
         } else if let Some(kind_mask) = self.resolve_runtime_cast_kind_mask(&cast.target_type) {
             self.emit(IrInstr::Cast {
                 dest: dest.clone(),
                 object,
-                class_id: ClassId::new((CAST_KIND_MASK_FLAG | kind_mask) as u32),
+                target: RuntimeCastTarget::new((CAST_KIND_MASK_FLAG | kind_mask) as u32),
             });
         } else {
             self.emit(IrInstr::Assign {
@@ -6812,7 +6866,7 @@ impl<'a> Lowerer<'a> {
 
     /// Resolve a class runtime cast target from a type annotation.
     /// Returns None for non-class targets (primitive/union/object/etc).
-    fn resolve_class_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<ClassId> {
+    fn resolve_class_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<NominalTypeId> {
         use crate::parser::ast::types::Type;
 
         match &type_ann.ty {
@@ -6824,7 +6878,7 @@ impl<'a> Lowerer<'a> {
                 if type_name.starts_with("__t_") {
                     None
                 } else {
-                    self.class_id_from_type_name(type_name)
+                    self.nominal_type_id_from_type_name(type_name)
                 }
             }
             _ => None,
@@ -6933,7 +6987,7 @@ impl<'a> Lowerer<'a> {
         Some(CAST_KIND_MASK_FLAG | CAST_ARRAY_ELEM_KIND_FLAG | elem_mask)
     }
 
-    fn resolve_nullable_class_from_union(&self, type_ann: &ast::TypeAnnotation) -> Option<ClassId> {
+    fn resolve_nullable_class_from_union(&self, type_ann: &ast::TypeAnnotation) -> Option<NominalTypeId> {
         use crate::parser::ast::types::{PrimitiveType, Type};
         let Type::Union(union) = &type_ann.ty else {
             return None;
@@ -6956,16 +7010,16 @@ impl<'a> Lowerer<'a> {
 
     /// Find a method in a class or its parent classes.
     /// Returns the function ID if found.
-    fn find_method(&self, class_id: ClassId, method_name: Symbol) -> Option<FunctionId> {
+    fn find_method(&self, nominal_type_id: NominalTypeId, method_name: Symbol) -> Option<FunctionId> {
         // First check this class
-        if let Some(&func_id) = self.method_map.get(&(class_id, method_name)) {
+        if let Some(&func_id) = self.method_map.get(&(nominal_type_id, method_name)) {
             return Some(func_id);
         }
 
         // Check parent class recursively
         if let Some(parent_id) = self
             .class_info_map
-            .get(&class_id)
+            .get(&nominal_type_id)
             .and_then(|info| info.parent_class)
         {
             return self.find_method(parent_id, method_name);
@@ -7063,7 +7117,7 @@ impl<'a> Lowerer<'a> {
     fn propagate_container_return_type(
         &self,
         dest: &mut Register,
-        class_id: ClassId,
+        nominal_type_id: NominalTypeId,
         method_name: &str,
         object_expr: &Expression,
     ) {
@@ -7071,7 +7125,7 @@ impl<'a> Lowerer<'a> {
         let class_name = self
             .class_map
             .iter()
-            .find(|(&_sym, &id)| id == class_id)
+            .find(|(&_sym, &id)| id == nominal_type_id)
             .map(|(&sym, _)| self.interner.resolve(sym).to_string());
         let class_name = match class_name {
             Some(name) if name == TC::MAP_TYPE_NAME || name == TC::SET_TYPE_NAME => name,
@@ -7150,9 +7204,9 @@ impl<'a> Lowerer<'a> {
     /// For `this.adj` where `adj: Map<K, V>`, returns V's TypeId.
     fn get_container_value_type(&self, expr: &Expression) -> Option<TypeId> {
         if let Expression::Member(member) = expr {
-            let obj_class_id = self.infer_class_id(&member.object)?;
+            let obj_nominal_type_id = self.infer_nominal_type_id(&member.object)?;
             let field_name = self.interner.resolve(member.property.name);
-            let all_fields = self.get_all_fields(obj_class_id);
+            let all_fields = self.get_all_fields(obj_nominal_type_id);
             for field in all_fields.into_iter().rev() {
                 if self.interner.resolve(field.name) == field_name {
                     return field.value_type;
@@ -7276,10 +7330,10 @@ impl<'a> Lowerer<'a> {
 
     /// When a child extends a generic parent (e.g., `extends Base<string>`),
     /// parent field types are substituted with concrete type arguments.
-    pub(super) fn get_all_fields(&self, class_id: ClassId) -> Vec<ClassFieldInfo> {
+    pub(super) fn get_all_fields(&self, nominal_type_id: NominalTypeId) -> Vec<ClassFieldInfo> {
         let mut all_fields = Vec::new();
 
-        if let Some(class_info) = self.class_info_map.get(&class_id) {
+        if let Some(class_info) = self.class_info_map.get(&nominal_type_id) {
             if let Some(parent_id) = class_info.parent_class {
                 let mut parent_fields = self.get_all_fields(parent_id);
                 // Apply type substitutions for generic parent classes
@@ -7304,14 +7358,14 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Infer the class ID of an expression (for method call resolution)
-    pub(super) fn infer_class_id(&self, expr: &Expression) -> Option<ClassId> {
+    pub(super) fn infer_nominal_type_id(&self, expr: &Expression) -> Option<NominalTypeId> {
         match expr {
             // 'this' uses current class context
             Expression::This(_) => {
                 let resolved = self.current_class.or_else(|| {
                     self.this_register
                         .as_ref()
-                        .and_then(|reg| self.class_id_from_type_id(reg.ty))
+                        .and_then(|reg| self.nominal_type_id_from_type_id(reg.ty))
                 });
                 if resolved.is_none() && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                     let this_ty = self
@@ -7320,7 +7374,7 @@ impl<'a> Lowerer<'a> {
                         .map(|reg| reg.ty.as_u32())
                         .unwrap_or(u32::MAX);
                     eprintln!(
-                        "[lower] infer_class_id(this)=None current_class={:?} this_ty={}",
+                        "[lower] infer_nominal_type_id(this)=None current_class={:?} this_ty={}",
                         self.current_class.map(|id| id.as_u32()),
                         this_ty
                     );
@@ -7333,7 +7387,7 @@ impl<'a> Lowerer<'a> {
                     return self.current_class.or_else(|| {
                         self.this_register
                             .as_ref()
-                            .and_then(|reg| self.class_id_from_type_id(reg.ty))
+                            .and_then(|reg| self.nominal_type_id_from_type_id(reg.ty))
                     });
                 }
                 if self
@@ -7345,27 +7399,27 @@ impl<'a> Lowerer<'a> {
                 // Prefer explicit variable/class maps, then local register typing.
                 // Local register type is often more precise than checker fallback
                 // (e.g. primitive parameters should not degrade to Object class).
-                if let Some(class_id) = self.variable_class_map.get(&ident.name).copied() {
-                    return Some(class_id);
+                if let Some(nominal_type_id) = self.variable_class_map.get(&ident.name).copied() {
+                    return Some(nominal_type_id);
                 }
-                if let Some(class_id) =
-                    self.class_id_from_type_name(self.interner.resolve(ident.name))
+                if let Some(nominal_type_id) =
+                    self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
                 {
-                    return Some(class_id);
+                    return Some(nominal_type_id);
                 }
-                if let Some(class_id) = self
+                if let Some(nominal_type_id) = self
                     .variable_object_type_aliases
                     .get(&ident.name)
-                    .and_then(|alias| self.class_id_from_type_name(alias))
+                    .and_then(|alias| self.nominal_type_id_from_type_name(alias))
                 {
-                    return Some(class_id);
+                    return Some(nominal_type_id);
                 }
                 if let Some(&local_idx) = self.local_map.get(&ident.name) {
                     if let Some(local_reg) = self.local_registers.get(&local_idx) {
-                        return self.class_id_from_type_id(local_reg.ty);
+                        return self.nominal_type_id_from_type_id(local_reg.ty);
                     }
                 }
-                self.class_id_from_type_id(self.get_expr_type(expr))
+                self.nominal_type_id_from_type_id(self.get_expr_type(expr))
             }
             Expression::TypeCast(cast) => {
                 if self
@@ -7377,66 +7431,66 @@ impl<'a> Lowerer<'a> {
                     None
                 } else {
                     self.try_extract_class_from_type(&cast.target_type)
-                        .or_else(|| self.infer_class_id(&cast.object))
-                        .or_else(|| self.class_id_from_type_id(self.get_expr_type(expr)))
+                        .or_else(|| self.infer_nominal_type_id(&cast.object))
+                        .or_else(|| self.nominal_type_id_from_type_id(self.get_expr_type(expr)))
                 }
             }
             Expression::Conditional(cond) => {
-                let then_class = self.infer_class_id(&cond.consequent);
-                let else_class = self.infer_class_id(&cond.alternate);
+                let then_class = self.infer_nominal_type_id(&cond.consequent);
+                let else_class = self.infer_nominal_type_id(&cond.alternate);
                 match (then_class, else_class) {
                     (Some(a), Some(b)) if a == b => Some(a),
                     (Some(a), None) => Some(a),
                     (None, Some(b)) => Some(b),
-                    _ => self.class_id_from_type_id(self.get_expr_type(expr)),
+                    _ => self.nominal_type_id_from_type_id(self.get_expr_type(expr)),
                 }
             }
-            Expression::Parenthesized(inner) => self.infer_class_id(&inner.expression),
+            Expression::Parenthesized(inner) => self.infer_nominal_type_id(&inner.expression),
             // Field access: look up the field's type in the class definition
             Expression::Member(member) => {
                 // Get the class of the object
-                let obj_class_id = self.infer_class_id(&member.object)?;
+                let obj_nominal_type_id = self.infer_nominal_type_id(&member.object)?;
                 // Look up the field type
                 let field_name = self.interner.resolve(member.property.name);
-                let all_fields = self.get_all_fields(obj_class_id);
+                let all_fields = self.get_all_fields(obj_nominal_type_id);
                 for field in all_fields.into_iter().rev() {
                     let fname = self.interner.resolve(field.name);
                     if fname == field_name {
                         // Check if the field has a known class type
-                        if let Some(field_class_id) = field.class_type {
-                            return Some(field_class_id);
+                        if let Some(field_nominal_type_id) = field.class_type {
+                            return Some(field_nominal_type_id);
                         }
                         // Otherwise, check if we have a type name we can look up
                         if let Some(ref type_name) = field.type_name {
-                            if let Some(cid) = self.class_id_from_type_name(type_name) {
+                            if let Some(cid) = self.nominal_type_id_from_type_name(type_name) {
                                 return Some(cid);
                             }
                         }
                         break;
                     }
                 }
-                self.class_id_from_type_id(self.get_expr_type(expr))
+                self.nominal_type_id_from_type_id(self.get_expr_type(expr))
             }
             // Method/function call: check if the call has a known return class type
             Expression::Call(call) => {
                 if let Expression::Member(member) = &*call.callee {
-                    let obj_class_id = self.infer_class_id(&member.object)?;
+                    let obj_nominal_type_id = self.infer_nominal_type_id(&member.object)?;
                     let method_name = member.property.name;
                     // Only return a class if there's an explicit return class mapping.
                     // Don't assume methods return the same class (e.g., Map.get() returns
                     // the value type, not Map).
-                    if let Some(&ret_class_id) = self
+                    if let Some(&ret_nominal_type_id) = self
                         .method_return_class_map
-                        .get(&(obj_class_id, method_name))
+                        .get(&(obj_nominal_type_id, method_name))
                     {
-                        return Some(ret_class_id);
+                        return Some(ret_nominal_type_id);
                     }
                     if let Some(ret_class_name) = self
                         .method_return_type_alias_map
-                        .get(&(obj_class_id, method_name))
+                        .get(&(obj_nominal_type_id, method_name))
                     {
-                        if let Some(ret_class_id) = self.class_id_from_type_name(ret_class_name) {
-                            return Some(ret_class_id);
+                        if let Some(ret_nominal_type_id) = self.nominal_type_id_from_type_name(ret_class_name) {
+                            return Some(ret_nominal_type_id);
                         }
                     }
                 }
@@ -7452,20 +7506,20 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     // Check if callee is a bound method variable
-                    if let Some(&(class_id, method_name)) = self.bound_method_vars.get(&ident.name)
+                    if let Some(&(nominal_type_id, method_name)) = self.bound_method_vars.get(&ident.name)
                     {
-                        if let Some(&ret_class_id) =
-                            self.method_return_class_map.get(&(class_id, method_name))
+                        if let Some(&ret_nominal_type_id) =
+                            self.method_return_class_map.get(&(nominal_type_id, method_name))
                         {
-                            return Some(ret_class_id);
+                            return Some(ret_nominal_type_id);
                         }
                     }
                     // Check function return class
-                    if let Some(&ret_class_id) = self.function_return_class_map.get(&ident.name) {
-                        return Some(ret_class_id);
+                    if let Some(&ret_nominal_type_id) = self.function_return_class_map.get(&ident.name) {
+                        return Some(ret_nominal_type_id);
                     }
                 }
-                self.class_id_from_type_id(self.get_expr_type(expr))
+                self.nominal_type_id_from_type_id(self.get_expr_type(expr))
             }
             // New expression: return the class being instantiated
             Expression::New(new_expr) => {
@@ -7476,10 +7530,10 @@ impl<'a> Lowerer<'a> {
                         .copied()
                         .or_else(|| self.variable_class_map.get(&ident.name).copied())
                         .or_else(|| {
-                            self.class_id_from_type_name(self.interner.resolve(ident.name))
+                            self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
                         });
                 }
-                self.class_id_from_type_id(self.get_expr_type(expr))
+                self.nominal_type_id_from_type_id(self.get_expr_type(expr))
             }
             // Index access over array/tuple containers can preserve the element class.
             // Important: do NOT return container class ID directly (e.g. Array), because
@@ -7489,14 +7543,14 @@ impl<'a> Lowerer<'a> {
                 if let Some(ty) = self.type_ctx.get(object_ty) {
                     match ty {
                         crate::parser::types::ty::Type::Array(arr) => {
-                            return self.class_id_from_type_id(arr.element);
+                            return self.nominal_type_id_from_type_id(arr.element);
                         }
                         crate::parser::types::ty::Type::Tuple(tuple) => {
                             // Conservative: if all tuple members that are class-typed agree
                             // on one class, use it; otherwise keep unresolved.
-                            let mut found: Option<ClassId> = None;
+                            let mut found: Option<NominalTypeId> = None;
                             for member_ty in &tuple.elements {
-                                if let Some(cid) = self.class_id_from_type_id(*member_ty) {
+                                if let Some(cid) = self.nominal_type_id_from_type_id(*member_ty) {
                                     match found {
                                         None => found = Some(cid),
                                         Some(existing) if existing == cid => {}
@@ -7515,13 +7569,13 @@ impl<'a> Lowerer<'a> {
                         _ => {
                             // Non-array indexed containers (or custom indexable classes):
                             // fall back to the container class inference behavior.
-                            return self.infer_class_id(&index.object);
+                            return self.infer_nominal_type_id(&index.object);
                         }
                     }
                 }
-                self.infer_class_id(&index.object)
+                self.infer_nominal_type_id(&index.object)
             }
-            _ => self.class_id_from_type_id(self.get_expr_type(expr)),
+            _ => self.nominal_type_id_from_type_id(self.get_expr_type(expr)),
         }
     }
 
@@ -7681,7 +7735,7 @@ impl<'a> Lowerer<'a> {
         false
     }
 
-    pub(super) fn class_id_from_type_id(&self, ty_id: TypeId) -> Option<ClassId> {
+    pub(super) fn nominal_type_id_from_type_id(&self, ty_id: TypeId) -> Option<NominalTypeId> {
         use crate::parser::types::ty::Type;
 
         if let Some(&cid) = self.type_alias_object_class_map.get(&ty_id) {
@@ -7713,24 +7767,24 @@ impl<'a> Lowerer<'a> {
 
         let ty = self.type_ctx.get(ty_id)?;
         match ty {
-            Type::Class(class_ty) => self.class_id_from_type_name(&class_ty.name),
-            Type::Reference(type_ref) => self.class_id_from_type_name(&type_ref.name),
+            Type::Class(class_ty) => self.nominal_type_id_from_type_name(&class_ty.name),
+            Type::Reference(type_ref) => self.nominal_type_id_from_type_name(&type_ref.name),
             Type::Generic(generic) => {
                 if let Some(Type::JSObject) = self.type_ctx.get(generic.base) {
                     if let Some(&inner) = generic.type_args.first() {
-                        return self.class_id_from_type_id(inner);
+                        return self.nominal_type_id_from_type_id(inner);
                     }
                 }
-                self.class_id_from_type_id(generic.base)
+                self.nominal_type_id_from_type_id(generic.base)
             }
             Type::TypeVar(tv) => tv
                 .constraint
-                .and_then(|constraint| self.class_id_from_type_id(constraint)),
+                .and_then(|constraint| self.nominal_type_id_from_type_id(constraint)),
             Type::Union(union) => {
                 // Prefer the single concrete class member if present.
-                let mut found: Option<ClassId> = None;
+                let mut found: Option<NominalTypeId> = None;
                 for member in &union.members {
-                    if let Some(cid) = self.class_id_from_type_id(*member) {
+                    if let Some(cid) = self.nominal_type_id_from_type_id(*member) {
                         match found {
                             None => found = Some(cid),
                             Some(existing) if existing == cid => {}

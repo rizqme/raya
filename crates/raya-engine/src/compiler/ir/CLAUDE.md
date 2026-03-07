@@ -84,7 +84,7 @@ pub enum IrInstr {
     NativeCall { dest: Option<Register>, native_id: u16, args: Vec<Register> },
 
     // Objects
-    NewObject { dest: Register, class_id: ClassId },
+    NewType { dest: Register, nominal_type_id: NominalTypeId },
     NewArray { dest: Register, size: Register },
     ArrayLen { dest: Register, array: Register },
 

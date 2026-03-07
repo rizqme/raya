@@ -1341,7 +1341,7 @@ impl Runtime {
                     .map(|class_def| class_def.name.clone())
                     .unwrap_or_else(|| export.name.clone());
 
-                let class_id = {
+                let nominal_type_id = {
                     let rebased = vm
                         .shared_state()
                         .resolve_nominal_type_id(module, export.index)
@@ -1379,28 +1379,22 @@ impl Runtime {
                     }
                 };
 
-                if class_id > u32::MAX as usize {
+                if nominal_type_id > u32::MAX as usize {
                     return Err(RuntimeError::Dependency(format!(
                         "Imported class symbol '{}' from '{}' has class ID {} outside u32 range",
-                        export.name, module.metadata.name, class_id
+                        export.name, module.metadata.name, nominal_type_id
                     )));
                 }
                 let shape_id = export.type_signature.as_deref().map(signature_hash);
-                let layout_id = {
-                    let classes = vm.shared_state().classes.read();
-                    classes
-                        .get_class(class_id)
-                        .map(|class| class.layout_id)
-                        .ok_or_else(|| {
-                            RuntimeError::Dependency(format!(
-                                "class '{}' missing runtime layout id",
-                                class_name
-                            ))
-                        })?
-                };
+                let layout_id = vm.shared_state().nominal_layout_id(nominal_type_id).ok_or_else(|| {
+                    RuntimeError::Dependency(format!(
+                        "class '{}' missing runtime layout id",
+                        class_name
+                    ))
+                })?;
                 let handle_id =
                     vm.shared_state()
-                        .register_type_handle(class_id as u32, layout_id, shape_id);
+                        .register_type_handle(nominal_type_id as u32, layout_id, shape_id);
                 let handle = TypeHandle {
                     handle_id,
                     shape_id,
@@ -1592,9 +1586,9 @@ impl Runtime {
             vm.shared_state()
                 .register_structural_layout_shape(provider_layout, &actual_layout);
         }
-        let slot_map = if let Some(class_id) = nominal_type_id {
+        let slot_map = if let Some(nominal_type_id) = nominal_type_id {
             let class_metadata = vm.shared_state().class_metadata.read();
-            if let Some(meta) = class_metadata.get(class_id as usize) {
+            if let Some(meta) = class_metadata.get(nominal_type_id as usize) {
                 expected_layout
                     .iter()
                     .map(|name| {

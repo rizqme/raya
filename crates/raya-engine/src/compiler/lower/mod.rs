@@ -8,7 +8,7 @@ mod expr;
 mod stmt;
 
 use crate::compiler::ir::{
-    BasicBlock, BasicBlockId, BinaryOp, ClassId, FunctionId, IrClass, IrConstant, IrField,
+    BasicBlock, BasicBlockId, BinaryOp, NominalTypeId, FunctionId, IrClass, IrConstant, IrField,
     IrFunction, IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, Register, RegisterId,
     Terminator, TypeAliasId,
 };
@@ -151,7 +151,7 @@ struct ClassFieldInfo {
     /// Default initializer expression (if any)
     initializer: Option<Expression>,
     /// Class type if the field is a class instance (for method resolution)
-    class_type: Option<ClassId>,
+    class_type: Option<NominalTypeId>,
     /// Type name string (for looking up class by name)
     type_name: Option<String>,
     /// For generic container fields (Map<K,V>, Set<T>): the value type's TypeId.
@@ -218,22 +218,22 @@ struct DecoratorInfo {
 /// Target of a decorator (used during code generation)
 enum DecoratorTarget {
     /// Class decorator - applied to the class itself
-    Class { class_id: u32, class_name: String },
+    Class { nominal_type_id: u32, class_name: String },
     /// Method decorator - applied to a specific method
     Method {
-        class_id: u32,
+        nominal_type_id: u32,
         class_name: String,
         method_name: String,
     },
     /// Field decorator - applied to a specific field
     Field {
-        class_id: u32,
+        nominal_type_id: u32,
         class_name: String,
         field_name: String,
     },
     /// Parameter decorator - applied to a specific parameter
     Parameter {
-        class_id: u32,
+        nominal_type_id: u32,
         class_name: String,
         method_name: String,
         param_index: u32,
@@ -287,7 +287,7 @@ struct ClassInfo {
     /// Static methods
     static_methods: Vec<StaticMethodInfo>,
     /// Parent class (for inheritance)
-    parent_class: Option<ClassId>,
+    parent_class: Option<NominalTypeId>,
     /// Type arg substitutions for generic parent (param_name → concrete TypeId)
     extends_type_subs: Option<std::collections::HashMap<String, TypeId>>,
     /// Number of vtable method slots (including inherited)
@@ -397,29 +397,29 @@ pub struct Lowerer<'a> {
     /// Set of async function IDs (functions that should be spawned as Tasks)
     async_functions: FxHashSet<FunctionId>,
     /// Class name to ID mapping (last class registered with a given name wins)
-    class_map: FxHashMap<Symbol, ClassId>,
-    /// Class declarations by symbol in source order: (span_start, class_id).
+    class_map: FxHashMap<Symbol, NominalTypeId>,
+    /// Class declarations by symbol in source order: (span_start, nominal_type_id).
     /// Used for position-aware class resolution so later declarations do not
     /// retroactively rewrite earlier code's type bindings.
-    class_decl_history: FxHashMap<Symbol, Vec<(usize, ClassId)>>,
+    class_decl_history: FxHashMap<Symbol, Vec<(usize, NominalTypeId)>>,
     /// Exact synthesized type alias (`__t_*`) to class ID mapping
-    type_alias_class_map: FxHashMap<String, ClassId>,
+    type_alias_class_map: FxHashMap<String, NominalTypeId>,
     /// Expanded object TypeId for synthesized `__t_*` aliases -> class ID.
     /// This lets lowered dispatch recover nominal class semantics even when
     /// checker-expanded aliases lose their reference wrapper.
-    type_alias_object_class_map: FxHashMap<TypeId, ClassId>,
+    type_alias_object_class_map: FxHashMap<TypeId, NominalTypeId>,
     /// Class info (fields, initializers) for lowering `new` expressions
-    class_info_map: FxHashMap<ClassId, ClassInfo>,
+    class_info_map: FxHashMap<NominalTypeId, ClassInfo>,
     /// Per-declaration class ID (keyed by span start position, survives name collisions)
-    class_decl_ids: FxHashMap<usize, ClassId>,
-    /// Class declarations already lowered (keyed by ClassId)
-    lowered_class_ids: FxHashSet<ClassId>,
-    /// Lowered class IR keyed by pre-assigned ClassId
-    lowered_classes: FxHashMap<ClassId, IrClass>,
+    class_decl_ids: FxHashMap<usize, NominalTypeId>,
+    /// Class declarations already lowered (keyed by NominalTypeId)
+    lowered_nominal_type_ids: FxHashSet<NominalTypeId>,
+    /// Lowered class IR keyed by pre-assigned NominalTypeId
+    lowered_classes: FxHashMap<NominalTypeId, IrClass>,
     /// Next function ID
     next_function_id: u32,
     /// Next class ID
-    next_class_id: u32,
+    next_nominal_type_id: u32,
     /// Type alias name to ID mapping
     type_alias_map: FxHashMap<Symbol, TypeAliasId>,
     /// Resolved checker TypeId for object-capable type aliases (alias name -> TypeId)
@@ -459,11 +459,11 @@ pub struct Lowerer<'a> {
     /// Variables that are captured by any closure (read or write) - used for per-iteration bindings in loops
     loop_captured_vars: FxHashSet<Symbol>,
     /// Map from variable name to its class type (for field access resolution)
-    variable_class_map: FxHashMap<Symbol, ClassId>,
+    variable_class_map: FxHashMap<Symbol, NominalTypeId>,
     /// Map from array variable name to its element's class type (for for-of loop type inference)
-    array_element_class_map: FxHashMap<Symbol, ClassId>,
+    array_element_class_map: FxHashMap<Symbol, NominalTypeId>,
     /// Current class being processed (for method lowering)
-    current_class: Option<ClassId>,
+    current_class: Option<NominalTypeId>,
     /// Register holding `this` in current method
     this_register: Option<Register>,
     /// Info about `this` from ancestor scope (for arrow functions inside methods)
@@ -471,26 +471,26 @@ pub struct Lowerer<'a> {
     /// Capture index of `this` if it was captured (for LoadCaptured)
     this_captured_idx: Option<u16>,
     /// Method name to function ID mapping (for method calls)
-    method_map: FxHashMap<(ClassId, Symbol), FunctionId>,
+    method_map: FxHashMap<(NominalTypeId, Symbol), FunctionId>,
     /// Method name to vtable slot index (for virtual dispatch)
-    method_slot_map: FxHashMap<(ClassId, Symbol), u16>,
+    method_slot_map: FxHashMap<(NominalTypeId, Symbol), u16>,
     /// Static method name to function ID mapping
-    static_method_map: FxHashMap<(ClassId, Symbol), FunctionId>,
+    static_method_map: FxHashMap<(NominalTypeId, Symbol), FunctionId>,
     /// Method return type class mapping (for chained method call resolution)
-    method_return_class_map: FxHashMap<(ClassId, Symbol), ClassId>,
+    method_return_class_map: FxHashMap<(NominalTypeId, Symbol), NominalTypeId>,
     /// Function return type class mapping (for method dispatch on objects returned from standalone function calls)
-    function_return_class_map: FxHashMap<Symbol, ClassId>,
+    function_return_class_map: FxHashMap<Symbol, NominalTypeId>,
     /// Function return type alias mapping (for stable object field layout on alias-typed returns)
     function_return_type_alias_map: FxHashMap<Symbol, String>,
     /// Method return TypeId mapping (for ALL return types, not just class types)
     /// Populated during class registration. Used for bound method return type propagation.
-    method_return_type_map: FxHashMap<(ClassId, Symbol), TypeId>,
+    method_return_type_map: FxHashMap<(NominalTypeId, Symbol), TypeId>,
     /// Method return class-name fallback for forward references
     /// (e.g., `accept(): TcpStream | null` declared before `class TcpStream`).
-    method_return_type_alias_map: FxHashMap<(ClassId, Symbol), String>,
-    /// Tracks variables holding bound methods: var_name → (class_id, method_name)
+    method_return_type_alias_map: FxHashMap<(NominalTypeId, Symbol), String>,
+    /// Tracks variables holding bound methods: var_name → (nominal_type_id, method_name)
     /// Used to propagate return types when calling bound method variables.
-    bound_method_vars: FxHashMap<Symbol, (ClassId, Symbol)>,
+    bound_method_vars: FxHashMap<Symbol, (NominalTypeId, Symbol)>,
     /// Next global variable index (for static fields and module-level variables)
     next_global_index: u16,
     /// Module-level variable name to global index mapping.
@@ -585,8 +585,8 @@ pub struct Lowerer<'a> {
     native_function_map: FxHashMap<String, u16>,
     /// JSX compilation options (None = JSX not enabled)
     jsx_options: Option<JsxOptions>,
-    /// Type parameter names for generic classes (ClassId → ["T", "E", ...])
-    class_type_params: FxHashMap<ClassId, Vec<String>>,
+    /// Type parameter names for generic classes (NominalTypeId → ["T", "E", ...])
+    class_type_params: FxHashMap<NominalTypeId, Vec<String>>,
     /// Whether to track source spans in IR for source map generation
     emit_sourcemap: bool,
     /// Current source span (set at statement/expression boundaries, used by emit/set_terminator)
@@ -972,8 +972,8 @@ impl<'a> Lowerer<'a> {
                 self.function_return_type_alias_map
                     .insert(fn_name, ret_name);
             }
-            if let Some(class_id) = self.try_extract_class_from_type(ret_type) {
-                self.function_return_class_map.insert(fn_name, class_id);
+            if let Some(nominal_type_id) = self.try_extract_class_from_type(ret_type) {
+                self.function_return_class_map.insert(fn_name, nominal_type_id);
             }
         }
     }
@@ -1036,10 +1036,10 @@ impl<'a> Lowerer<'a> {
             type_alias_object_class_map: FxHashMap::default(),
             class_info_map: FxHashMap::default(),
             class_decl_ids: FxHashMap::default(),
-            lowered_class_ids: FxHashSet::default(),
+            lowered_nominal_type_ids: FxHashSet::default(),
             lowered_classes: FxHashMap::default(),
             next_function_id: 0,
-            next_class_id: 0,
+            next_nominal_type_id: 0,
             type_alias_map: FxHashMap::default(),
             type_alias_resolved_type_map: FxHashMap::default(),
             type_alias_object_fields: FxHashMap::default(),
@@ -1547,8 +1547,8 @@ impl<'a> Lowerer<'a> {
                         let alias_ty = self.resolve_type_annotation(&type_alias.type_annotation);
                         self.type_alias_resolved_type_map
                             .insert(alias_name.clone(), alias_ty);
-                        if let Some(&class_id) = self.type_alias_class_map.get(&alias_name) {
-                            self.populate_alias_object_class_map(&alias_name, class_id);
+                        if let Some(&nominal_type_id) = self.type_alias_class_map.get(&alias_name) {
+                            self.populate_alias_object_class_map(&alias_name, nominal_type_id);
                         }
                         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                             if let Some(stored) = self.type_alias_object_fields.get(&alias_name) {
@@ -1591,14 +1591,14 @@ impl<'a> Lowerer<'a> {
         // Reconcile synthesized wrapper aliases after first-pass registration.
         // Type aliases can appear before the wrapper function/class declaration in
         // linked sources, so populate alias->class type bridges once both sides exist.
-        let alias_class_pairs: Vec<(String, ClassId)> = self
+        let alias_class_pairs: Vec<(String, NominalTypeId)> = self
             .type_alias_class_map
             .iter()
             .map(|(alias, &cid)| (alias.clone(), cid))
             .collect();
-        for (alias_name, class_id) in alias_class_pairs {
+        for (alias_name, nominal_type_id) in alias_class_pairs {
             if self.type_alias_object_fields.contains_key(&alias_name) {
-                self.populate_alias_object_class_map(&alias_name, class_id);
+                self.populate_alias_object_class_map(&alias_name, nominal_type_id);
             }
         }
 
@@ -1614,8 +1614,8 @@ impl<'a> Lowerer<'a> {
                     let name = ident.name;
                     // Track class type from explicit type annotation
                     if let Some(type_ann) = &decl.type_annotation {
-                        if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
-                            self.variable_class_map.insert(name, class_id);
+                        if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
+                            self.variable_class_map.insert(name, nominal_type_id);
                             self.clear_late_bound_object_binding(name);
                         }
                     }
@@ -1624,34 +1624,34 @@ impl<'a> Lowerer<'a> {
                     if !self.variable_class_map.contains_key(&name) {
                         if let Some(init) = &decl.initializer {
                             if let ast::Expression::New(new_expr) = init {
-                                if let ast::Expression::Identifier(class_ident) = &*new_expr.callee
+                                if let ast::Expression::Identifier(nominal_type_ident) = &*new_expr.callee
                                 {
-                                    let class_id = self
+                                    let nominal_type_id = self
                                         .class_map
-                                        .get(&class_ident.name)
+                                        .get(&nominal_type_ident.name)
                                         .copied()
                                         .or_else(|| {
-                                            self.variable_class_map.get(&class_ident.name).copied()
+                                            self.variable_class_map.get(&nominal_type_ident.name).copied()
                                         })
                                         .or_else(|| {
-                                            self.class_id_from_type_name(
-                                                self.interner.resolve(class_ident.name),
+                                            self.nominal_type_id_from_type_name(
+                                                self.interner.resolve(nominal_type_ident.name),
                                             )
                                         });
-                                    if let Some(class_id) = class_id {
-                                        self.variable_class_map.insert(name, class_id);
+                                    if let Some(nominal_type_id) = nominal_type_id {
+                                        self.variable_class_map.insert(name, nominal_type_id);
                                         self.clear_late_bound_object_binding(name);
                                         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                             eprintln!(
-                                                "[lower] variable_class_map: '{}' = class_id({}) (from new {}())",
+                                                "[lower] variable_class_map: '{}' = nominal_type_id({}) (from new {}())",
                                                 self.interner.resolve(name),
-                                                class_id.as_u32(),
-                                                self.interner.resolve(class_ident.name)
+                                                nominal_type_id.as_u32(),
+                                                self.interner.resolve(nominal_type_ident.name)
                                             );
                                         }
-                                    } else if self.import_bindings.contains(&class_ident.name)
+                                    } else if self.import_bindings.contains(&nominal_type_ident.name)
                                         || self.ambient_builtin_globals
-                                            .contains(self.interner.resolve(class_ident.name))
+                                            .contains(self.interner.resolve(nominal_type_ident.name))
                                     {
                                         let ctor_ty = self
                                             .get_expr_type(&new_expr.callee)
@@ -1660,42 +1660,42 @@ impl<'a> Lowerer<'a> {
                                             .then(|| self.get_expr_type(&new_expr.callee))
                                             .or_else(|| {
                                                 self.type_ctx.lookup_named_type(
-                                                    self.interner.resolve(class_ident.name),
+                                                    self.interner.resolve(nominal_type_ident.name),
                                                 )
                                             });
                                         self.mark_late_bound_object_binding(
                                             name,
-                                            class_ident.name,
+                                            nominal_type_ident.name,
                                             ctor_ty,
                                         );
                                         if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                             eprintln!(
                                                 "[lower] late_bound_object_vars: '{}' marked (from runtime-bound new {}())",
                                                 self.interner.resolve(name),
-                                                self.interner.resolve(class_ident.name)
+                                                self.interner.resolve(nominal_type_ident.name)
                                             );
                                         }
                                     } else if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                         eprintln!(
                                             "[lower] variable_class_map: '{}' NOT added — class '{}' not in class_map",
                                             self.interner.resolve(name),
-                                            self.interner.resolve(class_ident.name)
+                                            self.interner.resolve(nominal_type_ident.name)
                                         );
                                     }
                                 }
                             } else if let ast::Expression::TypeCast(cast) = init {
                                 // Preserve class dispatch for import bindings such as:
                                 //   const path = (__std_exports___node_path.default as __t___node_path_NodePath);
-                                if let Some(class_id) =
+                                if let Some(nominal_type_id) =
                                     self.try_extract_class_from_type(&cast.target_type)
                                 {
-                                    self.variable_class_map.insert(name, class_id);
+                                    self.variable_class_map.insert(name, nominal_type_id);
                                     self.clear_late_bound_object_binding(name);
                                     if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                                         eprintln!(
-                                            "[lower] variable_class_map: '{}' = class_id({}) (from cast)",
+                                            "[lower] variable_class_map: '{}' = nominal_type_id({}) (from cast)",
                                             self.interner.resolve(name),
-                                            class_id.as_u32(),
+                                            nominal_type_id.as_u32(),
                                         );
                                     }
                                 }
@@ -1721,7 +1721,7 @@ impl<'a> Lowerer<'a> {
                     // When the initializer is `__std_module_<tag>()`, the return type is
                     // `__std_exports_type_<tag>` whose field layout is already known.
                     // Populating variable_object_fields here makes has_concrete_layout=true
-                    // in lower_member, so LoadField (static index) is emitted instead of
+                    // in lower_member, so LoadFieldExact (static index) is emitted instead of
                     // LateBoundMember (name-based lookup that returns null at runtime).
                     if let Some(init) = &decl.initializer {
                         let (call_expr, cast_alias_name) = match init {
@@ -1859,16 +1859,16 @@ impl<'a> Lowerer<'a> {
             self.pending_arrow_functions.push((main_id, main_func));
         }
 
-        // Emit classes in strict ClassId order so class_id == module.classes index.
-        for raw_id in 0..self.next_class_id {
-            let class_id = ClassId::new(raw_id);
-            if let Some(ir_class) = self.lowered_classes.remove(&class_id) {
+        // Emit classes in strict NominalTypeId order so nominal_type_id == module.classes index.
+        for raw_id in 0..self.next_nominal_type_id {
+            let nominal_type_id = NominalTypeId::new(raw_id);
+            if let Some(ir_class) = self.lowered_classes.remove(&nominal_type_id) {
                 ir_module.add_class(ir_class);
             } else {
                 self.errors.push(super::error::CompileError::InternalError {
                     message: format!(
                         "registered class id {} was never lowered",
-                        class_id.as_u32()
+                        nominal_type_id.as_u32()
                     ),
                 });
             }
@@ -1909,19 +1909,19 @@ impl<'a> Lowerer<'a> {
                             labels.push(format!("function_decl_ids@{}", span_start));
                         }
                     }
-                    for (&(class_id, method_sym), &fid) in &self.method_map {
+                    for (&(nominal_type_id, method_sym), &fid) in &self.method_map {
                         if fid.as_u32() == *miss {
                             let class_name = self
                                 .class_map
                                 .iter()
                                 .find_map(|(&sym, &id)| {
-                                    if id == class_id {
+                                    if id == nominal_type_id {
                                         Some(self.interner.resolve(sym).to_string())
                                     } else {
                                         None
                                     }
                                 })
-                                .unwrap_or_else(|| format!("class{}", class_id.as_u32()));
+                                .unwrap_or_else(|| format!("class{}", nominal_type_id.as_u32()));
                             labels.push(format!(
                                 "method_map:{}::{}",
                                 class_name,
@@ -1929,19 +1929,19 @@ impl<'a> Lowerer<'a> {
                             ));
                         }
                     }
-                    for (&(class_id, method_sym), &fid) in &self.static_method_map {
+                    for (&(nominal_type_id, method_sym), &fid) in &self.static_method_map {
                         if fid.as_u32() == *miss {
                             let class_name = self
                                 .class_map
                                 .iter()
                                 .find_map(|(&sym, &id)| {
-                                    if id == class_id {
+                                    if id == nominal_type_id {
                                         Some(self.interner.resolve(sym).to_string())
                                     } else {
                                         None
                                     }
                                 })
-                                .unwrap_or_else(|| format!("class{}", class_id.as_u32()));
+                                .unwrap_or_else(|| format!("class{}", nominal_type_id.as_u32()));
                             labels.push(format!(
                                 "static_method_map:{}::{}",
                                 class_name,
@@ -1949,19 +1949,19 @@ impl<'a> Lowerer<'a> {
                             ));
                         }
                     }
-                    for (&class_id, info) in &self.class_info_map {
+                    for (&nominal_type_id, info) in &self.class_info_map {
                         if info.constructor.is_some_and(|fid| fid.as_u32() == *miss) {
                             let class_name = self
                                 .class_map
                                 .iter()
                                 .find_map(|(&sym, &id)| {
-                                    if id == class_id {
+                                    if id == nominal_type_id {
                                         Some(self.interner.resolve(sym).to_string())
                                     } else {
                                         None
                                     }
                                 })
-                                .unwrap_or_else(|| format!("class{}", class_id.as_u32()));
+                                .unwrap_or_else(|| format!("class{}", nominal_type_id.as_u32()));
                             labels.push(format!("constructor:{}", class_name));
                         }
                     }
@@ -2057,7 +2057,7 @@ impl<'a> Lowerer<'a> {
         locals
     }
 
-    fn class_id_for_decl(&self, class: &ast::ClassDecl) -> Option<ClassId> {
+    fn nominal_type_id_for_decl(&self, class: &ast::ClassDecl) -> Option<NominalTypeId> {
         self.class_decl_ids.get(&class.span.start).copied()
     }
 
@@ -2066,7 +2066,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_class_declaration(&mut self, class: &ast::ClassDecl) {
-        let Some(class_id) = self.class_id_for_decl(class) else {
+        let Some(nominal_type_id) = self.nominal_type_id_for_decl(class) else {
             self.errors.push(super::error::CompileError::InternalError {
                 message: format!(
                     "class declaration '{}' at span {} was not pre-registered",
@@ -2077,13 +2077,13 @@ impl<'a> Lowerer<'a> {
             return;
         };
 
-        if self.lowered_class_ids.contains(&class_id) {
+        if self.lowered_nominal_type_ids.contains(&nominal_type_id) {
             return;
         }
 
         let ir_class = self.lower_class(class);
-        self.lowered_class_ids.insert(class_id);
-        self.lowered_classes.insert(class_id, ir_class);
+        self.lowered_nominal_type_ids.insert(nominal_type_id);
+        self.lowered_classes.insert(nominal_type_id, ir_class);
     }
 
     /// Register a class declaration (first-pass registration).
@@ -2103,30 +2103,30 @@ impl<'a> Lowerer<'a> {
         let saved_span = self.current_span;
         self.current_span = class.span;
 
-        let class_id = ClassId::new(self.next_class_id);
-        self.next_class_id += 1;
+        let nominal_type_id = NominalTypeId::new(self.next_nominal_type_id);
+        self.next_nominal_type_id += 1;
 
         // Track per-declaration class ID (survives name collisions)
-        self.class_decl_ids.insert(class.span.start, class_id);
+        self.class_decl_ids.insert(class.span.start, nominal_type_id);
         self.class_decl_history
             .entry(class.name.name)
             .or_default()
-            .push((class.span.start, class_id));
+            .push((class.span.start, nominal_type_id));
 
         // Insert into class_map (last class with a given name wins for name-based lookups)
-        self.class_map.insert(class.name.name, class_id);
+        self.class_map.insert(class.name.name, nominal_type_id);
 
         if let Some(tag) = wrapper_tag {
             let class_name = self.interner.resolve(class.name.name);
             let alias = format!("__t_{}_{}", tag, class_name);
-            if let Some(prev) = self.type_alias_class_map.insert(alias.clone(), class_id) {
-                if prev != class_id {
+            if let Some(prev) = self.type_alias_class_map.insert(alias.clone(), nominal_type_id) {
+                if prev != nominal_type_id {
                     self.errors.push(super::error::CompileError::InternalError {
                         message: format!(
                             "conflicting wrapper alias mapping for '{}': {} vs {}",
                             alias,
                             prev.as_u32(),
-                            class_id.as_u32()
+                            nominal_type_id.as_u32()
                         ),
                     });
                 }
@@ -2140,7 +2140,7 @@ impl<'a> Lowerer<'a> {
                     .iter()
                     .map(|tp| self.interner.resolve(tp.name.name).to_string())
                     .collect();
-                self.class_type_params.insert(class_id, param_names);
+                self.class_type_params.insert(nominal_type_id, param_names);
             }
         }
 
@@ -2351,30 +2351,30 @@ impl<'a> Lowerer<'a> {
                             func_id,
                         });
                         self.static_method_map
-                            .insert((class_id, method.name.name), func_id);
+                            .insert((nominal_type_id, method.name.name), func_id);
                     } else {
                         methods.push(ClassMethodInfo {
                             name: method.name.name,
                             func_id,
                         });
                         self.method_map
-                            .insert((class_id, method.name.name), func_id);
+                            .insert((nominal_type_id, method.name.name), func_id);
                     }
 
                     if let Some(ret_type) = &method.return_type {
-                        if let Some(ret_class_id) = self.try_extract_class_from_type(ret_type) {
+                        if let Some(ret_nominal_type_id) = self.try_extract_class_from_type(ret_type) {
                             self.method_return_class_map
-                                .insert((class_id, method.name.name), ret_class_id);
+                                .insert((nominal_type_id, method.name.name), ret_nominal_type_id);
                         } else if let Some(ret_class_name) =
                             self.try_extract_class_name_from_type(ret_type)
                         {
                             self.method_return_type_alias_map
-                                .insert((class_id, method.name.name), ret_class_name);
+                                .insert((nominal_type_id, method.name.name), ret_class_name);
                         }
                         // Store full return TypeId for all return types (bound method propagation)
                         let type_id = self.resolve_type_annotation(ret_type);
                         self.method_return_type_map
-                            .insert((class_id, method.name.name), type_id);
+                            .insert((nominal_type_id, method.name.name), type_id);
                     }
                 }
             }
@@ -2399,7 +2399,7 @@ impl<'a> Lowerer<'a> {
                             next_slot += 1;
                             s
                         });
-                    self.method_slot_map.insert((class_id, method_name), slot);
+                    self.method_slot_map.insert((nominal_type_id, method_name), slot);
                 }
             }
         }
@@ -2413,14 +2413,14 @@ impl<'a> Lowerer<'a> {
                     s
                 });
             self.method_slot_map
-                .insert((class_id, method_info.name), slot);
+                .insert((nominal_type_id, method_info.name), slot);
             // Symbol.iterator keyed protocol bridge:
             // until parser-level computed members land, map `iterator` method
             // to the `Symbol.iterator` key internally.
             if self.interner.resolve(method_info.name) == "iterator" {
                 if let Some(symbol_iterator) = self.interner.lookup("Symbol.iterator") {
                     self.method_slot_map
-                        .insert((class_id, symbol_iterator), slot);
+                        .insert((nominal_type_id, symbol_iterator), slot);
                 }
             }
         }
@@ -2554,9 +2554,9 @@ impl<'a> Lowerer<'a> {
             let ctor_dbg = constructor.map(|id| id.as_u32());
             let first_method_dbg = methods.first().map(|m| m.func_id.as_u32());
             eprintln!(
-                "[lower] register_class name={} class_id={} ctor={:?} first_method={:?} methods={}",
+                "[lower] register_class name={} nominal_type_id={} ctor={:?} first_method={:?} methods={}",
                 class_name,
-                class_id.as_u32(),
+                nominal_type_id.as_u32(),
                 ctor_dbg,
                 first_method_dbg,
                 methods.len()
@@ -2564,7 +2564,7 @@ impl<'a> Lowerer<'a> {
         }
 
         self.class_info_map.insert(
-            class_id,
+            nominal_type_id,
             ClassInfo {
                 fields,
                 methods,
@@ -2713,12 +2713,12 @@ impl<'a> Lowerer<'a> {
                             .insert(ident.name, layout);
                         self.variable_class_map.remove(&ident.name);
                     }
-                    if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
+                    if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
                         if !self
                             .variable_structural_projection_fields
                             .contains_key(&ident.name)
                         {
-                            self.variable_class_map.insert(ident.name, class_id);
+                            self.variable_class_map.insert(ident.name, nominal_type_id);
                         }
                     }
                     self.register_variable_type_hints_from_annotation(ident.name, type_ann);
@@ -2885,13 +2885,13 @@ impl<'a> Lowerer<'a> {
         let mut ir_class = IrClass::new(name);
 
         // Get class ID from per-declaration map (safe even when names collide)
-        let class_id = self.class_id_for_decl(class).unwrap_or_else(|| {
+        let nominal_type_id = self.nominal_type_id_for_decl(class).unwrap_or_else(|| {
             panic!(
                 "ICE: class '{}' at span {} was not pre-registered",
                 name, class.span.start
             )
         });
-        let class_info = self.class_info_map.get(&class_id).cloned();
+        let class_info = self.class_info_map.get(&nominal_type_id).cloned();
 
         // Set parent class if this class extends another
         if let Some(ref info) = class_info {
@@ -2905,7 +2905,7 @@ impl<'a> Lowerer<'a> {
                 fn add_parent_fields(
                     lowerer: &Lowerer<'_>,
                     ir_class: &mut IrClass,
-                    parent_id: ClassId,
+                    parent_id: NominalTypeId,
                 ) {
                     if let Some(parent_info) = lowerer.class_info_map.get(&parent_id) {
                         // First add grandparent fields
@@ -3055,12 +3055,12 @@ impl<'a> Lowerer<'a> {
                             .type_ctx
                             .lookup_named_type(name)
                             .unwrap_or(TypeId::new(0));
-                        self.current_class = Some(class_id);
+                        self.current_class = Some(nominal_type_id);
                         let this_reg = self.alloc_register(this_ty);
                         params.push(this_reg.clone());
                         self.this_register = Some(this_reg);
                         if let Some(this_sym) = self.interner.lookup("this") {
-                            self.variable_class_map.insert(this_sym, class_id);
+                            self.variable_class_map.insert(this_sym, nominal_type_id);
                         }
                         // Check if there are destructuring parameters
                         let has_destructuring = method.params.iter().any(|p| {
@@ -3133,14 +3133,14 @@ impl<'a> Lowerer<'a> {
                                         .insert(ident.name, layout);
                                     self.variable_class_map.remove(&ident.name);
                                 }
-                                if let Some(param_class_id) =
+                                if let Some(param_nominal_type_id) =
                                     self.try_extract_class_from_type(type_ann)
                                 {
                                     if !self
                                         .variable_structural_projection_fields
                                         .contains_key(&ident.name)
                                     {
-                                        self.variable_class_map.insert(ident.name, param_class_id);
+                                        self.variable_class_map.insert(ident.name, param_nominal_type_id);
                                     }
                                 }
                                 self.register_variable_type_hints_from_annotation(
@@ -3270,21 +3270,21 @@ impl<'a> Lowerer<'a> {
                     // Get the function ID and add to pending methods
                     let method_name_str = self.interner.resolve(method.name.name);
                     let func_id = if method.is_static {
-                        *self.static_method_map.get(&(class_id, method.name.name))
+                        *self.static_method_map.get(&(nominal_type_id, method.name.name))
                             .unwrap_or_else(|| panic!(
-                                "ICE: static method '{}::{}' not found in static_method_map (class_id={})",
-                                name, method_name_str, class_id.as_u32()
+                                "ICE: static method '{}::{}' not found in static_method_map (nominal_type_id={})",
+                                name, method_name_str, nominal_type_id.as_u32()
                             ))
                     } else {
                         *self
                             .method_map
-                            .get(&(class_id, method.name.name))
+                            .get(&(nominal_type_id, method.name.name))
                             .unwrap_or_else(|| {
                                 panic!(
-                                    "ICE: method '{}::{}' not found in method_map (class_id={})",
+                                    "ICE: method '{}::{}' not found in method_map (nominal_type_id={})",
                                     name,
                                     method_name_str,
-                                    class_id.as_u32()
+                                    nominal_type_id.as_u32()
                                 )
                             })
                     };
@@ -3294,7 +3294,7 @@ impl<'a> Lowerer<'a> {
 
                     // Add instance methods to the IR class vtable with slot index
                     if !method.is_static {
-                        if let Some(&slot) = self.method_slot_map.get(&(class_id, method.name.name))
+                        if let Some(&slot) = self.method_slot_map.get(&(nominal_type_id, method.name.name))
                         {
                             ir_class.add_method_with_slot(func_id, slot);
                         } else {
@@ -3345,7 +3345,7 @@ impl<'a> Lowerer<'a> {
                 self.current_method_env_globals = class_method_env_globals.clone();
 
                 // Set current class context for 'this' handling
-                self.current_class = Some(class_id);
+                self.current_class = Some(nominal_type_id);
 
                 // Create parameter registers - 'this' is the first parameter
                 let mut params = Vec::new();
@@ -3360,7 +3360,7 @@ impl<'a> Lowerer<'a> {
                 params.push(this_reg.clone());
                 self.this_register = Some(this_reg);
                 if let Some(this_sym) = self.interner.lookup("this") {
-                    self.variable_class_map.insert(this_sym, class_id);
+                    self.variable_class_map.insert(this_sym, nominal_type_id);
                 }
                 self.next_local = 1; // Explicit parameters start at slot 1
 
@@ -3402,13 +3402,13 @@ impl<'a> Lowerer<'a> {
                                     .insert(ident.name, layout);
                                 self.variable_class_map.remove(&ident.name);
                             }
-                            if let Some(param_class_id) = self.try_extract_class_from_type(type_ann)
+                            if let Some(param_nominal_type_id) = self.try_extract_class_from_type(type_ann)
                             {
                                 if !self
                                     .variable_structural_projection_fields
                                     .contains_key(&ident.name)
                                 {
-                                    self.variable_class_map.insert(ident.name, param_class_id);
+                                    self.variable_class_map.insert(ident.name, param_nominal_type_id);
                                 }
                             }
                             self.register_variable_type_hints_from_annotation(ident.name, type_ann);
@@ -3509,14 +3509,14 @@ impl<'a> Lowerer<'a> {
                 // Emit field assignments for constructor parameter properties
                 for (param_name, param_reg) in &param_prop_regs {
                     let field_name_str = self.interner.resolve(*param_name);
-                    let all_fields = self.get_all_fields(class_id);
+                    let all_fields = self.get_all_fields(nominal_type_id);
                     if let Some(fi) = all_fields
                         .iter()
                         .find(|f| self.interner.resolve(f.name) == field_name_str)
                     {
                         let field_idx = fi.index;
                         let this_reg = self.this_register.clone().unwrap();
-                        self.emit(IrInstr::StoreField {
+                        self.emit(IrInstr::StoreFieldExact {
                             object: this_reg,
                             field: field_idx,
                             value: param_reg.clone(),
@@ -3535,7 +3535,7 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Get the constructor function ID from class_info and add to pending functions
-                if let Some(class_info) = self.class_info_map.get(&class_id) {
+                if let Some(class_info) = self.class_info_map.get(&nominal_type_id) {
                     if let Some(ctor_func_id) = class_info.constructor {
                         let ir_func = self.current_function.take().unwrap();
                         self.pending_arrow_functions
@@ -3558,13 +3558,13 @@ impl<'a> Lowerer<'a> {
         if !explicit_ctor_lowered {
             let ctor_func_id = self
                 .class_info_map
-                .get(&class_id)
+                .get(&nominal_type_id)
                 .and_then(|info| info.constructor)
                 .unwrap_or_else(|| {
                     panic!(
-                        "ICE: missing constructor function id for class '{}' (class_id={})",
+                        "ICE: missing constructor function id for class '{}' (nominal_type_id={})",
                         name,
-                        class_id.as_u32()
+                        nominal_type_id.as_u32()
                     )
                 });
 
@@ -3591,7 +3591,7 @@ impl<'a> Lowerer<'a> {
             self.closure_locals.clear();
             self.current_method_env_globals = class_method_env_globals.clone();
 
-            self.current_class = Some(class_id);
+            self.current_class = Some(nominal_type_id);
 
             // Implicit ctor has only `this`.
             let this_ty = self
@@ -3601,7 +3601,7 @@ impl<'a> Lowerer<'a> {
             let this_reg = self.alloc_register(this_ty);
             self.this_register = Some(this_reg.clone());
             if let Some(this_sym) = self.interner.lookup("this") {
-                self.variable_class_map.insert(this_sym, class_id);
+                self.variable_class_map.insert(this_sym, nominal_type_id);
             }
             let params = vec![this_reg];
             let mut ir_func =
@@ -3855,31 +3855,31 @@ impl<'a> Lowerer<'a> {
     /// Find a method's vtable slot in parent class hierarchy
     fn find_parent_method_slot(
         &self,
-        parent_class: Option<ClassId>,
+        parent_class: Option<NominalTypeId>,
         method_name: Symbol,
     ) -> Option<u16> {
         let mut current = parent_class;
-        while let Some(class_id) = current {
-            if let Some(&slot) = self.method_slot_map.get(&(class_id, method_name)) {
+        while let Some(nominal_type_id) = current {
+            if let Some(&slot) = self.method_slot_map.get(&(nominal_type_id, method_name)) {
                 return Some(slot);
             }
             current = self
                 .class_info_map
-                .get(&class_id)
+                .get(&nominal_type_id)
                 .and_then(|info| info.parent_class);
         }
         None
     }
 
     /// Resolve a method slot for a class, falling back to inherited slots.
-    pub(super) fn find_method_slot(&self, class_id: ClassId, method_name: Symbol) -> Option<u16> {
+    pub(super) fn find_method_slot(&self, nominal_type_id: NominalTypeId, method_name: Symbol) -> Option<u16> {
         self.method_slot_map
-            .get(&(class_id, method_name))
+            .get(&(nominal_type_id, method_name))
             .copied()
             .or_else(|| {
                 let parent = self
                     .class_info_map
-                    .get(&class_id)
+                    .get(&nominal_type_id)
                     .and_then(|info| info.parent_class);
                 self.find_parent_method_slot(parent, method_name)
             })
@@ -4003,11 +4003,11 @@ impl<'a> Lowerer<'a> {
         };
 
         // Collect all decorator applications (clone to avoid borrow issues)
-        // Structure: (class_id, class_name, class_decorators, field_decorators, method_decorators, parameter_decorators)
+        // Structure: (nominal_type_id, class_name, class_decorators, field_decorators, method_decorators, parameter_decorators)
         #[allow(clippy::type_complexity)]
         // Tuple groups related decorator info; a dedicated struct would add boilerplate for a single use-site.
         let decorator_apps: Vec<(
-            ClassId,
+            NominalTypeId,
             String,
             Vec<DecoratorInfo>,
             Vec<FieldDecoratorInfo>,
@@ -4016,7 +4016,7 @@ impl<'a> Lowerer<'a> {
         )> = self
             .class_info_map
             .iter()
-            .filter_map(|(&class_id, info)| {
+            .filter_map(|(&nominal_type_id, info)| {
                 // Only process classes that have decorators
                 if info.class_decorators.is_empty()
                     && info.field_decorators.is_empty()
@@ -4030,12 +4030,12 @@ impl<'a> Lowerer<'a> {
                 let class_name = self
                     .class_map
                     .iter()
-                    .find(|(_, &id)| id == class_id)
+                    .find(|(_, &id)| id == nominal_type_id)
                     .map(|(sym, _)| self.interner.resolve(*sym).to_string())
-                    .unwrap_or_else(|| format!("class_{}", class_id.as_u32()));
+                    .unwrap_or_else(|| format!("class_{}", nominal_type_id.as_u32()));
 
                 Some((
-                    class_id,
+                    nominal_type_id,
                     class_name,
                     info.class_decorators.clone(),
                     info.field_decorators.clone(),
@@ -4047,7 +4047,7 @@ impl<'a> Lowerer<'a> {
 
         // Process each class's decorators
         for (
-            class_id,
+            nominal_type_id,
             class_name,
             class_decorators,
             field_decorators,
@@ -4055,14 +4055,14 @@ impl<'a> Lowerer<'a> {
             parameter_decorators,
         ) in decorator_apps
         {
-            let class_id_val = class_id.as_u32();
+            let nominal_type_id_val = nominal_type_id.as_u32();
 
             // 1. Process parameter decorators first (applied before method is decorated)
             for param_dec in &parameter_decorators {
                 for dec_info in &param_dec.decorators {
                     self.emit_decorator_call(
                         DecoratorTarget::Parameter {
-                            class_id: class_id_val,
+                            nominal_type_id: nominal_type_id_val,
                             class_name: class_name.clone(),
                             method_name: param_dec.method_name.clone(),
                             param_index: param_dec.param_index,
@@ -4079,7 +4079,7 @@ impl<'a> Lowerer<'a> {
                 for dec_info in &field_dec.decorators {
                     self.emit_decorator_call(
                         DecoratorTarget::Field {
-                            class_id: class_id_val,
+                            nominal_type_id: nominal_type_id_val,
                             class_name: class_name.clone(),
                             field_name: field_name.clone(),
                         },
@@ -4095,7 +4095,7 @@ impl<'a> Lowerer<'a> {
                 for dec_info in &method_dec.decorators {
                     self.emit_decorator_call(
                         DecoratorTarget::Method {
-                            class_id: class_id_val,
+                            nominal_type_id: nominal_type_id_val,
                             class_name: class_name.clone(),
                             method_name: method_name.clone(),
                         },
@@ -4109,7 +4109,7 @@ impl<'a> Lowerer<'a> {
             for dec_info in class_decorators.iter().rev() {
                 self.emit_decorator_call(
                     DecoratorTarget::Class {
-                        class_id: class_id_val,
+                        nominal_type_id: nominal_type_id_val,
                         class_name: class_name.clone(),
                     },
                     dec_info,
@@ -4130,17 +4130,17 @@ impl<'a> Lowerer<'a> {
         // Get decorator name for registration
         let decorator_name = self.get_decorator_name(decorator_expr);
 
-        // Create class_id register
-        let class_id_val = match &target {
-            DecoratorTarget::Class { class_id, .. } => *class_id,
-            DecoratorTarget::Method { class_id, .. } => *class_id,
-            DecoratorTarget::Field { class_id, .. } => *class_id,
-            DecoratorTarget::Parameter { class_id, .. } => *class_id,
+        // Create nominal_type_id register
+        let nominal_type_id_val = match &target {
+            DecoratorTarget::Class { nominal_type_id, .. } => *nominal_type_id,
+            DecoratorTarget::Method { nominal_type_id, .. } => *nominal_type_id,
+            DecoratorTarget::Field { nominal_type_id, .. } => *nominal_type_id,
+            DecoratorTarget::Parameter { nominal_type_id, .. } => *nominal_type_id,
         };
-        let class_id_reg = self.alloc_register(TypeId::new(0));
+        let nominal_type_id_reg = self.alloc_register(TypeId::new(0));
         self.emit(IrInstr::Assign {
-            dest: class_id_reg.clone(),
-            value: IrValue::Constant(IrConstant::I32(class_id_val as i32)),
+            dest: nominal_type_id_reg.clone(),
+            value: IrValue::Constant(IrConstant::I32(nominal_type_id_val as i32)),
         });
 
         // Determine how to call the decorator based on the expression type
@@ -4158,15 +4158,15 @@ impl<'a> Lowerer<'a> {
         // Build JS-model decorator arguments from runtime targets.
         // Registration still uses internal class IDs in separate native calls.
         let args = match &target {
-            DecoratorTarget::Class { class_id, .. } => {
-                vec![self.build_class_decorator_target(*class_id)]
+            DecoratorTarget::Class { nominal_type_id, .. } => {
+                vec![self.build_class_decorator_target(*nominal_type_id)]
             }
             DecoratorTarget::Method {
-                class_id,
+                nominal_type_id,
                 method_name,
                 ..
             } => {
-                let target_reg = self.build_method_decorator_target(*class_id, method_name);
+                let target_reg = self.build_method_decorator_target(*nominal_type_id, method_name);
                 let method_name_reg = self.alloc_register(TypeId::new(1));
                 self.emit(IrInstr::Assign {
                     dest: method_name_reg.clone(),
@@ -4175,11 +4175,11 @@ impl<'a> Lowerer<'a> {
                 vec![target_reg, method_name_reg]
             }
             DecoratorTarget::Field {
-                class_id,
+                nominal_type_id,
                 field_name,
                 ..
             } => {
-                let target_reg = self.build_class_decorator_target(*class_id);
+                let target_reg = self.build_class_decorator_target(*nominal_type_id);
                 let field_name_reg = self.alloc_register(TypeId::new(1));
                 self.emit(IrInstr::Assign {
                     dest: field_name_reg.clone(),
@@ -4188,12 +4188,12 @@ impl<'a> Lowerer<'a> {
                 vec![target_reg, field_name_reg]
             }
             DecoratorTarget::Parameter {
-                class_id,
+                nominal_type_id,
                 method_name,
                 param_index,
                 ..
             } => {
-                let target_reg = self.build_class_decorator_target(*class_id);
+                let target_reg = self.build_class_decorator_target(*nominal_type_id);
                 let method_name_reg = self.alloc_register(TypeId::new(1));
                 self.emit(IrInstr::Assign {
                     dest: method_name_reg.clone(),
@@ -4280,15 +4280,15 @@ impl<'a> Lowerer<'a> {
         // Emit registration native call based on target type
         match &target {
             DecoratorTarget::Class { .. } => {
-                // registerClassDecorator(classId, decoratorName)
+                // registerClassDecorator(typeRef, decoratorName)
                 self.emit(IrInstr::NativeCall {
                     dest: None,
                     native_id: registration_native_id,
-                    args: vec![class_id_reg, dec_name_reg],
+                    args: vec![nominal_type_id_reg, dec_name_reg],
                 });
             }
             DecoratorTarget::Method { method_name, .. } => {
-                // registerMethodDecorator(classId, methodName, decoratorName)
+                // registerMethodDecorator(typeRef, methodName, decoratorName)
                 let method_name_reg = self.alloc_register(TypeId::new(1));
                 self.emit(IrInstr::Assign {
                     dest: method_name_reg.clone(),
@@ -4297,11 +4297,11 @@ impl<'a> Lowerer<'a> {
                 self.emit(IrInstr::NativeCall {
                     dest: None,
                     native_id: registration_native_id,
-                    args: vec![class_id_reg, method_name_reg, dec_name_reg],
+                    args: vec![nominal_type_id_reg, method_name_reg, dec_name_reg],
                 });
             }
             DecoratorTarget::Field { field_name, .. } => {
-                // registerFieldDecorator(classId, fieldName, decoratorName)
+                // registerFieldDecorator(typeRef, fieldName, decoratorName)
                 let field_name_reg = self.alloc_register(TypeId::new(1));
                 self.emit(IrInstr::Assign {
                     dest: field_name_reg.clone(),
@@ -4310,7 +4310,7 @@ impl<'a> Lowerer<'a> {
                 self.emit(IrInstr::NativeCall {
                     dest: None,
                     native_id: registration_native_id,
-                    args: vec![class_id_reg, field_name_reg, dec_name_reg],
+                    args: vec![nominal_type_id_reg, field_name_reg, dec_name_reg],
                 });
             }
             DecoratorTarget::Parameter {
@@ -4318,7 +4318,7 @@ impl<'a> Lowerer<'a> {
                 param_index,
                 ..
             } => {
-                // registerParameterDecorator(classId, methodName, paramIndex, decoratorName)
+                // registerParameterDecorator(typeRef, methodName, paramIndex, decoratorName)
                 let method_name_reg = self.alloc_register(TypeId::new(1));
                 self.emit(IrInstr::Assign {
                     dest: method_name_reg.clone(),
@@ -4332,7 +4332,7 @@ impl<'a> Lowerer<'a> {
                 self.emit(IrInstr::NativeCall {
                     dest: None,
                     native_id: registration_native_id,
-                    args: vec![class_id_reg, method_name_reg, param_index_reg, dec_name_reg],
+                    args: vec![nominal_type_id_reg, method_name_reg, param_index_reg, dec_name_reg],
                 });
             }
         }
@@ -4360,11 +4360,11 @@ impl<'a> Lowerer<'a> {
     ///
     /// Prefer constructor function closure when available; otherwise materialize
     /// a class instance as a pragmatic runtime target object.
-    fn build_class_decorator_target(&mut self, class_id: u32) -> Register {
+    fn build_class_decorator_target(&mut self, nominal_type_id: u32) -> Register {
         let target = self.alloc_register(TypeId::new(0));
         let ctor_func = self
             .class_info_map
-            .get(&ClassId::new(class_id))
+            .get(&NominalTypeId::new(nominal_type_id))
             .and_then(|info| info.constructor);
         if let Some(func) = ctor_func {
             self.emit(IrInstr::MakeClosure {
@@ -4373,9 +4373,9 @@ impl<'a> Lowerer<'a> {
                 captures: vec![],
             });
         } else {
-            self.emit(IrInstr::NewObject {
+            self.emit(IrInstr::NewType {
                 dest: target.clone(),
-                class: ClassId::new(class_id),
+                nominal_type_id: NominalTypeId::new(nominal_type_id),
             });
         }
         target
@@ -4385,13 +4385,13 @@ impl<'a> Lowerer<'a> {
     ///
     /// Prefer the actual method function closure; if unresolved, fall back to
     /// class target semantics.
-    fn build_method_decorator_target(&mut self, class_id: u32, method_name: &str) -> Register {
-        let class_id = ClassId::new(class_id);
+    fn build_method_decorator_target(&mut self, nominal_type_id: u32, method_name: &str) -> Register {
+        let nominal_type_id = NominalTypeId::new(nominal_type_id);
         let func_id = self.interner.lookup(method_name).and_then(|sym| {
             self.method_map
-                .get(&(class_id, sym))
+                .get(&(nominal_type_id, sym))
                 .copied()
-                .or_else(|| self.static_method_map.get(&(class_id, sym)).copied())
+                .or_else(|| self.static_method_map.get(&(nominal_type_id, sym)).copied())
         });
 
         if let Some(func) = func_id {
@@ -4403,7 +4403,7 @@ impl<'a> Lowerer<'a> {
             });
             target
         } else {
-            self.build_class_decorator_target(class_id.as_u32())
+            self.build_class_decorator_target(nominal_type_id.as_u32())
         }
     }
 
@@ -4639,29 +4639,29 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Extract a ClassId from a type annotation, handling both direct class references
-    /// and nullable unions (e.g., `Node | null` → Node's ClassId).
-    fn try_extract_class_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<ClassId> {
+    /// Extract a NominalTypeId from a type annotation, handling both direct class references
+    /// and nullable unions (e.g., `Node | null` → Node's NominalTypeId).
+    fn try_extract_class_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<NominalTypeId> {
         match &type_ann.ty {
             ast::Type::Reference(type_ref) => {
-                self.class_id_from_type_name(self.interner.resolve(type_ref.name.name))
+                self.nominal_type_id_from_type_name(self.interner.resolve(type_ref.name.name))
             }
             ast::Type::Union(union_type) => {
-                let mut class_id = None;
+                let mut nominal_type_id = None;
                 for member in &union_type.types {
                     match &member.ty {
                         ast::Type::Primitive(ast::PrimitiveType::Null) => {} // skip null
                         ast::Type::Reference(type_ref) => {
-                            if class_id.is_some() {
+                            if nominal_type_id.is_some() {
                                 return None; // multiple class refs — ambiguous
                             }
-                            class_id = self
-                                .class_id_from_type_name(self.interner.resolve(type_ref.name.name));
+                            nominal_type_id = self
+                                .nominal_type_id_from_type_name(self.interner.resolve(type_ref.name.name));
                         }
                         _ => return None, // non-null, non-class member
                     }
                 }
-                class_id
+                nominal_type_id
             }
             _ => None,
         }
@@ -4698,8 +4698,8 @@ impl<'a> Lowerer<'a> {
     /// Resolve a class ID from a type name.
     /// Supports direct class names and synthesized wrapper aliases:
     /// `__t_<module>_<ClassName>`.
-    pub(super) fn class_id_from_type_name(&self, type_name: &str) -> Option<ClassId> {
-        let pick_scoped = |entries: &Vec<(usize, ClassId)>| -> Option<ClassId> {
+    pub(super) fn nominal_type_id_from_type_name(&self, type_name: &str) -> Option<NominalTypeId> {
+        let pick_scoped = |entries: &Vec<(usize, NominalTypeId)>| -> Option<NominalTypeId> {
             if entries.is_empty() {
                 return None;
             }
@@ -4749,7 +4749,7 @@ impl<'a> Lowerer<'a> {
         None
     }
 
-    fn populate_alias_object_class_map(&mut self, alias_name: &str, class_id: ClassId) {
+    fn populate_alias_object_class_map(&mut self, alias_name: &str, nominal_type_id: NominalTypeId) {
         // Prefer type IDs resolved from explicit type-alias declarations; fall back
         // to named type lookup when available.
         let alias_ty = self
@@ -4762,7 +4762,7 @@ impl<'a> Lowerer<'a> {
             return;
         }
 
-        self.type_alias_object_class_map.insert(alias_ty, class_id);
+        self.type_alias_object_class_map.insert(alias_ty, nominal_type_id);
 
         // Some checker paths materialize structurally equivalent object/interface
         // TypeIds distinct from the named alias type. Pre-populate those equivalent
@@ -4775,7 +4775,7 @@ impl<'a> Lowerer<'a> {
             {
                 self.type_alias_object_class_map
                     .entry(candidate_ty)
-                    .or_insert(class_id);
+                    .or_insert(nominal_type_id);
             }
         }
     }
@@ -4931,11 +4931,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn emit_structural_registration_for_ordered_names(
-        &mut self,
-        object: Option<Register>,
-        names: Vec<String>,
-    ) {
+    fn emit_structural_registration_for_ordered_names(&mut self, names: Vec<String>) {
         if names.is_empty() {
             return;
         }
@@ -4968,35 +4964,20 @@ impl<'a> Lowerer<'a> {
             elem_ty: TypeId::new(STRING_TYPE_ID),
         });
 
-        let object = object.unwrap_or_else(|| self.lower_null_literal());
         self.emit(IrInstr::NativeCall {
             dest: None,
-            native_id: crate::compiler::native_id::OBJECT_REGISTER_STRUCTURAL_VIEW,
-            args: vec![object, names_array],
+            native_id: crate::compiler::native_id::OBJECT_REGISTER_STRUCTURAL_SHAPE,
+            args: vec![names_array],
         });
     }
 
-    /// Seed canonical structural projection metadata for a value against an expected type.
-    ///
-    /// This records the projected slot layout on the lowering side and emits the
-    /// canonical member-name registration needed for runtime `(layout_id, shape_id)`
-    /// adapter construction. It intentionally avoids installing object-bound view
-    /// handles on the legacy `structural_slot_views` path.
-    fn emit_structural_slot_registration_for_ordered_names(
-        &mut self,
-        object: Register,
-        names: Vec<String>,
-    ) {
-        self.emit_structural_registration_for_ordered_names(Some(object), names);
-    }
-
     /// Register canonical member names for a structural shape without attaching
-    /// an object-specific runtime view.
+    /// any object-specific runtime view.
     fn emit_structural_shape_name_registration_for_ordered_names(
         &mut self,
         names: Vec<String>,
     ) {
-        self.emit_structural_registration_for_ordered_names(None, names);
+        self.emit_structural_registration_for_ordered_names(names);
     }
 
     fn emit_shape_name_registration_for_projection_layout(
@@ -5024,19 +5005,6 @@ impl<'a> Lowerer<'a> {
         true
     }
 
-    fn emit_structural_slot_registration_for_names(
-        &mut self,
-        object: Register,
-        mut names: Vec<String>,
-    ) {
-        if names.is_empty() {
-            return;
-        }
-        names.sort_unstable();
-        names.dedup();
-        self.emit_structural_slot_registration_for_ordered_names(object, names);
-    }
-
     fn emit_structural_slot_registration_for_type(
         &mut self,
         object: Register,
@@ -5053,7 +5021,7 @@ impl<'a> Lowerer<'a> {
             // Treat them as nominal/exact, not structural projections.
             if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                 eprintln!(
-                    "[lower] skip registerStructuralView for concrete class-ish type reg={} expected_ty={}",
+                    "[lower] skip structural shape seeding for concrete class-ish type reg={} expected_ty={}",
                     object.id,
                     self.type_ctx.format_type(expected_ty),
                 );
@@ -5186,7 +5154,7 @@ impl<'a> Lowerer<'a> {
 
         match self.type_ctx.get(ty_id) {
             Some(Type::Class(class_ty)) => {
-                self.class_id_from_type_name(&class_ty.name).is_none()
+                self.nominal_type_id_from_type_name(&class_ty.name).is_none()
                     && !self.type_registry.has_builtin_dispatch_type(&class_ty.name)
             }
             Some(Type::Reference(type_ref)) => self
@@ -5460,7 +5428,7 @@ mod decorator_tests {
 }
 
 #[cfg(test)]
-mod class_identity_tests {
+mod nominal_type_identity_tests {
     use super::*;
     use crate::parser::{Parser, TypeContext};
 
@@ -5517,7 +5485,7 @@ mod class_identity_tests {
     }
 
     #[test]
-    fn classes_emit_in_class_id_order() {
+    fn classes_emit_in_nominal_type_id_order() {
         let source = r#"
             class Top {}
             function make(): void {
@@ -5566,10 +5534,10 @@ mod class_identity_tests {
         );
 
         let alpha = lowerer
-            .class_id_from_type_name("__t_alpha_EnvNamespace")
+            .nominal_type_id_from_type_name("__t_alpha_EnvNamespace")
             .expect("alpha alias should resolve");
         let beta = lowerer
-            .class_id_from_type_name("__t_beta_EnvNamespace")
+            .nominal_type_id_from_type_name("__t_beta_EnvNamespace")
             .expect("beta alias should resolve");
         assert_ne!(
             alpha, beta,
@@ -5603,10 +5571,10 @@ mod class_identity_tests {
         );
 
         let m1 = lowerer
-            .class_id_from_type_name("__t_m1_EnvNamespace")
+            .nominal_type_id_from_type_name("__t_m1_EnvNamespace")
             .expect("module 1 alias should resolve");
         let m2 = lowerer
-            .class_id_from_type_name("__t_m2_EnvNamespace")
+            .nominal_type_id_from_type_name("__t_m2_EnvNamespace")
             .expect("module 2 alias should resolve");
         assert_ne!(m1, m2, "module aliases must map to distinct class ids");
     }
@@ -5644,13 +5612,13 @@ mod class_identity_tests {
         );
 
         let env_sym = interner.lookup("env").expect("env symbol");
-        let env_class_id = lowerer
+        let env_nominal_type_id = lowerer
             .variable_class_map
             .get(&env_sym)
             .copied()
             .expect("env variable should have class mapping");
         assert_eq!(
-            ir.classes[env_class_id.as_u32() as usize].name,
+            ir.classes[env_nominal_type_id.as_u32() as usize].name,
             "EnvNamespace",
             "env should map to wrapper class id"
         );
@@ -5660,16 +5628,16 @@ mod class_identity_tests {
             .iter()
             .flat_map(|f| &f.blocks)
             .flat_map(|b| &b.instructions)
-            .filter(|instr| matches!(instr, IrInstr::CallMethod { .. }))
+            .filter(|instr| matches!(instr, IrInstr::CallMethodExact { .. }))
             .count();
         assert!(
             call_method_count > 0,
-            "expected CallMethod dispatch, got no CallMethod in module IR"
+            "expected CallMethodExact dispatch, got no CallMethodExact in module IR"
         );
     }
 
     #[test]
-    fn std_logger_default_cast_infers_class_identity() {
+    fn std_logger_default_cast_infers_nominal_type_identity() {
         let source = r#"
             type __t_logger_LoggerNamespace = { info: (message: string) => void };
             type __std_exports_type_logger = { default: unknown, info: unknown };
@@ -5699,8 +5667,8 @@ mod class_identity_tests {
             lowerer.errors()
         );
 
-        let class_id = lowerer
-            .class_id_from_type_name("__t_logger_LoggerNamespace")
+        let nominal_type_id = lowerer
+            .nominal_type_id_from_type_name("__t_logger_LoggerNamespace")
             .expect("logger alias should resolve");
         let logger_sym = interner.lookup("logger").expect("logger symbol");
         let var_class = lowerer
@@ -5709,13 +5677,13 @@ mod class_identity_tests {
             .copied()
             .expect("logger variable should preserve class mapping");
         assert_eq!(
-            var_class, class_id,
+            var_class, nominal_type_id,
             "logger cast alias should preserve LoggerNamespace class id"
         );
     }
 
     #[test]
-    fn function_and_method_nullable_class_returns_preserve_class_identity() {
+    fn function_and_method_nullable_class_returns_preserve_nominal_type_identity() {
         let source = r#"
             class JsonValue {
                 get(): JsonValue | null { return null; }
@@ -5799,7 +5767,7 @@ mod class_identity_tests {
     }
 
     #[test]
-    fn class_identifier_value_lowers_to_class_id_constant() {
+    fn nominal_type_identifier_value_lowers_to_nominal_type_id_constant() {
         use crate::compiler::ir::{IrConstant, IrInstr, IrValue};
 
         let source = r#"
@@ -5819,11 +5787,11 @@ mod class_identity_tests {
         );
 
         let a_sym = interner.lookup("A").expect("A symbol");
-        let a_class_id = lowerer.class_map.get(&a_sym).copied().expect("A class id");
-        let expected = a_class_id.as_u32() as i32;
+        let a_nominal_type_id = lowerer.class_map.get(&a_sym).copied().expect("A class id");
+        let expected = a_nominal_type_id.as_u32() as i32;
 
         let main = ir.get_function_by_name("main").expect("main function");
-        let has_class_id_i32_assign =
+        let has_nominal_type_id_i32_assign =
             main.blocks
                 .iter()
                 .flat_map(|b| &b.instructions)
@@ -5850,7 +5818,7 @@ mod class_identity_tests {
                 )
             });
         assert!(
-            has_class_id_i32_assign,
+            has_nominal_type_id_i32_assign,
             "expected class id constant assignment in main IR (class id {}), main blocks: {:?}",
             expected, main.blocks
         );

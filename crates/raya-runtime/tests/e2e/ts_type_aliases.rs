@@ -481,3 +481,47 @@ fn test_structural_parameter_destructuring_uses_projected_shape_slots() {
         5,
     );
 }
+
+#[test]
+fn test_structural_instanceof_alias_narrows_then_branch() {
+    expect_i32(
+        "type Pair = {
+             a: number;
+             b: number;
+         };
+         let value: unknown = { b: 3, a: 2, c: 99 };
+         if (value instanceof Pair) {
+             return value.a + value.b;
+         }
+         return 0;",
+        5,
+    );
+}
+
+#[test]
+fn test_structural_instanceof_inline_object_shape_narrows_then_branch() {
+    expect_i32(
+        "let value: unknown = { b: 3, a: 2 };
+         if (value instanceof { a: number; b: number }) {
+             return value.a + value.b;
+         }
+         return 0;",
+        5,
+    );
+}
+
+#[test]
+fn test_structural_instanceof_alias_returns_false_when_slot_missing() {
+    expect_i32(
+        "type Pair = {
+             a: number;
+             b: number;
+         };
+         let value: unknown = { a: 2 };
+         if (value instanceof Pair) {
+             return 1;
+         }
+         return 0;",
+        0,
+    );
+}

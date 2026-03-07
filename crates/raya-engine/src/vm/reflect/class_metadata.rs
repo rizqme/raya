@@ -123,7 +123,7 @@ impl ClassMetadata {
             self.fields.push(FieldInfo {
                 name: String::new(),
                 type_info: TypeInfo::primitive("unknown"),
-                declaring_class_id: 0,
+                declaring_nominal_type_id: 0,
                 field_index: self.fields.len(),
                 is_static: false,
                 is_readonly: false,
@@ -145,7 +145,7 @@ impl ClassMetadata {
                 name: String::new(),
                 return_type: TypeInfo::primitive("unknown"),
                 parameters: Vec::new(),
-                declaring_class_id: 0,
+                declaring_nominal_type_id: 0,
                 method_index: self.methods.len(),
                 is_static: false,
                 is_async: false,
@@ -221,10 +221,10 @@ impl ClassMetadata {
     }
 }
 
-/// Registry of class metadata for reflection
+/// Registry of nominal-type metadata for reflection
 #[derive(Debug, Default)]
 pub struct ClassMetadataRegistry {
-    /// Metadata indexed by class ID
+    /// Metadata indexed by nominal type ID
     metadata: FxHashMap<usize, ClassMetadata>,
 }
 
@@ -234,29 +234,29 @@ impl ClassMetadataRegistry {
         Self::default()
     }
 
-    /// Register metadata for a class
-    pub fn register(&mut self, class_id: usize, metadata: ClassMetadata) {
-        self.metadata.insert(class_id, metadata);
+    /// Register metadata for a nominal type
+    pub fn register(&mut self, nominal_type_id: usize, metadata: ClassMetadata) {
+        self.metadata.insert(nominal_type_id, metadata);
     }
 
-    /// Get metadata for a class
-    pub fn get(&self, class_id: usize) -> Option<&ClassMetadata> {
-        self.metadata.get(&class_id)
+    /// Get metadata for a nominal type
+    pub fn get(&self, nominal_type_id: usize) -> Option<&ClassMetadata> {
+        self.metadata.get(&nominal_type_id)
     }
 
-    /// Get mutable metadata for a class
-    pub fn get_mut(&mut self, class_id: usize) -> Option<&mut ClassMetadata> {
-        self.metadata.get_mut(&class_id)
+    /// Get mutable metadata for a nominal type
+    pub fn get_mut(&mut self, nominal_type_id: usize) -> Option<&mut ClassMetadata> {
+        self.metadata.get_mut(&nominal_type_id)
     }
 
-    /// Get or create metadata for a class
-    pub fn get_or_create(&mut self, class_id: usize) -> &mut ClassMetadata {
-        self.metadata.entry(class_id).or_default()
+    /// Get or create metadata for a nominal type
+    pub fn get_or_create(&mut self, nominal_type_id: usize) -> &mut ClassMetadata {
+        self.metadata.entry(nominal_type_id).or_default()
     }
 
-    /// Check if a class has metadata
-    pub fn has_metadata(&self, class_id: usize) -> bool {
-        self.metadata.contains_key(&class_id)
+    /// Check if a nominal type has metadata
+    pub fn has_metadata(&self, nominal_type_id: usize) -> bool {
+        self.metadata.contains_key(&nominal_type_id)
     }
 
     /// Get number of classes with metadata
@@ -269,7 +269,7 @@ impl ClassMetadataRegistry {
         self.metadata.is_empty()
     }
 
-    /// Get all class IDs that implement a given interface
+    /// Get all nominal type IDs that implement a given interface
     pub fn get_implementors(&self, interface_name: &str) -> Vec<usize> {
         self.metadata
             .iter()
@@ -278,7 +278,7 @@ impl ClassMetadataRegistry {
             .collect()
     }
 
-    /// Iterate over all class metadata
+    /// Iterate over all nominal-type metadata
     pub fn iter(&self) -> impl Iterator<Item = (usize, &ClassMetadata)> {
         self.metadata.iter().map(|(id, meta)| (*id, meta))
     }
@@ -349,7 +349,7 @@ mod tests {
         let field = FieldInfo {
             name: "age".to_string(),
             type_info: TypeInfo::primitive("number"),
-            declaring_class_id: 0,
+            declaring_nominal_type_id: 0,
             field_index: 0,
             is_static: false,
             is_readonly: false,
@@ -359,7 +359,7 @@ mod tests {
         let field2 = FieldInfo {
             name: "name".to_string(),
             type_info: TypeInfo::primitive("string"),
-            declaring_class_id: 0,
+            declaring_nominal_type_id: 0,
             field_index: 1,
             is_static: false,
             is_readonly: true,
@@ -421,7 +421,7 @@ mod tests {
                 index: 0,
                 is_optional: false,
             }],
-            declaring_class_id: 0,
+            declaring_nominal_type_id: 0,
             method_index: 0,
             is_static: false,
             is_async: false,
@@ -432,7 +432,7 @@ mod tests {
             name: "computeAsync".to_string(),
             return_type: TypeInfo::primitive("number"),
             parameters: vec![],
-            declaring_class_id: 0,
+            declaring_nominal_type_id: 0,
             method_index: 1,
             is_static: false,
             is_async: true,
@@ -473,7 +473,7 @@ mod tests {
             name: "create".to_string(),
             return_type: TypeInfo::class("MyClass", 0),
             parameters: vec![],
-            declaring_class_id: 0,
+            declaring_nominal_type_id: 0,
             method_index: 0,
             is_static: true,
             is_async: false,
@@ -507,13 +507,13 @@ mod tests {
                     is_optional: true,
                 },
             ],
-            declaring_class_id: 5,
+            declaring_nominal_type_id: 5,
             function_id: 42,
         });
 
         let ctor = meta.constructor.as_ref().unwrap();
         assert_eq!(ctor.parameters.len(), 2);
-        assert_eq!(ctor.declaring_class_id, 5);
+        assert_eq!(ctor.declaring_nominal_type_id, 5);
         assert_eq!(ctor.function_id, 42);
         assert_eq!(ctor.parameters[0].name, "name");
         assert_eq!(ctor.parameters[1].name, "age");

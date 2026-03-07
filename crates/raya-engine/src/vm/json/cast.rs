@@ -67,8 +67,8 @@ pub enum TypeKind {
 
     /// Interface/class type with named fields
     Interface {
-        /// Class ID for runtime type tagging
-        class_id: usize,
+        /// Nominal type ID for runtime type tagging
+        nominal_type_id: usize,
         /// Physical layout ID for typed object allocation.
         layout_id: crate::vm::object::LayoutId,
         /// Field names and their type schema IDs
@@ -223,12 +223,12 @@ where
         TypeKind::String => validate_string(json, gc),
 
         TypeKind::Interface {
-            class_id,
+            nominal_type_id,
             layout_id,
             fields,
         } => validate_interface(
             json,
-            *class_id,
+            *nominal_type_id,
             *layout_id,
             fields,
             schema_registry,
@@ -319,7 +319,7 @@ fn validate_string(json: &JsonValue, _gc: &mut GarbageCollector) -> VmResult<Val
 /// Validate interface/class type
 fn validate_interface<FP, FL>(
     json: &JsonValue,
-    class_id: usize,
+    nominal_type_id: usize,
     layout_id: crate::vm::object::LayoutId,
     fields: &[(String, usize)],
     schema_registry: &TypeSchemaRegistry,
@@ -370,7 +370,7 @@ where
     }
 
     // Create typed object
-    let mut obj = Object::new_nominal(layout_id, class_id as u32, field_values.len());
+    let mut obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_values.len());
     obj.fields = field_values;
 
     let obj_ptr = gc.allocate(obj);
@@ -669,7 +669,7 @@ mod tests {
         let schema = TypeSchema {
             type_id: 3,
             kind: TypeKind::Interface {
-                class_id: 9,
+                nominal_type_id: 9,
                 layout_id: layout_id_from_ordered_names(&["name".to_string(), "age".to_string()]),
                 fields: vec![("name".to_string(), 1), ("age".to_string(), 2)],
             },

@@ -330,8 +330,6 @@ mod aot_impl {
             | Opcode::StoreRefCell
             | Opcode::ArrayPush
             | Opcode::ArrayPop
-            | Opcode::InstanceOf
-            | Opcode::Cast
             | Opcode::TupleGet
             | Opcode::EndTry
             | Opcode::Rethrow
@@ -339,9 +337,9 @@ mod aot_impl {
             Opcode::BindMethod
             | Opcode::LoadLocal
             | Opcode::StoreLocal
-            | Opcode::LoadField
-            | Opcode::StoreField
-            | Opcode::OptionalField
+            | Opcode::LoadFieldExact
+            | Opcode::StoreFieldExact
+            | Opcode::OptionalFieldExact
             | Opcode::InitObject
             | Opcode::InitArray
             | Opcode::InitTuple
@@ -350,7 +348,11 @@ mod aot_impl {
             | Opcode::StoreCaptured
             | Opcode::SetClosureCapture
             | Opcode::Trap
-            | Opcode::SpawnClosure => 2,
+            | Opcode::SpawnClosure
+            | Opcode::NewType
+            | Opcode::IsNominal
+            | Opcode::Cast
+            | Opcode::CastNominal => 2,
             Opcode::ConstI32
             | Opcode::Jmp
             | Opcode::JmpIfFalse
@@ -361,7 +363,6 @@ mod aot_impl {
             | Opcode::LoadConst
             | Opcode::LoadGlobal
             | Opcode::StoreGlobal
-            | Opcode::New
             | Opcode::NewArray
             | Opcode::LoadModule
             | Opcode::TaskThen
@@ -373,10 +374,14 @@ mod aot_impl {
             | Opcode::StoreStatic => 4,
             Opcode::LoadFieldShape | Opcode::StoreFieldShape | Opcode::OptionalFieldShape => 10,
             Opcode::CallMethodShape | Opcode::OptionalCallMethodShape => 12,
-            Opcode::ConstF64 | Opcode::ArrayLiteral | Opcode::Try => 8,
+            Opcode::ConstF64
+            | Opcode::CastShape
+            | Opcode::ImplementsShape
+            | Opcode::ArrayLiteral
+            | Opcode::Try => 8,
             Opcode::Call
-            | Opcode::CallMethod
-            | Opcode::OptionalCallMethod
+            | Opcode::CallMethodExact
+            | Opcode::OptionalCallMethodExact
             | Opcode::CallConstructor
             | Opcode::CallSuper
             | Opcode::CallStatic

@@ -1,4 +1,4 @@
-//! Call opcode handlers: Call, CallMethod, CallConstructor, CallSuper
+//! Call opcode handlers: Call, CallMethodExact, CallConstructor, CallSuper
 
 use crate::compiler::{Module, Opcode};
 use crate::vm::gc::GcHeader;
@@ -269,7 +269,7 @@ impl<'a> Interpreter<'a> {
                     crate::vm::interpreter::shared_state::StructuralSlotBinding::Method(
                         method_slot,
                     ) => {
-                        let class_id = match obj.nominal_class_id() {
+                        let nominal_type_id = match obj.nominal_type_id_usize() {
                             Some(id) => id,
                             None => {
                                 return OpcodeResult::Error(VmError::TypeError(
@@ -279,12 +279,12 @@ impl<'a> Interpreter<'a> {
                             }
                         };
                         let classes = self.classes.read();
-                        let class = match classes.get_class(class_id) {
+                        let class = match classes.get_class(nominal_type_id) {
                             Some(c) => c,
                             None => {
                                 return OpcodeResult::Error(VmError::RuntimeError(format!(
-                                    "Invalid class ID: {}",
-                                    class_id
+                                    "Invalid nominal type id: {}",
+                                    nominal_type_id
                                 )))
                             }
                         };
@@ -292,10 +292,10 @@ impl<'a> Interpreter<'a> {
                             Some(id) => id,
                             None => {
                                 return OpcodeResult::Error(VmError::RuntimeError(format!(
-                                    "Method index {} not found in vtable for class '{}' (id={}, vtable_size={})",
+                                    "Method index {} not found in vtable for nominal type '{}' (id={}, vtable_size={})",
                                     method_slot,
                                     class.name,
-                                    class_id,
+                                    nominal_type_id,
                                     class.vtable.method_count()
                                 )))
                             }
@@ -407,9 +407,9 @@ impl<'a> Interpreter<'a> {
                 }
             }
 
-            Opcode::CallMethod | Opcode::OptionalCallMethod => {
+            Opcode::CallMethodExact | Opcode::OptionalCallMethodExact => {
                 self.safepoint.poll();
-                let optional = matches!(opcode, Opcode::OptionalCallMethod);
+                let optional = matches!(opcode, Opcode::OptionalCallMethodExact);
                 let method_index = match Self::read_u32(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
@@ -625,7 +625,7 @@ impl<'a> Interpreter<'a> {
                 if !receiver_val.is_ptr() {
                     if std::env::var("RAYA_DEBUG_VM_CALLS").is_ok() {
                         eprintln!(
-                            "[vm] CallMethod fail: receiver not ptr! method_index={} arg_count={} receiver_raw=0x{:016X}",
+                            "[vm] CallMethodExact fail: receiver not ptr! method_index={} arg_count={} receiver_raw=0x{:016X}",
                             method_index,
                             arg_count,
                             receiver_val.raw()
@@ -675,7 +675,7 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { receiver_val.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
-                let class_id = match obj.nominal_class_id() {
+                let nominal_type_id = match obj.nominal_type_id_usize() {
                     Some(id) => id,
                     None => {
                         return OpcodeResult::Error(VmError::TypeError(
@@ -685,7 +685,7 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let classes = self.classes.read();
-                let class = match classes.get_class(class_id) {
+                let class = match classes.get_class(nominal_type_id) {
                     Some(c) => c,
                     None => {
                         let receiver_kind = {
@@ -713,8 +713,8 @@ impl<'a> Interpreter<'a> {
                             }
                         };
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid class ID: {} (receiver_kind={})",
-                            class_id, receiver_kind
+                            "Invalid nominal type id: {} (receiver_kind={})",
+                            nominal_type_id, receiver_kind
                         )));
                     }
                 };
@@ -723,8 +723,8 @@ impl<'a> Interpreter<'a> {
                     Some(id) => id,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Method index {} not found in vtable for class '{}' (id={}, vtable_size={})",
-                            method_index, class.name, class_id, class.vtable.method_count()
+                            "Method index {} not found in vtable for nominal type '{}' (id={}, vtable_size={})",
+                            method_index, class.name, nominal_type_id, class.vtable.method_count()
                         )));
                     }
                 };
@@ -748,7 +748,8 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let class_index = match self.resolve_nominal_type_id(module, local_class_index) {
+                let nominal_type_id = match self.resolve_nominal_type_id(module, local_class_index)
+                {
                     Ok(id) => id,
                     Err(error) => return OpcodeResult::Error(error),
                 };
@@ -769,30 +770,30 @@ impl<'a> Interpreter<'a> {
 
                 // Look up class and create object
                 let classes = self.classes.read();
-                let class = match classes.get_class(class_index) {
+                let class = match classes.get_class(nominal_type_id) {
                     Some(c) => c,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid class index: {}",
-                            class_index
+                            "Invalid nominal type id: {}",
+                            nominal_type_id
                         )));
                     }
                 };
                 let constructor_id = class.get_constructor();
                 let constructor_module = class.module.clone();
-                let (layout_id, field_count) = match self.nominal_allocation(class_index) {
+                let (layout_id, field_count) = match self.nominal_allocation(nominal_type_id) {
                     Some(allocation) => allocation,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid class allocation metadata: {}",
-                            class_index
+                            "Invalid nominal type allocation metadata: {}",
+                            nominal_type_id
                         )));
                     }
                 };
                 drop(classes);
 
                 // Create the object
-                let obj = Object::new_nominal(layout_id, class_index as u32, field_count);
+                let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
                 let gc_ptr = self.gc.lock().allocate(obj);
                 let obj_val =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
@@ -834,7 +835,8 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let class_index = match self.resolve_nominal_type_id(module, local_class_index) {
+                let nominal_type_id = match self.resolve_nominal_type_id(module, local_class_index)
+                {
                     Ok(id) => id,
                     Err(error) => return OpcodeResult::Error(error),
                 };
@@ -844,12 +846,12 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let classes = self.classes.read();
-                let class = match classes.get_class(class_index) {
+                let class = match classes.get_class(nominal_type_id) {
                     Some(c) => c,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid class index: {}",
-                            class_index
+                            "Invalid nominal type id: {}",
+                            nominal_type_id
                         )));
                     }
                 };

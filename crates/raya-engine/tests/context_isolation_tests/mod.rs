@@ -158,10 +158,10 @@ fn test_class_registry_isolation() {
 
     // Verify they are separate instances
     // (they should have different addresses in memory)
-    // For now, just verify they both exist and include only the reserved
-    // dynamic-object class slot at ID 0.
-    assert_eq!(registry1.next_class_id(), 1);
-    assert_eq!(registry2.next_class_id(), 1);
+    // For now, just verify they both exist and start with the first allocatable
+    // nominal type id.
+    assert_eq!(registry1.next_nominal_type_id(), 1);
+    assert_eq!(registry2.next_nominal_type_id(), 1);
 
     // Note: Full class registration tests will be added when
     // class loading is implemented

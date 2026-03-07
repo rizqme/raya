@@ -102,8 +102,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::StoreRefCell
         | Opcode::ArrayPush
         | Opcode::ArrayPop
-        | Opcode::InstanceOf
-        | Opcode::Cast => 1,
+        => 1,
 
         // u16 operand (BindMethod: opcode + u16 method_slot)
         Opcode::BindMethod => 1 + 2,
@@ -111,9 +110,9 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         // u16 operand
         Opcode::LoadLocal
         | Opcode::StoreLocal
-        | Opcode::LoadField
-        | Opcode::StoreField
-        | Opcode::OptionalField
+        | Opcode::LoadFieldExact
+        | Opcode::StoreFieldExact
+        | Opcode::OptionalFieldExact
         | Opcode::ConstStr
         | Opcode::CloseVar
         | Opcode::LoadCaptured
@@ -123,7 +122,11 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::InitArray
         | Opcode::InitTuple
         | Opcode::SpawnClosure
-        | Opcode::Trap => 1 + 2,
+        | Opcode::Trap
+        | Opcode::NewType
+        | Opcode::IsNominal
+        | Opcode::Cast
+        | Opcode::CastNominal => 1 + 2,
 
         // i32 operand (jumps)
         Opcode::Jmp
@@ -135,8 +138,8 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         // i32 operand (constants)
         Opcode::ConstI32 => 1 + 4,
 
-        // f64 operand
-        Opcode::ConstF64 => 1 + 8,
+        // f64 / u64 operand
+        Opcode::ConstF64 | Opcode::CastShape | Opcode::ImplementsShape => 1 + 8,
 
         // u64 + u16 operands
         Opcode::LoadFieldShape | Opcode::StoreFieldShape | Opcode::OptionalFieldShape => {
@@ -148,7 +151,6 @@ pub fn opcode_size(opcode: Opcode) -> usize {
 
         // u32 operand
         Opcode::LoadConst
-        | Opcode::New
         | Opcode::NewArray
         | Opcode::TaskThen
         | Opcode::LoadModule
@@ -163,8 +165,8 @@ pub fn opcode_size(opcode: Opcode) -> usize {
 
         // u32 + u16 operands
         Opcode::Call
-        | Opcode::CallMethod
-        | Opcode::OptionalCallMethod
+        | Opcode::CallMethodExact
+        | Opcode::OptionalCallMethodExact
         | Opcode::CallConstructor
         | Opcode::CallSuper
         | Opcode::CallStatic

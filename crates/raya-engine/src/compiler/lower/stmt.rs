@@ -131,8 +131,8 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn class_id_by_name(&self, class_name: &str) -> Option<crate::compiler::ir::ClassId> {
-        self.class_id_from_type_name(class_name)
+    fn nominal_type_id_by_name(&self, class_name: &str) -> Option<crate::compiler::ir::NominalTypeId> {
+        self.nominal_type_id_from_type_name(class_name)
     }
 
     /// Lower a statement
@@ -168,11 +168,11 @@ impl<'a> Lowerer<'a> {
                 // Module-level declarations handled in lower_module first pass
             }
             Statement::ClassDecl(class) => {
-                let Some(class_id) = self.class_id_for_decl(class) else {
+                let Some(nominal_type_id) = self.nominal_type_id_for_decl(class) else {
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
                             message: format!(
-                                "class declaration '{}' at span {} missing ClassId registration",
+                                "class declaration '{}' at span {} missing NominalTypeId registration",
                                 self.interner.resolve(class.name.name),
                                 class.span.start
                             ),
@@ -180,7 +180,7 @@ impl<'a> Lowerer<'a> {
                     return;
                 };
 
-                if !self.lowered_class_ids.contains(&class_id) {
+                if !self.lowered_nominal_type_ids.contains(&nominal_type_id) {
                     // Nested class declaration — lower once by declaration identity.
                     // lower_class resets per-function state (registers, blocks, locals)
                     // for each method/constructor, so save and restore enclosing state.
@@ -230,7 +230,7 @@ impl<'a> Lowerer<'a> {
                     // so execution order matches source semantics.
                     let static_blocks: Vec<ast::BlockStatement> = self
                         .class_info_map
-                        .get(&class_id)
+                        .get(&nominal_type_id)
                         .map(|info| info.static_blocks.clone())
                         .unwrap_or_default();
                     for block in static_blocks {
@@ -372,10 +372,10 @@ impl<'a> Lowerer<'a> {
                 if class_name == "Map" {
                     let iter_array = self.alloc_register(UNRESOLVED);
                     let mut lowered = false;
-                    if let Some(class_id) = self.class_id_by_name("Map") {
+                    if let Some(nominal_type_id) = self.nominal_type_id_by_name("Map") {
                         if let Some(entries_sym) = self.interner.lookup("entries") {
-                            if let Some(slot) = self.find_method_slot(class_id, entries_sym) {
-                                self.emit(IrInstr::CallMethod {
+                            if let Some(slot) = self.find_method_slot(nominal_type_id, entries_sym) {
+                                self.emit(IrInstr::CallMethodExact {
                                     dest: Some(iter_array.clone()),
                                     object: source_reg.clone(),
                                     method: slot,
@@ -397,10 +397,10 @@ impl<'a> Lowerer<'a> {
                 } else if class_name == "Set" {
                     let iter_array = self.alloc_register(UNRESOLVED);
                     let mut lowered = false;
-                    if let Some(class_id) = self.class_id_by_name("Set") {
+                    if let Some(nominal_type_id) = self.nominal_type_id_by_name("Set") {
                         if let Some(values_sym) = self.interner.lookup("values") {
-                            if let Some(slot) = self.find_method_slot(class_id, values_sym) {
-                                self.emit(IrInstr::CallMethod {
+                            if let Some(slot) = self.find_method_slot(nominal_type_id, values_sym) {
+                                self.emit(IrInstr::CallMethodExact {
                                     dest: Some(iter_array.clone()),
                                     object: source_reg.clone(),
                                     method: slot,
@@ -420,7 +420,7 @@ impl<'a> Lowerer<'a> {
                     }
                     iter_array
                 } else {
-                    let class_id = match self.class_id_by_name(class_name) {
+                    let nominal_type_id = match self.nominal_type_id_by_name(class_name) {
                         Some(id) => id,
                         None => {
                             let mut known: Vec<String> = self
@@ -444,9 +444,9 @@ impl<'a> Lowerer<'a> {
                     let symbol_iterator_sym = self.interner.lookup("Symbol.iterator");
                     let iterator_sym = self.interner.lookup("iterator");
                     let slot = match symbol_iterator_sym
-                        .and_then(|sym| self.find_method_slot(class_id, sym))
+                        .and_then(|sym| self.find_method_slot(nominal_type_id, sym))
                         .or_else(|| {
-                            iterator_sym.and_then(|sym| self.find_method_slot(class_id, sym))
+                            iterator_sym.and_then(|sym| self.find_method_slot(nominal_type_id, sym))
                         }) {
                         Some(slot) => slot,
                         None => {
@@ -461,7 +461,7 @@ impl<'a> Lowerer<'a> {
                         }
                     };
                     let iter_array = self.alloc_register(UNRESOLVED);
-                    self.emit(IrInstr::CallMethod {
+                    self.emit(IrInstr::CallMethodExact {
                         dest: Some(iter_array.clone()),
                         object: source_reg,
                         method: slot,
@@ -588,16 +588,16 @@ impl<'a> Lowerer<'a> {
         if let Some(var_name) = loop_var_name {
             // Check if iterable is a variable with known array element class type
             if let ast::Expression::Identifier(iter_ident) = &for_of.right {
-                if let Some(&elem_class_id) = self.array_element_class_map.get(&iter_ident.name) {
-                    self.variable_class_map.insert(var_name, elem_class_id);
+                if let Some(&elem_nominal_type_id) = self.array_element_class_map.get(&iter_ident.name) {
+                    self.variable_class_map.insert(var_name, elem_nominal_type_id);
                 }
             }
             // Also check if the for-of variable has a type annotation
             if let ast::ForOfLeft::VariableDecl(decl) = &for_of.left {
                 if let Some(type_ann) = &decl.type_annotation {
                     if let ast::Type::Reference(type_ref) = &type_ann.ty {
-                        if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
-                            self.variable_class_map.insert(var_name, class_id);
+                        if let Some(&nominal_type_id) = self.class_map.get(&type_ref.name.name) {
+                            self.variable_class_map.insert(var_name, nominal_type_id);
                         }
                     }
                 }
@@ -931,8 +931,8 @@ impl<'a> Lowerer<'a> {
                         .and_then(|named| self.object_layout_from_type(named))
                 }),
             Type::Class(_) => {
-                let class_id = self.class_id_from_type_id(value_ty)?;
-                let mut fields = self.get_all_fields(class_id);
+                let nominal_type_id = self.nominal_type_id_from_type_id(value_ty)?;
+                let mut fields = self.get_all_fields(nominal_type_id);
                 fields.sort_by_key(|f| f.index);
                 Some(
                     fields
@@ -997,8 +997,8 @@ impl<'a> Lowerer<'a> {
                         })
                 }),
             Type::Class(_) => {
-                let class_id = self.class_id_from_type_id(value_ty)?;
-                self.get_all_fields(class_id)
+                let nominal_type_id = self.nominal_type_id_from_type_id(value_ty)?;
+                self.get_all_fields(nominal_type_id)
                     .into_iter()
                     .find(|field| self.interner.resolve(field.name) == property_name)
                     .map(|field| field.ty)
@@ -1349,7 +1349,7 @@ impl<'a> Lowerer<'a> {
                                 optional: false,
                             });
                         } else {
-                            self.emit(IrInstr::LoadField {
+                            self.emit(IrInstr::LoadFieldExact {
                                 dest: loaded.clone(),
                                 object: value_reg.clone(),
                                 field: field_index,
@@ -1453,9 +1453,9 @@ impl<'a> Lowerer<'a> {
                 Some(obj.properties.iter().map(|p| p.name.clone()).collect())
             }
             crate::parser::types::Type::Class(_) => {
-                if let Some(class_id) = self.class_id_from_type_id(ty) {
+                if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(ty) {
                     let names = self
-                        .get_all_fields(class_id)
+                        .get_all_fields(nominal_type_id)
                         .into_iter()
                         .map(|f| self.interner.resolve(f.name).to_string())
                         .collect();
@@ -1561,7 +1561,7 @@ impl<'a> Lowerer<'a> {
             crate::parser::types::Type::Object(_)
             | crate::parser::types::Type::Interface(_) => true,
             crate::parser::types::Type::Class(class_ty) => {
-                self.class_id_from_type_name(&class_ty.name).is_none()
+                self.nominal_type_id_from_type_name(&class_ty.name).is_none()
             }
             crate::parser::types::Type::Union(union) => union
                 .members
@@ -1728,9 +1728,9 @@ impl<'a> Lowerer<'a> {
         callee: &ast::Expression,
         _args: &[ast::Expression],
     ) -> Option<String> {
-        let class_name_from_id = |class_id: crate::compiler::ir::ClassId| {
+        let class_name_from_id = |nominal_type_id: crate::compiler::ir::NominalTypeId| {
             self.class_map.iter().find_map(|(&sym, &cid)| {
-                (cid == class_id).then_some(self.interner.resolve(sym).to_string())
+                (cid == nominal_type_id).then_some(self.interner.resolve(sym).to_string())
             })
         };
 
@@ -1740,7 +1740,7 @@ impl<'a> Lowerer<'a> {
                 .get(&ident.name)
                 .filter(|name| {
                     self.type_alias_object_fields.contains_key(*name)
-                        || self.class_id_from_type_name(name).is_some()
+                        || self.nominal_type_id_from_type_name(name).is_some()
                 })
                 .cloned()
                 .or_else(|| {
@@ -1749,13 +1749,13 @@ impl<'a> Lowerer<'a> {
                         .and_then(|cid| class_name_from_id(*cid))
                 }),
             ast::Expression::Member(member) => {
-                let class_id = self.infer_class_id(&member.object);
-                class_id.and_then(|cid| {
+                let nominal_type_id = self.infer_nominal_type_id(&member.object);
+                nominal_type_id.and_then(|cid| {
                     self.method_return_type_alias_map
                         .get(&(cid, member.property.name))
                         .filter(|name| {
                             self.type_alias_object_fields.contains_key(*name)
-                                || self.class_id_from_type_name(name).is_some()
+                                || self.nominal_type_id_from_type_name(name).is_some()
                         })
                         .cloned()
                         .or_else(|| {
@@ -1879,7 +1879,7 @@ impl<'a> Lowerer<'a> {
         }
 
         // Populate field layout from inline object type annotation (e.g. `const x: { a: T } = ...`).
-        // This gives has_concrete_layout=true so LoadField is emitted instead of LateBoundMember.
+        // This gives has_concrete_layout=true so LoadFieldExact is emitted instead of LateBoundMember.
         if !self.variable_object_fields.contains_key(&name) {
             if let Some(type_ann) = &decl.type_annotation {
                 if let ast::Type::Object(obj_type) = &type_ann.ty {
@@ -1946,8 +1946,8 @@ impl<'a> Lowerer<'a> {
                 if let Some(init) = &decl.initializer {
                     // Track class type from type annotation (same as local path)
                     if let Some(type_ann) = &decl.type_annotation {
-                        if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
-                            self.variable_class_map.insert(name, class_id);
+                        if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
+                            self.variable_class_map.insert(name, nominal_type_id);
                             self.clear_late_bound_object_binding(name);
                         }
                         self.track_variable_object_alias_from_annotation(name, type_ann);
@@ -1957,8 +1957,8 @@ impl<'a> Lowerer<'a> {
                         }
                         if let ast::Type::Array(arr_ty) = &type_ann.ty {
                             if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
-                                if let Some(&class_id) = self.class_map.get(&elem_ref.name.name) {
-                                    self.array_element_class_map.insert(name, class_id);
+                                if let Some(&nominal_type_id) = self.class_map.get(&elem_ref.name.name) {
+                                    self.array_element_class_map.insert(name, nominal_type_id);
                                 }
                             }
                         }
@@ -1976,16 +1976,16 @@ impl<'a> Lowerer<'a> {
                     // Always override stale mappings from previous scopes/methods.
                     if let ast::Expression::New(new_expr) = init {
                         if let ast::Expression::Identifier(ident) = &*new_expr.callee {
-                            let class_id = self
+                            let nominal_type_id = self
                                 .class_map
                                 .get(&ident.name)
                                 .copied()
                                 .or_else(|| self.variable_class_map.get(&ident.name).copied())
                                 .or_else(|| {
-                                    self.class_id_from_type_name(self.interner.resolve(ident.name))
+                                    self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
                                 });
-                            if let Some(class_id) = class_id {
-                                self.variable_class_map.insert(name, class_id);
+                            if let Some(nominal_type_id) = nominal_type_id {
+                                self.variable_class_map.insert(name, nominal_type_id);
                                 self.clear_late_bound_object_binding(name);
                             } else if self.import_bindings.contains(&ident.name)
                                 || self
@@ -2007,8 +2007,8 @@ impl<'a> Lowerer<'a> {
                     }
 
                     // Infer class type from method call return types
-                    if let Some(class_id) = self.infer_class_id(init) {
-                        self.variable_class_map.insert(name, class_id);
+                    if let Some(nominal_type_id) = self.infer_nominal_type_id(init) {
+                        self.variable_class_map.insert(name, nominal_type_id);
                         self.clear_late_bound_object_binding(name);
                     }
                     self.track_task_result_alias_from_initializer(name, init);
@@ -2023,13 +2023,13 @@ impl<'a> Lowerer<'a> {
                         let ast::Expression::Member(member) = init else {
                             unreachable!()
                         };
-                        if let Some(class_id) = self.infer_class_id(&member.object) {
+                        if let Some(nominal_type_id) = self.infer_nominal_type_id(&member.object) {
                             if self
-                                .find_method_slot(class_id, member.property.name)
+                                .find_method_slot(nominal_type_id, member.property.name)
                                 .is_some()
                             {
                                 self.bound_method_vars
-                                    .insert(name, (class_id, member.property.name));
+                                    .insert(name, (nominal_type_id, member.property.name));
                             }
                         }
                     }
@@ -2061,8 +2061,8 @@ impl<'a> Lowerer<'a> {
                     if !self.variable_class_map.contains_key(&name)
                         && !self.late_bound_object_vars.contains(&name)
                     {
-                        if let Some(class_id) = self.class_id_from_type_id(value.ty) {
-                            self.variable_class_map.insert(name, class_id);
+                        if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(value.ty) {
+                            self.variable_class_map.insert(name, nominal_type_id);
                             self.clear_late_bound_object_binding(name);
                         }
                     }
@@ -2129,8 +2129,8 @@ impl<'a> Lowerer<'a> {
             // This must come before other inference to override stale entries from other scopes
             // (variable_class_map is a flat map without scope tracking).
             if let Some(type_ann) = &decl.type_annotation {
-                if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
-                    self.variable_class_map.insert(name, class_id);
+                if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
+                    self.variable_class_map.insert(name, nominal_type_id);
                     self.clear_late_bound_object_binding(name);
                 }
                 self.track_variable_object_alias_from_annotation(name, type_ann);
@@ -2141,8 +2141,8 @@ impl<'a> Lowerer<'a> {
                 // Track array element class type (e.g., `let items: Item[] = [...]`)
                 if let ast::Type::Array(arr_ty) = &type_ann.ty {
                     if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
-                        if let Some(&class_id) = self.class_map.get(&elem_ref.name.name) {
-                            self.array_element_class_map.insert(name, class_id);
+                        if let Some(&nominal_type_id) = self.class_map.get(&elem_ref.name.name) {
+                            self.array_element_class_map.insert(name, nominal_type_id);
                         }
                     }
                 }
@@ -2161,16 +2161,16 @@ impl<'a> Lowerer<'a> {
             // Always override stale mappings from previous scopes/methods.
             if let ast::Expression::New(new_expr) = init {
                 if let ast::Expression::Identifier(ident) = &*new_expr.callee {
-                    let class_id = self
+                    let nominal_type_id = self
                         .class_map
                         .get(&ident.name)
                         .copied()
                         .or_else(|| self.variable_class_map.get(&ident.name).copied())
                         .or_else(|| {
-                            self.class_id_from_type_name(self.interner.resolve(ident.name))
+                            self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
                         });
-                    if let Some(class_id) = class_id {
-                        self.variable_class_map.insert(name, class_id);
+                    if let Some(nominal_type_id) = nominal_type_id {
+                        self.variable_class_map.insert(name, nominal_type_id);
                         self.clear_late_bound_object_binding(name);
                     } else if self.import_bindings.contains(&ident.name)
                         || self
@@ -2193,8 +2193,8 @@ impl<'a> Lowerer<'a> {
 
             // Infer class type from method call return types
             // e.g., `let output = source.pipeThrough(x)` → infer ReadableStream from return type
-            if let Some(class_id) = self.infer_class_id(init) {
-                self.variable_class_map.insert(name, class_id);
+            if let Some(nominal_type_id) = self.infer_nominal_type_id(init) {
+                self.variable_class_map.insert(name, nominal_type_id);
                 self.clear_late_bound_object_binding(name);
             }
             self.track_task_result_alias_from_initializer(name, init);
@@ -2209,13 +2209,13 @@ impl<'a> Lowerer<'a> {
                 let ast::Expression::Member(member) = init else {
                     unreachable!()
                 };
-                if let Some(class_id) = self.infer_class_id(&member.object) {
+                if let Some(nominal_type_id) = self.infer_nominal_type_id(&member.object) {
                     if self
-                        .find_method_slot(class_id, member.property.name)
+                        .find_method_slot(nominal_type_id, member.property.name)
                         .is_some()
                     {
                         self.bound_method_vars
-                            .insert(name, (class_id, member.property.name));
+                            .insert(name, (nominal_type_id, member.property.name));
                     }
                 }
             }
@@ -2243,8 +2243,8 @@ impl<'a> Lowerer<'a> {
             if !self.variable_class_map.contains_key(&name)
                 && !self.late_bound_object_vars.contains(&name)
             {
-                if let Some(class_id) = self.class_id_from_type_id(value.ty) {
-                    self.variable_class_map.insert(name, class_id);
+                if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(value.ty) {
+                    self.variable_class_map.insert(name, nominal_type_id);
                     self.clear_late_bound_object_binding(name);
                 }
             }
@@ -2349,8 +2349,8 @@ impl<'a> Lowerer<'a> {
             // Without this, `let x: SomeClass; ... x.method()` can lose class-based
             // method lowering (especially across try/catch assignment paths).
             if let Some(type_ann) = &decl.type_annotation {
-                if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
-                    self.variable_class_map.insert(name, class_id);
+                if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
+                    self.variable_class_map.insert(name, nominal_type_id);
                 }
                 self.track_variable_object_alias_from_annotation(name, type_ann);
                 self.track_variable_structural_projection_from_annotation(name, type_ann);
@@ -2359,8 +2359,8 @@ impl<'a> Lowerer<'a> {
                 }
                 if let ast::Type::Array(arr_ty) = &type_ann.ty {
                     if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
-                        if let Some(&class_id) = self.class_map.get(&elem_ref.name.name) {
-                            self.array_element_class_map.insert(name, class_id);
+                        if let Some(&nominal_type_id) = self.class_map.get(&elem_ref.name.name) {
+                            self.array_element_class_map.insert(name, nominal_type_id);
                         }
                     }
                 }
@@ -2549,17 +2549,52 @@ impl<'a> Lowerer<'a> {
             else_block: else_target,
         });
 
-        // If condition is `a instanceof Bird`, temporarily update variable_class_map
-        // so that field access on `a` resolves to Bird's fields in the then-branch.
-        let instanceof_save = if let ast::Expression::InstanceOf(inst) = &if_stmt.condition {
+        // If condition is `a instanceof T`, temporarily update the narrowed runtime
+        // view for `a` in the then-branch. Nominal targets use variable_class_map;
+        // structural targets use variable_structural_projection_fields.
+        let instanceof_nominal_save = if let ast::Expression::InstanceOf(inst) = &if_stmt.condition {
             if let ast::Expression::Identifier(ident) = &*inst.object {
                 if let ast::types::Type::Reference(type_ref) = &inst.type_name.ty {
-                    if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
-                        let old = self.variable_class_map.insert(ident.name, class_id);
+                    if let Some(&nominal_type_id) = self.class_map.get(&type_ref.name.name) {
+                        let old = self.variable_class_map.insert(ident.name, nominal_type_id);
                         Some((ident.name, old))
                     } else {
                         None
                     }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let instanceof_shape_save = if let ast::Expression::InstanceOf(inst) = &if_stmt.condition {
+            if let ast::Expression::Identifier(ident) = &*inst.object {
+                let target_ty = self.resolve_structural_slot_type_from_annotation(&inst.type_name);
+                let layout = self
+                    .structural_projection_layout_from_type_id(target_ty)
+                    .or_else(|| {
+                        self.try_extract_object_alias_name_from_type(&inst.type_name)
+                            .and_then(|alias_name| {
+                                self.projected_structural_layout_from_alias_name(&alias_name)
+                                    .map(|layout| {
+                                        layout
+                                            .into_iter()
+                                            .map(|(field_name, field_idx)| {
+                                                (field_name, field_idx as usize)
+                                            })
+                                            .collect::<Vec<(String, usize)>>()
+                                    })
+                            })
+                    });
+                if let Some(layout) = layout {
+                    let old = self
+                        .variable_structural_projection_fields
+                        .insert(ident.name, layout);
+                    Some((ident.name, old))
                 } else {
                     None
                 }
@@ -2580,11 +2615,18 @@ impl<'a> Lowerer<'a> {
         }
 
         // Restore variable_class_map after then-branch
-        if let Some((name, old_class)) = instanceof_save {
+        if let Some((name, old_class)) = instanceof_nominal_save {
             if let Some(old) = old_class {
                 self.variable_class_map.insert(name, old);
             } else {
                 self.variable_class_map.remove(&name);
+            }
+        }
+        if let Some((name, old_projection)) = instanceof_shape_save {
+            if let Some(old) = old_projection {
+                self.variable_structural_projection_fields.insert(name, old);
+            } else {
+                self.variable_structural_projection_fields.remove(&name);
             }
         }
 
@@ -3014,9 +3056,9 @@ impl<'a> Lowerer<'a> {
                         self.local_registers.insert(local_idx, exc_reg);
 
                         // Add catch parameter to variable_class_map for method resolution
-                        for (&symbol, &class_id) in &self.class_map {
+                        for (&symbol, &nominal_type_id) in &self.class_map {
                             if self.interner.resolve(symbol) == "Error" {
-                                self.variable_class_map.insert(ident.name, class_id);
+                                self.variable_class_map.insert(ident.name, nominal_type_id);
                                 break;
                             }
                         }
@@ -3189,7 +3231,7 @@ impl<'a> Lowerer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::lower::{ClassId, Lowerer};
+    use crate::compiler::lower::{NominalTypeId, Lowerer};
     use crate::parser::{Parser, TypeContext};
     use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type};
 
@@ -3270,7 +3312,7 @@ mod tests {
             "late-bound/imported class public surface should project structurally"
         );
 
-        lowerer.class_map.insert(class_name, ClassId::new(1));
+        lowerer.class_map.insert(class_name, NominalTypeId::new(1));
         assert!(
             lowerer
                 .structural_projection_layout_from_type_id(remote_ty)

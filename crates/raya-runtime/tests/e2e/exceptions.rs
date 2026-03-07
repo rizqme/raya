@@ -544,3 +544,42 @@ fn test_type_error_stack_trace() {
         "TypeError: bad type",
     );
 }
+
+#[test]
+fn test_structural_error_like_object_gets_stack_trace() {
+    expect_bool(
+        "let stack = '';
+         try {
+             throw { message: 'boom', name: 'CustomError', stack: '' };
+         } catch (e) {
+             const err = e as { message: string, name: string, stack: string };
+             stack = err.stack;
+         }
+         return stack != '' && stack.includes('CustomError: boom');",
+        true,
+    );
+}
+
+#[test]
+fn test_custom_error_class_stack_trace_uses_structural_surface() {
+    expect_bool(
+        "class MyError {
+             message: string;
+             name: string = 'MyError';
+             stack: string = '';
+
+             constructor(message: string) {
+                 this.message = message;
+             }
+         }
+         let stack = '';
+         try {
+             throw new MyError('boom');
+         } catch (e) {
+             const err = e as { stack: string };
+             stack = err.stack;
+         }
+         return stack != '' && stack.includes('MyError: boom');",
+        true,
+    );
+}

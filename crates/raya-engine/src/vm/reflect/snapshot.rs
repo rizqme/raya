@@ -257,11 +257,11 @@ impl SnapshotContext {
             }
 
             // Create snapshot and mark as visited before recursing
-            let class_name = obj
-                .nominal_class_id()
-                .map(|class_id| format!("Class{}", class_id))
+            let type_label = obj
+                .nominal_type_id_usize()
+                .map(|nominal_type_id| format!("NominalType{}", nominal_type_id))
                 .unwrap_or_else(|| format!("Layout{}", obj.layout_id()));
-            let mut snapshot = ObjectSnapshot::new(class_name, obj_id);
+            let mut snapshot = ObjectSnapshot::new(type_label, obj_id);
 
             // Capture fields (by index since we may not have names)
             for (i, &field_value) in obj.fields.iter().enumerate() {

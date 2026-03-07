@@ -982,8 +982,8 @@ impl LoweringCtx {
             | HelperCall::ArrayPop
             | HelperCall::LoadElement
             | HelperCall::StoreElement
-            | HelperCall::LoadField
-            | HelperCall::StoreField
+            | HelperCall::LoadFieldExact
+            | HelperCall::StoreFieldExact
             | HelperCall::ModuleNativeCall
             | HelperCall::MakeClosure
             | HelperCall::LoadCaptured
@@ -993,7 +993,9 @@ impl LoweringCtx {
             | HelperCall::LoadRefCell
             | HelperCall::StoreRefCell
             | HelperCall::InstanceOf
+            | HelperCall::ImplementsShape
             | HelperCall::Cast
+            | HelperCall::CastShape
             | HelperCall::Typeof
             | HelperCall::DynGetProp
             | HelperCall::DynSetProp

@@ -93,7 +93,7 @@ pub enum WaitReason {
 
 /// Built-in method IDs for arrays
 ///
-/// These IDs are used in CallMethod instructions when calling methods on arrays.
+/// These IDs are used in CallMethodExact instructions when calling methods on arrays.
 /// The VM recognizes these IDs and executes the built-in implementation.
 pub mod array {
     /// `arr.push(value)` - Add element to end, returns new length
@@ -384,19 +384,19 @@ pub mod reflect {
     pub const GET_CLASS_HIERARCHY: u16 = 0x0D17;
 
     // Decorator Registration (for Phase 3 codegen)
-    /// `Reflect.registerClassDecorator(classId, name, args)` - Register decorator on class
+    /// `Reflect.registerClassDecorator(typeRef, name, args)` - Register decorator on class
     pub const REGISTER_CLASS_DECORATOR: u16 = 0x0D18;
-    /// `Reflect.registerMethodDecorator(classId, methodName, name, args)` - Register decorator on method
+    /// `Reflect.registerMethodDecorator(typeRef, methodName, name, args)` - Register decorator on method
     pub const REGISTER_METHOD_DECORATOR: u16 = 0x0D19;
-    /// `Reflect.registerFieldDecorator(classId, fieldName, name, args)` - Register decorator on field
+    /// `Reflect.registerFieldDecorator(typeRef, fieldName, name, args)` - Register decorator on field
     pub const REGISTER_FIELD_DECORATOR: u16 = 0x0D1A;
-    /// `Reflect.registerParameterDecorator(classId, methodName, paramIndex, name, args)` - Register on param
+    /// `Reflect.registerParameterDecorator(typeRef, methodName, paramIndex, name, args)` - Register on param
     pub const REGISTER_PARAMETER_DECORATOR: u16 = 0x0D1B;
-    /// `Reflect.getClassDecorators(classId)` - Get decorators on a class
+    /// `Reflect.getClassDecorators(typeRef)` - Get decorators on a class
     pub const GET_CLASS_DECORATORS: u16 = 0x0D1C;
-    /// `Reflect.getMethodDecorators(classId, methodName)` - Get decorators on a method
+    /// `Reflect.getMethodDecorators(typeRef, methodName)` - Get decorators on a method
     pub const GET_METHOD_DECORATORS: u16 = 0x0D1D;
-    /// `Reflect.getFieldDecorators(classId, fieldName)` - Get decorators on a field
+    /// `Reflect.getFieldDecorators(typeRef, fieldName)` - Get decorators on a field
     pub const GET_FIELD_DECORATORS: u16 = 0x0D1E;
 
     // ===== Phase 3: Field Access (0x0D20-0x0D2F) =====
@@ -472,9 +472,9 @@ pub mod reflect {
     pub const TYPE_OF: u16 = 0x0D57;
     /// `Reflect.isAssignableTo(source, target)` - Check type compatibility
     pub const IS_ASSIGNABLE_TO: u16 = 0x0D58;
-    /// `Reflect.cast(value, classId)` - Safe cast (returns null if incompatible)
+    /// `Reflect.cast(value, typeRef)` - Safe cast (returns null if incompatible)
     pub const CAST: u16 = 0x0D59;
-    /// `Reflect.castOrThrow(value, classId)` - Cast or throw error
+    /// `Reflect.castOrThrow(value, typeRef)` - Cast or throw error
     pub const CAST_OR_THROW: u16 = 0x0D5A;
 
     // ===== Phase 7: Interface and Hierarchy Query (0x0D60-0x0D6F) =====
@@ -498,7 +498,7 @@ pub mod reflect {
     pub const INSPECT: u16 = 0x0D70;
     /// `Reflect.getObjectId(obj)` - Get unique object identity
     pub const GET_OBJECT_ID: u16 = 0x0D71;
-    /// `Reflect.describe(classId)` - Detailed class description string
+    /// `Reflect.describe(typeRef)` - Detailed class description string
     pub const DESCRIBE: u16 = 0x0D72;
     /// `Reflect.snapshot(obj)` - Capture object state
     pub const SNAPSHOT: u16 = 0x0D73;
@@ -517,7 +517,7 @@ pub mod reflect {
     pub const GET_REFERRERS: u16 = 0x0D83;
     /// `Reflect.getHeapStats()` - Total objects, memory usage by class
     pub const GET_HEAP_STATS: u16 = 0x0D84;
-    /// `Reflect.findInstances(classId)` - All live instances of a class
+    /// `Reflect.findInstances(typeRef)` - All live instances of a class
     pub const FIND_INSTANCES: u16 = 0x0D85;
 
     // ===== Phase 8: Stack Introspection (0x0D90-0x0D9F) =====
@@ -551,15 +551,15 @@ pub mod reflect {
 
     // ===== Phase 10: Dynamic Subclass Creation (0x0DC0-0x0DCF) =====
 
-    /// `Reflect.createSubclass(superclassId, name, definition)` - Create a new subclass
+    /// `Reflect.createSubclass(superTypeRef, name, definition)` - Create a new subclass
     pub const CREATE_SUBCLASS: u16 = 0x0DC0;
-    /// `Reflect.extendWith(classId, fields)` - Add fields to a class (returns new class)
+    /// `Reflect.extendWith(typeRef, fields)` - Add fields to a class (returns new class)
     pub const EXTEND_WITH: u16 = 0x0DC1;
     /// `Reflect.defineClass(name, definition)` - Create a new root class
     pub const DEFINE_CLASS: u16 = 0x0DC2;
-    /// `Reflect.addMethod(classId, name, methodImpl)` - Add method to class
+    /// `Reflect.addMethod(typeRef, name, methodImpl)` - Add method to class
     pub const ADD_METHOD: u16 = 0x0DC3;
-    /// `Reflect.setConstructor(classId, constructorImpl)` - Set class constructor
+    /// `Reflect.setConstructor(typeRef, constructorImpl)` - Set class constructor
     pub const SET_CONSTRUCTOR: u16 = 0x0DC4;
 
     // ===== Phase 13: Generic Type Metadata (0x0DD0-0x0DDF) =====
@@ -588,7 +588,7 @@ pub mod reflect {
     pub const BUILDER_ADD_METHOD: u16 = 0x0DE2;
     /// `ClassBuilder.setConstructor(builderId, functionId)` - Set constructor
     pub const BUILDER_SET_CONSTRUCTOR: u16 = 0x0DE3;
-    /// `ClassBuilder.setParent(builderId, parentClassId)` - Set parent class
+    /// `ClassBuilder.setParent(builderId, parentNominalTypeId)` - Set parent class
     pub const BUILDER_SET_PARENT: u16 = 0x0DE4;
     /// `ClassBuilder.addInterface(builderId, interfaceName)` - Add interface
     pub const BUILDER_ADD_INTERFACE: u16 = 0x0DE5;
@@ -664,11 +664,11 @@ pub mod reflect {
     pub const CLEAR_PERMISSIONS: u16 = 0x0E03;
 
     // Class-level permissions
-    /// `Reflect.setClassPermissions(classId, permissions)` - Set class-level permissions
+    /// `Reflect.setClassPermissions(typeRef, permissions)` - Set class-level permissions
     pub const SET_CLASS_PERMISSIONS: u16 = 0x0E04;
-    /// `Reflect.getClassPermissions(classId)` - Get class-level permissions
+    /// `Reflect.getClassPermissions(typeRef)` - Get class-level permissions
     pub const GET_CLASS_PERMISSIONS: u16 = 0x0E05;
-    /// `Reflect.clearClassPermissions(classId)` - Clear class-level permissions
+    /// `Reflect.clearClassPermissions(typeRef)` - Clear class-level permissions
     pub const CLEAR_CLASS_PERMISSIONS: u16 = 0x0E06;
 
     // Module-level permissions
@@ -698,7 +698,7 @@ pub mod reflect {
     pub const CREATE_MODULE: u16 = 0x0E10;
     /// `Reflect.moduleAddFunction(moduleId, func)` - Add function to module
     pub const MODULE_ADD_FUNCTION: u16 = 0x0E11;
-    /// `Reflect.moduleAddClass(moduleId, classId)` - Add class to module
+    /// `Reflect.moduleAddClass(moduleId, nominalTypeId)` - Add class to module
     pub const MODULE_ADD_CLASS: u16 = 0x0E12;
     /// `Reflect.moduleAddGlobal(moduleId, name, value)` - Add global variable
     pub const MODULE_ADD_GLOBAL: u16 = 0x0E13;

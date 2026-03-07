@@ -573,12 +573,12 @@ impl<'a> LoweringContext<'a> {
             }
 
             // ===== Object Field Access (shape-aware helper path) =====
-            JitInstr::LoadField {
+            JitInstr::LoadFieldExact {
                 dest,
                 object,
                 offset,
             }
-            | JitInstr::OptionalField {
+            | JitInstr::OptionalFieldExact {
                 dest,
                 object,
                 offset,

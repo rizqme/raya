@@ -11,13 +11,10 @@ use crate::compiler::{Module, Opcode};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set};
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
-use crate::vm::interpreter::shared_state::{
-    LayoutId, ShapeAdapter, StructuralAdapterKey, StructuralSlotBinding,
-};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
     Array, BoundMethod, BoundNativeMethod, Buffer, ChannelObject, Class, Closure, DateObject,
-    MapObject, Object, RayaString, RegExpObject, SetObject, TypeHandle,
+    LayoutId, MapObject, Object, RayaString, RegExpObject, SetObject, TypeHandle,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -30,14 +27,6 @@ const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 const IMPORTED_CLASS_TYPE_HANDLE_KEY: &str = "__raya_type_handle__";
 
 impl<'a> Interpreter<'a> {
-    fn shape_id_for_member_names(names: &[String]) -> u64 {
-        crate::vm::object::shape_id_from_member_names(names)
-    }
-
-    fn dynamic_layout_id_from_member_names(names: &[String]) -> LayoutId {
-        crate::vm::object::layout_id_from_ordered_names(names)
-    }
-
     fn normalize_dynamic_value(&self, value: Value) -> Value {
         use crate::vm::json::view::{js_classify, JSView};
 
@@ -65,9 +54,9 @@ impl<'a> Interpreter<'a> {
                 let mut entries = Vec::new();
                 let mut fixed_entries_added = false;
 
-                if let Some(class_id) = obj.nominal_class_id() {
+                if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
                     let class_metadata = self.class_metadata.read();
-                    if let Some(meta) = class_metadata.get(class_id) {
+                    if let Some(meta) = class_metadata.get(nominal_type_id) {
                         for (index, name) in meta.field_names.iter().enumerate() {
                             if name.is_empty() || index >= obj.field_count() {
                                 continue;
@@ -216,10 +205,10 @@ impl<'a> Interpreter<'a> {
     ) -> Option<usize> {
         let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
-        let nominal_class_id = obj.nominal_class_id();
+        let nominal_type_id = obj.nominal_type_id_usize();
         let class_metadata = self.class_metadata.read();
-        let metadata_index = nominal_class_id
-            .and_then(|class_id| class_metadata.get(class_id))
+        let metadata_index = nominal_type_id
+            .and_then(|nominal_type_id| class_metadata.get(nominal_type_id))
             .and_then(|meta| meta.get_field_index(field_name));
         if metadata_index.is_some() {
             return metadata_index;
@@ -235,10 +224,15 @@ impl<'a> Interpreter<'a> {
     }
 
     fn get_field_value_by_name(&self, obj_val: Value, field_name: &str) -> Option<Value> {
-        let index = self.get_field_index_for_value(obj_val, field_name)?;
         let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
-        obj.get_field(index)
+        if let Some(index) = self.get_field_index_for_value(obj_val, field_name) {
+            if let Some(value) = obj.get_field(index) {
+                return Some(value);
+            }
+        }
+        let key = self.intern_prop_key(field_name);
+        obj.dyn_map().and_then(|map| map.get(&key).copied())
     }
 
     fn descriptor_flag(&self, descriptor: Value, field_name: &str, default: bool) -> bool {
@@ -356,12 +350,12 @@ impl<'a> Interpreter<'a> {
         let obj_ptr = unsafe { value.as_ptr::<Object>() }
             .ok_or_else(|| VmError::TypeError("Expected Buffer object".to_string()))?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
-        let class_id = obj
-            .nominal_class_id()
+        let nominal_type_id = obj
+            .nominal_type_id_usize()
             .ok_or_else(|| VmError::TypeError("Expected Buffer object".to_string()))?;
         let classes = self.classes.read();
         let class = classes
-            .get_class(class_id)
+            .get_class(nominal_type_id)
             .ok_or_else(|| VmError::RuntimeError("Buffer class metadata missing".to_string()))?;
         if class.name != "Buffer" {
             return Err(VmError::TypeError("Expected Buffer object".to_string()));
@@ -506,10 +500,14 @@ impl<'a> Interpreter<'a> {
     }
 
     fn alloc_buffer_object(&self, handle: u64, len: usize) -> Result<Value, VmError> {
-        let (buffer_class_id, buffer_field_count, buffer_layout_id) =
+        let (buffer_nominal_type_id, buffer_field_count, buffer_layout_id) =
             self.ensure_buffer_class_layout();
         let mut obj =
-            Object::new_nominal(buffer_layout_id, buffer_class_id as u32, buffer_field_count);
+            Object::new_nominal(
+                buffer_layout_id,
+                buffer_nominal_type_id as u32,
+                buffer_field_count,
+            );
         obj.set_field(0, Value::u64(handle))
             .map_err(VmError::RuntimeError)?;
         if buffer_field_count > 1 {
@@ -521,10 +519,14 @@ impl<'a> Interpreter<'a> {
     }
 
     fn alloc_object_descriptor(&self) -> Result<Value, VmError> {
-        let (object_class_id, object_field_count, object_layout_id) =
+        let (object_nominal_type_id, object_field_count, object_layout_id) =
             self.ensure_object_class_layout();
         let mut obj =
-            Object::new_nominal(object_layout_id, object_class_id as u32, object_field_count);
+            Object::new_nominal(
+                object_layout_id,
+                object_nominal_type_id as u32,
+                object_field_count,
+            );
         if object_field_count > 0 {
             obj.set_field(0, Value::null())
                 .map_err(VmError::RuntimeError)?;
@@ -742,7 +744,7 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
 
-                        let Some(class_id) =
+                        let Some(nominal_type_id) =
                             self.nominal_type_id_from_imported_class_value(args[0])
                         else {
                             return OpcodeResult::Error(VmError::TypeError(
@@ -752,29 +754,31 @@ impl<'a> Interpreter<'a> {
                         };
 
                         let classes = self.classes.read();
-                        let class = match classes.get_class(class_id) {
+                        let class = match classes.get_class(nominal_type_id) {
                             Some(class) => class,
                             None => {
                                 return OpcodeResult::Error(VmError::RuntimeError(format!(
-                                    "Invalid class ID for dynamic construction: {}",
-                                    class_id
+                                    "Invalid nominal type id for dynamic construction: {}",
+                                    nominal_type_id
                                 )))
                             }
                         };
                         let constructor_id = class.get_constructor();
                         let constructor_module = class.module.clone();
-                        let (layout_id, field_count) = match self.nominal_allocation(class_id) {
+                        let (layout_id, field_count) = match self.nominal_allocation(nominal_type_id)
+                        {
                             Some(allocation) => allocation,
                             None => {
                                 return OpcodeResult::Error(VmError::RuntimeError(format!(
-                                "Invalid class allocation metadata for dynamic construction: {}",
-                                class_id
+                                "Invalid nominal type allocation metadata for dynamic construction: {}",
+                                nominal_type_id
                             )))
                             }
                         };
                         drop(classes);
 
-                        let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
+                        let obj =
+                            Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
                         let gc_ptr = self.gc.lock().allocate(obj);
                         let obj_val = unsafe {
                             Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
@@ -812,7 +816,7 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
 
-                        let Some(class_id) =
+                        let Some(nominal_type_id) =
                             self.nominal_type_id_from_imported_class_value(args[1])
                         else {
                             return OpcodeResult::Error(VmError::TypeError(
@@ -823,24 +827,25 @@ impl<'a> Interpreter<'a> {
 
                         let classes = self.classes.read();
                         let result =
-                            crate::vm::reflect::is_instance_of(&classes, args[0], class_id);
+                            crate::vm::reflect::is_instance_of(&classes, args[0], nominal_type_id);
                         if let Err(error) = stack.push(Value::bool(result)) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
                     }
 
-                    id if id == crate::compiler::native_id::OBJECT_REGISTER_STRUCTURAL_VIEW => {
-                        if args.len() != 2 {
+                    id if id == crate::compiler::native_id::OBJECT_REGISTER_STRUCTURAL_SHAPE => {
+                        if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
-                                "registerStructuralView requires (object, memberNames[])"
+                                "registerStructuralShape requires (memberNames[])"
                                     .to_string(),
                             ));
                         }
 
-                        let Some(names_ptr) = (unsafe { args[1].as_ptr::<Array>() }) else {
+                        let Some(names_ptr) = (unsafe { args[0].as_ptr::<Array>() }) else {
                             return OpcodeResult::Error(VmError::TypeError(
-                                "registerStructuralView expects array of member names".to_string(),
+                                "registerStructuralShape expects array of member names"
+                                    .to_string(),
                             ));
                         };
                         let names_array = unsafe { &*names_ptr.as_ptr() };
@@ -848,137 +853,22 @@ impl<'a> Interpreter<'a> {
                         for element in &names_array.elements {
                             let Some(name_ptr) = (unsafe { element.as_ptr::<RayaString>() }) else {
                                 return OpcodeResult::Error(VmError::TypeError(
-                                    "registerStructuralView member names must be strings"
+                                    "registerStructuralShape member names must be strings"
                                         .to_string(),
                                 ));
                             };
                             expected_names.push(unsafe { &*name_ptr.as_ptr() }.data.clone());
                         }
 
-                        let required_shape = Self::shape_id_for_member_names(&expected_names);
+                        let required_shape =
+                            crate::vm::object::shape_id_from_member_names(&expected_names);
                         self.structural_shape_names
                             .write()
                             .entry(required_shape)
                             .or_insert_with(|| expected_names.clone());
                         let derived_layout =
-                            Self::dynamic_layout_id_from_member_names(&expected_names);
+                            crate::vm::object::layout_id_from_ordered_names(&expected_names);
                         self.register_structural_layout_shape(derived_layout, &expected_names);
-
-                        let object_val = args[0];
-                        if object_val.is_null() {
-                            if let Err(error) = stack.push(Value::null()) {
-                                return OpcodeResult::Error(error);
-                            }
-                            return OpcodeResult::Continue;
-                        }
-
-                        let Some(object_ptr) = (unsafe { object_val.as_ptr::<Object>() }) else {
-                            if let Err(error) = stack.push(Value::null()) {
-                                return OpcodeResult::Error(error);
-                            }
-                            return OpcodeResult::Continue;
-                        };
-                        let object_id = unsafe { (*object_ptr.as_ptr()).object_id() };
-                        let object_nominal_class_id =
-                            unsafe { (*object_ptr.as_ptr()).nominal_class_id() };
-                        let object_layout_id = unsafe { (*object_ptr.as_ptr()).layout_id() };
-                        let object_ref = unsafe { &*object_ptr.as_ptr() };
-                        let debug_structural = std::env::var("RAYA_DEBUG_STRUCTURAL_VIEW").is_ok();
-                        let (provider_layout, slot_map): (LayoutId, Vec<StructuralSlotBinding>) =
-                            if object_ref.nominal_class_id().is_none() {
-                                let provider_layout = object_ref.layout_id();
-                                let slot_map = self
-                                    .build_shape_slot_map_for_object(object_ref, &expected_names);
-                                if let Some(slot_map) = slot_map {
-                                    (provider_layout, slot_map)
-                                } else {
-                                    self.register_structural_layout_shape(
-                                        object_ref.layout_id(),
-                                        &expected_names,
-                                    );
-                                    let actual_names = self
-                                        .structural_layout_names(object_ref.layout_id())
-                                        .unwrap_or_else(|| expected_names.clone());
-                                    let derived_layout =
-                                        Self::dynamic_layout_id_from_member_names(&actual_names);
-                                    if provider_layout != derived_layout {
-                                        return OpcodeResult::Error(VmError::RuntimeError(format!(
-                                        "structural layout metadata mismatch: object layout {} != derived layout {}",
-                                        provider_layout, derived_layout
-                                    )));
-                                    }
-                                    if debug_structural {
-                                        eprintln!(
-                                        "[structural-view] seed/remap object_id={} layout={} expected=[{}] actual=[{}]",
-                                        object_id,
-                                        provider_layout,
-                                        expected_names.join(","),
-                                        actual_names.join(",")
-                                    );
-                                    }
-                                    let slot_map = expected_names
-                                        .iter()
-                                        .map(|name| {
-                                            actual_names
-                                                .iter()
-                                                .position(|actual| actual == name)
-                                                .map(StructuralSlotBinding::Field)
-                                                .unwrap_or(StructuralSlotBinding::Missing)
-                                        })
-                                        .collect();
-                                    (provider_layout, slot_map)
-                                }
-                            } else {
-                                if object_layout_id == 0 {
-                                    return OpcodeResult::Error(VmError::RuntimeError(
-                                    "structural view registration requires a physical layout id"
-                                        .to_string(),
-                                ));
-                                }
-                                let slot_map = self
-                                    .build_shape_slot_map_for_object(object_ref, &expected_names)
-                                    .unwrap_or_default();
-                                (object_layout_id, slot_map)
-                            };
-
-                        let adapter_key = StructuralAdapterKey {
-                            provider_layout,
-                            required_shape,
-                        };
-                        let adapter = Arc::new(ShapeAdapter::from_slot_map(
-                            provider_layout,
-                            required_shape,
-                            &slot_map,
-                        ));
-                        self.structural_shape_adapters
-                            .write()
-                            .insert(adapter_key, adapter.clone());
-                        if debug_structural {
-                            let slot_desc = (0..adapter.len())
-                                .map(|idx| match adapter.binding_for_slot(idx) {
-                                    StructuralSlotBinding::Field(field) => {
-                                        format!("{idx}->f{field}")
-                                    }
-                                    StructuralSlotBinding::Method(method) => {
-                                        format!("{idx}->m{method}")
-                                    }
-                                    StructuralSlotBinding::Dynamic(key) => format!("{idx}->d{key}"),
-                                    StructuralSlotBinding::Missing => format!("{idx}->missing"),
-                                })
-                                .collect::<Vec<_>>()
-                                .join(",");
-                            eprintln!(
-                                "[structural-view] install key=(func={},obj={}) class_id={} layout={} shape={} map=[{}]",
-                                self.profiler_func_id,
-                                object_id,
-                                object_nominal_class_id
-                                    .map(|id| id.to_string())
-                                    .unwrap_or_else(|| "structural".to_string()),
-                                provider_layout,
-                                required_shape,
-                                slot_desc
-                            );
-                        }
                         if let Err(error) = stack.push(Value::null()) {
                             return OpcodeResult::Error(error);
                         }
@@ -2254,11 +2144,11 @@ impl<'a> Interpreter<'a> {
                         if let Some(desc_ptr) = unsafe { descriptors_obj.as_ptr::<Object>() } {
                             let desc_obj = unsafe { &*desc_ptr.as_ptr() };
                             let field_names = desc_obj
-                                .nominal_class_id()
-                                .and_then(|class_id| {
+                                .nominal_type_id_usize()
+                                .and_then(|nominal_type_id| {
                                     let metadata = self.class_metadata.read();
                                     metadata
-                                        .get(class_id)
+                                        .get(nominal_type_id)
                                         .map(|m| m.field_names.clone())
                                         .filter(|names| !names.is_empty())
                                 })
@@ -2360,24 +2250,24 @@ impl<'a> Interpreter<'a> {
                     0x0600u16 => {
                         // ERROR_STACK (0x0600): return stack trace from error object.
                         // Stack traces are populated at throw time in exceptions.rs
-                        // (task.build_stack_trace → obj.fields[2]).
-                        // Normal e.stack access uses LoadField directly; this native
+                        // using the structural `stack` field surface.
+                        // Normal e.stack access uses LoadFieldExact directly; this native
                         // handler serves as a fallback if called explicitly.
                         let result = if !args.is_empty() {
                             let error_val = args[0];
                             if let Some(obj_ptr) = unsafe { error_val.as_ptr::<Object>() } {
                                 let obj = unsafe { &*obj_ptr.as_ptr() };
-                                if obj.fields.len() > 2 {
-                                    obj.fields[2]
-                                } else {
-                                    let s = RayaString::new(String::new());
-                                    let gc_ptr = self.gc.lock().allocate(s);
-                                    unsafe {
-                                        Value::from_ptr(
-                                            std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
-                                        )
-                                    }
-                                }
+                                self.get_object_named_field_value(obj, "stack").unwrap_or_else(
+                                    || {
+                                        let s = RayaString::new(String::new());
+                                        let gc_ptr = self.gc.lock().allocate(s);
+                                        unsafe {
+                                            Value::from_ptr(
+                                                std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
+                                            )
+                                        }
+                                    },
+                                )
                             } else {
                                 let s = RayaString::new(String::new());
                                 let gc_ptr = self.gc.lock().allocate(s);

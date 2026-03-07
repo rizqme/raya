@@ -27,7 +27,7 @@ fn test_object_creation_and_field_access() {
         local_count: 1,
         code: vec![
             // new Point() -> local 0
-            Opcode::New as u8,
+            Opcode::NewType as u8,
             0,
             0, // class index 0
             Opcode::StoreLocal as u8,
@@ -42,7 +42,7 @@ fn test_object_creation_and_field_access() {
             0,
             0,
             0,
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             0,
             0, // field offset 0
             // obj.y = 20
@@ -54,14 +54,14 @@ fn test_object_creation_and_field_access() {
             0,
             0,
             0,
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             1,
             0, // field offset 1
             // return obj.x
             Opcode::LoadLocal as u8,
             0,
             0,
-            Opcode::LoadField as u8,
+            Opcode::LoadFieldExact as u8,
             0,
             0, // field offset 0
             Opcode::Return as u8,
@@ -215,7 +215,7 @@ fn test_multiple_objects() {
         local_count: 2,
         code: vec![
             // Point -> local 0
-            Opcode::New as u8,
+            Opcode::NewType as u8,
             0,
             0, // class 0
             Opcode::StoreLocal as u8,
@@ -230,7 +230,7 @@ fn test_multiple_objects() {
             0,
             0,
             0,
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             0,
             0,
             // Point.y = 10
@@ -242,11 +242,11 @@ fn test_multiple_objects() {
             0,
             0,
             0,
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             1,
             0,
             // Rectangle -> local 1
-            Opcode::New as u8,
+            Opcode::NewType as u8,
             1,
             0, // class 1
             Opcode::StoreLocal as u8,
@@ -261,27 +261,27 @@ fn test_multiple_objects() {
             0,
             0,
             0,
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             2,
             0,
             // Calculate Point.x + Point.y + Rectangle.x2
             Opcode::LoadLocal as u8,
             0,
             0,
-            Opcode::LoadField as u8,
+            Opcode::LoadFieldExact as u8,
             0,
             0, // Point.x
             Opcode::LoadLocal as u8,
             0,
             0,
-            Opcode::LoadField as u8,
+            Opcode::LoadFieldExact as u8,
             1,
             0, // Point.y
             Opcode::Iadd as u8,
             Opcode::LoadLocal as u8,
             1,
             0,
-            Opcode::LoadField as u8,
+            Opcode::LoadFieldExact as u8,
             2,
             0, // Rectangle.x2
             Opcode::Iadd as u8,
@@ -310,7 +310,7 @@ fn test_object_with_gc() {
         local_count: 1,
         code: vec![
             // Create Point
-            Opcode::New as u8,
+            Opcode::NewType as u8,
             0,
             0,
             Opcode::StoreLocal as u8,
@@ -325,14 +325,14 @@ fn test_object_with_gc() {
             0,
             0,
             0,
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             0,
             0,
             // Load x and return it (object should survive GC)
             Opcode::LoadLocal as u8,
             0,
             0,
-            Opcode::LoadField as u8,
+            Opcode::LoadFieldExact as u8,
             0,
             0,
             Opcode::Return as u8,
@@ -389,7 +389,7 @@ fn test_object_literal() {
             0,
             // Object is now on stack with both fields set
             // Read field 0 to verify
-            Opcode::LoadField as u8,
+            Opcode::LoadFieldExact as u8,
             0,
             0,
             Opcode::Return as u8,
@@ -521,7 +521,7 @@ fn test_optional_field_non_null() {
         local_count: 1,
         code: vec![
             // Create Point
-            Opcode::New as u8,
+            Opcode::NewType as u8,
             0,
             0,
             Opcode::StoreLocal as u8,
@@ -536,14 +536,14 @@ fn test_optional_field_non_null() {
             0,
             0,
             0,
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             0,
             0,
             // Load object and access optional field
             Opcode::LoadLocal as u8,
             0,
             0,
-            Opcode::OptionalField as u8,
+            Opcode::OptionalFieldExact as u8,
             0,
             0, // field offset 0
             Opcode::Return as u8,
@@ -571,7 +571,7 @@ fn test_optional_field_null() {
             // Push null
             Opcode::ConstNull as u8,
             // Access optional field (should return null)
-            Opcode::OptionalField as u8,
+            Opcode::OptionalFieldExact as u8,
             0,
             0, // field offset 0
             Opcode::Return as u8,
@@ -619,14 +619,14 @@ fn test_constructor_no_args() {
             0,
             0,
             0,
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             0,
             0,
             // Load and return field 0 to verify
             Opcode::LoadLocal as u8,
             0,
             0,
-            Opcode::LoadField as u8,
+            Opcode::LoadFieldExact as u8,
             0,
             0,
             Opcode::Return as u8,
@@ -693,7 +693,7 @@ fn test_constructor_basic() {
             Opcode::LoadLocal as u8,
             0,
             0,
-            Opcode::LoadField as u8,
+            Opcode::LoadFieldExact as u8,
             0,
             0,
             Opcode::Return as u8,
@@ -716,7 +716,7 @@ fn test_constructor_basic() {
             1,
             0,
             // Set this.x = x
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             0,
             0,
             // Load 'this'
@@ -728,7 +728,7 @@ fn test_constructor_basic() {
             2,
             0,
             // Set this.y = y
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             1,
             0,
             // Return null (constructor doesn't return value)
@@ -789,7 +789,7 @@ fn test_call_super() {
             Opcode::LoadLocal as u8,
             0,
             0,
-            Opcode::LoadField as u8,
+            Opcode::LoadFieldExact as u8,
             1,
             0,
             Opcode::Return as u8,
@@ -810,7 +810,7 @@ fn test_call_super() {
             Opcode::LoadLocal as u8,
             1,
             0, // color
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             0,
             0, // field 0 (color)
             Opcode::ConstNull as u8,
@@ -844,7 +844,7 @@ fn test_call_super() {
             Opcode::LoadLocal as u8,
             1,
             0, // radius
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             1,
             0, // field 1 (radius)
             Opcode::ConstNull as u8,

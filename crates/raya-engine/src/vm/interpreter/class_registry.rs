@@ -106,6 +106,10 @@ impl RuntimeLayoutRegistry {
             .and_then(|layout| layout.field_names.as_deref())
     }
 
+    pub fn nominal_layout_id(&self, nominal_type_id: usize) -> Option<LayoutId> {
+        self.nominal_to_layout.get(&nominal_type_id).copied()
+    }
+
     pub fn nominal_allocation(&self, nominal_type_id: usize) -> Option<(LayoutId, usize)> {
         let layout_id = *self.nominal_to_layout.get(&nominal_type_id)?;
         let layout = self.layouts.get(&layout_id)?;
@@ -130,19 +134,19 @@ impl Default for RuntimeLayoutRegistry {
     }
 }
 
-/// Class registry for the VM
+/// Nominal type registry for the VM.
 #[derive(Debug)]
 pub struct ClassRegistry {
-    /// Classes indexed by ID
+    /// Nominal classes indexed by runtime type ID.
     classes: Vec<Option<Class>>,
-    /// Class name to ID mapping
+    /// Class name to nominal type ID mapping.
     name_to_id: FxHashMap<String, usize>,
-    /// Next internally allocated nominal class ID.
+    /// Next internally allocated nominal type ID.
     next_id: usize,
 }
 
 impl ClassRegistry {
-    /// Create a new empty registry
+    /// Create a new empty registry.
     pub fn new() -> Self {
         Self {
             classes: Vec::new(),
@@ -166,15 +170,11 @@ impl ClassRegistry {
         base
     }
 
-    /// Register a new class
+    /// Register a new class definition.
     pub fn register_class(&mut self, mut class: Class) -> usize {
         if class.id == 0 {
             class.id = self.allocate_nominal_type_id();
         }
-        assert_ne!(
-            class.layout_id, 0,
-            "nominal runtime class must have a layout id before registration"
-        );
         let id = class.id;
         let name = class.name.clone();
 
@@ -193,12 +193,12 @@ impl ClassRegistry {
         id
     }
 
-    /// Get class by ID
+    /// Get class by nominal type ID.
     pub fn get_class(&self, id: usize) -> Option<&Class> {
         self.classes.get(id).and_then(|class| class.as_ref())
     }
 
-    /// Get mutable class by ID
+    /// Get mutable class by nominal type ID.
     pub fn get_class_mut(&mut self, id: usize) -> Option<&mut Class> {
         self.classes.get_mut(id).and_then(|class| class.as_mut())
     }
@@ -208,12 +208,12 @@ impl ClassRegistry {
         self.name_to_id.get(name).and_then(|id| self.get_class(*id))
     }
 
-    /// Get next available class ID
-    pub fn next_class_id(&self) -> usize {
+    /// Get the next available nominal type ID.
+    pub fn next_nominal_type_id(&self) -> usize {
         self.next_id
     }
 
-    /// Get class by ID (alias for get_class)
+    /// Get class by nominal type ID (alias for `get_class`).
     pub fn get(&self, id: usize) -> Option<&Class> {
         self.get_class(id)
     }
@@ -247,28 +247,18 @@ mod tests {
     use super::*;
     use crate::vm::object::{Class, STRUCTURAL_LAYOUT_ID_TAG};
 
-    fn class_with_layout(id: usize, name: &str, field_count: usize, layout_id: LayoutId) -> Class {
-        let mut class = Class::new(id, name.to_string(), field_count);
-        class.set_layout_id(layout_id);
-        class
+    fn class_with_id(id: usize, name: &str, field_count: usize) -> Class {
+        Class::new(id, name.to_string(), field_count)
     }
 
-    fn class_with_parent_and_layout(
-        id: usize,
-        name: &str,
-        field_count: usize,
-        parent_id: usize,
-        layout_id: LayoutId,
-    ) -> Class {
-        let mut class = Class::with_parent(id, name.to_string(), field_count, parent_id);
-        class.set_layout_id(layout_id);
-        class
+    fn class_with_parent(id: usize, name: &str, field_count: usize, parent_id: usize) -> Class {
+        Class::with_parent(id, name.to_string(), field_count, parent_id)
     }
 
     #[test]
     fn test_register_class() {
         let mut registry = ClassRegistry::new();
-        let class = class_with_layout(1, "Point", 2, 1);
+        let class = class_with_id(1, "Point", 2);
 
         let id = registry.register_class(class);
         assert_eq!(id, 1);
@@ -277,7 +267,7 @@ mod tests {
     #[test]
     fn test_get_class_by_id() {
         let mut registry = ClassRegistry::new();
-        let class = class_with_layout(1, "Point", 2, 1);
+        let class = class_with_id(1, "Point", 2);
         registry.register_class(class);
 
         let retrieved = registry.get_class(1).unwrap();
@@ -288,7 +278,7 @@ mod tests {
     #[test]
     fn test_get_class_by_name() {
         let mut registry = ClassRegistry::new();
-        let class = class_with_layout(1, "Point", 2, 1);
+        let class = class_with_id(1, "Point", 2);
         registry.register_class(class);
 
         let retrieved = registry.get_class_by_name("Point").unwrap();
@@ -300,53 +290,51 @@ mod tests {
     fn test_multiple_classes() {
         let mut registry = ClassRegistry::new();
 
-        let class1 = class_with_layout(1, "Point", 2, 1);
-        let class2 = class_with_layout(2, "Circle", 3, 2);
+        let class1 = class_with_id(1, "Point", 2);
+        let class2 = class_with_id(2, "Circle", 3);
 
         registry.register_class(class1);
         registry.register_class(class2);
 
         assert_eq!(registry.get_class(1).unwrap().name, "Point");
         assert_eq!(registry.get_class(2).unwrap().name, "Circle");
-        assert_eq!(registry.next_class_id(), 3);
+        assert_eq!(registry.next_nominal_type_id(), 3);
     }
 
     #[test]
-    fn test_next_class_id() {
+    fn test_next_nominal_type_id() {
         let mut registry = ClassRegistry::new();
-        assert_eq!(registry.next_class_id(), 1);
+        assert_eq!(registry.next_nominal_type_id(), 1);
 
-        let class = class_with_layout(1, "Point", 2, 1);
+        let class = class_with_id(1, "Point", 2);
         registry.register_class(class);
-        assert_eq!(registry.next_class_id(), 2);
+        assert_eq!(registry.next_nominal_type_id(), 2);
     }
 
     #[test]
-    fn test_register_class_preserves_explicit_layout_id() {
-        let mut registry = ClassRegistry::new();
-        registry.register_class(class_with_layout(42, "Point", 2, 7));
+    fn test_nominal_layout_lookup_tracks_registered_nominal_layout() {
+        let mut registry = RuntimeLayoutRegistry::new();
+        registry.register_nominal_layout(42, 7, 2, Some("Point".to_string()));
 
-        let class = registry.get_class(42).expect("registered class");
-        assert_eq!(class.layout_id, 7);
+        assert_eq!(registry.nominal_layout_id(42), Some(7));
+        assert_eq!(registry.nominal_allocation(42), Some((7, 2)));
     }
 
     #[test]
     fn test_register_class_auto_assigns_nominal_type_id() {
         let mut registry = ClassRegistry::new();
-        let id = registry.register_class(class_with_layout(0, "Point", 2, 11));
+        let id = registry.register_class(class_with_id(0, "Point", 2));
 
         assert_eq!(id, 1);
         assert_eq!(registry.get_class(id).map(|class| class.id), Some(1));
-        assert_eq!(registry.next_class_id(), 2);
+        assert_eq!(registry.next_nominal_type_id(), 2);
     }
 
     #[test]
-    fn test_register_class_requires_explicit_layout_id() {
+    fn test_register_class_no_longer_requires_layout_id() {
         let mut registry = ClassRegistry::new();
-        let result = std::panic::catch_unwind(move || {
-            registry.register_class(Class::new(1, "Point".to_string(), 2));
-        });
-        assert!(result.is_err());
+        let id = registry.register_class(Class::new(1, "Point".to_string(), 2));
+        assert_eq!(id, 1);
     }
 
     #[test]
@@ -355,11 +343,11 @@ mod tests {
         let base = registry.reserve_nominal_type_range(3);
 
         assert_eq!(base, 1);
-        assert_eq!(registry.next_class_id(), 4);
+        assert_eq!(registry.next_nominal_type_id(), 4);
 
-        let id = registry.register_class(class_with_layout(2, "Reserved", 1, 12));
+        let id = registry.register_class(class_with_id(2, "Reserved", 1));
         assert_eq!(id, 2);
-        assert_eq!(registry.next_class_id(), 4);
+        assert_eq!(registry.next_nominal_type_id(), 4);
     }
 
     #[test]

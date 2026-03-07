@@ -148,53 +148,55 @@ const REFLECT_IS_PERMISSIONS_SEALED: number = 0x0E0D;
 const REFLECT_BOOTSTRAP: number = 0x0E20;
 const REFLECT_IS_BOOTSTRAPPED: number = 0x0E28;
 
+type ReflectValue = Object | string | number | boolean | null;
+type NominalTypeRef = { nominalTypeId: number, name: string, layoutId: number };
+
 // ============================================================================
 // Reflect class
 // ============================================================================
 
 class __StdReflect {
-
     // ========================================================================
     // Phase 1: Metadata Operations
     // ========================================================================
 
-    defineMetadata(key: string, value: number, target: number): void {
+    defineMetadata(key: string, value: ReflectValue, target: ReflectValue): void {
         __NATIVE_CALL(REFLECT_DEFINE_METADATA, key, value, target);
     }
 
-    defineMetadataProp(key: string, value: number, target: number, prop: string): void {
+    defineMetadataProp(key: string, value: ReflectValue, target: ReflectValue, prop: string): void {
         __NATIVE_CALL(REFLECT_DEFINE_METADATA_PROP, key, value, target, prop);
     }
 
-    getMetadata(key: string, target: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_METADATA, key, target);
+    getMetadata(key: string, target: ReflectValue): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_GET_METADATA, key, target);
     }
 
-    getMetadataProp(key: string, target: number, prop: string): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_METADATA_PROP, key, target, prop);
+    getMetadataProp(key: string, target: ReflectValue, prop: string): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_GET_METADATA_PROP, key, target, prop);
     }
 
-    hasMetadata(key: string, target: number): boolean {
+    hasMetadata(key: string, target: ReflectValue): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_HAS_METADATA, key, target);
     }
 
-    hasMetadataProp(key: string, target: number, prop: string): boolean {
+    hasMetadataProp(key: string, target: ReflectValue, prop: string): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_HAS_METADATA_PROP, key, target, prop);
     }
 
-    getMetadataKeys(target: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_METADATA_KEYS, target);
+    getMetadataKeys(target: ReflectValue): string[] {
+        return __NATIVE_CALL<string[]>(REFLECT_GET_METADATA_KEYS, target);
     }
 
-    getMetadataKeysProp(target: number, prop: string): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_METADATA_KEYS_PROP, target, prop);
+    getMetadataKeysProp(target: ReflectValue, prop: string): string[] {
+        return __NATIVE_CALL<string[]>(REFLECT_GET_METADATA_KEYS_PROP, target, prop);
     }
 
-    deleteMetadata(key: string, target: number): boolean {
+    deleteMetadata(key: string, target: ReflectValue): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_DELETE_METADATA, key, target);
     }
 
-    deleteMetadataProp(key: string, target: number, prop: string): boolean {
+    deleteMetadataProp(key: string, target: ReflectValue, prop: string): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_DELETE_METADATA_PROP, key, target, prop);
     }
 
@@ -202,164 +204,180 @@ class __StdReflect {
     // Phase 2: Class Introspection
     // ========================================================================
 
-    getClass(obj: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_CLASS, obj);
+    getClass<T>(obj: T): NominalTypeRef | null {
+        return __NATIVE_CALL<NominalTypeRef | null>(REFLECT_GET_CLASS, obj);
     }
 
-    getClassByName(name: string): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_CLASS_BY_NAME, name);
+    getClassByName(name: string): NominalTypeRef | null {
+        return __NATIVE_CALL<NominalTypeRef | null>(REFLECT_GET_CLASS_BY_NAME, name);
     }
 
-    getAllClasses(): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_ALL_CLASSES);
+    getAllClasses(): NominalTypeRef[] {
+        return __NATIVE_CALL<NominalTypeRef[]>(REFLECT_GET_ALL_CLASSES);
     }
 
-    getClassesWithDecorator(decorator: string): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_CLASSES_WITH_DECORATOR, decorator);
+    getClassesWithDecorator(decorator: string): NominalTypeRef[] {
+        return __NATIVE_CALL<NominalTypeRef[]>(REFLECT_GET_CLASSES_WITH_DECORATOR, decorator);
     }
 
-    isSubclassOf(sub: number, sup: number): boolean {
-        return __NATIVE_CALL<boolean>(REFLECT_IS_SUBCLASS_OF, sub, sup);
+    isSubclassOf(sub: NominalTypeRef, sup: NominalTypeRef): boolean {
+        return __NATIVE_CALL<boolean>(
+            REFLECT_IS_SUBCLASS_OF,
+            sub,
+            sup,
+        );
     }
 
-    isInstanceOf(obj: number, cls: number): boolean {
-        return __NATIVE_CALL<boolean>(REFLECT_IS_INSTANCE_OF, obj, cls);
+    isInstanceOf<T>(obj: T, typeRef: NominalTypeRef): boolean {
+        return __NATIVE_CALL<boolean>(
+            REFLECT_IS_INSTANCE_OF,
+            obj,
+            typeRef,
+        );
     }
 
-    getTypeInfo(target: number): string {
+    getTypeInfo(target: ReflectValue): string {
         return __NATIVE_CALL<string>(REFLECT_GET_TYPE_INFO, target);
     }
 
-    getClassHierarchy(obj: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_CLASS_HIERARCHY, obj);
+    getClassHierarchy<T>(obj: T): NominalTypeRef[] {
+        return __NATIVE_CALL<NominalTypeRef[]>(REFLECT_GET_CLASS_HIERARCHY, obj);
     }
 
     // Decorator queries
-    getClassDecorators(cls: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_CLASS_DECORATORS, cls);
+    getClassDecorators(typeRef: NominalTypeRef): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_CLASS_DECORATORS, typeRef);
     }
 
-    getMethodDecorators(cls: number, method: string): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_METHOD_DECORATORS, cls, method);
+    getMethodDecorators(typeRef: NominalTypeRef, method: string): number {
+        return __NATIVE_CALL<number>(
+            REFLECT_GET_METHOD_DECORATORS,
+            typeRef,
+            method,
+        );
     }
 
-    getFieldDecorators(cls: number, field: string): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_FIELD_DECORATORS, cls, field);
+    getFieldDecorators(typeRef: NominalTypeRef, field: string): number {
+        return __NATIVE_CALL<number>(
+            REFLECT_GET_FIELD_DECORATORS,
+            typeRef,
+            field,
+        );
     }
 
     // ========================================================================
     // Phase 3: Field Access
     // ========================================================================
 
-    get(target: number, key: string): number {
-        return __NATIVE_CALL<number>(REFLECT_GET, target, key);
+    get(target: ReflectValue, key: string): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_GET, target, key);
     }
 
-    set(target: number, key: string, value: number): void {
+    set(target: ReflectValue, key: string, value: ReflectValue): void {
         __NATIVE_CALL(REFLECT_SET, target, key, value);
     }
 
-    has(target: number, key: string): boolean {
+    has(target: ReflectValue, key: string): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_HAS, target, key);
     }
 
-    getFieldNames(target: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_FIELD_NAMES, target);
+    getFieldNames(target: ReflectValue): string[] {
+        return __NATIVE_CALL<string[]>(REFLECT_GET_FIELD_NAMES, target);
     }
 
-    getFieldInfo(target: number, key: string): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_FIELD_INFO, target, key);
+    getFieldInfo(target: ReflectValue, key: string): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_GET_FIELD_INFO, target, key);
     }
 
-    getFields(target: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_FIELDS, target);
+    getFields(target: ReflectValue): ReflectValue[] {
+        return __NATIVE_CALL<ReflectValue[]>(REFLECT_GET_FIELDS, target);
     }
 
-    getStaticFieldNames(cls: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_STATIC_FIELD_NAMES, cls);
+    getStaticFieldNames(typeRef: NominalTypeRef): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_STATIC_FIELD_NAMES, typeRef);
     }
 
-    getStaticFields(cls: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_STATIC_FIELDS, cls);
+    getStaticFields(typeRef: NominalTypeRef): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_STATIC_FIELDS, typeRef);
     }
 
     // ========================================================================
     // Phase 4: Method Invocation
     // ========================================================================
 
-    invoke(target: number, method: string, args: number): number {
-        return __NATIVE_CALL<number>(REFLECT_INVOKE, target, method, args);
+    invoke(target: ReflectValue, method: string, args: ReflectValue): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_INVOKE, target, method, args);
     }
 
-    hasMethod(target: number, method: string): boolean {
+    hasMethod(target: ReflectValue, method: string): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_HAS_METHOD, target, method);
     }
 
-    getMethodInfo(target: number, method: string): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_METHOD_INFO, target, method);
+    getMethodInfo(target: ReflectValue, method: string): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_GET_METHOD_INFO, target, method);
     }
 
-    getMethods(target: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_METHODS, target);
+    getMethods(target: ReflectValue): ReflectValue[] {
+        return __NATIVE_CALL<ReflectValue[]>(REFLECT_GET_METHODS, target);
     }
 
-    getStaticMethods(cls: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_STATIC_METHODS, cls);
+    getStaticMethods(typeRef: NominalTypeRef): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_STATIC_METHODS, typeRef);
     }
 
     // ========================================================================
     // Phase 5: Object Creation
     // ========================================================================
 
-    construct(cls: number, args: number): number {
-        return __NATIVE_CALL<number>(REFLECT_CONSTRUCT, cls, args);
+    construct(typeRef: NominalTypeRef, args: ReflectValue): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_CONSTRUCT, typeRef, args);
     }
 
-    allocate(cls: number): number {
-        return __NATIVE_CALL<number>(REFLECT_ALLOCATE, cls);
+    allocate(typeRef: NominalTypeRef): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_ALLOCATE, typeRef);
     }
 
-    clone(obj: number): number {
-        return __NATIVE_CALL<number>(REFLECT_CLONE, obj);
+    clone(obj: ReflectValue): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_CLONE, obj);
     }
 
-    deepClone(obj: number): number {
-        return __NATIVE_CALL<number>(REFLECT_DEEP_CLONE, obj);
+    deepClone(obj: ReflectValue): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_DEEP_CLONE, obj);
     }
 
-    getConstructorInfo(cls: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_CONSTRUCTOR_INFO, cls);
+    getConstructorInfo(typeRef: NominalTypeRef): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_CONSTRUCTOR_INFO, typeRef);
     }
 
     // ========================================================================
     // Phase 6: Type Utilities
     // ========================================================================
 
-    isString(value: number): boolean {
+    isString(value: ReflectValue): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_IS_STRING, value);
     }
 
-    isNumber(value: number): boolean {
+    isNumber(value: ReflectValue): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_IS_NUMBER, value);
     }
 
-    isBoolean(value: number): boolean {
+    isBoolean(value: ReflectValue): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_IS_BOOLEAN, value);
     }
 
-    isNull(value: number): boolean {
+    isNull(value: ReflectValue): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_IS_NULL, value);
     }
 
-    isArray(value: number): boolean {
+    isArray(value: ReflectValue): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_IS_ARRAY, value);
     }
 
-    isFunction(value: number): boolean {
+    isFunction(value: ReflectValue): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_IS_FUNCTION, value);
     }
 
-    isObject(value: number): boolean {
+    isObject(value: ReflectValue): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_IS_OBJECT, value);
     }
 
@@ -367,39 +385,39 @@ class __StdReflect {
     // Phase 7: Interface and Hierarchy Query
     // ========================================================================
 
-    implementsInterface(cls: number, iface: string): boolean {
-        return __NATIVE_CALL<boolean>(REFLECT_IMPLEMENTS, cls, iface);
+    implementsInterface(typeRef: NominalTypeRef, iface: string): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IMPLEMENTS, typeRef, iface);
     }
 
-    getInterfaces(cls: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_INTERFACES, cls);
+    getInterfaces(typeRef: NominalTypeRef): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_INTERFACES, typeRef);
     }
 
-    getSuperclass(cls: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_SUPERCLASS, cls);
+    getSuperclass(typeRef: NominalTypeRef): NominalTypeRef | null {
+        return __NATIVE_CALL<NominalTypeRef | null>(REFLECT_GET_SUPERCLASS, typeRef);
     }
 
-    getSubclasses(cls: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_SUBCLASSES, cls);
+    getSubclasses(typeRef: NominalTypeRef): NominalTypeRef[] {
+        return __NATIVE_CALL<NominalTypeRef[]>(REFLECT_GET_SUBCLASSES, typeRef);
     }
 
     // ========================================================================
     // Phase 8: Object Inspection
     // ========================================================================
 
-    inspect(obj: number): string {
+    inspect(obj: ReflectValue): string {
         return __NATIVE_CALL<string>(REFLECT_INSPECT, obj);
     }
 
-    getObjectId(obj: number): number {
+    getObjectId(obj: ReflectValue): number {
         return __NATIVE_CALL<number>(REFLECT_GET_OBJECT_ID, obj);
     }
 
-    describe(cls: number): string {
-        return __NATIVE_CALL<string>(REFLECT_DESCRIBE, cls);
+    describe(typeRef: NominalTypeRef): string {
+        return __NATIVE_CALL<string>(REFLECT_DESCRIBE, typeRef);
     }
 
-    getObjectSize(obj: number): number {
+    getObjectSize(obj: ReflectValue): number {
         return __NATIVE_CALL<number>(REFLECT_GET_OBJECT_SIZE, obj);
     }
 
@@ -407,35 +425,35 @@ class __StdReflect {
     // Phase 9: Proxy Objects
     // ========================================================================
 
-    createProxy(target: number, handler: number): number {
-        return __NATIVE_CALL<number>(REFLECT_CREATE_PROXY, target, handler);
+    createProxy(target: ReflectValue, handler: ReflectValue): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_CREATE_PROXY, target, handler);
     }
 
-    isProxy(obj: number): boolean {
+    isProxy(obj: ReflectValue): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_IS_PROXY, obj);
     }
 
-    getProxyTarget(proxy: number): number {
-        return __NATIVE_CALL<number>(REFLECT_GET_PROXY_TARGET, proxy);
+    getProxyTarget(proxy: ReflectValue): ReflectValue {
+        return __NATIVE_CALL<ReflectValue>(REFLECT_GET_PROXY_TARGET, proxy);
     }
 
     // ========================================================================
     // Phase 16: Permissions
     // ========================================================================
 
-    setPermissions(target: number, perms: number): void {
+    setPermissions(target: ReflectValue, perms: number): void {
         __NATIVE_CALL(REFLECT_SET_PERMISSIONS, target, perms);
     }
 
-    getPermissions(target: number): number {
+    getPermissions(target: ReflectValue): number {
         return __NATIVE_CALL<number>(REFLECT_GET_PERMISSIONS, target);
     }
 
-    hasPermission(target: number, perm: number): boolean {
+    hasPermission(target: ReflectValue, perm: number): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_HAS_PERMISSION, target, perm);
     }
 
-    clearPermissions(target: number): void {
+    clearPermissions(target: ReflectValue): void {
         __NATIVE_CALL(REFLECT_CLEAR_PERMISSIONS, target);
     }
 
@@ -447,7 +465,7 @@ class __StdReflect {
         return __NATIVE_CALL<number>(REFLECT_GET_GLOBAL_PERMISSIONS);
     }
 
-    isPermissionsSealed(target: number): boolean {
+    isPermissionsSealed(target: ReflectValue): boolean {
         return __NATIVE_CALL<boolean>(REFLECT_IS_PERMISSIONS_SEALED, target);
     }
 

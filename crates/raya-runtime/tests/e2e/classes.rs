@@ -700,7 +700,7 @@ fn test_cast_unknown_to_object_shape_required_fields_throws() {
         "let x: unknown = {};
          let y = x as { a: number };
          return y;",
-        "required field count",
+        "missing required slot",
     );
 }
 

@@ -173,7 +173,7 @@ export class BytecodeBuilder {
  * Usage:
  *   let builder: ClassBuilder = new ClassBuilder("MyClass");
  *   builder.addField("x", "number", false, false);
- *   let classId: number = builder.build();
+ *   let nominalTypeId: number = builder.build();
  */
 export class ClassBuilder {
     /** Internal builder ID. */
@@ -192,12 +192,12 @@ export class ClassBuilder {
     setConstructor(functionId: number): void;
 
     /** Set the parent class for inheritance. */
-    setParent(parentClassId: number): void;
+    setParent(parentNominalTypeId: number): void;
 
     /** Add an interface that this class implements. */
     addInterface(interfaceName: string): void;
 
-    /** Finalize and register the class. Returns class ID. */
+    /** Finalize and register the class. Returns nominal type ID. */
     build(): number;
 }
 
@@ -221,7 +221,7 @@ export class DynamicModule {
     addFunction(functionId: number): void;
 
     /** Add a class to the module with an export name. */
-    addClass(classId: number, name: string): void;
+    addClass(nominalTypeId: number, name: string): void;
 
     /** Add a global variable to the module. */
     addGlobal(name: string, value: number): void;

@@ -145,7 +145,7 @@ fn emit_binary_op(writer: &mut BytecodeWriter, op: BinaryOp, ty: TypeId) {
 - Type information drives opcode selection
 - Stack-based bytecode: load operands, operate, store result
 - Methods use vtable indices, not function IDs
-- `ObjectLiteral` emits class_id as **u16** (not u32) + field_count as u16, followed by `InitObject` per field
+- `ObjectLiteral` emits structural layout metadata plus field_count, followed by `InitObject` per field
 
 
 <!-- AUTO-FOLDER-SNAPSHOT:START -->

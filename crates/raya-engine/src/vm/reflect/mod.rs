@@ -46,8 +46,8 @@ mod snapshot;
 mod type_builder;
 
 pub use bootstrap::{
-    bootstrap_native_ids, core_class_ids, is_bootstrapped, mark_bootstrapped, BootstrapContext,
-    BootstrapInfo, ExecutionOptions, ExecutionResult,
+    bootstrap_native_ids, core_nominal_type_ids, is_bootstrapped, mark_bootstrapped,
+    BootstrapContext, BootstrapInfo, ExecutionOptions, ExecutionResult,
 };
 pub use bytecode_builder::{
     opcode as bc_opcode, BytecodeBuilder, BytecodeBuilderRegistry, CompiledFunction, ConstantValue,
@@ -67,9 +67,10 @@ pub use generic_metadata::{
     GenericTypeRegistry, SpecializedTypeInfo,
 };
 pub use introspection::{
-    get_all_classes, get_class, get_class_by_name, get_class_hierarchy, get_class_id,
-    get_type_info_for_value, is_instance_of, is_subclass_of, ConstructorInfo, DecoratorInfo,
-    FieldInfo, MethodInfo, Modifiers, ParameterInfo, TypeInfo, TypeKind,
+    get_all_classes, get_class, get_class_by_name, get_class_hierarchy, get_layout_id,
+    get_nominal_type_id, get_type_info_for_value, is_instance_of, is_subclass_of,
+    ConstructorInfo, DecoratorInfo, FieldInfo, MethodInfo, Modifiers, ParameterInfo, TypeInfo,
+    TypeKind,
 };
 pub use metadata::{MetadataKey, MetadataStore, PropertyKey};
 pub use permissions::{

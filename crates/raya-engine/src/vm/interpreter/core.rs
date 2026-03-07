@@ -462,7 +462,7 @@ impl<'a> Interpreter<'a> {
         if let Some(names) = self.structural_layout_names(object.layout_id()) {
             return Some(names);
         }
-        let nominal_type_id = object.nominal_class_id()?;
+        let nominal_type_id = object.nominal_type_id_usize()?;
         let class_name = self
             .classes
             .read()
@@ -486,6 +486,14 @@ impl<'a> Interpreter<'a> {
     }
 
     #[inline]
+    pub(in crate::vm::interpreter) fn nominal_layout_id(
+        &self,
+        nominal_type_id: usize,
+    ) -> Option<crate::vm::object::LayoutId> {
+        self.layouts.read().nominal_layout_id(nominal_type_id)
+    }
+
+    #[inline]
     pub(in crate::vm::interpreter) fn register_nominal_layout(
         &self,
         nominal_type_id: usize,
@@ -506,28 +514,21 @@ impl<'a> Interpreter<'a> {
     }
 
     #[inline]
-    pub(in crate::vm::interpreter) fn register_runtime_class(&self, mut class: Class) -> usize {
-        if class.layout_id == 0 {
-            let layout_id = self.allocate_nominal_layout_id();
-            class.set_layout_id(layout_id);
-        }
-        let id = self.classes.write().register_class(class);
-        if let Some(registered) = self.classes.read().get_class(id).cloned() {
-            self.register_nominal_layout(
-                id,
-                registered.layout_id,
-                registered.field_count,
-                Some(registered.name.clone()),
-            );
-            if let Some(field_names) =
-                crate::vm::object::builtin_nominal_layout_field_names(&registered.name)
-            {
-                let owned_names = field_names
+    pub(in crate::vm::interpreter) fn register_runtime_class(&self, class: Class) -> usize {
+        let layout_id = self.allocate_nominal_layout_id();
+        let field_count = class.field_count;
+        let class_name = class.name.clone();
+        let builtin_layout_names = crate::vm::object::builtin_nominal_layout_field_names(&class_name)
+            .map(|field_names| {
+                field_names
                     .iter()
                     .map(|name| (*name).to_string())
-                    .collect::<Vec<_>>();
-                self.register_structural_layout_shape(registered.layout_id, &owned_names);
-            }
+                    .collect::<Vec<_>>()
+            });
+        let id = self.classes.write().register_class(class);
+        self.register_nominal_layout(id, layout_id, field_count, Some(class_name));
+        if let Some(owned_names) = builtin_layout_names.as_ref() {
+            self.register_structural_layout_shape(layout_id, owned_names);
         }
         id
     }
@@ -1088,9 +1089,9 @@ impl<'a> Interpreter<'a> {
                     Opcode::Call
                         | Opcode::DynGet
                         | Opcode::DynGetKeyed
-                        | Opcode::LoadField
+                        | Opcode::LoadFieldExact
                         | Opcode::LoadFieldShape
-                        | Opcode::CallMethod
+                        | Opcode::CallMethodExact
                         | Opcode::CallMethodShape
                         | Opcode::NativeCall
                 )
@@ -1679,12 +1680,12 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             // Object Operations
             // =========================================================
-            Opcode::New
-            | Opcode::LoadField
+            Opcode::NewType
+            | Opcode::LoadFieldExact
             | Opcode::LoadFieldShape
-            | Opcode::StoreField
+            | Opcode::StoreFieldExact
             | Opcode::StoreFieldShape
-            | Opcode::OptionalField
+            | Opcode::OptionalFieldExact
             | Opcode::OptionalFieldShape
             | Opcode::ObjectLiteral
             | Opcode::InitObject
@@ -1745,8 +1746,8 @@ impl<'a> Interpreter<'a> {
             // Function Calls (needs MutexGuard for frame operations)
             // =========================================================
             Opcode::Call
-            | Opcode::CallMethod
-            | Opcode::OptionalCallMethod
+            | Opcode::CallMethodExact
+            | Opcode::OptionalCallMethodExact
             | Opcode::CallMethodShape
             | Opcode::OptionalCallMethodShape
             | Opcode::CallConstructor
@@ -1762,8 +1763,11 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             // Type Operations, JSON, Static Fields, Channels, Mutexes
             // =========================================================
-            Opcode::InstanceOf
+            Opcode::IsNominal
+            | Opcode::ImplementsShape
+            | Opcode::CastShape
             | Opcode::Cast
+            | Opcode::CastNominal
             | Opcode::DynGet
             | Opcode::DynSet
             | Opcode::DynDelete

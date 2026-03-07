@@ -105,7 +105,7 @@ pub mod opcode {
     pub const RETURN_VOID: u8 = 0xA3;
 
     // Object operations
-    pub const NEW: u8 = 0xB0;
+    pub const NEW_TYPE: u8 = 0xB0;
     pub const LOAD_FIELD: u8 = 0xB1;
     pub const STORE_FIELD: u8 = 0xB2;
 
@@ -676,15 +676,21 @@ impl BytecodeBuilder {
     // ===== Object Operations =====
 
     /// Emit new object allocation
-    pub fn emit_new(&mut self, class_id: u32) -> Result<(), VmError> {
+    pub fn emit_new(&mut self, nominal_type_id: u32) -> Result<(), VmError> {
         if self.finalized {
             return Err(VmError::RuntimeError(
                 "Cannot modify finalized BytecodeBuilder".to_string(),
             ));
         }
+        let nominal_type_id = u16::try_from(nominal_type_id).map_err(|_| {
+            VmError::RuntimeError(format!(
+                "Nominal type id {} exceeds bytecode u16 operand range",
+                nominal_type_id
+            ))
+        })?;
         self.push_type(StackType::Object);
-        self.emit_byte(opcode::NEW);
-        self.emit_u32(class_id);
+        self.emit_byte(opcode::NEW_TYPE);
+        self.emit_u16(nominal_type_id);
         Ok(())
     }
 

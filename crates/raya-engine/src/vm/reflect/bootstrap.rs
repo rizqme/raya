@@ -8,10 +8,10 @@
 //! | ID     | Method             | Description                    |
 //! |--------|--------------------|--------------------------------|
 //! | 0x0E20 | bootstrap          | Initialize runtime             |
-//! | 0x0E21 | getObjectClass     | Get core Object class ID       |
-//! | 0x0E22 | getArrayClass      | Get core Array class ID        |
-//! | 0x0E23 | getStringClass     | Get core String class ID       |
-//! | 0x0E24 | getTaskClass       | Get core Task class ID         |
+//! | 0x0E21 | getObjectClass     | Get core Object nominal type ID |
+//! | 0x0E22 | getArrayClass      | Get core Array nominal type ID  |
+//! | 0x0E23 | getStringClass     | Get core String nominal type ID |
+//! | 0x0E24 | getTaskClass       | Get core Task nominal type ID   |
 //! | 0x0E25 | dynamicPrint       | Print to console               |
 //! | 0x0E26 | createDynamicArray | Create array from values       |
 //! | 0x0E27 | createDynamicString| Create string value            |
@@ -21,20 +21,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::vm::VmError;
 
-/// Well-known class IDs for core types
-/// These should match the class IDs in the VM's ClassRegistry
-pub mod core_class_ids {
-    /// Object class ID (base class)
+/// Well-known nominal type IDs for core types.
+/// These should match the nominal type IDs in the VM's ClassRegistry.
+pub mod core_nominal_type_ids {
+    /// Object nominal type ID (base class)
     pub const OBJECT: usize = 0;
-    /// Array class ID (built-in)
+    /// Array nominal type ID (built-in)
     pub const ARRAY: usize = 1;
-    /// String class ID (built-in)
+    /// String nominal type ID (built-in)
     pub const STRING: usize = 2;
-    /// Task class ID (built-in)
+    /// Task nominal type ID (built-in)
     pub const TASK: usize = 3;
-    /// Map class ID (built-in)
+    /// Map nominal type ID (built-in)
     pub const MAP: usize = 4;
-    /// Closure class ID (built-in)
+    /// Closure nominal type ID (built-in)
     pub const CLOSURE: usize = 5;
 }
 
@@ -52,16 +52,16 @@ pub struct BootstrapContext {
     /// Whether the context has been initialized
     pub initialized: bool,
 
-    /// Object class ID
-    pub object_class_id: usize,
-    /// Array class ID
-    pub array_class_id: usize,
-    /// String class ID
-    pub string_class_id: usize,
-    /// Task class ID
-    pub task_class_id: usize,
-    /// Map class ID
-    pub map_class_id: usize,
+    /// Object nominal type ID
+    pub object_nominal_type_id: usize,
+    /// Array nominal type ID
+    pub array_nominal_type_id: usize,
+    /// String nominal type ID
+    pub string_nominal_type_id: usize,
+    /// Task nominal type ID
+    pub task_nominal_type_id: usize,
+    /// Map nominal type ID
+    pub map_nominal_type_id: usize,
 
     /// Print native call ID
     pub print_native_id: u16,
@@ -76,15 +76,15 @@ impl Default for BootstrapContext {
 }
 
 impl BootstrapContext {
-    /// Create a new bootstrap context with default core class IDs
+    /// Create a new bootstrap context with default core nominal type IDs
     pub fn new() -> Self {
         Self {
             initialized: false,
-            object_class_id: core_class_ids::OBJECT,
-            array_class_id: core_class_ids::ARRAY,
-            string_class_id: core_class_ids::STRING,
-            task_class_id: core_class_ids::TASK,
-            map_class_id: core_class_ids::MAP,
+            object_nominal_type_id: core_nominal_type_ids::OBJECT,
+            array_nominal_type_id: core_nominal_type_ids::ARRAY,
+            string_nominal_type_id: core_nominal_type_ids::STRING,
+            task_nominal_type_id: core_nominal_type_ids::TASK,
+            map_nominal_type_id: core_nominal_type_ids::MAP,
             print_native_id: bootstrap_native_ids::PRINT,
             logger_info_native_id: bootstrap_native_ids::LOGGER_INFO,
         }
@@ -110,10 +110,10 @@ impl BootstrapContext {
     pub fn get_info(&self) -> BootstrapInfo {
         BootstrapInfo {
             initialized: self.initialized,
-            object_class_id: self.object_class_id,
-            array_class_id: self.array_class_id,
-            string_class_id: self.string_class_id,
-            task_class_id: self.task_class_id,
+            object_nominal_type_id: self.object_nominal_type_id,
+            array_nominal_type_id: self.array_nominal_type_id,
+            string_nominal_type_id: self.string_nominal_type_id,
+            task_nominal_type_id: self.task_nominal_type_id,
             print_native_id: self.print_native_id,
         }
     }
@@ -123,10 +123,10 @@ impl BootstrapContext {
 #[derive(Debug, Clone)]
 pub struct BootstrapInfo {
     pub initialized: bool,
-    pub object_class_id: usize,
-    pub array_class_id: usize,
-    pub string_class_id: usize,
-    pub task_class_id: usize,
+    pub object_nominal_type_id: usize,
+    pub array_nominal_type_id: usize,
+    pub string_nominal_type_id: usize,
+    pub task_nominal_type_id: usize,
     pub print_native_id: u16,
 }
 
@@ -231,8 +231,8 @@ mod tests {
     fn test_bootstrap_context_new() {
         let ctx = BootstrapContext::new();
         assert!(!ctx.initialized);
-        assert_eq!(ctx.object_class_id, core_class_ids::OBJECT);
-        assert_eq!(ctx.array_class_id, core_class_ids::ARRAY);
+        assert_eq!(ctx.object_nominal_type_id, core_nominal_type_ids::OBJECT);
+        assert_eq!(ctx.array_nominal_type_id, core_nominal_type_ids::ARRAY);
     }
 
     #[test]
@@ -252,7 +252,7 @@ mod tests {
 
         let info = ctx.get_info();
         assert!(info.initialized);
-        assert_eq!(info.object_class_id, core_class_ids::OBJECT);
+        assert_eq!(info.object_nominal_type_id, core_nominal_type_ids::OBJECT);
     }
 
     #[test]

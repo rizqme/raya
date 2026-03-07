@@ -297,12 +297,12 @@ unsafe extern "C" fn helper_object_get_field(
     match binding {
         StructuralSlotBinding::Field(slot) => object.get_field(slot).unwrap_or(Value::null()).raw(),
         StructuralSlotBinding::Method(method_slot) => {
-            let Some(class_id) = object.nominal_class_id() else {
+            let Some(nominal_type_id) = object.nominal_type_id_usize() else {
                 return Value::null().raw();
             };
             let (func_id, method_module) = {
                 let classes = (&*bridge.classes).read();
-                let Some(class) = classes.get_class(class_id) else {
+                let Some(class) = classes.get_class(nominal_type_id) else {
                     return Value::null().raw();
                 };
                 let Some(fid) = class.vtable.get_method(method_slot) else {
@@ -537,7 +537,7 @@ mod tests {
         assert!(!object_ptr.is_null());
 
         let obj = unsafe { &*(object_ptr.cast::<Object>()) };
-        assert_eq!(obj.nominal_class_id(), Some(expected_nominal_type_id));
+        assert_eq!(obj.nominal_type_id_usize(), Some(expected_nominal_type_id));
         assert_eq!(obj.field_count(), 2);
     }
 }

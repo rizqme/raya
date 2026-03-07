@@ -30,7 +30,7 @@ pub struct Lowerer<'a> {
 
     // Function/class maps
     function_map: HashMap<Symbol, FunctionId>,
-    class_map: HashMap<Symbol, ClassId>,
+    class_map: HashMap<Symbol, NominalTypeId>,
 
     // Closure support
     captures: Vec<CaptureInfo>,

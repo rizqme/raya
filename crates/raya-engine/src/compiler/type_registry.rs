@@ -25,7 +25,7 @@ pub const UNRESOLVED_TYPE_ID: u32 = u32::MAX;
 pub enum DispatchAction {
     /// Emit a specialized opcode directly (e.g., StringLen, ArrayLen)
     Opcode(OpcodeKind),
-    /// Emit CallMethod with this builtin method ID (VM handles natively)
+    /// Emit CallMethodExact with this builtin method ID (VM handles natively)
     NativeCall(u16),
     /// Emit Call to a pre-compiled class method function.
     /// Contains (type_name, method_name) to look up the IR builder.
@@ -550,7 +550,7 @@ impl TypeRegistry {
     }
 
     /// Look up the return TypeId for a native method ID.
-    /// Used for return type propagation after CallMethod.
+    /// Used for return type propagation after CallMethodExact.
     pub fn lookup_return_type(&self, native_id: u16) -> Option<u32> {
         self.method_return_types.get(&native_id).copied()
     }

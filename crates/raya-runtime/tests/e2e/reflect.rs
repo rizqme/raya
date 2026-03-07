@@ -4,9 +4,9 @@
 //! through the NativeCall dispatch pipeline.
 //!
 //! Notes:
-//! - Reflect methods use `number` for opaque Value parameters.
-//!   For testing with non-number types (strings, objects, booleans),
-//!   we use `__NATIVE_CALL` directly to bypass type checking.
+//! - Public std:reflect methods now accept real values and nominal type refs.
+//!   We still use `__NATIVE_CALL` directly in a few tests where the wrapper does
+//!   not expose every low-level native yet.
 //! - MetadataStore requires object (pointer) targets, not primitives.
 //! - Avoid `let x: number = __NATIVE_CALL(...)` when classes are defined
 //!   in the same compilation unit (triggers type checker issue). Use
@@ -408,43 +408,38 @@ fn test_reflect_define_and_get_metadata_prop() {
 }
 
 // ============================================================================
-// Class Introspection (via __NATIVE_CALL)
+// Class Introspection
 // ============================================================================
 
 #[test]
 fn test_reflect_get_class() {
-    // REFLECT_GET_CLASS = 0x0D10, returns class ID (i32 > 0)
-    let result = compile_and_run_with_builtins(
+    expect_bool_with_builtins(
         r#"
         import reflect from "std:reflect";
         class Foo { x: number = 42; }
         let obj: Foo = new Foo();
-        return __NATIVE_CALL(0x0D10, obj);
-    "#,
-    );
-    match result {
-        Ok(value) => {
-            let class_id = value.as_i32().expect("Expected i32 class ID");
-            assert!(
-                class_id > 0,
-                "Class ID should be positive, got {}",
-                class_id
-            );
+        let typeRef = reflect.getClass(obj);
+        if (typeRef == null) {
+            return false;
         }
-        Err(e) => panic!("getClass should work: {}", e),
-    }
+        return typeRef.nominalTypeId > 0 && typeRef.name == "Foo";
+    "#,
+        true,
+    );
 }
 
 #[test]
 fn test_reflect_is_instance_of() {
-    // REFLECT_GET_CLASS = 0x0D10, REFLECT_IS_INSTANCE_OF = 0x0D15
     expect_bool_with_builtins(
         r#"
         import reflect from "std:reflect";
         class Bar { y: number = 10; }
         let obj: Bar = new Bar();
-        let classId = __NATIVE_CALL(0x0D10, obj);
-        return __NATIVE_CALL(0x0D15, obj, classId);
+        let typeRef = reflect.getClass(obj);
+        if (typeRef == null) {
+            return false;
+        }
+        return reflect.isInstanceOf(obj, typeRef);
     "#,
         true,
     );
@@ -559,16 +554,67 @@ fn test_reflect_metadata_workflow() {
 
 #[test]
 fn test_reflect_class_introspection_workflow() {
-    // Get class ID and verify instance check
-    // REFLECT_GET_CLASS = 0x0D10, REFLECT_IS_INSTANCE_OF = 0x0D15
+    // Get nominal type ref and verify instance check
     expect_bool_with_builtins(
         r#"
         import reflect from "std:reflect";
         class Animal { name: string = "generic"; }
         let a: Animal = new Animal();
-        let classId = __NATIVE_CALL(0x0D10, a);
-        let isAnimal = __NATIVE_CALL(0x0D15, a, classId);
-        return isAnimal;
+        let typeRef = reflect.getClass(a);
+        if (typeRef == null) {
+            return false;
+        }
+        return reflect.isInstanceOf(a, typeRef);
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_reflect_nominal_type_ref_hierarchy_workflow() {
+    expect_bool_with_builtins(
+        r#"
+        import reflect from "std:reflect";
+        class Animal {}
+        class Dog extends Animal {}
+        let dog = new Dog();
+        let dogType = reflect.getClass(dog);
+        if (dogType == null) {
+            return false;
+        }
+        let animalType = reflect.getSuperclass(dogType);
+        if (animalType == null) {
+            return false;
+        }
+        return reflect.isSubclassOf(dogType, animalType)
+            && reflect.isInstanceOf(dog, dogType)
+            && animalType.name == "Animal";
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_reflect_clone_structural_object() {
+    // REFLECT_CLONE = 0x0D43
+    expect_bool_with_builtins(
+        r#"
+        let original = { a: 1, b: 2 };
+        let cloned = __NATIVE_CALL(0x0D43, original) as { a: number, b: number };
+        return cloned.a == 1 && cloned.b == 2;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_reflect_get_enumerable_keys_structural_object() {
+    // REFLECT_GET_ENUMERABLE_KEYS = 0x0DA1
+    expect_bool_with_builtins(
+        r#"
+        let original = { a: 1, b: 2 };
+        let keys = __NATIVE_CALL(0x0DA1, original) as string[];
+        return keys.length == 2 && keys.includes("a") && keys.includes("b");
     "#,
         true,
     );

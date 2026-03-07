@@ -505,7 +505,7 @@ impl IrCodeGenerator {
                 }
             }
 
-            IrInstr::CallMethod {
+            IrInstr::CallMethodExact {
                 dest,
                 object,
                 method,
@@ -520,9 +520,9 @@ impl IrCodeGenerator {
                 }
                 // Emit call
                 if *optional {
-                    ctx.emit(Opcode::OptionalCallMethod);
+                    ctx.emit(Opcode::OptionalCallMethodExact);
                 } else {
-                    ctx.emit(Opcode::CallMethod);
+                    ctx.emit(Opcode::CallMethodExact);
                 }
                 ctx.emit_u32(*method as u32);
                 ctx.emit_u16(args.len() as u16);
@@ -531,7 +531,7 @@ impl IrCodeGenerator {
                     let slot = ctx.get_or_alloc_slot(dest);
                     self.emit_store_local(ctx, slot);
                 } else {
-                    // Pop the result that CallMethod pushes since we don't need it
+                    // Pop the result that CallMethodExact pushes since we don't need it
                     ctx.emit(Opcode::Pop);
                 }
             }
@@ -609,17 +609,56 @@ impl IrCodeGenerator {
                 }
             }
 
-            IrInstr::InstanceOf {
+            IrInstr::IsNominal {
                 dest,
                 object,
-                class_id,
+                nominal_type_id,
             } => {
                 // Push object onto stack
                 self.emit_load_register(ctx, object);
-                // Emit InstanceOf opcode with class ID
-                ctx.emit(Opcode::InstanceOf);
-                ctx.emit_u16(class_id.as_u32() as u16);
+                // Emit explicit nominal type check with nominal type ID
+                ctx.emit(Opcode::IsNominal);
+                ctx.emit_u16(nominal_type_id.as_u32() as u16);
                 // Store boolean result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::ImplementsShape {
+                dest,
+                object,
+                shape_id,
+            } => {
+                self.emit_load_register(ctx, object);
+                ctx.emit(Opcode::ImplementsShape);
+                ctx.emit_u64(*shape_id);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::CastNominal {
+                dest,
+                object,
+                nominal_type_id,
+            } => {
+                // Push object onto stack
+                self.emit_load_register(ctx, object);
+                // Emit explicit nominal cast with nominal type ID
+                ctx.emit(Opcode::CastNominal);
+                ctx.emit_u16(nominal_type_id.as_u32() as u16);
+                // Store casted object
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::CastShape {
+                dest,
+                object,
+                shape_id,
+            } => {
+                self.emit_load_register(ctx, object);
+                ctx.emit(Opcode::CastShape);
+                ctx.emit_u64(*shape_id);
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);
             }
@@ -627,14 +666,11 @@ impl IrCodeGenerator {
             IrInstr::Cast {
                 dest,
                 object,
-                class_id,
+                target,
             } => {
-                // Push object onto stack
                 self.emit_load_register(ctx, object);
-                // Emit Cast opcode with class ID
                 ctx.emit(Opcode::Cast);
-                ctx.emit_u16(class_id.as_u32() as u16);
-                // Store casted object
+                ctx.emit_u16(target.as_u32() as u16);
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);
             }
@@ -679,7 +715,7 @@ impl IrCodeGenerator {
                 ctx.emit_u32(*index as u32);
             }
 
-            IrInstr::LoadField {
+            IrInstr::LoadFieldExact {
                 dest,
                 object,
                 field,
@@ -687,9 +723,9 @@ impl IrCodeGenerator {
             } => {
                 self.emit_load_register(ctx, object);
                 if *optional {
-                    ctx.emit(Opcode::OptionalField);
+                    ctx.emit(Opcode::OptionalFieldExact);
                 } else {
-                    ctx.emit(Opcode::LoadField);
+                    ctx.emit(Opcode::LoadFieldExact);
                 }
                 ctx.emit_u16(*field);
                 let slot = ctx.get_or_alloc_slot(dest);
@@ -727,7 +763,7 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::StoreField {
+            IrInstr::StoreFieldExact {
                 object,
                 field,
                 value,
@@ -736,7 +772,7 @@ impl IrCodeGenerator {
                 // VM pops: value first, then object
                 self.emit_load_register(ctx, object);
                 self.emit_load_register(ctx, value);
-                ctx.emit(Opcode::StoreField);
+                ctx.emit(Opcode::StoreFieldExact);
                 ctx.emit_u16(*field);
             }
 
@@ -816,9 +852,12 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::StoreElem);
             }
 
-            IrInstr::NewObject { dest, class } => {
-                ctx.emit(Opcode::New);
-                ctx.emit_u16(class.as_u32() as u16);
+            IrInstr::NewType {
+                dest,
+                nominal_type_id,
+            } => {
+                ctx.emit(Opcode::NewType);
+                ctx.emit_u16(nominal_type_id.as_u32() as u16);
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);
             }

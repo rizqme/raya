@@ -132,7 +132,7 @@ pub struct GC {
 gc.allocate<T>(size) -> *mut T
 gc.allocate_string(data) -> StringRef
 gc.allocate_array(len) -> ArrayRef
-gc.allocate_object(class_id) -> ObjectRef
+gc.allocate_object(nominal_type_id) -> ObjectRef
 
 // Collection
 gc.collect()

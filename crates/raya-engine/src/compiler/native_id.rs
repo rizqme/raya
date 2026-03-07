@@ -17,8 +17,8 @@ pub const OBJECT_GET_OWN_PROPERTY_DESCRIPTOR: u16 = 0x0005;
 pub const OBJECT_DEFINE_PROPERTIES: u16 = 0x0006;
 /// construct(typeHandle, ...args) for constructors loaded at runtime (e.g., imported classes)
 pub const OBJECT_CONSTRUCT_DYNAMIC_CLASS: u16 = 0x0007;
-/// registerStructuralView(object, memberNames[]) for structural slot remapping
-pub const OBJECT_REGISTER_STRUCTURAL_VIEW: u16 = 0x0008;
+/// registerStructuralShape(memberNames[]) for structural shape-name seeding
+pub const OBJECT_REGISTER_STRUCTURAL_SHAPE: u16 = 0x0008;
 /// construct plain Object descriptor instance with node-compat fields
 pub const OBJECT_NEW: u16 = 0x0009;
 /// load ambient builtin global value by name (e.g., ArrayBuffer, Reflect, Intl)
@@ -413,13 +413,13 @@ pub const REFLECT_DELETE_METADATA_PROP: u16 = 0x0D09;
 
 /// Reflect.getClass(obj) - get class ID of object
 pub const REFLECT_GET_CLASS: u16 = 0x0D10;
-/// Reflect.getClassByName(name) - lookup class by name
+/// Reflect.getClassByName(name) - lookup nominal type ref by name
 pub const REFLECT_GET_CLASS_BY_NAME: u16 = 0x0D11;
-/// Reflect.getAllClasses() - get all registered class IDs
+/// Reflect.getAllClasses() - get all registered nominal type refs
 pub const REFLECT_GET_ALL_CLASSES: u16 = 0x0D12;
-/// Reflect.isSubclassOf(subClassId, superClassId) - check inheritance
+/// Reflect.isSubclassOf(subTypeRef, superTypeRef) - check inheritance
 pub const REFLECT_IS_SUBCLASS_OF: u16 = 0x0D13;
-/// Reflect.isInstanceOf(obj, classId) - type guard
+/// Reflect.isInstanceOf(obj, typeRef) - type guard
 pub const REFLECT_IS_INSTANCE_OF: u16 = 0x0D14;
 /// Reflect.getTypeInfo(target) - get type info string
 pub const REFLECT_GET_TYPE_INFO: u16 = 0x0D15;
@@ -432,21 +432,21 @@ pub const REFLECT_GET_CLASSES_WITH_DECORATOR: u16 = 0x0D17;
 // Reflect - Decorator Registration (0x0D18-0x0D1F)
 // ============================================================================
 
-/// registerClassDecorator(classId, decoratorName) - register class decorator
+/// registerClassDecorator(typeRef, decoratorName) - register class decorator
 pub const REGISTER_CLASS_DECORATOR: u16 = 0x0D18;
-/// registerMethodDecorator(classId, methodName, decoratorName) - register method decorator
+/// registerMethodDecorator(typeRef, methodName, decoratorName) - register method decorator
 pub const REGISTER_METHOD_DECORATOR: u16 = 0x0D19;
-/// registerFieldDecorator(classId, fieldName, decoratorName) - register field decorator
+/// registerFieldDecorator(typeRef, fieldName, decoratorName) - register field decorator
 pub const REGISTER_FIELD_DECORATOR: u16 = 0x0D1A;
-/// registerParameterDecorator(classId, methodName, paramIndex, decoratorName) - register parameter decorator
+/// registerParameterDecorator(typeRef, methodName, paramIndex, decoratorName) - register parameter decorator
 pub const REGISTER_PARAMETER_DECORATOR: u16 = 0x0D1B;
-/// getClassDecorators(classId) - get decorators applied to class
+/// getClassDecorators(typeRef) - get decorators applied to class
 pub const REFLECT_GET_CLASS_DECORATORS: u16 = 0x0D1C;
-/// getMethodDecorators(classId, methodName) - get decorators applied to method
+/// getMethodDecorators(typeRef, methodName) - get decorators applied to method
 pub const REFLECT_GET_METHOD_DECORATORS: u16 = 0x0D1D;
-/// getFieldDecorators(classId, fieldName) - get decorators applied to field
+/// getFieldDecorators(typeRef, fieldName) - get decorators applied to field
 pub const REFLECT_GET_FIELD_DECORATORS: u16 = 0x0D1E;
-/// getParameterDecorators(classId, methodName, paramIndex) - get decorators applied to parameter
+/// getParameterDecorators(typeRef, methodName, paramIndex) - get decorators applied to parameter
 pub const REFLECT_GET_PARAMETER_DECORATORS: u16 = 0x0D1F;
 
 // ============================================================================
@@ -465,9 +465,9 @@ pub const REFLECT_GET_FIELD_NAMES: u16 = 0x0D23;
 pub const REFLECT_GET_FIELD_INFO: u16 = 0x0D24;
 /// Reflect.getFields(target) - get all field infos
 pub const REFLECT_GET_FIELDS: u16 = 0x0D25;
-/// Reflect.getStaticFieldNames(classId) - get static field names
+/// Reflect.getStaticFieldNames(typeRef) - get static field names
 pub const REFLECT_GET_STATIC_FIELD_NAMES: u16 = 0x0D26;
-/// Reflect.getStaticFields(classId) - get static field infos
+/// Reflect.getStaticFields(typeRef) - get static field infos
 pub const REFLECT_GET_STATIC_FIELDS: u16 = 0x0D27;
 
 // ============================================================================
@@ -486,18 +486,18 @@ pub const REFLECT_GET_METHOD_INFO: u16 = 0x0D33;
 pub const REFLECT_GET_METHODS: u16 = 0x0D34;
 /// Reflect.hasMethod(target, methodName) - check method exists
 pub const REFLECT_HAS_METHOD: u16 = 0x0D35;
-/// Reflect.invokeStatic(classId, methodName, ...args) - call static method
+/// Reflect.invokeStatic(typeRef, methodName, ...args) - call static method
 pub const REFLECT_INVOKE_STATIC: u16 = 0x0D36;
-/// Reflect.getStaticMethods(classId) - get static method infos
+/// Reflect.getStaticMethods(typeRef) - get static method infos
 pub const REFLECT_GET_STATIC_METHODS: u16 = 0x0D37;
 
 // ============================================================================
 // Reflect - Object Creation (0x0D40-0x0D4F)
 // ============================================================================
 
-/// Reflect.construct(classId, ...args) - create instance
+/// Reflect.construct(typeRef, ...args) - create instance
 pub const REFLECT_CONSTRUCT: u16 = 0x0D40;
-/// Reflect.allocate(classId) - allocate uninitialized instance
+/// Reflect.allocate(typeRef) - allocate uninitialized instance
 pub const REFLECT_ALLOCATE: u16 = 0x0D41;
 /// Reflect.clone(obj) - shallow clone
 pub const REFLECT_CLONE: u16 = 0x0D42;

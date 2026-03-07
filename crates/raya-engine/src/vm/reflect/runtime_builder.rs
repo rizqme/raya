@@ -52,7 +52,7 @@ pub struct ClassBuilder {
     pub id: usize,
     /// Class name
     pub name: String,
-    /// Parent class ID (if any)
+    /// Parent nominal type ID (if any)
     pub parent_id: Option<usize>,
     /// Fields to add
     pub fields: Vec<FieldDefinition>,
@@ -394,10 +394,10 @@ impl DynamicClosure {
 /// Cache for generic specializations
 #[derive(Debug, Default)]
 pub struct SpecializationCache {
-    /// Maps generic name + type args -> specialized class ID
+    /// Maps generic name + type args -> specialized nominal type ID
     /// Key format: "GenericName<TypeArg1,TypeArg2,...>"
     cache: HashMap<String, usize>,
-    /// Reverse mapping: specialized class ID -> origin info
+    /// Reverse mapping: specialized nominal type ID -> origin info
     origins: HashMap<usize, GenericOrigin>,
 }
 
@@ -426,11 +426,11 @@ impl SpecializationCache {
     }
 
     /// Register a new specialization
-    pub fn register(&mut self, generic_name: &str, type_args: Vec<String>, class_id: usize) {
+    pub fn register(&mut self, generic_name: &str, type_args: Vec<String>, nominal_type_id: usize) {
         let key = Self::make_key(generic_name, &type_args);
-        self.cache.insert(key, class_id);
+        self.cache.insert(key, nominal_type_id);
         self.origins.insert(
-            class_id,
+            nominal_type_id,
             GenericOrigin {
                 name: generic_name.to_string(),
                 type_parameters: vec![], // Would need to be filled from generic definition
@@ -439,9 +439,9 @@ impl SpecializationCache {
         );
     }
 
-    /// Get origin info for a specialized class
-    pub fn get_origin(&self, class_id: usize) -> Option<&GenericOrigin> {
-        self.origins.get(&class_id)
+    /// Get origin info for a specialized nominal type
+    pub fn get_origin(&self, nominal_type_id: usize) -> Option<&GenericOrigin> {
+        self.origins.get(&nominal_type_id)
     }
 
     /// Find all specializations of a generic

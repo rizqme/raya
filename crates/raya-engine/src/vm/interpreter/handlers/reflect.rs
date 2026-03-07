@@ -5,7 +5,8 @@ use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    Array, BoundMethod, BoundNativeMethod, Closure, MapObject, Object, Proxy, RayaString,
+    layout_id_from_ordered_names, Array, BoundMethod, BoundNativeMethod, Closure, Object, Proxy,
+    RayaString,
 };
 use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
 use crate::vm::scheduler::Task;
@@ -21,10 +22,10 @@ impl<'a> Interpreter<'a> {
     }
 
     fn reflect_object_field_names(&self, obj: &Object) -> Vec<String> {
-        let mut field_names = if let Some(class_id) = obj.nominal_class_id() {
+        let mut field_names = if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
             let class_metadata = self.class_metadata.read();
             class_metadata
-                .get(class_id)
+                .get(nominal_type_id)
                 .map(|meta| {
                     meta.field_names
                         .iter()
@@ -69,13 +70,13 @@ impl<'a> Interpreter<'a> {
     }
 
     fn reflect_object_class_name(&self, obj: &Object) -> String {
-        if let Some(class_id) = obj.nominal_class_id() {
+        if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
             return self
                 .classes
                 .read()
-                .get_class(class_id)
+                .get_class(nominal_type_id)
                 .map(|class| class.name.clone())
-                .unwrap_or_else(|| format!("Class{}", class_id));
+                .unwrap_or_else(|| format!("Class{}", nominal_type_id));
         }
         format!("Layout{}", obj.layout_id())
     }
@@ -83,12 +84,7 @@ impl<'a> Interpreter<'a> {
     fn reflect_property_value(&self, target: Value, property_key: &str) -> Option<Value> {
         let obj_ptr = Self::reflect_object_ptr(target)?;
         let obj = unsafe { obj_ptr.as_ref() };
-        if let Some(index) = self.get_field_index_for_value(target, property_key) {
-            return obj.get_field(index);
-        }
-        let prop_key = self.intern_prop_key(property_key);
-        obj.dyn_map()
-            .and_then(|dyn_map| dyn_map.get(&prop_key).copied())
+        self.get_object_named_field_value(obj, property_key)
     }
 
     fn reflect_set_property_value(&self, target: Value, property_key: &str, value: Value) -> bool {
@@ -96,7 +92,7 @@ impl<'a> Interpreter<'a> {
             return false;
         };
         let obj = unsafe { obj_ptr.as_mut() };
-        if let Some(index) = self.get_field_index_for_value(target, property_key) {
+        if let Some(index) = self.get_object_named_field_index(obj, property_key) {
             return obj.set_field(index, value).is_ok();
         }
         obj.ensure_dyn_map()
@@ -105,10 +101,10 @@ impl<'a> Interpreter<'a> {
     }
 
     fn reflect_method_slot_for_object(&self, obj: &Object, property_key: &str) -> Option<usize> {
-        let class_id = obj.nominal_class_id()?;
+        let nominal_type_id = obj.nominal_type_id_usize()?;
         let class_metadata = self.class_metadata.read();
         class_metadata
-            .get(class_id)
+            .get(nominal_type_id)
             .and_then(|meta| meta.get_method_index(property_key))
     }
 
@@ -130,17 +126,7 @@ impl<'a> Interpreter<'a> {
             return false;
         };
         let obj = unsafe { obj_ptr.as_ref() };
-        if self
-            .get_field_index_for_value(target, property_key)
-            .is_some()
-        {
-            return true;
-        }
-        let prop_key = self.intern_prop_key(property_key);
-        if obj
-            .dyn_map()
-            .is_some_and(|dyn_map| dyn_map.contains_key(&prop_key))
-        {
+        if self.has_object_named_field(obj, property_key) {
             return true;
         }
         self.reflect_method_slot_for_object(obj, property_key)
@@ -152,6 +138,80 @@ impl<'a> Interpreter<'a> {
         unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
     }
 
+    fn reflect_alloc_structural_object(&self, entries: &[(&str, Value)]) -> Value {
+        let ordered_names = entries
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect::<Vec<_>>();
+        let layout_id = layout_id_from_ordered_names(&ordered_names);
+        self.register_structural_layout_shape(layout_id, &ordered_names);
+        let mut obj = Object::new_structural(layout_id, entries.len());
+        for (index, (_, value)) in entries.iter().enumerate() {
+            let _ = obj.set_field(index, *value);
+        }
+        let gc_ptr = self.gc.lock().allocate(obj);
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+    }
+
+    fn reflect_nominal_type_id_from_value(&self, value: Value) -> Option<usize> {
+        if let Some(id) = value.as_i32() {
+            return (id >= 0).then_some(id as usize);
+        }
+        let obj_ptr = Self::reflect_object_ptr(value)?;
+        let obj = unsafe { obj_ptr.as_ref() };
+        let id_value = self.get_object_named_field_value(obj, "nominalTypeId")?;
+        let id = value_to_f64(id_value).ok()? as isize;
+        (id >= 0).then_some(id as usize)
+    }
+
+    fn reflect_require_nominal_type_id(
+        &self,
+        value: Value,
+        context: &str,
+    ) -> Result<usize, VmError> {
+        self.reflect_nominal_type_id_from_value(value).ok_or_else(|| {
+            VmError::TypeError(format!(
+                "{context}: expected NominalTypeRef or nominal type id"
+            ))
+        })
+    }
+
+    fn reflect_alloc_nominal_type_ref(&self, nominal_type_id: usize) -> Value {
+        let class_name = {
+            let classes = self.classes.read();
+            let Some(class) = classes.get_class(nominal_type_id) else {
+                return Value::null();
+            };
+            class.name.clone()
+        };
+        let Some(layout_id) = self.nominal_layout_id(nominal_type_id) else {
+            return Value::null();
+        };
+
+        self.reflect_alloc_structural_object(&[
+            ("nominalTypeId", Value::i32(nominal_type_id as i32)),
+            ("name", self.reflect_alloc_string_value(class_name)),
+            ("layoutId", Value::i32(layout_id as i32)),
+        ])
+    }
+
+    fn reflect_alloc_nominal_type_ref_array(
+        &self,
+        nominal_type_ids: impl IntoIterator<Item = usize>,
+    ) -> Value {
+        let refs = nominal_type_ids
+            .into_iter()
+            .map(|nominal_type_id| self.reflect_alloc_nominal_type_ref(nominal_type_id))
+            .filter(|value| !value.is_null())
+            .collect::<Vec<_>>();
+        let mut arr = Array::new(0, refs.len());
+        for (index, value) in refs.into_iter().enumerate() {
+            arr.set(index, value).ok();
+        }
+        let gc_ptr = self.gc.lock().allocate(arr);
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+    }
+
     fn reflect_alloc_field_info_map(
         &self,
         name: &str,
@@ -159,39 +219,26 @@ impl<'a> Interpreter<'a> {
         field_index: Option<usize>,
         is_static: bool,
         is_readonly: bool,
-        declaring_class_id: Option<usize>,
+        declaring_nominal_type_id: Option<usize>,
     ) -> Value {
-        let mut map = MapObject::new();
-        map.set(
-            self.reflect_alloc_string_value("name"),
-            self.reflect_alloc_string_value(name),
-        );
-        map.set(
-            self.reflect_alloc_string_value("type"),
-            self.reflect_alloc_string_value(type_name),
-        );
-        map.set(
-            self.reflect_alloc_string_value("index"),
-            field_index
-                .map(|index| Value::i32(index as i32))
-                .unwrap_or(Value::null()),
-        );
-        map.set(
-            self.reflect_alloc_string_value("isStatic"),
-            Value::bool(is_static),
-        );
-        map.set(
-            self.reflect_alloc_string_value("isReadonly"),
-            Value::bool(is_readonly),
-        );
-        map.set(
-            self.reflect_alloc_string_value("declaringClass"),
-            declaring_class_id
-                .map(|id| Value::i32(id as i32))
-                .unwrap_or(Value::null()),
-        );
-        let gc_ptr = self.gc.lock().allocate(map);
-        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+        self.reflect_alloc_structural_object(&[
+            ("name", self.reflect_alloc_string_value(name)),
+            ("type", self.reflect_alloc_string_value(type_name)),
+            (
+                "index",
+                field_index
+                    .map(|index| Value::i32(index as i32))
+                    .unwrap_or(Value::null()),
+            ),
+            ("isStatic", Value::bool(is_static)),
+            ("isReadonly", Value::bool(is_readonly)),
+            (
+                "declaringType",
+                declaring_nominal_type_id
+                    .map(|id| self.reflect_alloc_nominal_type_ref(id))
+                    .unwrap_or(Value::null()),
+            ),
+        ])
     }
 
     fn reflect_object_snapshot_descriptor(&self, value: Value) -> (String, Vec<String>) {
@@ -404,22 +451,22 @@ impl<'a> Interpreter<'a> {
 
             // ===== Phase 2: Class Introspection =====
             reflect::GET_CLASS => {
-                // getClass(obj) -> returns class ID as i32, or null if not an object
+                // getClass(obj) -> returns nominal type ref, or null
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
                         "getClass requires 1 argument".to_string(),
                     ));
                 }
                 let obj = args[0];
-                if let Some(class_id) = crate::vm::reflect::get_class_id(obj) {
-                    Value::i32(class_id as i32)
+                if let Some(nominal_type_id) = crate::vm::reflect::get_nominal_type_id(obj) {
+                    self.reflect_alloc_nominal_type_ref(nominal_type_id)
                 } else {
                     Value::null()
                 }
             }
 
             reflect::GET_CLASS_BY_NAME => {
-                // getClassByName(name) -> returns class ID as i32, or null if not found
+                // getClassByName(name) -> returns nominal type ref, or null if not found
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
                         "getClassByName requires 1 argument".to_string(),
@@ -428,30 +475,24 @@ impl<'a> Interpreter<'a> {
                 let name = get_string(args[0])?;
                 let classes = self.classes.read();
                 if let Some(class) = classes.get_class_by_name(&name) {
-                    Value::i32(class.id as i32)
+                    let nominal_type_id = class.id;
+                    drop(classes);
+                    self.reflect_alloc_nominal_type_ref(nominal_type_id)
                 } else {
                     Value::null()
                 }
             }
 
             reflect::GET_ALL_CLASSES => {
-                // getAllClasses() -> returns array of class IDs
+                // getAllClasses() -> returns array of nominal type refs
                 let classes = self.classes.read();
-                let class_ids: Vec<Value> = classes
-                    .iter()
-                    .map(|(id, _)| Value::i32(id as i32))
-                    .collect();
-
-                let mut arr = Array::new(0, class_ids.len());
-                for (i, val) in class_ids.into_iter().enumerate() {
-                    arr.set(i, val).ok();
-                }
-                let arr_gc = self.gc.lock().allocate(arr);
-                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                let class_ids = classes.iter().map(|(id, _)| id).collect::<Vec<_>>();
+                drop(classes);
+                self.reflect_alloc_nominal_type_ref_array(class_ids)
             }
 
             reflect::GET_CLASSES_WITH_DECORATOR => {
-                // getClassesWithDecorator(decorator) -> returns array of class IDs
+                // getClassesWithDecorator(decorator) -> returns array of nominal type refs
                 // NOTE: This requires --emit-reflection to work fully
                 // For now, returns empty array (decorator metadata not yet stored)
                 let arr = Array::new(0, 0);
@@ -460,46 +501,42 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::IS_SUBCLASS_OF => {
-                // isSubclassOf(subClassId, superClassId) -> boolean
+                // isSubclassOf(subTypeRef, superTypeRef) -> boolean
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
                         "isSubclassOf requires 2 arguments".to_string(),
                     ));
                 }
-                let sub_id = args[0].as_i32().unwrap_or(-1);
-                let super_id = args[1].as_i32().unwrap_or(-1);
-
-                if sub_id < 0 || super_id < 0 {
-                    Value::bool(false)
-                } else {
-                    let classes = self.classes.read();
-                    Value::bool(crate::vm::reflect::is_subclass_of(
-                        &classes,
-                        sub_id as usize,
-                        super_id as usize,
-                    ))
+                match (
+                    self.reflect_nominal_type_id_from_value(args[0]),
+                    self.reflect_nominal_type_id_from_value(args[1]),
+                ) {
+                    (Some(sub_id), Some(super_id)) if sub_id != 0 && super_id != 0 => {
+                        let classes = self.classes.read();
+                        Value::bool(crate::vm::reflect::is_subclass_of(
+                            &classes,
+                            sub_id,
+                            super_id,
+                        ))
+                    }
+                    _ => Value::bool(false),
                 }
             }
 
             reflect::IS_INSTANCE_OF => {
-                // isInstanceOf(obj, classId) -> boolean
+                // isInstanceOf(obj, typeRef) -> boolean
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
                         "isInstanceOf requires 2 arguments".to_string(),
                     ));
                 }
                 let obj = args[0];
-                let class_id = args[1].as_i32().unwrap_or(-1);
-
-                if class_id < 0 {
-                    Value::bool(false)
-                } else {
-                    let classes = self.classes.read();
-                    Value::bool(crate::vm::reflect::is_instance_of(
-                        &classes,
-                        obj,
-                        class_id as usize,
-                    ))
+                match self.reflect_nominal_type_id_from_value(args[1]) {
+                    Some(nominal_type_id) => {
+                        let classes = self.classes.read();
+                        Value::bool(crate::vm::reflect::is_instance_of(&classes, obj, nominal_type_id))
+                    }
+                    None => Value::bool(false),
                 }
             }
 
@@ -521,7 +558,7 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::GET_CLASS_HIERARCHY => {
-                // getClassHierarchy(obj) -> returns array of class IDs from obj's class to root
+                // getClassHierarchy(obj) -> returns nominal type refs to the root
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
                         "getClassHierarchy requires 1 argument".to_string(),
@@ -529,21 +566,12 @@ impl<'a> Interpreter<'a> {
                 }
                 let obj = args[0];
 
-                if let Some(class_id) = crate::vm::reflect::get_class_id(obj) {
+                if let Some(nominal_type_id) = crate::vm::reflect::get_nominal_type_id(obj) {
                     let classes = self.classes.read();
-                    let hierarchy = crate::vm::reflect::get_class_hierarchy(&classes, class_id);
-
-                    let class_ids: Vec<Value> =
-                        hierarchy.iter().map(|c| Value::i32(c.id as i32)).collect();
-
+                    let hierarchy = crate::vm::reflect::get_class_hierarchy(&classes, nominal_type_id);
+                    let class_ids = hierarchy.iter().map(|c| c.id).collect::<Vec<_>>();
                     drop(classes);
-
-                    let mut arr = Array::new(0, class_ids.len());
-                    for (i, val) in class_ids.into_iter().enumerate() {
-                        arr.set(i, val).ok();
-                    }
-                    let arr_gc = self.gc.lock().allocate(arr);
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                    self.reflect_alloc_nominal_type_ref_array(class_ids)
                 } else {
                     // Not an object, return empty array
                     let arr = Array::new(0, 0);
@@ -577,7 +605,7 @@ impl<'a> Interpreter<'a> {
                     })?;
                     let obj = unsafe { obj_ptr.as_ref() };
                     if let Some(slot) = self.reflect_method_slot_for_object(obj, &property_key) {
-                        let Some(runtime_class_id) = obj.nominal_class_id() else {
+                        let Some(runtime_class_id) = obj.nominal_type_id_usize() else {
                             return Err(VmError::RuntimeError(
                                 "Method fallback requires nominal runtime type".to_string(),
                             ));
@@ -695,10 +723,10 @@ impl<'a> Interpreter<'a> {
                 if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
                     let obj = unsafe { obj_ptr.as_ref() };
 
-                    if let Some(class_id) = obj.nominal_class_id() {
+                    if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
                         let class_metadata = self.class_metadata.read();
                         if let Some(field_info) = class_metadata
-                            .get(class_id)
+                            .get(nominal_type_id)
                             .and_then(|meta| meta.get_field_info(&property_key))
                         {
                             self.reflect_alloc_field_info_map(
@@ -707,7 +735,7 @@ impl<'a> Interpreter<'a> {
                                 Some(field_info.field_index),
                                 field_info.is_static,
                                 field_info.is_readonly,
-                                Some(field_info.declaring_class_id),
+                                Some(field_info.declaring_nominal_type_id),
                             )
                         } else if let Some(value) =
                             self.reflect_property_value(target, &property_key)
@@ -718,7 +746,7 @@ impl<'a> Interpreter<'a> {
                                 self.get_field_index_for_value(target, &property_key),
                                 false,
                                 false,
-                                Some(class_id),
+                                Some(nominal_type_id),
                             )
                         } else {
                             Value::null()
@@ -730,7 +758,7 @@ impl<'a> Interpreter<'a> {
                             self.get_field_index_for_value(target, &property_key),
                             false,
                             false,
-                            obj.nominal_class_id(),
+                            obj.nominal_type_id_usize(),
                         )
                     } else {
                         Value::null()
@@ -752,9 +780,9 @@ impl<'a> Interpreter<'a> {
                 if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
                     let obj = unsafe { obj_ptr.as_ref() };
 
-                    if let Some(class_id) = obj.nominal_class_id() {
+                    if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
                         let class_metadata = self.class_metadata.read();
-                        if let Some(meta) = class_metadata.get(class_id) {
+                        if let Some(meta) = class_metadata.get(nominal_type_id) {
                             let fields = meta.get_all_field_infos();
                             if !fields.is_empty() {
                                 let mut arr = Array::new(0, fields.len());
@@ -765,7 +793,7 @@ impl<'a> Interpreter<'a> {
                                         Some(field_info.field_index),
                                         field_info.is_static,
                                         field_info.is_readonly,
-                                        Some(field_info.declaring_class_id),
+                                        Some(field_info.declaring_nominal_type_id),
                                     );
                                     arr.set(i, map_val).ok();
                                 }
@@ -789,7 +817,7 @@ impl<'a> Interpreter<'a> {
                                                 self.get_field_index_for_value(target, &name),
                                                 false,
                                                 false,
-                                                Some(class_id),
+                                                Some(nominal_type_id),
                                             )
                                         })
                                     })
@@ -818,7 +846,7 @@ impl<'a> Interpreter<'a> {
                                             self.get_field_index_for_value(target, &name),
                                             false,
                                             false,
-                                            Some(class_id),
+                                            Some(nominal_type_id),
                                         )
                                     })
                                 })
@@ -844,7 +872,7 @@ impl<'a> Interpreter<'a> {
                                         self.get_field_index_for_value(target, &name),
                                         false,
                                         false,
-                                        obj.nominal_class_id(),
+                                        obj.nominal_type_id_usize(),
                                     )
                                 })
                             })
@@ -864,18 +892,17 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::GET_STATIC_FIELD_NAMES => {
-                // getStaticFieldNames(classId) -> get static field names as array
+                // getStaticFieldNames(typeRef) -> get static field names as array
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "getStaticFieldNames requires 1 argument (classId)".to_string(),
+                        "getStaticFieldNames requires 1 argument (typeRef)".to_string(),
                     ));
                 }
-                let class_id = args[0].as_i32().ok_or_else(|| {
-                    VmError::TypeError("getStaticFieldNames: classId must be a number".to_string())
-                })? as usize;
+                let nominal_type_id =
+                    self.reflect_require_nominal_type_id(args[0], "getStaticFieldNames")?;
 
                 let class_metadata = self.class_metadata.read();
-                if let Some(meta) = class_metadata.get(class_id) {
+                if let Some(meta) = class_metadata.get(nominal_type_id) {
                     let names = &meta.static_field_names;
                     let mut arr = Array::new(0, names.len());
                     for (i, name) in names.iter().enumerate() {
@@ -898,7 +925,7 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::GET_STATIC_FIELDS => {
-                // getStaticFields(classId) -> get static field infos (stub for now)
+                // getStaticFields(typeRef) -> get static field infos (stub for now)
                 // Static field detailed info requires additional metadata
                 let arr = Array::new(0, 0);
                 let arr_gc = self.gc.lock().allocate(arr);
@@ -955,23 +982,21 @@ impl<'a> Interpreter<'a> {
 
             // ===== Phase 5: Object Creation =====
             reflect::CONSTRUCT => {
-                // construct(classId, ...args) -> create instance
+                // construct(typeRef, ...args) -> create instance
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "construct requires at least 1 argument (classId)".to_string(),
+                        "construct requires at least 1 argument (typeRef)".to_string(),
                     ));
                 }
-                let class_id = args[0].as_i32().ok_or_else(|| {
-                    VmError::TypeError("construct: classId must be a number".to_string())
-                })? as usize;
+                let nominal_type_id = self.reflect_require_nominal_type_id(args[0], "construct")?;
 
                 let (layout_id, field_count) =
-                    self.nominal_allocation(class_id).ok_or_else(|| {
-                        VmError::RuntimeError(format!("Class {} not found", class_id))
+                    self.nominal_allocation(nominal_type_id).ok_or_else(|| {
+                        VmError::RuntimeError(format!("Class {} not found", nominal_type_id))
                     })?;
 
                 // Allocate new object
-                let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
+                let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
                 let gc_ptr = self.gc.lock().allocate(obj);
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
 
@@ -979,23 +1004,21 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::ALLOCATE => {
-                // allocate(classId) -> allocate uninitialized instance
+                // allocate(typeRef) -> allocate uninitialized instance
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "allocate requires 1 argument (classId)".to_string(),
+                        "allocate requires 1 argument (typeRef)".to_string(),
                     ));
                 }
-                let class_id = args[0].as_i32().ok_or_else(|| {
-                    VmError::TypeError("allocate: classId must be a number".to_string())
-                })? as usize;
+                let nominal_type_id = self.reflect_require_nominal_type_id(args[0], "allocate")?;
 
                 let (layout_id, field_count) =
-                    self.nominal_allocation(class_id).ok_or_else(|| {
-                        VmError::RuntimeError(format!("Class {} not found", class_id))
+                    self.nominal_allocation(nominal_type_id).ok_or_else(|| {
+                        VmError::RuntimeError(format!("Class {} not found", nominal_type_id))
                     })?;
 
                 // Allocate new object (uninitialized - fields are null)
-                let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
+                let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
                 let gc_ptr = self.gc.lock().allocate(obj);
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
             }
@@ -1012,10 +1035,9 @@ impl<'a> Interpreter<'a> {
                 if !target.is_ptr() {
                     // Primitives are copied by value
                     target
-                } else if let Some(_class_id) = crate::vm::reflect::get_class_id(target) {
-                    // Clone object
-                    let obj_ptr = unsafe { target.as_ptr::<Object>() };
-                    let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                } else if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
+                    // Clone any unified runtime object, nominal or structural.
+                    let obj = unsafe { obj_ptr.as_ref() };
                     let cloned = obj.clone();
                     let gc_ptr = self.gc.lock().allocate(cloned);
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
@@ -1129,7 +1151,7 @@ impl<'a> Interpreter<'a> {
                 let type_name = get_string(args[0])?;
 
                 // Check primitive types
-                let (kind, class_id) = match type_name.as_str() {
+                let (kind, nominal_type_id) = match type_name.as_str() {
                     "string" | "number" | "boolean" | "null" | "void" | "any" => {
                         ("primitive".to_string(), None)
                     }
@@ -1145,43 +1167,14 @@ impl<'a> Interpreter<'a> {
                     }
                 };
 
-                // Return TypeInfo as a Map
-                let mut map = MapObject::new();
-                let kind_str = RayaString::new(kind);
-                let kind_ptr = self.gc.lock().allocate(kind_str);
-                let kind_key = RayaString::new("kind".to_string());
-                let kind_key_ptr = self.gc.lock().allocate(kind_key);
-                map.set(
-                    unsafe {
-                        Value::from_ptr(std::ptr::NonNull::new(kind_key_ptr.as_ptr()).unwrap())
-                    },
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(kind_ptr.as_ptr()).unwrap()) },
-                );
-
-                let name_str = RayaString::new(type_name);
-                let name_ptr = self.gc.lock().allocate(name_str);
-                let name_key = RayaString::new("name".to_string());
-                let name_key_ptr = self.gc.lock().allocate(name_key);
-                map.set(
-                    unsafe {
-                        Value::from_ptr(std::ptr::NonNull::new(name_key_ptr.as_ptr()).unwrap())
-                    },
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) },
-                );
-
-                if let Some(id) = class_id {
-                    let id_key = RayaString::new("classId".to_string());
-                    let id_key_ptr = self.gc.lock().allocate(id_key);
-                    map.set(
-                        unsafe {
-                            Value::from_ptr(std::ptr::NonNull::new(id_key_ptr.as_ptr()).unwrap())
-                        },
-                        Value::i32(id as i32),
-                    );
+                let mut entries = vec![
+                    ("kind", self.reflect_alloc_string_value(kind)),
+                    ("name", self.reflect_alloc_string_value(type_name)),
+                ];
+                if let Some(id) = nominal_type_id {
+                    entries.push(("nominalType", self.reflect_alloc_nominal_type_ref(id)));
                 }
-
-                let map_ptr = self.gc.lock().allocate(map);
-                unsafe { Value::from_ptr(std::ptr::NonNull::new(map_ptr.as_ptr()).unwrap()) }
+                self.reflect_alloc_structural_object(&entries)
             }
 
             reflect::IS_ASSIGNABLE_TO => {
@@ -1217,17 +1210,17 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::CAST => {
-                // cast(value, classId) - safe cast, returns null if incompatible
+                // cast(value, typeRef) - safe cast, returns null if incompatible
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
                         "cast requires 2 arguments".to_string(),
                     ));
                 }
                 let value = args[0];
-                let class_id = value_to_f64(args[1])? as usize;
+                let nominal_type_id = self.reflect_require_nominal_type_id(args[1], "cast")?;
 
                 let classes = self.classes.read();
-                if crate::vm::reflect::is_instance_of(&classes, value, class_id) {
+                if crate::vm::reflect::is_instance_of(&classes, value, nominal_type_id) {
                     value
                 } else {
                     Value::null()
@@ -1235,39 +1228,39 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::CAST_OR_THROW => {
-                // castOrThrow(value, classId) - cast or throw error
+                // castOrThrow(value, typeRef) - cast or throw error
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
                         "castOrThrow requires 2 arguments".to_string(),
                     ));
                 }
                 let value = args[0];
-                let class_id = value_to_f64(args[1])? as usize;
+                let nominal_type_id = self.reflect_require_nominal_type_id(args[1], "castOrThrow")?;
 
                 let classes = self.classes.read();
-                if crate::vm::reflect::is_instance_of(&classes, value, class_id) {
+                if crate::vm::reflect::is_instance_of(&classes, value, nominal_type_id) {
                     value
                 } else {
                     return Err(VmError::TypeError(format!(
-                        "Cannot cast value to class {}",
-                        class_id
+                        "Cannot cast value to nominal type {}",
+                        nominal_type_id
                     )));
                 }
             }
 
             // ===== Phase 7: Interface and Hierarchy Query =====
             reflect::IMPLEMENTS => {
-                // implements(classId, interfaceName) - check if class implements interface
+                // implements(typeRef, interfaceName) - check if class implements interface
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
                         "implements requires 2 arguments".to_string(),
                     ));
                 }
-                let class_id = value_to_f64(args[0])? as usize;
+                let nominal_type_id = self.reflect_require_nominal_type_id(args[0], "implements")?;
                 let interface_name = get_string(args[1])?;
 
                 let class_metadata = self.class_metadata.read();
-                if let Some(meta) = class_metadata.get(class_id) {
+                if let Some(meta) = class_metadata.get(nominal_type_id) {
                     Value::bool(meta.implements_interface(&interface_name))
                 } else {
                     Value::bool(false)
@@ -1275,16 +1268,16 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::GET_INTERFACES => {
-                // getInterfaces(classId) - get interfaces implemented by class
+                // getInterfaces(typeRef) - get interfaces implemented by class
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
                         "getInterfaces requires 1 argument".to_string(),
                     ));
                 }
-                let class_id = value_to_f64(args[0])? as usize;
+                let nominal_type_id = self.reflect_require_nominal_type_id(args[0], "getInterfaces")?;
 
                 let class_metadata = self.class_metadata.read();
-                let interfaces: Vec<String> = if let Some(meta) = class_metadata.get(class_id) {
+                let interfaces: Vec<String> = if let Some(meta) = class_metadata.get(nominal_type_id) {
                     meta.get_interfaces().to_vec()
                 } else {
                     Vec::new()
@@ -1305,18 +1298,19 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::GET_SUPERCLASS => {
-                // getSuperclass(classId) - get parent class
+                // getSuperclass(typeRef) - get parent nominal type ref
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
                         "getSuperclass requires 1 argument".to_string(),
                     ));
                 }
-                let class_id = value_to_f64(args[0])? as usize;
+                let nominal_type_id = self.reflect_require_nominal_type_id(args[0], "getSuperclass")?;
 
                 let classes = self.classes.read();
-                if let Some(class) = classes.get_class(class_id) {
+                if let Some(class) = classes.get_class(nominal_type_id) {
                     if let Some(parent) = class.parent_id {
-                        Value::i32(parent as i32)
+                        drop(classes);
+                        self.reflect_alloc_nominal_type_ref(parent)
                     } else {
                         Value::null()
                     }
@@ -1326,29 +1320,23 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::GET_SUBCLASSES => {
-                // getSubclasses(classId) - get direct subclasses
+                // getSubclasses(typeRef) - get direct subclass nominal type refs
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
                         "getSubclasses requires 1 argument".to_string(),
                     ));
                 }
-                let class_id = value_to_f64(args[0])? as usize;
+                let nominal_type_id = self.reflect_require_nominal_type_id(args[0], "getSubclasses")?;
 
                 let classes = self.classes.read();
                 let mut subclasses = Vec::new();
                 for (id, class) in classes.iter() {
-                    if class.parent_id == Some(class_id) {
+                    if class.parent_id == Some(nominal_type_id) {
                         subclasses.push(id);
                     }
                 }
                 drop(classes);
-
-                let mut arr = Array::new(0, 0);
-                for id in subclasses {
-                    arr.push(Value::i32(id as i32));
-                }
-                let arr_ptr = self.gc.lock().allocate(arr);
-                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+                self.reflect_alloc_nominal_type_ref_array(subclasses)
             }
 
             reflect::GET_IMPLEMENTORS => {
@@ -1363,24 +1351,20 @@ impl<'a> Interpreter<'a> {
                 let class_metadata = self.class_metadata.read();
                 let implementors = class_metadata.get_implementors(&interface_name);
                 drop(class_metadata);
-
-                let mut arr = Array::new(0, 0);
-                for id in implementors {
-                    arr.push(Value::i32(id as i32));
-                }
-                let arr_ptr = self.gc.lock().allocate(arr);
-                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+                self.reflect_alloc_nominal_type_ref_array(implementors)
             }
 
             reflect::IS_STRUCTURALLY_COMPATIBLE => {
-                // isStructurallyCompatible(sourceClassId, targetClassId) - check structural compatibility
+                // isStructurallyCompatible(sourceTypeRef, targetTypeRef) - check structural compatibility
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
                         "isStructurallyCompatible requires 2 arguments".to_string(),
                     ));
                 }
-                let source_id = value_to_f64(args[0])? as usize;
-                let target_id = value_to_f64(args[1])? as usize;
+                let source_id =
+                    self.reflect_require_nominal_type_id(args[0], "isStructurallyCompatible")?;
+                let target_id =
+                    self.reflect_require_nominal_type_id(args[1], "isStructurallyCompatible")?;
 
                 let class_metadata = self.class_metadata.read();
                 let source_meta = class_metadata.get(source_id);
@@ -1444,18 +1428,18 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::DESCRIBE => {
-                // describe(classId) - detailed class description
+                // describe(typeRef) - detailed class description
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
                         "describe requires 1 argument".to_string(),
                     ));
                 }
-                let class_id = value_to_f64(args[0])? as usize;
+                let nominal_type_id = self.reflect_require_nominal_type_id(args[0], "describe")?;
 
                 let classes = self.classes.read();
-                let class = classes.get_class(class_id);
+                let class = classes.get_class(nominal_type_id);
                 let class_metadata = self.class_metadata.read();
-                let meta = class_metadata.get(class_id);
+                let meta = class_metadata.get(nominal_type_id);
 
                 let description = if let Some(class) = class {
                     let mut desc = format!("class {} {{\n", class.name);
@@ -1478,7 +1462,7 @@ impl<'a> Interpreter<'a> {
                     desc.push('}');
                     desc
                 } else {
-                    format!("Unknown class {}", class_id)
+                    format!("Unknown class {}", nominal_type_id)
                 };
 
                 let s = RayaString::new(description);
@@ -1658,47 +1642,31 @@ impl<'a> Interpreter<'a> {
                 let stats = gc.heap_stats();
                 drop(gc);
 
-                let mut map = MapObject::new();
-
-                // totalObjects
-                let key = RayaString::new("totalObjects".to_string());
-                let key_ptr = self.gc.lock().allocate(key);
-                map.set(
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).unwrap()) },
-                    Value::i32(stats.allocation_count as i32),
-                );
-
-                // totalBytes
-                let key = RayaString::new("totalBytes".to_string());
-                let key_ptr = self.gc.lock().allocate(key);
-                map.set(
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).unwrap()) },
-                    Value::i32(stats.allocated_bytes as i32),
-                );
-
-                let map_ptr = self.gc.lock().allocate(map);
-                unsafe { Value::from_ptr(std::ptr::NonNull::new(map_ptr.as_ptr()).unwrap()) }
+                self.reflect_alloc_structural_object(&[
+                    ("totalObjects", Value::i32(stats.allocation_count as i32)),
+                    ("totalBytes", Value::i32(stats.allocated_bytes as i32)),
+                ])
             }
 
             reflect::FIND_INSTANCES => {
-                // findInstances(classId) - find all live instances of a class
+                // findInstances(typeRef) - find all live instances of a class
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
                         "findInstances requires 1 argument".to_string(),
                     ));
                 }
-                let class_id = value_to_f64(args[0])? as usize;
+                let nominal_type_id = self.reflect_require_nominal_type_id(args[0], "findInstances")?;
 
                 let gc = self.gc.lock();
                 let mut instances = Vec::new();
 
                 for header_ptr in gc.heap().iter_allocations() {
                     let header = unsafe { &*header_ptr };
-                    // Check if this is an Object with matching class_id
+                    // Check if this is an Object with matching nominal_type_id
                     if header.type_id() == std::any::TypeId::of::<Object>() {
                         let obj_ptr = unsafe { header_ptr.add(1) as *const Object };
                         let obj = unsafe { &*obj_ptr };
-                        if obj.nominal_class_id() == Some(class_id) {
+                        if obj.nominal_type_id_usize() == Some(nominal_type_id) {
                             let value = unsafe {
                                 Value::from_ptr(
                                     std::ptr::NonNull::new(obj_ptr as *mut Object).unwrap(),
@@ -1727,67 +1695,24 @@ impl<'a> Interpreter<'a> {
                 let mut arr = Array::new(0, 0);
 
                 for (i, &func_id) in call_stack.iter().enumerate() {
-                    let mut frame_map = MapObject::new();
-
                     // Function name
                     let func_name = module
                         .functions
                         .get(func_id)
                         .map(|f| f.name.clone())
                         .unwrap_or_else(|| format!("<function_{}>", func_id));
-
-                    let name_key = RayaString::new("functionName".to_string());
-                    let name_key_ptr = self.gc.lock().allocate(name_key);
-                    let name_val = RayaString::new(func_name);
-                    let name_val_ptr = self.gc.lock().allocate(name_val);
-                    frame_map.set(
-                        unsafe {
-                            Value::from_ptr(std::ptr::NonNull::new(name_key_ptr.as_ptr()).unwrap())
-                        },
-                        unsafe {
-                            Value::from_ptr(std::ptr::NonNull::new(name_val_ptr.as_ptr()).unwrap())
-                        },
-                    );
-
-                    // Frame index
-                    let idx_key = RayaString::new("frameIndex".to_string());
-                    let idx_key_ptr = self.gc.lock().allocate(idx_key);
-                    frame_map.set(
-                        unsafe {
-                            Value::from_ptr(std::ptr::NonNull::new(idx_key_ptr.as_ptr()).unwrap())
-                        },
-                        Value::i32(i as i32),
-                    );
+                    let function_name = self.reflect_alloc_string_value(func_name);
+                    let mut entries = vec![
+                        ("functionName", function_name),
+                        ("frameIndex", Value::i32(i as i32)),
+                    ];
 
                     // Add frame info if available
                     if let Some(frame) = stack_frames.get(i) {
-                        let locals_key = RayaString::new("localCount".to_string());
-                        let locals_key_ptr = self.gc.lock().allocate(locals_key);
-                        frame_map.set(
-                            unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(locals_key_ptr.as_ptr()).unwrap(),
-                                )
-                            },
-                            Value::i32(frame.local_count as i32),
-                        );
-
-                        let args_key = RayaString::new("argCount".to_string());
-                        let args_key_ptr = self.gc.lock().allocate(args_key);
-                        frame_map.set(
-                            unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(args_key_ptr.as_ptr()).unwrap(),
-                                )
-                            },
-                            Value::i32(frame.arg_count as i32),
-                        );
+                        entries.push(("localCount", Value::i32(frame.local_count as i32)));
+                        entries.push(("argCount", Value::i32(frame.arg_count as i32)));
                     }
-
-                    let frame_ptr = self.gc.lock().allocate(frame_map);
-                    arr.push(unsafe {
-                        Value::from_ptr(std::ptr::NonNull::new(frame_ptr.as_ptr()).unwrap())
-                    });
+                    arr.push(self.reflect_alloc_structural_object(&entries));
                 }
 
                 let arr_ptr = self.gc.lock().allocate(arr);
@@ -1822,17 +1747,15 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::GET_SOURCE_LOCATION => {
-                // getSourceLocation(classId, methodName) - source location
-                // Args: classId (number), methodName (string)
+                // getSourceLocation(typeRef, methodName) - source location
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "getSourceLocation requires 2 arguments: classId, methodName".to_string(),
+                        "getSourceLocation requires 2 arguments: typeRef, methodName".to_string(),
                     ));
                 }
 
-                let class_id = args[0].as_i32().ok_or_else(|| {
-                    VmError::RuntimeError("getSourceLocation: classId must be a number".to_string())
-                })? as usize;
+                let nominal_type_id =
+                    self.reflect_require_nominal_type_id(args[0], "getSourceLocation")?;
 
                 let method_name = if let Some(ptr) = unsafe { args[1].as_ptr::<RayaString>() } {
                     let s = unsafe { &*ptr.as_ptr() };
@@ -1849,7 +1772,7 @@ impl<'a> Interpreter<'a> {
                     Value::null()
                 } else if let Some(ref debug_info) = module.debug_info {
                     // Find the class and method
-                    if let Some(class_def) = module.classes.get(class_id) {
+                    if let Some(class_def) = module.classes.get(nominal_type_id) {
                         // Find the method by name
                         let method = class_def.methods.iter().find(|m| m.name == method_name);
 
@@ -1938,16 +1861,14 @@ impl<'a> Interpreter<'a> {
 
                 let mut arr = Array::new(0, 0);
 
-                if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
-                    let class_metadata = self.class_metadata.read();
-                    if let Some(meta) = class_metadata.get(class_id) {
-                        for name in &meta.field_names {
-                            let s = RayaString::new(name.clone());
-                            let s_ptr = self.gc.lock().allocate(s);
-                            arr.push(unsafe {
-                                Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap())
-                            });
-                        }
+                if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
+                    let obj = unsafe { obj_ptr.as_ref() };
+                    for name in self.reflect_object_field_names(obj) {
+                        let s = RayaString::new(name);
+                        let s_ptr = self.gc.lock().allocate(s);
+                        arr.push(unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap())
+                        });
                     }
                 }
 
@@ -2030,7 +1951,7 @@ impl<'a> Interpreter<'a> {
 
             // ===== Decorator Registration (Phase 3/4 codegen) =====
             reflect::REGISTER_CLASS_DECORATOR => {
-                // registerClassDecorator(classId, decoratorName)
+                // registerClassDecorator(typeRef, decoratorName)
                 // Metadata registration - currently a no-op, decorator function does the work
                 // The DecoratorRegistry is populated by the codegen emitted registration calls
                 // which use global state. For now, we just acknowledge the call.
@@ -2038,25 +1959,25 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::REGISTER_METHOD_DECORATOR => {
-                // registerMethodDecorator(classId, methodName, decoratorName)
+                // registerMethodDecorator(typeRef, methodName, decoratorName)
                 // Metadata registration - currently a no-op
                 Value::null()
             }
 
             reflect::REGISTER_FIELD_DECORATOR => {
-                // registerFieldDecorator(classId, fieldName, decoratorName)
+                // registerFieldDecorator(typeRef, fieldName, decoratorName)
                 // Metadata registration - currently a no-op
                 Value::null()
             }
 
             reflect::REGISTER_PARAMETER_DECORATOR => {
-                // registerParameterDecorator(classId, methodName, paramIndex, decoratorName)
+                // registerParameterDecorator(typeRef, methodName, paramIndex, decoratorName)
                 // Metadata registration - currently a no-op
                 Value::null()
             }
 
             reflect::GET_CLASS_DECORATORS => {
-                // getClassDecorators(classId) -> get decorators applied to class
+                // getClassDecorators(typeRef) -> get decorators applied to class
                 // Returns empty array for now - full implementation uses DecoratorRegistry
                 let arr = Array::new(0, 0);
                 let arr_gc = self.gc.lock().allocate(arr);
@@ -2064,14 +1985,14 @@ impl<'a> Interpreter<'a> {
             }
 
             reflect::GET_METHOD_DECORATORS => {
-                // getMethodDecorators(classId, methodName) -> get decorators on method
+                // getMethodDecorators(typeRef, methodName) -> get decorators on method
                 let arr = Array::new(0, 0);
                 let arr_gc = self.gc.lock().allocate(arr);
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
             }
 
             reflect::GET_FIELD_DECORATORS => {
-                // getFieldDecorators(classId, fieldName) -> get decorators on field
+                // getFieldDecorators(typeRef, fieldName) -> get decorators on field
                 let arr = Array::new(0, 0);
                 let arr_gc = self.gc.lock().allocate(arr);
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
@@ -2502,16 +2423,14 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_SET_PARENT => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "setParent requires 2 arguments (builderId, parentClassId)".to_string(),
+                        "setParent requires 2 arguments (builderId, parentTypeRef)".to_string(),
                     ));
                 }
                 let builder_id = args[0]
                     .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let parent_id = args[1].as_i32().ok_or_else(|| {
-                    VmError::TypeError("parentClassId must be a number".to_string())
-                })? as usize;
+                let parent_id = self.reflect_require_nominal_type_id(args[1], "setParent")?;
                 let mut registry =
                     crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id).ok_or_else(|| {
@@ -2597,7 +2516,7 @@ impl<'a> Interpreter<'a> {
                 class_metadata_write.register(new_class_id, new_metadata);
                 drop(class_metadata_write);
 
-                Value::i32(new_class_id as i32)
+                self.reflect_alloc_nominal_type_ref(new_class_id)
             }
 
             // ===== Phase 17: DynamicModule (0x0E10-0x0E15) =====
@@ -2652,24 +2571,21 @@ impl<'a> Interpreter<'a> {
             reflect::MODULE_ADD_CLASS => {
                 if args.len() < 3 {
                     return Err(VmError::RuntimeError(
-                        "addClass requires 3 arguments (moduleId, classId, name)".to_string(),
+                        "addClass requires 3 arguments (moduleId, typeRef, name)".to_string(),
                     ));
                 }
                 let module_id = args[0]
                     .as_i32()
                     .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
                     as usize;
-                let class_id = args[1]
-                    .as_i32()
-                    .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
-                    as usize;
+                let nominal_type_id = self.reflect_require_nominal_type_id(args[1], "addClass")?;
                 let name = get_string(args[2])?;
                 let mut registry =
                     crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
                 let module = registry.get_mut(module_id).ok_or_else(|| {
                     VmError::RuntimeError(format!("Module {} not found", module_id))
                 })?;
-                module.add_class(class_id, class_id, name)?;
+                module.add_class(nominal_type_id, nominal_type_id, name)?;
                 Value::null()
             }
 

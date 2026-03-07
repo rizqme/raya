@@ -31,9 +31,11 @@ pub struct DecodedInstr {
 pub enum Operands {
     /// No operands (Nop, Pop, Dup, Iadd, Return, etc.)
     None,
-    /// Single u16 (LoadLocal, StoreLocal, LoadField, etc.)
+    /// Single u16 (LoadLocal, StoreLocal, LoadFieldExact, etc.)
     U16(u16),
-    /// Single u32 (LoadConst, New, LoadGlobal, etc.)
+    /// Single u64 (CastShape)
+    U64(u64),
+    /// Single u32 (LoadConst, LoadGlobal, etc.)
     U32(u32),
     /// Single i32 (ConstI32, etc.)
     I32(i32),
@@ -211,16 +213,14 @@ fn decode_operands(
         | Opcode::StoreRefCell
         | Opcode::ArrayPush
         | Opcode::ArrayPop
-        | Opcode::InstanceOf
-        | Opcode::Cast
         | Opcode::Debugger => Ok(Operands::None),
 
         // u16 operand (3 bytes total)
         Opcode::LoadLocal
         | Opcode::StoreLocal
-        | Opcode::LoadField
-        | Opcode::StoreField
-        | Opcode::OptionalField
+        | Opcode::LoadFieldExact
+        | Opcode::StoreFieldExact
+        | Opcode::OptionalFieldExact
         | Opcode::ConstStr
         | Opcode::CloseVar
         | Opcode::LoadCaptured
@@ -230,9 +230,18 @@ fn decode_operands(
         | Opcode::InitArray
         | Opcode::InitTuple
         | Opcode::Trap
-        | Opcode::BindMethod => {
+        | Opcode::BindMethod
+        | Opcode::NewType
+        | Opcode::IsNominal
+        | Opcode::Cast
+        | Opcode::CastNominal => {
             let v = read_u16(code, pos, offset)?;
             Ok(Operands::U16(v))
+        }
+
+        Opcode::CastShape | Opcode::ImplementsShape => {
+            let shape_id = read_u64(code, pos, offset)?;
+            Ok(Operands::U64(shape_id))
         }
 
         // SpawnClosure: u16 arg_count
@@ -272,7 +281,6 @@ fn decode_operands(
 
         // u32 operand (5 bytes total)
         Opcode::LoadConst
-        | Opcode::New
         | Opcode::NewArray
         | Opcode::TaskThen
         | Opcode::LoadModule
@@ -289,8 +297,8 @@ fn decode_operands(
 
         // u32 + u16 operands — calls (7 bytes total)
         Opcode::Call
-        | Opcode::CallMethod
-        | Opcode::OptionalCallMethod
+        | Opcode::CallMethodExact
+        | Opcode::OptionalCallMethodExact
         | Opcode::CallConstructor
         | Opcode::CallSuper
         | Opcode::CallStatic => {

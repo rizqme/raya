@@ -256,7 +256,7 @@ pub enum Value {
 
 ```rust
 pub struct ClassInstance {
-    pub class_id: ClassId,
+    pub nominal_type_id: NominalTypeId,
     pub fields: Vec<Value>,
 }
 ```

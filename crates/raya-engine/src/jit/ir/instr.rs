@@ -384,14 +384,14 @@ pub enum JitInstr {
     // ===== Object Operations =====
     NewObject {
         dest: Reg,
-        class_id: u32,
+        nominal_type_id: u32,
     },
-    LoadField {
+    LoadFieldExact {
         dest: Reg,
         object: Reg,
         offset: u16,
     },
-    StoreField {
+    StoreFieldExact {
         object: Reg,
         offset: u16,
         value: Reg,
@@ -399,12 +399,12 @@ pub enum JitInstr {
     InstanceOf {
         dest: Reg,
         object: Reg,
-        class_id: u32,
+        nominal_type_id: u32,
     },
     Cast {
         dest: Reg,
         object: Reg,
-        class_id: u32,
+        nominal_type_id: u32,
     },
     Typeof {
         dest: Reg,
@@ -470,7 +470,7 @@ pub enum JitInstr {
         func_index: u32,
         args: Vec<Reg>,
     },
-    CallMethod {
+    CallMethodExact {
         dest: Option<Reg>,
         method_index: u32,
         receiver: Reg,
@@ -478,7 +478,7 @@ pub enum JitInstr {
     },
     CallConstructor {
         dest: Reg,
-        class_id: u32,
+        nominal_type_id: u32,
         args: Vec<Reg>,
     },
     CallSuper {
@@ -706,7 +706,7 @@ pub enum JitInstr {
     Rethrow,
 
     // ===== Optional Field =====
-    OptionalField {
+    OptionalFieldExact {
         dest: Reg,
         object: Reg,
         offset: u16,
@@ -799,7 +799,7 @@ impl JitInstr {
             | JitInstr::LoadGlobal { dest, .. }
             | JitInstr::LoadStatic { dest, .. }
             | JitInstr::NewObject { dest, .. }
-            | JitInstr::LoadField { dest, .. }
+            | JitInstr::LoadFieldExact { dest, .. }
             | JitInstr::InstanceOf { dest, .. }
             | JitInstr::Cast { dest, .. }
             | JitInstr::Typeof { dest, .. }
@@ -809,7 +809,7 @@ impl JitInstr {
             | JitInstr::ArrayPop { dest, .. }
             | JitInstr::ArrayLiteral { dest, .. }
             | JitInstr::InitArray { dest, .. }
-            | JitInstr::OptionalField { dest, .. } => Some(*dest),
+            | JitInstr::OptionalFieldExact { dest, .. } => Some(*dest),
 
             // String
             JitInstr::SConcat { dest, .. }
@@ -818,7 +818,7 @@ impl JitInstr {
 
             // Calls
             JitInstr::Call { dest, .. }
-            | JitInstr::CallMethod { dest, .. }
+            | JitInstr::CallMethodExact { dest, .. }
             | JitInstr::CallSuper { dest, .. }
             | JitInstr::CallStatic { dest, .. }
             | JitInstr::CallNative { dest, .. }
@@ -866,7 +866,7 @@ impl JitInstr {
             JitInstr::StoreLocal { .. }
             | JitInstr::StoreGlobal { .. }
             | JitInstr::StoreStatic { .. }
-            | JitInstr::StoreField { .. }
+            | JitInstr::StoreFieldExact { .. }
             | JitInstr::StoreElem { .. }
             | JitInstr::ArrayPush { .. }
             | JitInstr::StoreCaptured { .. }
@@ -961,7 +961,7 @@ impl JitInstr {
             | JitInstr::LoadLocal { .. }
             | JitInstr::LoadGlobal { .. }
             | JitInstr::LoadStatic { .. }
-            | JitInstr::LoadField { .. }
+            | JitInstr::LoadFieldExact { .. }
             | JitInstr::LoadElem { .. }
             | JitInstr::ArrayLen { .. }
             | JitInstr::LoadCaptured { .. }
@@ -969,7 +969,7 @@ impl JitInstr {
             | JitInstr::SLen { .. }
             | JitInstr::InstanceOf { .. }
             | JitInstr::Typeof { .. }
-            | JitInstr::OptionalField { .. }
+            | JitInstr::OptionalFieldExact { .. }
             | JitInstr::LoadModule { .. }
             | JitInstr::LoadConst { .. }
             | JitInstr::TupleGet { .. }

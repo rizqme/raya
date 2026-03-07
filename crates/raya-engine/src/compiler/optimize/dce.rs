@@ -70,7 +70,7 @@ impl DeadCodeEliminator {
                     used.insert(arg.id);
                 }
             }
-            IrInstr::CallMethod { object, args, .. } => {
+            IrInstr::CallMethodExact { object, args, .. } => {
                 used.insert(object.id);
                 for arg in args {
                     used.insert(arg.id);
@@ -81,7 +81,16 @@ impl DeadCodeEliminator {
                     used.insert(arg.id);
                 }
             }
-            IrInstr::InstanceOf { object, .. } => {
+            IrInstr::IsNominal { object, .. } => {
+                used.insert(object.id);
+            }
+            IrInstr::ImplementsShape { object, .. } => {
+                used.insert(object.id);
+            }
+            IrInstr::CastNominal { object, .. } => {
+                used.insert(object.id);
+            }
+            IrInstr::CastShape { object, .. } => {
                 used.insert(object.id);
             }
             IrInstr::Cast { object, .. } => {
@@ -90,7 +99,7 @@ impl DeadCodeEliminator {
             IrInstr::StoreLocal { value, .. } => {
                 used.insert(value.id);
             }
-            IrInstr::LoadField { object, .. } => {
+            IrInstr::LoadFieldExact { object, .. } => {
                 used.insert(object.id);
             }
             IrInstr::LoadFieldShape { object, .. } => {
@@ -102,7 +111,7 @@ impl DeadCodeEliminator {
                     used.insert(arg.id);
                 }
             }
-            IrInstr::StoreField { object, value, .. } => {
+            IrInstr::StoreFieldExact { object, value, .. } => {
                 used.insert(object.id);
                 used.insert(value.id);
             }
@@ -206,7 +215,7 @@ impl DeadCodeEliminator {
             }
             IrInstr::LoadLocal { .. }
             | IrInstr::LoadArgCount { .. }
-            | IrInstr::NewObject { .. }
+            | IrInstr::NewType { .. }
             | IrInstr::LoadCaptured { .. }
             | IrInstr::LoadGlobal { .. } => {
                 // No register uses

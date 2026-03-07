@@ -258,8 +258,7 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::StoreRefCell
         | Opcode::ArrayPush
         | Opcode::ArrayPop
-        | Opcode::InstanceOf
-        | Opcode::Cast => 0,
+        => 0,
 
         // BindMethod has 2-byte operand (u16 method_slot)
         Opcode::BindMethod => 2,
@@ -267,9 +266,9 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         // 2-byte operands (u16)
         Opcode::LoadLocal
         | Opcode::StoreLocal
-        | Opcode::LoadField
-        | Opcode::StoreField
-        | Opcode::OptionalField
+        | Opcode::LoadFieldExact
+        | Opcode::StoreFieldExact
+        | Opcode::OptionalFieldExact
         | Opcode::InitObject
         | Opcode::InitArray
         | Opcode::InitTuple
@@ -278,6 +277,8 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::StoreCaptured
         | Opcode::SetClosureCapture
         | Opcode::Trap => 2,
+
+        Opcode::NewType | Opcode::IsNominal | Opcode::Cast | Opcode::CastNominal => 2,
 
         // 4-byte operands (i32 or u32)
         Opcode::ConstI32 => 4,
@@ -290,7 +291,6 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::LoadConst
         | Opcode::LoadGlobal
         | Opcode::StoreGlobal
-        | Opcode::New
         | Opcode::NewArray
         | Opcode::LoadModule
         | Opcode::TaskThen
@@ -299,8 +299,8 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::DynDelete
         | Opcode::DynHas => 4,
 
-        // 8-byte operands (f64)
-        Opcode::ConstF64 => 8,
+        // 8-byte operands (f64 / u64)
+        Opcode::ConstF64 | Opcode::CastShape | Opcode::ImplementsShape => 8,
 
         // 10-byte operands (u64 + u16)
         Opcode::LoadFieldShape | Opcode::StoreFieldShape | Opcode::OptionalFieldShape => 10,
@@ -310,8 +310,8 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
 
         // 6-byte operands (u32 + u16)
         Opcode::Call
-        | Opcode::CallMethod
-        | Opcode::OptionalCallMethod
+        | Opcode::CallMethodExact
+        | Opcode::OptionalCallMethodExact
         | Opcode::CallConstructor
         | Opcode::CallSuper
         | Opcode::CallStatic
@@ -442,19 +442,19 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::Return => (1, 0),
         Opcode::ReturnVoid => (0, 0),
         Opcode::Call => (0, 1), // Simplified - actual depends on arg count
-        Opcode::CallMethod
-        | Opcode::OptionalCallMethod
+        Opcode::CallMethodExact
+        | Opcode::OptionalCallMethodExact
         | Opcode::CallMethodShape
         | Opcode::OptionalCallMethodShape => (1, 1), // Simplified
         Opcode::CallConstructor | Opcode::CallSuper | Opcode::CallStatic => (0, 1),
-        Opcode::New => (0, 1),
-        Opcode::LoadField => (1, 1),
-        Opcode::StoreField => (2, 0),
+        Opcode::NewType => (0, 1),
+        Opcode::LoadFieldExact => (1, 1),
+        Opcode::StoreFieldExact => (2, 0),
         Opcode::LoadFieldShape => (1, 1),
         Opcode::StoreFieldShape => (2, 0),
         Opcode::ObjectLiteral => (0, 1),
         Opcode::InitObject => (0, 0), // Simplified
-        Opcode::OptionalField => (1, 1),
+        Opcode::OptionalFieldExact => (1, 1),
         Opcode::OptionalFieldShape => (1, 1),
         Opcode::LoadStatic => (0, 1),
         Opcode::StoreStatic => (1, 0),
@@ -523,8 +523,8 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::ArrayPop => (1, 1),  // Pop array, push popped element
 
         // Type operations
-        Opcode::InstanceOf => (2, 1), // Pop class_id + object, push bool
-        Opcode::Cast => (2, 1),       // Pop class_id + object, push object (or throw)
+        Opcode::IsNominal | Opcode::ImplementsShape => (1, 1), // Pop object, push bool
+        Opcode::Cast | Opcode::CastNominal | Opcode::CastShape => (1, 1), // Pop object, push object (or throw)
 
         // Native call
         Opcode::NativeCall => (0, 1), // Simplified - pops args (dynamic), pushes result

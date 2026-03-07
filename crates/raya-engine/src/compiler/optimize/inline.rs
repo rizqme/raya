@@ -120,13 +120,13 @@ impl Inliner {
             | IrInstr::BinaryOp { .. }
             | IrInstr::UnaryOp { .. }
             | IrInstr::Call { .. }
-            | IrInstr::CallMethod { .. }
+            | IrInstr::CallMethodExact { .. }
             | IrInstr::CallClosure { .. }
             | IrInstr::NativeCall { .. }
             | IrInstr::ModuleNativeCall { .. }
             | IrInstr::LoadLocal { .. }
-            | IrInstr::LoadField { .. }
-            | IrInstr::StoreField { .. }
+            | IrInstr::LoadFieldExact { .. }
+            | IrInstr::StoreFieldExact { .. }
             | IrInstr::LoadGlobal { .. }
             | IrInstr::StoreGlobal { .. }
             | IrInstr::LoadElement { .. }
@@ -138,8 +138,11 @@ impl Inliner {
             | IrInstr::StringCompare { .. }
             | IrInstr::ToString { .. }
             | IrInstr::Typeof { .. }
-            | IrInstr::NewObject { .. }
-            | IrInstr::InstanceOf { .. }
+            | IrInstr::NewType { .. }
+            | IrInstr::IsNominal { .. }
+            | IrInstr::ImplementsShape { .. }
+            | IrInstr::CastNominal { .. }
+            | IrInstr::CastShape { .. }
             | IrInstr::Cast { .. }
             | IrInstr::MakeClosure { .. }
             | IrInstr::NewMutex { .. }
@@ -264,11 +267,11 @@ impl Inliner {
             }
             IrInstr::LoadLocal { dest, .. } => f(dest.id.as_u32()),
             IrInstr::StoreLocal { value, .. } => f(value.id.as_u32()),
-            IrInstr::LoadField { dest, object, .. } => {
+            IrInstr::LoadFieldExact { dest, object, .. } => {
                 f(dest.id.as_u32());
                 f(object.id.as_u32());
             }
-            IrInstr::StoreField { object, value, .. } => {
+            IrInstr::StoreFieldExact { object, value, .. } => {
                 f(object.id.as_u32());
                 f(value.id.as_u32());
             }
@@ -335,7 +338,7 @@ impl Inliner {
                     f(arg.id.as_u32());
                 }
             }
-            IrInstr::CallMethod {
+            IrInstr::CallMethodExact {
                 dest,
                 object,
                 args: method_args,
@@ -494,22 +497,22 @@ impl Inliner {
                     })
                 }
             }
-            IrInstr::LoadField {
+            IrInstr::LoadFieldExact {
                 dest,
                 object,
                 field,
                 optional,
-            } => Some(IrInstr::LoadField {
+            } => Some(IrInstr::LoadFieldExact {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 object: self.rename_register(object, reg_map),
                 field: *field,
                 optional: *optional,
             }),
-            IrInstr::StoreField {
+            IrInstr::StoreFieldExact {
                 object,
                 field,
                 value,
-            } => Some(IrInstr::StoreField {
+            } => Some(IrInstr::StoreFieldExact {
                 object: self.rename_register(object, reg_map),
                 field: *field,
                 value: self.rename_register(value, reg_map),
@@ -627,27 +630,57 @@ impl Inliner {
                 index: self.rename_register(index, reg_map),
                 value: self.rename_register(value, reg_map),
             }),
-            IrInstr::NewObject { dest, class } => Some(IrInstr::NewObject {
+            IrInstr::NewType {
+                dest,
+                nominal_type_id,
+            } => Some(IrInstr::NewType {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
-                class: *class,
+                nominal_type_id: *nominal_type_id,
             }),
-            IrInstr::InstanceOf {
+            IrInstr::IsNominal {
                 dest,
                 object,
-                class_id,
-            } => Some(IrInstr::InstanceOf {
+                nominal_type_id,
+            } => Some(IrInstr::IsNominal {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 object: self.rename_register(object, reg_map),
-                class_id: *class_id,
+                nominal_type_id: *nominal_type_id,
+            }),
+            IrInstr::ImplementsShape {
+                dest,
+                object,
+                shape_id,
+            } => Some(IrInstr::ImplementsShape {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                object: self.rename_register(object, reg_map),
+                shape_id: *shape_id,
+            }),
+            IrInstr::CastNominal {
+                dest,
+                object,
+                nominal_type_id,
+            } => Some(IrInstr::CastNominal {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                object: self.rename_register(object, reg_map),
+                nominal_type_id: *nominal_type_id,
+            }),
+            IrInstr::CastShape {
+                dest,
+                object,
+                shape_id,
+            } => Some(IrInstr::CastShape {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                object: self.rename_register(object, reg_map),
+                shape_id: *shape_id,
             }),
             IrInstr::Cast {
                 dest,
                 object,
-                class_id,
+                target,
             } => Some(IrInstr::Cast {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 object: self.rename_register(object, reg_map),
-                class_id: *class_id,
+                target: *target,
             }),
             IrInstr::MakeClosure {
                 dest,
@@ -675,13 +708,13 @@ impl Inliner {
                     .map(|a| self.rename_register(a, reg_map))
                     .collect(),
             }),
-            IrInstr::CallMethod {
+            IrInstr::CallMethodExact {
                 dest,
                 object,
                 method,
                 args: method_args,
                 optional,
-            } => Some(IrInstr::CallMethod {
+            } => Some(IrInstr::CallMethodExact {
                 dest: dest
                     .as_ref()
                     .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
@@ -828,7 +861,7 @@ mod tests {
     fn test_is_inlinable_two_instructions() {
         let inliner = Inliner::new();
         let instrs = vec![
-            IrInstr::LoadField {
+            IrInstr::LoadFieldExact {
                 dest: make_reg(0),
                 object: make_reg(1),
                 field: 0,

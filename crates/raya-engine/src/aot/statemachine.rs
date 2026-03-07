@@ -364,8 +364,8 @@ pub enum HelperCall {
     ArrayPop,
     LoadElement,
     StoreElement,
-    LoadField,
-    StoreField,
+    LoadFieldExact,
+    StoreFieldExact,
 
     // Native/module call dispatch
     ModuleNativeCall,
@@ -383,7 +383,9 @@ pub enum HelperCall {
 
     // Type operations
     InstanceOf,
+    ImplementsShape,
     Cast,
+    CastShape,
     Typeof,
 
     // JSON operations

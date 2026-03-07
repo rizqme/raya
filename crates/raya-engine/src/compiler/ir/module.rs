@@ -3,7 +3,7 @@
 //! Top-level container for a compiled module.
 
 use super::function::IrFunction;
-use super::instr::{ClassId, FunctionId, TypeAliasId};
+use super::instr::{NominalTypeId, FunctionId, TypeAliasId};
 use crate::parser::TypeId;
 use rustc_hash::FxHashMap;
 
@@ -21,7 +21,7 @@ pub struct IrModule {
     /// Function lookup by name
     function_map: FxHashMap<String, FunctionId>,
     /// Class lookup by name
-    class_map: FxHashMap<String, ClassId>,
+    class_map: FxHashMap<String, NominalTypeId>,
     /// Type alias lookup by name
     type_alias_map: FxHashMap<String, TypeAliasId>,
     /// Native function name table for ModuleNativeCall.
@@ -53,8 +53,8 @@ impl IrModule {
     }
 
     /// Add a class to the module
-    pub fn add_class(&mut self, class: IrClass) -> ClassId {
-        let id = ClassId(self.classes.len() as u32);
+    pub fn add_class(&mut self, class: IrClass) -> NominalTypeId {
+        let id = NominalTypeId(self.classes.len() as u32);
         self.class_map.insert(class.name.clone(), id);
         self.classes.push(class);
         id
@@ -83,12 +83,12 @@ impl IrModule {
     }
 
     /// Get a class by ID
-    pub fn get_class(&self, id: ClassId) -> Option<&IrClass> {
+    pub fn get_class(&self, id: NominalTypeId) -> Option<&IrClass> {
         self.classes.get(id.0 as usize)
     }
 
     /// Get a class by ID mutably
-    pub fn get_class_mut(&mut self, id: ClassId) -> Option<&mut IrClass> {
+    pub fn get_class_mut(&mut self, id: NominalTypeId) -> Option<&mut IrClass> {
         self.classes.get_mut(id.0 as usize)
     }
 
@@ -98,7 +98,7 @@ impl IrModule {
     }
 
     /// Get a class ID by name
-    pub fn get_class_id(&self, name: &str) -> Option<ClassId> {
+    pub fn get_nominal_type_id(&self, name: &str) -> Option<NominalTypeId> {
         self.class_map.get(name).copied()
     }
 
@@ -189,7 +189,7 @@ pub struct IrClass {
     /// Constructor function ID (if any)
     pub constructor: Option<FunctionId>,
     /// Parent class ID (if any)
-    pub parent: Option<ClassId>,
+    pub parent: Option<NominalTypeId>,
 }
 
 impl IrClass {
@@ -380,7 +380,7 @@ mod tests {
         let class = IrClass::new("MyClass");
         let id = module.add_class(class);
 
-        assert_eq!(id, ClassId(0));
+        assert_eq!(id, NominalTypeId(0));
         assert_eq!(module.class_count(), 1);
         assert!(module.get_class(id).is_some());
         assert!(module.get_class_by_name("MyClass").is_some());

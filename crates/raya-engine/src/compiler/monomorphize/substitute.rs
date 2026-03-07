@@ -104,13 +104,13 @@ impl TypeSubstitution {
                 func: *func,
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
             },
-            IrInstr::CallMethod {
+            IrInstr::CallMethodExact {
                 dest,
                 object,
                 method,
                 args,
                 optional,
-            } => IrInstr::CallMethod {
+            } => IrInstr::CallMethodExact {
                 dest: dest.as_ref().map(|d| self.apply_register(d)),
                 object: self.apply_register(object),
                 method: *method,
@@ -150,23 +150,50 @@ impl TypeSubstitution {
                 local_idx: *local_idx,
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
             },
-            IrInstr::InstanceOf {
+            IrInstr::IsNominal {
                 dest,
                 object,
-                class_id,
-            } => IrInstr::InstanceOf {
+                nominal_type_id,
+            } => IrInstr::IsNominal {
                 dest: self.apply_register(dest),
                 object: self.apply_register(object),
-                class_id: *class_id,
+                nominal_type_id: *nominal_type_id,
+            },
+            IrInstr::ImplementsShape {
+                dest,
+                object,
+                shape_id,
+            } => IrInstr::ImplementsShape {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                shape_id: *shape_id,
+            },
+            IrInstr::CastNominal {
+                dest,
+                object,
+                nominal_type_id,
+            } => IrInstr::CastNominal {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                nominal_type_id: *nominal_type_id,
+            },
+            IrInstr::CastShape {
+                dest,
+                object,
+                shape_id,
+            } => IrInstr::CastShape {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                shape_id: *shape_id,
             },
             IrInstr::Cast {
                 dest,
                 object,
-                class_id,
+                target,
             } => IrInstr::Cast {
                 dest: self.apply_register(dest),
                 object: self.apply_register(object),
-                class_id: *class_id,
+                target: *target,
             },
             IrInstr::LoadLocal { dest, index } => IrInstr::LoadLocal {
                 dest: self.apply_register(dest),
@@ -191,12 +218,12 @@ impl TypeSubstitution {
                 index: *index,
                 value: self.apply_register(value),
             },
-            IrInstr::LoadField {
+            IrInstr::LoadFieldExact {
                 dest,
                 object,
                 field,
                 optional,
-            } => IrInstr::LoadField {
+            } => IrInstr::LoadFieldExact {
                 dest: self.apply_register(dest),
                 object: self.apply_register(object),
                 field: *field,
@@ -215,11 +242,11 @@ impl TypeSubstitution {
                 field: *field,
                 optional: *optional,
             },
-            IrInstr::StoreField {
+            IrInstr::StoreFieldExact {
                 object,
                 field,
                 value,
-            } => IrInstr::StoreField {
+            } => IrInstr::StoreFieldExact {
                 object: self.apply_register(object),
                 field: *field,
                 value: self.apply_register(value),
@@ -286,9 +313,12 @@ impl TypeSubstitution {
                 index: self.apply_register(index),
                 value: self.apply_register(value),
             },
-            IrInstr::NewObject { dest, class } => IrInstr::NewObject {
+            IrInstr::NewType {
+                dest,
+                nominal_type_id,
+            } => IrInstr::NewType {
                 dest: self.apply_register(dest),
-                class: *class,
+                nominal_type_id: *nominal_type_id,
             },
             IrInstr::NewArray { dest, len, elem_ty } => IrInstr::NewArray {
                 dest: self.apply_register(dest),

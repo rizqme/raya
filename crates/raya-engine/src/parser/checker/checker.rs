@@ -1824,8 +1824,38 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    fn type_supports_instanceof_guard_target(&self, ty: TypeId) -> bool {
+        let Some(ty_def) = self.type_ctx.get(ty) else {
+            return false;
+        };
+
+        match ty_def {
+            crate::parser::types::Type::Class(_)
+            | crate::parser::types::Type::Object(_)
+            | crate::parser::types::Type::Interface(_) => true,
+            crate::parser::types::Type::Union(union) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_supports_instanceof_guard_target(member)),
+            crate::parser::types::Type::Reference(reference) => self
+                .type_ctx
+                .lookup_named_type(&reference.name)
+                .is_some_and(|resolved| self.type_supports_instanceof_guard_target(resolved)),
+            crate::parser::types::Type::Generic(generic) => {
+                self.type_supports_instanceof_guard_target(generic.base)
+            }
+            crate::parser::types::Type::TypeVar(type_var) => type_var
+                .constraint
+                .or(type_var.default)
+                .is_some_and(|inner| self.type_supports_instanceof_guard_target(inner)),
+            _ => false,
+        }
+    }
+
     /// Try to extract an instanceof guard from a condition expression.
-    /// Returns (variable_name, class_type_id) if the condition is `var instanceof ClassName`.
+    /// Returns (variable_name, target_type_id) if the condition is `var instanceof T`
+    /// and `T` is a supported nominal or structural runtime target.
     fn try_extract_instanceof_guard(&mut self, expr: &Expression) -> Option<(String, TypeId)> {
         let instanceof = match expr {
             Expression::InstanceOf(inst) => inst,
@@ -1836,43 +1866,29 @@ impl<'a> TypeChecker<'a> {
             Expression::Identifier(ident) => self.resolve(ident.name),
             _ => return None,
         };
-        // Resolve class name from type annotation
-        let class_name = match &instanceof.type_name.ty {
-            crate::parser::ast::types::Type::Reference(type_ref) => {
-                self.resolve(type_ref.name.name)
-            }
-            _ => return None,
-        };
 
-        // Prefer named type resolution so narrowing uses the actual class type.
-        if let Some(class_ty) = self.type_ctx.lookup_named_type(&class_name) {
-            if matches!(
-                self.type_ctx.get(class_ty),
-                Some(crate::parser::types::Type::Class(_))
-            ) {
-                return Some((var_name, class_ty));
+        if let crate::parser::ast::types::Type::Reference(type_ref) = &instanceof.type_name.ty {
+            let target_name = self.resolve(type_ref.name.name);
+            if let Some(target_ty) = self.type_ctx.lookup_named_type(&target_name) {
+                if self.type_supports_instanceof_guard_target(target_ty) {
+                    return Some((var_name.clone(), target_ty));
+                }
+            }
+
+            if let Some(target_sym) = self
+                .symbols
+                .resolve_from_scope(&target_name, self.current_scope)
+                .or_else(|| self.symbols.resolve(&target_name))
+            {
+                if self.type_supports_instanceof_guard_target(target_sym.ty) {
+                    return Some((var_name.clone(), target_sym.ty));
+                }
             }
         }
 
-        // Fallback to direct type-annotation resolution.
-        let class_ty = self.resolve_type_annotation(&instanceof.type_name);
-        if matches!(
-            self.type_ctx.get(class_ty),
-            Some(crate::parser::types::Type::Class(_))
-        ) {
-            return Some((var_name, class_ty));
-        }
-
-        // Last-resort symbol lookup (for partially bound modules).
-        let class_sym = self
-            .symbols
-            .resolve_from_scope(&class_name, self.current_scope)
-            .or_else(|| self.symbols.resolve(&class_name))?;
-        if matches!(
-            self.type_ctx.get(class_sym.ty),
-            Some(crate::parser::types::Type::Class(_))
-        ) {
-            Some((var_name, class_sym.ty))
+        let target_ty = self.resolve_type_annotation(&instanceof.type_name);
+        if self.type_supports_instanceof_guard_target(target_ty) {
+            Some((var_name, target_ty))
         } else {
             None
         }

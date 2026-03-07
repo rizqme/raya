@@ -141,7 +141,7 @@ impl<'a> NativeArray<'a> {
 
 /// Builder for constructing ObjectSchema instances manually.
 pub struct ObjectSchemaBuilder {
-    class_id: usize,
+    nominal_type_id: usize,
     class_name: String,
     field_lookup: HashMap<String, usize>,
     field_names: Vec<String>,
@@ -174,7 +174,7 @@ impl ObjectSchemaBuilder {
     /// Build the ObjectSchema
     pub fn build(self) -> ObjectSchema {
         ObjectSchema {
-            class_id: self.class_id,
+            nominal_type_id: self.nominal_type_id,
             class_name: self.class_name,
             field_lookup: self.field_lookup,
             field_names: self.field_names,
@@ -189,7 +189,7 @@ impl ObjectSchemaBuilder {
 /// Build once per class (via `from_context` or `builder`), reuse for all
 /// instances. Field lookups are `HashMap<String, usize>` → O(1).
 pub struct ObjectSchema {
-    class_id: usize,
+    nominal_type_id: usize,
     class_name: String,
     field_lookup: HashMap<String, usize>,
     field_names: Vec<String>,
@@ -199,10 +199,10 @@ pub struct ObjectSchema {
 
 impl ObjectSchema {
     /// Build schema from VM class metadata
-    pub fn from_context(ctx: &dyn NativeContext, class_id: usize) -> AbiResult<Self> {
-        let info = ctx.class_info(class_id)?;
-        let fields = ctx.class_field_names(class_id)?;
-        let methods = ctx.class_method_entries(class_id)?;
+    pub fn from_context(ctx: &dyn NativeContext, nominal_type_id: usize) -> AbiResult<Self> {
+        let info = ctx.nominal_type_info(nominal_type_id)?;
+        let fields = ctx.nominal_type_field_names(nominal_type_id)?;
+        let methods = ctx.nominal_type_method_entries(nominal_type_id)?;
 
         let mut field_lookup = HashMap::with_capacity(fields.len());
         let mut field_names = vec![String::new(); info.field_count];
@@ -224,7 +224,7 @@ impl ObjectSchema {
         }
 
         Ok(Self {
-            class_id,
+            nominal_type_id,
             class_name: info.name,
             field_lookup,
             field_names,
@@ -234,9 +234,9 @@ impl ObjectSchema {
     }
 
     /// Create a builder for manual schema construction
-    pub fn builder(class_id: usize, class_name: &str) -> ObjectSchemaBuilder {
+    pub fn builder(nominal_type_id: usize, class_name: &str) -> ObjectSchemaBuilder {
         ObjectSchemaBuilder {
-            class_id,
+            nominal_type_id,
             class_name: class_name.to_string(),
             field_lookup: HashMap::new(),
             field_names: Vec::new(),
@@ -271,8 +271,8 @@ impl ObjectSchema {
     }
 
     /// Get class ID
-    pub fn class_id(&self) -> usize {
-        self.class_id
+    pub fn nominal_type_id(&self) -> usize {
+        self.nominal_type_id
     }
 
     /// Get field names in order
@@ -387,8 +387,8 @@ impl<'a> NativeObject<'a> {
     }
 
     /// Get object's class ID
-    pub fn class_id(&self) -> AbiResult<usize> {
-        self.ctx.object_class_id(self.value)
+    pub fn nominal_type_id(&self) -> AbiResult<usize> {
+        self.ctx.object_nominal_type_id(self.value)
     }
 
     /// Get the schema
@@ -419,9 +419,9 @@ pub struct NativeClass {
 
 impl NativeClass {
     /// Look up class by ID
-    pub fn from_id(ctx: &dyn NativeContext, class_id: usize) -> AbiResult<Self> {
+    pub fn from_nominal_type_id(ctx: &dyn NativeContext, nominal_type_id: usize) -> AbiResult<Self> {
         Ok(Self {
-            info: ctx.class_info(class_id)?,
+            info: ctx.nominal_type_info(nominal_type_id)?,
         })
     }
 
@@ -434,7 +434,7 @@ impl NativeClass {
 
     /// Get class ID
     pub fn id(&self) -> usize {
-        self.info.class_id
+        self.info.nominal_type_id
     }
 
     /// Get class name
@@ -448,8 +448,8 @@ impl NativeClass {
     }
 
     /// Get parent class ID
-    pub fn parent_id(&self) -> Option<usize> {
-        self.info.parent_id
+    pub fn parent_nominal_type_id(&self) -> Option<usize> {
+        self.info.parent_nominal_type_id
     }
 
     /// Get constructor function ID
@@ -464,12 +464,12 @@ impl NativeClass {
 
     /// Build ObjectSchema for this class from VM metadata
     pub fn schema(&self, ctx: &dyn NativeContext) -> AbiResult<ObjectSchema> {
-        ObjectSchema::from_context(ctx, self.info.class_id)
+        ObjectSchema::from_context(ctx, self.info.nominal_type_id)
     }
 
     /// Allocate a new instance of this class
     pub fn instantiate(&self, ctx: &dyn NativeContext) -> AbiResult<NativeValue> {
-        ctx.create_object_by_id(self.info.class_id)
+        ctx.create_object_by_nominal_type_id(self.info.nominal_type_id)
     }
 }
 
@@ -527,7 +527,7 @@ impl<'a> NativeFunction<'a> {
 #[derive(Debug, Clone)]
 pub struct NativeMethod {
     /// Class this method belongs to
-    pub class_id: usize,
+    pub nominal_type_id: usize,
     /// Method name
     pub method_name: String,
     /// Vtable slot index
@@ -538,21 +538,21 @@ pub struct NativeMethod {
 
 impl NativeMethod {
     /// Resolve a method from class metadata
-    pub fn resolve(ctx: &dyn NativeContext, class_id: usize, method_name: &str) -> AbiResult<Self> {
-        let methods = ctx.class_method_entries(class_id)?;
+    pub fn resolve(ctx: &dyn NativeContext, nominal_type_id: usize, method_name: &str) -> AbiResult<Self> {
+        let methods = ctx.nominal_type_method_entries(nominal_type_id)?;
         let (_, vtable_index) = methods
             .iter()
             .find(|(name, _)| name == method_name)
             .ok_or_else(|| {
                 NativeError::AbiError(format!(
                     "Method '{}' not found in class {}",
-                    method_name, class_id
+                    method_name, nominal_type_id
                 ))
             })?;
 
         // For now, function_id = vtable_index (resolved at call time by engine)
         Ok(Self {
-            class_id,
+            nominal_type_id,
             method_name: method_name.to_string(),
             vtable_index: *vtable_index,
             function_id: *vtable_index,
@@ -566,7 +566,7 @@ impl NativeMethod {
         receiver: NativeValue,
         args: &[NativeValue],
     ) -> AbiResult<NativeValue> {
-        ctx.call_method(receiver, self.class_id, &self.method_name, args)
+        ctx.call_method(receiver, self.nominal_type_id, &self.method_name, args)
     }
 }
 
@@ -623,7 +623,7 @@ mod tests {
             .method("toString", 0)
             .build();
 
-        assert_eq!(schema.class_id(), 0);
+        assert_eq!(schema.nominal_type_id(), 0);
         assert_eq!(schema.class_name(), "Point");
         assert_eq!(schema.field_count(), 2);
         assert_eq!(schema.field_index("x"), Some(0));
@@ -647,10 +647,10 @@ mod tests {
     fn test_native_class_accessors() {
         let class = NativeClass {
             info: ClassInfo {
-                class_id: 5,
+                nominal_type_id: 5,
                 field_count: 3,
                 name: "MyClass".to_string(),
-                parent_id: Some(1),
+                parent_nominal_type_id: Some(1),
                 constructor_id: Some(10),
                 method_count: 2,
             },
@@ -659,7 +659,7 @@ mod tests {
         assert_eq!(class.id(), 5);
         assert_eq!(class.name(), "MyClass");
         assert_eq!(class.field_count(), 3);
-        assert_eq!(class.parent_id(), Some(1));
+        assert_eq!(class.parent_nominal_type_id(), Some(1));
         assert_eq!(class.constructor_id(), Some(10));
         assert_eq!(class.method_count(), 2);
     }

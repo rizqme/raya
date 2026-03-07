@@ -416,7 +416,7 @@ impl<'a> IrFunctionAdapter<'a> {
             }
 
             // === Object Field Access ===
-            IrInstr::LoadField {
+            IrInstr::LoadFieldExact {
                 dest,
                 object,
                 field,
@@ -441,7 +441,7 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![Self::reg(object), *field as u32],
                 });
             }
-            IrInstr::StoreField {
+            IrInstr::StoreFieldExact {
                 object,
                 field,
                 value,
@@ -516,11 +516,14 @@ impl<'a> IrFunctionAdapter<'a> {
             }
 
             // === Object/Array Creation ===
-            IrInstr::NewObject { dest, class } => {
+            IrInstr::NewType {
+                dest,
+                nominal_type_id,
+            } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::AllocObject,
-                    args: vec![class.as_u32()],
+                    args: vec![nominal_type_id.as_u32()],
                 });
             }
             IrInstr::NewArray { dest, len, .. } => {
@@ -621,7 +624,7 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: call_args,
                 });
             }
-            IrInstr::CallMethod {
+            IrInstr::CallMethodExact {
                 dest,
                 object,
                 method,
@@ -759,26 +762,67 @@ impl<'a> IrFunctionAdapter<'a> {
             }
 
             // === Type Operations ===
-            IrInstr::InstanceOf {
+            IrInstr::IsNominal {
                 dest,
                 object,
-                class_id,
+                nominal_type_id,
             } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::InstanceOf,
-                    args: vec![Self::reg(object), class_id.as_u32()],
+                    args: vec![Self::reg(object), nominal_type_id.as_u32()],
+                });
+            }
+            IrInstr::ImplementsShape {
+                dest,
+                object,
+                shape_id,
+            } => {
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::ImplementsShape,
+                    args: vec![
+                        Self::reg(object),
+                        (*shape_id & 0xFFFF_FFFF) as u32,
+                        (*shape_id >> 32) as u32,
+                    ],
+                });
+            }
+            IrInstr::CastNominal {
+                dest,
+                object,
+                nominal_type_id,
+            } => {
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::Cast,
+                    args: vec![Self::reg(object), nominal_type_id.as_u32()],
+                });
+            }
+            IrInstr::CastShape {
+                dest,
+                object,
+                shape_id,
+            } => {
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::CastShape,
+                    args: vec![
+                        Self::reg(object),
+                        (*shape_id & 0xFFFF_FFFF) as u32,
+                        (*shape_id >> 32) as u32,
+                    ],
                 });
             }
             IrInstr::Cast {
                 dest,
                 object,
-                class_id,
+                target,
             } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::Cast,
-                    args: vec![Self::reg(object), class_id.as_u32()],
+                    args: vec![Self::reg(object), target.as_u32()],
                 });
             }
 
@@ -1021,7 +1065,7 @@ impl<'a> IrFunctionAdapter<'a> {
             IrInstr::NativeCall { .. } => Some(SuspensionKind::NativeCall),
             IrInstr::ModuleNativeCall { .. } => Some(SuspensionKind::NativeCall),
             IrInstr::Call { .. } => Some(SuspensionKind::AotCall),
-            IrInstr::CallMethod { .. } | IrInstr::CallMethodShape { .. } => {
+            IrInstr::CallMethodExact { .. } | IrInstr::CallMethodShape { .. } => {
                 Some(SuspensionKind::NativeCall)
             }
             IrInstr::CallClosure { .. } => Some(SuspensionKind::AotCall),

@@ -26,11 +26,11 @@ impl std::fmt::Display for FunctionId {
     }
 }
 
-/// Class identifier in the IR
+/// Nominal type identifier in the IR
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ClassId(pub u32);
+pub struct NominalTypeId(pub u32);
 
-impl ClassId {
+impl NominalTypeId {
     pub fn new(id: u32) -> Self {
         Self(id)
     }
@@ -40,9 +40,29 @@ impl ClassId {
     }
 }
 
-impl std::fmt::Display for ClassId {
+impl std::fmt::Display for NominalTypeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "class{}", self.0)
+        write!(f, "nominal{}", self.0)
+    }
+}
+
+/// Encoded runtime cast target for generic `cast` operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RuntimeCastTarget(pub u32);
+
+impl RuntimeCastTarget {
+    pub fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    pub fn as_u32(&self) -> u32 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for RuntimeCastTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cast{}", self.0)
     }
 }
 
@@ -95,7 +115,7 @@ pub enum IrInstr {
     },
 
     /// Method call: dest = object.method(args)
-    CallMethod {
+    CallMethodExact {
         dest: Option<Register>,
         object: Register,
         method: u16,
@@ -137,20 +157,43 @@ pub enum IrInstr {
         args: Vec<Register>,
     },
 
-    /// Instance of check: dest = object instanceof class_id
-    /// Returns boolean indicating if object is an instance of the class
-    InstanceOf {
+    /// Nominal instance check: dest = object instanceof nominal_type_id
+    /// Returns boolean indicating if object is an instance of the nominal type.
+    IsNominal {
         dest: Register,
         object: Register,
-        class_id: ClassId,
+        nominal_type_id: NominalTypeId,
     },
 
-    /// Type cast: dest = object as class_id
-    /// Casts object to the specified class type (runtime check)
+    /// Structural instance check: dest = object implements shape_id
+    /// Returns boolean indicating if object satisfies the structural shape.
+    ImplementsShape {
+        dest: Register,
+        object: Register,
+        shape_id: u64,
+    },
+
+    /// Nominal type cast: dest = object as nominal_type_id
+    /// Casts object to the specified nominal type (runtime check).
+    CastNominal {
+        dest: Register,
+        object: Register,
+        nominal_type_id: NominalTypeId,
+    },
+
+    /// Structural shape cast: dest = object as shape_id
+    CastShape {
+        dest: Register,
+        object: Register,
+        shape_id: u64,
+    },
+
+    /// Generic runtime cast target.
+    /// This still carries encoded cast masks for tuple/object/array/runtime-kind checks.
     Cast {
         dest: Register,
         object: Register,
-        class_id: ClassId,
+        target: RuntimeCastTarget,
     },
 
     /// Load from local variable: dest = locals[index]
@@ -177,7 +220,7 @@ pub enum IrInstr {
     StoreGlobal { index: u16, value: Register },
 
     /// Load object field: dest = object.field
-    LoadField {
+    LoadFieldExact {
         dest: Register,
         object: Register,
         field: u16,
@@ -194,7 +237,7 @@ pub enum IrInstr {
     },
 
     /// Store object field: object.field = value
-    StoreField {
+    StoreFieldExact {
         object: Register,
         field: u16,
         value: Register,
@@ -240,7 +283,7 @@ pub enum IrInstr {
 
     /// Late-bound member access: dest = object.property
     /// Emitted when the object type is a TypeVar (generic constraint).
-    /// Resolved to a concrete opcode (ArrayLen, StringLen, LoadField, etc.)
+    /// Resolved to a concrete opcode (ArrayLen, StringLen, LoadFieldExact, etc.)
     /// after monomorphization substitutes the TypeVar with a concrete type.
     LateBoundMember {
         dest: Register,
@@ -262,8 +305,11 @@ pub enum IrInstr {
         value: Register,
     },
 
-    /// Create new object: dest = new class
-    NewObject { dest: Register, class: ClassId },
+    /// Create new nominal object: dest = new nominal type
+    NewType {
+        dest: Register,
+        nominal_type_id: NominalTypeId,
+    },
 
     /// Create new array: dest = new elem_ty[len]
     NewArray {
@@ -438,12 +484,12 @@ impl IrInstr {
             | IrInstr::LoadArgCount { dest, .. }
             | IrInstr::LoadArgLocal { dest, .. }
             | IrInstr::LoadGlobal { dest, .. }
-            | IrInstr::LoadField { dest, .. }
+            | IrInstr::LoadFieldExact { dest, .. }
             | IrInstr::LoadFieldShape { dest, .. }
             | IrInstr::DynGetProp { dest, .. }
             | IrInstr::DynGetKeyed { dest, .. }
             | IrInstr::LoadElement { dest, .. }
-            | IrInstr::NewObject { dest, .. }
+            | IrInstr::NewType { dest, .. }
             | IrInstr::NewArray { dest, .. }
             | IrInstr::ArrayLiteral { dest, .. }
             | IrInstr::ObjectLiteral { dest, .. }
@@ -464,19 +510,22 @@ impl IrInstr {
             | IrInstr::AwaitAll { dest, .. }
             | IrInstr::NewMutex { dest, .. }
             | IrInstr::NewChannel { dest, .. }
-            | IrInstr::InstanceOf { dest, .. }
+            | IrInstr::IsNominal { dest, .. }
+            | IrInstr::ImplementsShape { dest, .. }
+            | IrInstr::CastNominal { dest, .. }
+            | IrInstr::CastShape { dest, .. }
             | IrInstr::Cast { dest, .. }
             | IrInstr::LateBoundMember { dest, .. }
             | IrInstr::BindMethod { dest, .. } => Some(dest),
             IrInstr::Call { dest, .. }
-            | IrInstr::CallMethod { dest, .. }
+            | IrInstr::CallMethodExact { dest, .. }
             | IrInstr::CallMethodShape { dest, .. }
             | IrInstr::NativeCall { dest, .. }
             | IrInstr::ModuleNativeCall { dest, .. }
             | IrInstr::CallClosure { dest, .. } => dest.as_ref(),
             IrInstr::StoreLocal { .. }
             | IrInstr::StoreGlobal { .. }
-            | IrInstr::StoreField { .. }
+            | IrInstr::StoreFieldExact { .. }
             | IrInstr::StoreFieldShape { .. }
             | IrInstr::DynSetProp { .. }
             | IrInstr::DynSetKeyed { .. }
@@ -502,7 +551,7 @@ impl IrInstr {
         matches!(
             self,
             IrInstr::Call { .. }
-                | IrInstr::CallMethod { .. }
+                | IrInstr::CallMethodExact { .. }
                 | IrInstr::CallMethodShape { .. }
                 | IrInstr::NativeCall { .. }
                 | IrInstr::ModuleNativeCall { .. }
@@ -510,7 +559,7 @@ impl IrInstr {
                 | IrInstr::StoreLocal { .. }
                 | IrInstr::PopToLocal { .. }
                 | IrInstr::StoreGlobal { .. }
-                | IrInstr::StoreField { .. }
+                | IrInstr::StoreFieldExact { .. }
                 | IrInstr::StoreFieldShape { .. }
                 | IrInstr::DynSetProp { .. }
                 | IrInstr::DynSetKeyed { .. }
@@ -521,7 +570,7 @@ impl IrInstr {
                 | IrInstr::SetClosureCapture { .. }
                 | IrInstr::NewRefCell { .. }
                 | IrInstr::StoreRefCell { .. }
-                | IrInstr::NewObject { .. }
+                | IrInstr::NewType { .. }
                 | IrInstr::NewArray { .. }
                 | IrInstr::ArrayLiteral { .. }
                 | IrInstr::ObjectLiteral { .. }
@@ -540,6 +589,8 @@ impl IrInstr {
                 | IrInstr::MutexLock { .. }
                 | IrInstr::MutexUnlock { .. }
                 | IrInstr::TaskCancel { .. }
+                | IrInstr::ImplementsShape { .. }
+                | IrInstr::CastShape { .. }
                 | IrInstr::BindMethod { .. }
         )
     }

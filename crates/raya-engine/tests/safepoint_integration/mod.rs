@@ -91,7 +91,7 @@ fn test_safepoint_on_allocation() {
         local_count: 1,
         code: vec![
             // Allocate object (should trigger safepoint poll)
-            Opcode::New as u8,
+            Opcode::NewType as u8,
             0,
             0,
             Opcode::StoreLocal as u8,
@@ -106,14 +106,14 @@ fn test_safepoint_on_allocation() {
             0,
             0,
             0,
-            Opcode::StoreField as u8,
+            Opcode::StoreFieldExact as u8,
             0,
             0,
             // Load field x
             Opcode::LoadLocal as u8,
             0,
             0,
-            Opcode::LoadField as u8,
+            Opcode::LoadFieldExact as u8,
             0,
             0,
             Opcode::Return as u8,
@@ -358,7 +358,7 @@ fn test_safepoint_on_object_literal() {
             1,
             0,
             // Load field 0 to verify
-            Opcode::LoadField as u8,
+            Opcode::LoadFieldExact as u8,
             0,
             0,
             Opcode::Return as u8,
@@ -445,7 +445,7 @@ fn test_safepoint_at_all_allocation_types() {
         local_count: 4,
         code: vec![
             // 1. Object allocation (NEW)
-            Opcode::New as u8,
+            Opcode::NewType as u8,
             0,
             0,
             Opcode::StoreLocal as u8,
@@ -546,15 +546,15 @@ fn test_safepoint_integration_with_gc() {
         local_count: 0,
         code: vec![
             // Allocate multiple objects
-            Opcode::New as u8,
+            Opcode::NewType as u8,
             0,
             0,
             Opcode::Pop as u8,
-            Opcode::New as u8,
+            Opcode::NewType as u8,
             0,
             0,
             Opcode::Pop as u8,
-            Opcode::New as u8,
+            Opcode::NewType as u8,
             0,
             0,
             Opcode::Pop as u8,

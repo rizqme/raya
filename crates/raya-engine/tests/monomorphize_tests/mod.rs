@@ -6,7 +6,7 @@
 
 use raya_engine::compiler::ir::block::{BasicBlock, BasicBlockId, Terminator};
 use raya_engine::compiler::ir::function::IrFunction;
-use raya_engine::compiler::ir::instr::{BinaryOp, ClassId, FunctionId, IrInstr};
+use raya_engine::compiler::ir::instr::{BinaryOp, NominalTypeId, FunctionId, IrInstr};
 use raya_engine::compiler::ir::module::{IrClass, IrField, IrModule};
 use raya_engine::compiler::ir::value::{IrConstant, IrValue, Register, RegisterId};
 use raya_engine::compiler::monomorphize::{
@@ -76,7 +76,7 @@ mod mono_key_tests {
 
     #[test]
     fn test_mono_key_class() {
-        let key1 = MonoKey::class(ClassId::new(0), vec![TypeId::new(1)]);
+        let key1 = MonoKey::class(NominalTypeId::new(0), vec![TypeId::new(1)]);
         let key2 = MonoKey::function(FunctionId::new(0), vec![TypeId::new(1)]);
 
         assert_ne!(key1, key2);
@@ -114,14 +114,14 @@ mod context_tests {
     #[test]
     fn test_context_register_class() {
         let mut ctx = MonomorphizationContext::new();
-        let key = MonoKey::class(ClassId::new(0), vec![TypeId::new(1)]);
+        let key = MonoKey::class(NominalTypeId::new(0), vec![TypeId::new(1)]);
 
         assert!(!ctx.has_class(&key));
 
-        ctx.register_class(key.clone(), ClassId::new(5));
+        ctx.register_class(key.clone(), NominalTypeId::new(5));
 
         assert!(ctx.has_class(&key));
-        assert_eq!(ctx.get_class(&key), Some(ClassId::new(5)));
+        assert_eq!(ctx.get_class(&key), Some(NominalTypeId::new(5)));
     }
 
     #[test]
@@ -177,8 +177,8 @@ mod context_tests {
             FunctionId::new(6),
         );
         ctx.register_class(
-            MonoKey::class(ClassId::new(0), vec![TypeId::new(1)]),
-            ClassId::new(3),
+            MonoKey::class(NominalTypeId::new(0), vec![TypeId::new(1)]),
+            NominalTypeId::new(3),
         );
 
         assert_eq!(ctx.specialized_function_count(), 2);
@@ -362,10 +362,10 @@ mod monomorphizer_tests {
         // Create a generic class with a field of type T (represented as TypeId 100)
         let mut generic_class = IrClass::new("Box");
         generic_class.add_field(IrField::new("value", TypeId::new(100), 0));
-        let class_id = module.add_class(generic_class);
+        let nominal_type_id = module.add_class(generic_class);
 
         mono.register_generic_class(GenericClassInfo {
-            class_id,
+            nominal_type_id,
             type_params: vec![TypeId::new(100)],
             name: "Box".to_string(),
         });
@@ -413,18 +413,18 @@ mod rewriter_tests {
     #[test]
     fn test_rewrite_new_object() {
         let mut ctx = MonomorphizationContext::new();
-        let key = MonoKey::class(ClassId::new(0), vec![TypeId::new(1)]);
-        ctx.register_class(key.clone(), ClassId::new(3));
+        let key = MonoKey::class(NominalTypeId::new(0), vec![TypeId::new(1)]);
+        ctx.register_class(key.clone(), NominalTypeId::new(3));
 
         let mut rewriter = CallSiteRewriter::new(&ctx);
-        rewriter.register_generic_class(ClassId::new(0), vec![TypeId::new(1)]);
+        rewriter.register_generic_class(NominalTypeId::new(0), vec![TypeId::new(1)]);
 
         let mut module = IrModule::new("test");
         let mut caller = IrFunction::new("caller", vec![], TypeId::new(0));
         let mut block = BasicBlock::new(BasicBlockId(0));
-        block.add_instr(IrInstr::NewObject {
+        block.add_instr(IrInstr::NewType {
             dest: make_reg(0, 0),
-            class: ClassId::new(0),
+            nominal_type_id: NominalTypeId::new(0),
         });
         block.set_terminator(Terminator::Return(None));
         caller.add_block(block);
@@ -632,9 +632,9 @@ mod integration_tests {
         // Add a function that creates Box<i32>
         let mut main = IrFunction::new("main", vec![], TypeId::new(0));
         let mut block = BasicBlock::new(BasicBlockId(0));
-        block.add_instr(IrInstr::NewObject {
+        block.add_instr(IrInstr::NewType {
             dest: make_reg(0, 0),
-            class: box_id,
+            nominal_type_id: box_id,
         });
         block.set_terminator(Terminator::Return(None));
         main.add_block(block);
@@ -645,7 +645,7 @@ mod integration_tests {
         let mut mono = Monomorphizer::new(&type_ctx, &interner);
 
         mono.register_generic_class(GenericClassInfo {
-            class_id: box_id,
+            nominal_type_id: box_id,
             type_params: vec![TypeId::new(100)],
             name: "Box".to_string(),
         });

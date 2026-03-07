@@ -72,14 +72,14 @@ mod memory_analysis {
     #[test]
     fn test_find_instances_by_class() {
         let mut gc = GarbageCollector::default();
-        let class_id_a = 42;
-        let class_id_b = 99;
+        let nominal_type_id_a = 42;
+        let nominal_type_id_b = 99;
 
         // Allocate objects of different classes
-        let _obj_a1 = gc.allocate(Object::new_synthetic_nominal(class_id_a, 2));
-        let _obj_a2 = gc.allocate(Object::new_synthetic_nominal(class_id_a, 2));
-        let _obj_b1 = gc.allocate(Object::new_synthetic_nominal(class_id_b, 3));
-        let _obj_a3 = gc.allocate(Object::new_synthetic_nominal(class_id_a, 2));
+        let _obj_a1 = gc.allocate(Object::new_synthetic_nominal(nominal_type_id_a, 2));
+        let _obj_a2 = gc.allocate(Object::new_synthetic_nominal(nominal_type_id_a, 2));
+        let _obj_b1 = gc.allocate(Object::new_synthetic_nominal(nominal_type_id_b, 3));
+        let _obj_a3 = gc.allocate(Object::new_synthetic_nominal(nominal_type_id_a, 2));
 
         // Count instances of class A
         let mut count_a = 0;
@@ -88,7 +88,7 @@ mod memory_analysis {
             if header.type_id() == std::any::TypeId::of::<Object>() {
                 let obj_ptr = unsafe { header_ptr.add(1) as *const Object };
                 let obj = unsafe { &*obj_ptr };
-                if obj.nominal_class_id() == Some(class_id_a) {
+                if obj.nominal_type_id() == Some(nominal_type_id_a as u32) {
                     count_a += 1;
                 }
             }
@@ -368,7 +368,7 @@ mod object_identity {
 
     #[test]
     fn test_reflect_get_object_id() {
-        use raya_engine::vm::reflect::get_class_id;
+        use raya_engine::vm::reflect::get_nominal_type_id;
 
         let mut gc = GarbageCollector::default();
         let obj = gc.allocate(Object::new_synthetic_nominal(42, 3));
@@ -378,9 +378,9 @@ mod object_identity {
             Value::from_ptr(std::ptr::NonNull::new(obj.as_ptr() as *mut Object).unwrap())
         };
 
-        // get_class_id should return the class ID
-        let class_id = get_class_id(value);
-        assert_eq!(class_id, Some(42));
+        // get_nominal_type_id should return the nominal runtime type ID
+        let nominal_type_id = get_nominal_type_id(value);
+        assert_eq!(nominal_type_id, Some(42));
     }
 }
 

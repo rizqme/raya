@@ -11,9 +11,9 @@
 //! | 0x0E01 | getPermissions            | Get resolved permissions             |
 //! | 0x0E02 | hasPermission             | Check specific permission flag       |
 //! | 0x0E03 | clearPermissions          | Clear object-level permissions       |
-//! | 0x0E04 | setClassPermissions       | Set class-level permissions          |
-//! | 0x0E05 | getClassPermissions       | Get class-level permissions          |
-//! | 0x0E06 | clearClassPermissions     | Clear class-level permissions        |
+//! | 0x0E04 | setClassPermissions       | Set nominal-type-level permissions          |
+//! | 0x0E05 | getClassPermissions       | Get nominal-type-level permissions          |
+//! | 0x0E06 | clearClassPermissions     | Clear nominal-type-level permissions        |
 //! | 0x0E07 | setModulePermissions      | Set module-level permissions         |
 //! | 0x0E08 | getModulePermissions      | Get module-level permissions         |
 //! | 0x0E09 | clearModulePermissions    | Clear module-level permissions       |
@@ -242,8 +242,8 @@ pub struct PermissionStore {
     /// Object-level permissions: object_id -> entry
     object_permissions: HashMap<usize, PermissionEntry>,
 
-    /// Class-level permissions: class_id -> entry
-    class_permissions: HashMap<usize, PermissionEntry>,
+    /// Nominal-type-level permissions: nominal_type_id -> entry
+    nominal_type_permissions: HashMap<usize, PermissionEntry>,
 
     /// Module-level permissions: module_name -> entry
     module_permissions: HashMap<String, PermissionEntry>,
@@ -254,8 +254,8 @@ pub struct PermissionStore {
     /// Sealed objects (cannot modify permissions)
     sealed_objects: HashSet<usize>,
 
-    /// Sealed classes
-    sealed_classes: HashSet<usize>,
+    /// Sealed nominal types
+    sealed_nominal_types: HashSet<usize>,
 }
 
 impl PermissionStore {
@@ -264,11 +264,11 @@ impl PermissionStore {
         Self {
             global_default: ReflectionPermission::ALL,
             object_permissions: HashMap::new(),
-            class_permissions: HashMap::new(),
+            nominal_type_permissions: HashMap::new(),
             module_permissions: HashMap::new(),
             module_rules: Vec::new(),
             sealed_objects: HashSet::new(),
-            sealed_classes: HashSet::new(),
+            sealed_nominal_types: HashSet::new(),
         }
     }
 
@@ -276,7 +276,7 @@ impl PermissionStore {
     pub fn has_any_restrictions(&self) -> bool {
         self.global_default != ReflectionPermission::ALL
             || !self.object_permissions.is_empty()
-            || !self.class_permissions.is_empty()
+            || !self.nominal_type_permissions.is_empty()
             || !self.module_permissions.is_empty()
             || !self.module_rules.is_empty()
     }
@@ -339,48 +339,50 @@ impl PermissionStore {
         self.sealed_objects.contains(&object_id)
     }
 
-    // ===== Class Permissions =====
+    // ===== Nominal Type Permissions =====
 
-    /// Set class-level permissions
-    pub fn set_class(
+    /// Set nominal-type-level permissions
+    pub fn set_nominal_type(
         &mut self,
-        class_id: usize,
+        nominal_type_id: usize,
         permissions: ReflectionPermission,
     ) -> Result<(), VmError> {
-        if self.sealed_classes.contains(&class_id) {
+        if self.sealed_nominal_types.contains(&nominal_type_id) {
             return Err(VmError::RuntimeError(
-                "Cannot modify sealed class permissions".to_string(),
+                "Cannot modify sealed nominal type permissions".to_string(),
             ));
         }
-        self.class_permissions
-            .insert(class_id, PermissionEntry::new(permissions));
+        self.nominal_type_permissions
+            .insert(nominal_type_id, PermissionEntry::new(permissions));
         Ok(())
     }
 
-    /// Get class-level permissions (not resolved)
-    pub fn get_class(&self, class_id: usize) -> Option<ReflectionPermission> {
-        self.class_permissions.get(&class_id).map(|e| e.permissions)
+    /// Get nominal-type-level permissions (not resolved)
+    pub fn get_nominal_type(&self, nominal_type_id: usize) -> Option<ReflectionPermission> {
+        self.nominal_type_permissions
+            .get(&nominal_type_id)
+            .map(|e| e.permissions)
     }
 
-    /// Clear class-level permissions
-    pub fn clear_class(&mut self, class_id: usize) -> Result<(), VmError> {
-        if self.sealed_classes.contains(&class_id) {
+    /// Clear nominal-type-level permissions
+    pub fn clear_nominal_type(&mut self, nominal_type_id: usize) -> Result<(), VmError> {
+        if self.sealed_nominal_types.contains(&nominal_type_id) {
             return Err(VmError::RuntimeError(
-                "Cannot modify sealed class permissions".to_string(),
+                "Cannot modify sealed nominal type permissions".to_string(),
             ));
         }
-        self.class_permissions.remove(&class_id);
+        self.nominal_type_permissions.remove(&nominal_type_id);
         Ok(())
     }
 
-    /// Seal class permissions
-    pub fn seal_class(&mut self, class_id: usize) {
-        self.sealed_classes.insert(class_id);
+    /// Seal nominal type permissions
+    pub fn seal_nominal_type(&mut self, nominal_type_id: usize) {
+        self.sealed_nominal_types.insert(nominal_type_id);
     }
 
-    /// Check if class permissions are sealed
-    pub fn is_class_sealed(&self, class_id: usize) -> bool {
-        self.sealed_classes.contains(&class_id)
+    /// Check if nominal type permissions are sealed
+    pub fn is_nominal_type_sealed(&self, nominal_type_id: usize) -> bool {
+        self.sealed_nominal_types.contains(&nominal_type_id)
     }
 
     // ===== Module Permissions =====
@@ -436,7 +438,7 @@ impl PermissionStore {
     pub fn resolve(
         &self,
         object_id: Option<usize>,
-        class_id: Option<usize>,
+        nominal_type_id: Option<usize>,
         module_name: Option<&str>,
     ) -> ReflectionPermission {
         // Object-level check (most specific)
@@ -446,9 +448,9 @@ impl PermissionStore {
             }
         }
 
-        // Class-level check
-        if let Some(cid) = class_id {
-            if let Some(perms) = self.get_class(cid) {
+        // Nominal-type-level check
+        if let Some(id) = nominal_type_id {
+            if let Some(perms) = self.get_nominal_type(id) {
                 return perms;
             }
         }
@@ -468,11 +470,11 @@ impl PermissionStore {
     pub fn check_permission(
         &self,
         object_id: Option<usize>,
-        class_id: Option<usize>,
+        nominal_type_id: Option<usize>,
         module_name: Option<&str>,
         required: ReflectionPermission,
     ) -> bool {
-        let perms = self.resolve(object_id, class_id, module_name);
+        let perms = self.resolve(object_id, nominal_type_id, module_name);
         perms.contains(required)
     }
 
@@ -587,7 +589,7 @@ pub fn check_type_creation(store: &PermissionStore) -> Result<(), VmError> {
 pub fn check_field_read(
     store: &PermissionStore,
     object_id: Option<usize>,
-    class_id: Option<usize>,
+    nominal_type_id: Option<usize>,
     module_name: Option<&str>,
     is_private: bool,
 ) -> Result<(), VmError> {
@@ -597,7 +599,7 @@ pub fn check_field_read(
         ReflectionPermission::READ_PUBLIC
     };
 
-    if !store.check_permission(object_id, class_id, module_name, required) {
+    if !store.check_permission(object_id, nominal_type_id, module_name, required) {
         return Err(VmError::RuntimeError(format!(
             "Permission denied: cannot read {} fields",
             if is_private { "private" } else { "public" }
@@ -610,7 +612,7 @@ pub fn check_field_read(
 pub fn check_field_write(
     store: &PermissionStore,
     object_id: Option<usize>,
-    class_id: Option<usize>,
+    nominal_type_id: Option<usize>,
     module_name: Option<&str>,
     is_private: bool,
 ) -> Result<(), VmError> {
@@ -620,7 +622,7 @@ pub fn check_field_write(
         ReflectionPermission::WRITE_PUBLIC
     };
 
-    if !store.check_permission(object_id, class_id, module_name, required) {
+    if !store.check_permission(object_id, nominal_type_id, module_name, required) {
         return Err(VmError::RuntimeError(format!(
             "Permission denied: cannot write {} fields",
             if is_private { "private" } else { "public" }
@@ -633,7 +635,7 @@ pub fn check_field_write(
 pub fn check_invoke(
     store: &PermissionStore,
     object_id: Option<usize>,
-    class_id: Option<usize>,
+    nominal_type_id: Option<usize>,
     module_name: Option<&str>,
     is_private: bool,
 ) -> Result<(), VmError> {
@@ -643,7 +645,7 @@ pub fn check_invoke(
         ReflectionPermission::INVOKE_PUBLIC
     };
 
-    if !store.check_permission(object_id, class_id, module_name, required) {
+    if !store.check_permission(object_id, nominal_type_id, module_name, required) {
         return Err(VmError::RuntimeError(format!(
             "Permission denied: cannot invoke {} methods",
             if is_private { "private" } else { "public" }
@@ -742,9 +744,9 @@ mod tests {
         let mut store = PermissionStore::new();
 
         store
-            .set_class(10, ReflectionPermission::FULL_ACCESS)
+            .set_nominal_type(10, ReflectionPermission::FULL_ACCESS)
             .unwrap();
-        assert_eq!(store.get_class(10), Some(ReflectionPermission::FULL_ACCESS));
+        assert_eq!(store.get_nominal_type(10), Some(ReflectionPermission::FULL_ACCESS));
     }
 
     #[test]
@@ -781,7 +783,7 @@ mod tests {
     fn test_permission_resolution() {
         let mut store = PermissionStore::new();
         store.set_global(ReflectionPermission::ALL);
-        let _ = store.set_class(10, ReflectionPermission::FULL_ACCESS);
+        let _ = store.set_nominal_type(10, ReflectionPermission::FULL_ACCESS);
         store
             .set_object(123, ReflectionPermission::READ_PUBLIC)
             .unwrap();
@@ -792,7 +794,7 @@ mod tests {
             ReflectionPermission::READ_PUBLIC
         );
 
-        // Class-level when no object permissions
+        // Nominal-type-level when no object permissions
         assert_eq!(
             store.resolve(Some(456), Some(10), None),
             ReflectionPermission::FULL_ACCESS

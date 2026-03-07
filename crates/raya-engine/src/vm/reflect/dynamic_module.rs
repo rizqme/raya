@@ -72,7 +72,7 @@ pub struct DynamicModule {
     /// Function name to ID mapping
     pub function_names: HashMap<String, usize>,
 
-    /// Classes in this module: local_class_id -> global_class_id
+    /// Nominal types in this module: local_nominal_type_id -> global_nominal_type_id
     pub classes: HashMap<usize, usize>,
     /// Class name to ID mapping
     pub class_names: HashMap<String, usize>,

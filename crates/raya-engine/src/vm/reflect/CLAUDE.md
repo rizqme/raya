@@ -42,8 +42,8 @@ metadata_store.delete(key, target, property_key?);
 ### ClassMetadataRegistry
 ```rust
 // Class structure info
-registry.register(class_id, ClassMetadata { name, fields, methods, ... });
-registry.get(class_id) -> Option<&ClassMetadata>
+registry.register(nominal_type_id, ClassMetadata { name, fields, methods, ... });
+registry.get(nominal_type_id) -> Option<&ClassMetadata>
 registry.get_by_name(name) -> Option<usize>
 registry.all_classes() -> Vec<usize>
 ```
@@ -62,7 +62,7 @@ let compiled = builder.build()?;
 ```rust
 // Security permissions
 store.set_object_permissions(obj_id, ReflectionPermission::READ_PUBLIC);
-store.get_effective_permissions(obj_id, class_id, module);
+store.get_effective_permissions(obj_id, nominal_type_id, module);
 store.seal_permissions(obj_id);
 ```
 
@@ -79,9 +79,9 @@ WRAPPER_FUNCTION_REGISTRY.lock().register(wrapper);
 ### DecoratorRegistry
 ```rust
 // Track decorator applications for getClassesWithDecorator
-registry.register_class_decorator(class_id, decorator_app);
-registry.get_classes_with_decorator("Injectable") -> Vec<usize>
-registry.get_class_decorators(class_id) -> Vec<&DecoratorApplication>
+registry.register_nominal_type_decorator(nominal_type_id, decorator_app);
+registry.get_nominal_types_with_decorator("Injectable") -> Vec<usize>
+registry.get_nominal_type_decorators(nominal_type_id) -> Vec<&DecoratorApplication>
 ```
 
 ## Native Call IDs

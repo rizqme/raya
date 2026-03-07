@@ -61,7 +61,7 @@ LOAD_LOCAL_0..7  // Optimized variants
 
 ### Objects
 ```
-NEW_OBJECT <class_id>
+NEW_TYPE <nominal_type_id>
 GET_FIELD <field_idx>
 SET_FIELD <field_idx>
 ```
@@ -106,7 +106,7 @@ END_TRY
 ### Type Operations
 ```
 TYPEOF
-INSTANCEOF <class_id>
+IS_NOMINAL <nominal_type_id>
 ```
 
 ## Module Format (.ryb)

@@ -722,7 +722,7 @@ impl SharedVmState {
         if let Some(names) = self.structural_layout_names(object.layout_id()) {
             return Some(names);
         }
-        let nominal_type_id = object.nominal_class_id()?;
+        let nominal_type_id = object.nominal_type_id_usize()?;
         let class_name = self
             .classes
             .read()
@@ -750,34 +750,32 @@ impl SharedVmState {
             .register_nominal_layout(nominal_type_id, layout_id, field_count, name);
     }
 
+    /// Resolve the physical layout ID for a nominal runtime type.
+    pub fn nominal_layout_id(&self, nominal_type_id: usize) -> Option<LayoutId> {
+        self.layouts.read().nominal_layout_id(nominal_type_id)
+    }
+
     /// Allocate one fresh nominal object layout ID.
     pub fn allocate_nominal_layout_id(&self) -> LayoutId {
         self.layouts.write().allocate_nominal_layout_id()
     }
 
     /// Register a runtime class after ensuring it has an assigned nominal layout.
-    pub fn register_runtime_class(&self, mut class: crate::vm::object::Class) -> usize {
-        if class.layout_id == 0 {
-            let layout_id = self.allocate_nominal_layout_id();
-            class.set_layout_id(layout_id);
-        }
-        let id = self.classes.write().register_class(class);
-        if let Some(registered) = self.classes.read().get_class(id).cloned() {
-            self.register_nominal_layout(
-                id,
-                registered.layout_id,
-                registered.field_count,
-                Some(registered.name.clone()),
-            );
-            if let Some(field_names) =
-                crate::vm::object::builtin_nominal_layout_field_names(&registered.name)
-            {
-                let owned_names = field_names
+    pub fn register_runtime_class(&self, class: crate::vm::object::Class) -> usize {
+        let layout_id = self.allocate_nominal_layout_id();
+        let field_count = class.field_count;
+        let class_name = class.name.clone();
+        let builtin_layout_names = crate::vm::object::builtin_nominal_layout_field_names(&class_name)
+            .map(|field_names| {
+                field_names
                     .iter()
                     .map(|name| (*name).to_string())
-                    .collect::<Vec<_>>();
-                self.register_structural_layout_shape(registered.layout_id, &owned_names);
-            }
+                    .collect::<Vec<_>>()
+            });
+        let id = self.classes.write().register_class(class);
+        self.register_nominal_layout(id, layout_id, field_count, Some(class_name));
+        if let Some(owned_names) = builtin_layout_names.as_ref() {
+            self.register_structural_layout_shape(layout_id, owned_names);
         }
         id
     }
@@ -874,16 +872,13 @@ impl SharedVmState {
             }
 
             let layout_id = self.allocate_nominal_layout_id();
-            class.set_layout_id(layout_id);
             classes.register_class(class);
-            if let Some(registered_class) = classes.get_class(global_class_id) {
-                self.layouts.write().register_nominal_layout(
-                    global_class_id,
-                    registered_class.layout_id,
-                    registered_class.field_count,
-                    Some(registered_class.name.clone()),
-                );
-            }
+            self.layouts.write().register_nominal_layout(
+                global_class_id,
+                layout_id,
+                class_def.field_count,
+                Some(class_def.name.clone()),
+            );
 
             // Populate runtime metadata for dynamic property lookups.
             // Prefer rich reflection data when present, and always seed method slot names

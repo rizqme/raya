@@ -35,7 +35,7 @@ pub use substitute::TypeSubstitution;
 
 use crate::compiler::bytecode::{GenericTemplateInfo, MonoDebugEntry, TemplateSymbolEntry};
 use crate::compiler::ir::instr::IrInstr;
-use crate::compiler::ir::{ClassId, FunctionId, IrModule};
+use crate::compiler::ir::{NominalTypeId, FunctionId, IrModule};
 use crate::compiler::type_registry::TypeRegistry;
 use crate::parser::{Interner, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -48,11 +48,11 @@ pub enum GenericId {
     /// A generic function
     Function(FunctionId),
     /// A generic class
-    Class(ClassId),
-    /// A method on a generic class (class_id, method_index)
-    Method(ClassId, usize),
+    Class(NominalTypeId),
+    /// A method on a generic class (nominal_type_id, method_index)
+    Method(NominalTypeId, usize),
     /// A constructor on a generic class
-    Constructor(ClassId),
+    Constructor(NominalTypeId),
 }
 
 /// A unique key identifying a specific monomorphization
@@ -82,8 +82,8 @@ impl MonoKey {
     }
 
     /// Create a key for a class instantiation
-    pub fn class(class_id: ClassId, type_args: Vec<TypeId>) -> Self {
-        Self::new(GenericId::Class(class_id), type_args)
+    pub fn class(nominal_type_id: NominalTypeId, type_args: Vec<TypeId>) -> Self {
+        Self::new(GenericId::Class(nominal_type_id), type_args)
     }
 
     /// Canonical serialization of concrete type arguments for deterministic keys.
@@ -101,11 +101,11 @@ impl MonoKey {
         match self.generic_id {
             GenericId::Function(id) => hasher.update(format!("fn:{}", id.as_u32())),
             GenericId::Class(id) => hasher.update(format!("class:{}", id.as_u32())),
-            GenericId::Method(class_id, method_idx) => {
-                hasher.update(format!("method:{}:{}", class_id.as_u32(), method_idx));
+            GenericId::Method(nominal_type_id, method_idx) => {
+                hasher.update(format!("method:{}:{}", nominal_type_id.as_u32(), method_idx));
             }
-            GenericId::Constructor(class_id) => {
-                hasher.update(format!("ctor:{}", class_id.as_u32()));
+            GenericId::Constructor(nominal_type_id) => {
+                hasher.update(format!("ctor:{}", nominal_type_id.as_u32()));
             }
         }
         hasher.update(self.canonical_type_args().as_bytes());
@@ -129,7 +129,7 @@ pub enum InstantiationKind {
     /// A generic function call
     Function(FunctionId),
     /// A generic class constructor
-    Class(ClassId),
+    Class(NominalTypeId),
 }
 
 /// Context tracking all monomorphized instantiations
@@ -137,7 +137,7 @@ pub struct MonomorphizationContext {
     /// Map from mono key to specialized function ID
     functions: FxHashMap<MonoKey, FunctionId>,
     /// Map from mono key to specialized class ID
-    classes: FxHashMap<MonoKey, ClassId>,
+    classes: FxHashMap<MonoKey, NominalTypeId>,
     /// Work queue of pending instantiations
     pending: Vec<PendingInstantiation>,
     /// Instantiations currently being processed (cycle detection)
@@ -171,7 +171,7 @@ impl MonomorphizationContext {
     }
 
     /// Get a specialized class ID
-    pub fn get_class(&self, key: &MonoKey) -> Option<ClassId> {
+    pub fn get_class(&self, key: &MonoKey) -> Option<NominalTypeId> {
         self.classes.get(key).copied()
     }
 
@@ -181,8 +181,8 @@ impl MonomorphizationContext {
     }
 
     /// Register a specialized class
-    pub fn register_class(&mut self, key: MonoKey, class_id: ClassId) {
-        self.classes.insert(key, class_id);
+    pub fn register_class(&mut self, key: MonoKey, nominal_type_id: NominalTypeId) {
+        self.classes.insert(key, nominal_type_id);
     }
 
     /// Add a pending instantiation to process
@@ -220,7 +220,7 @@ impl MonomorphizationContext {
     }
 
     /// Get all registered class specializations
-    pub fn class_specializations(&self) -> impl Iterator<Item = (&MonoKey, &ClassId)> {
+    pub fn class_specializations(&self) -> impl Iterator<Item = (&MonoKey, &NominalTypeId)> {
         self.classes.iter()
     }
 
@@ -340,7 +340,7 @@ fn structural_slot_index_for_property(
 ///
 /// After monomorphization, TypeVar registers have been substituted with concrete types.
 /// This pass replaces `LateBoundMember` instructions with the correct concrete opcodes
-/// (e.g., ArrayLen, StringLen, LoadField) based on the now-known object type.
+/// (e.g., ArrayLen, StringLen, LoadFieldExact) based on the now-known object type.
 pub fn resolve_late_bound_members(
     ir_module: &mut IrModule,
     type_registry: &TypeRegistry,
@@ -364,7 +364,7 @@ pub fn resolve_late_bound_members(
                         if let Some(field) =
                             structural_slot_index_for_property(type_ctx, obj_ty, property)
                         {
-                            *instr = IrInstr::LoadField {
+                            *instr = IrInstr::LoadFieldExact {
                                 dest: dest.clone(),
                                 object: object.clone(),
                                 field,
@@ -407,7 +407,7 @@ pub fn resolve_late_bound_members(
                     if let Some(field) =
                         structural_slot_index_for_property(type_ctx, obj_ty, property)
                     {
-                        *instr = IrInstr::LoadField {
+                        *instr = IrInstr::LoadFieldExact {
                             dest: dest.clone(),
                             object: object.clone(),
                             field,
@@ -601,7 +601,7 @@ mod tests {
         resolve_late_bound_members(&mut module, &type_registry, &type_ctx);
 
         match &module.functions[0].blocks[0].instructions[0] {
-            IrInstr::LoadField {
+            IrInstr::LoadFieldExact {
                 field, optional, ..
             } => {
                 assert_eq!(
@@ -610,7 +610,7 @@ mod tests {
                 );
                 assert!(!optional);
             }
-            other => panic!("expected LoadField after late-bound resolution, got {other:?}"),
+            other => panic!("expected LoadFieldExact after late-bound resolution, got {other:?}"),
         }
     }
 }

@@ -5,7 +5,7 @@
 //! IrFunctions. The `.raya` files are the single source of truth.
 //!
 //! Each function takes `this` as the first parameter, followed by method arguments.
-//! Called via `IrInstr::Call` — regular function calls, NOT `CallMethod`.
+//! Called via `IrInstr::Call` — regular function calls, NOT `CallMethodExact`.
 
 use rustc_hash::FxHashMap;
 use std::sync::LazyLock;
@@ -224,10 +224,10 @@ mod tests {
             let func = build_class_method_ir("Array", method_name).unwrap();
             for block in &func.blocks {
                 for instr in &block.instructions {
-                    if let IrInstr::CallMethod { method, .. } = instr {
+                    if let IrInstr::CallMethodExact { method, .. } = instr {
                         assert_ne!(
                             *method, 0,
-                            "Array.{} contains CallMethod with unresolved method id 0 in block {:?}: {:?}",
+                            "Array.{} contains CallMethodExact with unresolved method id 0 in block {:?}: {:?}",
                             method_name, block.label, instr
                         );
                     }

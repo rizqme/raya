@@ -212,13 +212,16 @@ impl fmt::Display for JitInstr {
             }
 
             // Object
-            JitInstr::NewObject { dest, class_id } => write!(f, "{} = new @{}", dest, class_id),
-            JitInstr::LoadField {
+            JitInstr::NewObject {
+                dest,
+                nominal_type_id,
+            } => write!(f, "{} = new.type @{}", dest, nominal_type_id),
+            JitInstr::LoadFieldExact {
                 dest,
                 object,
                 offset,
             } => write!(f, "{} = load.field {}.{}", dest, object, offset),
-            JitInstr::StoreField {
+            JitInstr::StoreFieldExact {
                 object,
                 offset,
                 value,
@@ -226,15 +229,15 @@ impl fmt::Display for JitInstr {
             JitInstr::InstanceOf {
                 dest,
                 object,
-                class_id,
-            } => write!(f, "{} = instanceof {}, @{}", dest, object, class_id),
+                nominal_type_id,
+            } => write!(f, "{} = instanceof {}, @{}", dest, object, nominal_type_id),
             JitInstr::Cast {
                 dest,
                 object,
-                class_id,
-            } => write!(f, "{} = cast {}, @{}", dest, object, class_id),
+                nominal_type_id,
+            } => write!(f, "{} = cast {}, @{}", dest, object, nominal_type_id),
             JitInstr::Typeof { dest, operand } => write!(f, "{} = typeof {}", dest, operand),
-            JitInstr::OptionalField {
+            JitInstr::OptionalFieldExact {
                 dest,
                 object,
                 offset,
@@ -304,7 +307,7 @@ impl fmt::Display for JitInstr {
                 format_args_list(f, args)?;
                 write!(f, ")")
             }
-            JitInstr::CallMethod {
+            JitInstr::CallMethodExact {
                 dest,
                 method_index,
                 receiver,
@@ -319,10 +322,10 @@ impl fmt::Display for JitInstr {
             }
             JitInstr::CallConstructor {
                 dest,
-                class_id,
+                nominal_type_id,
                 args,
             } => {
-                write!(f, "{} = call.constructor @{} (", dest, class_id)?;
+                write!(f, "{} = call.constructor @{} (", dest, nominal_type_id)?;
                 format_args_list(f, args)?;
                 write!(f, ")")
             }

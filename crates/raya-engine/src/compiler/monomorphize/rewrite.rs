@@ -4,7 +4,7 @@
 
 use super::{MonoKey, MonomorphizationContext};
 use crate::compiler::ir::function::IrFunction;
-use crate::compiler::ir::instr::{ClassId, FunctionId, IrInstr};
+use crate::compiler::ir::instr::{NominalTypeId, FunctionId, IrInstr};
 use crate::compiler::ir::module::IrModule;
 use crate::parser::TypeId;
 use rustc_hash::FxHashMap;
@@ -16,7 +16,7 @@ pub struct CallSiteRewriter<'a> {
     /// Map from generic function to its type parameters
     generic_functions: FxHashMap<FunctionId, Vec<TypeId>>,
     /// Map from generic class to its type parameters
-    generic_classes: FxHashMap<ClassId, Vec<TypeId>>,
+    generic_classes: FxHashMap<NominalTypeId, Vec<TypeId>>,
     /// Statistics
     call_sites_rewritten: usize,
 }
@@ -38,8 +38,8 @@ impl<'a> CallSiteRewriter<'a> {
     }
 
     /// Register a generic class's type parameters
-    pub fn register_generic_class(&mut self, class_id: ClassId, type_params: Vec<TypeId>) {
-        self.generic_classes.insert(class_id, type_params);
+    pub fn register_generic_class(&mut self, nominal_type_id: NominalTypeId, type_params: Vec<TypeId>) {
+        self.generic_classes.insert(nominal_type_id, type_params);
     }
 
     /// Rewrite all call sites in the module
@@ -92,21 +92,24 @@ impl<'a> CallSiteRewriter<'a> {
                 }
                 None
             }
-            IrInstr::NewObject { dest, class } => {
+            IrInstr::NewType {
+                dest,
+                nominal_type_id,
+            } => {
                 // Check if this is a generic class instantiation
-                if let Some(type_params) = self.generic_classes.get(class) {
+                if let Some(type_params) = self.generic_classes.get(nominal_type_id) {
                     // Use the type params as the type args
-                    let key = MonoKey::class(*class, type_params.clone());
+                    let key = MonoKey::class(*nominal_type_id, type_params.clone());
                     if let Some(specialized_id) = self.mono_ctx.get_class(&key) {
-                        return Some(IrInstr::NewObject {
+                        return Some(IrInstr::NewType {
                             dest: dest.clone(),
-                            class: specialized_id,
+                            nominal_type_id: specialized_id,
                         });
                     }
                 }
                 None
             }
-            IrInstr::CallMethod {
+            IrInstr::CallMethodExact {
                 dest: _,
                 object: _,
                 method: _,
@@ -125,7 +128,7 @@ impl<'a> CallSiteRewriter<'a> {
                 args: _,
                 optional: _,
             } => None,
-            IrInstr::LoadField {
+            IrInstr::LoadFieldExact {
                 dest: _,
                 object: _,
                 field: _,
@@ -134,7 +137,7 @@ impl<'a> CallSiteRewriter<'a> {
                 // Field access on generic objects - pass through for now
                 None
             }
-            IrInstr::StoreField {
+            IrInstr::StoreFieldExact {
                 object: _,
                 field: _,
                 value: _,
@@ -194,8 +197,12 @@ impl<'a> TypeAwareRewriter<'a> {
 
         for block in func.blocks_mut() {
             for instr in &mut block.instructions {
-                // Track type arguments from NewObject
-                if let IrInstr::NewObject { dest: _, class: _ } = instr {
+                // Track type arguments from NewType
+                if let IrInstr::NewType {
+                    dest: _,
+                    nominal_type_id: _,
+                } = instr
+                {
                     // Store type args for this register if we have specialization info
                     // This would be populated during the specialization phase
                 }
@@ -271,26 +278,29 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_new_object() {
+    fn test_rewrite_new_type() {
         let mut ctx = MonomorphizationContext::new();
-        let key = MonoKey::class(ClassId::new(0), vec![TypeId::new(1)]);
-        ctx.register_class(key.clone(), ClassId::new(3)); // Specialized to class 3
+        let key = MonoKey::class(NominalTypeId::new(0), vec![TypeId::new(1)]);
+        ctx.register_class(key.clone(), NominalTypeId::new(3)); // Specialized to class 3
 
         let mut rewriter = CallSiteRewriter::new(&ctx);
-        rewriter.register_generic_class(ClassId::new(0), vec![TypeId::new(1)]);
+        rewriter.register_generic_class(NominalTypeId::new(0), vec![TypeId::new(1)]);
 
-        let instr = IrInstr::NewObject {
+        let instr = IrInstr::NewType {
             dest: make_reg(0, 0),
-            class: ClassId::new(0),
+            nominal_type_id: NominalTypeId::new(0),
         };
 
         let result = rewriter.rewrite_instruction(&instr);
         assert!(result.is_some());
 
-        if let Some(IrInstr::NewObject { class, .. }) = result {
-            assert_eq!(class, ClassId::new(3));
+        if let Some(IrInstr::NewType {
+            nominal_type_id, ..
+        }) = result
+        {
+            assert_eq!(nominal_type_id, NominalTypeId::new(3));
         } else {
-            panic!("Expected NewObject instruction");
+            panic!("Expected NewType instruction");
         }
     }
 

@@ -130,7 +130,7 @@ fn format_instr(instr: &IrInstr) -> String {
                 format!("call {}({})", func, args_str.join(", "))
             }
         }
-        IrInstr::CallMethod {
+        IrInstr::CallMethodExact {
             dest,
             object,
             method,
@@ -236,25 +236,45 @@ fn format_instr(instr: &IrInstr) -> String {
                 )
             }
         }
-        IrInstr::InstanceOf {
+        IrInstr::IsNominal {
             dest,
             object,
-            class_id,
+            nominal_type_id,
         } => {
             format!(
-                "{} = {} instanceof class{}",
+                "{} = {} instanceof nominal_type{}",
                 dest,
                 object,
-                class_id.as_u32()
+                nominal_type_id.as_u32()
             )
         }
+        IrInstr::ImplementsShape {
+            dest,
+            object,
+            shape_id,
+        } => format!("{} = implements_shape {} @{shape_id:016x}", dest, object),
+        IrInstr::CastNominal {
+            dest,
+            object,
+            nominal_type_id,
+        } => {
+            format!(
+                "{} = {} as nominal_type{}",
+                dest,
+                object,
+                nominal_type_id.as_u32()
+            )
+        }
+        IrInstr::CastShape {
+            dest,
+            object,
+            shape_id,
+        } => format!("{} = cast_shape {} @{shape_id:016x}", dest, object),
         IrInstr::Cast {
             dest,
             object,
-            class_id,
-        } => {
-            format!("{} = {} as class{}", dest, object, class_id.as_u32())
-        }
+            target,
+        } => format!("{} = cast {} @{}", dest, object, target.as_u32()),
         IrInstr::LoadLocal { dest, index } => {
             format!("{} = load_local {}", dest, index)
         }
@@ -276,7 +296,7 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::StoreGlobal { index, value } => {
             format!("store_global {} = {}", index, value)
         }
-        IrInstr::LoadField {
+        IrInstr::LoadFieldExact {
             dest,
             object,
             field,
@@ -307,7 +327,7 @@ fn format_instr(instr: &IrInstr) -> String {
                 )
             }
         }
-        IrInstr::StoreField {
+        IrInstr::StoreFieldExact {
             object,
             field,
             value,
@@ -362,8 +382,11 @@ fn format_instr(instr: &IrInstr) -> String {
         } => {
             format!("store_elem {}[{}] = {}", array, index, value)
         }
-        IrInstr::NewObject { dest, class } => {
-            format!("{} = new_object {}", dest, class)
+        IrInstr::NewType {
+            dest,
+            nominal_type_id,
+        } => {
+            format!("{} = new_type nominal_type{}", dest, nominal_type_id.as_u32())
         }
         IrInstr::NewArray { dest, len, elem_ty } => {
             format!("{} = new_array type{}[{}]", dest, elem_ty.as_u32(), len)

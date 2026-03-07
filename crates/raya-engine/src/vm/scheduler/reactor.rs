@@ -952,8 +952,8 @@ impl Reactor {
                 let gc_ptr = gc.allocate(buffer);
                 let handle = gc_ptr.as_ptr() as u64;
 
-                // Wrap in a proper Object with Buffer class_id so vtable dispatch works
-                let (class_id, field_count, layout_id) = {
+                // Wrap in a proper Object with Buffer nominal_type_id so vtable dispatch works
+                let (nominal_type_id, field_count, layout_id) = {
                     let mut classes = shared_state.classes.write();
                     if let Some(id) = classes.get_class_by_name("Buffer").map(|class| class.id) {
                         let (layout_id, field_count) = shared_state
@@ -974,7 +974,7 @@ impl Reactor {
                         (id, field_count.max(2), layout_id)
                     }
                 };
-                let mut obj = Object::new_nominal(layout_id, class_id as u32, field_count);
+                let mut obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
                 obj.fields[0] = Value::u64(handle); // bufferPtr field
                 if field_count > 1 {
                     obj.fields[1] = Value::i32(data.len() as i32); // length field

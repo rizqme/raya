@@ -298,7 +298,7 @@ impl BytecodeWriter {
 
     /// Emit CALL_METHOD instruction
     pub fn emit_call_method(&mut self, method_index: u32, arg_count: u16) {
-        self.emit_opcode(Opcode::CallMethod);
+        self.emit_opcode(Opcode::CallMethodExact);
         self.emit_u32(method_index);
         self.emit_u16(arg_count);
     }
@@ -344,21 +344,21 @@ impl BytecodeWriter {
 
     // ===== Object Operations =====
 
-    /// Emit NEW instruction
-    pub fn emit_new(&mut self, class_index: u32) {
-        self.emit_opcode(Opcode::New);
-        self.emit_u32(class_index);
+    /// Emit NEW_TYPE instruction
+    pub fn emit_new(&mut self, nominal_type_index: u32) {
+        self.emit_opcode(Opcode::NewType);
+        self.emit_u16(nominal_type_index as u16);
     }
 
     /// Emit LOAD_FIELD instruction
     pub fn emit_load_field(&mut self, field_offset: u16) {
-        self.emit_opcode(Opcode::LoadField);
+        self.emit_opcode(Opcode::LoadFieldExact);
         self.emit_u16(field_offset);
     }
 
     /// Emit STORE_FIELD instruction
     pub fn emit_store_field(&mut self, field_offset: u16) {
-        self.emit_opcode(Opcode::StoreField);
+        self.emit_opcode(Opcode::StoreFieldExact);
         self.emit_u16(field_offset);
     }
 
@@ -377,7 +377,7 @@ impl BytecodeWriter {
 
     /// Emit OPTIONAL_FIELD instruction
     pub fn emit_optional_field(&mut self, offset: u16) {
-        self.emit_opcode(Opcode::OptionalField);
+        self.emit_opcode(Opcode::OptionalFieldExact);
         self.emit_u16(offset);
     }
 

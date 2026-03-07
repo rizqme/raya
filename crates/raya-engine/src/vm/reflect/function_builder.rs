@@ -327,44 +327,48 @@ impl DecoratorTargetType {
     }
 }
 
-/// Registry for tracking decorator applications on classes
+/// Registry for tracking decorator applications on nominal types
 #[derive(Debug, Default)]
 pub struct DecoratorRegistry {
-    /// Decorators applied to classes: class_id -> Vec<DecoratorApplication>
-    class_decorators: HashMap<usize, Vec<DecoratorApplication>>,
-    /// Decorators applied to methods: (class_id, method_name) -> Vec<DecoratorApplication>
+    /// Decorators applied to nominal types: nominal_type_id -> Vec<DecoratorApplication>
+    nominal_type_decorators: HashMap<usize, Vec<DecoratorApplication>>,
+    /// Decorators applied to methods: (nominal_type_id, method_name) -> Vec<DecoratorApplication>
     method_decorators: HashMap<(usize, String), Vec<DecoratorApplication>>,
-    /// Decorators applied to fields: (class_id, field_name) -> Vec<DecoratorApplication>
+    /// Decorators applied to fields: (nominal_type_id, field_name) -> Vec<DecoratorApplication>
     field_decorators: HashMap<(usize, String), Vec<DecoratorApplication>>,
-    /// Decorators applied to parameters: (class_id, method_name, param_index) -> Vec<DecoratorApplication>
+    /// Decorators applied to parameters: (nominal_type_id, method_name, param_index) -> Vec<DecoratorApplication>
     parameter_decorators: HashMap<(usize, String, usize), Vec<DecoratorApplication>>,
-    /// Index: decorator_name -> Vec<class_id>
-    classes_by_decorator: HashMap<String, Vec<usize>>,
+    /// Index: decorator_name -> Vec<nominal_type_id>
+    nominal_types_by_decorator: HashMap<String, Vec<usize>>,
 }
 
 impl DecoratorRegistry {
     /// Create a new registry
     pub fn new() -> Self {
         Self {
-            class_decorators: HashMap::new(),
+            nominal_type_decorators: HashMap::new(),
             method_decorators: HashMap::new(),
             field_decorators: HashMap::new(),
             parameter_decorators: HashMap::new(),
-            classes_by_decorator: HashMap::new(),
+            nominal_types_by_decorator: HashMap::new(),
         }
     }
 
-    /// Register a decorator on a class
-    pub fn register_class_decorator(&mut self, class_id: usize, decorator: DecoratorApplication) {
+    /// Register a decorator on a nominal type
+    pub fn register_nominal_type_decorator(
+        &mut self,
+        nominal_type_id: usize,
+        decorator: DecoratorApplication,
+    ) {
         // Update index
-        self.classes_by_decorator
+        self.nominal_types_by_decorator
             .entry(decorator.name.clone())
             .or_default()
-            .push(class_id);
+            .push(nominal_type_id);
 
         // Store decorator
-        self.class_decorators
-            .entry(class_id)
+        self.nominal_type_decorators
+            .entry(nominal_type_id)
             .or_default()
             .push(decorator);
     }
@@ -372,12 +376,12 @@ impl DecoratorRegistry {
     /// Register a decorator on a method
     pub fn register_method_decorator(
         &mut self,
-        class_id: usize,
+        nominal_type_id: usize,
         method_name: String,
         decorator: DecoratorApplication,
     ) {
         self.method_decorators
-            .entry((class_id, method_name))
+            .entry((nominal_type_id, method_name))
             .or_default()
             .push(decorator);
     }
@@ -385,12 +389,12 @@ impl DecoratorRegistry {
     /// Register a decorator on a field
     pub fn register_field_decorator(
         &mut self,
-        class_id: usize,
+        nominal_type_id: usize,
         field_name: String,
         decorator: DecoratorApplication,
     ) {
         self.field_decorators
-            .entry((class_id, field_name))
+            .entry((nominal_type_id, field_name))
             .or_default()
             .push(decorator);
     }
@@ -398,29 +402,32 @@ impl DecoratorRegistry {
     /// Register a decorator on a parameter
     pub fn register_parameter_decorator(
         &mut self,
-        class_id: usize,
+        nominal_type_id: usize,
         method_name: String,
         param_index: usize,
         decorator: DecoratorApplication,
     ) {
         self.parameter_decorators
-            .entry((class_id, method_name, param_index))
+            .entry((nominal_type_id, method_name, param_index))
             .or_default()
             .push(decorator);
     }
 
-    /// Get all classes with a specific decorator
-    pub fn get_classes_with_decorator(&self, decorator_name: &str) -> Vec<usize> {
-        self.classes_by_decorator
+    /// Get all nominal types with a specific decorator
+    pub fn get_nominal_types_with_decorator(&self, decorator_name: &str) -> Vec<usize> {
+        self.nominal_types_by_decorator
             .get(decorator_name)
             .cloned()
             .unwrap_or_default()
     }
 
-    /// Get decorators on a class
-    pub fn get_class_decorators(&self, class_id: usize) -> Vec<&DecoratorApplication> {
-        self.class_decorators
-            .get(&class_id)
+    /// Get decorators on a nominal type
+    pub fn get_nominal_type_decorators(
+        &self,
+        nominal_type_id: usize,
+    ) -> Vec<&DecoratorApplication> {
+        self.nominal_type_decorators
+            .get(&nominal_type_id)
             .map(|v| v.iter().collect())
             .unwrap_or_default()
     }
@@ -428,11 +435,11 @@ impl DecoratorRegistry {
     /// Get decorators on a method
     pub fn get_method_decorators(
         &self,
-        class_id: usize,
+        nominal_type_id: usize,
         method_name: &str,
     ) -> Vec<&DecoratorApplication> {
         self.method_decorators
-            .get(&(class_id, method_name.to_string()))
+            .get(&(nominal_type_id, method_name.to_string()))
             .map(|v| v.iter().collect())
             .unwrap_or_default()
     }
@@ -440,11 +447,11 @@ impl DecoratorRegistry {
     /// Get decorators on a field
     pub fn get_field_decorators(
         &self,
-        class_id: usize,
+        nominal_type_id: usize,
         field_name: &str,
     ) -> Vec<&DecoratorApplication> {
         self.field_decorators
-            .get(&(class_id, field_name.to_string()))
+            .get(&(nominal_type_id, field_name.to_string()))
             .map(|v| v.iter().collect())
             .unwrap_or_default()
     }
@@ -452,28 +459,32 @@ impl DecoratorRegistry {
     /// Get decorators on a parameter
     pub fn get_parameter_decorators(
         &self,
-        class_id: usize,
+        nominal_type_id: usize,
         method_name: &str,
         param_index: usize,
     ) -> Vec<&DecoratorApplication> {
         self.parameter_decorators
-            .get(&(class_id, method_name.to_string(), param_index))
+            .get(&(nominal_type_id, method_name.to_string(), param_index))
             .map(|v| v.iter().collect())
             .unwrap_or_default()
     }
 
-    /// Check if a class has a specific decorator
-    pub fn class_has_decorator(&self, class_id: usize, decorator_name: &str) -> bool {
-        self.class_decorators
-            .get(&class_id)
+    /// Check if a nominal type has a specific decorator
+    pub fn nominal_type_has_decorator(
+        &self,
+        nominal_type_id: usize,
+        decorator_name: &str,
+    ) -> bool {
+        self.nominal_type_decorators
+            .get(&nominal_type_id)
             .map(|decorators| decorators.iter().any(|d| d.name == decorator_name))
             .unwrap_or(false)
     }
 
-    /// Get all decorator names applied to a class
-    pub fn get_class_decorator_names(&self, class_id: usize) -> Vec<String> {
-        self.class_decorators
-            .get(&class_id)
+    /// Get all decorator names applied to a nominal type
+    pub fn get_nominal_type_decorator_names(&self, nominal_type_id: usize) -> Vec<String> {
+        self.nominal_type_decorators
+            .get(&nominal_type_id)
             .map(|decorators| decorators.iter().map(|d| d.name.clone()).collect())
             .unwrap_or_default()
     }
@@ -548,10 +559,10 @@ mod tests {
             parameter_index: None,
         };
 
-        registry.register_class_decorator(1, decorator.clone());
-        registry.register_class_decorator(2, decorator.clone());
+        registry.register_nominal_type_decorator(1, decorator.clone());
+        registry.register_nominal_type_decorator(2, decorator.clone());
 
-        let classes = registry.get_classes_with_decorator("Injectable");
+        let classes = registry.get_nominal_types_with_decorator("Injectable");
         assert_eq!(classes.len(), 2);
         assert!(classes.contains(&1));
         assert!(classes.contains(&2));
@@ -577,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn test_class_has_decorator() {
+    fn test_nominal_type_has_decorator() {
         let mut registry = DecoratorRegistry::new();
 
         let decorator = DecoratorApplication {
@@ -588,11 +599,11 @@ mod tests {
             parameter_index: None,
         };
 
-        registry.register_class_decorator(1, decorator);
+        registry.register_nominal_type_decorator(1, decorator);
 
-        assert!(registry.class_has_decorator(1, "Entity"));
-        assert!(!registry.class_has_decorator(1, "Controller"));
-        assert!(!registry.class_has_decorator(2, "Entity"));
+        assert!(registry.nominal_type_has_decorator(1, "Entity"));
+        assert!(!registry.nominal_type_has_decorator(1, "Controller"));
+        assert!(!registry.nominal_type_has_decorator(2, "Entity"));
     }
 
     #[test]
@@ -675,7 +686,7 @@ mod tests {
         let mut registry = DecoratorRegistry::new();
 
         // Register multiple decorators on same class
-        registry.register_class_decorator(
+        registry.register_nominal_type_decorator(
             1,
             DecoratorApplication {
                 name: "Injectable".to_string(),
@@ -685,7 +696,7 @@ mod tests {
                 parameter_index: None,
             },
         );
-        registry.register_class_decorator(
+        registry.register_nominal_type_decorator(
             1,
             DecoratorApplication {
                 name: "Singleton".to_string(),
@@ -696,15 +707,15 @@ mod tests {
             },
         );
 
-        let decorators = registry.get_class_decorators(1);
+        let decorators = registry.get_nominal_type_decorators(1);
         assert_eq!(decorators.len(), 2);
 
         // Class should appear in both decorator queries
         assert!(registry
-            .get_classes_with_decorator("Injectable")
+            .get_nominal_types_with_decorator("Injectable")
             .contains(&1));
         assert!(registry
-            .get_classes_with_decorator("Singleton")
+            .get_nominal_types_with_decorator("Singleton")
             .contains(&1));
     }
 
@@ -749,7 +760,7 @@ mod tests {
         let registry = DecoratorRegistry::new();
 
         // Queries on empty registry should return empty
-        assert!(registry.get_class_decorators(999).is_empty());
+        assert!(registry.get_nominal_type_decorators(999).is_empty());
         assert!(registry
             .get_method_decorators(999, "nonexistent")
             .is_empty());
@@ -757,7 +768,7 @@ mod tests {
         assert!(registry
             .get_parameter_decorators(999, "nonexistent", 0)
             .is_empty());
-        assert!(registry.get_classes_with_decorator("Unknown").is_empty());
-        assert!(!registry.class_has_decorator(999, "Unknown"));
+        assert!(registry.get_nominal_types_with_decorator("Unknown").is_empty());
+        assert!(!registry.nominal_type_has_decorator(999, "Unknown"));
     }
 }

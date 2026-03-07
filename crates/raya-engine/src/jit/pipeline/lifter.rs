@@ -947,20 +947,21 @@ fn lift_instruction(
         }
 
         // ===== Object Operations =====
-        Opcode::New => {
-            if let Operands::U32(class_id) = instr.operands {
+        Opcode::NewType => {
+            if let Operands::U16(nominal_type_id) = instr.operands {
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block)
-                    .instrs
-                    .push(JitInstr::NewObject { dest, class_id });
+                func.block_mut(block).instrs.push(JitInstr::NewObject {
+                    dest,
+                    nominal_type_id: nominal_type_id as u32,
+                });
                 stack.push(dest);
             }
         }
-        Opcode::LoadField => {
+        Opcode::LoadFieldExact => {
             if let Operands::U16(offset) = instr.operands {
                 let object = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::LoadField {
+                func.block_mut(block).instrs.push(JitInstr::LoadFieldExact {
                     dest,
                     object,
                     offset,
@@ -968,11 +969,11 @@ fn lift_instruction(
                 stack.push(dest);
             }
         }
-        Opcode::StoreField => {
+        Opcode::StoreFieldExact => {
             if let Operands::U16(offset) = instr.operands {
                 let value = stack.pop(instr.offset)?;
                 let object = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::StoreField {
+                func.block_mut(block).instrs.push(JitInstr::StoreFieldExact {
                     object,
                     offset,
                     value,
@@ -985,11 +986,11 @@ fn lift_instruction(
                 offset: instr.offset,
             });
         }
-        Opcode::OptionalField => {
+        Opcode::OptionalFieldExact => {
             if let Operands::U16(offset) = instr.operands {
                 let object = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::OptionalField {
+                func.block_mut(block).instrs.push(JitInstr::OptionalFieldExact {
                     dest,
                     object,
                     offset,
@@ -997,28 +998,41 @@ fn lift_instruction(
                 stack.push(dest);
             }
         }
-        Opcode::InstanceOf => {
-            // InstanceOf pops object, pushes bool; class_id on stack below
-            let object = stack.pop(instr.offset)?;
-            let _class_val = stack.pop(instr.offset)?;
-            // The class ID is typically encoded differently, but for now treat as value
-            let dest = func.alloc_reg(JitType::Bool);
-            func.block_mut(block).instrs.push(JitInstr::InstanceOf {
-                dest,
-                object,
-                class_id: 0,
-            });
-            stack.push(dest);
+        Opcode::IsNominal => {
+            if let Operands::U16(nominal_type_id) = instr.operands {
+                let object = stack.pop(instr.offset)?;
+                let dest = func.alloc_reg(JitType::Bool);
+                func.block_mut(block).instrs.push(JitInstr::InstanceOf {
+                    dest,
+                    object,
+                    nominal_type_id: nominal_type_id as u32,
+                });
+                stack.push(dest);
+            }
+        }
+        Opcode::CastNominal => {
+            if let Operands::U16(nominal_type_id) = instr.operands {
+                let object = stack.pop(instr.offset)?;
+                let dest = func.alloc_reg(JitType::Ptr);
+                func.block_mut(block).instrs.push(JitInstr::Cast {
+                    dest,
+                    object,
+                    nominal_type_id: nominal_type_id as u32,
+                });
+                stack.push(dest);
+            }
         }
         Opcode::Cast => {
-            let object = stack.pop(instr.offset)?;
-            let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::Cast {
-                dest,
-                object,
-                class_id: 0,
+            return Err(LiftError::UnsupportedOpcode {
+                opcode: instr.opcode,
+                offset: instr.offset,
             });
-            stack.push(dest);
+        }
+        Opcode::CastShape | Opcode::ImplementsShape => {
+            return Err(LiftError::UnsupportedOpcode {
+                opcode: instr.opcode,
+                offset: instr.offset,
+            });
         }
 
         // ===== Array Operations =====
@@ -1127,7 +1141,7 @@ fn lift_instruction(
                 stack.push(dest);
             }
         }
-        Opcode::CallMethod => {
+        Opcode::CallMethodExact => {
             if let Operands::Call {
                 func_index: method_index,
                 arg_count,
@@ -1140,7 +1154,7 @@ fn lift_instruction(
                 args.reverse();
                 let receiver = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::CallMethod {
+                func.block_mut(block).instrs.push(JitInstr::CallMethodExact {
                     dest: Some(dest),
                     method_index,
                     receiver,
@@ -1149,7 +1163,7 @@ fn lift_instruction(
                 stack.push(dest);
             }
         }
-        Opcode::OptionalCallMethod => {
+        Opcode::OptionalCallMethodExact => {
             // Not yet lifted: preserves interpreter semantics for null short-circuit.
             return Err(LiftError::UnsupportedOpcode {
                 opcode: instr.opcode,
@@ -1164,7 +1178,7 @@ fn lift_instruction(
         }
         Opcode::CallConstructor => {
             if let Operands::Call {
-                func_index: class_id,
+                func_index: nominal_type_id,
                 arg_count,
             } = instr.operands
             {
@@ -1178,7 +1192,7 @@ fn lift_instruction(
                     .instrs
                     .push(JitInstr::CallConstructor {
                         dest,
-                        class_id,
+                        nominal_type_id,
                         args,
                     });
                 stack.push(dest);

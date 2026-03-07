@@ -12,7 +12,7 @@
 //! | 0x0DD1 | getTypeParameters           | Get type parameter info              |
 //! | 0x0DD2 | getTypeArguments            | Get actual type arguments            |
 //! | 0x0DD3 | isGenericInstance           | Check if monomorphized               |
-//! | 0x0DD4 | getGenericBase              | Get base generic class ID            |
+//! | 0x0DD4 | getGenericBase              | Get base generic nominal type ID            |
 //! | 0x0DD5 | findSpecializations         | Find all monomorphized versions      |
 
 use std::collections::HashMap;
@@ -57,8 +57,8 @@ pub struct GenericTypeInfo {
     pub name: String,
     /// Type parameters in order (e.g., ["T"] for Box<T>, ["K", "V"] for Map<K, V>)
     pub type_parameters: Vec<GenericParameterInfo>,
-    /// Base generic class ID (if the generic definition was compiled)
-    pub base_class_id: Option<usize>,
+    /// Base generic nominal type ID (if the generic definition was compiled)
+    pub base_nominal_type_id: Option<usize>,
 }
 
 impl GenericTypeInfo {
@@ -67,7 +67,7 @@ impl GenericTypeInfo {
         Self {
             name,
             type_parameters: Vec::new(),
-            base_class_id: None,
+            base_nominal_type_id: None,
         }
     }
 
@@ -82,9 +82,9 @@ impl GenericTypeInfo {
         self.type_parameters.push(param);
     }
 
-    /// Set the base class ID
-    pub fn with_base_class(mut self, class_id: usize) -> Self {
-        self.base_class_id = Some(class_id);
+    /// Set the base nominal type ID
+    pub fn with_base_nominal_type(mut self, nominal_type_id: usize) -> Self {
+        self.base_nominal_type_id = Some(nominal_type_id);
         self
     }
 }
@@ -92,8 +92,8 @@ impl GenericTypeInfo {
 /// Information about a monomorphized (specialized) class
 #[derive(Debug, Clone)]
 pub struct SpecializedTypeInfo {
-    /// The specialized class ID (e.g., class ID for Box_number)
-    pub class_id: usize,
+    /// The specialized nominal type ID (e.g., the runtime ID for `Box_number`)
+    pub nominal_type_id: usize,
     /// The specialized class name (e.g., "Box_number")
     pub class_name: String,
     /// Original generic name (e.g., "Box")
@@ -105,13 +105,13 @@ pub struct SpecializedTypeInfo {
 impl SpecializedTypeInfo {
     /// Create new specialized type info
     pub fn new(
-        class_id: usize,
+        nominal_type_id: usize,
         class_name: String,
         generic_name: String,
         type_arguments: Vec<TypeInfo>,
     ) -> Self {
         Self {
-            class_id,
+            nominal_type_id,
             class_name,
             generic_name,
             type_arguments,
@@ -127,9 +127,9 @@ impl SpecializedTypeInfo {
 pub struct GenericTypeRegistry {
     /// Generic definitions: generic name -> GenericTypeInfo
     generics: HashMap<String, GenericTypeInfo>,
-    /// Specialized classes: specialized class ID -> SpecializedTypeInfo
+    /// Specialized classes: specialized nominal type ID -> SpecializedTypeInfo
     specializations: HashMap<usize, SpecializedTypeInfo>,
-    /// Reverse lookup: generic name -> list of specialized class IDs
+    /// Reverse lookup: generic name -> list of specialized nominal type IDs
     specialization_index: HashMap<String, Vec<usize>>,
 }
 
@@ -154,13 +154,13 @@ impl GenericTypeRegistry {
     /// Register a specialized (monomorphized) type
     pub fn register_specialization(&mut self, info: SpecializedTypeInfo) {
         let generic_name = info.generic_name.clone();
-        let class_id = info.class_id;
+        let nominal_type_id = info.nominal_type_id;
 
-        self.specializations.insert(class_id, info);
+        self.specializations.insert(nominal_type_id, info);
         self.specialization_index
             .entry(generic_name)
             .or_default()
-            .push(class_id);
+            .push(nominal_type_id);
     }
 
     /// Get generic type definition by name
@@ -168,27 +168,27 @@ impl GenericTypeRegistry {
         self.generics.get(name)
     }
 
-    /// Get specialization info by class ID
-    pub fn get_specialization(&self, class_id: usize) -> Option<&SpecializedTypeInfo> {
-        self.specializations.get(&class_id)
+    /// Get specialization info by nominal type ID
+    pub fn get_specialization(&self, nominal_type_id: usize) -> Option<&SpecializedTypeInfo> {
+        self.specializations.get(&nominal_type_id)
     }
 
-    /// Check if a class is a generic instance (monomorphized)
-    pub fn is_generic_instance(&self, class_id: usize) -> bool {
-        self.specializations.contains_key(&class_id)
+    /// Check if a nominal type is a generic instance (monomorphized)
+    pub fn is_generic_instance(&self, nominal_type_id: usize) -> bool {
+        self.specializations.contains_key(&nominal_type_id)
     }
 
-    /// Get the generic origin name for a specialized class
-    pub fn get_generic_origin(&self, class_id: usize) -> Option<&str> {
+    /// Get the generic origin name for a specialized nominal type
+    pub fn get_generic_origin(&self, nominal_type_id: usize) -> Option<&str> {
         self.specializations
-            .get(&class_id)
+            .get(&nominal_type_id)
             .map(|s| s.generic_name.as_str())
     }
 
-    /// Get type arguments for a specialized class
-    pub fn get_type_arguments(&self, class_id: usize) -> Option<&[TypeInfo]> {
+    /// Get type arguments for a specialized nominal type
+    pub fn get_type_arguments(&self, nominal_type_id: usize) -> Option<&[TypeInfo]> {
         self.specializations
-            .get(&class_id)
+            .get(&nominal_type_id)
             .map(|s| s.type_arguments.as_slice())
     }
 
@@ -199,11 +199,11 @@ impl GenericTypeRegistry {
             .map(|g| g.type_parameters.as_slice())
     }
 
-    /// Get base generic class ID
+    /// Get base generic nominal type ID
     pub fn get_generic_base(&self, generic_name: &str) -> Option<usize> {
         self.generics
             .get(generic_name)
-            .and_then(|g| g.base_class_id)
+            .and_then(|g| g.base_nominal_type_id)
     }
 
     /// Find all specializations of a generic type
@@ -296,7 +296,7 @@ mod tests {
             vec![type_arg],
         );
 
-        assert_eq!(info.class_id, 10);
+        assert_eq!(info.nominal_type_id, 10);
         assert_eq!(info.class_name, "Box_number");
         assert_eq!(info.generic_name, "Box");
         assert_eq!(info.type_arguments.len(), 1);

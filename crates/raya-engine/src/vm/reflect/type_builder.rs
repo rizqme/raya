@@ -45,10 +45,10 @@ impl FieldDefinition {
     }
 
     /// Create a field definition with a class type
-    pub fn with_class_type(name: String, class_name: &str, class_id: usize) -> Self {
+    pub fn with_class_type(name: String, class_name: &str, nominal_type_id: usize) -> Self {
         Self {
             name,
-            type_info: TypeInfo::class(class_name, class_id),
+            type_info: TypeInfo::class(class_name, nominal_type_id),
             initial_value: None,
             is_static: false,
             is_readonly: false,
@@ -224,12 +224,12 @@ impl Default for SubclassDefinition {
 
 /// Builder for creating dynamic classes at runtime
 pub struct DynamicClassBuilder {
-    /// Next class ID to allocate
+    /// Next nominal type ID to allocate
     next_id: usize,
 }
 
 impl DynamicClassBuilder {
-    /// Create a new builder with the next available class ID
+    /// Create a new builder with the next available nominal type ID
     pub fn new(next_id: usize) -> Self {
         Self { next_id }
     }
@@ -240,7 +240,7 @@ impl DynamicClassBuilder {
         name: String,
         definition: &SubclassDefinition,
     ) -> (Class, ClassMetadata) {
-        let class_id = self.next_id;
+        let nominal_type_id = self.next_id;
         self.next_id += 1;
 
         let instance_field_count = definition.instance_field_count();
@@ -249,13 +249,13 @@ impl DynamicClassBuilder {
         // Create the Class object
         let mut class = if static_field_count > 0 {
             Class::with_static_fields(
-                class_id,
+                nominal_type_id,
                 name.clone(),
                 instance_field_count,
                 static_field_count,
             )
         } else {
-            Class::new(class_id, name.clone(), instance_field_count)
+            Class::new(nominal_type_id, name.clone(), instance_field_count)
         };
 
         // Set constructor if provided
@@ -271,7 +271,7 @@ impl DynamicClassBuilder {
         }
 
         // Create metadata
-        let metadata = self.build_metadata(class_id, definition);
+        let metadata = self.build_metadata(nominal_type_id, definition);
 
         (class, metadata)
     }
@@ -284,7 +284,7 @@ impl DynamicClassBuilder {
         parent_metadata: Option<&ClassMetadata>,
         definition: &SubclassDefinition,
     ) -> (Class, ClassMetadata) {
-        let class_id = self.next_id;
+        let nominal_type_id = self.next_id;
         self.next_id += 1;
 
         // Calculate total field count (inherited + new)
@@ -295,7 +295,7 @@ impl DynamicClassBuilder {
         let static_field_count = definition.static_field_count();
 
         // Create the Class object with parent
-        let mut class = Class::with_parent(class_id, name.clone(), total_field_count, parent.id);
+        let mut class = Class::with_parent(nominal_type_id, name.clone(), total_field_count, parent.id);
 
         // Copy static fields from definition
         if static_field_count > 0 {
@@ -317,7 +317,7 @@ impl DynamicClassBuilder {
 
         // Create metadata (inheriting from parent if available)
         let metadata =
-            self.build_subclass_metadata(class_id, inherited_fields, parent_metadata, definition);
+            self.build_subclass_metadata(nominal_type_id, inherited_fields, parent_metadata, definition);
 
         (class, metadata)
     }
@@ -329,7 +329,7 @@ impl DynamicClassBuilder {
         original_metadata: Option<&ClassMetadata>,
         new_fields: &[FieldDefinition],
     ) -> (Class, ClassMetadata) {
-        let class_id = self.next_id;
+        let nominal_type_id = self.next_id;
         self.next_id += 1;
 
         // Count new instance fields
@@ -341,9 +341,9 @@ impl DynamicClassBuilder {
         // Create new class (same parent as original, but with extended name)
         let new_name = format!("{}$Extended", original.name);
         let mut class = if let Some(parent_id) = original.parent_id {
-            Class::with_parent(class_id, new_name.clone(), total_field_count, parent_id)
+            Class::with_parent(nominal_type_id, new_name.clone(), total_field_count, parent_id)
         } else {
-            Class::new(class_id, new_name.clone(), total_field_count)
+            Class::new(nominal_type_id, new_name.clone(), total_field_count)
         };
 
         // Copy static fields (original + new)
@@ -364,7 +364,7 @@ impl DynamicClassBuilder {
 
         // Build metadata with extended fields
         let metadata = self.build_extended_metadata(
-            class_id,
+            nominal_type_id,
             original.field_count,
             original.static_field_count(),
             original_metadata,
@@ -375,7 +375,7 @@ impl DynamicClassBuilder {
     }
 
     /// Build metadata for a new root class
-    fn build_metadata(&self, class_id: usize, definition: &SubclassDefinition) -> ClassMetadata {
+    fn build_metadata(&self, nominal_type_id: usize, definition: &SubclassDefinition) -> ClassMetadata {
         let mut metadata = ClassMetadata::new();
 
         let mut field_index = 0;
@@ -385,7 +385,7 @@ impl DynamicClassBuilder {
             let field_info = FieldInfo {
                 name: field_def.name.clone(),
                 type_info: field_def.type_info.clone(),
-                declaring_class_id: class_id,
+                declaring_nominal_type_id: nominal_type_id,
                 field_index: if field_def.is_static {
                     static_index
                 } else {
@@ -419,7 +419,7 @@ impl DynamicClassBuilder {
                         is_optional: p.is_optional,
                     })
                     .collect(),
-                declaring_class_id: class_id,
+                declaring_nominal_type_id: nominal_type_id,
                 method_index,
                 is_static: method_def.is_static,
                 is_async: method_def.is_async,
@@ -438,7 +438,7 @@ impl DynamicClassBuilder {
     /// Build metadata for a subclass (inherits parent metadata)
     fn build_subclass_metadata(
         &self,
-        class_id: usize,
+        nominal_type_id: usize,
         inherited_field_count: usize,
         parent_metadata: Option<&ClassMetadata>,
         definition: &SubclassDefinition,
@@ -466,7 +466,7 @@ impl DynamicClassBuilder {
             let field_info = FieldInfo {
                 name: field_def.name.clone(),
                 type_info: field_def.type_info.clone(),
-                declaring_class_id: class_id,
+                declaring_nominal_type_id: nominal_type_id,
                 field_index: if field_def.is_static {
                     static_index
                 } else {
@@ -502,7 +502,7 @@ impl DynamicClassBuilder {
                         is_optional: p.is_optional,
                     })
                     .collect(),
-                declaring_class_id: class_id,
+                declaring_nominal_type_id: nominal_type_id,
                 method_index,
                 is_static: method_def.is_static,
                 is_async: method_def.is_async,
@@ -522,7 +522,7 @@ impl DynamicClassBuilder {
     /// Build metadata for extended class
     fn build_extended_metadata(
         &self,
-        class_id: usize,
+        nominal_type_id: usize,
         original_field_count: usize,
         original_static_count: usize,
         original_metadata: Option<&ClassMetadata>,
@@ -551,7 +551,7 @@ impl DynamicClassBuilder {
             let field_info = FieldInfo {
                 name: field_def.name.clone(),
                 type_info: field_def.type_info.clone(),
-                declaring_class_id: class_id,
+                declaring_nominal_type_id: nominal_type_id,
                 field_index: if field_def.is_static {
                     static_index
                 } else {

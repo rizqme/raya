@@ -93,30 +93,25 @@ impl<'a> EngineContext<'a> {
         value_to_native(unsafe { Value::from_ptr(ptr) })
     }
 
-    fn register_runtime_class(&self, mut class: Class) -> usize {
-        if class.layout_id == 0 {
-            let layout_id = self.layouts.write().allocate_nominal_layout_id();
-            class.set_layout_id(layout_id);
-        }
-        let id = self.classes.write().register_class(class);
-        if let Some(registered) = self.classes.read().get_class(id).cloned() {
-            self.layouts.write().register_nominal_layout(
-                id,
-                registered.layout_id,
-                registered.field_count,
-                Some(registered.name.clone()),
-            );
-            if let Some(field_names) =
-                crate::vm::object::builtin_nominal_layout_field_names(&registered.name)
-            {
-                let owned_names = field_names
+    fn register_runtime_class(&self, class: Class) -> usize {
+        let layout_id = self.layouts.write().allocate_nominal_layout_id();
+        let field_count = class.field_count;
+        let class_name = class.name.clone();
+        let builtin_layout_names = crate::vm::object::builtin_nominal_layout_field_names(&class_name)
+            .map(|field_names| {
+                field_names
                     .iter()
                     .map(|name| (*name).to_string())
-                    .collect::<Vec<_>>();
-                self.layouts
-                    .write()
-                    .register_layout_shape(registered.layout_id, &owned_names);
-            }
+                    .collect::<Vec<_>>()
+            });
+        let id = self.classes.write().register_class(class);
+        self.layouts
+            .write()
+            .register_nominal_layout(id, layout_id, field_count, Some(class_name));
+        if let Some(owned_names) = builtin_layout_names.as_ref() {
+            self.layouts
+                .write()
+                .register_layout_shape(layout_id, owned_names);
         }
         id
     }
@@ -133,13 +128,13 @@ impl<'a> EngineContext<'a> {
     }
 
     fn read_buffer_from_object(&self, obj: &Object) -> AbiResult<Vec<u8>> {
-        let class_id = obj
-            .nominal_class_id()
+        let nominal_type_id = obj
+            .nominal_type_id_usize()
             .ok_or_else(|| "Expected nominal Buffer object".to_string())?;
         let class_name = {
             let classes = self.classes.read();
             let class = classes
-                .get_class(class_id)
+                .get_class(nominal_type_id)
                 .ok_or_else(|| "Buffer class metadata missing".to_string())?;
             class.name.clone()
         };
@@ -150,7 +145,7 @@ impl<'a> EngineContext<'a> {
         let handle_field_index = {
             let class_metadata = self.class_metadata.read();
             class_metadata
-                .get(class_id)
+                .get(nominal_type_id)
                 .and_then(|meta| meta.get_field_index("bufferPtr"))
                 .unwrap_or(0)
         };
@@ -224,13 +219,13 @@ impl NativeContext for EngineContext<'_> {
         self.alloc_ptr(arr)
     }
 
-    fn create_object_by_id(&self, class_id: usize) -> AbiResult<NativeValue> {
+    fn create_object_by_nominal_type_id(&self, nominal_type_id: usize) -> AbiResult<NativeValue> {
         let (layout_id, field_count) = self
             .layouts
             .read()
-            .nominal_allocation(class_id)
-            .ok_or_else(|| format!("Class {} not found", class_id))?;
-        let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
+            .nominal_allocation(nominal_type_id)
+            .ok_or_else(|| format!("Nominal type {} not found", nominal_type_id))?;
+        let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
         Ok(self.alloc_ptr(obj))
     }
 
@@ -320,7 +315,7 @@ impl NativeContext for EngineContext<'_> {
         Ok(())
     }
 
-    fn object_class_id(&self, val: NativeValue) -> AbiResult<usize> {
+    fn object_nominal_type_id(&self, val: NativeValue) -> AbiResult<usize> {
         let v = native_to_value(val);
         if !v.is_ptr() {
             return Err("Expected Object, got non-pointer".into());
@@ -328,7 +323,7 @@ impl NativeContext for EngineContext<'_> {
         let obj_ptr =
             unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Object".to_string())?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
-        obj.nominal_class_id()
+        obj.nominal_type_id_usize()
             .ok_or_else(|| "Object has no nominal class identity".into())
     }
 
@@ -336,17 +331,17 @@ impl NativeContext for EngineContext<'_> {
     // Class Operations
     // ========================================================================
 
-    fn class_info(&self, class_id: usize) -> AbiResult<ClassInfo> {
+    fn nominal_type_info(&self, nominal_type_id: usize) -> AbiResult<ClassInfo> {
         let classes = self.classes.read();
         let class = classes
-            .get_class(class_id)
-            .ok_or_else(|| format!("Class {} not found", class_id))?;
+            .get_class(nominal_type_id)
+            .ok_or_else(|| format!("Nominal type {} not found", nominal_type_id))?;
 
         Ok(ClassInfo {
-            class_id,
+            nominal_type_id,
             field_count: class.field_count,
             name: class.name.clone(),
-            parent_id: class.parent_id,
+            parent_nominal_type_id: class.parent_id,
             constructor_id: None, // ClassRegistry doesn't store this directly
             method_count: 0,      // Resolved from metadata below if available
         })
@@ -359,18 +354,21 @@ impl NativeContext for EngineContext<'_> {
             .ok_or_else(|| format!("Class '{}' not found", name))?;
 
         Ok(ClassInfo {
-            class_id: class.id,
+            nominal_type_id: class.id,
             field_count: class.field_count,
             name: class.name.clone(),
-            parent_id: class.parent_id,
+            parent_nominal_type_id: class.parent_id,
             constructor_id: None,
             method_count: 0,
         })
     }
 
-    fn class_field_names(&self, class_id: usize) -> AbiResult<Vec<(String, usize)>> {
+    fn nominal_type_field_names(
+        &self,
+        nominal_type_id: usize,
+    ) -> AbiResult<Vec<(String, usize)>> {
         let meta = self.class_metadata.read();
-        match meta.get(class_id) {
+        match meta.get(nominal_type_id) {
             Some(m) => Ok(m
                 .field_names
                 .iter()
@@ -381,9 +379,12 @@ impl NativeContext for EngineContext<'_> {
         }
     }
 
-    fn class_method_entries(&self, class_id: usize) -> AbiResult<Vec<(String, usize)>> {
+    fn nominal_type_method_entries(
+        &self,
+        nominal_type_id: usize,
+    ) -> AbiResult<Vec<(String, usize)>> {
         let meta = self.class_metadata.read();
-        match meta.get(class_id) {
+        match meta.get(nominal_type_id) {
             Some(m) => Ok(m
                 .method_names
                 .iter()
@@ -603,36 +604,39 @@ pub fn object_set_field(val: NativeValue, field_index: usize, value: NativeValue
     Ok(())
 }
 
-/// Get object class ID
-pub fn object_class_id(val: NativeValue) -> AbiResult<usize> {
+/// Get object nominal type ID.
+pub fn object_nominal_type_id(val: NativeValue) -> AbiResult<usize> {
     let v = native_to_value(val);
     if !v.is_ptr() {
         return Err("Expected Object, got non-pointer".into());
     }
     let obj_ptr = unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Object".to_string())?;
     let obj = unsafe { &*obj_ptr.as_ptr() };
-    obj.nominal_class_id()
+    obj.nominal_type_id_usize()
         .ok_or_else(|| "Object has no nominal class identity".into())
 }
 
 /// Allocate a new Object
 pub fn object_allocate(
     ctx: &EngineContext<'_>,
-    class_id: usize,
+    nominal_type_id: usize,
     _field_count: usize,
 ) -> NativeValue {
     let (layout_id, field_count) = ctx
         .layouts
         .read()
-        .nominal_allocation(class_id)
-        .unwrap_or_else(|| panic!("Class {} not found", class_id));
-    let obj = Object::new_nominal(layout_id, class_id as u32, field_count);
+        .nominal_allocation(nominal_type_id)
+        .unwrap_or_else(|| panic!("Nominal type {} not found", nominal_type_id));
+    let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
     ctx.alloc_ptr(obj)
 }
 
-/// Get class information by ID
-pub fn class_get_info(ctx: &EngineContext<'_>, class_id: usize) -> AbiResult<ClassInfo> {
-    ctx.class_info(class_id)
+/// Get nominal type information by ID.
+pub fn nominal_type_get_info(
+    ctx: &EngineContext<'_>,
+    nominal_type_id: usize,
+) -> AbiResult<ClassInfo> {
+    ctx.nominal_type_info(nominal_type_id)
 }
 
 /// Spawn a new task (TODO)

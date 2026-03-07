@@ -306,16 +306,16 @@ impl Object {
         self.fields.len()
     }
 
-    /// Return the nominal class ID when this object participates in nominal dispatch.
+    /// Return the nominal type ID when this object participates in nominal dispatch.
     #[inline]
-    pub fn nominal_class_id(&self) -> Option<usize> {
+    pub fn nominal_type_id_usize(&self) -> Option<usize> {
         self.nominal_type_id().map(|id| id as usize)
     }
 
     /// Return a stable runtime identity for diagnostics/debug paths.
     #[inline]
     pub fn runtime_identity_id(&self) -> usize {
-        self.nominal_class_id()
+        self.nominal_type_id_usize()
             .unwrap_or_else(|| self.layout_id() as usize)
     }
 
@@ -331,8 +331,6 @@ impl Object {
 pub struct Class {
     /// Class ID (unique identifier)
     pub id: usize,
-    /// Physical runtime layout ID for object storage.
-    pub layout_id: LayoutId,
     /// Class name
     pub name: String,
     /// Number of instance fields (including inherited)
@@ -354,7 +352,6 @@ impl Class {
     pub fn new(id: usize, name: String, field_count: usize) -> Self {
         Self {
             id,
-            layout_id: 0,
             name,
             field_count,
             parent_id: None,
@@ -369,7 +366,6 @@ impl Class {
     pub fn with_parent(id: usize, name: String, field_count: usize, parent_id: usize) -> Self {
         Self {
             id,
-            layout_id: 0,
             name,
             field_count,
             parent_id: Some(parent_id),
@@ -389,7 +385,6 @@ impl Class {
     ) -> Self {
         Self {
             id,
-            layout_id: 0,
             name,
             field_count,
             parent_id: None,
@@ -403,12 +398,6 @@ impl Class {
     /// Set the constructor function ID
     pub fn set_constructor(&mut self, function_id: usize) {
         self.constructor_id = Some(function_id);
-    }
-
-    /// Set physical layout ID once assigned by the runtime registry.
-    pub fn set_layout_id(&mut self, layout_id: LayoutId) {
-        assert_ne!(layout_id, 0, "nominal type layout id must be nonzero");
-        self.layout_id = layout_id;
     }
 
     /// Get the constructor function ID
@@ -448,17 +437,6 @@ impl Class {
     /// Get method from vtable
     pub fn get_method(&self, method_index: usize) -> Option<usize> {
         self.vtable.get_method(method_index)
-    }
-}
-
-impl Object {
-    /// Create a nominal object using the runtime class metadata.
-    pub fn new_from_class(class: &Class) -> Self {
-        Self::new_nominal(
-            class.layout_id,
-            class.id as NominalTypeId,
-            class.field_count,
-        )
     }
 }
 
@@ -1704,7 +1682,7 @@ mod tests {
     fn test_object_creation() {
         let obj = Object::new_synthetic_structural(3);
         assert_eq!(obj.field_count(), 3);
-        assert_eq!(obj.nominal_class_id(), None);
+        assert_eq!(obj.nominal_type_id_usize(), None);
         assert_ne!(obj.layout_id(), 0);
     }
 

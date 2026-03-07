@@ -1,5 +1,5 @@
-//! Type operation opcode handlers: InstanceOf, Cast, Typeof, DynGet, DynSet, DynGetKeyed,
-//! DynSetKeyed, DynNewObject, DynKeys, DynHas, DynDelete, NewMutex, NewChannel, LoadStatic, StoreStatic
+//! Type operation opcode handlers: nominal checks/casts, generic casts, dynamic keyed access,
+//! and static/runtime type helpers.
 
 use crate::compiler::type_registry::TypeRegistry;
 use crate::compiler::{Module, Opcode};
@@ -112,6 +112,66 @@ fn dyn_key_parts(key_val: Value) -> Result<(Option<String>, Option<usize>), VmEr
 }
 
 impl<'a> Interpreter<'a> {
+    fn exec_shape_cast(
+        &self,
+        stack: &mut Stack,
+        obj_val: Value,
+        required_shape: u64,
+    ) -> OpcodeResult {
+        let Some(object_ptr) = object_ptr_checked(obj_val) else {
+            return OpcodeResult::Error(VmError::TypeError(format!(
+                "Cannot cast non-object value to structural shape @{required_shape:016x}"
+            )));
+        };
+        let obj = unsafe { &*object_ptr.as_ptr() };
+        let Some(adapter) = self.ensure_shape_adapter_for_object(obj, required_shape) else {
+            return OpcodeResult::Error(VmError::TypeError(format!(
+                "Cannot cast object(layout_id={}) to structural shape @{required_shape:016x}",
+                obj.layout_id()
+            )));
+        };
+        for slot in 0..adapter.len() {
+            if matches!(adapter.binding_for_slot(slot), crate::vm::interpreter::shared_state::StructuralSlotBinding::Missing) {
+                return OpcodeResult::Error(VmError::TypeError(format!(
+                    "Cannot cast object(layout_id={}) to structural shape @{required_shape:016x}: missing required slot {}",
+                    obj.layout_id(),
+                    slot
+                )));
+            }
+        }
+        if let Err(error) = stack.push(obj_val) {
+            return OpcodeResult::Error(error);
+        }
+        OpcodeResult::Continue
+    }
+
+    fn exec_implements_shape(
+        &self,
+        stack: &mut Stack,
+        obj_val: Value,
+        required_shape: u64,
+    ) -> OpcodeResult {
+        let Some(object_ptr) = object_ptr_checked(obj_val) else {
+            return stack
+                .push(Value::bool(false))
+                .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue);
+        };
+        let obj = unsafe { &*object_ptr.as_ptr() };
+        let result = self
+            .ensure_shape_adapter_for_object(obj, required_shape)
+            .is_some_and(|adapter| {
+                (0..adapter.len()).all(|slot| {
+                    !matches!(
+                        adapter.binding_for_slot(slot),
+                        crate::vm::interpreter::shared_state::StructuralSlotBinding::Missing
+                    )
+                })
+            });
+        stack
+            .push(Value::bool(result))
+            .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
+    }
+
     fn builtin_native_method_for_class(class_name: &str, method_name: &str) -> Option<u16> {
         static TYPE_REGISTRY: OnceLock<TypeRegistry> = OnceLock::new();
         TYPE_REGISTRY
@@ -120,6 +180,94 @@ impl<'a> Interpreter<'a> {
                 TypeRegistry::new(&type_ctx)
             })
             .native_method_id_for_type_name(class_name, method_name)
+    }
+
+    fn exec_nominal_cast(
+        &self,
+        stack: &mut Stack,
+        module: &Module,
+        task: &Arc<Task>,
+        obj_val: Value,
+        target_nominal_type_id: usize,
+    ) -> OpcodeResult {
+        if obj_val.is_null() {
+            if let Err(error) = stack.push(obj_val) {
+                return OpcodeResult::Error(error);
+            }
+            return OpcodeResult::Continue;
+        }
+
+        let valid_cast = if obj_val.is_ptr() {
+            if let Some(obj_ptr) = object_ptr_checked(obj_val) {
+                let obj = unsafe { &*obj_ptr.as_ptr() };
+                let classes = self.classes.read();
+                let mut current_nominal_type_id = obj.nominal_type_id_usize();
+                let mut matches = false;
+                while let Some(cid) = current_nominal_type_id {
+                    if cid == target_nominal_type_id {
+                        matches = true;
+                        break;
+                    }
+                    if let Some(class) = classes.get_class(cid) {
+                        current_nominal_type_id = class.parent_id;
+                    } else {
+                        break;
+                    }
+                }
+                matches
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if valid_cast {
+            if let Err(error) = stack.push(obj_val) {
+                return OpcodeResult::Error(error);
+            }
+            return OpcodeResult::Continue;
+        }
+
+        let target_name = {
+            let classes = self.classes.read();
+            classes
+                .get_class(target_nominal_type_id)
+                .map(|class| class.name.clone())
+                .unwrap_or_else(|| "<unknown>".to_string())
+        };
+        let (actual_nominal_type_id, actual_name) = if let Some(obj_ptr) = object_ptr_checked(obj_val) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
+                let class_name = {
+                    let classes = self.classes.read();
+                    classes
+                        .get_class(nominal_type_id)
+                        .map(|class| class.name.clone())
+                        .unwrap_or_else(|| "<unknown>".to_string())
+                };
+                (nominal_type_id, class_name)
+            } else {
+                (usize::MAX, "<structural-object>".to_string())
+            }
+        } else {
+            (usize::MAX, "<non-object>".to_string())
+        };
+        let current_func_id = task.current_func_id();
+        let current_func_name = module
+            .functions
+            .get(current_func_id)
+            .map(|function| function.name.as_str())
+            .unwrap_or("<unknown>");
+        OpcodeResult::Error(VmError::TypeError(format!(
+            "Cannot cast object(nominal_type_id={}, nominal_type_name={}) to nominal type {} ({}) in {}#{}",
+            actual_nominal_type_id,
+            actual_name,
+            target_nominal_type_id,
+            target_name,
+            current_func_name,
+            current_func_id
+        )))
     }
 
     pub(in crate::vm::interpreter) fn exec_type_ops(
@@ -132,15 +280,16 @@ impl<'a> Interpreter<'a> {
         opcode: Opcode,
     ) -> OpcodeResult {
         match opcode {
-            Opcode::InstanceOf => {
+            Opcode::IsNominal => {
                 let local_class_index = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let class_index = match self.resolve_nominal_type_id(module, local_class_index) {
+                let target_nominal_type_id =
+                    match self.resolve_nominal_type_id(module, local_class_index) {
                     Ok(id) => id,
                     Err(error) => return OpcodeResult::Error(error),
-                };
+                    };
                 let obj_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
@@ -150,15 +299,15 @@ impl<'a> Interpreter<'a> {
                     if let Some(obj_ptr) = object_ptr_checked(obj_val) {
                         let obj = unsafe { &*obj_ptr.as_ptr() };
                         let classes = self.classes.read();
-                        let mut current_class_id = obj.nominal_class_id();
+                        let mut current_nominal_type_id = obj.nominal_type_id_usize();
                         let mut matches = false;
-                        while let Some(cid) = current_class_id {
-                            if cid == class_index {
+                        while let Some(cid) = current_nominal_type_id {
+                            if cid == target_nominal_type_id {
                                 matches = true;
                                 break;
                             }
                             if let Some(class) = classes.get_class(cid) {
-                                current_class_id = class.parent_id;
+                                current_nominal_type_id = class.parent_id;
                             } else {
                                 break;
                             }
@@ -175,6 +324,47 @@ impl<'a> Interpreter<'a> {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
+            }
+
+            Opcode::CastNominal => {
+                let local_nominal_type_index = match Self::read_u16(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                let target_nominal_type_id =
+                    match self.resolve_nominal_type_id(module, local_nominal_type_index) {
+                        Ok(id) => id,
+                        Err(error) => return OpcodeResult::Error(error),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                self.exec_nominal_cast(stack, module, task, obj_val, target_nominal_type_id)
+            }
+
+            Opcode::CastShape => {
+                let required_shape = match Self::read_u64(code, ip) {
+                    Ok(v) => v,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                self.exec_shape_cast(stack, obj_val, required_shape)
+            }
+
+            Opcode::ImplementsShape => {
+                let required_shape = match Self::read_u64(code, ip) {
+                    Ok(v) => v,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                self.exec_implements_shape(stack, obj_val, required_shape)
             }
 
             Opcode::Cast => {
@@ -354,91 +544,12 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
 
-                // Null check - null can be cast to any type (it represents absence of value)
-                if obj_val.is_null() {
-                    if let Err(e) = stack.push(obj_val) {
-                        return OpcodeResult::Error(e);
-                    }
-                    return OpcodeResult::Continue;
-                }
-
-                // Class-cast target is encoded as module-local class ID.
-                let cast_target_class =
-                    match self.resolve_nominal_type_id(module, cast_target as usize) {
-                        Ok(id) => id,
-                        Err(error) => return OpcodeResult::Error(error),
-                    };
-
-                // Check if object is an instance of the target class
-                let valid_cast = if obj_val.is_ptr() {
-                    if let Some(obj_ptr) = object_ptr_checked(obj_val) {
-                        let obj = unsafe { &*obj_ptr.as_ptr() };
-                        let classes = self.classes.read();
-                        let mut current_class_id = obj.nominal_class_id();
-                        let mut matches = false;
-                        while let Some(cid) = current_class_id {
-                            if cid == cast_target_class {
-                                matches = true;
-                                break;
-                            }
-                            if let Some(class) = classes.get_class(cid) {
-                                current_class_id = class.parent_id;
-                            } else {
-                                break;
-                            }
-                        }
-                        matches
-                    } else {
-                        false
-                    }
-                } else {
-                    false
+                let cast_target_class = match self.resolve_nominal_type_id(module, cast_target as usize)
+                {
+                    Ok(id) => id,
+                    Err(error) => return OpcodeResult::Error(error),
                 };
-
-                if valid_cast {
-                    // Cast is valid, push object back
-                    if let Err(e) = stack.push(obj_val) {
-                        return OpcodeResult::Error(e);
-                    }
-                    OpcodeResult::Continue
-                } else {
-                    // Cast failed - throw TypeError
-                    let target_name = {
-                        let classes = self.classes.read();
-                        classes
-                            .get_class(cast_target_class)
-                            .map(|c| c.name.clone())
-                            .unwrap_or_else(|| "<unknown>".to_string())
-                    };
-                    let (actual_id, actual_name) =
-                        if let Some(obj_ptr) = object_ptr_checked(obj_val) {
-                            let obj = unsafe { &*obj_ptr.as_ptr() };
-                            if let Some(class_id) = obj.nominal_class_id() {
-                                let class_name = {
-                                    let classes = self.classes.read();
-                                    classes
-                                        .get_class(class_id)
-                                        .map(|c| c.name.clone())
-                                        .unwrap_or_else(|| "<unknown>".to_string())
-                                };
-                                (class_id, class_name)
-                            } else {
-                                (usize::MAX, "<structural-object>".to_string())
-                            }
-                        } else {
-                            (usize::MAX, "<non-object>".to_string())
-                        };
-                    let current_func_id = task.current_func_id();
-                    let current_func_name = module
-                        .functions
-                        .get(current_func_id)
-                        .map(|f| f.name.as_str())
-                        .unwrap_or("<unknown>");
-                    OpcodeResult::Error(VmError::TypeError(format!(
-                        "Cannot cast object(class_id={}, class_name={}) to class index {} ({}) in {}#{}",
-                        actual_id, actual_name, cast_target_class, target_name, current_func_name, current_func_id
-                    )))
-                }
+                self.exec_nominal_cast(stack, module, task, obj_val, cast_target_class)
             }
 
             // =========================================================
@@ -474,13 +585,13 @@ impl<'a> Interpreter<'a> {
                     JSView::Struct { ptr, .. } => {
                         // Typed class instance: name → slot lookup
                         let obj = unsafe { &*ptr };
-                        let nominal_class_id = obj.nominal_class_id();
+                        let nominal_type_id = obj.nominal_type_id_usize();
                         let field_index = self.get_field_index_for_value(obj_val, &prop_name);
                         let class_metadata = self.class_metadata.read();
                         let method_slot = if field_index.is_none() {
-                            nominal_class_id.and_then(|class_id| {
+                            nominal_type_id.and_then(|nominal_type_id| {
                                 class_metadata
-                                    .get(class_id)
+                                    .get(nominal_type_id)
                                     .and_then(|meta| meta.get_method_index(&prop_name))
                             })
                         } else {
@@ -492,8 +603,8 @@ impl<'a> Interpreter<'a> {
                             obj.get_field(index).unwrap_or(Value::null())
                         } else {
                             let classes = self.classes.read();
-                            let (func_id, method_module, class_name) = nominal_class_id
-                                .and_then(|class_id| classes.get_class(class_id))
+                            let (func_id, method_module, class_name) = nominal_type_id
+                                .and_then(|nominal_type_id| classes.get_class(nominal_type_id))
                                 .map_or((None, None, None), |class| {
                                     let method_module = class.module.clone();
                                     let class_name = Some(class.name.clone());
@@ -557,16 +668,16 @@ impl<'a> Interpreter<'a> {
                                         value
                                     } else {
                                         if std::env::var("RAYA_DEBUG_DYNGET").is_ok() {
-                                            let class_debug = nominal_class_id
+                                            let nominal_type_debug = nominal_type_id
                                                 .map(|id| id.to_string())
                                                 .unwrap_or_else(|| "structural".to_string());
                                             let class_name = {
-                                                nominal_class_id.map_or_else(
+                                                nominal_type_id.map_or_else(
                                                     || "<structural-object>".to_string(),
-                                                    |class_id| {
+                                                    |nominal_type_id| {
                                                         let classes = self.classes.read();
                                                         classes
-                                                            .get_class(class_id)
+                                                            .get_class(nominal_type_id)
                                                             .map(|class| class.name.clone())
                                                             .unwrap_or_else(|| {
                                                                 "<unknown>".to_string()
@@ -576,9 +687,9 @@ impl<'a> Interpreter<'a> {
                                             };
                                             let metadata_methods = {
                                                 let class_metadata = self.class_metadata.read();
-                                                nominal_class_id
-                                                    .and_then(|class_id| {
-                                                        class_metadata.get(class_id)
+                                                nominal_type_id
+                                                    .and_then(|nominal_type_id| {
+                                                        class_metadata.get(nominal_type_id)
                                                     })
                                                     .map(|meta| {
                                                         meta.method_names
@@ -590,8 +701,8 @@ impl<'a> Interpreter<'a> {
                                                     .unwrap_or_default()
                                             };
                                             eprintln!(
-                                                "[dynget] unresolved struct member '{}.{}' class_id={} metadata_methods={:?}",
-                                                class_name, prop_name, class_debug, metadata_methods
+                                                "[dynget] unresolved struct member '{}.{}' nominal_type_id={} metadata_methods={:?}",
+                                                class_name, prop_name, nominal_type_debug, metadata_methods
                                             );
                                         }
                                         Value::null()
@@ -845,9 +956,9 @@ impl<'a> Interpreter<'a> {
                     JSView::Struct { ptr, .. } => {
                         let obj = unsafe { &*ptr };
                         let mut names = Vec::new();
-                        if let Some(class_id) = obj.nominal_class_id() {
+                        if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
                             let class_metadata = self.class_metadata.read();
-                            if let Some(meta) = class_metadata.get(class_id) {
+                            if let Some(meta) = class_metadata.get(nominal_type_id) {
                                 names.extend(
                                     meta.field_names
                                         .iter()
@@ -994,7 +1105,7 @@ impl<'a> Interpreter<'a> {
                     Some(c) => c,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid class index: {}",
+                            "Invalid nominal type id: {}",
                             class_index
                         )));
                     }
@@ -1035,7 +1146,7 @@ impl<'a> Interpreter<'a> {
                     Some(c) => c,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid class index: {}",
+                            "Invalid nominal type id: {}",
                             class_index
                         )));
                     }

@@ -10,7 +10,7 @@ use super::{
     InstantiationKind, MonoKey, MonomorphizationContext, MonomorphizationResult,
     PendingInstantiation,
 };
-use crate::compiler::ir::instr::{ClassId, FunctionId};
+use crate::compiler::ir::instr::{NominalTypeId, FunctionId};
 use crate::compiler::ir::module::{IrClass, IrField, IrModule};
 use crate::parser::{Interner, TypeContext, TypeId};
 use rustc_hash::FxHashMap;
@@ -26,7 +26,7 @@ pub struct Monomorphizer<'a> {
     /// Generic function definitions
     generic_functions: FxHashMap<FunctionId, GenericFunctionInfo>,
     /// Generic class definitions
-    generic_classes: FxHashMap<ClassId, GenericClassInfo>,
+    generic_classes: FxHashMap<NominalTypeId, GenericClassInfo>,
     /// Statistics
     functions_specialized: usize,
     classes_specialized: usize,
@@ -53,7 +53,7 @@ impl<'a> Monomorphizer<'a> {
 
     /// Register a generic class
     pub fn register_generic_class(&mut self, info: GenericClassInfo) {
-        self.generic_classes.insert(info.class_id, info);
+        self.generic_classes.insert(info.nominal_type_id, info);
     }
 
     /// Perform monomorphization on the IR module
@@ -81,7 +81,7 @@ impl<'a> Monomorphizer<'a> {
                 rewriter.register_generic_function(info.func_id, info.type_params.clone());
             }
             for info in self.generic_classes.values() {
-                rewriter.register_generic_class(info.class_id, info.type_params.clone());
+                rewriter.register_generic_class(info.nominal_type_id, info.type_params.clone());
             }
             rewriter.rewrite(module)
         };
@@ -138,13 +138,15 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
             }
-            IrInstr::NewObject { class, .. } => {
-                if let Some(info) = self.generic_classes.get(class) {
+            IrInstr::NewType {
+                nominal_type_id, ..
+            } => {
+                if let Some(info) = self.generic_classes.get(nominal_type_id) {
                     // Use registered type parameters
                     if !info.type_params.is_empty() {
                         return Some(PendingInstantiation {
-                            key: MonoKey::class(*class, info.type_params.clone()),
-                            kind: InstantiationKind::Class(*class),
+                            key: MonoKey::class(*nominal_type_id, info.type_params.clone()),
+                            kind: InstantiationKind::Class(*nominal_type_id),
                         });
                     }
                 }
@@ -169,8 +171,8 @@ impl<'a> Monomorphizer<'a> {
             InstantiationKind::Function(func_id) => {
                 self.specialize_function(module, &pending.key, func_id);
             }
-            InstantiationKind::Class(class_id) => {
-                self.specialize_class(module, &pending.key, class_id);
+            InstantiationKind::Class(nominal_type_id) => {
+                self.specialize_class(module, &pending.key, nominal_type_id);
             }
         }
 
@@ -220,14 +222,14 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// Specialize a generic class
-    fn specialize_class(&mut self, module: &mut IrModule, key: &MonoKey, class_id: ClassId) {
+    fn specialize_class(&mut self, module: &mut IrModule, key: &MonoKey, nominal_type_id: NominalTypeId) {
         // Check if already specialized
         if self.ctx.has_class(key) {
             return;
         }
 
         // Get the generic class
-        let generic_class = match module.get_class(class_id) {
+        let generic_class = match module.get_class(nominal_type_id) {
             Some(c) => c.clone(),
             None => return,
         };
@@ -235,7 +237,7 @@ impl<'a> Monomorphizer<'a> {
         // Get type parameters for this class
         let type_params = self
             .generic_classes
-            .get(&class_id)
+            .get(&nominal_type_id)
             .map(|info| &info.type_params)
             .cloned()
             .unwrap_or_default();
@@ -306,7 +308,7 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// Get the specialized class ID for a key
-    pub fn get_specialized_class(&self, key: &MonoKey) -> Option<ClassId> {
+    pub fn get_specialized_class(&self, key: &MonoKey) -> Option<NominalTypeId> {
         self.ctx.get_class(key)
     }
 
@@ -354,7 +356,7 @@ mod tests {
         let interner = Interner::new();
         let mono = Monomorphizer::new(&type_ctx, &interner);
 
-        let key = MonoKey::class(ClassId::new(0), vec![TypeId::new(1)]);
+        let key = MonoKey::class(NominalTypeId::new(0), vec![TypeId::new(1)]);
         let name = mono.mangle_class_name("Box", &key);
         assert!(name.starts_with("Box__mono_"));
         assert_eq!(name.len(), "Box__mono_".len() + 12);
@@ -453,17 +455,17 @@ mod tests {
         // Create a generic class with a field of type T
         let mut generic_class = IrClass::new("Box");
         generic_class.add_field(IrField::new("value", TypeId::new(100), 0));
-        let class_id = module.add_class(generic_class);
+        let nominal_type_id = module.add_class(generic_class);
 
         mono.register_generic_class(GenericClassInfo {
-            class_id,
+            nominal_type_id,
             type_params: vec![TypeId::new(100)],
             name: "Box".to_string(),
         });
 
         // Specialize for i32
-        let key = MonoKey::class(class_id, vec![TypeId::new(1)]);
-        mono.specialize_class(&mut module, &key, class_id);
+        let key = MonoKey::class(nominal_type_id, vec![TypeId::new(1)]);
+        mono.specialize_class(&mut module, &key, nominal_type_id);
 
         // Verify
         assert!(mono.ctx.has_class(&key));

@@ -72,6 +72,16 @@ export interface DecoratorInfo {
     readonly parameterIndex?: number;
 }
 
+/**
+ * Public nominal type reference used by std:reflect.
+ * The runtime keeps the numeric nominal type ID internal; user code works with this object.
+ */
+export interface NominalTypeRef {
+    readonly nominalTypeId: number;
+    readonly name: string;
+    readonly layoutId?: number;
+}
+
 // ============================================================================
 // Decorator Registration (used by codegen, rarely called directly)
 // ============================================================================
@@ -79,69 +89,69 @@ export interface DecoratorInfo {
 /**
  * Register a decorator application on a class
  * Called by generated code to track decorator applications
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param decoratorName - Name of the decorator function
  * @param args - Arguments passed to the decorator factory
  */
-export function registerClassDecorator(classId: number, decoratorName: string, args?: any[]): void;
+export function registerClassDecorator(typeRef: NominalTypeRef, decoratorName: string, args?: any[]): void;
 
 /**
  * Register a decorator application on a method
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param methodName - Method name
  * @param decoratorName - Name of the decorator function
  * @param args - Arguments passed to the decorator factory
  */
-export function registerMethodDecorator(classId: number, methodName: string, decoratorName: string, args?: any[]): void;
+export function registerMethodDecorator(typeRef: NominalTypeRef, methodName: string, decoratorName: string, args?: any[]): void;
 
 /**
  * Register a decorator application on a field
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param fieldName - Field name
  * @param decoratorName - Name of the decorator function
  * @param args - Arguments passed to the decorator factory
  */
-export function registerFieldDecorator(classId: number, fieldName: string, decoratorName: string, args?: any[]): void;
+export function registerFieldDecorator(typeRef: NominalTypeRef, fieldName: string, decoratorName: string, args?: any[]): void;
 
 /**
  * Register a decorator application on a parameter
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param methodName - Method name
  * @param paramIndex - Parameter index (0-based)
  * @param decoratorName - Name of the decorator function
  * @param args - Arguments passed to the decorator factory
  */
-export function registerParameterDecorator(classId: number, methodName: string, paramIndex: number, decoratorName: string, args?: any[]): void;
+export function registerParameterDecorator(typeRef: NominalTypeRef, methodName: string, paramIndex: number, decoratorName: string, args?: any[]): void;
 
 /**
  * Get all classes that have a specific decorator applied
  * @param decoratorName - Name of the decorator to search for
- * @returns Array of class IDs that have the decorator
+ * @returns Array of nominal type refs that have the decorator
  */
-export function getClassesWithDecorator(decoratorName: string): number[];
+export function getClassesWithDecorator(decoratorName: string): NominalTypeRef[];
 
 /**
  * Get all decorators applied to a class
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @returns Array of DecoratorInfo objects
  */
-export function getClassDecorators(classId: number): DecoratorInfo[];
+export function getClassDecorators(typeRef: NominalTypeRef): DecoratorInfo[];
 
 /**
  * Get all decorators applied to a method
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param methodName - Method name
  * @returns Array of DecoratorInfo objects
  */
-export function getMethodDecorators(classId: number, methodName: string): DecoratorInfo[];
+export function getMethodDecorators(typeRef: NominalTypeRef, methodName: string): DecoratorInfo[];
 
 /**
  * Get all decorators applied to a field
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param fieldName - Field name
  * @returns Array of DecoratorInfo objects
  */
-export function getFieldDecorators(classId: number, fieldName: string): DecoratorInfo[];
+export function getFieldDecorators(typeRef: NominalTypeRef, fieldName: string): DecoratorInfo[];
 
 // ============================================================================
 // Metadata Operations
@@ -235,47 +245,47 @@ export function deleteMetadata(key: string, target: any, propertyKey: string): b
 // ============================================================================
 
 /**
- * Get the class ID of an object
+ * Get the nominal type ref of an object
  * @param obj - Object instance
- * @returns Class ID or null if not a class instance
+ * @returns nominal type ref or null if not a class instance
  */
-export function getClass<T>(obj: T): number | null;
+export function getClass<T>(obj: T): NominalTypeRef | null;
 
 /**
  * Look up a class by name
  * @param name - Class name
- * @returns Class ID or null if not found
+ * @returns nominal type ref or null if not found
  */
-export function getClassByName(name: string): number | null;
+export function getClassByName(name: string): NominalTypeRef | null;
 
 /**
- * Get all registered class IDs
- * @returns Array of class IDs
+ * Get all registered nominal type refs
+ * @returns Array of nominal type refs
  */
-export function getAllClasses(): number[];
+export function getAllClasses(): NominalTypeRef[];
 
 /**
  * Get classes with a specific decorator
  * @param decorator - Decorator name
- * @returns Array of class IDs
+ * @returns Array of nominal type refs
  */
-export function getClassesWithDecorator(decorator: string): number[];
+export function getClassesWithDecorator(decorator: string): NominalTypeRef[];
 
 /**
  * Check if one class is a subclass of another
- * @param subClassId - Potential subclass ID
- * @param superClassId - Potential superclass ID
- * @returns true if subClassId extends superClassId
+ * @param subTypeRef - Potential subtype nominal type ref
+ * @param superTypeRef - Potential supertype nominal type ref
+ * @returns true if the subtype extends the supertype
  */
-export function isSubclassOf(subClassId: number, superClassId: number): boolean;
+export function isSubclassOf(subType: NominalTypeRef, superType: NominalTypeRef): boolean;
 
 /**
  * Check if an object is an instance of a class
  * @param obj - Object to check
- * @param classId - Class ID to check against
+ * @param typeRef - nominal type ref to check against
  * @returns true if obj is an instance of the class
  */
-export function isInstanceOf(obj: any, classId: number): boolean;
+export function isInstanceOf(obj: any, typeRef: NominalTypeRef): boolean;
 
 /**
  * Get type information for a value
@@ -287,9 +297,9 @@ export function getTypeInfo(target: any): string;
 /**
  * Get the inheritance hierarchy for an object
  * @param obj - Object instance
- * @returns Array of class IDs from most specific to most general
+ * @returns Array of nominal type refs from most specific to most general
  */
-export function getClassHierarchy(obj: any): number[];
+export function getClassHierarchy(obj: any): NominalTypeRef[];
 
 // ============================================================================
 // Field Access
@@ -336,7 +346,7 @@ export interface FieldInfo {
     index: number;
     isStatic: boolean;
     isReadonly: boolean;
-    declaringClass: number;
+    declaringType: NominalTypeRef | null;
 }
 
 /**
@@ -356,17 +366,17 @@ export function getFields(target: any): FieldInfo[];
 
 /**
  * Get static field names for a class
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @returns Array of static field names
  */
-export function getStaticFieldNames(classId: number): string[];
+export function getStaticFieldNames(typeRef: NominalTypeRef): string[];
 
 /**
  * Get static field infos for a class
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @returns Array of FieldInfo for static fields
  */
-export function getStaticFields(classId: number): FieldInfo[];
+export function getStaticFields(typeRef: NominalTypeRef): FieldInfo[];
 
 // ============================================================================
 // Method Invocation
@@ -388,7 +398,7 @@ export interface MethodInfo {
     parameterCount: number;
     isStatic: boolean;
     isAsync: boolean;
-    declaringClass: number;
+    declaringType: NominalTypeRef | null;
 }
 
 /**
@@ -434,19 +444,19 @@ export function invokeAsync(target: any, methodName: string, ...args: any[]): Pr
 
 /**
  * Invoke a static method dynamically
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param methodName - Method name
  * @param args - Arguments to pass
  * @returns Method return value
  */
-export function invokeStatic(classId: number, methodName: string, ...args: any[]): any;
+export function invokeStatic(typeRef: NominalTypeRef, methodName: string, ...args: any[]): any;
 
 /**
  * Get static methods of a class
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @returns Array of MethodInfo
  */
-export function getStaticMethods(classId: number): MethodInfo[];
+export function getStaticMethods(typeRef: NominalTypeRef): MethodInfo[];
 
 // ============================================================================
 // Object Creation
@@ -454,18 +464,18 @@ export function getStaticMethods(classId: number): MethodInfo[];
 
 /**
  * Create a new instance of a class
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param args - Constructor arguments
  * @returns New instance
  */
-export function construct(classId: number, ...args: any[]): any;
+export function construct(typeRef: NominalTypeRef, ...args: any[]): any;
 
 /**
  * Allocate an uninitialized instance
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @returns Uninitialized instance (fields are null)
  */
-export function allocate(classId: number): any;
+export function allocate(typeRef: NominalTypeRef): any;
 
 /**
  * Create a shallow clone of an object
@@ -491,10 +501,10 @@ export interface ConstructorInfo {
 
 /**
  * Get constructor information for a class
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @returns ConstructorInfo or null
  */
-export function getConstructorInfo(classId: number): ConstructorInfo | null;
+export function getConstructorInfo(typeRef: NominalTypeRef): ConstructorInfo | null;
 
 // ============================================================================
 // Type Utilities
@@ -555,7 +565,7 @@ export function isObject(value: any): boolean;
 export interface TypeInfo {
     kind: string;
     name: string;
-    classId?: number;
+    nominalType?: NominalTypeRef;
 }
 
 /**
@@ -576,19 +586,19 @@ export function isAssignableTo(sourceType: string, targetType: string): boolean;
 /**
  * Safe cast - returns null if the value is not an instance of the class
  * @param value - Value to cast
- * @param classId - Target class ID
+ * @param typeRef - Target nominal type ref
  * @returns The value if compatible, null otherwise
  */
-export function cast<T>(value: any, classId: number): T | null;
+export function cast<T>(value: any, typeRef: NominalTypeRef): T | null;
 
 /**
  * Cast that throws an error if the value is not an instance of the class
  * @param value - Value to cast
- * @param classId - Target class ID
+ * @param typeRef - Target nominal type ref
  * @returns The value if compatible
  * @throws TypeError if cast fails
  */
-export function castOrThrow<T>(value: any, classId: number): T;
+export function castOrThrow<T>(value: any, typeRef: NominalTypeRef): T;
 
 // ============================================================================
 // Interface and Hierarchy Query
@@ -596,48 +606,48 @@ export function castOrThrow<T>(value: any, classId: number): T;
 
 /**
  * Check if a class implements an interface
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param interfaceName - Interface name
  * @returns true if class implements interface
  */
-export function implements_(classId: number, interfaceName: string): boolean;
+export function implements_(typeRef: NominalTypeRef, interfaceName: string): boolean;
 
 /**
  * Get interfaces implemented by a class
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @returns Array of interface names
  */
-export function getInterfaces(classId: number): string[];
+export function getInterfaces(typeRef: NominalTypeRef): string[];
 
 /**
  * Get the superclass of a class
- * @param classId - Class ID
- * @returns Parent class ID or null if no parent
+ * @param typeRef - nominal type ref
+ * @returns Parent nominal type ref or null if no parent
  */
-export function getSuperclass(classId: number): number | null;
+export function getSuperclass(typeRef: NominalTypeRef): NominalTypeRef | null;
 
 /**
  * Get direct subclasses of a class
- * @param classId - Class ID
- * @returns Array of subclass IDs
+ * @param typeRef - nominal type ref
+ * @returns Array of subclass nominal type refs
  */
-export function getSubclasses(classId: number): number[];
+export function getSubclasses(typeRef: NominalTypeRef): NominalTypeRef[];
 
 /**
  * Get all classes that implement a given interface
  * @param interfaceName - Interface name
- * @returns Array of class IDs implementing the interface
+ * @returns Array of nominal type refs implementing the interface
  */
-export function getImplementors(interfaceName: string): number[];
+export function getImplementors(interfaceName: string): NominalTypeRef[];
 
 /**
  * Check if two classes are structurally compatible
  * A class is structurally compatible if it has all fields and methods of the target.
- * @param sourceClassId - Source class ID
- * @param targetClassId - Target class ID
+ * @param sourceTypeRef - Source nominal type ref
+ * @param targetTypeRef - Target nominal type ref
  * @returns true if source is structurally compatible with target
  */
-export function isStructurallyCompatible(sourceClassId: number, targetClassId: number): boolean;
+export function isStructurallyCompatible(sourceTypeRef: NominalTypeRef, targetTypeRef: NominalTypeRef): boolean;
 
 // ============================================================================
 // Object Inspection & DevTools
@@ -660,10 +670,10 @@ export function getObjectId(obj: any): number;
 
 /**
  * Get a detailed description of a class
- * @param classId - Class ID to describe
+ * @param typeRef - nominal type ref to describe
  * @returns Human-readable class description
  */
-export function describe(classId: number): string;
+export function describe(typeRef: NominalTypeRef): string;
 
 /**
  * Object snapshot for state tracking
@@ -757,10 +767,10 @@ export function getHeapStats(): HeapStats;
 
 /**
  * Find all live instances of a class
- * @param classId - Class ID to find instances of
+ * @param typeRef - nominal type ref to find instances of
  * @returns Array of all live instances (scans heap)
  */
-export function findInstances(classId: number): any[];
+export function findInstances(typeRef: NominalTypeRef): any[];
 
 // ============================================================================
 // Stack Introspection
@@ -802,11 +812,11 @@ export interface SourceLocation {
 
 /**
  * Get source location for a method
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param methodName - Method name
  * @returns Source location or null (requires --emit-debug flag during compilation)
  */
-export function getSourceLocation(classId: number, methodName: string): SourceLocation | null;
+export function getSourceLocation(typeRef: NominalTypeRef, methodName: string): SourceLocation | null;
 
 // ============================================================================
 // Serialization Helpers
@@ -946,27 +956,27 @@ export interface Modifiers {
 
 /**
  * Get parameter information for a method
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param methodName - Method name
  * @returns Array of ParameterInfo for the method's parameters
  */
-export function getParameterInfo(classId: number, methodName: string): ParameterInfo[];
+export function getParameterInfo(typeRef: NominalTypeRef, methodName: string): ParameterInfo[];
 
 /**
  * Get modifiers for a field
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param fieldName - Field name
  * @returns Modifiers object or null if field not found
  */
-export function getFieldModifiers(classId: number, fieldName: string): Modifiers | null;
+export function getFieldModifiers(typeRef: NominalTypeRef, fieldName: string): Modifiers | null;
 
 /**
  * Get modifiers for a method
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param methodName - Method name
  * @returns Modifiers object or null if method not found
  */
-export function getMethodModifiers(classId: number, methodName: string): Modifiers | null;
+export function getMethodModifiers(typeRef: NominalTypeRef, methodName: string): Modifiers | null;
 
 // ============================================================================
 // Dynamic Class Creation (Phase 10)
@@ -1004,43 +1014,43 @@ export interface SubclassDefinition {
 
 /**
  * Create a subclass of an existing class
- * @param superclassId - Parent class ID
+ * @param superType - Parent nominal type ref
  * @param name - Name for the new class
  * @param definition - Fields, methods, and constructor for the subclass
- * @returns Class ID of the new subclass
+ * @returns nominal type ref of the new subclass
  */
-export function createSubclass(superclassId: number, name: string, definition: SubclassDefinition): number;
+export function createSubclass(superType: NominalTypeRef, name: string, definition: SubclassDefinition): NominalTypeRef;
 
 /**
  * Extend a class with additional fields
- * @param classId - Class ID to extend
+ * @param typeRef - nominal type ref to extend
  * @param fields - Array of field definitions to add
- * @returns New class ID with the additional fields
+ * @returns New nominal type ref with the additional fields
  */
-export function extendWith(classId: number, fields: FieldDefinition[]): number;
+export function extendWith(typeRef: NominalTypeRef, fields: FieldDefinition[]): NominalTypeRef;
 
 /**
  * Define a new class from scratch
  * @param name - Class name
  * @param definition - Class definition
- * @returns Class ID of the new class
+ * @returns nominal type ref of the new class
  */
-export function defineClass(name: string, definition: SubclassDefinition): number;
+export function defineClass(name: string, definition: SubclassDefinition): NominalTypeRef;
 
 /**
  * Add a method to an existing dynamic class
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param name - Method name
  * @param functionId - Function ID for the method implementation
  */
-export function addMethod(classId: number, name: string, functionId: number): void;
+export function addMethod(typeRef: NominalTypeRef, name: string, functionId: number): void;
 
 /**
  * Set the constructor for a dynamic class
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param functionId - Function ID for the constructor implementation
  */
-export function setConstructor(classId: number, functionId: number): void;
+export function setConstructor(typeRef: NominalTypeRef, functionId: number): void;
 
 // ============================================================================
 // Generic Type Metadata (Phase 13)
@@ -1072,45 +1082,45 @@ export interface GenericOrigin {
 
 /**
  * Get the generic origin of a monomorphized class
- * @param classId - Class ID of a monomorphized class (e.g., Box_number)
+ * @param typeRef - nominal type ref of a monomorphized class (e.g., Box_number)
  * @returns Original generic class name (e.g., "Box") or null if not a generic instance
  */
-export function getGenericOrigin(classId: number): string | null;
+export function getGenericOrigin(typeRef: NominalTypeRef): string | null;
 
 /**
  * Get type parameters of a generic class
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @returns Array of GenericParameterInfo
  */
-export function getTypeParameters(classId: number): GenericParameterInfo[];
+export function getTypeParameters(typeRef: NominalTypeRef): GenericParameterInfo[];
 
 /**
  * Get type arguments of a monomorphized class
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @returns Array of type argument names
  */
-export function getTypeArguments(classId: number): string[];
+export function getTypeArguments(typeRef: NominalTypeRef): string[];
 
 /**
  * Check if a class is a generic instance (monomorphized from a generic)
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @returns true if class was created by monomorphization
  */
-export function isGenericInstance(classId: number): boolean;
+export function isGenericInstance(typeRef: NominalTypeRef): boolean;
 
 /**
- * Get the base generic class ID
+ * Get the base generic nominal type ref
  * @param genericName - Name of the generic class (e.g., "Box")
- * @returns Class ID or null if not found
+ * @returns nominal type ref or null if not found
  */
-export function getGenericBase(genericName: string): number | null;
+export function getGenericBase(genericName: string): NominalTypeRef | null;
 
 /**
  * Find all specializations of a generic class
  * @param genericName - Name of the generic class (e.g., "Box")
- * @returns Array of class IDs for all specializations (e.g., Box_number, Box_string)
+ * @returns Array of nominal type refs for all specializations (e.g., Box_number, Box_string)
  */
-export function findSpecializations(genericName: string): number[];
+export function findSpecializations(genericName: string): NominalTypeRef[];
 
 // ============================================================================
 // Runtime Type Creation (Phase 14)
@@ -1126,9 +1136,9 @@ export function newClassBuilder(name: string): number;
 /**
  * Set the parent class for a ClassBuilder
  * @param builderId - Builder ID from newClassBuilder
- * @param parentClassId - Parent class ID
+ * @param parentTypeRef - Parent nominal type ref
  */
-export function builderSetParent(builderId: number, parentClassId: number): void;
+export function builderSetParent(builderId: number, parentTypeRef: NominalTypeRef): void;
 
 /**
  * Add a field to a ClassBuilder
@@ -1167,9 +1177,9 @@ export function builderAddInterface(builderId: number, interfaceName: string): v
 /**
  * Build the class from a ClassBuilder
  * @param builderId - Builder ID
- * @returns Class ID of the newly created class
+ * @returns nominal type ref of the newly created class
  */
-export function builderBuild(builderId: number): number;
+export function builderBuild(builderId: number): NominalTypeRef;
 
 /**
  * Create a function from bytecode
@@ -1201,9 +1211,9 @@ export function createClosure(functionId: number, captures: any[]): number;
  * Specialize a generic class with type arguments
  * @param genericName - Name of the generic class
  * @param typeArgs - Array of type argument names
- * @returns Class ID of the specialized class
+ * @returns nominal type ref of the specialized class
  */
-export function specialize(genericName: string, typeArgs: string[]): number;
+export function specialize(genericName: string, typeArgs: string[]): NominalTypeRef;
 
 // ============================================================================
 // Method Wrapper Builder (Phase 14 - High-level API for Decorators)
@@ -1400,21 +1410,21 @@ export const enum ReflectionPermission {
 
 /**
  * Set permissions on an object or class
- * @param target - Target object or class ID
+ * @param target - Target object or nominal type ref
  * @param permissions - Permission flags
  */
 export function setPermissions(target: any, permissions: number): void;
 
 /**
  * Get permissions for an object or class
- * @param target - Target object or class ID
+ * @param target - Target object or nominal type ref
  * @returns Permission flags
  */
 export function getPermissions(target: any): number;
 
 /**
  * Check if a specific permission is granted
- * @param target - Target object or class ID
+ * @param target - Target object or nominal type ref
  * @param permission - Permission flag to check
  * @returns true if permission is granted
  */
@@ -1422,29 +1432,29 @@ export function hasPermission(target: any, permission: number): boolean;
 
 /**
  * Clear all permissions on an object
- * @param target - Target object or class ID
+ * @param target - Target object or nominal type ref
  */
 export function clearPermissions(target: any): void;
 
 /**
  * Set class-level permissions
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @param permissions - Permission flags
  */
-export function setClassPermissions(classId: number, permissions: number): void;
+export function setClassPermissions(typeRef: NominalTypeRef, permissions: number): void;
 
 /**
  * Get class-level permissions
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  * @returns Permission flags
  */
-export function getClassPermissions(classId: number): number;
+export function getClassPermissions(typeRef: NominalTypeRef): number;
 
 /**
  * Clear class-level permissions
- * @param classId - Class ID
+ * @param typeRef - nominal type ref
  */
-export function clearClassPermissions(classId: number): void;
+export function clearClassPermissions(typeRef: NominalTypeRef): void;
 
 /**
  * Set module-level permissions
@@ -1480,13 +1490,13 @@ export function getGlobalPermissions(): number;
 
 /**
  * Seal permissions on a target (make immutable)
- * @param target - Target object or class ID
+ * @param target - Target object or nominal type ref
  */
 export function sealPermissions(target: any): void;
 
 /**
  * Check if permissions are sealed
- * @param target - Target object or class ID
+ * @param target - Target object or nominal type ref
  * @returns true if permissions are sealed
  */
 export function isPermissionsSealed(target: any): boolean;
@@ -1512,10 +1522,10 @@ export function moduleAddFunction(moduleId: number, functionId: number): void;
 /**
  * Add a class to a dynamic module
  * @param moduleId - Module ID
- * @param classId - Class ID to add
+ * @param typeRef - nominal type ref to add
  * @param name - Export name for the class
  */
-export function moduleAddClass(moduleId: number, classId: number, name: string): void;
+export function moduleAddClass(moduleId: number, typeRef: NominalTypeRef, name: string): void;
 
 /**
  * Add a global variable to a dynamic module
@@ -1596,28 +1606,28 @@ export function bootstrap(): boolean;
 export function isBootstrapped(): boolean;
 
 /**
- * Get the core Object class ID
- * @returns Class ID for Object
+ * Get the core Object nominal type ref
+ * @returns nominal type ref for Object
  */
-export function getObjectClass(): number;
+export function getObjectClass(): NominalTypeRef;
 
 /**
- * Get the core Array class ID
- * @returns Class ID for Array
+ * Get the core Array nominal type ref
+ * @returns nominal type ref for Array
  */
-export function getArrayClass(): number;
+export function getArrayClass(): NominalTypeRef;
 
 /**
- * Get the core String class ID
- * @returns Class ID for String
+ * Get the core String nominal type ref
+ * @returns nominal type ref for String
  */
-export function getStringClass(): number;
+export function getStringClass(): NominalTypeRef;
 
 /**
- * Get the core Promise class ID
- * @returns Class ID for Promise
+ * Get the core Promise nominal type ref
+ * @returns nominal type ref for Promise
  */
-export function getTaskClass(): number;
+export function getTaskClass(): NominalTypeRef;
 
 /**
  * Print a message (for dynamic code)

@@ -4,7 +4,7 @@
 //! This is the first phase of monomorphization.
 
 use super::{InstantiationKind, MonoKey, PendingInstantiation};
-use crate::compiler::ir::instr::{ClassId, FunctionId, IrInstr};
+use crate::compiler::ir::instr::{NominalTypeId, FunctionId, IrInstr};
 use crate::compiler::ir::module::IrModule;
 use crate::parser::{Interner, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -24,7 +24,7 @@ pub struct GenericFunctionInfo {
 #[derive(Debug, Clone)]
 pub struct GenericClassInfo {
     /// Class ID
-    pub class_id: ClassId,
+    pub nominal_type_id: NominalTypeId,
     /// Type parameter IDs
     pub type_params: Vec<TypeId>,
     /// Original class name
@@ -43,7 +43,7 @@ pub struct InstantiationCollector<'a> {
     /// Registered generic functions
     generic_functions: FxHashMap<FunctionId, GenericFunctionInfo>,
     /// Registered generic classes
-    generic_classes: FxHashMap<ClassId, GenericClassInfo>,
+    generic_classes: FxHashMap<NominalTypeId, GenericClassInfo>,
     /// Collected instantiations
     instantiations: Vec<PendingInstantiation>,
     /// Already seen instantiations (deduplication)
@@ -70,7 +70,7 @@ impl<'a> InstantiationCollector<'a> {
 
     /// Register a generic class
     pub fn register_generic_class(&mut self, info: GenericClassInfo) {
-        self.generic_classes.insert(info.class_id, info);
+        self.generic_classes.insert(info.nominal_type_id, info);
     }
 
     /// Check if a function is generic
@@ -79,8 +79,8 @@ impl<'a> InstantiationCollector<'a> {
     }
 
     /// Check if a class is generic
-    pub fn is_generic_class(&self, class_id: ClassId) -> bool {
-        self.generic_classes.contains_key(&class_id)
+    pub fn is_generic_class(&self, nominal_type_id: NominalTypeId) -> bool {
+        self.generic_classes.contains_key(&nominal_type_id)
     }
 
     /// Get generic function info
@@ -89,8 +89,8 @@ impl<'a> InstantiationCollector<'a> {
     }
 
     /// Get generic class info
-    pub fn get_generic_class(&self, class_id: ClassId) -> Option<&GenericClassInfo> {
-        self.generic_classes.get(&class_id)
+    pub fn get_generic_class(&self, nominal_type_id: NominalTypeId) -> Option<&GenericClassInfo> {
+        self.generic_classes.get(&nominal_type_id)
     }
 
     /// Collect all instantiations from the module
@@ -125,14 +125,16 @@ impl<'a> InstantiationCollector<'a> {
                     }
                 }
             }
-            IrInstr::NewObject { class, .. } => {
+            IrInstr::NewType {
+                nominal_type_id, ..
+            } => {
                 // Check if this is a generic class instantiation
-                if let Some(info) = self.generic_classes.get(class) {
+                if let Some(info) = self.generic_classes.get(nominal_type_id) {
                     // For now, use placeholder type inference
                     // In a real implementation, we'd get type args from the AST or type annotations
                     let type_args = info.type_params.clone();
                     if !type_args.is_empty() {
-                        self.add_class_instantiation(*class, type_args);
+                        self.add_class_instantiation(*nominal_type_id, type_args);
                     }
                 }
             }
@@ -163,12 +165,12 @@ impl<'a> InstantiationCollector<'a> {
     }
 
     /// Add a class instantiation
-    fn add_class_instantiation(&mut self, class_id: ClassId, type_args: Vec<TypeId>) {
-        let key = MonoKey::class(class_id, type_args);
+    fn add_class_instantiation(&mut self, nominal_type_id: NominalTypeId, type_args: Vec<TypeId>) {
+        let key = MonoKey::class(nominal_type_id, type_args);
         if self.seen.insert(key.clone()) {
             self.instantiations.push(PendingInstantiation {
                 key,
-                kind: InstantiationKind::Class(class_id),
+                kind: InstantiationKind::Class(nominal_type_id),
             });
         }
     }
@@ -188,8 +190,8 @@ impl<'a> InstantiationCollector<'a> {
 pub struct InstantiationTracker {
     /// Function instantiations: (generic_func_id, type_args) -> specialized_func_id
     function_instantiations: FxHashMap<MonoKey, FunctionId>,
-    /// Class instantiations: (generic_class_id, type_args) -> specialized_class_id
-    class_instantiations: FxHashMap<MonoKey, ClassId>,
+    /// Class instantiations: (generic_nominal_type_id, type_args) -> specialized_nominal_type_id
+    class_instantiations: FxHashMap<MonoKey, NominalTypeId>,
     /// Pending instantiations to process
     pending: Vec<PendingInstantiation>,
 }
@@ -231,10 +233,10 @@ impl InstantiationTracker {
     /// Record a class instantiation
     pub fn record_class_instantiation(
         &mut self,
-        class_id: ClassId,
+        nominal_type_id: NominalTypeId,
         type_args: Vec<TypeId>,
-    ) -> Option<ClassId> {
-        let key = MonoKey::class(class_id, type_args.clone());
+    ) -> Option<NominalTypeId> {
+        let key = MonoKey::class(nominal_type_id, type_args.clone());
 
         if let Some(&specialized) = self.class_instantiations.get(&key) {
             return Some(specialized);
@@ -243,7 +245,7 @@ impl InstantiationTracker {
         // Add to pending
         self.pending.push(PendingInstantiation {
             key,
-            kind: InstantiationKind::Class(class_id),
+            kind: InstantiationKind::Class(nominal_type_id),
         });
 
         None
@@ -255,7 +257,7 @@ impl InstantiationTracker {
     }
 
     /// Register a completed class instantiation
-    pub fn complete_class_instantiation(&mut self, key: MonoKey, specialized_id: ClassId) {
+    pub fn complete_class_instantiation(&mut self, key: MonoKey, specialized_id: NominalTypeId) {
         self.class_instantiations.insert(key, specialized_id);
     }
 
@@ -275,7 +277,7 @@ impl InstantiationTracker {
     }
 
     /// Get the specialized class ID for an instantiation
-    pub fn get_specialized_class(&self, key: &MonoKey) -> Option<ClassId> {
+    pub fn get_specialized_class(&self, key: &MonoKey) -> Option<NominalTypeId> {
         self.class_instantiations.get(key).copied()
     }
 }

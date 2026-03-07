@@ -10,7 +10,7 @@
 use raya_engine::compiler::codegen;
 use raya_engine::compiler::ir::block::{BasicBlock, BasicBlockId, Terminator};
 use raya_engine::compiler::ir::function::IrFunction;
-use raya_engine::compiler::ir::instr::{BinaryOp, ClassId, FunctionId, IrInstr, UnaryOp};
+use raya_engine::compiler::ir::instr::{BinaryOp, NominalTypeId, FunctionId, IrInstr, UnaryOp};
 use raya_engine::compiler::ir::module::{IrClass, IrField, IrModule};
 use raya_engine::compiler::ir::value::{IrConstant, IrValue, Register, RegisterId};
 use raya_engine::compiler::Opcode;
@@ -704,9 +704,9 @@ fn test_new_object() {
     let mut entry = BasicBlock::new(BasicBlockId(0));
 
     let obj = make_reg(0, 10);
-    entry.add_instr(IrInstr::NewObject {
+    entry.add_instr(IrInstr::NewType {
         dest: obj.clone(),
-        class: ClassId::new(0),
+        nominal_type_id: NominalTypeId::new(0),
     });
     entry.set_terminator(Terminator::Return(Some(obj)));
     func.add_block(entry);
@@ -715,8 +715,8 @@ fn test_new_object() {
     let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
-    let has_new = code.iter().any(|&b| b == Opcode::New as u8);
-    assert!(has_new, "Should emit NEW opcode");
+    let has_new_type = code.iter().any(|&b| b == Opcode::NewType as u8);
+    assert!(has_new_type, "Should emit NEW_TYPE opcode");
 }
 
 #[test]
@@ -734,11 +734,11 @@ fn test_field_access() {
     let obj = make_reg(0, 10);
     let x = make_reg(1, 1);
 
-    entry.add_instr(IrInstr::NewObject {
+    entry.add_instr(IrInstr::NewType {
         dest: obj.clone(),
-        class: ClassId::new(0),
+        nominal_type_id: NominalTypeId::new(0),
     });
-    entry.add_instr(IrInstr::LoadField {
+    entry.add_instr(IrInstr::LoadFieldExact {
         dest: x.clone(),
         object: obj,
         field: 0,
@@ -751,7 +751,7 @@ fn test_field_access() {
     let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
-    let has_load_field = code.iter().any(|&b| b == Opcode::LoadField as u8);
+    let has_load_field = code.iter().any(|&b| b == Opcode::LoadFieldExact as u8);
     assert!(has_load_field, "Should emit LOAD_FIELD opcode");
 }
 

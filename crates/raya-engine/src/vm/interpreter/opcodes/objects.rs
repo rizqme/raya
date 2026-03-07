@@ -1,4 +1,5 @@
-//! Object opcode handlers: New, LoadField, StoreField, OptionalField, ObjectLiteral, InitObject, BindMethod
+//! Object opcode handlers: nominal allocation, field access, structural field access,
+//! object literals, and method binding
 
 use crate::compiler::Module;
 use crate::compiler::Opcode;
@@ -24,13 +25,15 @@ impl<'a> Interpreter<'a> {
     ) -> Result<Value, VmError> {
         let receiver = Self::ensure_object_receiver(receiver, "method binding")?;
         let obj = unsafe { &*receiver.as_ptr::<Object>().unwrap().as_ptr() };
-        let class_id = obj.nominal_class_id().ok_or_else(|| {
+        let nominal_type_id = obj.nominal_type_id_usize().ok_or_else(|| {
             VmError::TypeError("Cannot bind method on structural object value".to_string())
         })?;
         let classes = self.classes.read();
         let class = classes
-            .get_class(class_id)
-            .ok_or_else(|| VmError::RuntimeError(format!("Invalid class index: {}", class_id)))?;
+            .get_class(nominal_type_id)
+            .ok_or_else(|| {
+                VmError::RuntimeError(format!("Invalid nominal type id: {}", nominal_type_id))
+            })?;
         let func_id = class.vtable.get_method(method_slot).ok_or_else(|| {
             VmError::RuntimeError(format!(
                 "Invalid method slot: {} for class {}",
@@ -136,11 +139,11 @@ impl<'a> Interpreter<'a> {
     }
 
     fn field_name_for_offset(&self, obj: &Object, field_offset: usize) -> Option<String> {
-        let nominal_class_id = obj.nominal_class_id();
+        let nominal_type_id = obj.nominal_type_id_usize();
         let class_metadata = self.class_metadata.read();
-        let from_metadata = nominal_class_id.and_then(|class_id| {
+        let from_metadata = nominal_type_id.and_then(|nominal_type_id| {
             class_metadata
-                .get(class_id)
+                .get(nominal_type_id)
                 .and_then(|meta| meta.field_names.get(field_offset))
                 .cloned()
                 .filter(|name| !name.is_empty())
@@ -160,10 +163,10 @@ impl<'a> Interpreter<'a> {
     fn field_index_for_value(&self, obj_val: Value, field_name: &str) -> Option<usize> {
         let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
-        let nominal_class_id = obj.nominal_class_id();
+        let nominal_type_id = obj.nominal_type_id_usize();
         let class_metadata = self.class_metadata.read();
-        let from_metadata = nominal_class_id
-            .and_then(|class_id| class_metadata.get(class_id))
+        let from_metadata = nominal_type_id
+            .and_then(|nominal_type_id| class_metadata.get(nominal_type_id))
             .and_then(|meta| meta.get_field_index(field_name));
         if from_metadata.is_some() {
             return from_metadata;
@@ -192,9 +195,9 @@ impl<'a> Interpreter<'a> {
         };
         let layout_names = self.layout_field_names_for_object(obj);
 
-        if let Some(class_id) = obj.nominal_class_id() {
+        if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
             let class_metadata = self.class_metadata.read();
-            let class_meta = class_metadata.get(class_id).cloned();
+            let class_meta = class_metadata.get(nominal_type_id).cloned();
             drop(class_metadata);
             return Some(
                 required_names
@@ -430,30 +433,31 @@ impl<'a> Interpreter<'a> {
         opcode: Opcode,
     ) -> OpcodeResult {
         match opcode {
-            Opcode::New => {
+            Opcode::NewType => {
                 self.safepoint.poll();
                 let local_class_index = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let class_index = match self.resolve_nominal_type_id(module, local_class_index) {
+                let nominal_type_id = match self.resolve_nominal_type_id(module, local_class_index)
+                {
                     Ok(id) => id,
                     Err(error) => return OpcodeResult::Error(error),
                 };
 
                 let classes = self.classes.read();
-                let (layout_id, field_count) = match self.nominal_allocation(class_index) {
+                let (layout_id, field_count) = match self.nominal_allocation(nominal_type_id) {
                     Some(allocation) => allocation,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid class index: {}",
-                            class_index
+                            "Invalid nominal type id: {}",
+                            nominal_type_id
                         )));
                     }
                 };
                 drop(classes);
 
-                let obj = Object::new_nominal(layout_id, class_index as u32, field_count);
+                let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
                 let gc_ptr = self.gc.lock().allocate(obj);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
@@ -463,7 +467,7 @@ impl<'a> Interpreter<'a> {
                 OpcodeResult::Continue
             }
 
-            Opcode::LoadField => {
+            Opcode::LoadFieldExact => {
                 let field_offset = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
@@ -533,11 +537,11 @@ impl<'a> Interpreter<'a> {
                 let value = obj.get_field(field_offset).unwrap_or(Value::null());
                 if std::env::var("RAYA_DEBUG_FIELD_TRACE").is_ok() {
                     let class_debug = obj
-                        .nominal_class_id()
+                        .nominal_type_id_usize()
                         .map(|v| v.to_string())
                         .unwrap_or_else(|| "structural".to_string());
                     eprintln!(
-                        "[field-trace] LoadField[{}] class_id={} field_count={} => {:?} (is_ptr={})",
+                        "[field-trace] LoadFieldExact[{}] nominal_type_id={} field_count={} => {:?} (is_ptr={})",
                         field_offset,
                         class_debug,
                         obj.field_count(),
@@ -634,7 +638,7 @@ impl<'a> Interpreter<'a> {
                 OpcodeResult::Continue
             }
 
-            Opcode::StoreField => {
+            Opcode::StoreFieldExact => {
                 let field_offset = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
@@ -811,7 +815,7 @@ impl<'a> Interpreter<'a> {
                 OpcodeResult::Continue
             }
 
-            Opcode::OptionalField => {
+            Opcode::OptionalFieldExact => {
                 let field_offset = match Self::read_u16(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
@@ -1012,20 +1016,20 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let obj = unsafe { &*obj_val.as_ptr::<Object>().unwrap().as_ptr() };
-                let class_id = obj.nominal_class_id().ok_or_else(|| {
+                let nominal_type_id = obj.nominal_type_id_usize().ok_or_else(|| {
                     VmError::TypeError("Cannot bind method on structural object value".to_string())
                 });
-                let class_id = match class_id {
+                let nominal_type_id = match nominal_type_id {
                     Ok(id) => id,
                     Err(error) => return OpcodeResult::Error(error),
                 };
                 let classes = self.classes.read();
-                let class = match classes.get_class(class_id) {
+                let class = match classes.get_class(nominal_type_id) {
                     Some(c) => c,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid class index: {}",
-                            class_id
+                            "Invalid nominal type id: {}",
+                            nominal_type_id
                         )));
                     }
                 };
