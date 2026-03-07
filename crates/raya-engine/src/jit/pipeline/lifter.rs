@@ -1058,13 +1058,13 @@ fn lift_instruction(
             });
         }
         Opcode::CastShape => {
-            if let Operands::U64(_) = instr.operands {
-                let pre_stack = stack.clone_state();
-                let _object = stack.pop(instr.offset)?;
+            if let Operands::U64(shape_id) = instr.operands {
+                let object = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::InterpreterBoundary {
-                    dest: Some(dest),
-                    stack: pre_stack,
+                func.block_mut(block).instrs.push(JitInstr::CastShape {
+                    dest,
+                    object,
+                    shape_id,
                     bytecode_offset: instr.offset as u32,
                 });
                 stack.push(dest);

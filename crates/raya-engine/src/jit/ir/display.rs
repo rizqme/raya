@@ -226,6 +226,12 @@ impl fmt::Display for JitInstr {
                 object,
                 shape_id,
             } => write!(f, "{} = implements.shape {}, @{shape_id:016x}", dest, object),
+            JitInstr::CastShape {
+                dest,
+                object,
+                shape_id,
+                ..
+            } => write!(f, "{} = cast.shape {}, @{shape_id:016x}", dest, object),
             JitInstr::StoreFieldExact {
                 object,
                 offset,

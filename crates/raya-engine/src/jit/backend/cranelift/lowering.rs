@@ -205,6 +205,45 @@ impl<'a> LoweringContext<'a> {
         builder.def_var(self.var_for(reg), val);
     }
 
+    fn boxed_reg_value(&self, builder: &mut FunctionBuilder<'_>, reg: Reg) -> ir::Value {
+        let raw = self.use_reg(builder, reg);
+        match self.func.reg_type(reg) {
+            crate::jit::ir::types::JitType::I32 => abi::emit_box_i32(builder, raw),
+            crate::jit::ir::types::JitType::F64 => abi::emit_box_f64(builder, raw),
+            crate::jit::ir::types::JitType::Bool => abi::emit_box_bool(builder, raw),
+            _ => raw,
+        }
+    }
+
+    fn emit_interpreter_boundary_exit(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        regs: &[Reg],
+        bytecode_offset: u32,
+    ) {
+        let count = regs.len().min(JIT_EXIT_MAX_NATIVE_ARGS) as i64;
+        let count_val = builder.ins().iconst(types::I32, count);
+        builder.ins().store(
+            MemFlags::trusted(),
+            count_val,
+            self.params.exit_info_ptr,
+            40,
+        );
+        for (i, reg) in regs.iter().take(JIT_EXIT_MAX_NATIVE_ARGS).enumerate() {
+            let boxed = self.boxed_reg_value(builder, *reg);
+            let off = 48 + (i as i32) * 8;
+            builder
+                .ins()
+                .store(MemFlags::trusted(), boxed, self.params.exit_info_ptr, off);
+        }
+        self.emit_exit_return(
+            builder,
+            JitExitKind::Suspended as i64,
+            JitSuspendReason::InterpreterBoundary as i64,
+            bytecode_offset as i64,
+        );
+    }
+
     /// Lower all instructions and terminator for a single block
     fn lower_block(
         &mut self,
@@ -652,7 +691,7 @@ impl<'a> LoweringContext<'a> {
                     .ins()
                     .load(types::I64, MemFlags::trusted(), ctx, 128); // 24 + 104
                 let sig = self.object_implements_shape_sig(builder);
-                let object_val = self.use_reg(builder, *object);
+                let object_val = self.boxed_reg_value(builder, *object);
                 let shape_id_val = builder.ins().iconst(types::I64, *shape_id as i64);
                 let call = builder.ins().call_indirect(
                     sig,
@@ -673,42 +712,56 @@ impl<'a> LoweringContext<'a> {
                 let merged = builder.block_params(done)[0];
                 self.def_reg(builder, *dest, merged);
             }
+            JitInstr::CastShape {
+                dest,
+                object,
+                shape_id,
+                bytecode_offset,
+            } => {
+                let ctx = self.params.ctx_ptr;
+                let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let call_block = builder.create_block();
+                let fallback_block = builder.create_block();
+                let success_block = builder.create_block();
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder.seal_block(call_block);
+
+                builder.switch_to_block(call_block);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let fn_ptr = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx, 128); // 24 + 104
+                let sig = self.object_implements_shape_sig(builder);
+                let object_val = self.boxed_reg_value(builder, *object);
+                let shape_id_val = builder.ins().iconst(types::I64, *shape_id as i64);
+                let call = builder.ins().call_indirect(
+                    sig,
+                    fn_ptr,
+                    &[object_val, shape_id_val, shared_state],
+                );
+                let result = builder.inst_results(call)[0];
+                builder
+                    .ins()
+                    .brif(result, success_block, &[], fallback_block, &[]);
+                builder.seal_block(success_block);
+                builder.seal_block(fallback_block);
+
+                builder.switch_to_block(fallback_block);
+                self.emit_interpreter_boundary_exit(builder, &[*object], *bytecode_offset);
+
+                builder.switch_to_block(success_block);
+                let object_val = self.boxed_reg_value(builder, *object);
+                self.def_reg(builder, *dest, object_val);
+            }
 
             JitInstr::InterpreterBoundary {
                 bytecode_offset,
                 stack,
                 ..
             } => {
-                let count = stack.len().min(JIT_EXIT_MAX_NATIVE_ARGS) as i64;
-                let count_val = builder.ins().iconst(types::I32, count);
-                builder.ins().store(
-                    MemFlags::trusted(),
-                    count_val,
-                    self.params.exit_info_ptr,
-                    40,
-                );
-                for (i, reg) in stack.iter().take(JIT_EXIT_MAX_NATIVE_ARGS).enumerate() {
-                    let raw = self.use_reg(builder, *reg);
-                    let boxed = match self.func.reg_type(*reg) {
-                        crate::jit::ir::types::JitType::I32 => abi::emit_box_i32(builder, raw),
-                        crate::jit::ir::types::JitType::F64 => abi::emit_box_f64(builder, raw),
-                        crate::jit::ir::types::JitType::Bool => abi::emit_box_bool(builder, raw),
-                        _ => raw,
-                    };
-                    let off = 48 + (i as i32) * 8;
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        boxed,
-                        self.params.exit_info_ptr,
-                        off,
-                    );
-                }
-                self.emit_exit_return(
-                    builder,
-                    JitExitKind::Suspended as i64,
-                    JitSuspendReason::InterpreterCallBoundary as i64,
-                    *bytecode_offset as i64,
-                );
+                self.emit_interpreter_boundary_exit(builder, stack, *bytecode_offset);
                 return Ok(true);
             }
 

@@ -396,6 +396,12 @@ pub enum JitInstr {
         object: Reg,
         shape_id: u64,
     },
+    CastShape {
+        dest: Reg,
+        object: Reg,
+        shape_id: u64,
+        bytecode_offset: u32,
+    },
     StoreFieldExact {
         object: Reg,
         offset: u16,
@@ -813,6 +819,7 @@ impl JitInstr {
             | JitInstr::NewObject { dest, .. }
             | JitInstr::LoadFieldExact { dest, .. }
             | JitInstr::ImplementsShape { dest, .. }
+            | JitInstr::CastShape { dest, .. }
             | JitInstr::InstanceOf { dest, .. }
             | JitInstr::Cast { dest, .. }
             | JitInstr::Typeof { dest, .. }

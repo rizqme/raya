@@ -1392,7 +1392,7 @@ impl<'a> Interpreter<'a> {
                                                 );
                                             }
                                             x if x
-                                                == crate::jit::runtime::trampoline::JitSuspendReason::InterpreterCallBoundary
+                                                == crate::jit::runtime::trampoline::JitSuspendReason::InterpreterBoundary
                                                     as u32 =>
                                             {
                                                 if let Some(vals) =

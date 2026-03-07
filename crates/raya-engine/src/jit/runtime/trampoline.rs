@@ -34,7 +34,7 @@ pub enum JitSuspendReason {
     None = 0,
     Preemption = 1,
     NativeCallBoundary = 2,
-    InterpreterCallBoundary = 3,
+    InterpreterBoundary = 3,
 }
 
 /// Minimal native-frame snapshot to support resume/deopt plumbing.

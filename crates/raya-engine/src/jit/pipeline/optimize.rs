@@ -261,7 +261,8 @@ fn replace_reg_uses(instr: &mut JitInstr, subs: &rustc_hash::FxHashMap<Reg, Reg>
         | JitInstr::INot { operand, .. }
         | JitInstr::FNeg { operand, .. }
         | JitInstr::Not { operand, .. }
-        | JitInstr::ImplementsShape { object: operand, .. } => {
+        | JitInstr::ImplementsShape { object: operand, .. }
+        | JitInstr::CastShape { object: operand, .. } => {
             sub(operand, subs);
         }
 
