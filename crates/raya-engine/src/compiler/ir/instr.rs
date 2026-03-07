@@ -46,26 +46,6 @@ impl std::fmt::Display for NominalTypeId {
     }
 }
 
-/// Encoded runtime cast target for generic `cast` operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RuntimeCastTarget(pub u32);
-
-impl RuntimeCastTarget {
-    pub fn new(id: u32) -> Self {
-        Self(id)
-    }
-
-    pub fn as_u32(&self) -> u32 {
-        self.0
-    }
-}
-
-impl std::fmt::Display for RuntimeCastTarget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "cast{}", self.0)
-    }
-}
-
 /// Type alias identifier in the IR
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeAliasId(pub u32);
@@ -196,12 +176,32 @@ pub enum IrInstr {
         shape_id: u64,
     },
 
-    /// Generic runtime cast target.
-    /// This still carries encoded cast masks for tuple/object/array/runtime-kind checks.
-    Cast {
+    /// Runtime tuple cast: dest = object as tuple[length]
+    CastTupleLen {
         dest: Register,
         object: Register,
-        target: RuntimeCastTarget,
+        expected_len: u16,
+    },
+
+    /// Runtime object-width cast: dest = object as object[min_required_fields]
+    CastObjectMinFields {
+        dest: Register,
+        object: Register,
+        required_fields: u16,
+    },
+
+    /// Runtime array-element-kind cast.
+    CastArrayElemKind {
+        dest: Register,
+        object: Register,
+        expected_elem_mask: u16,
+    },
+
+    /// Runtime primitive/function kind-mask cast.
+    CastKindMask {
+        dest: Register,
+        object: Register,
+        expected_kind_mask: u16,
     },
 
     /// Load from local variable: dest = locals[index]
@@ -522,7 +522,10 @@ impl IrInstr {
             | IrInstr::ImplementsShape { dest, .. }
             | IrInstr::CastNominal { dest, .. }
             | IrInstr::CastShape { dest, .. }
-            | IrInstr::Cast { dest, .. }
+            | IrInstr::CastTupleLen { dest, .. }
+            | IrInstr::CastObjectMinFields { dest, .. }
+            | IrInstr::CastArrayElemKind { dest, .. }
+            | IrInstr::CastKindMask { dest, .. }
             | IrInstr::LateBoundMember { dest, .. }
             | IrInstr::BindMethod { dest, .. } => Some(dest),
             IrInstr::ConstructType { dest, .. } => Some(dest),

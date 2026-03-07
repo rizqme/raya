@@ -235,6 +235,10 @@ fn decode_operands(
         | Opcode::BindMethod
         | Opcode::NewType
         | Opcode::IsNominal
+        | Opcode::CastTupleLen
+        | Opcode::CastObjectMinFields
+        | Opcode::CastArrayElemKind
+        | Opcode::CastKindMask
         | Opcode::Cast
         | Opcode::CastNominal => {
             let v = read_u16(code, pos, offset)?;

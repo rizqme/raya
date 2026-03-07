@@ -992,14 +992,8 @@ impl LoweringCtx {
             | HelperCall::NewRefCell
             | HelperCall::LoadRefCell
             | HelperCall::StoreRefCell
-            | HelperCall::InstanceOf
-            | HelperCall::ImplementsShape
             | HelperCall::ConstructType
-            | HelperCall::Cast
-            | HelperCall::CastShape
             | HelperCall::Typeof
-            | HelperCall::DynGetProp
-            | HelperCall::DynSetProp
             | HelperCall::StringCompare
             | HelperCall::AwaitTask
             | HelperCall::AwaitAll
@@ -1050,20 +1044,15 @@ impl LoweringCtx {
 
             // (ctx, local_nominal_type_index: u32) -> u64
             HelperCall::AllocObject => {
-                let mut v = vec![ctx];
-                for a in args {
-                    v.push(self.use_reg(builder, *a));
-                }
-                v
+                let nominal_type = builder.ins().iconst(types::I32, args[0] as i64);
+                vec![ctx, nominal_type]
             }
 
             // (ctx, type_id: u32, capacity: u32) -> u64
             HelperCall::AllocArray => {
-                let mut v = vec![ctx];
-                for a in args {
-                    v.push(self.use_reg(builder, *a));
-                }
-                v
+                let type_id = builder.ins().iconst(types::I32, args[0] as i64);
+                let capacity = self.use_reg(builder, args[1]);
+                vec![ctx, type_id, capacity]
             }
 
             // (ctx, data_ptr: i64, len: u32) -> u64
@@ -1110,10 +1099,78 @@ impl LoweringCtx {
             }
 
             // (obj: u64, field_index: u32) -> u64
-            HelperCall::ObjectGetField => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
+            HelperCall::ObjectGetField => {
+                let object = self.use_reg(builder, args[0]);
+                let field_index = builder.ins().iconst(types::I32, args[1] as i64);
+                vec![object, field_index]
+            }
 
             // (obj: u64, field_index: u32, value: u64)
-            HelperCall::ObjectSetField => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
+            HelperCall::ObjectSetField => {
+                let object = self.use_reg(builder, args[0]);
+                let field_index = builder.ins().iconst(types::I32, args[1] as i64);
+                let value = self.use_reg(builder, args[2]);
+                vec![object, field_index, value]
+            }
+
+            // (ctx, obj: u64, local_nominal_type_index: u32) -> u8
+            HelperCall::InstanceOf => {
+                let object = self.use_reg(builder, args[0]);
+                let target = builder.ins().iconst(types::I32, args[1] as i64);
+                vec![ctx, object, target]
+            }
+
+            // (ctx, obj: u64, shape_id: u64) -> u8
+            HelperCall::ImplementsShape => {
+                let object = self.use_reg(builder, args[0]);
+                let shape = ((args[2] as u64) << 32) | args[1] as u64;
+                let shape = builder.ins().iconst(types::I64, shape as i64);
+                vec![ctx, object, shape]
+            }
+
+            // (ctx, obj: u64, shape_id: u64, slot: u32, optional: u8) -> u64
+            HelperCall::LoadFieldShape => {
+                let object = self.use_reg(builder, args[0]);
+                let shape = ((args[2] as u64) << 32) | args[1] as u64;
+                let shape = builder.ins().iconst(types::I64, shape as i64);
+                let slot = builder.ins().iconst(types::I32, args[3] as i64);
+                let optional = builder.ins().iconst(types::I8, 0);
+                vec![ctx, object, shape, slot, optional]
+            }
+
+            // (ctx, obj: u64, shape_id: u64, slot: u32, value: u64) -> u8
+            HelperCall::StoreFieldShape => {
+                let object = self.use_reg(builder, args[0]);
+                let shape = ((args[2] as u64) << 32) | args[1] as u64;
+                let shape = builder.ins().iconst(types::I64, shape as i64);
+                let slot = builder.ins().iconst(types::I32, args[3] as i64);
+                let value = self.use_reg(builder, args[4]);
+                vec![ctx, object, shape, slot, value]
+            }
+
+            // (ctx, value: u64, target: u32) -> u64
+            HelperCall::Cast => {
+                let value = self.use_reg(builder, args[0]);
+                let target = builder.ins().iconst(types::I32, args[1] as i64);
+                vec![ctx, value, target]
+            }
+
+            // (ctx, value: u64, shape_id: u64) -> u64
+            HelperCall::CastShape => {
+                let value = self.use_reg(builder, args[0]);
+                let shape = ((args[2] as u64) << 32) | args[1] as u64;
+                let shape = builder.ins().iconst(types::I64, shape as i64);
+                vec![ctx, value, shape]
+            }
+
+            // (ctx, object: u64, key: u64) -> u64 / (ctx, object: u64, key: u64, value: u64)
+            HelperCall::DynGetProp | HelperCall::DynSetProp => {
+                let mut v = vec![ctx];
+                for a in args {
+                    v.push(self.use_reg(builder, *a));
+                }
+                v
+            }
 
             // (ctx, native_id: u16, args_ptr: i64, argc: u8) -> u64
             HelperCall::NativeCall => {
@@ -1192,11 +1249,8 @@ impl LoweringCtx {
 
             // (ctx, const_index: u32) -> u64
             HelperCall::LoadStringConstant => {
-                let mut v = vec![ctx];
-                for a in args {
-                    v.push(self.use_reg(builder, *a));
-                }
-                v
+                let const_index = builder.ins().iconst(types::I32, args[0] as i64);
+                vec![ctx, const_index]
             }
 
             // (value: i32) -> u64
@@ -1344,6 +1398,66 @@ fn helper_call_signature(helper: &HelperCall, call_conv: CallConv) -> ir::Signat
             sig.params.push(AbiParam::new(types::I32));
             sig.params.push(AbiParam::new(types::I64));
         }
+        // (ctx: i64, obj: u64, local_nominal_type_index: u32) -> u8
+        HelperCall::InstanceOf => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.returns.push(AbiParam::new(types::I8));
+        }
+        // (ctx: i64, obj: u64, shape_id: u64) -> u8
+        HelperCall::ImplementsShape => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I8));
+        }
+        // (ctx: i64, obj: u64, shape_id: u64, slot: u32, optional: u8) -> u64
+        HelperCall::LoadFieldShape => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.params.push(AbiParam::new(types::I8));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (ctx: i64, obj: u64, shape_id: u64, slot: u32, value: u64) -> u8
+        HelperCall::StoreFieldShape => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I8));
+        }
+        // (ctx: i64, value: u64, target: u32) -> u64
+        HelperCall::Cast => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (ctx: i64, value: u64, shape_id: u64) -> u64
+        HelperCall::CastShape => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (ctx: i64, object: u64, key: u64) -> u64
+        HelperCall::DynGetProp => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (ctx: i64, object: u64, key: u64, value: u64)
+        HelperCall::DynSetProp => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+        }
         // (ctx: i64, native_id: u16, args_ptr: i64, argc: u8) -> u64
         HelperCall::NativeCall => {
             sig.params.push(AbiParam::new(types::I64));
@@ -1425,15 +1539,23 @@ fn helper_table_field_offset(helper: &HelperCall) -> Option<i32> {
         HelperCall::GenericLessThan => 13,
         HelperCall::ObjectGetField => 14,
         HelperCall::ObjectSetField => 15,
-        HelperCall::NativeCall => 16,
-        HelperCall::IsNativeSuspend => 17,
-        HelperCall::Spawn => 18,
-        HelperCall::CheckPreemption => 19,
-        HelperCall::ThrowException => 20,
-        HelperCall::GetAotFuncPtr => 21,
-        HelperCall::LoadStringConstant => 22,
-        HelperCall::LoadI32Constant => 23,
-        HelperCall::LoadF64Constant => 24,
+        HelperCall::InstanceOf => 16,
+        HelperCall::ImplementsShape => 17,
+        HelperCall::LoadFieldShape => 18,
+        HelperCall::StoreFieldShape => 19,
+        HelperCall::Cast => 20,
+        HelperCall::CastShape => 21,
+        HelperCall::DynGetProp => 22,
+        HelperCall::DynSetProp => 23,
+        HelperCall::NativeCall => 24,
+        HelperCall::IsNativeSuspend => 25,
+        HelperCall::Spawn => 26,
+        HelperCall::CheckPreemption => 27,
+        HelperCall::ThrowException => 28,
+        HelperCall::GetAotFuncPtr => 29,
+        HelperCall::LoadStringConstant => 30,
+        HelperCall::LoadI32Constant => 31,
+        HelperCall::LoadF64Constant => 32,
         _ => return None, // Compound operation
     };
     Some(index * 8)

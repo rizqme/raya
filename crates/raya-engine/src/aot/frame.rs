@@ -181,6 +181,31 @@ pub struct AotHelperTable {
     /// Set object field by index: (obj_val, field_index, value)
     pub object_set_field: unsafe extern "C" fn(u64, u32, u64),
 
+    /// Check nominal membership: (ctx, obj_val, local_nominal_type_index) -> bool as u8
+    pub object_is_nominal: unsafe extern "C" fn(*mut AotTaskContext, u64, u32) -> u8,
+
+    /// Check structural compatibility: (ctx, obj_val, shape_id) -> bool as u8
+    pub object_implements_shape: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u8,
+
+    /// Get structural field by required shape slot: (ctx, obj_val, shape_id, slot, optional) -> value
+    pub object_get_shape_field: unsafe extern "C" fn(*mut AotTaskContext, u64, u64, u32, u8) -> u64,
+
+    /// Store structural field by required shape slot: (ctx, obj_val, shape_id, slot, value) -> success as u8
+    pub object_set_shape_field:
+        unsafe extern "C" fn(*mut AotTaskContext, u64, u64, u32, u64) -> u8,
+
+    /// Generic cast helper for nominal and runtime-mask casts: (ctx, value, target) -> value
+    pub cast_value: unsafe extern "C" fn(*mut AotTaskContext, u64, u32) -> u64,
+
+    /// Structural cast helper: (ctx, value, shape_id) -> value
+    pub cast_shape: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u64,
+
+    /// Dynamic keyed get: (ctx, object, key) -> value
+    pub dyn_get_prop: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u64,
+
+    /// Dynamic keyed set: (ctx, object, key, value)
+    pub dyn_set_prop: unsafe extern "C" fn(*mut AotTaskContext, u64, u64, u64),
+
     // ---- Native call dispatch ----
     /// Dispatch a native function call: (ctx, native_id, args_ptr, argc) -> result
     ///

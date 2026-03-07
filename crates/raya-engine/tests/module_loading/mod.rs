@@ -161,7 +161,7 @@ fn test_module_with_exports() {
         index: 0,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
     });
 
@@ -194,7 +194,7 @@ fn test_module_with_imports() {
         module_id,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
         runtime_global_slot: None,
     });
@@ -688,7 +688,7 @@ fn test_e2e_exports_survive_encode_decode() {
         index: 0,
         symbol_id: test_symbol_id(module_id_from_name("export_mod"), "add", 0),
         scope: SymbolScope::Module,
-        type_symbol_id: test_symbol_id(module_id_from_name("export_mod"), "add", 0)
+        signature_hash: test_symbol_id(module_id_from_name("export_mod"), "add", 0)
             ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
     });
@@ -731,7 +731,7 @@ fn test_e2e_imports_survive_encode_decode() {
         module_id,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
         runtime_global_slot: None,
     });

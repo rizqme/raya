@@ -278,7 +278,14 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::SetClosureCapture
         | Opcode::Trap => 2,
 
-        Opcode::NewType | Opcode::IsNominal | Opcode::Cast | Opcode::CastNominal => 2,
+        Opcode::NewType
+        | Opcode::IsNominal
+        | Opcode::CastNominal
+        | Opcode::CastTupleLen
+        | Opcode::CastObjectMinFields
+        | Opcode::CastArrayElemKind
+        | Opcode::CastKindMask
+        | Opcode::Cast => 2,
 
         // 4-byte operands (i32 or u32)
         Opcode::ConstI32 => 4,
@@ -528,7 +535,13 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
 
         // Type operations
         Opcode::IsNominal | Opcode::ImplementsShape => (1, 1), // Pop object, push bool
-        Opcode::Cast | Opcode::CastNominal | Opcode::CastShape => (1, 1), // Pop object, push object (or throw)
+        Opcode::Cast
+        | Opcode::CastNominal
+        | Opcode::CastShape
+        | Opcode::CastTupleLen
+        | Opcode::CastObjectMinFields
+        | Opcode::CastArrayElemKind
+        | Opcode::CastKindMask => (1, 1), // Pop object, push object (or throw)
 
         // Native call
         Opcode::NativeCall => (0, 1), // Simplified - pops args (dynamic), pushes result

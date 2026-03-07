@@ -481,19 +481,7 @@ impl<'a> Interpreter<'a> {
         if let Some(names) = self.structural_layout_names(object.layout_id()) {
             return Some(names);
         }
-        let nominal_type_id = object.nominal_type_id_usize()?;
-        let class_name = self
-            .classes
-            .read()
-            .get_class(nominal_type_id)
-            .map(|class| class.name.clone())?;
-        let builtin_names = crate::vm::object::builtin_nominal_layout_field_names(&class_name)?;
-        let owned_names = builtin_names
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect::<Vec<_>>();
-        self.register_structural_layout_shape(object.layout_id(), &owned_names);
-        Some(owned_names)
+        crate::vm::object::global_layout_names(object.layout_id())
     }
 
     #[inline]
@@ -534,20 +522,29 @@ impl<'a> Interpreter<'a> {
 
     #[inline]
     pub(in crate::vm::interpreter) fn register_runtime_class(&self, class: Class) -> usize {
+        self.register_runtime_class_with_layout_names(class, None::<&[&str]>)
+    }
+
+    pub(in crate::vm::interpreter) fn register_runtime_class_with_layout_names(
+        &self,
+        class: Class,
+        layout_names: impl Into<Option<&'static [&'static str]>>,
+    ) -> usize {
+        assert_eq!(
+            class.id, 0,
+            "runtime class registration must not supply nominal IDs directly"
+        );
         let layout_id = self.allocate_nominal_layout_id();
         let field_count = class.field_count;
         let class_name = class.name.clone();
-        let builtin_layout_names = crate::vm::object::builtin_nominal_layout_field_names(&class_name)
-            .map(|field_names| {
-                field_names
-                    .iter()
-                    .map(|name| (*name).to_string())
-                    .collect::<Vec<_>>()
-            });
         let id = self.classes.write().register_class(class);
         self.register_nominal_layout(id, layout_id, field_count, Some(class_name));
-        if let Some(owned_names) = builtin_layout_names.as_ref() {
-            self.register_structural_layout_shape(layout_id, owned_names);
+        if let Some(layout_names) = layout_names.into() {
+            let owned_names = layout_names
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>();
+            self.register_structural_layout_shape(layout_id, &owned_names);
         }
         id
     }
@@ -1851,6 +1848,10 @@ impl<'a> Interpreter<'a> {
             Opcode::IsNominal
             | Opcode::ImplementsShape
             | Opcode::CastShape
+            | Opcode::CastTupleLen
+            | Opcode::CastObjectMinFields
+            | Opcode::CastArrayElemKind
+            | Opcode::CastKindMask
             | Opcode::Cast
             | Opcode::CastNominal
             | Opcode::DynGet

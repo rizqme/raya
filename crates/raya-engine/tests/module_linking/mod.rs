@@ -52,7 +52,7 @@ fn make_export(module_name: &str, symbol: &str, index: usize) -> Export {
         index,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
     }
 }
@@ -78,7 +78,7 @@ fn make_import(module_specifier: &str, symbol: &str, index: usize) -> Import {
         module_id,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
         runtime_global_slot: None,
     }
@@ -265,7 +265,7 @@ fn test_link_prefers_symbol_id_over_name() {
         index: 0,
         symbol_id: symbol_id_0,
         scope: SymbolScope::Module,
-        type_symbol_id: symbol_id_0 ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id_0 ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
     });
     dup.exports.push(Export {
@@ -274,7 +274,7 @@ fn test_link_prefers_symbol_id_over_name() {
         index: 1,
         symbol_id: symbol_id_1,
         scope: SymbolScope::Module,
-        type_symbol_id: symbol_id_1 ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id_1 ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
     });
 
@@ -288,7 +288,7 @@ fn test_link_prefers_symbol_id_over_name() {
         module_id,
         symbol_id: symbol_id_1,
         scope: SymbolScope::Module,
-        type_symbol_id: symbol_id_1 ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id_1 ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
         runtime_global_slot: None,
     };
@@ -315,7 +315,7 @@ fn test_link_type_symbol_mismatch() {
         index: 0,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: 1001,
+        signature_hash: 1001,
         type_signature: Some("fn(min=0,params=[],rest=_,ret=string)".to_string()),
     });
     linker.add_module(Arc::new(typed)).unwrap();
@@ -327,7 +327,7 @@ fn test_link_type_symbol_mismatch() {
         module_id,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: 2002,
+        signature_hash: 2002,
         type_signature: Some("fn(min=1,params=[number],rest=_,ret=number)".to_string()),
         runtime_global_slot: None,
     };
@@ -360,7 +360,7 @@ fn test_link_type_hash_diff_but_structurally_assignable() {
         index: 0,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: 1001,
+        signature_hash: 1001,
         type_signature: Some("fn(min=0,params=[],rest=_,ret=number)".to_string()),
     });
     linker.add_module(Arc::new(typed)).unwrap();
@@ -372,7 +372,7 @@ fn test_link_type_hash_diff_but_structurally_assignable() {
         module_id,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: 2002,
+        signature_hash: 2002,
         type_signature: Some("fn(min=1,params=[number],rest=_,ret=number)".to_string()),
         runtime_global_slot: None,
     };
@@ -399,7 +399,7 @@ fn test_link_scope_mismatch() {
         index: 0,
         symbol_id,
         scope: SymbolScope::Global,
-        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
     });
     linker.add_module(Arc::new(scoped)).unwrap();
@@ -411,7 +411,7 @@ fn test_link_scope_mismatch() {
         module_id,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
         runtime_global_slot: None,
     };
@@ -445,7 +445,7 @@ fn test_add_module_rejects_duplicate_symbol_ids() {
         index: 0,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
     });
     module.exports.push(Export {
@@ -454,7 +454,7 @@ fn test_add_module_rejects_duplicate_symbol_ids() {
         index: 1,
         symbol_id,
         scope: SymbolScope::Module,
-        type_symbol_id: symbol_id ^ 0x00FF_00FF_00FF_00FF,
+        signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
     });
 

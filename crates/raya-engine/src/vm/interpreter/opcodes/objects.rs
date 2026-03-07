@@ -257,13 +257,20 @@ impl<'a> Interpreter<'a> {
             provider_layout: obj.layout_id(),
             required_shape,
         };
+        let current_epoch = self
+            .layouts
+            .read()
+            .layout_epoch(obj.layout_id())
+            .unwrap_or(0);
         if let Some(adapter) = self
             .structural_shape_adapters
             .read()
             .get(&adapter_key)
             .cloned()
         {
-            return Some(adapter);
+            if adapter.epoch == current_epoch {
+                return Some(adapter);
+            }
         }
 
         let required_names = self
@@ -317,6 +324,7 @@ impl<'a> Interpreter<'a> {
             obj.layout_id(),
             required_shape,
             &slot_map,
+            current_epoch,
         ));
         let mut adapters = self.structural_shape_adapters.write();
         Some(

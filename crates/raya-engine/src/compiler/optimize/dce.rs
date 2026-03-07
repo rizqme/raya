@@ -99,7 +99,10 @@ impl DeadCodeEliminator {
             IrInstr::CastShape { object, .. } => {
                 used.insert(object.id);
             }
-            IrInstr::Cast { object, .. } => {
+            IrInstr::CastTupleLen { object, .. }
+            | IrInstr::CastObjectMinFields { object, .. }
+            | IrInstr::CastArrayElemKind { object, .. }
+            | IrInstr::CastKindMask { object, .. } => {
                 used.insert(object.id);
             }
             IrInstr::StoreLocal { value, .. } => {

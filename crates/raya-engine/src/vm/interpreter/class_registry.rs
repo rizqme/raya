@@ -1,7 +1,7 @@
 //! Class registry for managing runtime class metadata
 
 use crate::vm::object::{register_global_layout_names, Class, LayoutId, STRUCTURAL_LAYOUT_ID_TAG};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Physical layout metadata for nominal runtime types.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +11,7 @@ pub struct LayoutInfo {
     pub nominal_type_id: Option<usize>,
     pub name: Option<String>,
     pub field_names: Option<Vec<String>>,
+    pub epoch: u32,
 }
 
 /// Dedicated runtime registry for physical object layouts.
@@ -62,6 +63,7 @@ impl RuntimeLayoutRegistry {
                 if layout.name.is_none() {
                     layout.name = name.clone();
                 }
+                layout.epoch = layout.epoch.wrapping_add(1);
             })
             .or_insert_with(|| LayoutInfo {
                 id: layout_id,
@@ -69,6 +71,7 @@ impl RuntimeLayoutRegistry {
                 nominal_type_id: Some(nominal_type_id),
                 name,
                 field_names: None,
+                epoch: 1,
             });
     }
 
@@ -90,6 +93,7 @@ impl RuntimeLayoutRegistry {
                 if layout.field_names.is_none() {
                     layout.field_names = Some(owned_names.clone());
                 }
+                layout.epoch = layout.epoch.wrapping_add(1);
             })
             .or_insert_with(|| LayoutInfo {
                 id: layout_id,
@@ -97,6 +101,7 @@ impl RuntimeLayoutRegistry {
                 nominal_type_id: None,
                 name: Some(format!("Layout{}", layout_id)),
                 field_names: Some(owned_names),
+                epoch: 1,
             });
     }
 
@@ -116,6 +121,10 @@ impl RuntimeLayoutRegistry {
         Some((layout.id, layout.field_count))
     }
 
+    pub fn layout_epoch(&self, layout_id: LayoutId) -> Option<u32> {
+        self.layouts.get(&layout_id).map(|layout| layout.epoch)
+    }
+
     pub fn set_nominal_field_count(&mut self, nominal_type_id: usize, field_count: usize) -> bool {
         let Some(layout_id) = self.nominal_to_layout.get(&nominal_type_id).copied() else {
             return false;
@@ -124,6 +133,7 @@ impl RuntimeLayoutRegistry {
             return false;
         };
         layout.field_count = field_count;
+        layout.epoch = layout.epoch.wrapping_add(1);
         true
     }
 }
@@ -141,6 +151,8 @@ pub struct ClassRegistry {
     classes: Vec<Option<Class>>,
     /// Class name to nominal type ID mapping.
     name_to_id: FxHashMap<String, usize>,
+    /// Nominal IDs reserved internally but not yet populated with class metadata.
+    reserved_ids: FxHashSet<usize>,
     /// Next internally allocated nominal type ID.
     next_id: usize,
 }
@@ -151,6 +163,7 @@ impl ClassRegistry {
         Self {
             classes: Vec::new(),
             name_to_id: FxHashMap::default(),
+            reserved_ids: FxHashSet::default(),
             next_id: 1,
         }
     }
@@ -167,6 +180,9 @@ impl ClassRegistry {
             .next_id
             .checked_add(len)
             .expect("nominal type id overflow");
+        for id in base..base + len {
+            self.reserved_ids.insert(id);
+        }
         base
     }
 
@@ -174,6 +190,15 @@ impl ClassRegistry {
     pub fn register_class(&mut self, mut class: Class) -> usize {
         if class.id == 0 {
             class.id = self.allocate_nominal_type_id();
+            assert!(
+                self.reserved_ids.remove(&class.id),
+                "fresh nominal type id must be reserved"
+            );
+        } else if !self.reserved_ids.remove(&class.id) {
+            panic!(
+                "nominal type id {} was not reserved by ClassRegistry; callers must use registry-allocated IDs",
+                class.id
+            );
         }
         let id = class.id;
         let name = class.name.clone();

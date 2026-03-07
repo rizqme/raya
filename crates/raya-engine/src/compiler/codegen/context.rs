@@ -680,14 +680,50 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::Cast {
+            IrInstr::CastTupleLen {
                 dest,
                 object,
-                target,
+                expected_len,
             } => {
                 self.emit_load_register(ctx, object);
-                ctx.emit(Opcode::Cast);
-                ctx.emit_u16(target.as_u32() as u16);
+                ctx.emit(Opcode::CastTupleLen);
+                ctx.emit_u16(*expected_len);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::CastObjectMinFields {
+                dest,
+                object,
+                required_fields,
+            } => {
+                self.emit_load_register(ctx, object);
+                ctx.emit(Opcode::CastObjectMinFields);
+                ctx.emit_u16(*required_fields);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::CastArrayElemKind {
+                dest,
+                object,
+                expected_elem_mask,
+            } => {
+                self.emit_load_register(ctx, object);
+                ctx.emit(Opcode::CastArrayElemKind);
+                ctx.emit_u16(*expected_elem_mask);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::CastKindMask {
+                dest,
+                object,
+                expected_kind_mask,
+            } => {
+                self.emit_load_register(ctx, object);
+                ctx.emit(Opcode::CastKindMask);
+                ctx.emit_u16(*expected_kind_mask);
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);
             }
@@ -811,11 +847,9 @@ impl IrCodeGenerator {
                 object,
                 property,
             } => {
-                // Get dynamic property by const-pool name
                 self.emit_load_register(ctx, object);
-                let str_index = self.module_builder.add_string(property.clone())?;
-                ctx.emit(Opcode::DynGet);
-                ctx.emit_u32(str_index as u32);
+                self.emit_constant(ctx, &IrConstant::String(property.clone()))?;
+                ctx.emit(Opcode::DynGetKeyed);
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);
             }
@@ -825,12 +859,10 @@ impl IrCodeGenerator {
                 property,
                 value,
             } => {
-                // Set dynamic property by const-pool name
                 self.emit_load_register(ctx, object);
+                self.emit_constant(ctx, &IrConstant::String(property.clone()))?;
                 self.emit_load_register(ctx, value);
-                let str_index = self.module_builder.add_string(property.clone())?;
-                ctx.emit(Opcode::DynSet);
-                ctx.emit_u32(str_index as u32);
+                ctx.emit(Opcode::DynSetKeyed);
             }
 
             IrInstr::DynGetKeyed { dest, object, key } => {

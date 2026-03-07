@@ -365,7 +365,9 @@ pub enum HelperCall {
     LoadElement,
     StoreElement,
     LoadFieldExact,
+    LoadFieldShape,
     StoreFieldExact,
+    StoreFieldShape,
 
     // Native/module call dispatch
     ModuleNativeCall,

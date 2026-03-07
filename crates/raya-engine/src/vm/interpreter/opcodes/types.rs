@@ -145,6 +145,165 @@ impl<'a> Interpreter<'a> {
         OpcodeResult::Continue
     }
 
+    fn exec_tuple_len_cast(
+        &self,
+        stack: &mut Stack,
+        obj_val: Value,
+        expected_len: usize,
+    ) -> OpcodeResult {
+        if !obj_val.is_ptr() {
+            return OpcodeResult::Error(VmError::TypeError(format!(
+                "Cannot cast non-array value to tuple length {}",
+                expected_len
+            )));
+        }
+        let Some(array_ptr) = (unsafe { obj_val.as_ptr::<Array>() }) else {
+            return OpcodeResult::Error(VmError::TypeError(format!(
+                "Cannot cast non-array value to tuple length {}",
+                expected_len
+            )));
+        };
+        let arr = unsafe { &*array_ptr.as_ptr() };
+        if arr.len() != expected_len {
+            return OpcodeResult::Error(VmError::TypeError(format!(
+                "Cannot cast array(length={}) to tuple(length={})",
+                arr.len(),
+                expected_len
+            )));
+        }
+        if let Err(e) = stack.push(obj_val) {
+            return OpcodeResult::Error(e);
+        }
+        OpcodeResult::Continue
+    }
+
+    fn exec_object_min_fields_cast(
+        &self,
+        stack: &mut Stack,
+        obj_val: Value,
+        required_fields: usize,
+    ) -> OpcodeResult {
+        if !obj_val.is_ptr() {
+            return OpcodeResult::Error(VmError::TypeError(format!(
+                "Cannot cast non-object value to object with {} required fields",
+                required_fields
+            )));
+        }
+        let Some(object_ptr) = object_ptr_checked(obj_val) else {
+            return OpcodeResult::Error(VmError::TypeError(format!(
+                "Cannot cast non-object value to object with {} required fields",
+                required_fields
+            )));
+        };
+        let obj = unsafe { &*object_ptr.as_ptr() };
+        let effective_field_count = obj
+            .field_count()
+            .max(obj.dyn_map().map(|dyn_map| dyn_map.len()).unwrap_or(0));
+        if effective_field_count < required_fields {
+            return OpcodeResult::Error(VmError::TypeError(format!(
+                "Cannot cast object(field_count={}) to required field count {}",
+                effective_field_count, required_fields
+            )));
+        }
+        if let Err(e) = stack.push(obj_val) {
+            return OpcodeResult::Error(e);
+        }
+        OpcodeResult::Continue
+    }
+
+    fn exec_array_elem_kind_cast(
+        &self,
+        stack: &mut Stack,
+        obj_val: Value,
+        expected_elem_mask: u16,
+    ) -> OpcodeResult {
+        if !obj_val.is_ptr() {
+            return OpcodeResult::Error(VmError::TypeError(format!(
+                "Cannot cast non-array value to array element mask 0x{:02X}",
+                expected_elem_mask
+            )));
+        }
+        let Some(array_ptr) = (unsafe { obj_val.as_ptr::<Array>() }) else {
+            return OpcodeResult::Error(VmError::TypeError(format!(
+                "Cannot cast non-array value to array element mask 0x{:02X}",
+                expected_elem_mask
+            )));
+        };
+        let arr = unsafe { &*array_ptr.as_ptr() };
+        for elem in &arr.elements {
+            let mut actual = value_kind_mask(*elem);
+            if (actual & CAST_KIND_INT) != 0 {
+                actual |= CAST_KIND_NUMBER;
+            }
+            if (actual & expected_elem_mask) == 0 {
+                return OpcodeResult::Error(VmError::TypeError(format!(
+                    "Cannot cast array element to required kind mask 0x{:02X}",
+                    expected_elem_mask
+                )));
+            }
+        }
+        if let Err(e) = stack.push(obj_val) {
+            return OpcodeResult::Error(e);
+        }
+        OpcodeResult::Continue
+    }
+
+    fn exec_kind_mask_cast(
+        &self,
+        stack: &mut Stack,
+        module: &Module,
+        obj_val: Value,
+        expected: u16,
+    ) -> OpcodeResult {
+        let mut actual = value_kind_mask(obj_val);
+        if (actual & CAST_KIND_INT) != 0 {
+            actual |= CAST_KIND_NUMBER;
+        }
+        if (actual & expected) != 0 {
+            if let Err(e) = stack.push(obj_val) {
+                return OpcodeResult::Error(e);
+            }
+            return OpcodeResult::Continue;
+        }
+        if expected == CAST_KIND_FUNCTION {
+            let func_id = obj_val.as_i32().map(|v| v as usize).or_else(|| {
+                obj_val.as_f64().and_then(|v| {
+                    if v.is_finite() && v.fract() == 0.0 && v >= 0.0 && v <= usize::MAX as f64 {
+                        Some(v as usize)
+                    } else {
+                        None
+                    }
+                })
+            });
+            if let Some(func_id) = func_id {
+                if module.functions.get(func_id).is_some() {
+                    if let Err(e) = stack.push(obj_val) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                }
+            }
+        }
+        if expected == CAST_KIND_INT {
+            if let Some(num) = obj_val.as_f64() {
+                if num.is_finite()
+                    && num.fract() == 0.0
+                    && num >= i32::MIN as f64
+                    && num <= i32::MAX as f64
+                {
+                    if let Err(e) = stack.push(Value::i32(num as i32)) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                }
+            }
+        }
+        OpcodeResult::Error(VmError::TypeError(format!(
+            "Cannot cast value to runtime kind mask 0x{:04X}",
+            expected
+        )))
+    }
+
     fn exec_implements_shape(
         &self,
         stack: &mut Stack,
@@ -391,157 +550,33 @@ impl<'a> Interpreter<'a> {
 
                 // Kind-mask casts validate primitive/structural categories at runtime.
                 if (cast_target & CAST_KIND_MASK_FLAG) != 0 {
-                    // Tuple cast target with exact runtime arity check.
                     if (cast_target & CAST_TUPLE_LEN_FLAG) != 0 {
-                        let expected_len = (cast_target & 0x3FFF) as usize;
-                        if !obj_val.is_ptr() {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot cast non-array value to tuple length {}",
-                                expected_len
-                            )));
-                        }
-                        let Some(array_ptr) = (unsafe { obj_val.as_ptr::<Array>() }) else {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot cast non-array value to tuple length {}",
-                                expected_len
-                            )));
-                        };
-                        let arr = unsafe { &*array_ptr.as_ptr() };
-                        if arr.len() != expected_len {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot cast array(length={}) to tuple(length={})",
-                                arr.len(),
-                                expected_len
-                            )));
-                        }
-                        if let Err(e) = stack.push(obj_val) {
-                            return OpcodeResult::Error(e);
-                        }
-                        return OpcodeResult::Continue;
+                        return self.exec_tuple_len_cast(
+                            stack,
+                            obj_val,
+                            (cast_target & 0x3FFF) as usize,
+                        );
                     }
-
-                    // Object structural cast target with minimum required fields.
                     if (cast_target & CAST_OBJECT_MIN_FIELDS_FLAG) != 0 {
-                        let required_fields = (cast_target & 0x1FFF) as usize;
-                        if !obj_val.is_ptr() {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot cast non-object value to object with {} required fields",
-                                required_fields
-                            )));
-                        }
-                        let Some(object_ptr) = object_ptr_checked(obj_val) else {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot cast non-object value to object with {} required fields",
-                                required_fields
-                            )));
-                        };
-                        let obj = unsafe { &*object_ptr.as_ptr() };
-                        let effective_field_count = obj
-                            .field_count()
-                            .max(obj.dyn_map().map(|dyn_map| dyn_map.len()).unwrap_or(0));
-                        if effective_field_count < required_fields {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot cast object(field_count={}) to required field count {}",
-                                effective_field_count, required_fields
-                            )));
-                        }
-                        if let Err(e) = stack.push(obj_val) {
-                            return OpcodeResult::Error(e);
-                        }
-                        return OpcodeResult::Continue;
+                        return self.exec_object_min_fields_cast(
+                            stack,
+                            obj_val,
+                            (cast_target & 0x1FFF) as usize,
+                        );
                     }
-
-                    // Array cast target with runtime-checkable element kinds.
                     if (cast_target & CAST_ARRAY_ELEM_KIND_FLAG) != 0 {
-                        let expected_elem_mask = cast_target & 0x00FF;
-                        if !obj_val.is_ptr() {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot cast non-array value to array element mask 0x{:02X}",
-                                expected_elem_mask
-                            )));
-                        }
-                        let Some(array_ptr) = (unsafe { obj_val.as_ptr::<Array>() }) else {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot cast non-array value to array element mask 0x{:02X}",
-                                expected_elem_mask
-                            )));
-                        };
-                        let arr = unsafe { &*array_ptr.as_ptr() };
-                        for elem in &arr.elements {
-                            let mut actual = value_kind_mask(*elem);
-                            if (actual & CAST_KIND_INT) != 0 {
-                                actual |= CAST_KIND_NUMBER;
-                            }
-                            if (actual & expected_elem_mask) == 0 {
-                                return OpcodeResult::Error(VmError::TypeError(format!(
-                                    "Cannot cast array element to required kind mask 0x{:02X}",
-                                    expected_elem_mask
-                                )));
-                            }
-                        }
-                        if let Err(e) = stack.push(obj_val) {
-                            return OpcodeResult::Error(e);
-                        }
-                        return OpcodeResult::Continue;
+                        return self.exec_array_elem_kind_cast(
+                            stack,
+                            obj_val,
+                            cast_target & 0x00FF,
+                        );
                     }
-
-                    let expected = cast_target & !CAST_KIND_MASK_FLAG;
-                    let mut actual = value_kind_mask(obj_val);
-                    // `number` accepts both integer and float values.
-                    if (actual & CAST_KIND_INT) != 0 {
-                        actual |= CAST_KIND_NUMBER;
-                    }
-                    if (actual & expected) != 0 {
-                        if let Err(e) = stack.push(obj_val) {
-                            return OpcodeResult::Error(e);
-                        }
-                        return OpcodeResult::Continue;
-                    }
-                    // Compatibility path: function references may be encoded as
-                    // direct function IDs (int) instead of closure pointers.
-                    if expected == CAST_KIND_FUNCTION {
-                        let func_id = obj_val.as_i32().map(|v| v as usize).or_else(|| {
-                            obj_val.as_f64().and_then(|v| {
-                                if v.is_finite()
-                                    && v.fract() == 0.0
-                                    && v >= 0.0
-                                    && v <= usize::MAX as f64
-                                {
-                                    Some(v as usize)
-                                } else {
-                                    None
-                                }
-                            })
-                        });
-                        if let Some(func_id) = func_id {
-                            if module.functions.get(func_id).is_some() {
-                                if let Err(e) = stack.push(obj_val) {
-                                    return OpcodeResult::Error(e);
-                                }
-                                return OpcodeResult::Continue;
-                            }
-                        }
-                    }
-                    // Explicit cast to `int` can accept a numeric value only when
-                    // the runtime number is finite and integral.
-                    if expected == CAST_KIND_INT {
-                        if let Some(num) = obj_val.as_f64() {
-                            if num.is_finite()
-                                && num.fract() == 0.0
-                                && num >= i32::MIN as f64
-                                && num <= i32::MAX as f64
-                            {
-                                if let Err(e) = stack.push(Value::i32(num as i32)) {
-                                    return OpcodeResult::Error(e);
-                                }
-                                return OpcodeResult::Continue;
-                            }
-                        }
-                    }
-                    return OpcodeResult::Error(VmError::TypeError(format!(
-                        "Cannot cast value to runtime kind mask 0x{:04X}",
-                        expected
-                    )));
+                    return self.exec_kind_mask_cast(
+                        stack,
+                        module,
+                        obj_val,
+                        cast_target & !CAST_KIND_MASK_FLAG,
+                    );
                 }
 
                 let cast_target_class = match self.resolve_nominal_type_id(module, cast_target as usize)
@@ -550,6 +585,50 @@ impl<'a> Interpreter<'a> {
                     Err(error) => return OpcodeResult::Error(error),
                 };
                 self.exec_nominal_cast(stack, module, task, obj_val, cast_target_class)
+            }
+            Opcode::CastTupleLen => {
+                let expected_len = match Self::read_u16(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                self.exec_tuple_len_cast(stack, obj_val, expected_len)
+            }
+            Opcode::CastObjectMinFields => {
+                let required_fields = match Self::read_u16(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                self.exec_object_min_fields_cast(stack, obj_val, required_fields)
+            }
+            Opcode::CastArrayElemKind => {
+                let expected_elem_mask = match Self::read_u16(code, ip) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                self.exec_array_elem_kind_cast(stack, obj_val, expected_elem_mask)
+            }
+            Opcode::CastKindMask => {
+                let expected_kind_mask = match Self::read_u16(code, ip) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                self.exec_kind_mask_cast(stack, module, obj_val, expected_kind_mask)
             }
 
             // =========================================================

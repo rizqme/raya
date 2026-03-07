@@ -280,7 +280,7 @@ impl ProgramCompiler {
                     {
                         import.symbol_id = exported.symbol_id;
                         import.scope = exported.scope;
-                        import.type_symbol_id = exported.type_symbol_id;
+                        import.signature_hash = exported.signature_hash;
                         import.type_signature = exported.type_signature.clone();
                     }
                 }

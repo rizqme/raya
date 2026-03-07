@@ -45,6 +45,9 @@ static NEXT_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
 /// Process-local fallback registry for structural layout names used outside a live VM.
 static GLOBAL_LAYOUT_NAMES: LazyLock<RwLock<FxHashMap<LayoutId, Vec<String>>>> =
     LazyLock::new(|| RwLock::new(FxHashMap::default()));
+pub const OBJECT_DESCRIPTOR_LAYOUT_FIELDS: &[&str] =
+    &["value", "writable", "configurable", "enumerable", "get", "set"];
+pub const BUFFER_LAYOUT_FIELDS: &[&str] = &["bufferPtr", "length"];
 
 /// Generate a new unique object ID
 fn generate_object_id() -> u64 {
@@ -65,31 +68,6 @@ pub fn shape_id_from_member_names(names: &[String]) -> ShapeId {
     canonical.dedup();
     let payload = format!("shape{{{}}}", canonical.join(","));
     crate::parser::types::signature_hash(&payload)
-}
-
-/// Builtin nominal runtime layouts that do not carry compiler-emitted field metadata.
-pub fn builtin_nominal_layout_field_names(class_name: &str) -> Option<&'static [&'static str]> {
-    match class_name {
-        "Object" => Some(&[
-            "value",
-            "writable",
-            "configurable",
-            "enumerable",
-            "get",
-            "set",
-        ]),
-        "Map" => Some(&["mapPtr", "size"]),
-        "Set" => Some(&["setPtr", "size"]),
-        "Buffer" => Some(&["bufferPtr", "length"]),
-        "AggregateError" => Some(&[
-            "message", "name", "stack", "cause", "code", "errno", "syscall", "path", "errors",
-        ]),
-        "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError" | "URIError"
-        | "EvalError" | "ChannelClosedError" | "AssertionError" => Some(&[
-            "message", "name", "stack", "cause", "code", "errno", "syscall", "path",
-        ]),
-        _ => None,
-    }
 }
 
 /// Register structural layout names in the process-local fallback registry.

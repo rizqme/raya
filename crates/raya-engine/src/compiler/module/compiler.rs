@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::compiler::bytecode::{Function as BytecodeFunction, Module as BytecodeModule, Opcode};
+use crate::compiler::bytecode::{
+    Function as BytecodeFunction, Module as BytecodeModule, NominalTypeExport, Opcode,
+};
 use crate::compiler::{
     module_id_from_name, symbol_id_from_name, CompileError, Compiler, Export, Import, SymbolScope,
     SymbolType,
@@ -716,8 +718,9 @@ impl ModuleCompiler {
                 index: function_index,
                 symbol_id: exported.symbol_id,
                 scope: exported.scope,
-                type_symbol_id: exported.type_symbol_id,
+                signature_hash: exported.signature_hash,
                 type_signature: Some(exported.type_signature.clone()),
+                nominal_type: None,
             });
         }
 
@@ -735,8 +738,12 @@ impl ModuleCompiler {
                 index: class_index,
                 symbol_id: exported.symbol_id,
                 scope: exported.scope,
-                type_symbol_id: exported.type_symbol_id,
+                signature_hash: exported.signature_hash,
                 type_signature: Some(exported.type_signature.clone()),
+                nominal_type: Some(NominalTypeExport {
+                    local_nominal_type_index: class_index as u32,
+                    constructor_function_index: None,
+                }),
             });
         }
 
@@ -749,8 +756,9 @@ impl ModuleCompiler {
                 index,
                 symbol_id: exported.symbol_id,
                 scope: exported.scope,
-                type_symbol_id: exported.type_symbol_id,
+                signature_hash: exported.signature_hash,
                 type_signature: Some(exported.type_signature.clone()),
+                nominal_type: None,
             });
         }
 
@@ -1570,7 +1578,7 @@ impl ModuleCompiler {
             symbol_id: exported.symbol_id,
             scope: exported.scope,
             symbol_type,
-            type_symbol_id: exported.type_symbol_id,
+            signature_hash: exported.signature_hash,
             type_signature: exported.type_signature.clone(),
             specialization_template: specialization_template_from_symbol(&exported.name),
         });
@@ -1623,12 +1631,24 @@ impl ModuleCompiler {
 
             bytecode.exports.push(Export {
                 name: exported.name.clone(),
-                symbol_type,
+                symbol_type: symbol_type.clone(),
                 index,
                 symbol_id: exported.symbol_id,
                 scope: exported.scope,
-                type_symbol_id: exported.type_symbol_id,
+                signature_hash: exported.signature_hash,
                 type_signature: Some(exported.type_signature.clone()),
+                nominal_type: matches!(symbol_type, SymbolType::Class).then_some(
+                    NominalTypeExport {
+                        local_nominal_type_index: index as u32,
+                        constructor_function_index: bytecode
+                            .functions
+                            .iter()
+                            .position(|function| {
+                                function.name == format!("{}::constructor", exported.local_name)
+                            })
+                            .map(|idx| idx as u32),
+                    },
+                ),
             });
         }
 
@@ -1685,7 +1705,7 @@ impl ModuleCompiler {
                                     module_id: target_module_id,
                                     symbol_id: exported.symbol_id,
                                     scope: SymbolScope::Module,
-                                    type_symbol_id: exported.type_symbol_id,
+                                    signature_hash: exported.signature_hash,
                                     type_signature: Some(exported.type_signature.clone()),
                                     runtime_global_slot: module_global_slots
                                         .get(&local_name)
@@ -1728,7 +1748,7 @@ impl ModuleCompiler {
                                     module_id: target_module_id,
                                     symbol_id: exported.symbol_id,
                                     scope: SymbolScope::Module,
-                                    type_symbol_id: exported.type_symbol_id,
+                                    signature_hash: exported.signature_hash,
                                     type_signature: Some(exported.type_signature.clone()),
                                     runtime_global_slot: module_global_slots
                                         .get(interner.resolve(local.name))
@@ -1758,7 +1778,7 @@ impl ModuleCompiler {
                                     // Namespace imports are resolved by module_id at link/hydration time.
                                     symbol_id: 0,
                                     scope: SymbolScope::Module,
-                                    type_symbol_id: namespace_hash,
+                                    signature_hash: namespace_hash,
                                     type_signature: Some(namespace_signature),
                                     runtime_global_slot: module_global_slots
                                         .get(interner.resolve(alias.name))
@@ -1821,7 +1841,7 @@ impl ModuleCompiler {
                             module_id: target_module_id,
                             symbol_id: exported.symbol_id,
                             scope: SymbolScope::Module,
-                            type_symbol_id: exported.type_symbol_id,
+                            signature_hash: exported.signature_hash,
                             type_signature: Some(exported.type_signature.clone()),
                             runtime_global_slot: None,
                         });
@@ -1858,7 +1878,7 @@ impl ModuleCompiler {
                             &namespace_symbol,
                         ),
                         scope: SymbolScope::Module,
-                        type_symbol_id: namespace_hash,
+                        signature_hash: namespace_hash,
                         type_signature: Some(namespace_signature),
                         runtime_global_slot: None,
                     });
@@ -2055,7 +2075,7 @@ mod tests {
             .expect("constant export");
 
         assert_eq!(export.symbol_type, SymbolType::Constant);
-        assert!(export.type_symbol_id != 0);
+        assert!(export.signature_hash != 0);
     }
 
     #[test]
@@ -2080,7 +2100,7 @@ mod tests {
 
         assert_eq!(export.symbol_type, SymbolType::Constant);
         assert_eq!(export.index, 0);
-        assert!(export.type_symbol_id != 0);
+        assert!(export.signature_hash != 0);
     }
 
     #[test]
@@ -2358,7 +2378,7 @@ mod tests {
             .iter()
             .find(|import| import.symbol == "*")
             .expect("namespace import metadata");
-        assert_ne!(namespace_import.type_symbol_id, 0);
+        assert_ne!(namespace_import.signature_hash, 0);
         assert_eq!(
             namespace_import.type_signature.as_deref(),
             Some("obj(prop:answer:ro:req:number)")

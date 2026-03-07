@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::compiler::{
     module_id_from_name, symbol_id_from_name, ModuleId, SymbolId, SymbolScope, SymbolType,
-    TypeSymbolId,
+    TypeSignatureHash,
 };
 use crate::parser::ast::{
     self, ClassDecl, ClassMember, ExportDecl, ExportSpecifier, Expression, FunctionDecl,
@@ -62,7 +62,7 @@ pub struct LateLinkSymbolRequirement {
     pub symbol_id: SymbolId,
     pub scope: SymbolScope,
     pub symbol_type: SymbolType,
-    pub type_symbol_id: TypeSymbolId,
+    pub signature_hash: TypeSignatureHash,
     pub type_signature: String,
     /// Generic template symbol for monomorphized exports (e.g. `identity` for
     /// `identity__mono_abcd1234`), when applicable.
@@ -470,7 +470,7 @@ pub fn builtin_global_exports(mode: BuiltinSurfaceMode) -> Result<ModuleExports,
                 module_name: merged_module_identity.clone(),
                 module_id: merged_module_id,
                 symbol_id,
-                type_symbol_id: exported.type_symbol_id,
+                signature_hash: exported.signature_hash,
                 type_signature: exported.type_signature,
                 scope: SymbolScope::Module,
             });
@@ -789,7 +789,7 @@ fn extract_declaration_exports(
             module_name: module_identity.to_string(),
             module_id: module_id_from_name(module_identity),
             symbol_id,
-            type_symbol_id: signature_hash(&export.canonical_signature),
+            signature_hash: signature_hash(&export.canonical_signature),
             type_signature: export.canonical_signature,
             scope: SymbolScope::Module,
         });
@@ -1519,7 +1519,7 @@ mod tests {
                 .symbols
                 .get(symbol)
                 .unwrap_or_else(|| panic!("missing symbol {symbol} in d.ts"));
-            assert_eq!(left.type_symbol_id, right.type_symbol_id);
+            assert_eq!(left.signature_hash, right.signature_hash);
             assert_eq!(left.type_signature, right.type_signature);
         }
     }

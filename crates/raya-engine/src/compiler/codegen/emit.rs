@@ -125,6 +125,10 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::Trap
         | Opcode::NewType
         | Opcode::IsNominal
+        | Opcode::CastTupleLen
+        | Opcode::CastObjectMinFields
+        | Opcode::CastArrayElemKind
+        | Opcode::CastKindMask
         | Opcode::Cast
         | Opcode::CastNominal => 1 + 2,
 

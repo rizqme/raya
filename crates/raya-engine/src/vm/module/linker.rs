@@ -126,7 +126,7 @@ impl ModuleLinker {
                 return Err(LinkError::MissingTypeSignature {
                     symbol: format!("{}::{}", module.metadata.name, export.name),
                     import_hash: 0,
-                    export_hash: export.type_symbol_id,
+                    export_hash: export.signature_hash,
                 });
             };
             members.push(format!(
@@ -228,23 +228,23 @@ impl ModuleLinker {
             let Some(expected_signature) = import.type_signature.as_deref() else {
                 return Err(LinkError::MissingTypeSignature {
                     symbol: format!("{}::*", module.metadata.name),
-                    import_hash: import.type_symbol_id,
+                    import_hash: import.signature_hash,
                     export_hash: actual_hash,
                 });
             };
-            if import.type_symbol_id == 0 {
+            if import.signature_hash == 0 {
                 return Err(LinkError::MissingTypeSignature {
                     symbol: format!("{}::*", module.metadata.name),
-                    import_hash: import.type_symbol_id,
+                    import_hash: import.signature_hash,
                     export_hash: actual_hash,
                 });
             }
-            if import.type_symbol_id != actual_hash
+            if import.signature_hash != actual_hash
                 && !structural_signature_is_assignable(expected_signature, &actual_signature)
             {
                 return Err(LinkError::TypeSignatureMismatch {
                     symbol: format!("{}::*", module.metadata.name),
-                    expected_hash: import.type_symbol_id,
+                    expected_hash: import.signature_hash,
                     actual_hash,
                     expected_pretty: expected_signature.to_string(),
                     actual_pretty: actual_signature.clone(),
@@ -258,8 +258,9 @@ impl ModuleLinker {
                     index: 0,
                     symbol_id: 0,
                     scope: import.scope,
-                    type_symbol_id: actual_hash,
+                    signature_hash: actual_hash,
                     type_signature: Some(actual_signature),
+                    nominal_type: None,
                 },
                 index: 0,
             });
@@ -295,15 +296,15 @@ impl ModuleLinker {
 
         // For concrete symbol imports, structural signature hash is required.
         if import.symbol != "*" {
-            if import.type_symbol_id == 0 || export.type_symbol_id == 0 {
+            if import.signature_hash == 0 || export.signature_hash == 0 {
                 return Err(LinkError::MissingTypeSignature {
                     symbol: import.symbol.clone(),
-                    import_hash: import.type_symbol_id,
-                    export_hash: export.type_symbol_id,
+                    import_hash: import.signature_hash,
+                    export_hash: export.signature_hash,
                 });
             }
 
-            if import.type_symbol_id != export.type_symbol_id {
+            if import.signature_hash != export.signature_hash {
                 let signatures_assignable = match (
                     import.type_signature.as_deref(),
                     export.type_signature.as_deref(),
@@ -320,16 +321,16 @@ impl ModuleLinker {
                 } else {
                     return Err(LinkError::TypeSignatureMismatch {
                         symbol: import.symbol.clone(),
-                        expected_hash: import.type_symbol_id,
-                        actual_hash: export.type_symbol_id,
+                        expected_hash: import.signature_hash,
+                        actual_hash: export.signature_hash,
                         expected_pretty: import
                             .type_signature
                             .clone()
-                            .unwrap_or_else(|| format!("hash:{:016x}", import.type_symbol_id)),
+                            .unwrap_or_else(|| format!("hash:{:016x}", import.signature_hash)),
                         actual_pretty: export
                             .type_signature
                             .clone()
-                            .unwrap_or_else(|| format!("hash:{:016x}", export.type_symbol_id)),
+                            .unwrap_or_else(|| format!("hash:{:016x}", export.signature_hash)),
                     });
                 }
             }
@@ -500,7 +501,7 @@ mod tests {
             module_id,
             symbol_id: 123,
             scope: crate::compiler::SymbolScope::Module,
-            type_symbol_id: 456,
+            signature_hash: 456,
             type_signature: None,
             runtime_global_slot: None,
         };
@@ -523,7 +524,7 @@ mod tests {
             module_id,
             symbol_id: 999,
             scope: crate::compiler::SymbolScope::Module,
-            type_symbol_id: 111,
+            signature_hash: 111,
             type_signature: None,
             runtime_global_slot: None,
         };
@@ -548,7 +549,7 @@ mod tests {
             index: 0,
             symbol_id: 10,
             scope: SymbolScope::Module,
-            type_symbol_id: 42,
+            signature_hash: 42,
             type_signature: Some("fn(min=0,params=[],rest=_,ret=number)".to_string()),
         });
         linker.add_module(Arc::new(module)).unwrap();
@@ -561,7 +562,7 @@ mod tests {
             module_id,
             symbol_id: 10,
             scope: SymbolScope::Module,
-            type_symbol_id: 0,
+            signature_hash: 0,
             type_signature: None,
             runtime_global_slot: None,
         };
@@ -583,7 +584,7 @@ mod tests {
             index: 0,
             symbol_id: 1,
             scope: SymbolScope::Module,
-            type_symbol_id: crate::parser::types::signature_hash("number"),
+            signature_hash: crate::parser::types::signature_hash("number"),
             type_signature: Some("number".to_string()),
         });
         linker.add_module(Arc::new(module)).unwrap();
@@ -596,7 +597,7 @@ mod tests {
             module_id: module_id_from_name("typed"),
             symbol_id: 0,
             scope: crate::compiler::SymbolScope::Module,
-            type_symbol_id: crate::parser::types::signature_hash(&expected_signature),
+            signature_hash: crate::parser::types::signature_hash(&expected_signature),
             type_signature: Some(expected_signature.clone()),
             runtime_global_slot: Some(0),
         };
@@ -605,7 +606,7 @@ mod tests {
             .resolve_import(&import, "main")
             .expect("resolve namespace import");
         assert_eq!(resolved.export.type_signature.as_deref(), Some(expected_signature.as_str()));
-        assert_eq!(resolved.export.type_symbol_id, import.type_symbol_id);
+        assert_eq!(resolved.export.signature_hash, import.signature_hash);
     }
 
     #[test]
@@ -619,7 +620,7 @@ mod tests {
             index: 0,
             symbol_id: 11,
             scope: SymbolScope::Module,
-            type_symbol_id: signature_hash(
+            signature_hash: signature_hash(
                 "obj(prop:a:rw:req:number,prop:b:rw:req:string,prop:c:rw:req:string)",
             ),
             type_signature: Some(
@@ -636,7 +637,7 @@ mod tests {
             module_id,
             symbol_id: 11,
             scope: SymbolScope::Module,
-            type_symbol_id: signature_hash("obj(prop:a:rw:req:number,prop:b:rw:req:string)"),
+            signature_hash: signature_hash("obj(prop:a:rw:req:number,prop:b:rw:req:string)"),
             type_signature: Some("obj(prop:a:rw:req:number,prop:b:rw:req:string)".to_string()),
             runtime_global_slot: None,
         };
@@ -654,7 +655,7 @@ mod tests {
             index: 0,
             symbol_id: 12,
             scope: SymbolScope::Module,
-            type_symbol_id: signature_hash("number"),
+            signature_hash: signature_hash("number"),
             type_signature: Some("number".to_string()),
         });
         linker.add_module(Arc::new(module)).unwrap();
@@ -667,7 +668,7 @@ mod tests {
             module_id,
             symbol_id: 12,
             scope: SymbolScope::Module,
-            type_symbol_id: signature_hash("union(number|string)"),
+            signature_hash: signature_hash("union(number|string)"),
             type_signature: Some("union(number|string)".to_string()),
             runtime_global_slot: None,
         };
@@ -691,7 +692,7 @@ mod tests {
             index: 0,
             symbol_id: 13,
             scope: SymbolScope::Module,
-            type_symbol_id: signature_hash("fn(min=1,params=[number],rest=_,ret=number)"),
+            signature_hash: signature_hash("fn(min=1,params=[number],rest=_,ret=number)"),
             type_signature: Some("fn(min=1,params=[number],rest=_,ret=number)".to_string()),
         });
         linker.add_module(Arc::new(module)).unwrap();
@@ -704,7 +705,7 @@ mod tests {
             module_id,
             symbol_id: 13,
             scope: SymbolScope::Module,
-            type_symbol_id: signature_hash("fn(min=2,params=[number,number],rest=_,ret=number)"),
+            signature_hash: signature_hash("fn(min=2,params=[number,number],rest=_,ret=number)"),
             type_signature: Some("fn(min=2,params=[number,number],rest=_,ret=number)".to_string()),
             runtime_global_slot: None,
         };

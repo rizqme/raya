@@ -54,7 +54,8 @@ use raya_engine::compiler::module::{
     builtin_global_exports, BuiltinSurfaceMode, LateLinkRequirement, LateLinkSymbolRequirement,
 };
 use raya_engine::compiler::{
-    module_id_from_name, symbol_id_from_name, Export, Import, SymbolScope, SymbolType,
+    module_id_from_name, symbol_id_from_name, Export, Import, NominalTypeExport, SymbolScope,
+    SymbolType,
 };
 use raya_engine::parser::ast::{Pattern, Statement};
 use raya_engine::parser::checker::SymbolKind;
@@ -881,12 +882,24 @@ impl Runtime {
 
             module.exports.push(Export {
                 name: export_name.clone(),
-                symbol_type,
+                symbol_type: symbol_type.clone(),
                 index,
                 symbol_id: symbol_id_from_name(&module_name, SymbolScope::Module, export_name),
                 scope: SymbolScope::Module,
-                type_symbol_id: declared.type_symbol_id,
+                signature_hash: declared.signature_hash,
                 type_signature: Some(declared.type_signature.clone()),
+                nominal_type: matches!(symbol_type, SymbolType::Class).then_some(
+                    NominalTypeExport {
+                        local_nominal_type_index: index as u32,
+                        constructor_function_index: module
+                            .functions
+                            .iter()
+                            .position(|function| {
+                                function.name == format!("{}::constructor", export_name)
+                            })
+                            .map(|idx| idx as u32),
+                    },
+                ),
             });
         }
     }
@@ -1335,53 +1348,63 @@ impl Runtime {
                 Self::materialize_constant_export(vm, &resolved)
             }
             SymbolType::Class => {
+                let Some(nominal_export) = export.nominal_type else {
+                    return Err(RuntimeError::Dependency(format!(
+                        "Imported class symbol '{}' from '{}' is missing nominal constructor metadata",
+                        export.name, module.metadata.name
+                    )));
+                };
                 let class_name = module
                     .classes
                     .get(export.index)
                     .map(|class_def| class_def.name.clone())
                     .unwrap_or_else(|| export.name.clone());
 
-                let nominal_type_id = {
-                    let rebased = vm
-                        .shared_state()
-                        .resolve_nominal_type_id(module, export.index)
-                        .ok_or_else(|| {
-                            RuntimeError::Dependency(format!(
-                                "invalid module-local nominal type id {} for export '{}'",
-                                export.index, export.name
-                            ))
-                        })?;
-                    let classes = vm.shared_state().classes.read();
-                    let rebased_ok = classes.get_class(rebased).is_some_and(|class| {
-                        class.name == class_name
-                            && class.module.as_ref().is_some_and(|class_module| {
-                                class_module.checksum == module.checksum
-                            })
-                    });
-                    if rebased_ok {
-                        rebased
-                    } else {
-                        classes
-                            .iter()
-                            .find_map(|(id, class)| {
-                                (class.name == class_name
-                                    && class.module.as_ref().is_some_and(|class_module| {
-                                        class_module.checksum == module.checksum
-                                    }))
-                                .then_some(id)
-                            })
-                            .ok_or_else(|| {
-                                RuntimeError::Dependency(format!(
-                                    "Imported class symbol '{}' from '{}' could not be resolved to a registered runtime class (export index {})",
-                                    export.name, module.metadata.name, export.index
-                                ))
-                            })?
+                let nominal_type_id = vm
+                    .shared_state()
+                    .resolve_nominal_type_id(module, nominal_export.local_nominal_type_index as usize)
+                    .ok_or_else(|| {
+                        RuntimeError::Dependency(format!(
+                            "invalid module-local nominal type index {} for export '{}'",
+                            nominal_export.local_nominal_type_index, export.name
+                        ))
+                    })?;
+
+                let classes = vm.shared_state().classes.read();
+                let resolved_class = classes.get_class(nominal_type_id).ok_or_else(|| {
+                    RuntimeError::Dependency(format!(
+                        "Imported class symbol '{}' from '{}' resolved to missing runtime nominal type {}",
+                        export.name, module.metadata.name, nominal_type_id
+                    ))
+                })?;
+                if resolved_class.name != class_name
+                    || !resolved_class
+                        .module
+                        .as_ref()
+                        .is_some_and(|class_module| class_module.checksum == module.checksum)
+                {
+                    return Err(RuntimeError::Dependency(format!(
+                        "Imported class symbol '{}' from '{}' resolved to wrong runtime class '{}' (nominal type {})",
+                        export.name, module.metadata.name, resolved_class.name, nominal_type_id
+                    )));
+                }
+                if let Some(expected_ctor_index) = nominal_export.constructor_function_index {
+                    let actual_ctor_index = resolved_class.constructor_id.map(|id| id as u32);
+                    if actual_ctor_index != Some(expected_ctor_index) {
+                        return Err(RuntimeError::Dependency(format!(
+                            "Imported class symbol '{}' from '{}' resolved to constructor {:?}, expected {}",
+                            export.name,
+                            module.metadata.name,
+                            actual_ctor_index,
+                            expected_ctor_index
+                        )));
                     }
-                };
+                }
+                drop(classes);
 
                 if nominal_type_id > u32::MAX as usize {
                     return Err(RuntimeError::Dependency(format!(
-                        "Imported class symbol '{}' from '{}' has class ID {} outside u32 range",
+                        "Imported class symbol '{}' from '{}' has nominal type ID {} outside u32 range",
                         export.name, module.metadata.name, nominal_type_id
                     )));
                 }
@@ -2128,14 +2151,14 @@ impl Runtime {
             )));
         }
 
-        if symbol.type_symbol_id == 0 || exported.type_symbol_id == 0 {
+        if symbol.signature_hash == 0 || exported.signature_hash == 0 {
             return Err(RuntimeError::Dependency(format!(
                 "Late-link symbol '{}' is missing structural type signature hash (expected={:#x}, actual={:#x})",
-                symbol.symbol, symbol.type_symbol_id, exported.type_symbol_id
+                symbol.symbol, symbol.signature_hash, exported.signature_hash
             )));
         }
 
-        if exported.type_symbol_id != symbol.type_symbol_id {
+        if exported.signature_hash != symbol.signature_hash {
             let assignable = exported.type_signature.as_deref().is_some_and(|actual| {
                 structural_signature_is_assignable(&symbol.type_signature, actual)
             });
@@ -2144,13 +2167,13 @@ impl Runtime {
                     .type_signature
                     .as_deref()
                     .map(str::to_string)
-                    .unwrap_or_else(|| format!("hash:{:016x}", exported.type_symbol_id));
+                    .unwrap_or_else(|| format!("hash:{:016x}", exported.signature_hash));
                 return Err(RuntimeError::Dependency(format!(
                     "Late-link type signature mismatch for '{}': expected {:#x} ({}), got {:#x} ({})",
                     symbol.symbol,
-                    symbol.type_symbol_id,
+                    symbol.signature_hash,
                     symbol.type_signature,
-                    exported.type_symbol_id,
+                    exported.signature_hash,
                     actual_pretty
                 )));
             }

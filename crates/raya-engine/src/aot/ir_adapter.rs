@@ -28,6 +28,12 @@ const NUMBER_TYPE_ID: u32 = TypeContext::NUMBER_TYPE_ID;
 const STRING_TYPE_ID: u32 = TypeContext::STRING_TYPE_ID;
 const BOOLEAN_TYPE_ID: u32 = TypeContext::BOOLEAN_TYPE_ID;
 #[allow(dead_code)]
+const CAST_KIND_MASK_FLAG: u32 = 0x8000;
+const CAST_TUPLE_LEN_FLAG: u32 = 0x4000;
+const CAST_OBJECT_MIN_FIELDS_FLAG: u32 = 0x2000;
+const CAST_ARRAY_ELEM_KIND_FLAG: u32 = 0x1000;
+
+#[allow(dead_code)]
 const NULL_TYPE_ID: u32 = TypeContext::NULL_TYPE_ID;
 const INT_TYPE_ID: u32 = TypeContext::INT_TYPE_ID;
 
@@ -431,14 +437,19 @@ impl<'a> IrFunctionAdapter<'a> {
             IrInstr::LoadFieldShape {
                 dest,
                 object,
+                shape_id,
                 field,
                 optional: _,
-                ..
             } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
-                    helper: HelperCall::ObjectGetField,
-                    args: vec![Self::reg(object), *field as u32],
+                    helper: HelperCall::LoadFieldShape,
+                    args: vec![
+                        Self::reg(object),
+                        (*shape_id & 0xFFFF_FFFF) as u32,
+                        (*shape_id >> 32) as u32,
+                        *field as u32,
+                    ],
                 });
             }
             IrInstr::StoreFieldExact {
@@ -454,14 +465,20 @@ impl<'a> IrFunctionAdapter<'a> {
             }
             IrInstr::StoreFieldShape {
                 object,
+                shape_id,
                 field,
                 value,
-                ..
             } => {
                 out.push(SmInstr::CallHelper {
                     dest: None,
-                    helper: HelperCall::ObjectSetField,
-                    args: vec![Self::reg(object), *field as u32, Self::reg(value)],
+                    helper: HelperCall::StoreFieldShape,
+                    args: vec![
+                        Self::reg(object),
+                        (*shape_id & 0xFFFF_FFFF) as u32,
+                        (*shape_id >> 32) as u32,
+                        *field as u32,
+                        Self::reg(value),
+                    ],
                 });
             }
 
@@ -470,14 +487,14 @@ impl<'a> IrFunctionAdapter<'a> {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::DynGetProp,
-                    args: vec![Self::reg(object)], // TODO: property name index
+                    args: vec![Self::reg(object)], // TODO: property name materialization in AOT adapter
                 });
             }
             IrInstr::DynSetProp { object, value, .. } => {
                 out.push(SmInstr::CallHelper {
                     dest: None,
                     helper: HelperCall::DynSetProp,
-                    args: vec![Self::reg(object), Self::reg(value)],
+                    args: vec![Self::reg(object), Self::reg(value)], // TODO: property name materialization in AOT adapter
                 });
             }
             IrInstr::DynGetKeyed { dest, object, key } => {
@@ -530,7 +547,7 @@ impl<'a> IrFunctionAdapter<'a> {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::AllocArray,
-                    args: vec![Self::reg(len)],
+                    args: vec![0, Self::reg(len)],
                 });
             }
             IrInstr::ArrayLiteral { dest, elements, .. } => {
@@ -828,15 +845,60 @@ impl<'a> IrFunctionAdapter<'a> {
                     ],
                 });
             }
-            IrInstr::Cast {
+            IrInstr::CastTupleLen {
                 dest,
                 object,
-                target,
+                expected_len,
             } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::Cast,
-                    args: vec![Self::reg(object), target.as_u32()],
+                    args: vec![
+                        Self::reg(object),
+                        CAST_KIND_MASK_FLAG | CAST_TUPLE_LEN_FLAG | (*expected_len as u32),
+                    ],
+                });
+            }
+            IrInstr::CastObjectMinFields {
+                dest,
+                object,
+                required_fields,
+            } => {
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::Cast,
+                    args: vec![
+                        Self::reg(object),
+                        CAST_KIND_MASK_FLAG | CAST_OBJECT_MIN_FIELDS_FLAG | (*required_fields as u32),
+                    ],
+                });
+            }
+            IrInstr::CastArrayElemKind {
+                dest,
+                object,
+                expected_elem_mask,
+            } => {
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::Cast,
+                    args: vec![
+                        Self::reg(object),
+                        CAST_KIND_MASK_FLAG | CAST_ARRAY_ELEM_KIND_FLAG | (*expected_elem_mask as u32),
+                    ],
+                });
+            }
+            IrInstr::CastKindMask {
+                dest,
+                object,
+                expected_kind_mask,
+            } => {
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::Cast,
+                    args: vec![
+                        Self::reg(object),
+                        CAST_KIND_MASK_FLAG | (*expected_kind_mask as u32),
+                    ],
                 });
             }
 

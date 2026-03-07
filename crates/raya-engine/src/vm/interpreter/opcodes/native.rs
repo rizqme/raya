@@ -465,7 +465,10 @@ impl<'a> Interpreter<'a> {
             (id, field_count.max(2), layout_id)
         } else {
             drop(classes);
-            let id = self.register_runtime_class(Class::new(0, "Buffer".to_string(), 2));
+            let id = self.register_runtime_class_with_layout_names(
+                Class::new(0, "Buffer".to_string(), 2),
+                Some(crate::vm::object::BUFFER_LAYOUT_FIELDS),
+            );
             let (layout_id, field_count) = self
                 .nominal_allocation(id)
                 .expect("registered Buffer allocation");
@@ -491,7 +494,10 @@ impl<'a> Interpreter<'a> {
             (id, field_count.max(6), layout_id)
         } else {
             drop(classes);
-            let id = self.register_runtime_class(Class::new(0, "Object".to_string(), 6));
+            let id = self.register_runtime_class_with_layout_names(
+                Class::new(0, "Object".to_string(), 6),
+                Some(crate::vm::object::OBJECT_DESCRIPTOR_LAYOUT_FIELDS),
+            );
             let (layout_id, field_count) = self
                 .nominal_allocation(id)
                 .expect("registered Object allocation");

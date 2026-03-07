@@ -16,6 +16,7 @@
 use std::alloc::{self, Layout};
 use std::ptr;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use super::abi;
 use super::frame::{
@@ -23,14 +24,28 @@ use super::frame::{
 };
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
 use crate::vm::interpreter::SharedVmState;
-use crate::vm::object::Object;
+use crate::vm::json::view::{js_classify, JSView};
+use crate::vm::object::{Array, BoundMethod, Object, RayaString};
 use crate::vm::scheduler::{IoSubmission, Task};
 use crate::vm::value::Value;
 use raya_sdk::NativeCallResult;
+use rustc_hash::FxHashMap;
 
 /// Temporary marker native ID for exercising suspend handoff in default AOT helpers.
 /// Real runtime dispatch will replace this stub behavior.
 const STUB_NATIVE_SUSPEND_ID: u16 = u16::MAX;
+const CAST_KIND_MASK_FLAG: u16 = 0x8000;
+const CAST_TUPLE_LEN_FLAG: u16 = 0x4000;
+const CAST_OBJECT_MIN_FIELDS_FLAG: u16 = 0x2000;
+const CAST_ARRAY_ELEM_KIND_FLAG: u16 = 0x1000;
+const CAST_KIND_NULL: u16 = 0x0001;
+const CAST_KIND_BOOL: u16 = 0x0002;
+const CAST_KIND_INT: u16 = 0x0004;
+const CAST_KIND_NUMBER: u16 = 0x0008;
+const CAST_KIND_STRING: u16 = 0x0010;
+const CAST_KIND_ARRAY: u16 = 0x0020;
+const CAST_KIND_OBJECT: u16 = 0x0040;
+const CAST_KIND_FUNCTION: u16 = 0x0080;
 
 // =============================================================================
 // Frame management
@@ -139,54 +154,128 @@ unsafe extern "C" fn helper_alloc_object(
 }
 
 unsafe extern "C" fn helper_alloc_array(
-    _ctx: *mut AotTaskContext,
-    _type_id: u32,
-    _capacity: u32,
+    ctx: *mut AotTaskContext,
+    type_id: u32,
+    capacity: u32,
 ) -> u64 {
-    // TODO: Allocate array via GC
-    abi::NULL_VALUE
+    if ctx.is_null() || (*ctx).shared_state.is_null() {
+        return abi::NULL_VALUE;
+    }
+    let shared = &*((*ctx).shared_state as *const SharedVmState);
+    let arr = Array::new(type_id as usize, capacity as usize);
+    let mut gc = shared.gc.lock();
+    let arr_ptr = gc.allocate(arr);
+    Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()).raw()
 }
 
 unsafe extern "C" fn helper_alloc_string(
-    _ctx: *mut AotTaskContext,
-    _data_ptr: *const u8,
-    _len: u32,
+    ctx: *mut AotTaskContext,
+    data_ptr: *const u8,
+    len: u32,
 ) -> u64 {
-    // TODO: Allocate string via GC
-    abi::NULL_VALUE
+    if ctx.is_null() || (*ctx).shared_state.is_null() || data_ptr.is_null() {
+        return abi::NULL_VALUE;
+    }
+    let shared = &*((*ctx).shared_state as *const SharedVmState);
+    let bytes = std::slice::from_raw_parts(data_ptr, len as usize);
+    let string = match std::str::from_utf8(bytes) {
+        Ok(value) => value.to_owned(),
+        Err(_) => String::from_utf8_lossy(bytes).into_owned(),
+    };
+    let mut gc = shared.gc.lock();
+    let ptr = gc.allocate(RayaString::new(string));
+    Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()).raw()
 }
 
 // =============================================================================
 // Value operations (stubs — require value system integration)
 // =============================================================================
 
-unsafe extern "C" fn helper_string_concat(_ctx: *mut AotTaskContext, _a: u64, _b: u64) -> u64 {
-    // TODO: Concatenate two NaN-boxed strings
-    abi::NULL_VALUE
+unsafe extern "C" fn helper_string_concat(ctx: *mut AotTaskContext, a: u64, b: u64) -> u64 {
+    if ctx.is_null() || (*ctx).shared_state.is_null() {
+        return abi::NULL_VALUE;
+    }
+    let shared = &*((*ctx).shared_state as *const SharedVmState);
+    let a = Value::from_raw(a);
+    let b = Value::from_raw(b);
+    let stringify = |value: Value| -> String {
+        if value.is_null() {
+            "null".to_string()
+        } else if let Some(boolean) = value.as_bool() {
+            boolean.to_string()
+        } else if let Some(int) = value.as_i32() {
+            int.to_string()
+        } else if let Some(float) = value.as_f64() {
+            if float.fract() == 0.0 && float.abs() < 1e15 {
+                (float as i64).to_string()
+            } else {
+                float.to_string()
+            }
+        } else if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
+            unsafe { &*ptr.as_ptr() }.data.clone()
+        } else {
+            "[object]".to_string()
+        }
+    };
+    let result = RayaString::new(format!("{}{}", stringify(a), stringify(b)));
+    let mut gc = shared.gc.lock();
+    let ptr = gc.allocate(result);
+    Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()).raw()
 }
 
-unsafe extern "C" fn helper_string_len(_val: u64) -> u64 {
-    // TODO: Get string length, return NaN-boxed i32
-    // For now, return 0
-    abi::I32_TAG_BASE // NaN-boxed 0
+unsafe extern "C" fn helper_string_len(val: u64) -> u64 {
+    let value = Value::from_raw(val);
+    let Some(ptr) = (unsafe { value.as_ptr::<RayaString>() }) else {
+        return Value::i32(0).raw();
+    };
+    Value::i32(unsafe { &*ptr.as_ptr() }.len() as i32).raw()
 }
 
-unsafe extern "C" fn helper_array_len(_val: u64) -> u64 {
-    // TODO: Get array length, return NaN-boxed i32
-    abi::I32_TAG_BASE // NaN-boxed 0
+unsafe extern "C" fn helper_array_len(val: u64) -> u64 {
+    let value = Value::from_raw(val);
+    let Some(ptr) = (unsafe { value.as_ptr::<Array>() }) else {
+        return Value::i32(0).raw();
+    };
+    Value::i32(unsafe { &*ptr.as_ptr() }.len() as i32).raw()
 }
 
-unsafe extern "C" fn helper_array_get(_array: u64, _index: u64) -> u64 {
-    // TODO: Array element access
-    abi::NULL_VALUE
+unsafe extern "C" fn helper_array_get(array: u64, index: u64) -> u64 {
+    let array = Value::from_raw(array);
+    let index = Value::from_raw(index);
+    let Some(ptr) = (unsafe { array.as_ptr::<Array>() }) else {
+        return abi::NULL_VALUE;
+    };
+    let index = index
+        .as_i32()
+        .map(|v| v as usize)
+        .or_else(|| index.as_f64().map(|v| v as usize))
+        .unwrap_or(0);
+    unsafe { &*ptr.as_ptr() }
+        .get(index)
+        .unwrap_or(Value::null())
+        .raw()
 }
 
-unsafe extern "C" fn helper_array_set(_array: u64, _index: u64, _value: u64) {
-    // TODO: Array element store
+unsafe extern "C" fn helper_array_set(array: u64, index: u64, value: u64) {
+    let array = Value::from_raw(array);
+    let index = Value::from_raw(index);
+    let Some(ptr) = (unsafe { array.as_ptr::<Array>() }) else {
+        return;
+    };
+    let index = index
+        .as_i32()
+        .map(|v| v as usize)
+        .or_else(|| index.as_f64().map(|v| v as usize))
+        .unwrap_or(0);
+    let _ = unsafe { &mut *ptr.as_ptr() }.set(index, Value::from_raw(value));
 }
 
-unsafe extern "C" fn helper_array_push(_ctx: *mut AotTaskContext, _array: u64, _value: u64) {
-    // TODO: Array push
+unsafe extern "C" fn helper_array_push(_ctx: *mut AotTaskContext, array: u64, value: u64) {
+    let array = Value::from_raw(array);
+    let Some(ptr) = (unsafe { array.as_ptr::<Array>() }) else {
+        return;
+    };
+    unsafe { &mut *ptr.as_ptr() }.push(Value::from_raw(value));
 }
 
 unsafe extern "C" fn helper_generic_equals(a: u64, b: u64) -> u8 {
@@ -214,6 +303,641 @@ unsafe extern "C" fn helper_generic_less_than(a: u64, b: u64) -> u8 {
         }
     } else {
         0
+    }
+}
+
+// =============================================================================
+// Shape / dynamic / cast helpers
+// =============================================================================
+
+fn aot_shared<'a>(ctx: *mut AotTaskContext) -> Option<&'a SharedVmState> {
+    if ctx.is_null() {
+        return None;
+    }
+    let ptr = unsafe { (*ctx).shared_state as *const SharedVmState };
+    (!ptr.is_null()).then(|| unsafe { &*ptr })
+}
+
+fn aot_module<'a>(ctx: *mut AotTaskContext) -> Option<&'a crate::compiler::Module> {
+    if ctx.is_null() {
+        return None;
+    }
+    let ptr = unsafe { (*ctx).module as *const crate::compiler::Module };
+    (!ptr.is_null()).then(|| unsafe { &*ptr })
+}
+
+fn aot_task<'a>(ctx: *mut AotTaskContext) -> Option<&'a Task> {
+    if ctx.is_null() {
+        return None;
+    }
+    let ptr = unsafe { (*ctx).current_task as *const Task };
+    (!ptr.is_null()).then(|| unsafe { &*ptr })
+}
+
+fn aot_raise_type_error(ctx: *mut AotTaskContext, message: String) {
+    let (Some(shared), Some(task)) = (aot_shared(ctx), aot_task(ctx)) else {
+        return;
+    };
+    if task.has_exception() {
+        return;
+    }
+    let mut gc = shared.gc.lock();
+    let ptr = gc.allocate(RayaString::new(message));
+    let exc = unsafe { Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()) };
+    task.set_exception(exc);
+}
+
+fn aot_value_kind_mask(value: Value) -> u16 {
+    if value.is_null() {
+        return CAST_KIND_NULL;
+    }
+    if value.as_bool().is_some() {
+        return CAST_KIND_BOOL;
+    }
+    if value.as_i32().is_some() {
+        return CAST_KIND_INT;
+    }
+    if value.as_f64().is_some() {
+        return CAST_KIND_NUMBER;
+    }
+    if unsafe { value.as_ptr::<RayaString>() }.is_some() {
+        return CAST_KIND_STRING;
+    }
+    if unsafe { value.as_ptr::<Array>() }.is_some() {
+        return CAST_KIND_ARRAY;
+    }
+    if unsafe { value.as_ptr::<Object>() }.is_some() {
+        return CAST_KIND_OBJECT;
+    }
+    if unsafe { value.as_ptr::<crate::vm::object::Closure>() }.is_some()
+        || unsafe { value.as_ptr::<crate::vm::object::BoundMethod>() }.is_some()
+        || unsafe { value.as_ptr::<crate::vm::object::BoundNativeMethod>() }.is_some()
+    {
+        return CAST_KIND_FUNCTION;
+    }
+    0
+}
+
+fn aot_object_ptr_checked(value: Value) -> Option<std::ptr::NonNull<Object>> {
+    unsafe { value.as_ptr::<Object>() }
+}
+
+fn aot_dyn_key_parts(key_val: Value) -> Result<(Option<String>, Option<usize>), String> {
+    match js_classify(key_val) {
+        JSView::Str(ptr) => {
+            let key = unsafe { &*ptr }.data.clone();
+            let index = key.parse::<usize>().ok();
+            Ok((Some(key), index))
+        }
+        JSView::Int(index) if index >= 0 => {
+            let index = index as usize;
+            Ok((Some(index.to_string()), Some(index)))
+        }
+        JSView::Number(number) if number.is_finite() && number.fract() == 0.0 && number >= 0.0 => {
+            let index = number as usize;
+            Ok((Some(index.to_string()), Some(index)))
+        }
+        _ => Err("Dynamic key must be a string or non-negative integer".to_string()),
+    }
+}
+
+fn aot_shape_slot_map_for_object(
+    shared: &SharedVmState,
+    object: &Object,
+    required_names: &[String],
+) -> Option<Vec<crate::vm::interpreter::StructuralSlotBinding>> {
+    use crate::vm::interpreter::StructuralSlotBinding;
+
+    let layout_names = shared
+        .layouts
+        .read()
+        .layout_field_names(object.layout_id())
+        .map(|names| names.to_vec())
+        .or_else(|| {
+            shared
+                .structural_layout_shapes
+                .read()
+                .get(&object.layout_id())
+                .cloned()
+        });
+    let class_meta = object.nominal_type_id_usize().and_then(|nominal_type_id| {
+        shared.class_metadata.read().get(nominal_type_id).cloned()
+    });
+    let dynamic_binding_for = |name: &str| {
+        object.dyn_map().and_then(|dyn_map| {
+            dyn_map.keys().find_map(|key| {
+                shared
+                    .prop_key_name(*key)
+                    .filter(|actual| actual == name)
+                    .map(|_| StructuralSlotBinding::Dynamic(*key))
+            })
+        })
+    };
+
+    if let Some(nominal_type_id) = object.nominal_type_id_usize() {
+        let class_meta = class_meta;
+        let classes = shared.classes.read();
+        let class = classes.get_class(nominal_type_id)?;
+        return Some(
+            required_names
+                .iter()
+                .map(|name| {
+                    class_meta
+                        .as_ref()
+                        .and_then(|meta| meta.get_field_index(name))
+                        .and_then(|index| {
+                            (index < object.field_count()).then_some(StructuralSlotBinding::Field(index))
+                        })
+                        .or_else(|| {
+                            layout_names
+                                .as_ref()
+                                .and_then(|names| names.iter().position(|actual| actual == name))
+                                .map(StructuralSlotBinding::Field)
+                        })
+                        .or_else(|| {
+                            class_meta
+                                .as_ref()
+                                .and_then(|meta| meta.get_method_index(name))
+                                .map(StructuralSlotBinding::Method)
+                        })
+                        .or_else(|| dynamic_binding_for(name))
+                        .unwrap_or(StructuralSlotBinding::Missing)
+                })
+                .collect(),
+        );
+    }
+
+    Some(
+        required_names
+            .iter()
+            .map(|name| {
+                layout_names
+                    .as_ref()
+                    .and_then(|names| names.iter().position(|actual| actual == name))
+                    .map(StructuralSlotBinding::Field)
+                    .or_else(|| dynamic_binding_for(name))
+                    .unwrap_or(StructuralSlotBinding::Missing)
+            })
+            .collect(),
+    )
+}
+
+fn aot_ensure_shape_adapter_for_object(
+    shared: &SharedVmState,
+    object: &Object,
+    required_shape: u64,
+) -> Option<Arc<crate::vm::interpreter::ShapeAdapter>> {
+    use crate::vm::interpreter::ShapeAdapter;
+    use crate::vm::interpreter::StructuralAdapterKey;
+
+    let adapter_key = StructuralAdapterKey {
+        provider_layout: object.layout_id(),
+        required_shape,
+    };
+    let current_epoch = shared
+        .layouts
+        .read()
+        .layout_epoch(object.layout_id())
+        .unwrap_or(0);
+    if let Some(adapter) = shared
+        .structural_shape_adapters
+        .read()
+        .get(&adapter_key)
+        .cloned()
+    {
+        if adapter.epoch == current_epoch {
+            return Some(adapter);
+        }
+    }
+    let required_names = shared
+        .structural_shape_names
+        .read()
+        .get(&required_shape)
+        .cloned()?;
+    let slot_map = aot_shape_slot_map_for_object(shared, object, &required_names)?;
+    let adapter = Arc::new(ShapeAdapter::from_slot_map(
+        object.layout_id(),
+        required_shape,
+        &slot_map,
+        current_epoch,
+    ));
+    let mut adapters = shared.structural_shape_adapters.write();
+    let entry = adapters
+        .entry(adapter_key)
+        .or_insert_with(|| adapter.clone())
+        .clone();
+    Some(entry)
+}
+
+unsafe extern "C" fn helper_object_is_nominal(
+    ctx: *mut AotTaskContext,
+    object_raw: u64,
+    local_nominal_type_index: u32,
+) -> u8 {
+    let (Some(shared), Some(module)) = (aot_shared(ctx), aot_module(ctx)) else {
+        return 0;
+    };
+    let Some(target_nominal_type_id) =
+        shared.resolve_nominal_type_id(module, local_nominal_type_index as usize)
+    else {
+        return 0;
+    };
+    let object = Value::from_raw(object_raw);
+    let Some(object_ptr) = aot_object_ptr_checked(object) else {
+        return 0;
+    };
+    let object = &*object_ptr.as_ptr();
+    let classes = shared.classes.read();
+    let mut current = object.nominal_type_id_usize();
+    while let Some(nominal_type_id) = current {
+        if nominal_type_id == target_nominal_type_id {
+            return 1;
+        }
+        current = classes.get_class(nominal_type_id).and_then(|class| class.parent_id);
+    }
+    0
+}
+
+unsafe extern "C" fn helper_object_implements_shape(
+    ctx: *mut AotTaskContext,
+    object_raw: u64,
+    required_shape: u64,
+) -> u8 {
+    let Some(shared) = aot_shared(ctx) else {
+        return 0;
+    };
+    let object = Value::from_raw(object_raw);
+    let Some(object_ptr) = aot_object_ptr_checked(object) else {
+        return 0;
+    };
+    let object = &*object_ptr.as_ptr();
+    let Some(adapter) = aot_ensure_shape_adapter_for_object(shared, object, required_shape) else {
+        return 0;
+    };
+    if (0..adapter.len()).all(|slot| {
+        !matches!(
+            adapter.binding_for_slot(slot),
+            crate::vm::interpreter::StructuralSlotBinding::Missing
+        )
+    }) {
+        1
+    } else {
+        0
+    }
+}
+
+unsafe extern "C" fn helper_object_get_shape_field(
+    ctx: *mut AotTaskContext,
+    object_raw: u64,
+    required_shape: u64,
+    expected_slot: u32,
+    optional: u8,
+) -> u64 {
+    use crate::vm::interpreter::StructuralSlotBinding;
+
+    let Some(shared) = aot_shared(ctx) else {
+        return abi::NULL_VALUE;
+    };
+    let object = Value::from_raw(object_raw);
+    if optional != 0 && object.is_null() {
+        return Value::null().raw();
+    }
+    let Some(object_ptr) = aot_object_ptr_checked(object) else {
+        return abi::NULL_VALUE;
+    };
+    let object_ref = &*object_ptr.as_ptr();
+    let Some(adapter) = aot_ensure_shape_adapter_for_object(shared, object_ref, required_shape) else {
+        return abi::NULL_VALUE;
+    };
+    match adapter.binding_for_slot(expected_slot as usize) {
+        StructuralSlotBinding::Field(slot) => {
+            object_ref.get_field(slot).unwrap_or(Value::null()).raw()
+        }
+        StructuralSlotBinding::Dynamic(key) => object_ref
+            .dyn_map()
+            .and_then(|dyn_map| dyn_map.get(&key).copied())
+            .unwrap_or(Value::null())
+            .raw(),
+        StructuralSlotBinding::Method(method_slot) => {
+            let Some(nominal_type_id) = object_ref.nominal_type_id_usize() else {
+                return abi::NULL_VALUE;
+            };
+            let (func_id, method_module) = {
+                let classes = shared.classes.read();
+                let Some(class) = classes.get_class(nominal_type_id) else {
+                    return abi::NULL_VALUE;
+                };
+                let Some(fid) = class.vtable.get_method(method_slot) else {
+                    return abi::NULL_VALUE;
+                };
+                (fid, class.module.clone())
+            };
+            let mut gc = shared.gc.lock();
+            let ptr = gc.allocate(BoundMethod {
+                receiver: object,
+                func_id,
+                module: method_module,
+            });
+            Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()).raw()
+        }
+        StructuralSlotBinding::Missing => Value::null().raw(),
+    }
+}
+
+unsafe extern "C" fn helper_object_set_shape_field(
+    ctx: *mut AotTaskContext,
+    object_raw: u64,
+    required_shape: u64,
+    expected_slot: u32,
+    value_raw: u64,
+) -> u8 {
+    use crate::vm::interpreter::StructuralSlotBinding;
+
+    let Some(shared) = aot_shared(ctx) else {
+        return 0;
+    };
+    let object = Value::from_raw(object_raw);
+    let Some(object_ptr) = aot_object_ptr_checked(object) else {
+        return 0;
+    };
+    let object_ref = &mut *object_ptr.as_ptr();
+    let Some(adapter) = aot_ensure_shape_adapter_for_object(shared, object_ref, required_shape) else {
+        return 0;
+    };
+    match adapter.binding_for_slot(expected_slot as usize) {
+        StructuralSlotBinding::Field(slot) => object_ref
+            .set_field(slot, Value::from_raw(value_raw))
+            .map(|_| 1)
+            .unwrap_or(0),
+        StructuralSlotBinding::Dynamic(key) => {
+            object_ref.ensure_dyn_map().insert(key, Value::from_raw(value_raw));
+            1
+        }
+        StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => 0,
+    }
+}
+
+unsafe extern "C" fn helper_cast_value(
+    ctx: *mut AotTaskContext,
+    value_raw: u64,
+    target: u32,
+) -> u64 {
+    let value = Value::from_raw(value_raw);
+    let target = target as u16;
+    let (Some(shared), Some(module)) = (aot_shared(ctx), aot_module(ctx)) else {
+        return abi::NULL_VALUE;
+    };
+
+    if (target & CAST_KIND_MASK_FLAG) != 0 {
+        if (target & CAST_TUPLE_LEN_FLAG) != 0 {
+            let expected_len = (target & 0x3FFF) as usize;
+            let Some(ptr) = (unsafe { value.as_ptr::<Array>() }) else {
+                aot_raise_type_error(ctx, format!("Cannot cast non-array value to tuple length {}", expected_len));
+                return abi::NULL_VALUE;
+            };
+            if unsafe { &*ptr.as_ptr() }.len() != expected_len {
+                aot_raise_type_error(ctx, format!("Cannot cast array to tuple length {}", expected_len));
+                return abi::NULL_VALUE;
+            }
+            return value.raw();
+        }
+        if (target & CAST_OBJECT_MIN_FIELDS_FLAG) != 0 {
+            let required_fields = (target & 0x1FFF) as usize;
+            let Some(ptr) = aot_object_ptr_checked(value) else {
+                aot_raise_type_error(ctx, format!("Cannot cast non-object value to object with {} required fields", required_fields));
+                return abi::NULL_VALUE;
+            };
+            let object = unsafe { &*ptr.as_ptr() };
+            let field_count = object
+                .field_count()
+                .max(object.dyn_map().map(|dyn_map| dyn_map.len()).unwrap_or(0));
+            if field_count < required_fields {
+                aot_raise_type_error(ctx, format!("Cannot cast object(field_count={}) to required field count {}", field_count, required_fields));
+                return abi::NULL_VALUE;
+            }
+            return value.raw();
+        }
+        if (target & CAST_ARRAY_ELEM_KIND_FLAG) != 0 {
+            let expected = target & 0x00FF;
+            let Some(ptr) = (unsafe { value.as_ptr::<Array>() }) else {
+                aot_raise_type_error(ctx, format!("Cannot cast non-array value to array element mask 0x{:02X}", expected));
+                return abi::NULL_VALUE;
+            };
+            let array = unsafe { &*ptr.as_ptr() };
+            for element in &array.elements {
+                let mut actual = aot_value_kind_mask(*element);
+                if (actual & CAST_KIND_INT) != 0 {
+                    actual |= CAST_KIND_NUMBER;
+                }
+                if (actual & expected) == 0 {
+                    aot_raise_type_error(ctx, format!("Cannot cast array element to required kind mask 0x{:02X}", expected));
+                    return abi::NULL_VALUE;
+                }
+            }
+            return value.raw();
+        }
+        let expected = target & !CAST_KIND_MASK_FLAG;
+        let mut actual = aot_value_kind_mask(value);
+        if (actual & CAST_KIND_INT) != 0 {
+            actual |= CAST_KIND_NUMBER;
+        }
+        if (actual & expected) != 0 {
+            return value.raw();
+        }
+        if expected == CAST_KIND_FUNCTION {
+            let func_id = value.as_i32().map(|v| v as usize).or_else(|| {
+                value.as_f64().and_then(|v| {
+                    if v.is_finite() && v.fract() == 0.0 && v >= 0.0 && v <= usize::MAX as f64 {
+                        Some(v as usize)
+                    } else {
+                        None
+                    }
+                })
+            });
+            if let Some(func_id) = func_id {
+                if module.functions.get(func_id).is_some() {
+                    return value.raw();
+                }
+            }
+        }
+        if expected == CAST_KIND_INT {
+            if let Some(num) = value.as_f64() {
+                if num.is_finite()
+                    && num.fract() == 0.0
+                    && num >= i32::MIN as f64
+                    && num <= i32::MAX as f64
+                {
+                    return Value::i32(num as i32).raw();
+                }
+            }
+        }
+        aot_raise_type_error(ctx, format!("Cannot cast value to runtime kind mask 0x{:04X}", expected));
+        return abi::NULL_VALUE;
+    }
+
+    let Some(target_nominal_type_id) =
+        shared.resolve_nominal_type_id(module, target as usize)
+    else {
+        aot_raise_type_error(ctx, format!("Unknown nominal target {}", target));
+        return abi::NULL_VALUE;
+    };
+    let Some(object_ptr) = aot_object_ptr_checked(value) else {
+        aot_raise_type_error(ctx, "Cannot cast non-object value to nominal type".to_string());
+        return abi::NULL_VALUE;
+    };
+    let object = unsafe { &*object_ptr.as_ptr() };
+    let classes = shared.classes.read();
+    let mut current = object.nominal_type_id_usize();
+    while let Some(nominal_type_id) = current {
+        if nominal_type_id == target_nominal_type_id {
+            return value.raw();
+        }
+        current = classes.get_class(nominal_type_id).and_then(|class| class.parent_id);
+    }
+    aot_raise_type_error(ctx, "Cannot cast object to target nominal type".to_string());
+    abi::NULL_VALUE
+}
+
+unsafe extern "C" fn helper_cast_shape(
+    ctx: *mut AotTaskContext,
+    value_raw: u64,
+    required_shape: u64,
+) -> u64 {
+    let Some(shared) = aot_shared(ctx) else {
+        return abi::NULL_VALUE;
+    };
+    let value = Value::from_raw(value_raw);
+    let Some(object_ptr) = aot_object_ptr_checked(value) else {
+        aot_raise_type_error(
+            ctx,
+            format!("Cannot cast non-object value to structural shape @{required_shape:016x}"),
+        );
+        return abi::NULL_VALUE;
+    };
+    let object = unsafe { &*object_ptr.as_ptr() };
+    let Some(adapter) = aot_ensure_shape_adapter_for_object(shared, object, required_shape) else {
+        aot_raise_type_error(
+            ctx,
+            format!(
+                "Cannot cast object(layout_id={}) to structural shape @{required_shape:016x}",
+                object.layout_id()
+            ),
+        );
+        return abi::NULL_VALUE;
+    };
+    for slot in 0..adapter.len() {
+        if matches!(
+            adapter.binding_for_slot(slot),
+            crate::vm::interpreter::StructuralSlotBinding::Missing
+        ) {
+            aot_raise_type_error(
+                ctx,
+                format!(
+                    "Cannot cast object(layout_id={}) to structural shape @{required_shape:016x}: missing required slot {}",
+                    object.layout_id(),
+                    slot
+                ),
+            );
+            return abi::NULL_VALUE;
+        }
+    }
+    value.raw()
+}
+
+unsafe extern "C" fn helper_dyn_get_prop(
+    ctx: *mut AotTaskContext,
+    object_raw: u64,
+    key_raw: u64,
+) -> u64 {
+    let Some(shared) = aot_shared(ctx) else {
+        return abi::NULL_VALUE;
+    };
+    let object = Value::from_raw(object_raw);
+    let key = Value::from_raw(key_raw);
+    let Ok((key_str, array_index)) = aot_dyn_key_parts(key) else {
+        return abi::NULL_VALUE;
+    };
+    match js_classify(object) {
+        JSView::Arr(ptr) => {
+            let arr = unsafe { &*ptr };
+            if let Some(index) = array_index {
+                arr.get(index).unwrap_or(Value::null()).raw()
+            } else if key_str.as_deref() == Some("length") {
+                Value::i32(arr.len() as i32).raw()
+            } else {
+                abi::NULL_VALUE
+            }
+        }
+        JSView::Struct { ptr, .. } => {
+            let obj = unsafe { &*ptr };
+            let key_str = key_str.unwrap_or_default();
+            if let Some(index) = {
+                let layout_names = shared
+                    .layouts
+                    .read()
+                    .layout_field_names(obj.layout_id())
+                    .map(|names| names.to_vec())
+                    .or_else(|| shared.structural_layout_shapes.read().get(&obj.layout_id()).cloned());
+                layout_names.and_then(|names| names.iter().position(|name| name == &key_str))
+            } {
+                obj.get_field(index).unwrap_or(Value::null()).raw()
+            } else {
+                let key_id = shared.prop_keys.write().intern(&key_str);
+                obj.dyn_map()
+                    .and_then(|dyn_map| dyn_map.get(&key_id).copied())
+                    .unwrap_or(Value::null())
+                    .raw()
+            }
+        }
+        _ => abi::NULL_VALUE,
+    }
+}
+
+unsafe extern "C" fn helper_dyn_set_prop(
+    ctx: *mut AotTaskContext,
+    object_raw: u64,
+    key_raw: u64,
+    value_raw: u64,
+) {
+    let Some(shared) = aot_shared(ctx) else {
+        return;
+    };
+    let object = Value::from_raw(object_raw);
+    let key = Value::from_raw(key_raw);
+    let value = Value::from_raw(value_raw);
+    let Ok((key_str, array_index)) = aot_dyn_key_parts(key) else {
+        return;
+    };
+    match js_classify(object) {
+        JSView::Arr(ptr) => {
+            let Some(index) = array_index else {
+                return;
+            };
+            let arr = unsafe { &mut *(ptr as *mut Array) };
+            if index >= arr.elements.len() {
+                arr.elements.resize(index + 1, Value::null());
+            }
+            arr.elements[index] = value;
+        }
+        JSView::Struct { ptr, .. } => {
+            let obj = unsafe { &mut *(ptr as *mut Object) };
+            let key_str = key_str.unwrap_or_default();
+            if let Some(index) = {
+                let layout_names = shared
+                    .layouts
+                    .read()
+                    .layout_field_names(obj.layout_id())
+                    .map(|names| names.to_vec())
+                    .or_else(|| shared.structural_layout_shapes.read().get(&obj.layout_id()).cloned());
+                layout_names.and_then(|names| names.iter().position(|name| name == &key_str))
+            } {
+                let _ = obj.set_field(index, value);
+            } else {
+                let key_id = shared.prop_keys.write().intern(&key_str);
+                obj.ensure_dyn_map().insert(key_id, value);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -396,11 +1120,20 @@ unsafe extern "C" fn helper_trap_fn(_frame: *mut AotFrame, _ctx: *mut AotTaskCon
 // =============================================================================
 
 unsafe extern "C" fn helper_load_string_constant(
-    _ctx: *mut AotTaskContext,
-    _const_index: u32,
+    ctx: *mut AotTaskContext,
+    const_index: u32,
 ) -> u64 {
-    // TODO: Load from module constant pool
-    abi::NULL_VALUE
+    if ctx.is_null() || (*ctx).shared_state.is_null() || (*ctx).module.is_null() {
+        return abi::NULL_VALUE;
+    }
+    let shared = &*((*ctx).shared_state as *const SharedVmState);
+    let module = &*((*ctx).module as *const crate::compiler::Module);
+    let Some(string) = module.constants.get_string(const_index) else {
+        return abi::NULL_VALUE;
+    };
+    let mut gc = shared.gc.lock();
+    let ptr = gc.allocate(RayaString::new(string.to_string()));
+    Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()).raw()
 }
 
 /// Box an i32 value into a NaN-boxed u64.
@@ -447,6 +1180,14 @@ pub fn create_default_helper_table() -> AotHelperTable {
         generic_less_than: helper_generic_less_than,
         object_get_field: helper_object_get_field,
         object_set_field: helper_object_set_field,
+        object_is_nominal: helper_object_is_nominal,
+        object_implements_shape: helper_object_implements_shape,
+        object_get_shape_field: helper_object_get_shape_field,
+        object_set_shape_field: helper_object_set_shape_field,
+        cast_value: helper_cast_value,
+        cast_shape: helper_cast_shape,
+        dyn_get_prop: helper_dyn_get_prop,
+        dyn_set_prop: helper_dyn_set_prop,
         native_call: helper_native_call,
         is_native_suspend: helper_is_native_suspend,
         spawn: helper_spawn,

@@ -1066,6 +1066,15 @@ fn lift_instruction(
                 offset: instr.offset,
             });
         }
+        Opcode::CastTupleLen
+        | Opcode::CastObjectMinFields
+        | Opcode::CastArrayElemKind
+        | Opcode::CastKindMask => {
+            return Err(LiftError::UnsupportedOpcode {
+                opcode: instr.opcode,
+                offset: instr.offset,
+            });
+        }
         Opcode::CastShape => {
             if let Operands::U64(shape_id) = instr.operands {
                 let object = stack.pop(instr.offset)?;

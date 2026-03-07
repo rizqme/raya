@@ -1962,24 +1962,33 @@ fn allocate_string(ctx: &RuntimeHandlerContext<'_>, s: String) -> Value {
 }
 
 fn register_runtime_class(ctx: &RuntimeHandlerContext<'_>, class: Class) -> usize {
+    register_runtime_class_with_layout_names(ctx, class, None::<&[&str]>)
+}
+
+fn register_runtime_class_with_layout_names(
+    ctx: &RuntimeHandlerContext<'_>,
+    class: Class,
+    layout_names: impl Into<Option<&'static [&'static str]>>,
+) -> usize {
+    assert_eq!(
+        class.id, 0,
+        "runtime class registration must not supply nominal IDs directly"
+    );
     let layout_id = ctx.layouts.write().allocate_nominal_layout_id();
     let field_count = class.field_count;
     let class_name = class.name.clone();
-    let builtin_layout_names = crate::vm::object::builtin_nominal_layout_field_names(&class_name)
-        .map(|field_names| {
-            field_names
-                .iter()
-                .map(|name| (*name).to_string())
-                .collect::<Vec<_>>()
-        });
     let id = ctx.classes.write().register_class(class);
     ctx.layouts
         .write()
         .register_nominal_layout(id, layout_id, field_count, Some(class_name));
-    if let Some(owned_names) = builtin_layout_names.as_ref() {
+    if let Some(layout_names) = layout_names.into() {
+        let owned_names = layout_names
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
         ctx.layouts
             .write()
-            .register_layout_shape(layout_id, owned_names);
+            .register_layout_shape(layout_id, &owned_names);
     }
     id
 }
@@ -1995,7 +2004,11 @@ fn ensure_buffer_class_layout(ctx: &RuntimeHandlerContext<'_>) -> (usize, usize,
         (id, field_count.max(2), layout_id)
     } else {
         drop(classes);
-        let id = register_runtime_class(ctx, Class::new(0, "Buffer".to_string(), 2));
+        let id = register_runtime_class_with_layout_names(
+            ctx,
+            Class::new(0, "Buffer".to_string(), 2),
+            Some(crate::vm::object::BUFFER_LAYOUT_FIELDS),
+        );
         let (layout_id, field_count) = ctx
             .layouts
             .read()

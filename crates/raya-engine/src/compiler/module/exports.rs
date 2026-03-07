@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use crate::compiler::{
     module_id_from_name, symbol_id_from_name, ModuleId, SymbolId, SymbolScope, SymbolType,
-    TypeSymbolId,
+    TypeSignatureHash,
 };
 use crate::parser::checker::{Symbol, SymbolKind};
 use crate::parser::types::{canonical_type_signature, TypeContext, TypeId};
@@ -35,7 +35,7 @@ pub struct ExportedSymbol {
     /// Stable symbol ID.
     pub symbol_id: SymbolId,
     /// Stable type symbol ID.
-    pub type_symbol_id: TypeSymbolId,
+    pub signature_hash: TypeSignatureHash,
     /// Canonical structural signature string for deterministic diagnostics.
     pub type_signature: String,
     /// Export symbol scope class.
@@ -75,7 +75,7 @@ impl ExportedSymbol {
             module_name: module_name.to_string(),
             module_id,
             symbol_id,
-            type_symbol_id: structural_sig.hash,
+            signature_hash: structural_sig.hash,
             type_signature: structural_sig.canonical,
             scope,
         }
@@ -103,7 +103,7 @@ impl ExportedSymbol {
             module_name: module_name.to_string(),
             module_id,
             symbol_id,
-            type_symbol_id: structural_sig.hash,
+            signature_hash: structural_sig.hash,
             type_signature: structural_sig.canonical,
             scope,
         }
@@ -253,7 +253,7 @@ mod tests {
             module_name: "/test.raya".to_string(),
             module_id: module_id_from_name("/test.raya"),
             symbol_id: symbol_id_from_name("/test.raya", SymbolScope::Module, "foo"),
-            type_symbol_id: 101,
+            signature_hash: 101,
             type_signature: "fn(min=0,params=[],rest=_,ret=number)".to_string(),
             scope: SymbolScope::Module,
         };
@@ -284,7 +284,7 @@ mod tests {
             module_name: "/utils.raya".to_string(),
             module_id: module_id_from_name("/utils.raya"),
             symbol_id: symbol_id_from_name("/utils.raya", SymbolScope::Module, "helper"),
-            type_symbol_id: 102,
+            signature_hash: 102,
             type_signature: "fn(min=0,params=[],rest=_,ret=number)".to_string(),
             scope: SymbolScope::Module,
         });
@@ -310,7 +310,7 @@ mod tests {
             module_name: "/m.raya".to_string(),
             module_id: module_id_from_name("/m.raya"),
             symbol_id: symbol_id_from_name("/m.raya", SymbolScope::Module, "myFunc"),
-            type_symbol_id: 103,
+            signature_hash: 103,
             type_signature: "fn(min=0,params=[],rest=_,ret=number)".to_string(),
             scope: SymbolScope::Module,
         };

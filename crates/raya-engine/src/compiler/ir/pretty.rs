@@ -285,11 +285,35 @@ fn format_instr(instr: &IrInstr) -> String {
             object,
             shape_id,
         } => format!("{} = cast_shape {} @{shape_id:016x}", dest, object),
-        IrInstr::Cast {
+        IrInstr::CastTupleLen {
             dest,
             object,
-            target,
-        } => format!("{} = cast {} @{}", dest, object, target.as_u32()),
+            expected_len,
+        } => format!("{} = cast_tuple_len {} {}", dest, object, expected_len),
+        IrInstr::CastObjectMinFields {
+            dest,
+            object,
+            required_fields,
+        } => format!(
+            "{} = cast_object_min_fields {} {}",
+            dest, object, required_fields
+        ),
+        IrInstr::CastArrayElemKind {
+            dest,
+            object,
+            expected_elem_mask,
+        } => format!(
+            "{} = cast_array_elem_kind {} 0x{:02X}",
+            dest, object, expected_elem_mask
+        ),
+        IrInstr::CastKindMask {
+            dest,
+            object,
+            expected_kind_mask,
+        } => format!(
+            "{} = cast_kind_mask {} 0x{:04X}",
+            dest, object, expected_kind_mask
+        ),
         IrInstr::LoadLocal { dest, index } => {
             format!("{} = load_local {}", dest, index)
         }

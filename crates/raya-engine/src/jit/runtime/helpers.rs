@@ -28,6 +28,7 @@ use crate::vm::VmError;
 use crossbeam_deque::Injector;
 use raya_sdk::NativeCallResult;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -38,6 +39,14 @@ pub const JIT_INTERPRETER_FALLBACK_SENTINEL: u64 = 0xFFFF_DEAD_0000_0002;
 pub const JIT_INTERPRETER_EXCEPTION_SENTINEL: u64 = 0xFFFF_DEAD_0000_0003;
 pub const JIT_SHAPE_FIELD_FALLBACK_SENTINEL: u64 = 0xFFFF_DEAD_0000_0004;
 pub const JIT_STRING_LEN_FALLBACK_SENTINEL: i32 = i32::MIN;
+const JIT_SHAPE_ADAPTER_PIC_CAPACITY: usize = 4;
+
+thread_local! {
+    static JIT_SHAPE_ADAPTER_LAST: RefCell<Option<(StructuralAdapterKey, u32, Arc<ShapeAdapter>)>> =
+        const { RefCell::new(None) };
+    static JIT_SHAPE_ADAPTER_PIC: RefCell<Vec<(StructuralAdapterKey, u32, Arc<ShapeAdapter>)>> =
+        const { RefCell::new(Vec::new()) };
+}
 
 const JIT_STORE_SUCCESS: i8 = 1;
 const JIT_STORE_FALLBACK: i8 = 0;
@@ -197,30 +206,6 @@ fn jit_layout_field_names(
             return Some(names.to_vec());
         }
     }
-    if let Some(nominal_type_id) = object.nominal_type_id_usize() {
-        if !bridge.classes.is_null() {
-            let class_name = unsafe { &*bridge.classes }
-                .read()
-                .get_class(nominal_type_id)
-                .map(|class| class.name.clone());
-            if let Some(class_name) = class_name {
-                if let Some(builtin_names) =
-                    crate::vm::object::builtin_nominal_layout_field_names(&class_name)
-                {
-                    let owned_names = builtin_names
-                        .iter()
-                        .map(|name| (*name).to_string())
-                        .collect::<Vec<_>>();
-                    if !bridge.layouts.is_null() {
-                        unsafe { &*bridge.layouts }
-                            .write()
-                            .register_layout_shape(object.layout_id(), &owned_names);
-                    }
-                    return Some(owned_names);
-                }
-            }
-        }
-    }
     global_layout_names(object.layout_id())
 }
 
@@ -303,12 +288,63 @@ fn jit_ensure_shape_adapter_for_object(
         provider_layout: object.layout_id(),
         required_shape,
     };
+    let current_epoch = if bridge.layouts.is_null() {
+        0
+    } else {
+        unsafe { &*bridge.layouts }
+            .read()
+            .layout_epoch(object.layout_id())
+            .unwrap_or(0)
+    };
+    if let Some(adapter) = JIT_SHAPE_ADAPTER_LAST.with(|cache| {
+        let borrowed = cache.borrow();
+        let Some((cached_key, cached_epoch, adapter)) = borrowed.as_ref() else {
+            return None;
+        };
+        if *cached_key == adapter_key && *cached_epoch == current_epoch {
+            Some(adapter.clone())
+        } else {
+            None
+        }
+    }) {
+        return Some(adapter);
+    }
+    if let Some(adapter) = JIT_SHAPE_ADAPTER_PIC.with(|cache| {
+        let borrowed = cache.borrow();
+        borrowed
+            .iter()
+            .find(|(cached_key, cached_epoch, _)| {
+                *cached_key == adapter_key && *cached_epoch == current_epoch
+            })
+            .map(|(_, _, adapter)| adapter.clone())
+    }) {
+        JIT_SHAPE_ADAPTER_LAST.with(|cache| {
+            *cache.borrow_mut() = Some((adapter_key, current_epoch, adapter.clone()));
+        });
+        return Some(adapter);
+    }
     if let Some(adapter) = unsafe { &*bridge.structural_shape_adapters }
         .read()
         .get(&adapter_key)
         .cloned()
     {
-        return Some(adapter);
+        if adapter.epoch == current_epoch {
+            JIT_SHAPE_ADAPTER_LAST.with(|cache| {
+                *cache.borrow_mut() = Some((adapter_key, current_epoch, adapter.clone()));
+            });
+            JIT_SHAPE_ADAPTER_PIC.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                if let Some(pos) = cache
+                    .iter()
+                    .position(|(cached_key, _, _)| *cached_key == adapter_key)
+                {
+                    cache.remove(pos);
+                }
+                cache.insert(0, (adapter_key, current_epoch, adapter.clone()));
+                cache.truncate(JIT_SHAPE_ADAPTER_PIC_CAPACITY);
+            });
+            return Some(adapter);
+        }
     }
 
     if bridge.structural_shape_names.is_null() {
@@ -323,14 +359,28 @@ fn jit_ensure_shape_adapter_for_object(
         object.layout_id(),
         required_shape,
         &slot_map,
+        current_epoch,
     ));
     let mut adapters = unsafe { &*bridge.structural_shape_adapters }.write();
-    Some(
-        adapters
-            .entry(adapter_key)
-            .or_insert_with(|| adapter.clone())
-            .clone(),
-    )
+    let adapter = adapters
+        .entry(adapter_key)
+        .or_insert_with(|| adapter.clone())
+        .clone();
+    JIT_SHAPE_ADAPTER_LAST.with(|cache| {
+        *cache.borrow_mut() = Some((adapter_key, current_epoch, adapter.clone()));
+    });
+    JIT_SHAPE_ADAPTER_PIC.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(pos) = cache
+            .iter()
+            .position(|(cached_key, _, _)| *cached_key == adapter_key)
+        {
+            cache.remove(pos);
+        }
+        cache.insert(0, (adapter_key, current_epoch, adapter.clone()));
+        cache.truncate(JIT_SHAPE_ADAPTER_PIC_CAPACITY);
+    });
+    Some(adapter)
 }
 
 fn jit_resolve_nominal_type_id(

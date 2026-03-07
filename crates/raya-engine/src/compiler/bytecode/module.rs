@@ -8,16 +8,14 @@ use thiserror::Error;
 pub const MAGIC: [u8; 4] = *b"RAYA";
 
 /// Current bytecode version
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 
 /// Stable module ID derived from canonical module identity.
 pub type ModuleId = u64;
 /// Stable symbol ID used for value linkage.
 pub type SymbolId = u64;
-/// Stable symbol ID used for type linkage.
-pub type TypeSymbolId = u64;
 /// Stable structural signature hash used for type compatibility.
-pub type TypeSignatureHash = TypeSymbolId;
+pub type TypeSignatureHash = u64;
 
 /// Symbol scope for disambiguation across global/module/local contexts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +64,15 @@ pub enum SymbolType {
     Constant,
 }
 
+/// Extra nominal constructor metadata for class exports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NominalTypeExport {
+    /// Module-local nominal type index used to resolve the runtime constructor handle.
+    pub local_nominal_type_index: u32,
+    /// Module-local constructor function index for this nominal type, if any.
+    pub constructor_function_index: Option<u32>,
+}
+
 /// Exported symbol from a module
 #[derive(Debug, Clone)]
 pub struct Export {
@@ -79,10 +86,12 @@ pub struct Export {
     pub symbol_id: SymbolId,
     /// Scope where this symbol is defined.
     pub scope: SymbolScope,
-    /// Stable type symbol ID for signature/type compatibility checks.
-    pub type_symbol_id: TypeSymbolId,
+    /// Stable structural signature hash for compatibility checks.
+    pub signature_hash: TypeSignatureHash,
     /// Optional canonical structural signature string (for diagnostics).
     pub type_signature: Option<String>,
+    /// Explicit nominal constructor metadata for class exports.
+    pub nominal_type: Option<NominalTypeExport>,
 }
 
 /// Imported symbol/module dependency
@@ -100,8 +109,8 @@ pub struct Import {
     pub symbol_id: SymbolId,
     /// Scope hint for the expected imported symbol.
     pub scope: SymbolScope,
-    /// Stable expected type symbol ID.
-    pub type_symbol_id: TypeSymbolId,
+    /// Stable expected structural signature hash.
+    pub signature_hash: TypeSignatureHash,
     /// Optional canonical structural signature string (for diagnostics).
     pub type_signature: Option<String>,
     /// Module-local runtime global slot to hydrate (if applicable).
@@ -1155,7 +1164,7 @@ impl Export {
         // Write symbol IDs and scope
         writer.emit_u64(self.symbol_id);
         writer.emit_u8(self.scope.to_u8());
-        writer.emit_u64(self.type_symbol_id);
+        writer.emit_u64(self.signature_hash);
 
         // Write canonical structural type signature (optional)
         match &self.type_signature {
@@ -1163,6 +1172,20 @@ impl Export {
                 writer.emit_u8(1);
                 writer.emit_u32(signature.len() as u32);
                 writer.buffer.extend_from_slice(signature.as_bytes());
+            }
+            None => writer.emit_u8(0),
+        }
+        match self.nominal_type {
+            Some(nominal_type) => {
+                writer.emit_u8(1);
+                writer.emit_u32(nominal_type.local_nominal_type_index);
+                match nominal_type.constructor_function_index {
+                    Some(index) => {
+                        writer.emit_u8(1);
+                        writer.emit_u32(index);
+                    }
+                    None => writer.emit_u8(0),
+                }
             }
             None => writer.emit_u8(0),
         }
@@ -1182,10 +1205,23 @@ impl Export {
         // Read symbol IDs and scope
         let symbol_id = reader.read_u64()?;
         let scope = SymbolScope::from_u8(reader.read_u8()?)?;
-        let type_symbol_id = reader.read_u64()?;
+        let signature_hash = reader.read_u64()?;
         let has_signature = reader.read_u8()? != 0;
         let type_signature = if has_signature {
             Some(reader.read_string()?)
+        } else {
+            None
+        };
+        let has_nominal_type = reader.read_u8()? != 0;
+        let nominal_type = if has_nominal_type {
+            Some(NominalTypeExport {
+                local_nominal_type_index: reader.read_u32()?,
+                constructor_function_index: if reader.read_u8()? != 0 {
+                    Some(reader.read_u32()?)
+                } else {
+                    None
+                },
+            })
         } else {
             None
         };
@@ -1196,8 +1232,9 @@ impl Export {
             index,
             symbol_id,
             scope,
-            type_symbol_id,
+            signature_hash,
             type_signature,
+            nominal_type,
         })
     }
 }
@@ -1231,7 +1268,7 @@ impl Import {
         writer.emit_u64(self.module_id);
         writer.emit_u64(self.symbol_id);
         writer.emit_u8(self.scope.to_u8());
-        writer.emit_u64(self.type_symbol_id);
+        writer.emit_u64(self.signature_hash);
 
         // Write canonical structural type signature (optional)
         match &self.type_signature {
@@ -1272,7 +1309,7 @@ impl Import {
         let module_id = reader.read_u64()?;
         let symbol_id = reader.read_u64()?;
         let scope = SymbolScope::from_u8(reader.read_u8()?)?;
-        let type_symbol_id = reader.read_u64()?;
+        let signature_hash = reader.read_u64()?;
         let has_signature = reader.read_u8()? != 0;
         let type_signature = if has_signature {
             Some(reader.read_string()?)
@@ -1293,7 +1330,7 @@ impl Import {
             module_id,
             symbol_id,
             scope,
-            type_symbol_id,
+            signature_hash,
             type_signature,
             runtime_global_slot,
         })
@@ -2077,7 +2114,7 @@ mod tests {
             module_id: 42,
             symbol_id: 99,
             scope: SymbolScope::Module,
-            type_symbol_id: 1234,
+            signature_hash: 1234,
             type_signature: Some("fn(min=1,params=[number],rest=_,ret=number)".to_string()),
             runtime_global_slot: Some(7),
         });
@@ -2094,7 +2131,7 @@ mod tests {
         assert_eq!(import.module_id, 42);
         assert_eq!(import.symbol_id, 99);
         assert_eq!(import.scope, SymbolScope::Module);
-        assert_eq!(import.type_symbol_id, 1234);
+        assert_eq!(import.signature_hash, 1234);
         assert_eq!(
             import.type_signature.as_deref(),
             Some("fn(min=1,params=[number],rest=_,ret=number)")

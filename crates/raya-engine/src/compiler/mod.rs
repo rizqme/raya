@@ -40,8 +40,8 @@ pub use module_builder::ModuleBuilder;
 pub use bytecode::{
     module_id_from_name, symbol_id_from_name, verify_module, BytecodeReader, BytecodeWriter,
     ClassDef, ConstantPool, DecodeError, Export, Function, Import, Metadata, Method, Module,
-    ModuleError, ModuleId, Opcode, StructuralShapeInfo, SymbolId, SymbolScope, SymbolType,
-    TypeSignatureHash, TypeSymbolId, VerifyError,
+    ModuleError, ModuleId, NominalTypeExport, Opcode, StructuralShapeInfo, SymbolId, SymbolScope,
+    SymbolType, TypeSignatureHash, VerifyError,
 };
 
 use crate::parser::ast;
@@ -563,7 +563,7 @@ fn populate_symbol_link_metadata(
                                     &symbol,
                                 ),
                                 scope: SymbolScope::Module,
-                                type_symbol_id: 0,
+                                signature_hash: 0,
                                 type_signature: None,
                                 runtime_global_slot: None,
                             });
@@ -581,7 +581,7 @@ fn populate_symbol_link_metadata(
                                     &symbol,
                                 ),
                                 scope: SymbolScope::Module,
-                                type_symbol_id: 0,
+                                signature_hash: 0,
                                 type_signature: None,
                                 runtime_global_slot: None,
                             });
@@ -599,7 +599,7 @@ fn populate_symbol_link_metadata(
                                     &symbol,
                                 ),
                                 scope: SymbolScope::Module,
-                                type_symbol_id: 0,
+                                signature_hash: 0,
                                 type_signature: None,
                                 runtime_global_slot: None,
                             });
@@ -652,7 +652,7 @@ fn populate_symbol_link_metadata(
                                     &symbol,
                                 ),
                                 scope: SymbolScope::Module,
-                                type_symbol_id: 0,
+                                signature_hash: 0,
                                 type_signature: None,
                                 runtime_global_slot: None,
                             });
@@ -676,7 +676,7 @@ fn populate_symbol_link_metadata(
                             &symbol,
                         ),
                         scope: SymbolScope::Module,
-                        type_symbol_id: 0,
+                        signature_hash: 0,
                         type_signature: None,
                         runtime_global_slot: None,
                     });
@@ -724,8 +724,9 @@ fn populate_symbol_link_metadata(
             index,
             symbol_id,
             scope: SymbolScope::Module,
-            type_symbol_id: 0,
+            signature_hash: 0,
             type_signature: None,
+            nominal_type: None,
         });
     }
 
@@ -1157,7 +1158,7 @@ mod tests {
                     && export.symbol_type == SymbolType::Function
                     && export.symbol_id
                         == symbol_id_from_name(&module_name, SymbolScope::Module, "foo")
-                    && export.type_symbol_id == 0
+                    && export.signature_hash == 0
             }),
             "expected function export metadata for foo"
         );
@@ -1168,7 +1169,7 @@ mod tests {
                     && export.symbol_type == SymbolType::Class
                     && export.symbol_id
                         == symbol_id_from_name(&module_name, SymbolScope::Module, "MyClass")
-                    && export.type_symbol_id == 0
+                    && export.signature_hash == 0
             }),
             "expected class export metadata for MyClass"
         );

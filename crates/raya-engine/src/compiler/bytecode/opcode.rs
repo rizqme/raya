@@ -234,6 +234,14 @@ pub enum Opcode {
     /// Invoke a nominal constructor on an existing object.
     /// Operands: u16 nominalTypeIndex, u8 argCount
     ConstructType = 0xAB,
+    /// Cast object to tuple length: pop object, push object (throws TypeError if invalid)
+    CastTupleLen = 0xAC,
+    /// Cast object to minimum object width: pop object, push object (throws TypeError if invalid)
+    CastObjectMinFields = 0xAD,
+    /// Cast object to array element kind mask: pop object, push object (throws TypeError if invalid)
+    CastArrayElemKind = 0xAE,
+    /// Cast object to primitive/function kind mask: pop object, push object (throws TypeError if invalid)
+    CastKindMask = 0xAF,
 
     // ===== Object Operations (0xB0-0xBF) =====
     /// Allocate new nominal object (operand: u16 nominalTypeIndex)
@@ -357,12 +365,12 @@ pub enum Opcode {
     TaskCancel = 0xED,
     /// Check if object is instance of a nominal type (operand: u16 nominalTypeIndex)
     IsNominal = 0xEE,
-    /// Cast object to type: pop object, push object (throws TypeError if invalid)
-    Cast = 0xEF,
     /// Cast object to a nominal type (operand: u16 nominalTypeIndex)
     CastNominal = 0xEB,
     /// Cast object to a structural shape (operand: u64 shapeId)
     CastShape = 0xEC,
+    /// Legacy generic cast opcode kept for decode compatibility only.
+    Cast = 0xEF,
 
     // ===== Closures & Modules (0xF0-0xF7) =====
     /// Create closure object (operands: u32 funcIndex, u16 captureCount)
@@ -523,6 +531,10 @@ impl Opcode {
             0xA9 => Some(Self::CallMethodShape),
             0xAA => Some(Self::OptionalCallMethodShape),
             0xAB => Some(Self::ConstructType),
+            0xAC => Some(Self::CastTupleLen),
+            0xAD => Some(Self::CastObjectMinFields),
+            0xAE => Some(Self::CastArrayElemKind),
+            0xAF => Some(Self::CastKindMask),
 
             // Object operations
             0xB0 => Some(Self::NewType),
@@ -757,6 +769,10 @@ impl Opcode {
             Self::ImplementsShape => "IMPLEMENTS_SHAPE",
             Self::TaskCancel => "TASK_CANCEL",
             Self::IsNominal => "IS_NOMINAL",
+            Self::CastTupleLen => "CAST_TUPLE_LEN",
+            Self::CastObjectMinFields => "CAST_OBJECT_MIN_FIELDS",
+            Self::CastArrayElemKind => "CAST_ARRAY_ELEM_KIND",
+            Self::CastKindMask => "CAST_KIND_MASK",
             Self::Cast => "CAST",
             Self::CastNominal => "CAST_NOMINAL",
             Self::CastShape => "CAST_SHAPE",
@@ -1101,6 +1117,10 @@ mod tests {
             Opcode::DynHas,
             Opcode::ImplementsShape,
             Opcode::IsNominal,
+            Opcode::CastTupleLen,
+            Opcode::CastObjectMinFields,
+            Opcode::CastArrayElemKind,
+            Opcode::CastKindMask,
             Opcode::CastNominal,
             Opcode::TaskCancel,
             Opcode::Cast,

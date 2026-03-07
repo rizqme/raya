@@ -78,6 +78,7 @@ impl ShapeAdapter {
         provider_layout: LayoutId,
         required_shape: ShapeId,
         slot_map: &[StructuralSlotBinding],
+        epoch: u32,
     ) -> Self {
         let mut field_map = Vec::with_capacity(slot_map.len());
         let mut method_map = Vec::with_capacity(slot_map.len());
@@ -112,7 +113,7 @@ impl ShapeAdapter {
             field_map,
             method_map,
             dynamic_key_map,
-            epoch: 0,
+            epoch,
         }
     }
 
@@ -662,6 +663,7 @@ impl SharedVmState {
             provider_layout,
             required_shape,
             &slot_map,
+            0,
         ));
         self.structural_shape_adapters
             .write()
@@ -722,19 +724,7 @@ impl SharedVmState {
         if let Some(names) = self.structural_layout_names(object.layout_id()) {
             return Some(names);
         }
-        let nominal_type_id = object.nominal_type_id_usize()?;
-        let class_name = self
-            .classes
-            .read()
-            .get_class(nominal_type_id)
-            .map(|class| class.name.clone())?;
-        let builtin_names = crate::vm::object::builtin_nominal_layout_field_names(&class_name)?;
-        let owned_names = builtin_names
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect::<Vec<_>>();
-        self.register_structural_layout_shape(object.layout_id(), &owned_names);
-        Some(owned_names)
+        crate::vm::object::global_layout_names(object.layout_id())
     }
 
     /// Record physical layout metadata for a nominal runtime type.
@@ -762,20 +752,29 @@ impl SharedVmState {
 
     /// Register a runtime class after ensuring it has an assigned nominal layout.
     pub fn register_runtime_class(&self, class: crate::vm::object::Class) -> usize {
+        self.register_runtime_class_with_layout_names(class, None::<&[&str]>)
+    }
+
+    pub fn register_runtime_class_with_layout_names(
+        &self,
+        class: crate::vm::object::Class,
+        layout_names: impl Into<Option<&'static [&'static str]>>,
+    ) -> usize {
+        assert_eq!(
+            class.id, 0,
+            "runtime class registration must not supply nominal IDs directly"
+        );
         let layout_id = self.allocate_nominal_layout_id();
         let field_count = class.field_count;
         let class_name = class.name.clone();
-        let builtin_layout_names = crate::vm::object::builtin_nominal_layout_field_names(&class_name)
-            .map(|field_names| {
-                field_names
-                    .iter()
-                    .map(|name| (*name).to_string())
-                    .collect::<Vec<_>>()
-            });
         let id = self.classes.write().register_class(class);
         self.register_nominal_layout(id, layout_id, field_count, Some(class_name));
-        if let Some(owned_names) = builtin_layout_names.as_ref() {
-            self.register_structural_layout_shape(layout_id, owned_names);
+        if let Some(layout_names) = layout_names.into() {
+            let owned_names = layout_names
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>();
+            self.register_structural_layout_shape(layout_id, &owned_names);
         }
         id
     }
@@ -1056,6 +1055,7 @@ mod tests {
                 StructuralSlotBinding::Dynamic(9),
                 StructuralSlotBinding::Missing,
             ],
+            0,
         );
 
         assert_eq!(adapter.binding_for_slot(0), StructuralSlotBinding::Field(3));
@@ -1081,6 +1081,7 @@ mod tests {
                 StructuralSlotBinding::Field(0),
                 StructuralSlotBinding::Field(1),
             ],
+            0,
         );
         assert!(adapter.is_identity_field_projection());
 
@@ -1091,6 +1092,7 @@ mod tests {
                 StructuralSlotBinding::Field(1),
                 StructuralSlotBinding::Field(0),
             ],
+            0,
         );
         assert!(!non_identity.is_identity_field_projection());
     }

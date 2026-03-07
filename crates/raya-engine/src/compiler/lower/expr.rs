@@ -8,8 +8,8 @@ use super::{
     STRING_TYPE_ID, TASK_TYPE_ID, UNKNOWN_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
 };
 use crate::compiler::ir::{
-    BinaryOp, NominalTypeId, FunctionId, IrConstant, IrInstr, IrValue, Register,
-    RuntimeCastTarget, Terminator, UnaryOp,
+    BinaryOp, NominalTypeId, FunctionId, IrConstant, IrInstr, IrValue, Register, Terminator,
+    UnaryOp,
 };
 use crate::compiler::CompileError;
 use crate::parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
@@ -1042,6 +1042,7 @@ impl<'a> Lowerer<'a> {
                             func: parent_ctor,
                             args: ctor_args,
                         });
+                        self.emit_pending_constructor_prologue_if_needed();
                     }
                 }
             }
@@ -5304,6 +5305,7 @@ impl<'a> Lowerer<'a> {
         let saved_captures = std::mem::take(&mut self.captures);
         let saved_next_capture_slot = self.next_capture_slot;
         let saved_this_register = self.this_register.take();
+        let saved_pending_constructor_prologue = self.pending_constructor_prologue.take();
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
         // closure_locals maps local-slot indices to async func IDs; it is
@@ -5574,6 +5576,7 @@ impl<'a> Lowerer<'a> {
         self.captures = saved_captures;
         self.next_capture_slot = saved_next_capture_slot;
         self.this_register = saved_this_register;
+        self.pending_constructor_prologue = saved_pending_constructor_prologue;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
         self.closure_locals = saved_closure_locals;
@@ -5917,21 +5920,6 @@ impl<'a> Lowerer<'a> {
                     dest: dest.clone(),
                     nominal_type_id: nominal_type_id,
                 });
-
-                // Initialize all fields (including inherited parent fields) with default values
-                let all_fields = self.get_all_fields(nominal_type_id);
-                for field in &all_fields {
-                    if let Some(ref init_expr) = field.initializer {
-                        // Lower the initializer expression
-                        let value = self.lower_expr(init_expr);
-                        // Store it to the field
-                        self.emit(IrInstr::StoreFieldExact {
-                            object: dest.clone(),
-                            field: field.index,
-                            value,
-                        });
-                    }
-                }
 
                 let constructor_func_id = self
                     .class_info_map
@@ -6761,32 +6749,32 @@ impl<'a> Lowerer<'a> {
         } else if let Some(tuple_len_encoded) =
             self.resolve_runtime_tuple_len_cast_target(&cast.target_type)
         {
-            self.emit(IrInstr::Cast {
+            self.emit(IrInstr::CastTupleLen {
                 dest: dest.clone(),
                 object,
-                target: RuntimeCastTarget::new(tuple_len_encoded as u32),
+                expected_len: tuple_len_encoded & 0x3FFF,
             });
         } else if let Some(object_min_fields_encoded) =
             self.resolve_runtime_object_min_fields_cast_target(&cast.target_type)
         {
-            self.emit(IrInstr::Cast {
+            self.emit(IrInstr::CastObjectMinFields {
                 dest: dest.clone(),
                 object,
-                target: RuntimeCastTarget::new(object_min_fields_encoded as u32),
+                required_fields: object_min_fields_encoded & 0x1FFF,
             });
         } else if let Some(array_elem_kind_encoded) =
             self.resolve_runtime_array_element_kind_cast_target(&cast.target_type)
         {
-            self.emit(IrInstr::Cast {
+            self.emit(IrInstr::CastArrayElemKind {
                 dest: dest.clone(),
                 object,
-                target: RuntimeCastTarget::new(array_elem_kind_encoded as u32),
+                expected_elem_mask: array_elem_kind_encoded & 0x00FF,
             });
         } else if let Some(kind_mask) = self.resolve_runtime_cast_kind_mask(&cast.target_type) {
-            self.emit(IrInstr::Cast {
+            self.emit(IrInstr::CastKindMask {
                 dest: dest.clone(),
                 object,
-                target: RuntimeCastTarget::new((CAST_KIND_MASK_FLAG | kind_mask) as u32),
+                expected_kind_mask: kind_mask,
             });
         } else {
             self.emit(IrInstr::Assign {

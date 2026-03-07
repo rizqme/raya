@@ -197,14 +197,41 @@ impl TypeSubstitution {
                 object: self.apply_register(object),
                 shape_id: *shape_id,
             },
-            IrInstr::Cast {
+            IrInstr::CastTupleLen {
                 dest,
                 object,
-                target,
-            } => IrInstr::Cast {
+                expected_len,
+            } => IrInstr::CastTupleLen {
                 dest: self.apply_register(dest),
                 object: self.apply_register(object),
-                target: *target,
+                expected_len: *expected_len,
+            },
+            IrInstr::CastObjectMinFields {
+                dest,
+                object,
+                required_fields,
+            } => IrInstr::CastObjectMinFields {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                required_fields: *required_fields,
+            },
+            IrInstr::CastArrayElemKind {
+                dest,
+                object,
+                expected_elem_mask,
+            } => IrInstr::CastArrayElemKind {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                expected_elem_mask: *expected_elem_mask,
+            },
+            IrInstr::CastKindMask {
+                dest,
+                object,
+                expected_kind_mask,
+            } => IrInstr::CastKindMask {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                expected_kind_mask: *expected_kind_mask,
             },
             IrInstr::LoadLocal { dest, index } => IrInstr::LoadLocal {
                 dest: self.apply_register(dest),

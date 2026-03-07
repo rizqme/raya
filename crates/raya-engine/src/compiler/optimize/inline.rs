@@ -144,7 +144,10 @@ impl Inliner {
             | IrInstr::ImplementsShape { .. }
             | IrInstr::CastNominal { .. }
             | IrInstr::CastShape { .. }
-            | IrInstr::Cast { .. }
+            | IrInstr::CastTupleLen { .. }
+            | IrInstr::CastObjectMinFields { .. }
+            | IrInstr::CastArrayElemKind { .. }
+            | IrInstr::CastKindMask { .. }
             | IrInstr::MakeClosure { .. }
             | IrInstr::NewMutex { .. }
             | IrInstr::MutexLock { .. }
@@ -688,14 +691,41 @@ impl Inliner {
                 object: self.rename_register(object, reg_map),
                 shape_id: *shape_id,
             }),
-            IrInstr::Cast {
+            IrInstr::CastTupleLen {
                 dest,
                 object,
-                target,
-            } => Some(IrInstr::Cast {
+                expected_len,
+            } => Some(IrInstr::CastTupleLen {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 object: self.rename_register(object, reg_map),
-                target: *target,
+                expected_len: *expected_len,
+            }),
+            IrInstr::CastObjectMinFields {
+                dest,
+                object,
+                required_fields,
+            } => Some(IrInstr::CastObjectMinFields {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                object: self.rename_register(object, reg_map),
+                required_fields: *required_fields,
+            }),
+            IrInstr::CastArrayElemKind {
+                dest,
+                object,
+                expected_elem_mask,
+            } => Some(IrInstr::CastArrayElemKind {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                object: self.rename_register(object, reg_map),
+                expected_elem_mask: *expected_elem_mask,
+            }),
+            IrInstr::CastKindMask {
+                dest,
+                object,
+                expected_kind_mask,
+            } => Some(IrInstr::CastKindMask {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                object: self.rename_register(object, reg_map),
+                expected_kind_mask: *expected_kind_mask,
             }),
             IrInstr::MakeClosure {
                 dest,

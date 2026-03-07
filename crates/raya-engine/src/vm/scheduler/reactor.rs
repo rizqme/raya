@@ -965,7 +965,10 @@ impl Reactor {
                     } else {
                         drop(classes);
                         let id =
-                            shared_state.register_runtime_class(Class::new(0, "Buffer".to_string(), 2));
+                            shared_state.register_runtime_class_with_layout_names(
+                                Class::new(0, "Buffer".to_string(), 2),
+                                Some(crate::vm::object::BUFFER_LAYOUT_FIELDS),
+                            );
                         let (layout_id, field_count) = shared_state
                             .layouts
                             .read()

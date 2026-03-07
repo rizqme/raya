@@ -175,6 +175,13 @@ struct ConstructorParamInfo {
     default_value: Option<Expression>,
 }
 
+#[derive(Clone)]
+struct PendingConstructorPrologue {
+    nominal_type_id: NominalTypeId,
+    this_reg: Register,
+    param_properties: Vec<(u16, Register)>,
+}
+
 /// Information about a static field
 #[derive(Clone)]
 struct StaticFieldInfo {
@@ -466,6 +473,9 @@ pub struct Lowerer<'a> {
     current_class: Option<NominalTypeId>,
     /// Register holding `this` in current method
     this_register: Option<Register>,
+    /// Deferred instance initialization for derived constructors until after
+    /// the parent constructor has been invoked via `super()`.
+    pending_constructor_prologue: Option<PendingConstructorPrologue>,
     /// Info about `this` from ancestor scope (for arrow functions inside methods)
     this_ancestor_info: Option<AncestorThisInfo>,
     /// Capture index of `this` if it was captured (for LoadCaptured)
@@ -1065,6 +1075,7 @@ impl<'a> Lowerer<'a> {
             array_element_class_map: FxHashMap::default(),
             current_class: None,
             this_register: None,
+            pending_constructor_prologue: None,
             this_ancestor_info: None,
             this_captured_idx: None,
             method_map: FxHashMap::default(),
@@ -3519,7 +3530,8 @@ impl<'a> Lowerer<'a> {
                 // Emit null-check + default-value for constructor parameters with defaults
                 self.emit_default_params(&ctor.params);
 
-                // Emit field assignments for constructor parameter properties
+                let this_reg = self.this_register.clone().unwrap();
+                let mut param_property_fields: Vec<(u16, Register)> = Vec::new();
                 for (param_name, param_reg) in &param_prop_regs {
                     let field_name_str = self.interner.resolve(*param_name);
                     let all_fields = self.get_all_fields(nominal_type_id);
@@ -3527,20 +3539,34 @@ impl<'a> Lowerer<'a> {
                         .iter()
                         .find(|f| self.interner.resolve(f.name) == field_name_str)
                     {
-                        let field_idx = fi.index;
-                        let this_reg = self.this_register.clone().unwrap();
-                        self.emit(IrInstr::StoreFieldExact {
-                            object: this_reg,
-                            field: field_idx,
-                            value: param_reg.clone(),
-                        });
+                        param_property_fields.push((fi.index, param_reg.clone()));
                     }
+                }
+                let is_derived = self
+                    .class_info_map
+                    .get(&nominal_type_id)
+                    .and_then(|info| info.parent_class)
+                    .is_some();
+                if is_derived {
+                    self.pending_constructor_prologue = Some(PendingConstructorPrologue {
+                        nominal_type_id,
+                        this_reg: this_reg.clone(),
+                        param_properties: param_property_fields,
+                    });
+                } else {
+                    self.emit_constructor_prologue(
+                        nominal_type_id,
+                        &this_reg,
+                        &param_property_fields,
+                    );
                 }
 
                 // Lower constructor body
                 for stmt in &ctor.body.statements {
                     self.lower_stmt(stmt);
                 }
+
+                self.emit_pending_constructor_prologue_if_needed();
 
                 // Ensure the function ends with a return
                 if !self.current_block_is_terminated() {
@@ -3559,6 +3585,7 @@ impl<'a> Lowerer<'a> {
                 // Clear method context
                 self.current_class = None;
                 self.this_register = None;
+                self.pending_constructor_prologue = None;
                 if let Some(this_sym) = self.interner.lookup("this") {
                     self.variable_class_map.remove(&this_sym);
                 }
@@ -3628,6 +3655,22 @@ impl<'a> Lowerer<'a> {
             self.current_block = entry_block;
             self.current_function_mut()
                 .add_block(BasicBlock::with_label(entry_block, "entry"));
+
+            let this_reg = self.this_register.clone().unwrap();
+            if let Some(parent_ctor) = self
+                .class_info_map
+                .get(&nominal_type_id)
+                .and_then(|info| info.parent_class)
+                .and_then(|parent_id| self.class_info_map.get(&parent_id))
+                .and_then(|info| info.constructor)
+            {
+                self.emit(IrInstr::Call {
+                    dest: None,
+                    func: parent_ctor,
+                    args: vec![this_reg.clone()],
+                });
+            }
+            self.emit_constructor_prologue(nominal_type_id, &this_reg, &[]);
             self.set_terminator(Terminator::Return(None));
 
             let ir_func = self.current_function.take().unwrap();
@@ -3636,6 +3679,7 @@ impl<'a> Lowerer<'a> {
 
             self.current_class = None;
             self.this_register = None;
+            self.pending_constructor_prologue = None;
             if let Some(this_sym) = self.interner.lookup("this") {
                 self.variable_class_map.remove(&this_sym);
             }
@@ -5050,6 +5094,54 @@ impl<'a> Lowerer<'a> {
         self.emit_structural_shape_name_registration_for_ordered_names(
             layout.into_iter().map(|(name, _)| name).collect(),
         );
+    }
+
+    fn emit_instance_field_initializers_for_constructor(
+        &mut self,
+        nominal_type_id: NominalTypeId,
+        this_reg: &Register,
+    ) {
+        let own_fields = self
+            .class_info_map
+            .get(&nominal_type_id)
+            .map(|info| info.fields.clone())
+            .unwrap_or_default();
+        for field in own_fields {
+            if let Some(init_expr) = field.initializer {
+                let value = self.lower_expr(&init_expr);
+                self.emit(IrInstr::StoreFieldExact {
+                    object: this_reg.clone(),
+                    field: field.index,
+                    value,
+                });
+            }
+        }
+    }
+
+    fn emit_constructor_prologue(
+        &mut self,
+        nominal_type_id: NominalTypeId,
+        this_reg: &Register,
+        param_properties: &[(u16, Register)],
+    ) {
+        self.emit_instance_field_initializers_for_constructor(nominal_type_id, this_reg);
+        for (field_idx, param_reg) in param_properties {
+            self.emit(IrInstr::StoreFieldExact {
+                object: this_reg.clone(),
+                field: *field_idx,
+                value: param_reg.clone(),
+            });
+        }
+    }
+
+    fn emit_pending_constructor_prologue_if_needed(&mut self) {
+        if let Some(pending) = self.pending_constructor_prologue.take() {
+            self.emit_constructor_prologue(
+                pending.nominal_type_id,
+                &pending.this_reg,
+                &pending.param_properties,
+            );
+        }
     }
 
     /// Resolve a type annotation for structural-slot registration.
