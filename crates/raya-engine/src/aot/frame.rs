@@ -209,6 +209,12 @@ pub struct AotHelperTable {
     /// Dynamic keyed set: (ctx, object, key, value)
     pub dyn_set_prop: unsafe extern "C" fn(*mut AotTaskContext, u64, u64, u64),
 
+    /// Load module global by local slot index: (ctx, local_slot) -> value
+    pub load_global_value: unsafe extern "C" fn(*mut AotTaskContext, u32) -> u64,
+
+    /// Store module global by local slot index: (ctx, local_slot, value)
+    pub store_global_value: unsafe extern "C" fn(*mut AotTaskContext, u32, u64),
+
     // ---- Native call dispatch ----
     /// Dispatch a native function call: (ctx, native_id, args_ptr, argc) -> result
     ///
@@ -226,15 +232,25 @@ pub struct AotHelperTable {
     /// Check if preemption is requested: (ctx) -> should_yield (bool as u8)
     pub check_preemption: unsafe extern "C" fn(*mut AotTaskContext) -> u8,
 
+    /// Run a statically proven sync-safe AOT function call.
+    /// (ctx, func_id, local_count, args_ptr, argc) -> result
+    pub run_sync_aot_call: unsafe extern "C" fn(*mut AotTaskContext, u32, u32, *const u64, u32) -> u64,
+
+    /// Prepare a resumable child AOT frame for a direct call.
+    /// (ctx, func_id, local_count, args_ptr, argc) -> child_frame_ptr
+    pub prepare_aot_call_frame:
+        unsafe extern "C" fn(*mut AotTaskContext, u32, u32, *const u64, u32) -> *mut AotFrame,
+
     // ---- Exceptions ----
     /// Throw an exception: (ctx, exception_value)
     pub throw_exception: unsafe extern "C" fn(*mut AotTaskContext, u64),
 
     // ---- AOT function dispatch ----
-    /// Look up an AOT function pointer by global ID: (func_id) -> AotEntryFn
+    /// Look up an AOT function pointer by global ID and prepared callee frame.
     ///
-    /// Used for indirect calls (closures, virtual dispatch, cross-module calls).
-    pub get_aot_func_ptr: unsafe extern "C" fn(u32) -> AotEntryFn,
+    /// The helper may inspect incoming arguments in `callee_frame` to choose a
+    /// profile-specialized clone before falling back to the baseline entry.
+    pub get_aot_func_ptr: unsafe extern "C" fn(u32, *mut AotFrame) -> AotEntryFn,
 
     // ---- Constant pool access ----
     /// Load a string constant from the module's constant pool: (ctx, const_index) -> NaN-boxed string

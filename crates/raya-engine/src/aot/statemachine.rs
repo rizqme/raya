@@ -127,6 +127,9 @@ pub enum SmInstr {
     /// Load the resume_value from the task context.
     LoadResumeValue { dest: u32 },
 
+    /// dest = (ptr == 0)
+    PtrIsNull { dest: u32, ptr: u32 },
+
     // ===== Constants =====
     /// Load an i32 immediate.
     ConstI32 { dest: u32, value: i32 },
@@ -139,6 +142,9 @@ pub enum SmInstr {
 
     /// Load null.
     ConstNull { dest: u32 },
+
+    /// Load a raw null pointer into an I64 register.
+    ConstPtrNull { dest: u32 },
 
     /// Materialize a UTF-8 string literal into a boxed runtime string value.
     ConstString { dest: u32, value: String },
@@ -333,6 +339,8 @@ pub enum HelperCall {
     GenericLessThan,
     ObjectGetField,
     ObjectSetField,
+    LoadGlobalValue,
+    StoreGlobalValue,
     NativeCall,
     IsNativeSuspend,
     Spawn,
@@ -344,6 +352,8 @@ pub enum HelperCall {
     LoadF64Constant,
     GetArgCount,
     LoadArgLocal,
+    RunSyncAotCall,
+    PrepareAotCallFrame,
 
     // ===== Compound operations (lowering emits specific code) =====
     /// Generic polymorphic add (box+unbox pattern based on runtime tags).
@@ -542,6 +552,9 @@ struct StateMachineTransformer<'a> {
     output_blocks: Vec<SmBlock>,
     next_block_id: u32,
     continuation_block_ids: std::collections::HashMap<usize, SmBlockId>,
+    child_reentry_block_ids: std::collections::HashMap<usize, SmBlockId>,
+    propagate_suspend_block_ids: std::collections::HashMap<usize, SmBlockId>,
+    aot_call_metadata: std::collections::HashMap<(u32, u32), (u32, u32)>,
     /// Temporary register allocator (starts after local_count * 2 to avoid collisions).
     next_temp_reg: u32,
 }
@@ -556,6 +569,16 @@ impl<'a> StateMachineTransformer<'a> {
     ) -> Self {
         // Find max block ID from input blocks
         let max_block = blocks.iter().map(|b| b.id.0).max().unwrap_or(0);
+        let max_reg = max_sm_reg(&blocks);
+
+        let mut aot_call_metadata = std::collections::HashMap::new();
+        for block in &blocks {
+            for (instr_index, instr) in block.instructions.iter().enumerate() {
+                if let SmInstr::CallAot { dest, func_id, .. } = instr {
+                    aot_call_metadata.insert((block.id.0, instr_index as u32), (*dest, *func_id));
+                }
+            }
+        }
 
         Self {
             _function_id: function_id,
@@ -566,7 +589,10 @@ impl<'a> StateMachineTransformer<'a> {
             output_blocks: Vec::new(),
             next_block_id: max_block + 1,
             continuation_block_ids: std::collections::HashMap::new(),
-            next_temp_reg: (local_count + 1) * 2 + 100,
+            child_reentry_block_ids: std::collections::HashMap::new(),
+            propagate_suspend_block_ids: std::collections::HashMap::new(),
+            aot_call_metadata,
+            next_temp_reg: max_reg.saturating_add(1),
         }
     }
 
@@ -676,14 +702,107 @@ impl<'a> StateMachineTransformer<'a> {
                 restore_instrs.push(SmInstr::LoadResumeValue { dest: resume_val });
             }
 
+            let terminator = if matches!(point.kind, super::analysis::SuspensionKind::AotCall) {
+                if let Some((call_dest, _)) = self.aot_call_metadata(point.block_id, point.instr_index)
+                {
+                    restore_instrs.push(SmInstr::LoadResumeValue { dest: call_dest });
+                }
+                let child_reentry_id = self.alloc_block_id();
+                let propagate_suspend_id = self.alloc_block_id();
+                self.child_reentry_block_ids.insert(idx, child_reentry_id);
+                self.propagate_suspend_block_ids
+                    .insert(idx, propagate_suspend_id);
+
+                let child_reg = self.alloc_temp();
+                let child_is_null = self.alloc_temp();
+                restore_instrs.push(SmInstr::LoadChildFrame { dest: child_reg });
+                restore_instrs.push(SmInstr::PtrIsNull {
+                    dest: child_is_null,
+                    ptr: child_reg,
+                });
+                SmTerminator::Branch {
+                    cond: child_is_null,
+                    then_block: continuation_id,
+                    else_block: child_reentry_id,
+                }
+            } else {
+                SmTerminator::Jump(continuation_id)
+            };
+
             self.output_blocks.push(SmBlock {
                 id: restore_id,
                 kind: SmBlockKind::RestoreState {
                     suspension_index: idx as u32,
                 },
                 instructions: restore_instrs,
-                terminator: SmTerminator::Jump(continuation_id),
+                terminator,
             });
+
+            if matches!(point.kind, super::analysis::SuspensionKind::AotCall) {
+                let Some((call_dest, func_id)) =
+                    self.aot_call_metadata(point.block_id, point.instr_index)
+                else {
+                    continue;
+                };
+                let child_reentry_id = self.child_reentry_block_ids[&idx];
+                let propagate_suspend_id = self.propagate_suspend_block_ids[&idx];
+                let child_complete_id = self.alloc_block_id();
+                let child_reg = self.alloc_temp();
+                let call_result = self.alloc_temp();
+                let is_suspend = self.alloc_temp();
+                self.output_blocks.push(SmBlock {
+                    id: child_reentry_id,
+                    kind: SmBlockKind::ChildReentry,
+                    instructions: vec![
+                        SmInstr::LoadChildFrame { dest: child_reg },
+                        SmInstr::CallAot {
+                            dest: call_result,
+                            func_id,
+                            callee_frame: child_reg,
+                        },
+                        SmInstr::IsSuspend {
+                            dest: is_suspend,
+                            value: call_result,
+                        },
+                    ],
+                    terminator: SmTerminator::Branch {
+                        cond: is_suspend,
+                        then_block: propagate_suspend_id,
+                        else_block: child_complete_id,
+                    },
+                });
+
+                let null_child = self.alloc_temp();
+                self.output_blocks.push(SmBlock {
+                    id: child_complete_id,
+                    kind: SmBlockKind::Body,
+                    instructions: vec![
+                        SmInstr::ConstPtrNull { dest: null_child },
+                        SmInstr::CallHelper {
+                            dest: None,
+                            helper: HelperCall::FreeFrame,
+                            args: vec![child_reg],
+                        },
+                        SmInstr::StoreChildFrame { src: null_child },
+                        SmInstr::Move {
+                            dest: call_dest,
+                            src: call_result,
+                        },
+                    ],
+                    terminator: SmTerminator::Jump(continuation_id),
+                });
+
+                let suspend_reg = self.alloc_temp();
+                self.output_blocks.push(SmBlock {
+                    id: propagate_suspend_id,
+                    kind: SmBlockKind::PropagateSuspend,
+                    instructions: vec![SmInstr::ConstF64 {
+                        dest: suspend_reg,
+                        bits: super::frame::AOT_SUSPEND,
+                    }],
+                    terminator: SmTerminator::Return { value: suspend_reg },
+                });
+            }
         }
 
         std::mem::take(&mut self.output_blocks)
@@ -714,6 +833,7 @@ impl<'a> StateMachineTransformer<'a> {
             // Create pre-suspend block with instructions up to the suspension point
             let save_block_id = self.alloc_block_id();
             let continuation_id = self.alloc_block_id();
+            let initial_complete_id = self.alloc_block_id();
             self.continuation_block_ids
                 .insert(suspend_idx, continuation_id);
 
@@ -766,7 +886,14 @@ impl<'a> StateMachineTransformer<'a> {
                         SmTerminator::Branch {
                             cond: check_reg,
                             then_block: save_block_id,
-                            else_block: continuation_id,
+                            else_block: if matches!(
+                                point.kind,
+                                super::analysis::SuspensionKind::AotCall
+                            ) {
+                                initial_complete_id
+                            } else {
+                                continuation_id
+                            },
                         }
                     } else {
                         // Conservative fallback if analysis/instruction stream diverges.
@@ -795,6 +922,30 @@ impl<'a> StateMachineTransformer<'a> {
                 instructions: all_pre_instrs,
                 terminator,
             });
+
+            if matches!(point.kind, super::analysis::SuspensionKind::AotCall) {
+                let initial_child_frame = match block.instructions.get(instr_idx as usize) {
+                    Some(SmInstr::CallAot { callee_frame, .. }) => Some(*callee_frame),
+                    _ => None,
+                };
+                if let Some(initial_child_frame) = initial_child_frame {
+                    let null_child = self.alloc_temp();
+                    self.output_blocks.push(SmBlock {
+                        id: initial_complete_id,
+                        kind: SmBlockKind::Body,
+                        instructions: vec![
+                            SmInstr::ConstPtrNull { dest: null_child },
+                            SmInstr::CallHelper {
+                                dest: None,
+                                helper: HelperCall::FreeFrame,
+                                args: vec![initial_child_frame],
+                            },
+                            SmInstr::StoreChildFrame { src: null_child },
+                        ],
+                        terminator: SmTerminator::Jump(continuation_id),
+                    });
+                }
+            }
 
             // Create save block
             let mut save_instrs = Vec::new();
@@ -831,9 +982,7 @@ impl<'a> StateMachineTransformer<'a> {
                 super::analysis::SuspensionKind::NativeCall => {
                     super::frame::SuspendReason::NativeCallBoundary as i32
                 }
-                super::analysis::SuspensionKind::AotCall => {
-                    super::frame::SuspendReason::AwaitTask as i32
-                }
+                super::analysis::SuspensionKind::AotCall => super::frame::SuspendReason::None as i32,
                 super::analysis::SuspensionKind::PreemptionCheck => {
                     super::frame::SuspendReason::Preempted as i32
                 }
@@ -851,9 +1000,11 @@ impl<'a> StateMachineTransformer<'a> {
                 dest: reason_const,
                 value: reason_value,
             });
-            save_instrs.push(SmInstr::StoreSuspendReason {
-                reason: reason_const,
-            });
+            if !matches!(point.kind, super::analysis::SuspensionKind::AotCall) {
+                save_instrs.push(SmInstr::StoreSuspendReason {
+                    reason: reason_const,
+                });
+            }
 
             // Return AOT_SUSPEND
             let suspend_reg = self.alloc_temp();
@@ -884,6 +1035,197 @@ impl<'a> StateMachineTransformer<'a> {
             instructions: final_instrs,
             terminator: block.terminator.clone(),
         });
+    }
+
+    fn aot_call_metadata(&self, block_id: u32, instr_index: u32) -> Option<(u32, u32)> {
+        self.aot_call_metadata
+            .get(&(block_id, instr_index))
+            .copied()
+    }
+}
+
+fn max_sm_reg(blocks: &[SmBlock]) -> u32 {
+    let mut max_reg = 0u32;
+    for block in blocks {
+        for instr in &block.instructions {
+            match instr {
+                SmInstr::LoadLocal { dest, index } => max_reg = max_reg.max(*dest).max(*index),
+                SmInstr::StoreLocal { index, src } => max_reg = max_reg.max(*index).max(*src),
+                SmInstr::LoadResumePoint { dest }
+                | SmInstr::StoreResumePoint { value: dest }
+                | SmInstr::LoadChildFrame { dest }
+                | SmInstr::StoreChildFrame { src: dest }
+                | SmInstr::StoreSuspendReason { reason: dest }
+                | SmInstr::StoreSuspendPayload { src: dest }
+                | SmInstr::LoadResumeValue { dest }
+                | SmInstr::ConstNull { dest }
+                | SmInstr::ConstPtrNull { dest }
+                | SmInstr::ConstF64 { dest, .. }
+                | SmInstr::ConstString { dest, .. }
+                | SmInstr::ReturnValue { value: dest } => max_reg = max_reg.max(*dest),
+                SmInstr::PtrIsNull { dest, ptr } => max_reg = max_reg.max(*dest).max(*ptr),
+                SmInstr::ConstI32 { dest, .. } | SmInstr::ConstBool { dest, .. } => {
+                    max_reg = max_reg.max(*dest)
+                }
+                SmInstr::BoxI32 { dest, src }
+                | SmInstr::UnboxI32 { dest, src }
+                | SmInstr::BoxF64 { dest, src }
+                | SmInstr::UnboxF64 { dest, src }
+                | SmInstr::BoxBool { dest, src }
+                | SmInstr::UnboxBool { dest, src }
+                | SmInstr::BoolNot { dest, src }
+                | SmInstr::Move { dest, src } => max_reg = max_reg.max(*dest).max(*src),
+                SmInstr::LoadGlobal { dest, index } => max_reg = max_reg.max(*dest).max(*index),
+                SmInstr::StoreGlobal { index, src } => max_reg = max_reg.max(*index).max(*src),
+                SmInstr::IsSuspend { dest, value } => max_reg = max_reg.max(*dest).max(*value),
+                SmInstr::I32BinOp {
+                    dest,
+                    left,
+                    right,
+                    ..
+                }
+                | SmInstr::F64BinOp {
+                    dest,
+                    left,
+                    right,
+                    ..
+                }
+                | SmInstr::I32Cmp {
+                    dest,
+                    left,
+                    right,
+                    ..
+                }
+                | SmInstr::F64Cmp {
+                    dest,
+                    left,
+                    right,
+                    ..
+                }
+                | SmInstr::BoolAnd { dest, left, right }
+                | SmInstr::BoolOr { dest, left, right } => {
+                    max_reg = max_reg.max(*dest).max(*left).max(*right);
+                }
+                SmInstr::I32Neg { dest, src }
+                | SmInstr::I32BitNot { dest, src }
+                | SmInstr::F64Neg { dest, src } => {
+                    max_reg = max_reg.max(*dest).max(*src);
+                }
+                SmInstr::CallHelper { dest, args, .. } => {
+                    if let Some(dest) = dest {
+                        max_reg = max_reg.max(*dest);
+                    }
+                    for (arg_index, arg) in args.iter().enumerate() {
+                        if helper_arg_is_register(instr, arg_index) {
+                            max_reg = max_reg.max(*arg);
+                        }
+                    }
+                }
+                SmInstr::CallAot {
+                    dest,
+                    callee_frame,
+                    ..
+                } => {
+                    max_reg = max_reg.max(*dest).max(*callee_frame);
+                }
+                SmInstr::Phi { dest, sources } => {
+                    max_reg = max_reg.max(*dest);
+                    for (_, src) in sources {
+                        max_reg = max_reg.max(*src);
+                    }
+                }
+            }
+        }
+        match &block.terminator {
+            SmTerminator::Branch { cond, .. } => max_reg = max_reg.max(*cond),
+            SmTerminator::BranchNull { value, .. } => max_reg = max_reg.max(*value),
+            SmTerminator::BrTable { index, .. } => max_reg = max_reg.max(*index),
+            SmTerminator::Return { value } => max_reg = max_reg.max(*value),
+            SmTerminator::Jump(_) | SmTerminator::Unreachable => {}
+        }
+    }
+    max_reg
+}
+
+fn helper_arg_is_register(instr: &SmInstr, arg_index: usize) -> bool {
+    let SmInstr::CallHelper { helper, .. } = instr else {
+        return true;
+    };
+    match helper {
+        HelperCall::AllocFrame | HelperCall::FreeFrame | HelperCall::SafepointPoll => true,
+        HelperCall::AllocObject => false,
+        HelperCall::AllocStructuralObject => false,
+        HelperCall::AllocArray => arg_index >= 1,
+        HelperCall::AllocString
+        | HelperCall::StringConcat
+        | HelperCall::StringLen
+        | HelperCall::ArrayLen
+        | HelperCall::ArrayGet
+        | HelperCall::ArraySet
+        | HelperCall::ArrayPush
+        | HelperCall::GenericEquals
+        | HelperCall::GenericLessThan
+        | HelperCall::DynGetProp
+        | HelperCall::DynSetProp
+        | HelperCall::GenericAdd
+        | HelperCall::GenericSub
+        | HelperCall::GenericMul
+        | HelperCall::GenericDiv
+        | HelperCall::GenericMod
+        | HelperCall::GenericNeg
+        | HelperCall::GenericNot
+        | HelperCall::GenericNotEqual
+        | HelperCall::GenericLessEqual
+        | HelperCall::GenericGreater
+        | HelperCall::GenericGreaterEqual
+        | HelperCall::GenericConcat
+        | HelperCall::ToString
+        | HelperCall::LoadElement
+        | HelperCall::StoreElement
+        | HelperCall::ArrayPop
+        | HelperCall::CallClosure
+        | HelperCall::LoadCaptured
+        | HelperCall::StoreCaptured
+        | HelperCall::NewRefCell
+        | HelperCall::LoadRefCell
+        | HelperCall::StoreRefCell
+        | HelperCall::AwaitTask
+        | HelperCall::AwaitAll
+        | HelperCall::YieldTask
+        | HelperCall::SleepTask
+        | HelperCall::SpawnClosure
+        | HelperCall::NewMutex
+        | HelperCall::MutexLock
+        | HelperCall::MutexUnlock
+        | HelperCall::NewChannel
+        | HelperCall::TaskCancel
+        | HelperCall::SetupTry
+        | HelperCall::EndTry
+        | HelperCall::StringCompare => true,
+        HelperCall::ObjectGetField => arg_index == 0,
+        HelperCall::ObjectSetField => arg_index == 0 || arg_index == 2,
+        HelperCall::LoadGlobalValue => false,
+        HelperCall::StoreGlobalValue => arg_index == 1,
+        HelperCall::NativeCall => arg_index > 0,
+        HelperCall::IsNativeSuspend => true,
+        HelperCall::Spawn => arg_index > 0,
+        HelperCall::CheckPreemption => false,
+        HelperCall::RunSyncAotCall | HelperCall::PrepareAotCallFrame => arg_index >= 2,
+        HelperCall::ThrowException => true,
+        HelperCall::GetAotFuncPtr => arg_index == 1,
+        HelperCall::LoadStringConstant | HelperCall::LoadI32Constant | HelperCall::LoadF64Constant => false,
+        HelperCall::GetArgCount => false,
+        HelperCall::LoadArgLocal => false,
+        HelperCall::NewObject | HelperCall::ObjectLiteral | HelperCall::ArrayLiteral => false,
+        HelperCall::LoadFieldExact => arg_index == 0,
+        HelperCall::LoadFieldShape => arg_index == 0,
+        HelperCall::StoreFieldExact => arg_index == 0 || arg_index == 2,
+        HelperCall::StoreFieldShape => arg_index == 0 || arg_index == 4,
+        HelperCall::ModuleNativeCall => arg_index > 0,
+        HelperCall::InstanceOf | HelperCall::Cast | HelperCall::Typeof => arg_index == 0,
+        HelperCall::ImplementsShape | HelperCall::CastShape => arg_index == 0,
+        HelperCall::ConstructType => arg_index != 1,
+        HelperCall::MakeClosure => arg_index > 0,
     }
 }
 

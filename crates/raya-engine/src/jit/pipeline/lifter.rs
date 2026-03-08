@@ -1090,6 +1090,7 @@ fn lift_instruction(
                     dest,
                     object,
                     shape_id,
+                    bytecode_offset: instr.offset as u32,
                 });
                 stack.push(dest);
             }

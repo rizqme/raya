@@ -205,48 +205,10 @@ mod aot_impl {
     fn collect_reachable_functions(
         module: &raya_engine::compiler::bytecode::Module,
     ) -> anyhow::Result<Vec<u32>> {
-        let entry_main_fn_id = module
-            .functions
-            .iter()
-            .rposition(|f| f.name == "main")
-            .ok_or_else(|| anyhow::anyhow!("No main function"))?;
-
-        let mut seen = BTreeSet::new();
-        let mut queue = VecDeque::new();
-        seen.insert(entry_main_fn_id as u32);
-        queue.push_back(entry_main_fn_id as u32);
-
-        while let Some(func_id) = queue.pop_front() {
-            let function = &module.functions[func_id as usize];
-            let code = &function.code;
-            let mut ip = 0usize;
-            while ip < code.len() {
-                let Some(opcode) = Opcode::from_u8(code[ip]) else {
-                    break;
-                };
-                ip += 1;
-
-                if opcode == Opcode::Call {
-                    if ip + 6 > code.len() {
-                        break;
-                    }
-                    let callee_fn_id =
-                        u32::from_le_bytes([code[ip], code[ip + 1], code[ip + 2], code[ip + 3]]);
-                    if (callee_fn_id as usize) < module.functions.len() && seen.insert(callee_fn_id)
-                    {
-                        queue.push_back(callee_fn_id);
-                    }
-                }
-
-                let operand_len = operand_size(opcode);
-                if ip + operand_len > code.len() {
-                    break;
-                }
-                ip += operand_len;
-            }
+        if module.functions.iter().all(|function| function.name != "main") {
+            anyhow::bail!("No main function");
         }
-
-        Ok(seen.into_iter().collect())
+        Ok((0..module.functions.len() as u32).collect())
     }
 
     fn operand_size(opcode: Opcode) -> usize {
@@ -443,6 +405,19 @@ mod aot_impl {
                 code_size: entry.code_size,
                 local_count: entry.local_count,
                 param_count: entry.param_count,
+                variant_kind: entry.variant_kind as u32,
+                guard_bytecode_offset: entry
+                    .variant_guard
+                    .map(|guard| guard.bytecode_offset)
+                    .unwrap_or(u32::MAX),
+                guard_layout_id: entry
+                    .variant_guard
+                    .map(|guard| guard.layout_id)
+                    .unwrap_or(u32::MAX),
+                guard_arg_index: entry
+                    .variant_guard
+                    .and_then(|guard| guard.guard_arg_index)
+                    .unwrap_or(u32::MAX),
             };
             file.write_all(&bundled.to_bytes())?;
         }

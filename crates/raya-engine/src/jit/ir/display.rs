@@ -241,6 +241,7 @@ impl fmt::Display for JitInstr {
                 dest,
                 object,
                 shape_id,
+                ..
             } => write!(f, "{} = implements.shape {}, @{shape_id:016x}", dest, object),
             JitInstr::CastShape {
                 dest,

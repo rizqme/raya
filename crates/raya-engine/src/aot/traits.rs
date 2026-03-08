@@ -8,7 +8,29 @@
 //! the state machine transform and then Cranelift lowering.
 
 use super::analysis::SuspensionAnalysis;
+use super::profile::AotFunctionProfile;
 use super::statemachine::{transform_to_state_machine, SmBlock, StateMachineFunction};
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AotVariantKind {
+    Baseline = 0,
+    ProfileClone = 1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AotVariantGuard {
+    pub bytecode_offset: u32,
+    pub layout_id: u32,
+    pub guard_arg_index: Option<u32>,
+}
+
+pub struct AotProfileVariant {
+    pub func: Box<dyn AotCompilable>,
+    pub name_suffix: String,
+    pub kind: AotVariantKind,
+    pub guard: Option<AotVariantGuard>,
+}
 
 /// Trait for types that can be compiled to AOT native code.
 ///
@@ -49,6 +71,10 @@ pub trait AotCompilable {
 
     /// Function name (for debug info).
     fn name(&self) -> Option<&str>;
+
+    fn profile_variants(&self, _profile: Option<&AotFunctionProfile>) -> Vec<AotProfileVariant> {
+        Vec::new()
+    }
 }
 
 /// Errors that can occur during AOT compilation.

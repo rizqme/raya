@@ -17,6 +17,7 @@ use std::alloc::{self, Layout};
 use std::ptr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use super::abi;
 use super::frame::{
@@ -28,8 +29,94 @@ use crate::vm::json::view::{js_classify, JSView};
 use crate::vm::object::{Array, BoundMethod, Object, RayaString};
 use crate::vm::scheduler::{IoSubmission, Task};
 use crate::vm::value::Value;
+use parking_lot::RwLock;
 use raya_sdk::NativeCallResult;
 use rustc_hash::FxHashMap;
+
+#[derive(Clone, Copy)]
+pub struct RegisteredAotClone {
+    pub ptr: AotEntryFn,
+    pub guard_bytecode_offset: Option<u32>,
+    pub guard_layout_id: Option<u32>,
+    pub guard_arg_index: Option<u32>,
+}
+
+pub struct RegisteredAotFunctionEntry {
+    pub func_id: u32,
+    pub baseline: AotEntryFn,
+    pub clones: Vec<RegisteredAotClone>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct RegisteredAotFunction {
+    baseline: usize,
+    clones_start: usize,
+    clones_len: usize,
+}
+
+#[derive(Clone, Copy)]
+struct RegisteredAotCloneInternal {
+    ptr: usize,
+    guard_bytecode_offset: Option<u32>,
+    guard_layout_id: Option<u32>,
+    guard_arg_index: Option<u32>,
+}
+
+#[derive(Default)]
+struct RegisteredAotRegistry {
+    functions: FxHashMap<u32, RegisteredAotFunction>,
+    clones: Vec<RegisteredAotCloneInternal>,
+}
+
+static AOT_FUNCTION_REGISTRY: OnceLock<RwLock<RegisteredAotRegistry>> = OnceLock::new();
+
+fn aot_function_registry() -> &'static RwLock<RegisteredAotRegistry> {
+    AOT_FUNCTION_REGISTRY.get_or_init(|| RwLock::new(RegisteredAotRegistry::default()))
+}
+
+pub struct InstalledAotFunctionRegistry;
+
+impl Drop for InstalledAotFunctionRegistry {
+    fn drop(&mut self) {
+        clear_registered_aot_functions();
+    }
+}
+
+pub fn install_registered_aot_functions<I>(entries: I) -> InstalledAotFunctionRegistry
+where
+    I: IntoIterator<Item = RegisteredAotFunctionEntry>,
+{
+    let mut registry = aot_function_registry().write();
+    registry.functions.clear();
+    registry.clones.clear();
+    for entry in entries {
+        let clones_start = registry.clones.len();
+        for clone in entry.clones {
+            registry.clones.push(RegisteredAotCloneInternal {
+                ptr: clone.ptr as usize,
+                guard_bytecode_offset: clone.guard_bytecode_offset,
+                guard_layout_id: clone.guard_layout_id,
+                guard_arg_index: clone.guard_arg_index,
+            });
+        }
+        let clones_len = registry.clones.len() - clones_start;
+        registry.functions.insert(
+            entry.func_id,
+            RegisteredAotFunction {
+                baseline: entry.baseline as usize,
+                clones_start,
+                clones_len,
+            },
+        );
+    }
+    InstalledAotFunctionRegistry
+}
+
+pub fn clear_registered_aot_functions() {
+    let mut registry = aot_function_registry().write();
+    registry.functions.clear();
+    registry.clones.clear();
+}
 
 /// Temporary marker native ID for exercising suspend handoff in default AOT helpers.
 /// Real runtime dispatch will replace this stub behavior.
@@ -394,7 +481,10 @@ fn aot_value_kind_mask(value: Value) -> u16 {
 }
 
 fn aot_object_ptr_checked(value: Value) -> Option<std::ptr::NonNull<Object>> {
-    unsafe { value.as_ptr::<Object>() }
+    match js_classify(value) {
+        JSView::Struct { ptr, .. } => std::ptr::NonNull::new(ptr as *mut Object),
+        _ => None,
+    }
 }
 
 fn aot_dyn_key_parts(key_val: Value) -> Result<(Option<String>, Option<usize>), String> {
@@ -818,18 +908,21 @@ unsafe extern "C" fn helper_cast_shape(
     value_raw: u64,
     required_shape: u64,
 ) -> u64 {
+    if helper_object_implements_shape(ctx, value_raw, required_shape) != 0 {
+        return value_raw;
+    }
     let Some(shared) = aot_shared(ctx) else {
         return abi::NULL_VALUE;
     };
     let value = Value::from_raw(value_raw);
-    let Some(object_ptr) = aot_object_ptr_checked(value) else {
+    let JSView::Struct { ptr, .. } = js_classify(value) else {
         aot_raise_type_error(
             ctx,
             format!("Cannot cast non-object value to structural shape @{required_shape:016x}"),
         );
         return abi::NULL_VALUE;
     };
-    let object = unsafe { &*object_ptr.as_ptr() };
+    let object = unsafe { &*ptr };
     let Some(adapter) = aot_ensure_shape_adapter_for_object(shared, object, required_shape) else {
         aot_raise_type_error(
             ctx,
@@ -956,6 +1049,36 @@ unsafe extern "C" fn helper_dyn_set_prop(
     }
 }
 
+unsafe extern "C" fn helper_load_global_value(ctx: *mut AotTaskContext, local_slot: u32) -> u64 {
+    let (Some(shared), Some(module)) = (aot_shared(ctx), aot_module(ctx)) else {
+        return abi::NULL_VALUE;
+    };
+    let absolute = shared.resolve_global_slot(module, local_slot as usize);
+    shared
+        .globals_by_index
+        .read()
+        .get(absolute)
+        .copied()
+        .unwrap_or(Value::null())
+        .raw()
+}
+
+unsafe extern "C" fn helper_store_global_value(
+    ctx: *mut AotTaskContext,
+    local_slot: u32,
+    value_raw: u64,
+) {
+    let (Some(shared), Some(module)) = (aot_shared(ctx), aot_module(ctx)) else {
+        return;
+    };
+    let absolute = shared.resolve_global_slot(module, local_slot as usize);
+    let mut globals = shared.globals_by_index.write();
+    if absolute >= globals.len() {
+        globals.resize(absolute + 1, Value::null());
+    }
+    globals[absolute] = Value::from_raw(value_raw);
+}
+
 // =============================================================================
 // Object field access (stubs)
 // =============================================================================
@@ -1023,6 +1146,49 @@ unsafe extern "C" fn helper_native_call(
         let native_args: Vec<raya_sdk::NativeValue> =
             value_args.iter().map(|v| value_to_native(*v)).collect();
 
+        match native_id {
+            crate::compiler::native_id::JSON_PARSE => {
+                use crate::vm::json;
+
+                if value_args.is_empty() {
+                    return abi::NULL_VALUE;
+                }
+                let Some(s) = (unsafe { value_args[0].as_ptr::<RayaString>() }) else {
+                    return abi::NULL_VALUE;
+                };
+                let json_str = unsafe { &*s.as_ptr() }.data.clone();
+                let mut gc = shared.gc.lock();
+                let mut prop_keys = shared.prop_keys.write();
+                return match json::parser::parse_with_prop_key_interner(
+                    &json_str,
+                    &mut gc,
+                    &mut |name| prop_keys.intern(name),
+                ) {
+                    Ok(v) => v.raw(),
+                    Err(_) => abi::NULL_VALUE,
+                };
+            }
+            crate::compiler::native_id::JSON_STRINGIFY => {
+                use crate::vm::json;
+
+                if value_args.is_empty() {
+                    return abi::NULL_VALUE;
+                }
+                return match json::stringify::stringify_with_runtime_metadata(
+                    value_args[0],
+                    |key| shared.prop_key_name(key),
+                    |layout_id| shared.structural_layout_names(layout_id),
+                ) {
+                    Ok(json_str) => {
+                        let gc_ptr = shared.gc.lock().allocate(RayaString::new(json_str));
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()).raw()
+                    }
+                    Err(_) => abi::NULL_VALUE,
+                };
+            }
+            _ => {}
+        }
+
         // Dispatch through the module-scoped resolved native table when available.
         let resolved = if !(*ctx).module.is_null() {
             let module = &*((*ctx).module as *const crate::compiler::Module);
@@ -1049,8 +1215,27 @@ unsafe extern "C" fn helper_native_call(
                 (*ctx).suspend_payload = 0;
                 return AOT_SUSPEND;
             }
-            NativeCallResult::Unhandled | NativeCallResult::Error(_) => {
-                // Fall through to stub behavior below for now.
+            NativeCallResult::Unhandled => {}
+            NativeCallResult::Error(_) => {}
+        }
+
+        let native_name = crate::compiler::native_id::native_name(native_id);
+        if let Some(handler) = shared.native_registry.read().get(native_name) {
+            match handler(&engine_ctx, &native_args) {
+                NativeCallResult::Value(val) => return native_to_value(val).raw(),
+                NativeCallResult::Suspend(io_request) => {
+                    if let Some(tx) = shared.io_submit_tx.lock().as_ref() {
+                        let _ = tx.send(IoSubmission {
+                            task_id,
+                            request: io_request,
+                        });
+                    }
+                    (*ctx).suspend_reason = SuspendReason::IoWait;
+                    (*ctx).suspend_payload = 0;
+                    return AOT_SUSPEND;
+                }
+                NativeCallResult::Unhandled => {}
+                NativeCallResult::Error(_) => {}
             }
         }
     }
@@ -1106,6 +1291,81 @@ unsafe extern "C" fn helper_check_preemption(ctx: *mut AotTaskContext) -> u8 {
     }
 }
 
+unsafe extern "C" fn helper_run_sync_aot_call(
+    ctx: *mut AotTaskContext,
+    func_id: u32,
+    local_count: u32,
+    args_ptr: *const u64,
+    argc: u32,
+) -> u64 {
+    let helpers = if ctx.is_null() {
+        return abi::NULL_VALUE;
+    } else {
+        &(*ctx).helpers
+    };
+    let mut args = Vec::with_capacity(argc as usize);
+    for i in 0..argc as usize {
+        let raw = if args_ptr.is_null() {
+            abi::NULL_VALUE
+        } else {
+            *args_ptr.add(i)
+        };
+        args.push(Value::from_raw(raw));
+    }
+    let frame = crate::aot::executor::allocate_initial_frame(
+        func_id,
+        local_count,
+        dispatch_registered_aot_entry,
+        &args,
+        helpers,
+    );
+    if frame.is_null() {
+        return abi::NULL_VALUE;
+    }
+    let result = crate::aot::executor::run_aot_function(frame, ctx, 100);
+    match result.result {
+        crate::vm::interpreter::ExecutionResult::Completed(value) => value.raw(),
+        crate::vm::interpreter::ExecutionResult::Failed(error) => {
+            aot_raise_type_error(ctx, format!("sync AOT call failed: {}", error));
+            abi::NULL_VALUE
+        }
+        crate::vm::interpreter::ExecutionResult::Suspended(_) => {
+            aot_raise_type_error(ctx, "sync AOT call suspended unexpectedly".to_string());
+            abi::NULL_VALUE
+        }
+    }
+}
+
+unsafe extern "C" fn helper_prepare_aot_call_frame(
+    ctx: *mut AotTaskContext,
+    func_id: u32,
+    local_count: u32,
+    args_ptr: *const u64,
+    argc: u32,
+) -> *mut AotFrame {
+    let helpers = if ctx.is_null() {
+        return ptr::null_mut();
+    } else {
+        &(*ctx).helpers
+    };
+    let mut args = Vec::with_capacity(argc as usize);
+    for i in 0..argc as usize {
+        let raw = if args_ptr.is_null() {
+            abi::NULL_VALUE
+        } else {
+            *args_ptr.add(i)
+        };
+        args.push(Value::from_raw(raw));
+    }
+    crate::aot::executor::allocate_initial_frame(
+        func_id,
+        local_count,
+        dispatch_registered_aot_entry,
+        &args,
+        helpers,
+    )
+}
+
 // =============================================================================
 // Exceptions (stub)
 // =============================================================================
@@ -1119,10 +1379,63 @@ unsafe extern "C" fn helper_throw_exception(_ctx: *mut AotTaskContext, _value: u
 // AOT function dispatch (stub)
 // =============================================================================
 
-unsafe extern "C" fn helper_get_aot_func_ptr(_func_id: u32) -> AotEntryFn {
-    // TODO: Look up function pointer from the loaded code region
-    // For now, return a trap function
-    helper_trap_fn
+fn raw_value_layout_id(raw: u64) -> Option<u32> {
+    let value = unsafe { Value::from_raw(raw) };
+    match js_classify(value) {
+        JSView::Struct { layout_id, .. } => Some(layout_id),
+        _ => None,
+    }
+}
+
+fn select_registered_aot_func_ptr(func_id: u32, callee_frame: *mut AotFrame) -> AotEntryFn {
+    let registry = aot_function_registry().read();
+    let Some(entry) = registry.functions.get(&func_id).copied() else {
+        return helper_trap_fn;
+    };
+    let clones = &registry.clones[entry.clones_start..entry.clones_start + entry.clones_len];
+    if !callee_frame.is_null() {
+        let param_count = unsafe { (*callee_frame).param_count as usize };
+        let locals = unsafe { (*callee_frame).locals };
+        for clone in clones {
+            let (Some(guard_layout_id), Some(guard_arg_index)) =
+                (clone.guard_layout_id, clone.guard_arg_index)
+            else {
+                continue;
+            };
+            let guard_arg_index = guard_arg_index as usize;
+            if guard_arg_index >= param_count || locals.is_null() {
+                continue;
+            }
+            let raw = unsafe { *locals.add(guard_arg_index) };
+            if raw_value_layout_id(raw) == Some(guard_layout_id) {
+                return unsafe { std::mem::transmute::<usize, AotEntryFn>(clone.ptr) };
+            }
+        }
+    }
+    unsafe { std::mem::transmute::<usize, AotEntryFn>(entry.baseline) }
+}
+
+pub unsafe extern "C" fn dispatch_registered_aot_entry(
+    frame: *mut AotFrame,
+    ctx: *mut AotTaskContext,
+) -> u64 {
+    if frame.is_null() {
+        return helper_trap_fn(frame, ctx);
+    }
+    let func_id = (*frame).function_id;
+    let target = select_registered_aot_func_ptr(func_id, frame);
+    target(frame, ctx)
+}
+
+unsafe extern "C" fn helper_get_aot_func_ptr(func_id: u32, callee_frame: *mut AotFrame) -> AotEntryFn {
+    let registry = aot_function_registry().read();
+    if let Some(entry) = registry.functions.get(&func_id) {
+        if entry.clones_len > 0 {
+            return dispatch_registered_aot_entry;
+        }
+    }
+    drop(registry);
+    select_registered_aot_func_ptr(func_id, callee_frame)
 }
 
 /// Placeholder function for unresolved AOT calls.
@@ -1204,10 +1517,14 @@ pub fn create_default_helper_table() -> AotHelperTable {
         cast_shape: helper_cast_shape,
         dyn_get_prop: helper_dyn_get_prop,
         dyn_set_prop: helper_dyn_set_prop,
+        load_global_value: helper_load_global_value,
+        store_global_value: helper_store_global_value,
         native_call: helper_native_call,
         is_native_suspend: helper_is_native_suspend,
         spawn: helper_spawn,
         check_preemption: helper_check_preemption,
+        run_sync_aot_call: helper_run_sync_aot_call,
+        prepare_aot_call_frame: helper_prepare_aot_call_frame,
         throw_exception: helper_throw_exception,
         get_aot_func_ptr: helper_get_aot_func_ptr,
         load_string_constant: helper_load_string_constant,

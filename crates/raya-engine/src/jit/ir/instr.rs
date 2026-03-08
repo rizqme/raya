@@ -405,6 +405,7 @@ pub enum JitInstr {
         dest: Reg,
         object: Reg,
         shape_id: u64,
+        bytecode_offset: u32,
     },
     CastShape {
         dest: Reg,
@@ -1108,7 +1109,7 @@ pub enum JitTerminator {
 }
 
 /// A complete JIT IR function
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JitFunction {
     /// Index in the module's function table
     pub func_index: u32,

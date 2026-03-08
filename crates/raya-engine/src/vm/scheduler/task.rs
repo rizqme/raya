@@ -358,6 +358,11 @@ impl Task {
         self.preempt_requested.load(Ordering::Acquire)
     }
 
+    /// Get a stable pointer to the task's preemption flag for native runtimes.
+    pub fn preempt_flag_ptr(&self) -> *const AtomicBool {
+        &self.preempt_requested as *const AtomicBool
+    }
+
     /// Clear preemption flag
     pub fn clear_preempt(&self) {
         self.preempt_requested.store(false, Ordering::Release);

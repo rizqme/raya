@@ -84,6 +84,18 @@ pub struct BundledFuncEntry {
 
     /// Number of parameters.
     pub param_count: u32,
+
+    /// Baseline or profile-guided clone.
+    pub variant_kind: u32,
+
+    /// Guard bytecode offset for profile-guided clones (u32::MAX when absent).
+    pub guard_bytecode_offset: u32,
+
+    /// Guard layout ID for profile-guided clones (u32::MAX when absent).
+    pub guard_layout_id: u32,
+
+    /// Guard argument index used to inspect incoming callee args (u32::MAX when absent).
+    pub guard_arg_index: u32,
 }
 
 /// Size of a single BundledFuncEntry in bytes.
@@ -292,6 +304,10 @@ mod tests {
             code_size: 256,
             local_count: 8,
             param_count: 2,
+            variant_kind: 0,
+            guard_bytecode_offset: u32::MAX,
+            guard_layout_id: u32::MAX,
+            guard_arg_index: u32::MAX,
         };
 
         let bytes = entry.to_bytes();
@@ -303,11 +319,19 @@ mod tests {
         let code_size = restored.code_size;
         let local_count = restored.local_count;
         let param_count = restored.param_count;
+        let variant_kind = restored.variant_kind;
+        let guard_bytecode_offset = restored.guard_bytecode_offset;
+        let guard_layout_id = restored.guard_layout_id;
+        let guard_arg_index = restored.guard_arg_index;
         assert_eq!(global_func_id, (3 << 16) | 42);
         assert_eq!(code_offset, 128);
         assert_eq!(code_size, 256);
         assert_eq!(local_count, 8);
         assert_eq!(param_count, 2);
+        assert_eq!(variant_kind, 0);
+        assert_eq!(guard_bytecode_offset, u32::MAX);
+        assert_eq!(guard_layout_id, u32::MAX);
+        assert_eq!(guard_arg_index, u32::MAX);
     }
 
     #[test]

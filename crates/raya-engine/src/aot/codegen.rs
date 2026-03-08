@@ -24,7 +24,9 @@ use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 
 use super::lowering::{self, aot_entry_signature};
-use super::traits::{compile_to_state_machine, AotCompilable, AotError};
+use super::traits::{
+    compile_to_state_machine, AotCompilable, AotError, AotVariantGuard, AotVariantKind,
+};
 use crate::aot::profile::AotProfileData;
 
 // =============================================================================
@@ -78,6 +80,12 @@ pub struct FuncTableEntry {
 
     /// Function name (for debugging).
     pub name: String,
+
+    /// Baseline or profile-guided clone.
+    pub variant_kind: AotVariantKind,
+
+    /// Guard metadata for profile clones.
+    pub variant_guard: Option<AotVariantGuard>,
 }
 
 /// The compiled AOT bundle: machine code + metadata.
@@ -162,6 +170,21 @@ pub struct CompilableFunction<'a> {
     pub module_checksum: [u8; 32],
 }
 
+struct ScheduledCompilable<'a> {
+    func: ScheduledFuncRef<'a>,
+    module_index: u16,
+    func_index: u16,
+    module_checksum: [u8; 32],
+    variant_kind: AotVariantKind,
+    variant_guard: Option<AotVariantGuard>,
+    display_name: Option<String>,
+}
+
+enum ScheduledFuncRef<'a> {
+    Borrowed(&'a dyn AotCompilable),
+    Owned(usize),
+}
+
 /// Alignment for each function's code within the blob (16 bytes).
 const FUNC_ALIGN: usize = 16;
 
@@ -211,27 +234,75 @@ pub fn compile_functions_with_profile(
     let mut func_table = Vec::new();
     let mut func_builder_ctx = FunctionBuilderContext::new();
 
-    let mut ordered = functions.iter().collect::<Vec<_>>();
+    let mut owned_variants: Vec<Box<dyn AotCompilable>> = Vec::new();
+    let mut scheduled = Vec::new();
+    for compilable in functions {
+        scheduled.push(ScheduledCompilable {
+            func: ScheduledFuncRef::Borrowed(compilable.func),
+            module_index: compilable.module_index,
+            func_index: compilable.func_index,
+            module_checksum: compilable.module_checksum,
+            variant_kind: AotVariantKind::Baseline,
+            variant_guard: None,
+            display_name: None,
+        });
+        if let Some(profile) =
+            profile.and_then(|profile| profile.function_profile(&compilable.module_checksum, compilable.func_index as u32))
+        {
+            for variant in compilable.func.profile_variants(Some(profile)) {
+                let display_name = match compilable.func.name() {
+                    Some(name) => Some(format!("{}{}", name, variant.name_suffix)),
+                    None => None,
+                };
+                owned_variants.push(variant.func);
+                let variant_index = owned_variants.len() - 1;
+                scheduled.push(ScheduledCompilable {
+                    func: ScheduledFuncRef::Owned(variant_index),
+                    module_index: compilable.module_index,
+                    func_index: compilable.func_index,
+                    module_checksum: compilable.module_checksum,
+                    variant_kind: variant.kind,
+                    variant_guard: variant.guard,
+                    display_name,
+                });
+            }
+        }
+    }
+
+    let mut ordered = scheduled.iter().collect::<Vec<_>>();
     if let Some(profile) = profile {
-        ordered.sort_by_key(|compilable| {
-            std::cmp::Reverse(profile.function_hotness(
-                &compilable.module_checksum,
-                compilable.func_index as u32,
-            ))
+        ordered.sort_by_key(|scheduled| {
+            let guard_bonus = if scheduled.variant_kind == AotVariantKind::ProfileClone {
+                1
+            } else {
+                0
+            };
+            std::cmp::Reverse(
+                profile
+                    .function_hotness(&scheduled.module_checksum, scheduled.func_index as u32)
+                    .saturating_add(guard_bonus),
+            )
         });
     }
 
-    for compilable in ordered {
-        let global_id = GlobalFuncId::new(compilable.module_index, compilable.func_index);
-        let func_name = compilable.func.name().unwrap_or("anon").to_string();
+    for scheduled in ordered {
+        let func = match scheduled.func {
+            ScheduledFuncRef::Borrowed(func) => func,
+            ScheduledFuncRef::Owned(index) => owned_variants[index].as_ref(),
+        };
+        let global_id = GlobalFuncId::new(scheduled.module_index, scheduled.func_index);
+        let func_name = scheduled
+            .display_name
+            .clone()
+            .unwrap_or_else(|| func.name().unwrap_or("anon").to_string());
 
         // 1. Run through the full pipeline: analyze → emit → transform
-        let sm_func = compile_to_state_machine(compilable.func, global_id.0);
+        let sm_func = compile_to_state_machine(func, global_id.0);
         if std::env::var_os("RAYA_DEBUG_AOT_DUMP").is_some() {
             eprintln!(
                 "\n=== AOT SM {}::{:#06x} {} ===\n{:#?}",
-                compilable.module_index,
-                compilable.func_index,
+                scheduled.module_index,
+                scheduled.func_index,
                 func_name,
                 sm_func
             );
@@ -241,7 +312,7 @@ pub fn compile_functions_with_profile(
         let mut codegen_ctx = Context::new();
         codegen_ctx.func.signature = aot_entry_signature(call_conv);
         codegen_ctx.func.name =
-            UserFuncName::user(compilable.module_index as u32, compilable.func_index as u32);
+            UserFuncName::user(scheduled.module_index as u32, scheduled.func_index as u32);
 
         {
             let builder = FunctionBuilder::new(&mut codegen_ctx.func, &mut func_builder_ctx);
@@ -253,8 +324,8 @@ pub fn compile_functions_with_profile(
         if std::env::var_os("RAYA_DEBUG_AOT_DUMP").is_some() {
             eprintln!(
                 "\n=== AOT CLIF {}::{:#06x} {} ===\n{}",
-                compilable.module_index,
-                compilable.func_index,
+                scheduled.module_index,
+                scheduled.func_index,
                 func_name,
                 codegen_ctx.func.display()
             );
@@ -306,8 +377,10 @@ pub fn compile_functions_with_profile(
             code_size,
             local_count: sm_func.local_count,
             param_count: sm_func.param_count,
-            module_index: compilable.module_index,
+            module_index: scheduled.module_index,
             name: func_name,
+            variant_kind: scheduled.variant_kind,
+            variant_guard: scheduled.variant_guard,
         });
     }
 
@@ -326,7 +399,12 @@ pub fn compile_functions_with_profile(
 mod tests {
     use super::*;
     use crate::aot::analysis::SuspensionAnalysis;
+    use crate::aot::profile::{
+        AotFunctionProfile, AotHotLayout, AotModuleProfile, AotProfileData, AotSiteKind,
+        AotSiteProfile,
+    };
     use crate::aot::statemachine::*;
+    use crate::aot::traits::{AotProfileVariant, AotVariantGuard, AotVariantKind};
 
     #[test]
     fn test_global_func_id() {
@@ -418,6 +496,109 @@ mod tests {
         assert_eq!(bundle.func_table[0].name, "test_func");
         assert!(bundle.func_table[0].code_size > 0);
         assert_eq!(bundle.func_table[0].code_offset, 0); // First function starts at 0
+    }
+
+    #[test]
+    fn test_compile_functions_with_profile_emits_clone_metadata() {
+        let isa = create_native_isa().expect("Failed to create ISA");
+
+        struct VariantCompilable;
+        impl AotCompilable for VariantCompilable {
+            fn analyze(&self) -> SuspensionAnalysis {
+                SuspensionAnalysis::none()
+            }
+
+            fn emit_blocks(&self) -> Vec<SmBlock> {
+                vec![SmBlock {
+                    id: SmBlockId(0),
+                    kind: SmBlockKind::Body,
+                    instructions: vec![SmInstr::ConstNull { dest: 0 }],
+                    terminator: SmTerminator::Return { value: 0 },
+                }]
+            }
+
+            fn param_count(&self) -> u32 {
+                0
+            }
+
+            fn local_count(&self) -> u32 {
+                0
+            }
+
+            fn name(&self) -> Option<&str> {
+                Some("variant")
+            }
+
+            fn profile_variants(
+                &self,
+                _profile: Option<&AotFunctionProfile>,
+            ) -> Vec<AotProfileVariant> {
+                vec![AotProfileVariant {
+                    func: Box::new(TestCompilable {
+                        param_count: 0,
+                        local_count: 0,
+                        name: "variant_clone".to_string(),
+                    }),
+                    name_suffix: "$clone".to_string(),
+                    kind: AotVariantKind::ProfileClone,
+                    guard: Some(AotVariantGuard {
+                        bytecode_offset: 12,
+                        layout_id: 77,
+                        guard_arg_index: Some(0),
+                    }),
+                }]
+            }
+        }
+
+        let func = VariantCompilable;
+        let functions = vec![CompilableFunction {
+            func: &func,
+            module_index: 0,
+            func_index: 0,
+            module_checksum: [7; 32],
+        }];
+        let profile = AotProfileData {
+            modules: vec![AotModuleProfile {
+                checksum: [7; 32],
+                functions: vec![AotFunctionProfile {
+                    func_index: 0,
+                    call_count: 8,
+                    loop_count: 0,
+                    sites: vec![AotSiteProfile {
+                        bytecode_offset: 12,
+                        kind: AotSiteKind::LoadFieldShape,
+                        layouts: vec![AotHotLayout {
+                            layout_id: 77,
+                            hits: 8,
+                        }],
+                    }],
+                }],
+            }],
+        };
+
+        let bundle =
+            compile_functions_with_profile(&functions, isa, Some(&profile)).expect("Compilation failed");
+        assert_eq!(bundle.function_count(), 2);
+        let baseline = bundle
+            .func_table
+            .iter()
+            .find(|entry| entry.variant_kind == AotVariantKind::Baseline)
+            .expect("baseline entry");
+        let clone = bundle
+            .func_table
+            .iter()
+            .find(|entry| entry.variant_kind == AotVariantKind::ProfileClone)
+            .expect("clone entry");
+        assert_eq!(baseline.global_func_id, GlobalFuncId::new(0, 0));
+        assert_eq!(clone.global_func_id, GlobalFuncId::new(0, 0));
+        assert_eq!(
+            clone.variant_guard,
+            Some(AotVariantGuard {
+                bytecode_offset: 12,
+                layout_id: 77,
+                guard_arg_index: Some(0),
+            })
+        );
     }
 
     #[test]

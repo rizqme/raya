@@ -69,6 +69,16 @@ use raya_engine::vm::module::{ModuleLinker, ResolvedSymbol};
 use raya_engine::vm::object::{
     layout_id_from_ordered_names, Closure, Object, RayaString, TypeHandle,
 };
+#[cfg(feature = "aot")]
+use raya_engine::aot::{
+    allocate_initial_frame, build_task_context, install_registered_aot_functions, run_aot_function,
+    dispatch_registered_aot_entry, AotEntryFn, AotRunResult, RegisteredAotClone,
+    RegisteredAotFunctionEntry,
+};
+#[cfg(feature = "aot")]
+use raya_engine::vm::scheduler::{Task, TaskState};
+#[cfg(feature = "aot")]
+use raya_engine::vm::VmError;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -534,6 +544,11 @@ impl Runtime {
         let module = match path.extension().and_then(|e| e.to_str()) {
             Some("ryb") => self.load_bytecode(&path)?,
             Some("raya") => self.compile_file(&path)?,
+            #[cfg(feature = "aot")]
+            Some("bundle") => {
+                return self.run_bundle_file(&path);
+            }
+            #[cfg(not(feature = "aot"))]
             Some("bundle") => self.load_bundle_entry_module(&path)?,
             _ => {
                 return Err(RuntimeError::Io(std::io::Error::new(
@@ -553,6 +568,26 @@ impl Runtime {
             self.execute_with_deps(&module, &dep_modules)
         };
 
+        match result {
+            Ok(_) => Ok(0),
+            Err(RuntimeError::Vm(e)) => {
+                eprintln!("Runtime error: {}", e);
+                Ok(1)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    #[cfg(feature = "aot")]
+    fn run_bundle_file(&self, path: &Path) -> Result<i32, RuntimeError> {
+        let payload = bundle::loader::detect_bundle_at(path).ok_or_else(|| {
+            RuntimeError::Bytecode(format!("Invalid or unsupported bundle: {}", path.display()))
+        })?;
+        let module = self.load_bundle_entry_module_from_payload(&payload)?;
+        let mut vm = vm_setup::create_vm(&self.options);
+        let result = self.execute_bundle_with_vm(&mut vm, &module, &payload);
+        self.maybe_write_profile(&vm, &module.module);
+        self.maybe_emit_jit_telemetry(&vm);
         match result {
             Ok(_) => Ok(0),
             Err(RuntimeError::Vm(e)) => {
@@ -2276,10 +2311,13 @@ impl Runtime {
         let payload = bundle::loader::detect_bundle_at(path).ok_or_else(|| {
             RuntimeError::Bytecode(format!("Invalid or unsupported bundle: {}", path.display()))
         })?;
+        self.load_bundle_entry_module_from_payload(&payload)
+    }
 
-        // For now, execute embedded bytecode entry from VFS as a fallback path.
-        // This allows bundled artifacts to run by default even when native AOT
-        // execution is not available on this host/runtime build.
+    fn load_bundle_entry_module_from_payload(
+        &self,
+        payload: &bundle::loader::BundlePayload,
+    ) -> Result<CompiledModule, RuntimeError> {
         let entry_path = payload
             .vfs
             .paths()
@@ -2292,6 +2330,157 @@ impl Runtime {
         })?;
 
         self.load_bytecode_bytes(&bytes)
+    }
+
+    #[cfg(feature = "aot")]
+    fn execute_bundle_with_vm(
+        &self,
+        vm: &mut raya_engine::vm::Vm,
+        module: &CompiledModule,
+        payload: &bundle::loader::BundlePayload,
+    ) -> Result<Value, RuntimeError> {
+        self.ensure_ambient_builtin_globals_seeded(vm)?;
+        let runtime_module = Arc::new(module.module.clone());
+        vm.shared_state()
+            .register_module(runtime_module.clone())
+            .map_err(RuntimeError::Dependency)?;
+
+        let linker = self.build_module_linker(std::slice::from_ref(&runtime_module))?;
+        self.hydrate_module_import_globals(vm, &linker, &runtime_module)?;
+
+        let entry_main_fn_id = runtime_module
+            .functions
+            .iter()
+            .rposition(|f| f.name == "main")
+            .ok_or_else(|| RuntimeError::Vm(VmError::RuntimeError("No main function".to_string())))?;
+        let global_func_id = entry_main_fn_id as u32;
+        let loaded_entry = payload.functions.get(&global_func_id).ok_or_else(|| {
+            RuntimeError::Bytecode(format!(
+                "Bundle missing native entry for main function index {}",
+                entry_main_fn_id
+            ))
+        })?;
+
+        let entry_ptr = if payload.profile_clones.contains_key(&global_func_id) {
+            dispatch_registered_aot_entry
+        } else {
+            unsafe {
+                std::mem::transmute::<*const u8, AotEntryFn>(
+                    payload.code.get_fn_ptr(loaded_entry.code_offset),
+                )
+            }
+        };
+        let _registry_guard = install_registered_aot_functions(payload.functions.iter().map(
+            |(func_id, loaded)| unsafe {
+                let clones = payload
+                    .profile_clones
+                    .get(func_id)
+                    .into_iter()
+                    .flatten()
+                    .map(|clone| RegisteredAotClone {
+                        ptr: std::mem::transmute::<*const u8, AotEntryFn>(
+                            payload.code.get_fn_ptr(clone.code_offset),
+                        ),
+                        guard_bytecode_offset: clone.guard_bytecode_offset,
+                        guard_layout_id: clone.guard_layout_id,
+                        guard_arg_index: clone.guard_arg_index,
+                    })
+                    .collect::<Vec<_>>();
+                RegisteredAotFunctionEntry {
+                    func_id: *func_id,
+                    baseline: std::mem::transmute::<*const u8, AotEntryFn>(
+                        payload.code.get_fn_ptr(loaded.code_offset),
+                    ),
+                    clones,
+                }
+            },
+        ));
+
+        let main_task = Arc::new(Task::new(entry_main_fn_id, runtime_module.clone(), None));
+        main_task.set_state(TaskState::Running);
+        vm.shared_state()
+            .tasks
+            .write()
+            .insert(main_task.id(), main_task.clone());
+
+        let mut ctx = build_task_context(main_task.preempt_flag_ptr(), raya_engine::aot::helpers::create_default_helper_table(), None);
+        ctx.shared_state = vm.shared_state() as *const _ as *mut ();
+        ctx.current_task = Arc::as_ptr(&main_task) as *mut ();
+        ctx.module = Arc::as_ptr(&runtime_module) as *const ();
+
+        let frame = unsafe {
+            allocate_initial_frame(
+                global_func_id,
+                loaded_entry.local_count,
+                entry_ptr,
+                &[],
+                &ctx.helpers,
+            )
+        };
+        if frame.is_null() {
+            vm.shared_state().tasks.write().remove(&main_task.id());
+            return Err(RuntimeError::Vm(VmError::RuntimeError(
+                "AOT bundle entry frame allocation failed".to_string(),
+            )));
+        }
+
+        let run_result = unsafe { run_aot_function(frame, &mut ctx, 100) };
+        let result = self.finish_bundle_aot_result(vm, &main_task, run_result);
+        vm.shared_state().tasks.write().remove(&main_task.id());
+        vm.shared_state().mark_module_initialized(&runtime_module);
+        result
+    }
+
+    #[cfg(feature = "aot")]
+    fn finish_bundle_aot_result(
+        &self,
+        _vm: &mut raya_engine::vm::Vm,
+        task: &Arc<Task>,
+        run_result: AotRunResult,
+    ) -> Result<Value, RuntimeError> {
+        match run_result.result {
+            raya_engine::vm::interpreter::ExecutionResult::Completed(value) => {
+                if task.has_exception() {
+                    task.fail();
+                    return Err(RuntimeError::Vm(VmError::RuntimeError(
+                        Self::task_exception_message(task),
+                    )));
+                }
+                task.complete(value);
+                Ok(value)
+            }
+            raya_engine::vm::interpreter::ExecutionResult::Failed(error) => {
+                task.fail();
+                Err(RuntimeError::Vm(error))
+            }
+            raya_engine::vm::interpreter::ExecutionResult::Suspended(reason) => {
+                task.set_state(TaskState::Suspended);
+                Err(RuntimeError::Vm(VmError::RuntimeError(format!(
+                    "AOT bundle execution suspended with {:?}; scheduler-backed native bundle resume is not implemented yet",
+                    reason
+                ))))
+            }
+        }
+    }
+
+    #[cfg(feature = "aot")]
+    fn task_exception_message(task: &Task) -> String {
+        let Some(exc) = task.current_exception() else {
+            return "AOT bundle task failed".to_string();
+        };
+        if exc.is_ptr() {
+            if let Some(s) = unsafe { exc.as_ptr::<RayaString>() } {
+                return unsafe { &*s.as_ptr() }.data.clone();
+            }
+            if let Some(obj) = unsafe { exc.as_ptr::<Object>() } {
+                if let Some(msg_val) = unsafe { &*obj.as_ptr() }.get_field(0) {
+                    if let Some(s) = unsafe { msg_val.as_ptr::<RayaString>() } {
+                        return unsafe { &*s.as_ptr() }.data.clone();
+                    }
+                }
+            }
+        }
+        format!("{:?}", exc)
     }
 }
 

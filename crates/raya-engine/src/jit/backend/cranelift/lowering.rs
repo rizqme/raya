@@ -1009,6 +1009,7 @@ impl<'a> LoweringContext<'a> {
                 dest,
                 object,
                 shape_id,
+                ..
             } => {
                 let ctx = self.params.ctx_ptr;
                 let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);

@@ -70,6 +70,9 @@ pub struct BundlePayload {
     /// Function table: global_func_id → (code_offset, local_count, param_count).
     pub functions: HashMap<u32, LoadedFunction>,
 
+    /// Profile-guided clone table keyed by baseline global function ID.
+    pub profile_clones: HashMap<u32, Vec<LoadedFunction>>,
+
     /// Virtual filesystem with embedded assets.
     pub vfs: Vfs,
 
@@ -90,6 +93,34 @@ pub struct LoadedFunction {
 
     /// Number of parameters.
     pub param_count: u32,
+
+    /// Variant kind from the bundle metadata.
+    pub variant_kind: u32,
+
+    /// Guard bytecode offset for profile-guided clones.
+    pub guard_bytecode_offset: Option<u32>,
+
+    /// Guard layout ID for profile-guided clones.
+    pub guard_layout_id: Option<u32>,
+
+    /// Which incoming argument carries the guarded layout, when known.
+    pub guard_arg_index: Option<u32>,
+}
+
+impl BundlePayload {
+    pub fn select_profile_clone(
+        &self,
+        global_func_id: u32,
+        bytecode_offset: u32,
+        layout_id: u32,
+    ) -> Option<&LoadedFunction> {
+        self.profile_clones.get(&global_func_id).and_then(|variants| {
+            variants.iter().find(|variant| {
+                variant.guard_bytecode_offset == Some(bytecode_offset)
+                    && variant.guard_layout_id == Some(layout_id)
+            })
+        })
+    }
 }
 
 /// Detect if the current executable has an AOT bundle appended.
@@ -140,6 +171,7 @@ pub fn detect_bundle_at(path: &Path) -> Option<BundlePayload> {
     let ft_start = payload_start + trailer.func_table_offset as usize;
     let ft_count = trailer.func_table_count as usize;
     let mut functions = HashMap::new();
+    let mut profile_clones: HashMap<u32, Vec<LoadedFunction>> = HashMap::new();
 
     for i in 0..ft_count {
         let entry_start = ft_start + i * FUNC_ENTRY_SIZE;
@@ -148,14 +180,26 @@ pub fn detect_bundle_at(path: &Path) -> Option<BundlePayload> {
             break;
         }
         if let Some(entry) = BundledFuncEntry::from_bytes(&data[entry_start..entry_end]) {
-            functions.insert(
-                entry.global_func_id,
-                LoadedFunction {
-                    code_offset: entry.code_offset,
-                    local_count: entry.local_count,
-                    param_count: entry.param_count,
-                },
-            );
+            let loaded = LoadedFunction {
+                code_offset: entry.code_offset,
+                local_count: entry.local_count,
+                param_count: entry.param_count,
+                variant_kind: entry.variant_kind,
+                guard_bytecode_offset: (entry.guard_bytecode_offset != u32::MAX)
+                    .then_some(entry.guard_bytecode_offset),
+                guard_layout_id: (entry.guard_layout_id != u32::MAX)
+                    .then_some(entry.guard_layout_id),
+                guard_arg_index: (entry.guard_arg_index != u32::MAX)
+                    .then_some(entry.guard_arg_index),
+            };
+            if entry.variant_kind == 0 {
+                functions.insert(entry.global_func_id, loaded);
+            } else {
+                profile_clones
+                    .entry(entry.global_func_id)
+                    .or_default()
+                    .push(loaded);
+            }
         }
     }
 
@@ -180,6 +224,7 @@ pub fn detect_bundle_at(path: &Path) -> Option<BundlePayload> {
     Some(BundlePayload {
         code: code_region,
         functions,
+        profile_clones,
         vfs,
         target_triple: trailer.decode_target_triple().to_string(),
         entry_func_id,

@@ -18,6 +18,7 @@ use cranelift_frontend::FunctionBuilderContext;
 use cranelift_frontend::{FunctionBuilder, Variable};
 
 use super::abi;
+use super::frame::AotHelperTable;
 use super::statemachine::{
     HelperCall, SmBlock, SmBlockId, SmCmpOp, SmF64BinOp, SmI32BinOp, SmInstr, SmTerminator,
     StateMachineFunction,
@@ -192,7 +193,7 @@ fn determine_reg_types(blocks: &[SmBlock]) -> HashMap<u32, ir::types::Type> {
                 SmInstr::ConstBool { dest, .. } => {
                     types_map.insert(*dest, types::I8);
                 }
-                SmInstr::ConstNull { dest } => {
+                SmInstr::ConstNull { dest } | SmInstr::ConstPtrNull { dest } => {
                     types_map.insert(*dest, types::I64);
                 }
                 SmInstr::ConstString { dest, .. } => {
@@ -267,6 +268,9 @@ fn determine_reg_types(blocks: &[SmBlock]) -> HashMap<u32, ir::types::Type> {
                 }
                 SmInstr::LoadResumeValue { dest } => {
                     types_map.insert(*dest, types::I64);
+                }
+                SmInstr::PtrIsNull { dest, .. } => {
+                    types_map.insert(*dest, types::I8);
                 }
 
                 // Memory access
@@ -546,6 +550,16 @@ impl LoweringCtx {
                 let val = self.load_ctx_field(builder, ctx_offsets::RESUME_VALUE, types::I64);
                 self.def_reg(builder, *dest, val);
             }
+            SmInstr::PtrIsNull { dest, ptr } => {
+                self.ensure_reg(builder, *dest, types::I8);
+                let ptr_val = self.use_reg(builder, *ptr);
+                let zero = builder.ins().iconst(types::I64, 0);
+                let is_null = builder.ins().icmp(condcodes::IntCC::Equal, ptr_val, zero);
+                let one = builder.ins().iconst(types::I8, 1);
+                let zero = builder.ins().iconst(types::I8, 0);
+                let result = builder.ins().select(is_null, one, zero);
+                self.def_reg(builder, *dest, result);
+            }
 
             // ===== Constants =====
             SmInstr::ConstI32 { dest, value } => {
@@ -566,6 +580,11 @@ impl LoweringCtx {
             SmInstr::ConstNull { dest } => {
                 self.ensure_reg(builder, *dest, types::I64);
                 let val = abi::emit_null(builder);
+                self.def_reg(builder, *dest, val);
+            }
+            SmInstr::ConstPtrNull { dest } => {
+                self.ensure_reg(builder, *dest, types::I64);
+                let val = builder.ins().iconst(types::I64, 0);
                 self.def_reg(builder, *dest, val);
             }
             SmInstr::ConstString { dest, value } => {
@@ -732,16 +751,10 @@ impl LoweringCtx {
 
             // ===== Global access =====
             SmInstr::LoadGlobal { dest, index } => {
-                // TODO: Globals are stored in SharedVmState; load via ctx.shared_state
-                // For now, emit a null placeholder
-                self.ensure_reg(builder, *dest, types::I64);
-                let _ = index;
-                let val = abi::emit_null(builder);
-                self.def_reg(builder, *dest, val);
+                self.lower_helper_call(builder, Some(*dest), &HelperCall::LoadGlobalValue, &[*index])?;
             }
             SmInstr::StoreGlobal { index, src } => {
-                // TODO: Store to SharedVmState globals array
-                let _ = (index, src);
+                self.lower_helper_call(builder, None, &HelperCall::StoreGlobalValue, &[*index, *src])?;
             }
 
             // ===== Helper Calls =====
@@ -1225,9 +1238,20 @@ impl LoweringCtx {
                 v
             }
 
+            // (ctx, local_slot: u32) -> u64 / (ctx, local_slot: u32, value: u64)
+            HelperCall::LoadGlobalValue => {
+                let slot = builder.ins().iconst(types::I32, args[0] as i64);
+                vec![ctx, slot]
+            }
+            HelperCall::StoreGlobalValue => {
+                let slot = builder.ins().iconst(types::I32, args[0] as i64);
+                let value = self.use_reg(builder, args[1]);
+                vec![ctx, slot, value]
+            }
+
             // (ctx, native_id: u16, args_ptr: i64, argc: u8) -> u64
             HelperCall::NativeCall => {
-                // Adapter convention: args = [native_id_reg, arg0, arg1, ...]
+                // Adapter convention: args = [native_id_imm, arg0, arg1, ...]
                 // Marshal arg values into a contiguous stack buffer and pass pointer+argc.
                 let mut v = vec![ctx];
                 if args.is_empty() {
@@ -1240,8 +1264,7 @@ impl LoweringCtx {
                     return v;
                 }
 
-                let native_id_raw = self.use_reg(builder, args[0]);
-                let native_id = builder.ins().ireduce(types::I16, native_id_raw);
+                let native_id = builder.ins().iconst(types::I16, args[0] as i64);
                 let arg_count = args.len().saturating_sub(1).min(u8::MAX as usize);
                 let argc = builder.ins().iconst(types::I8, arg_count as i64);
                 let args_ptr = if arg_count == 0 {
@@ -1288,6 +1311,40 @@ impl LoweringCtx {
             // (ctx) -> u8
             HelperCall::CheckPreemption => vec![ctx],
 
+            // (ctx, func_id: u32, local_count: u32, args_ptr: i64, argc: u32) -> u64
+            HelperCall::RunSyncAotCall | HelperCall::PrepareAotCallFrame => {
+                let mut v = vec![ctx];
+                let func_id = builder.ins().iconst(types::I32, args[0] as i64);
+                let local_count = builder.ins().iconst(types::I32, args[1] as i64);
+                let arg_count = args.len().saturating_sub(2);
+                let argc = builder.ins().iconst(types::I32, arg_count as i64);
+                let args_ptr = if arg_count == 0 {
+                    builder.ins().iconst(types::I64, 0)
+                } else {
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        (arg_count * 8) as u32,
+                        3,
+                    ));
+                    let base = builder.ins().stack_addr(types::I64, slot, 0);
+                    for (i, a) in args.iter().skip(2).enumerate() {
+                        let raw = self.use_reg(builder, *a);
+                        let boxed = match builder.func.dfg.value_type(raw) {
+                            types::I32 => abi::emit_box_i32(builder, raw),
+                            types::F64 => abi::emit_box_f64(builder, raw),
+                            types::I8 => abi::emit_box_bool(builder, raw),
+                            _ => raw,
+                        };
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), boxed, base, (i as i32) * 8);
+                    }
+                    base
+                };
+                v.extend([func_id, local_count, args_ptr, argc]);
+                v
+            }
+
             // (ctx, exception_val: u64)
             HelperCall::ThrowException => {
                 let mut v = vec![ctx];
@@ -1333,17 +1390,18 @@ impl LoweringCtx {
 
         let mut sig = ir::Signature::new(self.call_conv);
         sig.params.push(AbiParam::new(types::I32)); // func_id
+        sig.params.push(AbiParam::new(types::I64)); // callee_frame
         sig.returns.push(AbiParam::new(types::I64)); // fn_ptr
 
         let func_id_val = builder.ins().iconst(types::I32, func_id as i64);
+        let callee_frame_val = self.use_reg(builder, callee_frame);
         let sig_ref = builder.import_signature(sig);
         let inst = builder
             .ins()
-            .call_indirect(sig_ref, get_func_ptr, &[func_id_val]);
+            .call_indirect(sig_ref, get_func_ptr, &[func_id_val, callee_frame_val]);
         let callee_fn_ptr = builder.inst_results(inst)[0];
 
         // Call the callee: callee_fn(callee_frame, ctx) -> u64
-        let callee_frame_val = self.use_reg(builder, callee_frame);
         let ctx = self.ctx_ptr(builder);
 
         let call_sig = aot_entry_signature(self.call_conv);
@@ -1511,6 +1569,16 @@ fn helper_call_signature(helper: &HelperCall, call_conv: CallConv) -> ir::Signat
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
         }
+        HelperCall::LoadGlobalValue => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        HelperCall::StoreGlobalValue => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.params.push(AbiParam::new(types::I64));
+        }
         // (ctx: i64, object: u64, key: u64, value: u64)
         HelperCall::DynSetProp => {
             sig.params.push(AbiParam::new(types::I64));
@@ -1544,14 +1612,33 @@ fn helper_call_signature(helper: &HelperCall, call_conv: CallConv) -> ir::Signat
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I8));
         }
+        // (ctx: i64, func_id: u32, local_count: u32, args_ptr: i64, argc: u32) -> u64
+        HelperCall::RunSyncAotCall => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
+        // (ctx: i64, func_id: u32, local_count: u32, args_ptr: i64, argc: u32) -> i64(frame_ptr)
+        HelperCall::PrepareAotCallFrame => {
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.returns.push(AbiParam::new(types::I64));
+        }
         // (ctx: i64, exception_val: u64)
         HelperCall::ThrowException => {
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
         }
-        // (func_id: u32) -> i64 (fn ptr)
+        // (func_id: u32, callee_frame: i64) -> i64 (fn ptr)
         HelperCall::GetAotFuncPtr => {
             sig.params.push(AbiParam::new(types::I32));
+            sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
         }
         // (ctx: i64, const_index: u32) -> u64
@@ -1590,9 +1677,12 @@ fn helper_return_type(helper: &HelperCall) -> ir::types::Type {
         | HelperCall::ArraySet
         | HelperCall::ArrayPush
         | HelperCall::DynSetProp
+        | HelperCall::StoreGlobalValue
         | HelperCall::FreeFrame
         | HelperCall::SafepointPoll
-        | HelperCall::ThrowException => types::I64,
+        | HelperCall::ThrowException
+        | HelperCall::RunSyncAotCall
+        | HelperCall::PrepareAotCallFrame => types::I64,
         _ => types::I64,
     }
 }
@@ -1600,45 +1690,50 @@ fn helper_return_type(helper: &HelperCall) -> ir::types::Type {
 /// Get the byte offset of a helper within AotHelperTable.
 /// Returns None for compound operations that don't map to a table entry.
 fn helper_table_field_offset(helper: &HelperCall) -> Option<i32> {
-    // Each field is a function pointer: 8 bytes on 64-bit
-    let index = match helper {
-        HelperCall::AllocFrame => 0,
-        HelperCall::FreeFrame => 1,
-        HelperCall::SafepointPoll => 2,
-        HelperCall::AllocObject => 3,
-        HelperCall::AllocStructuralObject => 4,
-        HelperCall::AllocArray => 5,
-        HelperCall::AllocString => 6,
-        HelperCall::StringConcat => 7,
-        HelperCall::StringLen => 8,
-        HelperCall::ArrayLen => 9,
-        HelperCall::ArrayGet => 10,
-        HelperCall::ArraySet => 11,
-        HelperCall::ArrayPush => 12,
-        HelperCall::GenericEquals => 13,
-        HelperCall::GenericLessThan => 14,
-        HelperCall::ObjectGetField => 15,
-        HelperCall::ObjectSetField => 16,
-        HelperCall::InstanceOf => 17,
-        HelperCall::ImplementsShape => 18,
-        HelperCall::LoadFieldShape => 19,
-        HelperCall::StoreFieldShape => 20,
-        HelperCall::Cast => 21,
-        HelperCall::CastShape => 22,
-        HelperCall::DynGetProp => 23,
-        HelperCall::DynSetProp => 24,
-        HelperCall::NativeCall => 25,
-        HelperCall::IsNativeSuspend => 26,
-        HelperCall::Spawn => 27,
-        HelperCall::CheckPreemption => 28,
-        HelperCall::ThrowException => 29,
-        HelperCall::GetAotFuncPtr => 30,
-        HelperCall::LoadStringConstant => 31,
-        HelperCall::LoadI32Constant => 32,
-        HelperCall::LoadF64Constant => 33,
-        _ => return None, // Compound operation
+    use std::mem::offset_of;
+
+    let offset = match helper {
+        HelperCall::AllocFrame => offset_of!(AotHelperTable, alloc_frame),
+        HelperCall::FreeFrame => offset_of!(AotHelperTable, free_frame),
+        HelperCall::SafepointPoll => offset_of!(AotHelperTable, safepoint_poll),
+        HelperCall::AllocObject => offset_of!(AotHelperTable, alloc_object),
+        HelperCall::AllocStructuralObject => offset_of!(AotHelperTable, alloc_structural_object),
+        HelperCall::AllocArray => offset_of!(AotHelperTable, alloc_array),
+        HelperCall::AllocString => offset_of!(AotHelperTable, alloc_string),
+        HelperCall::StringConcat => offset_of!(AotHelperTable, string_concat),
+        HelperCall::StringLen => offset_of!(AotHelperTable, string_len),
+        HelperCall::ArrayLen => offset_of!(AotHelperTable, array_len),
+        HelperCall::ArrayGet => offset_of!(AotHelperTable, array_get),
+        HelperCall::ArraySet => offset_of!(AotHelperTable, array_set),
+        HelperCall::ArrayPush => offset_of!(AotHelperTable, array_push),
+        HelperCall::GenericEquals => offset_of!(AotHelperTable, generic_equals),
+        HelperCall::GenericLessThan => offset_of!(AotHelperTable, generic_less_than),
+        HelperCall::ObjectGetField => offset_of!(AotHelperTable, object_get_field),
+        HelperCall::ObjectSetField => offset_of!(AotHelperTable, object_set_field),
+        HelperCall::InstanceOf => offset_of!(AotHelperTable, object_is_nominal),
+        HelperCall::ImplementsShape => offset_of!(AotHelperTable, object_implements_shape),
+        HelperCall::LoadFieldShape => offset_of!(AotHelperTable, object_get_shape_field),
+        HelperCall::StoreFieldShape => offset_of!(AotHelperTable, object_set_shape_field),
+        HelperCall::Cast => offset_of!(AotHelperTable, cast_value),
+        HelperCall::CastShape => offset_of!(AotHelperTable, cast_shape),
+        HelperCall::DynGetProp => offset_of!(AotHelperTable, dyn_get_prop),
+        HelperCall::DynSetProp => offset_of!(AotHelperTable, dyn_set_prop),
+        HelperCall::LoadGlobalValue => offset_of!(AotHelperTable, load_global_value),
+        HelperCall::StoreGlobalValue => offset_of!(AotHelperTable, store_global_value),
+        HelperCall::NativeCall => offset_of!(AotHelperTable, native_call),
+        HelperCall::IsNativeSuspend => offset_of!(AotHelperTable, is_native_suspend),
+        HelperCall::Spawn => offset_of!(AotHelperTable, spawn),
+        HelperCall::CheckPreemption => offset_of!(AotHelperTable, check_preemption),
+        HelperCall::RunSyncAotCall => offset_of!(AotHelperTable, run_sync_aot_call),
+        HelperCall::PrepareAotCallFrame => offset_of!(AotHelperTable, prepare_aot_call_frame),
+        HelperCall::ThrowException => offset_of!(AotHelperTable, throw_exception),
+        HelperCall::GetAotFuncPtr => offset_of!(AotHelperTable, get_aot_func_ptr),
+        HelperCall::LoadStringConstant => offset_of!(AotHelperTable, load_string_constant),
+        HelperCall::LoadI32Constant => offset_of!(AotHelperTable, load_i32_constant),
+        HelperCall::LoadF64Constant => offset_of!(AotHelperTable, load_f64_constant),
+        _ => return None,
     };
-    Some(index * 8)
+    i32::try_from(offset).ok()
 }
 
 // =============================================================================
@@ -1712,11 +1807,11 @@ pub mod ctx_offsets {
 }
 
 /// Number of entries in the AotHelperTable.
-pub const HELPER_TABLE_ENTRY_COUNT: usize = 25;
+pub const HELPER_TABLE_ENTRY_COUNT: usize = 38;
 
 /// Size of the AotHelperTable in bytes (for computing offsets after it).
 pub const fn helper_table_size() -> usize {
-    // 25 function pointers × 8 bytes each
+    // 38 function pointers × 8 bytes each
     HELPER_TABLE_ENTRY_COUNT * 8
 }
 
