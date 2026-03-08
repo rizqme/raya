@@ -186,6 +186,9 @@ impl<'a> Interpreter<'a> {
                         _ => {
                             // Not done yet - register as waiter and suspend
                             if awaited_task.add_waiter_if_incomplete(task.id()) {
+                                // Attaching an awaiter means the rejection will be
+                                // observed by user code if this task later fails.
+                                awaited_task.mark_rejection_observed();
                                 OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id))
                             } else {
                                 match awaited_task.state() {
@@ -269,6 +272,12 @@ impl<'a> Interpreter<'a> {
                         let awaited_id = TaskId::from_u64(task_id_u64);
 
                         if let Some(awaited_task) = tasks_guard.get(&awaited_id) {
+                            // Await-all attaches a consumer for every member task.
+                            // Mark any future rejection as observed as soon as the
+                            // aggregate wait is established, not only after failure
+                            // is re-read later. This matches promise-handler semantics
+                            // and avoids spurious unhandled-rejection reporting.
+                            awaited_task.mark_rejection_observed();
                             if awaited_task.is_cancelled() {
                                 failed_task_info = Some((awaited_id, None));
                                 break;

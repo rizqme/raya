@@ -19,10 +19,9 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::{Builder, Handle, Runtime};
 
 const VM_WORKER_RECV_TIMEOUT: Duration = Duration::from_millis(5);
-const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 // ============================================================================
 // Channel message types
@@ -116,7 +115,7 @@ pub struct Reactor {
     io_completion_rx: Option<Receiver<IoPoolCompletion>>,
 
     /// Tokio runtime for asynchronous IO execution
-    tokio_runtime: Option<Arc<Runtime>>,
+    tokio_runtime: Option<Runtime>,
 
     /// Shutdown signal
     shutdown: Arc<AtomicBool>,
@@ -184,15 +183,16 @@ impl Reactor {
             .enable_all()
             .build()
         {
-            Ok(runtime) => Arc::new(runtime),
+            Ok(runtime) => runtime,
             Err(e) => {
                 eprintln!(
                     "[runtime] failed to initialize tokio runtime, using default runtime: {e}"
                 );
-                Arc::new(Runtime::new().expect("tokio runtime construction failed"))
+                Runtime::new().expect("tokio runtime construction failed")
             }
         };
-        self.tokio_runtime = Some(tokio_runtime.clone());
+        let tokio_handle = tokio_runtime.handle().clone();
+        self.tokio_runtime = Some(tokio_runtime);
 
         // Store io_submit_tx in shared state so Interpreter can access it
         *self.shared_state.io_submit_tx.lock() = Some(io_submit_tx.clone());
@@ -219,7 +219,6 @@ impl Reactor {
         // --- Spawn reactor thread ---
         let shared_state = self.shared_state.clone();
         let vm_worker_count = self.vm_worker_count;
-        let tokio_runtime = tokio_runtime.clone();
         let shutdown_clone = shutdown.clone();
 
         let reactor_handle = thread::Builder::new()
@@ -232,7 +231,7 @@ impl Reactor {
                     io_submit_rx,
                     io_completion_tx,
                     io_completion_rx,
-                    tokio_runtime,
+                    tokio_handle,
                     vm_worker_count,
                     shutdown_clone,
                 );
@@ -265,57 +264,28 @@ impl Reactor {
         // running against dropped runtime state during teardown.
         self.vm_task_tx.take();
 
-        // Join VM workers. In integration-test teardown we prefer a clean join
-        // over detaching live workers, so keep the timeout comfortably above
-        // the reactor settle window.
-        let timeout = Duration::from_secs(5);
-        let mut all_threads_joined = true;
+        // Join VM workers and the reactor thread synchronously. Detaching live
+        // VM threads during teardown leaves them running against runtime state
+        // that the caller is about to drop, which can surface later as
+        // allocator corruption in unrelated tests.
         for handle in self.vm_worker_handles.drain(..) {
-            all_threads_joined &= Self::join_with_timeout(handle, timeout);
+            let _ = handle.join();
         }
 
-        // Join reactor thread
         if let Some(handle) = self.reactor_handle.take() {
-            all_threads_joined &= Self::join_with_timeout(handle, timeout);
+            let _ = handle.join();
         }
 
         // It is now safe to drop IO submission/runtime state; no VM worker or
         // reactor thread should still touch it after the joins above.
         self.io_submit_tx.take();
         if let Some(runtime) = self.tokio_runtime.take() {
-            match Arc::try_unwrap(runtime) {
-                Ok(runtime) => runtime.shutdown_timeout(timeout),
-                Err(runtime) => drop(runtime),
-            }
+            runtime.shutdown_timeout(Duration::from_secs(5));
         }
         *self.shared_state.io_submit_tx.lock() = None;
 
         self.started = false;
-
-        // Clear task registry only when all worker/reactor threads are fully joined.
-        // If a thread timed out and was detached, keep task state intact so detached
-        // workers don't race dropped tasks.
-        if all_threads_joined {
-            self.shared_state.tasks.write().clear();
-        } else {
-            eprintln!("[runtime] reactor shutdown timed out; detached worker(s) remain");
-        }
-    }
-
-    /// Join a thread with timeout, detaching if it does not terminate in time.
-    fn join_with_timeout(handle: JoinHandle<()>, timeout: Duration) -> bool {
-        let start = Instant::now();
-        loop {
-            if handle.is_finished() {
-                let _ = handle.join();
-                return true;
-            }
-            if start.elapsed() > timeout {
-                drop(handle);
-                return false;
-            }
-            thread::sleep(JOIN_POLL_INTERVAL);
-        }
+        self.shared_state.tasks.write().clear();
     }
 
     // ========================================================================
@@ -427,7 +397,7 @@ impl Reactor {
         io_submit_rx: Receiver<IoSubmission>,
         io_completion_tx: Sender<IoPoolCompletion>,
         io_completion_rx: Receiver<IoPoolCompletion>,
-        tokio_runtime: Arc<Runtime>,
+        tokio_runtime: Handle,
         vm_worker_count: usize,
         shutdown: Arc<AtomicBool>,
     ) {
@@ -646,7 +616,15 @@ impl Reactor {
             }
 
             // === STEP 8.5: Promise microtask checkpoint ===
-            Self::drain_promise_microtasks(&shared_state);
+            // Only surface unhandled rejections once the scheduler reaches a
+            // genuinely quiescent checkpoint. A one-tick delay is not enough
+            // for patterns like `let g = good(); let b = bad(); await g; try { await b; }`
+            // where the rejection is observed later in the same user flow.
+            let quiescent_checkpoint = active_vm_tasks == 0
+                && ready_queue.is_empty()
+                && timer_heap.is_empty()
+                && channel_waiters.is_empty();
+            Self::drain_promise_microtasks(&shared_state, quiescent_checkpoint);
 
             // === STEP 9: Block briefly with select! ===
             let timeout = timer_heap
@@ -701,7 +679,11 @@ impl Reactor {
             }
 
             // === STEP 9.5: Promise microtask checkpoint (post-select boundary) ===
-            Self::drain_promise_microtasks(&shared_state);
+            let quiescent_checkpoint = active_vm_tasks == 0
+                && ready_queue.is_empty()
+                && timer_heap.is_empty()
+                && channel_waiters.is_empty();
+            Self::drain_promise_microtasks(&shared_state, quiescent_checkpoint);
         }
     }
 
@@ -832,10 +814,13 @@ impl Reactor {
         shared_state
             .promise_microtasks
             .lock()
-            .push_back(PromiseMicrotask::ReportUnhandledRejection(task.id()));
+            .push_back(PromiseMicrotask::ReportUnhandledRejection(task.id(), 1));
     }
 
-    fn drain_promise_microtasks(shared_state: &Arc<SharedVmState>) {
+    fn drain_promise_microtasks(
+        shared_state: &Arc<SharedVmState>,
+        quiescent_checkpoint: bool,
+    ) {
         let mut drained = Vec::new();
         {
             let mut queue = shared_state.promise_microtasks.lock();
@@ -847,13 +832,25 @@ impl Reactor {
             return;
         }
         let tasks = shared_state.tasks.read();
+        let mut requeue = Vec::new();
         for job in drained {
             match job {
-                PromiseMicrotask::ReportUnhandledRejection(task_id) => {
+                PromiseMicrotask::ReportUnhandledRejection(task_id, delay) => {
                     let Some(task) = tasks.get(&task_id) else {
                         continue;
                     };
                     if task.state() != TaskState::Failed || task.is_rejection_observed() {
+                        continue;
+                    }
+                    if !quiescent_checkpoint {
+                        requeue.push(PromiseMicrotask::ReportUnhandledRejection(task_id, delay));
+                        continue;
+                    }
+                    if delay > 0 {
+                        requeue.push(PromiseMicrotask::ReportUnhandledRejection(
+                            task_id,
+                            delay - 1,
+                        ));
                         continue;
                     }
                     let reason = task.current_exception().unwrap_or(Value::null());
@@ -864,11 +861,15 @@ impl Reactor {
                 }
             }
         }
+        drop(tasks);
+        if !requeue.is_empty() {
+            shared_state.promise_microtasks.lock().extend(requeue);
+        }
     }
 
     fn handle_io_submission(
         sub: IoSubmission,
-        tokio_runtime: &Arc<Runtime>,
+        tokio_runtime: &Handle,
         io_completion_tx: &Sender<IoPoolCompletion>,
         shared_state: &Arc<SharedVmState>,
         channel_waiters: &mut Vec<ChannelWaiter>,
@@ -970,7 +971,7 @@ impl Reactor {
     }
 
     fn spawn_blocking_io(
-        tokio_runtime: &Arc<Runtime>,
+        tokio_runtime: &Handle,
         task_id: TaskId,
         work: impl FnOnce() -> IoCompletion + Send + 'static,
         completion_tx: Sender<IoPoolCompletion>,
@@ -1104,9 +1105,10 @@ impl Reactor {
         let tasks = shared_state.tasks.read();
         if let Some(task) = tasks.get(&task_id) {
             task.set_resume_value(value);
-            task.set_state(TaskState::Resumed);
-            task.clear_suspend_reason();
-            ready_queue.push_back(task.clone());
+            if task.resume_if_pending() {
+                task.clear_suspend_reason();
+                ready_queue.push_back(task.clone());
+            }
         }
     }
 
@@ -1122,17 +1124,19 @@ impl Reactor {
             if task.is_cancelled() {
                 // Cancellation wins over delayed IO exceptions.
                 task.set_resume_value(Value::null());
-                task.set_state(TaskState::Resumed);
-                task.clear_suspend_reason();
-                ready_queue.push_back(task.clone());
+                if task.resume_if_pending() {
+                    task.clear_suspend_reason();
+                    ready_queue.push_back(task.clone());
+                }
                 return;
             }
             // Ensure stale resume values are not materialized when resuming with exception.
             let _ = task.take_resume_value();
             task.set_exception(exception);
-            task.set_state(TaskState::Resumed);
-            task.clear_suspend_reason();
-            ready_queue.push_back(task.clone());
+            if task.resume_if_pending() {
+                task.clear_suspend_reason();
+                ready_queue.push_back(task.clone());
+            }
         }
     }
 
@@ -1169,9 +1173,10 @@ impl Reactor {
                 } else if let Some(result) = task.result() {
                     waiter_task.set_resume_value(result);
                 }
-                waiter_task.set_state(TaskState::Resumed);
-                waiter_task.clear_suspend_reason();
-                ready_queue.push_back(waiter_task.clone());
+                if waiter_task.resume_if_pending() {
+                    waiter_task.clear_suspend_reason();
+                    ready_queue.push_back(waiter_task.clone());
+                }
             }
         }
     }

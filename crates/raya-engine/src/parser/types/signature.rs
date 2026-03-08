@@ -544,7 +544,7 @@ fn unescape(value: &str) -> String {
     out
 }
 
-fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
+fn split_top_level<'a>(input: &'a str, delimiter: char) -> Vec<&'a str> {
     let mut parts = Vec::new();
     let mut start = 0usize;
     let mut depth_paren = 0usize;
@@ -572,13 +572,13 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
         }
 
         if ch == delimiter && depth_paren == 0 && depth_bracket == 0 && depth_angle == 0 {
-            parts.push(input[start..idx].trim().to_string());
+            parts.push(input[start..idx].trim());
             start = idx + ch.len_utf8();
         }
     }
 
     if start <= input.len() {
-        parts.push(input[start..].trim().to_string());
+        parts.push(input[start..].trim());
     }
 
     parts
@@ -846,7 +846,7 @@ impl<'a> SignatureHydrator<'a> {
         if !inner.trim().is_empty() {
             for entry in split_top_level(inner, ',') {
                 let fields = split_top_level(&entry, ':');
-                let Some(kind) = fields.first().map(|value| value.as_str()) else {
+                let Some(kind) = fields.first().copied() else {
                     continue;
                 };
 
@@ -901,7 +901,7 @@ impl<'a> SignatureHydrator<'a> {
         if !inner.trim().is_empty() {
             for entry in split_top_level(inner, ',') {
                 let fields = split_top_level(&entry, ':');
-                let Some(kind) = fields.first().map(|value| value.as_str()) else {
+                let Some(kind) = fields.first().copied() else {
                     continue;
                 };
 
@@ -1014,7 +1014,7 @@ impl<'a> SignatureHydrator<'a> {
         if !inner.trim().is_empty() {
             for entry in split_top_level(inner, ',') {
                 let fields = split_top_level(&entry, ':');
-                let Some(kind) = fields.first().map(|value| value.as_str()) else {
+                let Some(kind) = fields.first().copied() else {
                     continue;
                 };
 

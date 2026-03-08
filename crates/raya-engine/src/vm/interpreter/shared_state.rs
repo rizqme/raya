@@ -27,7 +27,10 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromiseMicrotask {
     /// Report a task rejection if still unhandled at checkpoint drain time.
-    ReportUnhandledRejection(TaskId),
+    ///
+    /// The countdown provides a grace turn so user code can attach an awaiter/
+    /// handler after the task fails but before we surface it as unhandled.
+    ReportUnhandledRejection(TaskId, u8),
 }
 
 /// Runtime layout assigned to a registered module.

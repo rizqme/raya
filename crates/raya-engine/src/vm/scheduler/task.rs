@@ -674,6 +674,25 @@ impl Task {
         }
     }
 
+    /// Resume a task from an external wakeup if it is still pending.
+    ///
+    /// This is used for wakeups that can race the worker's suspend result
+    /// reaching the reactor. A task may still be `Running` when the wakeup
+    /// arrives, or already `Suspended` if the suspend was fully parked first.
+    ///
+    /// Returns true if the task should be queued for execution, false if it is
+    /// already terminal or has already been resumed by another wakeup.
+    pub fn resume_if_pending(&self) -> bool {
+        let mut lc = self.lifecycle.lock();
+        match lc.state {
+            TaskState::Running | TaskState::Suspended | TaskState::Created => {
+                lc.state = TaskState::Resumed;
+                true
+            }
+            TaskState::Resumed | TaskState::Completed | TaskState::Failed => false,
+        }
+    }
+
     /// Set the value to push when resuming (e.g., channel receive result)
     pub fn set_resume_value(&self, value: Value) {
         self.lifecycle.lock().resume_value = Some(value);
