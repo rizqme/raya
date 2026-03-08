@@ -86,7 +86,9 @@ mod memory_analysis {
         for header_ptr in gc.heap().iter_allocations() {
             let header = unsafe { &*header_ptr };
             if header.type_id() == std::any::TypeId::of::<Object>() {
-                let obj_ptr = unsafe { header_ptr.add(1) as *const Object };
+                let obj_ptr = unsafe {
+                    (header_ptr as *const u8).add(header.value_offset() as usize) as *const Object
+                };
                 let obj = unsafe { &*obj_ptr };
                 if obj.nominal_type_id() == Some(nominal_type_id_a as u32) {
                     count_a += 1;
