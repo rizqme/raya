@@ -289,7 +289,15 @@ impl Scheduler {
                 })
             };
             let microtasks_empty = self.shared_state.promise_microtasks.lock().is_empty();
-            if all_done && microtasks_empty {
+            let reactor_quiescent = self
+                .shared_state
+                .reactor_is_quiescent
+                .load(std::sync::atomic::Ordering::Acquire);
+            let reactor_epoch = self
+                .shared_state
+                .reactor_quiescent_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            if all_done && microtasks_empty && reactor_quiescent {
                 std::thread::sleep(settle);
                 let all_done_confirm = {
                     let tasks = self.shared_state.tasks.read();
@@ -300,7 +308,19 @@ impl Scheduler {
                 };
                 let microtasks_empty_confirm =
                     self.shared_state.promise_microtasks.lock().is_empty();
-                if all_done_confirm && microtasks_empty_confirm {
+                let reactor_quiescent_confirm = self
+                    .shared_state
+                    .reactor_is_quiescent
+                    .load(std::sync::atomic::Ordering::Acquire);
+                let reactor_epoch_confirm = self
+                    .shared_state
+                    .reactor_quiescent_epoch
+                    .load(std::sync::atomic::Ordering::Acquire);
+                if all_done_confirm
+                    && microtasks_empty_confirm
+                    && reactor_quiescent_confirm
+                    && reactor_epoch == reactor_epoch_confirm
+                {
                     return true;
                 }
             }

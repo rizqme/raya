@@ -19,8 +19,7 @@ use crossbeam::channel::Sender;
 use crossbeam_deque::Injector;
 use parking_lot::{Mutex, RwLock};
 use rustc_hash::FxHashMap;
-#[cfg(feature = "jit")]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Promise-related microtasks processed by scheduler checkpoints.
@@ -356,6 +355,15 @@ pub struct SharedVmState {
     /// Promise microtask queue (FIFO), drained at scheduler checkpoints.
     pub promise_microtasks: Mutex<std::collections::VecDeque<PromiseMicrotask>>,
 
+    /// Whether the reactor has reached a quiescent checkpoint with no
+    /// internally queued work.
+    pub reactor_is_quiescent: AtomicBool,
+
+    /// Bumped whenever the reactor quiescence state changes. This lets callers
+    /// wait for a stable quiescent window instead of observing a transient
+    /// quiescent bool between local queue transitions.
+    pub reactor_quiescent_epoch: AtomicU64,
+
     /// Global task injector for scheduling
     pub injector: Arc<Injector<Arc<Task>>>,
 
@@ -483,6 +491,8 @@ impl SharedVmState {
             safepoint,
             tasks,
             promise_microtasks: Mutex::new(std::collections::VecDeque::new()),
+            reactor_is_quiescent: AtomicBool::new(false),
+            reactor_quiescent_epoch: AtomicU64::new(0),
             injector,
             mutex_registry: MutexRegistry::new(),
             semaphore_registry: SemaphoreRegistry::new(),
@@ -517,6 +527,13 @@ impl SharedVmState {
             ),
             #[cfg(feature = "jit")]
             jit_telemetry: Arc::new(JitTelemetry::default()),
+        }
+    }
+
+    pub fn set_reactor_quiescent(&self, quiescent: bool) {
+        let previous = self.reactor_is_quiescent.swap(quiescent, Ordering::AcqRel);
+        if previous != quiescent {
+            self.reactor_quiescent_epoch.fetch_add(1, Ordering::AcqRel);
         }
     }
 

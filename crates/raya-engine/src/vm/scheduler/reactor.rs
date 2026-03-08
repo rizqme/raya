@@ -409,6 +409,7 @@ impl Reactor {
 
         loop {
             if shutdown.load(AtomicOrdering::Acquire) {
+                shared_state.set_reactor_quiescent(false);
                 break;
             }
 
@@ -624,6 +625,7 @@ impl Reactor {
                 && ready_queue.is_empty()
                 && timer_heap.is_empty()
                 && channel_waiters.is_empty();
+            shared_state.set_reactor_quiescent(quiescent_checkpoint);
             Self::drain_promise_microtasks(&shared_state, quiescent_checkpoint);
 
             // === STEP 9: Block briefly with select! ===
@@ -683,8 +685,11 @@ impl Reactor {
                 && ready_queue.is_empty()
                 && timer_heap.is_empty()
                 && channel_waiters.is_empty();
+            shared_state.set_reactor_quiescent(quiescent_checkpoint);
             Self::drain_promise_microtasks(&shared_state, quiescent_checkpoint);
         }
+
+        shared_state.set_reactor_quiescent(false);
     }
 
     // ========================================================================
