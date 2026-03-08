@@ -1,26 +1,27 @@
-// Typed EventEmitter surface (Node-compatible shape)
-// No `any` used.
+// Typed EventEmitter surface.
+// Builtin declaration parsing/type instantiation is more reliable when the
+// event key is `string` and payloads flow through `E[string]`.
 
-export type EventMap = Record<PropertyKey, readonly unknown[]>;
+export type EventMap = Record<string, readonly unknown[]>;
 
 export class EventEmitter<E extends EventMap> {
     constructor();
 
-    on<K extends keyof E>(event: K, listener: (...args: E[K]) => void): this;
-    once<K extends keyof E>(event: K, listener: (...args: E[K]) => void): this;
-    off<K extends keyof E>(event: K, listener: (...args: E[K]) => void): this;
+    on(event: string, listener: (...args: E[keyof E]) => void): this;
+    once(event: string, listener: (...args: E[keyof E]) => void): this;
+    off(event: string, listener: (...args: E[keyof E]) => void): this;
 
-    addListener<K extends keyof E>(event: K, listener: (...args: E[K]) => void): this;
-    removeListener<K extends keyof E>(event: K, listener: (...args: E[K]) => void): this;
+    addListener(event: string, listener: (...args: E[keyof E]) => void): this;
+    removeListener(event: string, listener: (...args: E[keyof E]) => void): this;
 
-    emit<K extends keyof E>(event: K, ...args: E[K]): boolean;
+    emit(event: string, ...args: E[keyof E]): boolean;
 
-    removeAllListeners(event?: keyof E): this;
+    removeAllListeners(event?: string): this;
 
-    listeners<K extends keyof E>(event: K): Array<(...args: E[K]) => void>;
-    listenerCount(event: keyof E): number;
+    listeners(event: string): Array<(...args: E[keyof E]) => void>;
+    listenerCount(event: string): number;
 
-    eventNames(): Array<keyof E>;
+    eventNames(): Array<string>;
     setMaxListeners(n: number): this;
     getMaxListeners(): number;
 }

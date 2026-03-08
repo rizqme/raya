@@ -1,17 +1,54 @@
 //! Call opcode handlers: Call, CallMethodExact, CallConstructor, CallSuper
 
 use crate::compiler::{Module, Opcode};
+use crate::vm::builtin::mutex;
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
+use crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id;
 use crate::vm::object::{Array, BoundMethod, BoundNativeMethod, Closure, Object, RayaString};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
+use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
 use crate::vm::VmError;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
+    fn exec_bound_native_method_call(
+        &mut self,
+        stack: &mut Stack,
+        receiver: Value,
+        native_id: u16,
+        mut args: Vec<Value>,
+        module: &Module,
+        task: &Arc<Task>,
+    ) -> OpcodeResult {
+        let mut native_args = Vec::with_capacity(args.len() + 1);
+        native_args.push(receiver);
+        native_args.append(&mut args);
+        for arg in &native_args {
+            if let Err(error) = stack.push(*arg) {
+                return OpcodeResult::Error(error);
+            }
+        }
+        let arg_count_u8 = match u8::try_from(native_args.len()) {
+            Ok(v) => v,
+            Err(_) => {
+                return OpcodeResult::Error(VmError::RuntimeError(
+                    "Too many arguments for bound native method call".to_string(),
+                ))
+            }
+        };
+        let code = [
+            (native_id & 0x00FF) as u8,
+            ((native_id >> 8) & 0x00FF) as u8,
+            arg_count_u8,
+        ];
+        let mut native_ip = 0usize;
+        self.exec_native_ops(stack, &mut native_ip, &code, module, task, Opcode::NativeCall)
+    }
+
     pub(crate) fn exec_call_ops(
         &mut self,
         stack: &mut Stack,
@@ -271,6 +308,155 @@ impl<'a> Interpreter<'a> {
                         return OpcodeResult::Error(e);
                     }
                     return OpcodeResult::Continue;
+                }
+
+                let shape_method_name = self
+                    .structural_shape_names
+                    .read()
+                    .get(&shape_id)
+                    .and_then(|names| names.get(method_index).cloned());
+
+                if let Some(method_name) = shape_method_name.as_deref() {
+                    if !receiver_val.is_ptr() {
+                        let mut args = Vec::with_capacity(arg_count);
+                        for _ in 0..arg_count {
+                            match stack.pop() {
+                                Ok(v) => args.push(v),
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+                        match stack.pop() {
+                            Ok(_) => {}
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                        args.reverse();
+
+                        match method_name {
+                            "lock" if args.is_empty() => {
+                                let mutex_id =
+                                    MutexId::from_u64(receiver_val.as_i64().unwrap_or(0) as u64);
+                                if let Some(mutex) = self.mutex_registry.get(mutex_id) {
+                                    return match mutex.try_lock(task.id()) {
+                                        Ok(()) => {
+                                            task.add_held_mutex(mutex_id);
+                                            if let Err(error) = stack.push(Value::null()) {
+                                                OpcodeResult::Error(error)
+                                            } else {
+                                                OpcodeResult::Continue
+                                            }
+                                        }
+                                        Err(_) => {
+                                            OpcodeResult::Suspend(
+                                                crate::vm::scheduler::SuspendReason::MutexLockCall { mutex_id },
+                                            )
+                                        }
+                                    };
+                                }
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Mutex {:?} not found",
+                                    mutex_id
+                                )));
+                            }
+                            "unlock" if args.is_empty() => {
+                                let mutex_id =
+                                    MutexId::from_u64(receiver_val.as_i64().unwrap_or(0) as u64);
+                                if let Some(mutex) = self.mutex_registry.get(mutex_id) {
+                                    return match mutex.unlock(task.id()) {
+                                        Ok(next_waiter) => {
+                                            task.remove_held_mutex(mutex_id);
+                                            if let Some(waiter_id) = next_waiter {
+                                                let tasks = self.tasks.read();
+                                                if let Some(waiter_task) = tasks.get(&waiter_id) {
+                                                    // Only wake tasks that have already parked.
+                                                    // If ownership is transferred before the waiter
+                                                    // finishes suspending, the reactor will resume
+                                                    // it when the suspend result is committed.
+                                                    if waiter_task.state()
+                                                        == crate::vm::scheduler::TaskState::Suspended
+                                                    {
+                                                        waiter_task.add_held_mutex(mutex_id);
+                                                        if matches!(
+                                                            waiter_task.suspend_reason(),
+                                                            Some(crate::vm::scheduler::SuspendReason::MutexLockCall { .. })
+                                                        ) {
+                                                            waiter_task
+                                                                .set_resume_value(Value::null());
+                                                        }
+                                                        waiter_task.set_state(
+                                                            crate::vm::scheduler::TaskState::Resumed,
+                                                        );
+                                                        waiter_task.clear_suspend_reason();
+                                                        self.injector.push(waiter_task.clone());
+                                                    }
+                                                }
+                                            }
+                                            if let Err(error) = stack.push(Value::null()) {
+                                                OpcodeResult::Error(error)
+                                            } else {
+                                                OpcodeResult::Continue
+                                            }
+                                        }
+                                        Err(e) => {
+                                            OpcodeResult::Error(VmError::RuntimeError(format!(
+                                                "{}",
+                                                e
+                                            )))
+                                        }
+                                    };
+                                }
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Mutex {:?} not found",
+                                    mutex_id
+                                )));
+                            }
+                            "tryLock" => {
+                                return self.exec_bound_native_method_call(
+                                    stack,
+                                    receiver_val,
+                                    mutex::TRY_LOCK,
+                                    args,
+                                    module,
+                                    task,
+                                );
+                            }
+                            "isLocked" => {
+                                return self.exec_bound_native_method_call(
+                                    stack,
+                                    receiver_val,
+                                    mutex::IS_LOCKED,
+                                    args,
+                                    module,
+                                    task,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if let Some(native_id) =
+                        builtin_handle_native_method_id(receiver_val, method_name)
+                    {
+                        let mut args = Vec::with_capacity(arg_count);
+                        for _ in 0..arg_count {
+                            match stack.pop() {
+                                Ok(v) => args.push(v),
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+                        match stack.pop() {
+                            Ok(_) => {}
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                        args.reverse();
+                        return self.exec_bound_native_method_call(
+                            stack,
+                            receiver_val,
+                            native_id,
+                            args,
+                            module,
+                            task,
+                        );
+                    }
                 }
 
                 let receiver_val =

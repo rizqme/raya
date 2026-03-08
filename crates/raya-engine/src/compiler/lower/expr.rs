@@ -2319,8 +2319,41 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
+            let constrained_typevar_shape_call = self
+                .type_ctx
+                .get(self.get_expr_type(&member.object))
+                .is_some_and(|ty| {
+                    matches!(ty, crate::parser::types::ty::Type::TypeVar(tv) if tv.constraint.is_some())
+                });
+
+            if constrained_typevar_shape_call
+                && self
+                    .structural_shape_slot_from_expr(&member.object, method_name)
+                    .is_some()
+            {
+                if let Some((shape_id, slot)) =
+                    self.structural_shape_slot_from_expr(&member.object, method_name)
+                {
+                    let object = self.lower_expr(&member.object);
+                    self.emit_structural_shape_name_registration_for_expr(&member.object);
+                    self.emit(IrInstr::CallMethodShape {
+                        dest: Some(dest.clone()),
+                        object,
+                        shape_id,
+                        method: slot,
+                        args,
+                        optional: member.optional,
+                    });
+                    self.propagate_type_projection_to_register(call_ty, &dest);
+                    return dest;
+                }
+            }
+
             // Try to determine the class type of the object for method resolution
-            let mut nominal_type_id = self.infer_nominal_type_id(&member.object);
+            let member_field_metadata = self.resolve_member_field_metadata(&member.object);
+            let mut nominal_type_id = self
+                .infer_nominal_type_id(&member.object)
+                .or_else(|| member_field_metadata.and_then(|(_, nominal_type_id)| nominal_type_id));
 
             // If nominal_type_id is not found, check if this is a Channel type parameter
             // Parameters with Channel<T> type annotation aren't in variable_class_map
@@ -2630,17 +2663,38 @@ impl<'a> Lowerer<'a> {
             let obj_type_id = {
                 let reg_ty = object.ty.as_u32();
                 let checker_ty = self.get_expr_type(&member.object).as_u32();
+                let field_ty = member_field_metadata
+                    .map(|(field_ty, _)| field_ty.as_u32())
+                    .unwrap_or(UNRESOLVED_TYPE_ID);
                 let reg_dispatch = self.normalize_type_for_dispatch(reg_ty);
                 let checker_dispatch = self.normalize_type_for_dispatch(checker_ty);
+                let field_dispatch = self.normalize_type_for_dispatch(field_ty);
 
                 if reg_dispatch != UNRESOLVED_TYPE_ID && reg_dispatch != 6 {
                     reg_dispatch
                 } else if checker_dispatch != UNRESOLVED_TYPE_ID && checker_dispatch != 6 {
                     checker_dispatch
+                } else if field_dispatch != UNRESOLVED_TYPE_ID && field_dispatch != 6 {
+                    field_dispatch
                 } else {
                     UNRESOLVED_TYPE_ID
                 }
             };
+            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                if !matches!(&*member.object, Expression::Identifier(_)) {
+                    eprintln!(
+                        "[lower] member-call receiver method='{}' reg_ty={} checker_ty={} field_ty={} nominal_type_id={:?} obj_type_id={}",
+                        method_name,
+                        object.ty.as_u32(),
+                        self.get_expr_type(&member.object).as_u32(),
+                        member_field_metadata
+                            .map(|(field_ty, _)| field_ty.as_u32())
+                            .unwrap_or(UNRESOLVED_TYPE_ID),
+                        nominal_type_id.map(|id| id.as_u32()),
+                        obj_type_id
+                    );
+                }
+            }
             if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                 if let Expression::Identifier(obj_ident) = &*member.object {
                     eprintln!(
@@ -3079,6 +3133,36 @@ impl<'a> Lowerer<'a> {
         if obj_ty_id == JSON_TYPE_ID || obj_ty_id == JSON_OBJECT_TYPE_ID {
             let json_type = TypeId::new(JSON_TYPE_ID);
             let dest = self.alloc_register(json_type);
+            self.emit(IrInstr::DynGetProp {
+                dest: dest.clone(),
+                object,
+                property: prop_name.to_string(),
+            });
+            return dest;
+        }
+
+        let receiver_expr_ty = self.get_expr_type(&member.object);
+        let receiver_is_dynamic_object = matches!(
+            self.type_ctx.get(receiver_expr_ty),
+            Some(Type::JSObject) | Some(Type::Any) | Some(Type::Unknown)
+        ) || self.type_ctx.jsobject_inner(receiver_expr_ty).is_some()
+            || matches!(
+                self.type_ctx.get(object.ty),
+                Some(Type::JSObject) | Some(Type::Any) | Some(Type::Unknown)
+            )
+            || self.type_ctx.jsobject_inner(object.ty).is_some();
+
+        if nominal_type_id.is_none() && receiver_is_dynamic_object {
+            let member_ty = {
+                let member_expr = Expression::Member(member.clone());
+                let inferred = self.get_expr_type(&member_expr);
+                if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                    UNRESOLVED
+                } else {
+                    inferred
+                }
+            };
+            let dest = self.alloc_register(member_ty);
             self.emit(IrInstr::DynGetProp {
                 dest: dest.clone(),
                 object,
@@ -5984,11 +6068,22 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
+            let ctor_source_symbol = self
+                .constructor_value_ctor_map
+                .get(&ident.name)
+                .copied()
+                .unwrap_or(ident.name);
+            let ctor_source_name = self.interner.resolve(ctor_source_symbol);
             let mut callee_ty = self.get_expr_type(&new_expr.callee);
             if callee_ty.as_u32() == UNRESOLVED_TYPE_ID {
-                callee_ty = self.type_ctx.lookup_named_type(name).unwrap_or(callee_ty);
+                callee_ty = self
+                    .type_ctx
+                    .lookup_named_type(name)
+                    .or_else(|| self.type_ctx.lookup_named_type(ctor_source_name))
+                    .unwrap_or(callee_ty);
             }
             let runtime_bound_constructor = self.import_bindings.contains(&ident.name)
+                || self.constructor_value_ctor_map.contains_key(&ident.name)
                 || (self.ambient_builtin_globals.contains(name)
                     && !self.class_map.contains_key(&ident.name)
                     && !self.variable_class_map.contains_key(&ident.name)
@@ -6191,8 +6286,9 @@ impl<'a> Lowerer<'a> {
             }
             if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                 eprintln!(
-                    "[lower] new {} callee_ty={} has_construct_sig={} ambient_builtin={}",
+                    "[lower] new {} ctor_source={} callee_ty={} has_construct_sig={} ambient_builtin={}",
                     name,
+                    ctor_source_name,
                     callee_ty.as_u32(),
                     self.type_has_construct_signature(callee_ty),
                     self.ambient_builtin_globals.contains(name)
@@ -7194,6 +7290,34 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn resolve_member_field_metadata(
+        &self,
+        expr: &Expression,
+    ) -> Option<(TypeId, Option<NominalTypeId>)> {
+        let Expression::Member(member) = expr else {
+            return None;
+        };
+        let owner_nominal_type_id = self.infer_nominal_type_id(&member.object)?;
+        let field_name = self.interner.resolve(member.property.name);
+        self.get_all_fields(owner_nominal_type_id)
+            .into_iter()
+            .rev()
+            .find_map(|field| {
+                (self.interner.resolve(field.name) == field_name).then(|| {
+                    let nominal_type_id = field
+                        .class_type
+                        .or_else(|| {
+                            field
+                                .type_name
+                                .as_deref()
+                                .and_then(|name| self.nominal_type_id_from_type_name(name))
+                        })
+                        .or_else(|| self.nominal_type_id_from_type_id(field.ty));
+                    (field.ty, nominal_type_id)
+                })
+            })
+    }
+
     /// Look up the generic value type for a Map/Set field expression.
     /// For `this.adj` where `adj: Map<K, V>`, returns V's TypeId.
     fn get_container_value_type(&self, expr: &Expression) -> Option<TypeId> {
@@ -7234,7 +7358,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn type_has_construct_signature(&self, ty_id: TypeId) -> bool {
+    pub(crate) fn type_has_construct_signature(&self, ty_id: TypeId) -> bool {
         use crate::parser::types::ty::Type;
 
         match self.type_ctx.get(ty_id) {
@@ -7342,10 +7466,39 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 }
+                for field in &mut parent_fields {
+                    if field.ty == UNRESOLVED {
+                        if let Some(ref type_name) = field.type_name {
+                            if let Some(resolved_ty) = self.type_ctx.lookup_named_type(type_name) {
+                                field.ty = resolved_ty;
+                            }
+                        }
+                    }
+                    if field.class_type.is_none() {
+                        if let Some(ref type_name) = field.type_name {
+                            field.class_type = self.nominal_type_id_from_type_name(type_name);
+                        }
+                    }
+                }
                 all_fields.extend(parent_fields);
             }
             // Then add this class's fields
-            all_fields.extend(class_info.fields.clone());
+            let mut class_fields = class_info.fields.clone();
+            for field in &mut class_fields {
+                if field.ty == UNRESOLVED {
+                    if let Some(ref type_name) = field.type_name {
+                        if let Some(resolved_ty) = self.type_ctx.lookup_named_type(type_name) {
+                            field.ty = resolved_ty;
+                        }
+                    }
+                }
+                if field.class_type.is_none() {
+                    if let Some(ref type_name) = field.type_name {
+                        field.class_type = self.nominal_type_id_from_type_name(type_name);
+                    }
+                }
+            }
+            all_fields.extend(class_fields);
         }
 
         all_fields
@@ -7450,8 +7603,26 @@ impl<'a> Lowerer<'a> {
                 for field in all_fields.into_iter().rev() {
                     let fname = self.interner.resolve(field.name);
                     if fname == field_name {
+                        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                            eprintln!(
+                                "[lower] infer member '{}.{}' field_ty={} class_type={:?} type_name={:?}",
+                                "<member>",
+                                field_name,
+                                field.ty.as_u32(),
+                                field.class_type.map(|id| id.as_u32()),
+                                field.type_name,
+                            );
+                        }
                         // Check if the field has a known class type
                         if let Some(field_nominal_type_id) = field.class_type {
+                            return Some(field_nominal_type_id);
+                        }
+                        // Generic and substituted field types often have the correct
+                        // concrete nominal type even when `class_type`/`type_name`
+                        // were not preserved during lowering metadata construction.
+                        if let Some(field_nominal_type_id) =
+                            self.nominal_type_id_from_type_id(field.ty)
+                        {
                             return Some(field_nominal_type_id);
                         }
                         // Otherwise, check if we have a type name we can look up

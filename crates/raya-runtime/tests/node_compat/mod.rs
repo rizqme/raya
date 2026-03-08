@@ -16,20 +16,24 @@ fn test_node_compat_define_property_enforces_writable_false() {
         .eval(
             r#"
             let err = new Error("original");
-            let d = new Object();
+            let d = new Object() as {
+                value: string,
+                writable: boolean,
+                configurable: boolean
+            };
             d.value = "locked";
             d.writable = false;
             d.configurable = true;
-            Object.defineProperty(err, "message", d);
+            Object.defineProperty(err, "lockedField", d);
 
             let threw = false;
             try {
-                err.message = "new-value";
+                err["lockedField"] = "new-value";
             } catch (e) {
                 threw = true;
             }
 
-            return threw && err.message == "locked";
+            return threw && err["lockedField"] == "locked";
             "#,
         )
         .expect("node-compat eval should succeed");
@@ -48,24 +52,32 @@ fn test_node_compat_define_property_blocks_redefine_non_configurable() {
         .eval(
             r#"
             let err = new Error("m1");
-            let d1 = new Object();
+            let d1 = new Object() as {
+                value: string,
+                writable: boolean,
+                configurable: boolean
+            };
             d1.value = "E1";
             d1.writable = true;
             d1.configurable = false;
-            Object.defineProperty(err, "name", d1);
+            Object.defineProperty(err, "lockedName", d1);
 
             let redefineThrew = false;
             try {
-                let d2 = new Object();
+                let d2 = new Object() as {
+                    value: string,
+                    writable: boolean,
+                    configurable: boolean
+                };
                 d2.value = "E2";
                 d2.writable = true;
                 d2.configurable = true;
-                Object.defineProperty(err, "name", d2);
+                Object.defineProperty(err, "lockedName", d2);
             } catch (e) {
                 redefineThrew = true;
             }
 
-            return redefineThrew && err.name == "E1";
+            return redefineThrew && err["lockedName"] == "E1";
             "#,
         )
         .expect("node-compat eval should succeed");
@@ -84,11 +96,14 @@ fn test_node_compat_define_property_getter_invoked_on_read() {
         .eval(
             r#"
             let o = new Error("x");
-            let d = new Object();
+            let d = new Object() as {
+                get: () => unknown,
+                configurable: boolean
+            };
             d.get = (): Object => { return new Object(); };
             d.configurable = true;
-            Object.defineProperty(o, "cause", d);
-            return o.cause != null;
+            Object.defineProperty(o, "customCause", d);
+            return o["customCause"] != null;
             "#,
         )
         .expect("node-compat eval should succeed");
@@ -108,16 +123,17 @@ fn test_node_compat_define_property_setter_invoked_on_write() {
             r#"
             let o = new Error("x");
             let hit = false;
-            let seen: Object | null = null;
-            let d = new Object();
-            d.set = (v: Object): void => {
-                hit = true;
-                seen = v;
+            let d = new Object() as {
+                set: (v: number) => void,
+                configurable: boolean
+            };
+            d.set = (v: number): void => {
+                hit = v == 1;
             };
             d.configurable = true;
-            Object.defineProperty(o, "cause", d);
-            o.cause = new Object();
-            return hit && seen != null;
+            Object.defineProperty(o, "customCause", d);
+            o["customCause"] = 1;
+            return hit;
             "#,
         )
         .expect("node-compat eval should succeed");
@@ -136,14 +152,19 @@ fn test_node_compat_get_own_property_descriptor_roundtrip() {
         .eval(
             r#"
             let err = new Error("base");
-            let d = new Object();
+            let d = new Object() as {
+                value: string,
+                writable: boolean,
+                configurable: boolean,
+                enumerable: boolean
+            };
             d.value = "locked";
             d.writable = false;
             d.configurable = true;
             d.enumerable = false;
-            Object.defineProperty(err, "message", d);
+            Object.defineProperty(err, "lockedField", d);
 
-            let got = Object.getOwnPropertyDescriptor(err, "message");
+            let got = Object.getOwnPropertyDescriptor(err, "lockedField");
             return got != null
                 && got.value == "locked"
                 && got.writable == false

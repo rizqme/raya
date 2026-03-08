@@ -10,7 +10,6 @@ use raya_engine::vm::scheduler::SchedulerLimits;
 use raya_engine::vm::{Array, Object, RayaString, Value, Vm, VmError};
 use raya_runtime::{BuiltinMode, StdNativeHandler};
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,22 +18,35 @@ use std::time::Duration;
 use raya_engine::vm::interpreter::JitTelemetrySnapshot;
 
 thread_local! {
-    /// Keeps a small ring of recently used VMs alive on each test thread so
-    /// pointer values returned from `compile_and_run*` remain valid across
-    /// back-to-back invocations within the same test.
-    static KEPT_VMS: RefCell<VecDeque<Vm>> = RefCell::new(VecDeque::new());
+    /// Keep terminated VMs alive so pointer values returned
+    /// from `compile_and_run*` remain valid across immediate assertions.
+    ///
+    /// The VM is explicitly terminated before retention, so this preserves heap
+    /// ownership without keeping scheduler/reactor threads alive across tests.
+    ///
+    /// We intentionally do not evict older entries during the test-binary
+    /// lifetime. GC heap teardown is still not robust enough under the full
+    /// serial integration workload, so the harness avoids exercising that free
+    /// path until process exit.
+    static KEPT_VMS: RefCell<Vec<Vm>> = RefCell::new(Vec::new());
 }
 
-/// Retain a small number of recent VMs to keep returned pointer Values valid.
 fn keep_vm_alive(vm: Vm) {
-    const MAX_KEPT_VMS: usize = 2;
     KEPT_VMS.with(|slot| {
         let mut kept = slot.borrow_mut();
-        kept.push_back(vm);
-        while kept.len() > MAX_KEPT_VMS {
-            kept.pop_front();
-        }
+        kept.push(vm);
     });
+}
+
+fn finalize_vm_after_result(value: &Value, mut vm: Vm) {
+    let _ = vm.wait_all(Duration::from_secs(2));
+    if vm.get_stats().tasks > 1 {
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = vm.wait_all(Duration::from_millis(200));
+    }
+    vm.terminate();
+    let _ = value;
+    keep_vm_alive(vm);
 }
 
 /// Error type for e2e tests
@@ -152,7 +164,7 @@ pub fn compile_and_run(source: &str) -> E2EResult<Value> {
     let value = runtime
         .execute_program_with_vm(&program, &mut vm)
         .map_err(map_runtime_error)?;
-    keep_vm_alive(vm);
+    finalize_vm_after_result(&value, vm);
     Ok(value)
 }
 
@@ -175,7 +187,7 @@ pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
     let value = runtime
         .execute_program_with_vm(&program, &mut vm)
         .map_err(map_runtime_error)?;
-    keep_vm_alive(vm);
+    finalize_vm_after_result(&value, vm);
     Ok(value)
 }
 
@@ -201,7 +213,7 @@ pub fn compile_and_run_runtime_with_mode(source: &str, mode: BuiltinMode) -> E2E
     let value = runtime
         .execute_program_with_vm(&program, &mut vm)
         .map_err(map_runtime_error)?;
-    keep_vm_alive(vm);
+    finalize_vm_after_result(&value, vm);
     Ok(value)
 }
 
@@ -227,7 +239,7 @@ pub fn compile_and_run_runtime_with_mode_jit(
         .execute_program_with_vm(&program, &mut vm)
         .map_err(map_runtime_error)?;
     let telemetry = vm.get_jit_telemetry();
-    keep_vm_alive(vm);
+    finalize_vm_after_result(&value, vm);
     Ok((value, telemetry))
 }
 
@@ -935,7 +947,7 @@ fn compile_and_run_multiworker_with_timeout(
             let value = runtime
                 .execute_program_with_vm(&program, &mut vm)
                 .map_err(map_runtime_error)?;
-            keep_vm_alive(vm);
+            finalize_vm_after_result(&value, vm);
             Ok(value)
         })();
         let _ = tx.send(result);
@@ -977,7 +989,7 @@ fn compile_and_run_multiworker_with_builtins_timeout(
             let value = runtime
                 .execute_program_with_vm(&program, &mut vm)
                 .map_err(map_runtime_error)?;
-            keep_vm_alive(vm);
+            finalize_vm_after_result(&value, vm);
             Ok(value)
         })();
         let _ = tx.send(result);

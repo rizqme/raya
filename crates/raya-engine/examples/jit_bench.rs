@@ -94,7 +94,8 @@ fn make_module(name: &str, functions: Vec<Function>) -> Module {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
-                structural_shapes: vec![],
+            structural_shapes: vec![],
+            structural_layouts: vec![],
         },
         exports: vec![],
         imports: vec![],
@@ -453,7 +454,8 @@ fn jit_compile(module: &Module, func_idx: usize) -> Result<CompiledFunction, Str
     {
         let builder =
             cranelift_frontend::FunctionBuilder::new(&mut ctx.func, &mut func_builder_ctx);
-        LoweringContext::lower(&jit_func, builder).map_err(|e| format!("Lower: {}", e))?;
+        LoweringContext::lower(&jit_func, module, builder)
+            .map_err(|e| format!("Lower: {}", e))?;
     }
 
     jit_module
@@ -881,7 +883,7 @@ fn main() {
             let mut fbc = FunctionBuilderContext::new();
             {
                 let builder = cranelift_frontend::FunctionBuilder::new(&mut ctx.func, &mut fbc);
-                LoweringContext::lower(&jit_func, builder).unwrap();
+                LoweringContext::lower(&jit_func, &module, builder).unwrap();
             }
 
             jit_module.define_function(func_id, &mut ctx).unwrap();

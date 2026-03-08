@@ -13,7 +13,7 @@ use crate::vm::native_handler::{NativeHandler, NoopNativeHandler};
 use crate::vm::native_registry::{NativeFunctionRegistry, ResolvedNatives};
 use crate::vm::reflect::{ClassMetadata, ClassMetadataRegistry, MetadataStore};
 use crate::vm::scheduler::{IoSubmission, StackPool, Task, TaskId};
-use crate::vm::sync::MutexRegistry;
+use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
 use crate::vm::value::Value;
 use crossbeam::channel::Sender;
 use crossbeam_deque::Injector;
@@ -352,6 +352,9 @@ pub struct SharedVmState {
     /// Mutex registry for task synchronization
     pub mutex_registry: MutexRegistry,
 
+    /// Semaphore registry for task synchronization
+    pub semaphore_registry: SemaphoreRegistry,
+
     /// Stack pool for reusing Stack allocations across task lifetimes
     pub stack_pool: StackPool,
 
@@ -414,7 +417,7 @@ pub struct SharedVmState {
     pub profiler: Mutex<Option<Arc<crate::profiler::Profiler>>>,
 
     /// Offline AOT profile collector populated from interpreter execution.
-    pub aot_profile: RwLock<crate::aot::profile::AotProfileCollector>,
+    pub aot_profile: RwLock<crate::aot_profile::AotProfileCollector>,
 
     /// JIT code cache — shared with interpreter threads for native dispatch.
     /// Set once by `Vm::enable_jit()`, then read by interpreter threads.
@@ -470,6 +473,7 @@ impl SharedVmState {
             promise_microtasks: Mutex::new(std::collections::VecDeque::new()),
             injector,
             mutex_registry: MutexRegistry::new(),
+            semaphore_registry: SemaphoreRegistry::new(),
             stack_pool: StackPool::new(num_cpus::get() * 2),
             io_submit_tx: Mutex::new(None),
             metadata: Mutex::new(MetadataStore::new()),
@@ -488,7 +492,7 @@ impl SharedVmState {
             max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,
             preempt_threshold_ms: crate::vm::defaults::DEFAULT_PREEMPT_THRESHOLD_MS,
             profiler: Mutex::new(None),
-            aot_profile: RwLock::new(crate::aot::profile::AotProfileCollector::default()),
+            aot_profile: RwLock::new(crate::aot_profile::AotProfileCollector::default()),
             #[cfg(feature = "jit")]
             code_cache: Mutex::new(None),
             #[cfg(feature = "jit")]
@@ -768,10 +772,6 @@ impl SharedVmState {
         class: crate::vm::object::Class,
         layout_names: impl Into<Option<&'static [&'static str]>>,
     ) -> usize {
-        assert_eq!(
-            class.id, 0,
-            "runtime class registration must not supply nominal IDs directly"
-        );
         let layout_id = self.allocate_nominal_layout_id();
         let field_count = class.field_count;
         let class_name = class.name.clone();
@@ -846,7 +846,7 @@ impl SharedVmState {
         checksum: [u8; 32],
         func_index: u32,
         bytecode_offset: u32,
-        kind: crate::aot::profile::AotSiteKind,
+        kind: crate::aot_profile::AotSiteKind,
         layout_id: LayoutId,
     ) {
         self.aot_profile.write().record_layout_site(
@@ -858,7 +858,7 @@ impl SharedVmState {
         );
     }
 
-    pub fn snapshot_aot_profile(&self) -> crate::aot::profile::AotProfileData {
+    pub fn snapshot_aot_profile(&self) -> crate::aot_profile::AotProfileData {
         self.aot_profile.read().snapshot()
     }
 

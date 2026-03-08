@@ -14,5 +14,5 @@ export class FinalizationRegistry<T> {
         unregisterToken: U | null,
     ): void;
     unregister<U extends Object>(unregisterToken: U): boolean;
-    cleanupSome(callback: ((heldValue: T) => void) | null): void;
+    cleanupSome(callback: unknown): void;
 }

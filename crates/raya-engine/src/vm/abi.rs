@@ -102,10 +102,6 @@ impl<'a> EngineContext<'a> {
         class: Class,
         layout_names: impl Into<Option<&'static [&'static str]>>,
     ) -> usize {
-        assert_eq!(
-            class.id, 0,
-            "runtime class registration must not supply nominal IDs directly"
-        );
         let layout_id = self.layouts.write().allocate_nominal_layout_id();
         let field_count = class.field_count;
         let class_name = class.name.clone();

@@ -61,7 +61,7 @@ pub enum BindError {
     },
 
     /// Required parameter after optional parameter
-    #[error("Required parameter '{name}' cannot follow an optional parameter")]
+    #[error("RequiredAfterOptional: Required parameter '{name}' cannot follow an optional parameter")]
     RequiredAfterOptional {
         /// Parameter name
         name: String,
@@ -83,7 +83,7 @@ pub enum BindError {
 #[derive(Debug, Error, Clone)]
 pub enum CheckError {
     /// Type mismatch
-    #[error("Type mismatch: expected {expected}, got {actual}")]
+    #[error("TypeMismatch: Type mismatch: expected {expected}, got {actual}")]
     TypeMismatch {
         /// Expected type (human-readable)
         expected: String,
@@ -105,7 +105,7 @@ pub enum CheckError {
     },
 
     /// Attempting to call a non-function type
-    #[error("Cannot call non-function type '{ty}'")]
+    #[error("NotCallable: cannot call non-function type '{ty}'")]
     NotCallable {
         /// Type that was attempted to be called
         ty: String,
@@ -114,7 +114,7 @@ pub enum CheckError {
     },
 
     /// Wrong number of arguments in function call
-    #[error("Wrong number of arguments: expected {expected}, got {actual}")]
+    #[error("ArgumentCountMismatch: wrong number of arguments: expected {expected}, got {actual}")]
     ArgumentCountMismatch {
         /// Maximum expected number of arguments (total params)
         expected: usize,
@@ -136,7 +136,7 @@ pub enum CheckError {
     },
 
     /// Property does not exist on type
-    #[error("Property '{property}' does not exist on type '{ty}'")]
+    #[error("PropertyNotFound: property '{property}' does not exist on type '{ty}'")]
     PropertyNotFound {
         /// Property name
         property: String,
@@ -147,7 +147,7 @@ pub enum CheckError {
     },
 
     /// Return type mismatch
-    #[error("Return type mismatch: expected {expected}, got {actual}")]
+    #[error("TypeMismatch: return type mismatch: expected {expected}, got {actual}")]
     ReturnTypeMismatch {
         /// Expected return type
         expected: String,
@@ -232,7 +232,7 @@ pub enum CheckError {
     },
 
     /// Cannot instantiate an abstract class
-    #[error("Cannot instantiate abstract class '{name}'")]
+    #[error("AbstractClassInstantiation: cannot instantiate abstract class '{name}'")]
     AbstractClassInstantiation {
         /// Class name
         name: String,
@@ -259,7 +259,7 @@ pub enum CheckError {
     },
 
     /// Cannot assign to const variable
-    #[error("Cannot assign to const variable '{name}'")]
+    #[error("ConstReassignment: cannot assign to const variable '{name}'")]
     ConstReassignment {
         /// Variable name
         name: String,
@@ -268,7 +268,7 @@ pub enum CheckError {
     },
 
     /// Cannot use 'new' on a non-class type
-    #[error("Cannot use 'new' with non-class type '{name}'")]
+    #[error("NewNonClass: Cannot use 'new' with non-class type '{name}'")]
     NewNonClass {
         /// Name of the non-class identifier
         name: String,
@@ -305,7 +305,7 @@ pub enum CheckError {
     },
 
     /// Actionable operation on unknown is forbidden in strict mode.
-    #[error("E_STRICT_UNKNOWN_NOT_ACTIONABLE: cannot use unknown in operation '{operation}' without narrowing or cast")]
+    #[error("UnknownNotActionable: E_STRICT_UNKNOWN_NOT_ACTIONABLE: cannot use unknown in operation '{operation}' without narrowing or cast")]
     UnknownNotActionable {
         /// Operation name (member/call/index/arithmetic/etc.)
         operation: String,
@@ -315,7 +315,7 @@ pub enum CheckError {
 
     /// Intrinsic return type could not be inferred safely from the call context.
     #[error(
-        "E_INVALID_INTRINSIC_INFERENCE: intrinsic '{intrinsic}' requires a type argument or compatible operand type"
+        "InvalidIntrinsicInferenceContext: E_INVALID_INTRINSIC_INFERENCE: intrinsic '{intrinsic}' requires a type argument or compatible operand type"
     )]
     InvalidIntrinsicInferenceContext {
         /// Intrinsic function/opcode name
@@ -326,7 +326,7 @@ pub enum CheckError {
 
     /// Built-in generic type was referenced with wrong type argument count in checker paths.
     #[error(
-        "E_INVALID_TYPE_REFERENCE_ARITY: type '{name}' expects {expected} type argument(s), got {actual}"
+        "InvalidTypeReferenceArity: E_INVALID_TYPE_REFERENCE_ARITY: type '{name}' expects {expected} type argument(s), got {actual}"
     )]
     InvalidTypeReferenceArity {
         /// Type name
@@ -340,7 +340,7 @@ pub enum CheckError {
     },
 
     /// Expression kind has no first-class typing rule yet in checker.
-    #[error("E_UNSUPPORTED_EXPRESSION_TYPING: no typing rule implemented for expression kind '{expression}'")]
+    #[error("UnsupportedExpressionTypingPath: E_UNSUPPORTED_EXPRESSION_TYPING: no typing rule implemented for expression kind '{expression}'")]
     UnsupportedExpressionTypingPath {
         /// Expression kind name
         expression: String,
@@ -372,7 +372,7 @@ pub enum CheckError {
     // Decorator Errors
     // ========================================================================
     /// Decorator is not a valid decorator type
-    #[error("Expression is not a valid decorator")]
+    #[error("InvalidDecorator: expression is not a valid decorator")]
     InvalidDecorator {
         /// Type of the decorator expression
         ty: String,

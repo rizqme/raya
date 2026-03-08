@@ -957,6 +957,10 @@ impl<'a> SignatureHydrator<'a> {
             }
         }
 
+        if self.matches_buffer_surface(&properties, &methods) {
+            return Some(self.type_ctx.buffer_type());
+        }
+
         let class_name = format!("__imported_class_{:016x}", signature_hash(inner));
         Some(self.type_ctx.intern(Type::Class(super::ty::ClassType {
             name: class_name,
@@ -969,6 +973,35 @@ impl<'a> SignatureHydrator<'a> {
             implements,
             is_abstract: false,
         })))
+    }
+
+    fn matches_buffer_surface(
+        &self,
+        properties: &[super::ty::PropertySignature],
+        methods: &[super::ty::MethodSignature],
+    ) -> bool {
+        let prop_names = properties
+            .iter()
+            .filter(|prop| prop.visibility == Visibility::Public)
+            .map(|prop| prop.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let method_names = methods
+            .iter()
+            .filter(|method| method.visibility == Visibility::Public)
+            .map(|method| method.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        prop_names.len() == 1
+            && prop_names.contains("length")
+            && method_names.contains("getByte")
+            && method_names.contains("setByte")
+            && method_names.contains("getInt32")
+            && method_names.contains("setInt32")
+            && method_names.contains("getFloat64")
+            && method_names.contains("setFloat64")
+            && method_names.contains("slice")
+            && method_names.contains("copy")
+            && method_names.contains("toString")
     }
 
     fn parse_interface(&mut self, inner: &str) -> Option<TypeId> {

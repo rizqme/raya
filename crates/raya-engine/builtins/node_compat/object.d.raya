@@ -5,12 +5,12 @@
  */
 export class Object {
     /** Descriptor-compatible fields (node-compat mode only) */
-    value: Object | string | number | boolean | null;
+    value: any;
     writable: boolean;
     configurable: boolean;
     enumerable: boolean;
-    get: (() => Object) | null;
-    set: ((value: Object) => void) | null;
+    get: any;
+    set: any;
 
     constructor();
 
@@ -21,7 +21,7 @@ export class Object {
     hashCode(): number;
 
     /** Check equality with another object (identity comparison) */
-    equals(other: Object): boolean;
+    equals(other: unknown): boolean;
 
     /** Define a property descriptor on an object */
     static defineProperty<T, D>(obj: T, key: string, descriptor: D): T;

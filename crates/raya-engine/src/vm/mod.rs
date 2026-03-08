@@ -69,7 +69,10 @@ pub use object::{Array, BoundMethod, Class, Object, RayaString, VTable};
 pub use scheduler::Scheduler;
 pub use snapshot::{SnapshotReader, SnapshotWriter};
 pub use stack::{CallFrame, Stack, StackStats};
-pub use sync::{Mutex, MutexError, MutexId, MutexRegistry};
+pub use sync::{
+    Mutex, MutexError, MutexId, MutexRegistry, Semaphore, SemaphoreError, SemaphoreId,
+    SemaphoreRegistry,
+};
 pub use types::{PointerMap, TypeInfo, TypeRegistry};
 pub use value::Value;
 

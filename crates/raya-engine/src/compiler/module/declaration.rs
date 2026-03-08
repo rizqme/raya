@@ -265,10 +265,6 @@ fn strict_builtin_declaration_sources() -> &'static [(&'static str, &'static str
             include_str!("../../../builtins/strict/error.d.raya"),
         ),
         (
-            "strict/event_emitter.d.raya",
-            include_str!("../../../builtins/strict/event_emitter.d.raya"),
-        ),
-        (
             "strict/globals.shared.d.raya",
             include_str!("../../../builtins/strict/globals.shared.d.raya"),
         ),
@@ -336,10 +332,6 @@ fn node_compat_builtin_declaration_sources() -> &'static [(&'static str, &'stati
         (
             "node_compat/error.d.raya",
             include_str!("../../../builtins/node_compat/error.d.raya"),
-        ),
-        (
-            "node_compat/event_emitter.d.raya",
-            include_str!("../../../builtins/node_compat/event_emitter.d.raya"),
         ),
         (
             "node_compat/function_families.d.raya",

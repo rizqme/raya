@@ -334,6 +334,7 @@ impl Reactor {
                 &state.classes,
                 &state.layouts,
                 &state.mutex_registry,
+                &state.semaphore_registry,
                 &state.safepoint,
                 &state.globals_by_index,
                 &state.builtin_global_slots,
@@ -712,13 +713,41 @@ impl Reactor {
             ExecutionResult::Suspended(reason) => {
                 if matches!(
                     reason,
-                    SuspendReason::MutexLock { .. } | SuspendReason::AwaitTask(_)
+                    SuspendReason::MutexLock { .. }
+                        | SuspendReason::MutexLockCall { .. }
+                        | SuspendReason::SemaphoreAcquire { .. }
+                        | SuspendReason::AwaitTask(_)
                 ) {
-                    // MutexLock wakeup is handled by the MutexUnlock opcode on
-                    // VM workers (not by the reactor). Use try_suspend to avoid
-                    // overwriting a Resumed state if another completion already
-                    // woke the task.
-                    vr.task.try_suspend(reason);
+                    // These suspends can race with a wakeup performed by another
+                    // worker. Park the task only if it is still Running, then
+                    // check whether the awaited resource was already transferred
+                    // before the suspend result reached the reactor.
+                    vr.task.try_suspend(reason.clone());
+                    match reason {
+                        SuspendReason::MutexLock { mutex_id } => {
+                            if let Some(mutex) = shared_state.mutex_registry.get(mutex_id) {
+                                if mutex.owner() == Some(vr.task.id()) {
+                                    vr.task.add_held_mutex(mutex_id);
+                                    vr.task.set_state(TaskState::Resumed);
+                                    vr.task.clear_suspend_reason();
+                                    ready_queue.push_back(vr.task);
+                                }
+                            }
+                        }
+                        SuspendReason::MutexLockCall { mutex_id } => {
+                            if let Some(mutex) = shared_state.mutex_registry.get(mutex_id) {
+                                if mutex.owner() == Some(vr.task.id()) {
+                                    vr.task.add_held_mutex(mutex_id);
+                                    vr.task.set_resume_value(Value::null());
+                                    vr.task.set_state(TaskState::Resumed);
+                                    vr.task.clear_suspend_reason();
+                                    ready_queue.push_back(vr.task);
+                                }
+                            }
+                        }
+                        SuspendReason::SemaphoreAcquire { .. } | SuspendReason::AwaitTask(_) => {}
+                        _ => unreachable!(),
+                    }
                 } else {
                     vr.task.suspend(reason.clone());
                     match reason {
@@ -732,6 +761,8 @@ impl Reactor {
                             });
                         }
                         SuspendReason::MutexLock { .. } => unreachable!(),
+                        SuspendReason::MutexLockCall { .. } => unreachable!(),
+                        SuspendReason::SemaphoreAcquire { .. } => unreachable!(),
                         SuspendReason::ChannelSend { channel_id, value } => {
                             channel_waiters.push(ChannelWaiter {
                                 task_id: vr.task.id(),

@@ -50,10 +50,18 @@ fn needs_wrapping(code: &str) -> bool {
     let trimmed = code.trim();
     !trimmed.starts_with("function ")
         && !trimmed.starts_with("class ")
+        && !trimmed.starts_with("type ")
+        && !trimmed.starts_with("abstract ")
         && !trimmed.starts_with("return ")
         && !trimmed.starts_with("import ")
         && !trimmed.starts_with("let ")
         && !trimmed.starts_with("const ")
+        && !trimmed.starts_with("try ")
+        && !trimmed.starts_with("if ")
+        && !trimmed.starts_with("for ")
+        && !trimmed.starts_with("while ")
+        && !trimmed.starts_with("switch ")
+        && !trimmed.starts_with("throw ")
         && !trimmed.contains('\n')
 }
 

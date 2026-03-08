@@ -16,6 +16,14 @@ impl SemaphoreId {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         Self(COUNTER.fetch_add(1, Ordering::Relaxed))
     }
+
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    pub fn from_u64(id: u64) -> Self {
+        Self(id)
+    }
 }
 
 impl Default for SemaphoreId {

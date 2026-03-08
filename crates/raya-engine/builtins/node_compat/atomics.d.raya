@@ -5,13 +5,26 @@ export class SharedArrayBuffer {
     asArrayBuffer(): ArrayBuffer;
 }
 
+export type AtomicReadable = {
+    get(index: int): int;
+};
+
+export type AtomicWritable = {
+    set(index: int, value: int): void;
+};
+
+export type AtomicReadWrite = {
+    get(index: int): int;
+    set(index: int, value: int): void;
+};
+
 export class Atomics {
-    static load(arr: Int32Array, index: int): number;
-    static store(arr: Int32Array, index: int, value: int): number;
-    static add(arr: Int32Array, index: int, value: int): number;
-    static sub(arr: Int32Array, index: int, value: int): number;
-    static exchange(arr: Int32Array, index: int, value: int): number;
-    static compareExchange(arr: Int32Array, index: int, expected: int, replacement: int): number;
-    static wait(arr: Int32Array, index: int, value: int, timeoutMs: int): string;
-    static notify(arr: Int32Array, index: int, count: int): number;
+    static load(arr: AtomicReadable, index: int): number;
+    static store(arr: AtomicWritable, index: int, value: int): number;
+    static add(arr: AtomicReadWrite, index: int, value: int): number;
+    static sub(arr: AtomicReadWrite, index: int, value: int): number;
+    static exchange(arr: AtomicReadWrite, index: int, value: int): number;
+    static compareExchange(arr: AtomicReadWrite, index: int, expected: int, replacement: int): number;
+    static wait(arr: AtomicReadable, index: int, value: int, timeoutMs: int): string;
+    static notify(arr: AtomicReadable, index: int, count: int): number;
 }

@@ -602,6 +602,11 @@ impl Vm {
         self.scheduler.shutdown();
     }
 
+    /// Wait for all live tasks to complete or fail within the timeout.
+    pub fn wait_all(&self, timeout: std::time::Duration) -> bool {
+        self.scheduler.wait_all(timeout)
+    }
+
     /// Register a class with the VM's shared class registry
     pub fn register_class(&self, class: crate::vm::object::Class) {
         let shared = self.scheduler.shared_state();
@@ -634,7 +639,7 @@ impl Vm {
     }
 
     /// Snapshot the offline AOT profile collected by the interpreter.
-    pub fn snapshot_aot_profile(&self) -> crate::aot::profile::AotProfileData {
+    pub fn snapshot_aot_profile(&self) -> crate::aot_profile::AotProfileData {
         self.scheduler.shared_state().snapshot_aot_profile()
     }
 

@@ -3,13 +3,15 @@
 
 use crate::compiler::type_registry::TypeRegistry;
 use crate::compiler::{Module, Opcode};
+use crate::compiler::native_id;
 use crate::parser::TypeContext;
+use crate::vm::builtin::{array, channel, map, regexp, set, string};
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::OpcodeResult;
-use crate::vm::interpreter::Interpreter;
+use crate::vm::interpreter::{Interpreter, ReturnAction};
 use crate::vm::object::{
     layout_id_from_ordered_names, Array, BoundMethod, BoundNativeMethod, ChannelObject, Closure,
-    Object, RayaString,
+    MapObject, Object, RayaString, RegExpObject, SetObject,
 };
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
@@ -88,6 +90,145 @@ fn object_ptr_checked(value: Value) -> Option<NonNull<Object>> {
     }
 }
 
+pub(in crate::vm::interpreter) fn builtin_handle_native_method_id(
+    value: Value,
+    key: &str,
+) -> Option<u16> {
+    if let Some(ptr) = object_ptr_checked(value) {
+        let obj = unsafe { &*ptr.as_ptr() };
+        if obj.nominal_type_id().is_some() {
+            return match key {
+                "hashCode" => Some(native_id::OBJECT_HASH_CODE),
+                "equals" => Some(native_id::OBJECT_EQUAL),
+                _ => None,
+            };
+        }
+    }
+    if value.is_ptr() {
+        let ptr = unsafe { value.as_ptr::<u8>() }?;
+        let header = unsafe {
+            let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
+            &*(hp as *const GcHeader)
+        };
+        let ty = header.type_id();
+        if ty == std::any::TypeId::of::<Array>() {
+            return match key {
+                "push" => Some(array::PUSH),
+                "pop" => Some(array::POP),
+                "shift" => Some(array::SHIFT),
+                "unshift" => Some(array::UNSHIFT),
+                "indexOf" => Some(array::INDEX_OF),
+                "includes" => Some(array::INCLUDES),
+                "slice" => Some(array::SLICE),
+                "splice" => Some(array::SPLICE),
+                "concat" => Some(array::CONCAT),
+                "reverse" => Some(array::REVERSE),
+                "join" => Some(array::JOIN),
+                "forEach" => Some(array::FOR_EACH),
+                "filter" => Some(array::FILTER),
+                "find" => Some(array::FIND),
+                "findIndex" => Some(array::FIND_INDEX),
+                "every" => Some(array::EVERY),
+                "some" => Some(array::SOME),
+                "lastIndexOf" => Some(array::LAST_INDEX_OF),
+                "sort" => Some(array::SORT),
+                "map" => Some(array::MAP),
+                "reduce" => Some(array::REDUCE),
+                "fill" => Some(array::FILL),
+                "flat" => Some(array::FLAT),
+                _ => None,
+            };
+        }
+        if ty == std::any::TypeId::of::<RayaString>() {
+            return match key {
+                "charAt" => Some(string::CHAR_AT),
+                "substring" => Some(string::SUBSTRING),
+                "toUpperCase" => Some(string::TO_UPPER_CASE),
+                "toLowerCase" => Some(string::TO_LOWER_CASE),
+                "trim" => Some(string::TRIM),
+                "indexOf" => Some(string::INDEX_OF),
+                "includes" => Some(string::INCLUDES),
+                "split" => Some(string::SPLIT),
+                "startsWith" => Some(string::STARTS_WITH),
+                "endsWith" => Some(string::ENDS_WITH),
+                "replace" => Some(string::REPLACE),
+                "repeat" => Some(string::REPEAT),
+                "slice" => Some(string::SLICE),
+                "trimStart" => Some(string::TRIM_START),
+                "trimEnd" => Some(string::TRIM_END),
+                _ => None,
+            };
+        }
+    }
+    let handle = value.as_u64()?;
+    if handle == 0 {
+        return None;
+    }
+    let ptr = handle as *const u8;
+    let header = unsafe {
+        let hp = ptr.sub(std::mem::size_of::<GcHeader>());
+        &*(hp as *const GcHeader)
+    };
+    let ty = header.type_id();
+    if ty == std::any::TypeId::of::<ChannelObject>() {
+        return match key {
+            "send" => Some(channel::SEND),
+            "receive" => Some(channel::RECEIVE),
+            "trySend" => Some(channel::TRY_SEND),
+            "tryReceive" => Some(channel::TRY_RECEIVE),
+            "close" => Some(channel::CLOSE),
+            "isClosed" => Some(channel::IS_CLOSED),
+            "length" => Some(channel::LENGTH),
+            "capacity" => Some(channel::CAPACITY),
+            _ => None,
+        };
+    }
+    if ty == std::any::TypeId::of::<MapObject>() {
+        return match key {
+            "size" => Some(map::SIZE),
+            "get" => Some(map::GET),
+            "set" => Some(map::SET),
+            "has" => Some(map::HAS),
+            "delete" => Some(map::DELETE),
+            "clear" => Some(map::CLEAR),
+            "keys" => Some(map::KEYS),
+            "values" => Some(map::VALUES),
+            "entries" => Some(map::ENTRIES),
+            "forEach" => Some(map::FOR_EACH),
+            _ => None,
+        };
+    }
+    if ty == std::any::TypeId::of::<SetObject>() {
+        return match key {
+            "size" => Some(set::SIZE),
+            "add" => Some(set::ADD),
+            "has" => Some(set::HAS),
+            "delete" => Some(set::DELETE),
+            "clear" => Some(set::CLEAR),
+            "values" => Some(set::VALUES),
+            "keys" => Some(set::VALUES),
+            "entries" => Some(set::VALUES),
+            "forEach" => Some(set::FOR_EACH),
+            "union" => Some(set::UNION),
+            "intersection" => Some(set::INTERSECTION),
+            "difference" => Some(set::DIFFERENCE),
+            _ => None,
+        };
+    }
+    if ty == std::any::TypeId::of::<RegExpObject>() {
+        return match key {
+            "test" => Some(regexp::TEST),
+            "exec" => Some(regexp::EXEC),
+            "execAll" => Some(regexp::EXEC_ALL),
+            "replace" => Some(regexp::REPLACE),
+            "replaceWith" => Some(regexp::REPLACE_WITH),
+            "split" => Some(regexp::SPLIT),
+            _ => None,
+        };
+    }
+    None
+}
+
 fn dyn_key_parts(key_val: Value) -> Result<(Option<String>, Option<usize>), VmError> {
     use crate::vm::json::view::{js_classify, JSView};
 
@@ -125,7 +266,7 @@ impl<'a> Interpreter<'a> {
         };
         let obj = unsafe { &*object_ptr.as_ptr() };
         self.record_aot_shape_site(
-            crate::aot::profile::AotSiteKind::CastShape,
+            crate::aot_profile::AotSiteKind::CastShape,
             obj.layout_id(),
         );
         let Some(adapter) = self.ensure_shape_adapter_for_object(obj, required_shape) else {
@@ -321,7 +462,7 @@ impl<'a> Interpreter<'a> {
         };
         let obj = unsafe { &*object_ptr.as_ptr() };
         self.record_aot_shape_site(
-            crate::aot::profile::AotSiteKind::ImplementsShape,
+            crate::aot_profile::AotSiteKind::ImplementsShape,
             obj.layout_id(),
         );
         let result = self
@@ -609,13 +750,70 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                     JSView::Struct { ptr, .. } => {
-                        let obj = unsafe { &*ptr };
+                        let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
+                        let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() }
+                            .expect("JSView::Struct should always be an object");
+                        let obj = unsafe { &*obj_ptr.as_ptr() };
                         let key_str = key_str
                             .as_deref()
                             .expect("dyn object property access should always have a key string");
+                        if let Some(getter) = self.descriptor_accessor(actual_obj, &key_str, "get") {
+                            match self.callable_frame_for_value(
+                                getter,
+                                stack,
+                                &[],
+                                ReturnAction::PushReturnValue,
+                            ) {
+                                Ok(Some(frame)) => return frame,
+                                Ok(None) => {
+                                    return OpcodeResult::Error(VmError::TypeError(format!(
+                                        "Property '{}' getter is not callable",
+                                        key_str
+                                    )));
+                                }
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
                         let field_index = self.get_field_index_for_value(obj_val, &key_str);
                         if let Some(index) = field_index {
                             obj.get_field(index).unwrap_or(Value::null())
+                        } else if let Some(method_slot) = obj.nominal_type_id_usize().and_then(
+                            |nominal_type_id| {
+                                let class_metadata = self.class_metadata.read();
+                                class_metadata
+                                    .get(nominal_type_id)
+                                    .and_then(|meta| meta.get_method_index(key_str))
+                                    .or_else(|| {
+                                        drop(class_metadata);
+                                        let classes = self.classes.read();
+                                        let class = classes.get_class(nominal_type_id)?;
+                                        let module = class.module.as_ref()?;
+                                        module
+                                            .classes
+                                            .iter()
+                                            .find(|class_def| class_def.name == class.name)
+                                            .and_then(|class_def| {
+                                                class_def.methods.iter().find_map(|method| {
+                                                    let plain_name = method
+                                                        .name
+                                                        .rsplit("::")
+                                                        .next()
+                                                        .unwrap_or(method.name.as_str());
+                                                    if method.name == key_str || plain_name == key_str {
+                                                        Some(method.slot)
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                            })
+                                    })
+                            },
+                        )
+                        {
+                            match self.bound_method_value_for_slot(obj_val, method_slot) {
+                                Ok(value) => value,
+                                Err(_) => Value::null(),
+                            }
                         } else {
                             let key = self.intern_prop_key(&key_str);
                             obj.dyn_map()
@@ -623,7 +821,26 @@ impl<'a> Interpreter<'a> {
                                 .unwrap_or(Value::null())
                         }
                     }
-                    _ => Value::null(),
+                    _ => {
+                        if let Some(key_str) = key_str.as_deref() {
+                            if let Some(native_id) = builtin_handle_native_method_id(obj_val, key_str) {
+                                let method = BoundNativeMethod {
+                                    receiver: obj_val,
+                                    native_id,
+                                };
+                                let method_ptr = self.gc.lock().allocate(method);
+                                unsafe {
+                                    Value::from_ptr(
+                                        NonNull::new(method_ptr.as_ptr()).expect("bound native method ptr"),
+                                    )
+                                }
+                            } else {
+                                Value::null()
+                            }
+                        } else {
+                            Value::null()
+                        }
+                    }
                 };
 
                 if let Err(e) = stack.push(result) {
@@ -669,16 +886,54 @@ impl<'a> Interpreter<'a> {
                         arr.elements[index] = value;
                     }
                     JSView::Struct { ptr, .. } => {
-                        let obj = unsafe { &mut *(ptr as *mut Object) };
+                        let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
+                        let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() }
+                            .expect("JSView::Struct should always be an object");
+                        let obj = unsafe { &mut *obj_ptr.as_ptr() };
                         let key_str = key_str
                             .as_deref()
                             .expect("dyn object property access should always have a key string");
                         let field_index = self.get_field_index_for_value(obj_val, &key_str);
+                        if let Some(setter) = self.descriptor_accessor(actual_obj, &key_str, "set") {
+                            match self.callable_frame_for_value(
+                                setter,
+                                stack,
+                                &[value],
+                                ReturnAction::Discard,
+                            ) {
+                                Ok(Some(frame)) => return frame,
+                                Ok(None) => {
+                                    return OpcodeResult::Error(VmError::TypeError(format!(
+                                        "Property '{}' setter is not callable",
+                                        key_str
+                                    )));
+                                }
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+                        if self
+                            .descriptor_accessor(actual_obj, &key_str, "get")
+                            .is_some()
+                            && !self.is_field_writable(actual_obj, &key_str)
+                        {
+                            return OpcodeResult::Error(VmError::TypeError(format!(
+                                "Cannot set property '{}' which has only a getter",
+                                key_str
+                            )));
+                        }
+                        if !self.is_field_writable(actual_obj, &key_str) {
+                            return OpcodeResult::Error(VmError::TypeError(format!(
+                                "Cannot assign to non-writable property '{}'",
+                                key_str
+                            )));
+                        }
                         if let Some(index) = field_index {
                             let _ = obj.set_field(index, value);
+                            self.sync_descriptor_value(actual_obj, &key_str, value);
                         } else {
                             let key = self.intern_prop_key(&key_str);
                             obj.ensure_dyn_map().insert(key, value);
+                            self.sync_descriptor_value(actual_obj, &key_str, value);
                         }
                     }
                     _ => {
@@ -697,6 +952,22 @@ impl<'a> Interpreter<'a> {
             Opcode::NewMutex => {
                 let (mutex_id, _) = self.mutex_registry.create_mutex();
                 if let Err(e) = stack.push(Value::i64(mutex_id.as_u64() as i64)) {
+                    return OpcodeResult::Error(e);
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::NewSemaphore => {
+                let permits_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let permits = permits_val
+                    .as_i64()
+                    .filter(|count| *count >= 0)
+                    .unwrap_or(0) as usize;
+                let (semaphore_id, _) = self.semaphore_registry.create_semaphore(permits);
+                if let Err(e) = stack.push(Value::i64(semaphore_id.as_u64() as i64)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue

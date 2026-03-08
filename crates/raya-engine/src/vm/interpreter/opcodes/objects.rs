@@ -18,7 +18,20 @@ use std::sync::Arc;
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
 impl<'a> Interpreter<'a> {
-    fn bound_method_value_for_slot(
+    fn nominal_method_slot_by_name(&self, nominal_type_id: usize, method_name: &str) -> Option<usize> {
+        let classes = self.classes.read();
+        let class = classes.get_class(nominal_type_id)?;
+        let module = class.module.as_ref()?;
+        for (slot, function_id) in class.vtable.methods.iter().copied().enumerate() {
+            let function = module.functions.get(function_id)?;
+            if function.name == method_name || function.name.ends_with(&format!("::{method_name}")) {
+                return Some(slot);
+            }
+        }
+        None
+    }
+
+    pub(in crate::vm::interpreter) fn bound_method_value_for_slot(
         &mut self,
         receiver: Value,
         method_slot: usize,
@@ -224,6 +237,10 @@ impl<'a> Interpreter<'a> {
                                     .and_then(|meta| meta.get_method_index(name))
                                     .map(StructuralSlotBinding::Method)
                             })
+                            .or_else(|| {
+                                self.nominal_method_slot_by_name(nominal_type_id, name)
+                                    .map(StructuralSlotBinding::Method)
+                            })
                             .or_else(|| dynamic_binding_for(name))
                             .unwrap_or(StructuralSlotBinding::Missing)
                     })
@@ -342,7 +359,7 @@ impl<'a> Interpreter<'a> {
         obj.get_field(index)
     }
 
-    fn is_field_writable(&self, obj_val: Value, field_name: &str) -> bool {
+    pub(crate) fn is_field_writable(&self, obj_val: Value, field_name: &str) -> bool {
         let metadata = self.metadata.lock();
         let Some(descriptor) =
             metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
@@ -361,7 +378,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn sync_descriptor_value(&self, obj_val: Value, field_name: &str, value: Value) {
+    pub(crate) fn sync_descriptor_value(&self, obj_val: Value, field_name: &str, value: Value) {
         let descriptor = {
             let metadata = self.metadata.lock();
             metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
@@ -378,7 +395,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn descriptor_accessor(
+    pub(crate) fn descriptor_accessor(
         &self,
         obj_val: Value,
         field_name: &str,
@@ -586,7 +603,7 @@ impl<'a> Interpreter<'a> {
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
                 self.record_aot_shape_site(
-                    crate::aot::profile::AotSiteKind::LoadFieldShape,
+                    crate::aot_profile::AotSiteKind::LoadFieldShape,
                     obj.layout_id(),
                 );
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);
@@ -766,7 +783,7 @@ impl<'a> Interpreter<'a> {
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
                 self.record_aot_shape_site(
-                    crate::aot::profile::AotSiteKind::StoreFieldShape,
+                    crate::aot_profile::AotSiteKind::StoreFieldShape,
                     obj.layout_id(),
                 );
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);

@@ -501,6 +501,9 @@ pub struct Lowerer<'a> {
     /// Tracks variables holding bound methods: var_name → (nominal_type_id, method_name)
     /// Used to propagate return types when calling bound method variables.
     bound_method_vars: FxHashMap<Symbol, (NominalTypeId, Symbol)>,
+    /// Variables bound to constructor/class values (e.g. `let C = Box;`).
+    constructor_value_ctor_map: FxHashMap<Symbol, Symbol>,
+    constructor_value_type_map: FxHashMap<Symbol, TypeId>,
     /// Next global variable index (for static fields and module-level variables)
     next_global_index: u16,
     /// Module-level variable name to global index mapping.
@@ -1089,6 +1092,8 @@ impl<'a> Lowerer<'a> {
             method_return_type_map: FxHashMap::default(),
             method_return_type_alias_map: FxHashMap::default(),
             bound_method_vars: FxHashMap::default(),
+            constructor_value_ctor_map: FxHashMap::default(),
+            constructor_value_type_map: FxHashMap::default(),
             next_global_index: 0,
             module_var_globals: FxHashMap::default(),
             import_bindings: FxHashSet::default(),
@@ -1255,6 +1260,11 @@ impl<'a> Lowerer<'a> {
     /// Get the TypeId for an expression from the type checker's expr_types map.
     /// Falls back to UNRESOLVED if not found (compiler couldn't determine type).
     fn get_expr_type(&self, expr: &Expression) -> TypeId {
+        if let Expression::Identifier(ident) = expr {
+            if let Some(&ty) = self.constructor_value_type_map.get(&ident.name) {
+                return ty;
+            }
+        }
         let expr_id = expr as *const _ as usize;
         self.expr_types
             .get(&expr_id)
@@ -2273,21 +2283,18 @@ impl<'a> Lowerer<'a> {
                     }
                 });
 
-                let class_type = type_name.as_ref().and_then(|name| {
-                    for (&sym, &cid) in &self.class_map {
-                        if self.interner.resolve(sym) == name {
-                            return Some(cid);
-                        }
-                    }
-                    None
-                });
+                let class_type = type_name
+                    .as_ref()
+                    .and_then(|name| self.nominal_type_id_from_type_name(name));
 
                 // For array fields like `items: Item[]`, preserve element class info
                 // so indexed member access (`this.items[i].field`) can resolve method/field types.
                 let array_elem_class_type = field.type_annotation.as_ref().and_then(|t| {
                     if let ast::Type::Array(arr_ty) = &t.ty {
                         if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
-                            return self.class_map.get(&elem_ref.name.name).copied();
+                            return self.nominal_type_id_from_type_name(
+                                self.interner.resolve(elem_ref.name.name),
+                            );
                         }
                     }
                     None
@@ -5230,6 +5237,26 @@ impl<'a> Lowerer<'a> {
         self.late_bound_object_vars.remove(&name);
         self.late_bound_object_ctor_map.remove(&name);
         self.late_bound_object_type_map.remove(&name);
+    }
+
+    fn clear_constructor_value_binding(&mut self, name: Symbol) {
+        self.constructor_value_ctor_map.remove(&name);
+        self.constructor_value_type_map.remove(&name);
+    }
+
+    fn mark_constructor_value_binding(
+        &mut self,
+        name: Symbol,
+        constructor_symbol: Symbol,
+        constructor_type: Option<TypeId>,
+    ) {
+        self.constructor_value_ctor_map
+            .insert(name, constructor_symbol);
+        if let Some(ty) = constructor_type {
+            self.constructor_value_type_map.insert(name, ty);
+        } else {
+            self.constructor_value_type_map.remove(&name);
+        }
     }
 
     pub(super) fn identifier_requires_late_bound_dispatch(&self, name: Symbol) -> bool {

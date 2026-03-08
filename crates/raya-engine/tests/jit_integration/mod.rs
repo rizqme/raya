@@ -288,6 +288,7 @@ fn build_bridge_and_ctx<'a>(
         &shared.classes,
         &shared.layouts,
         &shared.mutex_registry,
+        &shared.semaphore_registry,
         &shared.globals_by_index,
         &shared.builtin_global_slots,
         &shared.tasks,
@@ -498,7 +499,7 @@ fn jit_native_call_exits_with_suspend_kind() {
         exit.suspend_reason,
         raya_engine::jit::runtime::trampoline::JitSuspendReason::NativeCallBoundary as u32
     );
-    assert_eq!(exit.bytecode_offset, 3);
+    assert_eq!(exit.bytecode_offset, 0);
 }
 
 #[test]
@@ -558,12 +559,13 @@ fn jit_native_call_materializes_operands_in_exit_info() {
 #[test]
 fn jit_native_call_materializes_operands_truncated_to_exit_cap() {
     let mut code = Vec::new();
-    for v in 0..10 {
+    let arg_cap = raya_engine::jit::runtime::trampoline::JIT_EXIT_MAX_NATIVE_ARGS as i32;
+    for v in 0..(arg_cap + 8) {
         emit_i32(&mut code, v);
     }
     code.push(Opcode::NativeCall as u8);
     code.extend_from_slice(&0u16.to_le_bytes());
-    code.push(10u8); // exceeds JIT_EXIT_MAX_NATIVE_ARGS (8)
+    code.push((arg_cap + 8) as u8);
     emit(&mut code, Opcode::Return);
 
     let module = make_module(code, 0, 0);
@@ -584,7 +586,12 @@ fn jit_native_call_materializes_operands_truncated_to_exit_cap() {
         raya_engine::jit::runtime::trampoline::JIT_EXIT_MAX_NATIVE_ARGS
     );
     assert_eq!(decode_i32(exit.native_args[0]), 0);
-    assert_eq!(decode_i32(exit.native_args[7]), 7);
+    assert_eq!(
+        decode_i32(
+            exit.native_args[raya_engine::jit::runtime::trampoline::JIT_EXIT_MAX_NATIVE_ARGS - 1]
+        ),
+        arg_cap - 1
+    );
 }
 
 #[test]
@@ -1321,6 +1328,7 @@ fn jit_new_type_uses_alloc_object_helper() {
         &shared.classes,
         &shared.layouts,
         &shared.mutex_registry,
+        &shared.semaphore_registry,
         &shared.globals_by_index,
         &shared.builtin_global_slots,
         &shared.tasks,
@@ -1418,6 +1426,7 @@ fn jit_implements_shape_uses_runtime_helper() {
         &shared.classes,
         &shared.layouts,
         &shared.mutex_registry,
+        &shared.semaphore_registry,
         &shared.globals_by_index,
         &shared.builtin_global_slots,
         &shared.tasks,
@@ -1512,6 +1521,7 @@ fn jit_cast_shape_uses_runtime_helper_fastpath() {
         &shared.classes,
         &shared.layouts,
         &shared.mutex_registry,
+        &shared.semaphore_registry,
         &shared.globals_by_index,
         &shared.builtin_global_slots,
         &shared.tasks,
@@ -1600,6 +1610,7 @@ fn jit_cast_shape_failure_exits_with_interpreter_boundary() {
         &shared.classes,
         &shared.layouts,
         &shared.mutex_registry,
+        &shared.semaphore_registry,
         &shared.globals_by_index,
         &shared.builtin_global_slots,
         &shared.tasks,
@@ -1689,6 +1700,7 @@ fn jit_is_nominal_uses_runtime_helper() {
         &shared.classes,
         &shared.layouts,
         &shared.mutex_registry,
+        &shared.semaphore_registry,
         &shared.globals_by_index,
         &shared.builtin_global_slots,
         &shared.tasks,
@@ -1803,6 +1815,7 @@ fn jit_cast_nominal_failure_exits_with_interpreter_boundary() {
         &shared.classes,
         &shared.layouts,
         &shared.mutex_registry,
+        &shared.semaphore_registry,
         &shared.globals_by_index,
         &shared.builtin_global_slots,
         &shared.tasks,

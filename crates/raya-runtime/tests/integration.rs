@@ -1,5 +1,4 @@
-//! raya-runtime integration tests — single binary entry point.
+//! raya-runtime integration tests — non-e2e entry points.
 
-mod e2e;
 mod node_compat;
 mod node_compat_translation;

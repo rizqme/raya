@@ -1025,10 +1025,13 @@ impl ModuleCompiler {
                         }
                     })
                     .collect::<Vec<_>>();
+                if !names.iter().any(|name| name == "EventEmitter") {
+                    names.push("EventEmitter".to_string());
+                }
                 names.sort();
                 names
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| vec!["EventEmitter".to_string()]);
 
         // Compile
         let mut compiler = Compiler::new(type_ctx, &interner)
@@ -1344,7 +1347,13 @@ impl ModuleCompiler {
                         if exports.has(&exported_name) {
                             continue;
                         }
-                        let Some(symbol) = symbols.resolve(&local_name) else {
+                        let Some(symbol) = Self::resolve_exported_symbol(
+                            ast,
+                            interner,
+                            symbols,
+                            &local_name,
+                            stmt.span().start,
+                        ) else {
                             continue;
                         };
                         let scope = Self::scope_kind_to_symbol_scope(
@@ -1364,7 +1373,13 @@ impl ModuleCompiler {
                         continue;
                     };
                     let local_name = interner.resolve(identifier.name).to_string();
-                    let Some(symbol) = symbols.resolve(&local_name) else {
+                    let Some(symbol) = Self::resolve_exported_symbol(
+                        ast,
+                        interner,
+                        symbols,
+                        &local_name,
+                        stmt.span().start,
+                    ) else {
                         continue;
                     };
                     let scope =
@@ -1382,6 +1397,39 @@ impl ModuleCompiler {
         }
 
         exports
+    }
+
+    fn top_level_module_scope_id(
+        symbols: &crate::parser::checker::SymbolTable,
+    ) -> Option<ScopeId> {
+        for idx in 0..symbols.scope_count() {
+            let scope_id = ScopeId(idx as u32);
+            let scope = symbols.get_scope(scope_id);
+            if scope.kind == ScopeKind::Module && scope.parent == Some(ScopeId(0)) {
+                return Some(scope_id);
+            }
+        }
+        None
+    }
+
+    fn resolve_exported_symbol<'a>(
+        ast: &AstModule,
+        interner: &Interner,
+        symbols: &'a crate::parser::checker::SymbolTable,
+        local_name: &str,
+        export_offset: usize,
+    ) -> Option<&'a Symbol> {
+        if Self::has_top_level_declaration_before_offset(ast, interner, local_name, export_offset)
+        {
+            if let Some(module_scope_id) = Self::top_level_module_scope_id(symbols) {
+                if let Some(symbol) = symbols.resolve_from_scope(local_name, module_scope_id) {
+                    if symbols.get_scope(symbol.scope_id).kind == ScopeKind::Module {
+                        return Some(symbol);
+                    }
+                }
+            }
+        }
+        symbols.resolve(local_name)
     }
 
     fn scope_kind_to_symbol_scope(kind: ScopeKind) -> SymbolScope {

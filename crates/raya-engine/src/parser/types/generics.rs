@@ -9,7 +9,7 @@
 use super::context::TypeContext;
 use super::error::TypeError;
 use super::subtyping::SubtypingContext;
-use super::ty::{Type, TypeId};
+use super::ty::{ClassType, InterfaceType, MethodSignature, ObjectType, PropertySignature, Type, TypeId};
 use rustc_hash::FxHashMap;
 
 /// Maximum recursion depth for type substitution to guard against infinite types
@@ -115,6 +115,83 @@ impl<'a> GenericContext<'a> {
                     elements.push(self.apply_substitution(elem)?);
                 }
                 Ok(self.type_ctx.tuple_type(elements))
+            }
+
+            Type::Object(obj) => {
+                let properties = self.substitute_properties(&obj.properties)?;
+                let index_signature = if let Some((key, value_ty)) = obj.index_signature.clone() {
+                    Some((key, self.apply_substitution(value_ty)?))
+                } else {
+                    None
+                };
+                let mut call_signatures = Vec::with_capacity(obj.call_signatures.len());
+                for sig in obj.call_signatures {
+                    call_signatures.push(self.apply_substitution(sig)?);
+                }
+                let mut construct_signatures = Vec::with_capacity(obj.construct_signatures.len());
+                for sig in obj.construct_signatures {
+                    construct_signatures.push(self.apply_substitution(sig)?);
+                }
+                Ok(self.type_ctx.intern(Type::Object(ObjectType {
+                    properties,
+                    index_signature,
+                    call_signatures,
+                    construct_signatures,
+                })))
+            }
+
+            Type::Interface(interface) => {
+                let properties = self.substitute_properties(&interface.properties)?;
+                let methods = self.substitute_methods(&interface.methods)?;
+                let mut call_signatures = Vec::with_capacity(interface.call_signatures.len());
+                for sig in interface.call_signatures {
+                    call_signatures.push(self.apply_substitution(sig)?);
+                }
+                let mut construct_signatures =
+                    Vec::with_capacity(interface.construct_signatures.len());
+                for sig in interface.construct_signatures {
+                    construct_signatures.push(self.apply_substitution(sig)?);
+                }
+                let mut extends = Vec::with_capacity(interface.extends.len());
+                for base in interface.extends {
+                    extends.push(self.apply_substitution(base)?);
+                }
+                Ok(self.type_ctx.intern(Type::Interface(InterfaceType {
+                    name: interface.name,
+                    type_params: interface.type_params,
+                    properties,
+                    methods,
+                    call_signatures,
+                    construct_signatures,
+                    extends,
+                })))
+            }
+
+            Type::Class(class) => {
+                let properties = self.substitute_properties(&class.properties)?;
+                let methods = self.substitute_methods(&class.methods)?;
+                let static_properties = self.substitute_properties(&class.static_properties)?;
+                let static_methods = self.substitute_methods(&class.static_methods)?;
+                let extends = if let Some(parent) = class.extends {
+                    Some(self.apply_substitution(parent)?)
+                } else {
+                    None
+                };
+                let mut implements = Vec::with_capacity(class.implements.len());
+                for implemented in class.implements {
+                    implements.push(self.apply_substitution(implemented)?);
+                }
+                Ok(self.type_ctx.intern(Type::Class(ClassType {
+                    name: class.name,
+                    type_params: class.type_params,
+                    properties,
+                    methods,
+                    static_properties,
+                    static_methods,
+                    extends,
+                    implements,
+                    is_abstract: class.is_abstract,
+                })))
             }
 
             Type::Function(func) => {
@@ -633,6 +710,39 @@ impl<'a> GenericContext<'a> {
             // Different types cannot be unified
             _ => Ok(false),
         }
+    }
+
+    fn substitute_properties(
+        &mut self,
+        props: &[PropertySignature],
+    ) -> Result<Vec<PropertySignature>, TypeError> {
+        let mut out = Vec::with_capacity(props.len());
+        for prop in props {
+            out.push(PropertySignature {
+                name: prop.name.clone(),
+                ty: self.apply_substitution(prop.ty)?,
+                optional: prop.optional,
+                readonly: prop.readonly,
+                visibility: prop.visibility,
+            });
+        }
+        Ok(out)
+    }
+
+    fn substitute_methods(
+        &mut self,
+        methods: &[MethodSignature],
+    ) -> Result<Vec<MethodSignature>, TypeError> {
+        let mut out = Vec::with_capacity(methods.len());
+        for method in methods {
+            out.push(MethodSignature {
+                name: method.name.clone(),
+                ty: self.apply_substitution(method.ty)?,
+                type_params: method.type_params.clone(),
+                visibility: method.visibility,
+            });
+        }
+        Ok(out)
     }
 }
 

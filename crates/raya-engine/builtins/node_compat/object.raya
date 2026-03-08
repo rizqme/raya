@@ -11,12 +11,12 @@ const OBJECT_DEFINE_PROPERTIES: number = 0x0006;
 class Object {
     // Descriptor-shape fields for node-compat property APIs.
     // These are inert in strict mode because this class variant is node-compat only.
-    value: Object | string | number | boolean | null;
+    value: any;
     writable: boolean;
     configurable: boolean;
     enumerable: boolean;
-    get: (() => Object) | null;
-    set: ((value: Object) => void) | null;
+    get: any;
+    set: any;
 
     constructor() {
         this.value = null;
@@ -41,7 +41,7 @@ class Object {
 
     // Check equality with another object (identity comparison)
     // Default implementation compares by object identity
-    equals(other: Object): boolean {
+    equals(other: unknown): boolean {
         return __NATIVE_CALL<boolean>(OBJECT_EQUALS, this, other);
     }
 

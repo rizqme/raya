@@ -180,8 +180,10 @@ fn extract_node_specifiers(source: &str) -> BTreeSet<String> {
 }
 
 fn generated_fixture_path() -> PathBuf {
-    let manifest_dir =
-        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+    let manifest_dir = option_env!("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok().map(|cwd| cwd.join("crates/raya-runtime")))
+        .expect("unable to resolve raya-runtime manifest dir");
     manifest_dir
         .join("../../target/generated/node_compat")
         .join("translated_node_cases.txt")

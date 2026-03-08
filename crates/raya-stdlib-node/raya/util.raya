@@ -21,7 +21,14 @@ class UtilTypes {
         return __NATIVE_CALL<boolean>(ARRAY_IS_ARRAY, value);
     }
     isNativeError(value: unknown): boolean {
-        return String(value as PrimitiveCoercible).includes("Error");
+        return value instanceof Error
+            || value instanceof TypeError
+            || value instanceof RangeError
+            || value instanceof SyntaxError
+            || value instanceof ReferenceError
+            || value instanceof URIError
+            || value instanceof EvalError
+            || value instanceof AggregateError;
     }
     isPromise(value: unknown): boolean {
         return false;

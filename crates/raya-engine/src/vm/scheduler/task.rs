@@ -16,7 +16,7 @@ use crate::vm::interpreter::execution::ExecutionFrame;
 use crate::vm::snapshot::{BlockedReason, SerializedFrame, SerializedTask};
 use crate::vm::snapshot::SerializedValue;
 use crate::vm::stack::Stack;
-use crate::vm::sync::MutexId;
+use crate::vm::sync::{MutexId, SemaphoreId};
 use crate::vm::value::Value;
 use parking_lot::Condvar as ParkingCondvar;
 use parking_lot::Mutex as ParkingMutex;
@@ -45,6 +45,19 @@ pub enum SuspendReason {
     MutexLock {
         /// The mutex we're waiting for
         mutex_id: MutexId,
+    },
+
+    /// Waiting to acquire a mutex from a method-call surface like `m.lock()`.
+    /// Resume should materialize a `null` return value instead of re-executing.
+    MutexLockCall {
+        /// The mutex we're waiting for
+        mutex_id: MutexId,
+    },
+
+    /// Waiting to acquire semaphore permits
+    SemaphoreAcquire {
+        /// The semaphore we're waiting for
+        semaphore_id: SemaphoreId,
     },
 
     /// Waiting to send on a full channel
@@ -917,6 +930,12 @@ impl Task {
             SuspendReason::MutexLock { mutex_id } => {
                 BlockedReason::AwaitingMutex(mutex_id.as_u64())
             }
+            SuspendReason::MutexLockCall { mutex_id } => {
+                BlockedReason::AwaitingMutex(mutex_id.as_u64())
+            }
+            SuspendReason::SemaphoreAcquire { semaphore_id } => {
+                BlockedReason::AwaitingSemaphore(semaphore_id.as_u64())
+            }
             SuspendReason::Sleep { .. } => BlockedReason::Other("sleep".to_string()),
             SuspendReason::ChannelSend { channel_id, .. } => {
                 BlockedReason::Other(format!("channel_send:{}", channel_id))
@@ -1050,6 +1069,9 @@ impl Task {
             BlockedReason::AwaitingTask(task_id) => SuspendReason::AwaitTask(task_id),
             BlockedReason::AwaitingMutex(id) => SuspendReason::MutexLock {
                 mutex_id: MutexId::from_u64(id),
+            },
+            BlockedReason::AwaitingSemaphore(id) => SuspendReason::SemaphoreAcquire {
+                semaphore_id: SemaphoreId::from_u64(id),
             },
             BlockedReason::Other(_) => SuspendReason::IoWait,
         });

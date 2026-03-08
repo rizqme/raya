@@ -5,7 +5,7 @@
 
 use super::context::TypeContext;
 use super::subtyping::SubtypingContext;
-use super::ty::{GenericType, PrimitiveType, Type, TypeId};
+use super::ty::{GenericType, PrimitiveType, Type, TypeId, TypeReference};
 use rustc_hash::FxHashSet;
 
 fn jsobject_generic_inner(type_ctx: &TypeContext, generic: &GenericType) -> Option<TypeId> {
@@ -14,6 +14,16 @@ fn jsobject_generic_inner(type_ctx: &TypeContext, generic: &GenericType) -> Opti
     }
     match type_ctx.get(generic.base) {
         Some(Type::JSObject) => generic.type_args.first().copied(),
+        _ => None,
+    }
+}
+
+fn special_reference_kind(type_ref: &TypeReference) -> Option<&str> {
+    match type_ref.name.as_str() {
+        "any" => Some("any"),
+        "unknown" => Some("unknown"),
+        "never" => Some("never"),
+        "JSObject" => Some("jsobject"),
         _ => None,
     }
 }
@@ -115,6 +125,16 @@ impl<'a> AssignabilityContext<'a> {
 
         let result =
             match (source_ty, target_ty) {
+                // Some declaration-backed surfaces still retain these well-known types
+                // as unresolved references; treat them identically to their canonical forms.
+                (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("any") => true,
+                (_, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("any") => true,
+                (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("unknown") && !self.strict_mode => true,
+                (_, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("unknown") && !self.strict_mode => true,
+                (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("never") => true,
+                (Type::Reference(type_ref), t) if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) => true,
+                (t, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) => true,
+
                 // Node-compat dynamic `any`: assignable to/from everything.
                 (Type::Any, _) | (_, Type::Any) => true,
 

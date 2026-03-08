@@ -1,12 +1,23 @@
 use crate::compiler::Opcode;
+use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::RayaString;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
+use std::any::TypeId;
 
 impl<'a> Interpreter<'a> {
+    #[inline]
+    fn ptr_is_raya_string(value: Value) -> bool {
+        let Some(ptr) = (unsafe { value.as_ptr::<u8>() }) else {
+            return false;
+        };
+        let header = unsafe { &*((ptr.as_ptr() as *const u8).sub(std::mem::size_of::<GcHeader>()) as *const GcHeader) };
+        header.type_id() == TypeId::of::<RayaString>()
+    }
+
     pub(in crate::vm::interpreter) fn exec_comparison_ops(
         &mut self,
         stack: &mut Stack,
@@ -330,7 +341,11 @@ impl<'a> Interpreter<'a> {
                         .as_f64()
                         .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
                     fa == fb
-                } else if a.is_ptr() && b.is_ptr() {
+                } else if a.is_ptr()
+                    && b.is_ptr()
+                    && Self::ptr_is_raya_string(a)
+                    && Self::ptr_is_raya_string(b)
+                {
                     let a_str = unsafe { a.as_ptr::<RayaString>() };
                     let b_str = unsafe { b.as_ptr::<RayaString>() };
                     if let (Some(a_ptr), Some(b_ptr)) = (a_str, b_str) {
@@ -367,7 +382,11 @@ impl<'a> Interpreter<'a> {
                         .as_f64()
                         .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
                     fa != fb
-                } else if a.is_ptr() && b.is_ptr() {
+                } else if a.is_ptr()
+                    && b.is_ptr()
+                    && Self::ptr_is_raya_string(a)
+                    && Self::ptr_is_raya_string(b)
+                {
                     let a_str = unsafe { a.as_ptr::<RayaString>() };
                     let b_str = unsafe { b.as_ptr::<RayaString>() };
                     if let (Some(a_ptr), Some(b_ptr)) = (a_str, b_str) {

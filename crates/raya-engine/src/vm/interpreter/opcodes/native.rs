@@ -8,7 +8,7 @@ use crate::compiler::native_id::{
     CHANNEL_RECEIVE, CHANNEL_SEND, CHANNEL_TRY_RECEIVE, CHANNEL_TRY_SEND,
 };
 use crate::compiler::{Module, Opcode};
-use crate::vm::builtin::{buffer, date, map, mutex, regexp, set};
+use crate::vm::builtin::{buffer, date, map, mutex, regexp, set, url};
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
@@ -25,6 +25,56 @@ use std::sync::Arc;
 
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 const IMPORTED_CLASS_TYPE_HANDLE_KEY: &str = "__raya_type_handle__";
+
+fn value_as_string(arg: Value) -> Result<String, VmError> {
+    if !arg.is_ptr() {
+        return Err(VmError::TypeError("Expected string".to_string()));
+    }
+    let Some(s) = (unsafe { arg.as_ptr::<RayaString>() }) else {
+        return Err(VmError::TypeError("Expected string".to_string()));
+    };
+    Ok(unsafe { &*s.as_ptr() }.data.clone())
+}
+
+fn is_uri_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~')
+}
+
+fn percent_encode_uri_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        if is_uri_unreserved(byte) {
+            out.push(byte as char);
+        } else {
+            use std::fmt::Write;
+            let _ = write!(&mut out, "%{:02X}", byte);
+        }
+    }
+    out
+}
+
+fn percent_decode_uri_component(input: &str) -> Result<String, VmError> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err(VmError::RuntimeError("Malformed percent-encoding".to_string()));
+            }
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .map_err(|_| VmError::RuntimeError("Malformed percent-encoding".to_string()))?;
+            let byte = u8::from_str_radix(hex, 16)
+                .map_err(|_| VmError::RuntimeError("Malformed percent-encoding".to_string()))?;
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| VmError::RuntimeError("Invalid UTF-8".to_string()))
+}
 
 impl<'a> Interpreter<'a> {
     fn normalize_dynamic_value(&self, value: Value) -> Value {
@@ -178,9 +228,29 @@ impl<'a> Interpreter<'a> {
             .map(|entry| entry.nominal_type_id)
     }
 
-    fn nominal_type_id_from_imported_class_value(&self, value: Value) -> Option<usize> {
+    fn nominal_type_id_from_imported_class_value(
+        &self,
+        module: &Module,
+        value: Value,
+    ) -> Option<usize> {
         if let Some(nominal_id) = self.type_handle_nominal_id(value) {
             return Some(nominal_id as usize);
+        }
+
+        if let Some(local_nominal_type_id) = value.as_i32() {
+            return self
+                .resolve_nominal_type_id(module, local_nominal_type_id as usize)
+                .ok();
+        }
+        if let Some(local_nominal_type_id) = value.as_u32() {
+            return self
+                .resolve_nominal_type_id(module, local_nominal_type_id as usize)
+                .ok();
+        }
+        if let Some(local_nominal_type_id) = value.as_u64() {
+            return self
+                .resolve_nominal_type_id(module, local_nominal_type_id as usize)
+                .ok();
         }
 
         if let Some(object_ptr) = unsafe { value.as_ptr::<Object>() } {
@@ -317,14 +387,16 @@ impl<'a> Interpreter<'a> {
 
         // Apply data descriptor value directly to the target field if provided.
         if let Some(value) = value_field.filter(|v| !v.is_null()) {
-            let field_index = self.get_field_index_for_value(target, key).ok_or_else(|| {
-                VmError::TypeError(format!("Unknown property '{}' on target object", key))
-            })?;
             let obj_ptr = unsafe { target.as_ptr::<Object>() }
                 .ok_or_else(|| VmError::TypeError("Expected object".to_string()))?;
             let obj = unsafe { &mut *obj_ptr.as_ptr() };
-            obj.set_field(field_index, value)
-                .map_err(VmError::RuntimeError)?;
+            if let Some(field_index) = self.get_field_index_for_value(target, key) {
+                obj.set_field(field_index, value)
+                    .map_err(VmError::RuntimeError)?;
+            } else {
+                let prop_key = self.intern_prop_key(key);
+                obj.ensure_dyn_map().insert(prop_key, value);
+            }
         }
 
         self.set_descriptor_metadata(target, key, descriptor);
@@ -751,7 +823,7 @@ impl<'a> Interpreter<'a> {
                         }
 
                         let Some(nominal_type_id) =
-                            self.nominal_type_id_from_imported_class_value(args[0])
+                            self.nominal_type_id_from_imported_class_value(module, args[0])
                         else {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "dynamic class construction expects imported class value with type handle"
@@ -823,7 +895,7 @@ impl<'a> Interpreter<'a> {
                         }
 
                         let Some(nominal_type_id) =
-                            self.nominal_type_id_from_imported_class_value(args[1])
+                            self.nominal_type_id_from_imported_class_value(module, args[1])
                         else {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "dynamic instanceof expects imported or ambient class value"
@@ -1347,6 +1419,48 @@ impl<'a> Interpreter<'a> {
                                 "Mutex {:?} not found",
                                 mutex_id
                             )));
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == url::ENCODE => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "encodeURI requires 1 argument".to_string(),
+                            ));
+                        }
+                        let encoded = match value_as_string(args[0]) {
+                            Ok(input) => percent_encode_uri_component(&input),
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
+                        let s = RayaString::new(encoded);
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let result = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
+                        if let Err(e) = stack.push(result) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == url::DECODE => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "decodeURI requires 1 argument".to_string(),
+                            ));
+                        }
+                        let decoded = match value_as_string(args[0])
+                            .and_then(|input| percent_decode_uri_component(&input))
+                        {
+                            Ok(decoded) => decoded,
+                            Err(err) => return OpcodeResult::Error(err),
+                        };
+                        let s = RayaString::new(decoded);
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let result = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
+                        if let Err(e) = stack.push(result) {
+                            return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }

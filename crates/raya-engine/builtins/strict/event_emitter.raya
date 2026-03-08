@@ -1,21 +1,22 @@
 // EventEmitter - Node-like event emitter for strict and node-compat modes
 
-type EventMap = Record<PropertyKey, readonly unknown[]>;
+type EventMap = Record<string, readonly unknown[]>;
+type RawListener = (payload: unknown) => void;
 
 class EventEmitter<E extends EventMap> {
-    _listeners: Map<string, Object[]>;
-    _onceListeners: Map<string, Object[]>;
+    _listeners: Map<string, RawListener[]>;
+    _onceListeners: Map<string, RawListener[]>;
     _maxListeners: number;
 
     constructor() {
-        this._listeners = new Map<string, Object[]>();
-        this._onceListeners = new Map<string, Object[]>();
+        this._listeners = new Map<string, RawListener[]>();
+        this._onceListeners = new Map<string, RawListener[]>();
         this._maxListeners = 10;
     }
 
-    on<K extends keyof E>(event: K, listener: (...args: E[K]) => void): EventEmitter<E> {
-        let eventKey = event as string;
-        if (this._maxListeners > 0 && this.listenerCount(event) >= this._maxListeners) {
+    on(event: string, listener: (...args: E[keyof E]) => void): EventEmitter<E> {
+        let eventKey = event;
+        if (this._maxListeners > 0 && this.listenerCount(eventKey) >= this._maxListeners) {
             return this;
         }
 
@@ -24,17 +25,17 @@ class EventEmitter<E extends EventMap> {
             group = [];
             this._listeners.set(eventKey, group);
         }
-        group.push(listener);
+        group.push(listener as RawListener);
         return this;
     }
 
-    off<K extends keyof E>(event: K, listener: (...args: E[K]) => void): EventEmitter<E> {
-        let eventKey = event as string;
+    off(event: string, listener: (...args: E[keyof E]) => void): EventEmitter<E> {
+        let eventKey = event;
         let group = this._listeners.get(eventKey);
         if (group != null) {
             let i = 0;
             while (i < group.length) {
-                if (group[i] == listener) {
+                if (group[i] == (listener as RawListener)) {
                     group.splice(i, 1);
                     break;
                 }
@@ -50,7 +51,7 @@ class EventEmitter<E extends EventMap> {
         if (onceGroup != null) {
             let j = 0;
             while (j < onceGroup.length) {
-                if (onceGroup[j] == listener) {
+                if (onceGroup[j] == (listener as RawListener)) {
                     onceGroup.splice(j, 1);
                     break;
                 }
@@ -65,23 +66,17 @@ class EventEmitter<E extends EventMap> {
         return this;
     }
 
-    addListener<K extends keyof E>(
-        event: K,
-        listener: (...args: E[K]) => void,
-    ): EventEmitter<E> {
+    addListener(event: string, listener: (...args: E[keyof E]) => void): EventEmitter<E> {
         return this.on(event, listener);
     }
 
-    removeListener<K extends keyof E>(
-        event: K,
-        listener: (...args: E[K]) => void,
-    ): EventEmitter<E> {
+    removeListener(event: string, listener: (...args: E[keyof E]) => void): EventEmitter<E> {
         return this.off(event, listener);
     }
 
-    once<K extends keyof E>(event: K, listener: (...args: E[K]) => void): EventEmitter<E> {
-        let eventKey = event as string;
-        if (this._maxListeners > 0 && this.listenerCount(event) >= this._maxListeners) {
+    once(event: string, listener: (...args: E[keyof E]) => void): EventEmitter<E> {
+        let eventKey = event;
+        if (this._maxListeners > 0 && this.listenerCount(eventKey) >= this._maxListeners) {
             return this;
         }
 
@@ -90,12 +85,12 @@ class EventEmitter<E extends EventMap> {
             group = [];
             this._onceListeners.set(eventKey, group);
         }
-        group.push(listener);
+        group.push(listener as RawListener);
         return this;
     }
 
-    emit<K extends keyof E>(event: K, ...args: E[K]): boolean {
-        let eventKey = event as string;
+    emit(event: string, ...args: E[keyof E]): boolean {
+        let eventKey = event;
         let group = this._listeners.get(eventKey);
         let onceGroup = this._onceListeners.get(eventKey);
         let hasNormal = group != null && group.length > 0;
@@ -106,53 +101,45 @@ class EventEmitter<E extends EventMap> {
 
         let payload = args[0];
 
-        if (hasNormal) {
-            // Snapshot listeners so `off` during emit does not skip callbacks.
-            if (group != null) {
-                let snapshot = group.slice(0, group.length);
-                let i = 0;
-                while (i < snapshot.length) {
-                    let fn = snapshot[i] as ((...items: E[K]) => void);
-                    fn(payload);
-                    i = i + 1;
-                }
+        if (group != null) {
+            let i = 0;
+            while (i < group.length) {
+                let fn = group[i] as ((...items: E[keyof E]) => void);
+                fn(payload);
+                i = i + 1;
             }
         }
 
-        if (hasOnce) {
-            if (onceGroup != null) {
-                let snapshotOnce = onceGroup.slice(0, onceGroup.length);
-                this._onceListeners.delete(eventKey);
-                let j = 0;
-                while (j < snapshotOnce.length) {
-                    let fn = snapshotOnce[j] as ((...items: E[K]) => void);
-                    fn(payload);
-                    j = j + 1;
-                }
+        if (onceGroup != null) {
+            this._onceListeners.delete(eventKey);
+            let j = 0;
+            while (j < onceGroup.length) {
+                let fn = onceGroup[j] as ((...items: E[keyof E]) => void);
+                fn(payload);
+                j = j + 1;
             }
         }
 
         return true;
     }
 
-    listenerCount(event: keyof E): number {
-        let eventKey = event as string;
-        let group = this._listeners.get(eventKey);
-        let onceGroup = this._onceListeners.get(eventKey);
+    listenerCount(event: string): number {
+        let group = this._listeners.get(event);
+        let onceGroup = this._onceListeners.get(event);
         let normalCount = group == null ? 0 : group.length;
         let onceCount = onceGroup == null ? 0 : onceGroup.length;
         return normalCount + onceCount;
     }
 
-    listeners<K extends keyof E>(event: K): ((...args: E[K]) => void)[] {
-        let eventKey = event as string;
-        let out: ((...args: E[K]) => void)[] = [];
+    listeners(event: string): ((...args: E[keyof E]) => void)[] {
+        let eventKey = event;
+        let out: ((...args: E[keyof E]) => void)[] = [];
 
         let group = this._listeners.get(eventKey);
         if (group != null) {
             let i = 0;
             while (i < group.length) {
-                out.push(group[i] as ((...args: E[K]) => void));
+                out.push(group[i] as ((...args: E[keyof E]) => void));
                 i = i + 1;
             }
         }
@@ -161,7 +148,7 @@ class EventEmitter<E extends EventMap> {
         if (onceGroup != null) {
             let j = 0;
             while (j < onceGroup.length) {
-                out.push(onceGroup[j] as ((...args: E[K]) => void));
+                out.push(onceGroup[j] as ((...args: E[keyof E]) => void));
                 j = j + 1;
             }
         }
@@ -169,7 +156,7 @@ class EventEmitter<E extends EventMap> {
         return out;
     }
 
-    eventNames(): (keyof E)[] {
+    eventNames(): string[] {
         let names = this._listeners.keys();
         let onceNames = this._onceListeners.keys();
 
@@ -181,21 +168,17 @@ class EventEmitter<E extends EventMap> {
             i = i + 1;
         }
 
-        let out: (keyof E)[] = [];
+        let out: string[] = [];
         let j = 0;
         while (j < names.length) {
-            out.push(names[j] as keyof E);
+            out.push(names[j]);
             j = j + 1;
         }
         return out;
     }
 
     setMaxListeners(n: number): EventEmitter<E> {
-        if (n < 0) {
-            this._maxListeners = 0;
-            return this;
-        }
-        this._maxListeners = n;
+        this._maxListeners = n < 0 ? 0 : n;
         return this;
     }
 
@@ -203,16 +186,15 @@ class EventEmitter<E extends EventMap> {
         return this._maxListeners;
     }
 
-    removeAllListeners(event: keyof E | null = null): EventEmitter<E> {
+    removeAllListeners(event: string | null = null): EventEmitter<E> {
         if (event == null) {
             this._listeners.clear();
             this._onceListeners.clear();
             return this;
         }
 
-        let eventKey = event as string;
-        this._listeners.delete(eventKey);
-        this._onceListeners.delete(eventKey);
+        this._listeners.delete(event);
+        this._onceListeners.delete(event);
         return this;
     }
 }

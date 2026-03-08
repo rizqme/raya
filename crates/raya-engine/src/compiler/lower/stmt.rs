@@ -2005,6 +2005,26 @@ impl<'a> Lowerer<'a> {
                             }
                         }
                     }
+                    if let ast::Expression::Identifier(ident) = init {
+                        let ident_name = self.interner.resolve(ident.name);
+                        let constructor_type = self
+                            .get_expr_type(init)
+                            .as_u32()
+                            .ne(&UNRESOLVED_TYPE_ID)
+                            .then(|| self.get_expr_type(init))
+                            .or_else(|| self.type_ctx.lookup_named_type(ident_name));
+                        if self.class_map.contains_key(&ident.name)
+                            || self.import_bindings.contains(&ident.name)
+                            || self.ambient_builtin_globals.contains(ident_name)
+                            || constructor_type.is_some_and(|ty| self.type_has_construct_signature(ty))
+                        {
+                            self.mark_constructor_value_binding(name, ident.name, constructor_type);
+                        } else {
+                            self.clear_constructor_value_binding(name);
+                        }
+                    } else {
+                        self.clear_constructor_value_binding(name);
+                    }
 
                     // Infer class type from method call return types
                     if let Some(nominal_type_id) = self.infer_nominal_type_id(init) {
@@ -2189,6 +2209,26 @@ impl<'a> Lowerer<'a> {
                         self.mark_late_bound_object_binding(name, ident.name, ctor_ty);
                     }
                 }
+            }
+            if let ast::Expression::Identifier(ident) = init {
+                let ident_name = self.interner.resolve(ident.name);
+                let constructor_type = self
+                    .get_expr_type(init)
+                    .as_u32()
+                    .ne(&UNRESOLVED_TYPE_ID)
+                    .then(|| self.get_expr_type(init))
+                    .or_else(|| self.type_ctx.lookup_named_type(ident_name));
+                if self.class_map.contains_key(&ident.name)
+                    || self.import_bindings.contains(&ident.name)
+                    || self.ambient_builtin_globals.contains(ident_name)
+                    || constructor_type.is_some_and(|ty| self.type_has_construct_signature(ty))
+                {
+                    self.mark_constructor_value_binding(name, ident.name, constructor_type);
+                } else {
+                    self.clear_constructor_value_binding(name);
+                }
+            } else {
+                self.clear_constructor_value_binding(name);
             }
 
             // Infer class type from method call return types

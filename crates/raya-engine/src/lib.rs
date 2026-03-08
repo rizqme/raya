@@ -65,6 +65,9 @@ pub mod jit;
 #[cfg(feature = "aot")]
 pub mod aot;
 
+/// Offline AOT profiling types, available as real or no-op shims depending on feature flags.
+pub mod aot_profile;
+
 /// Profiler module: sampling-based CPU/wall-clock profiling
 pub mod profiler;
 

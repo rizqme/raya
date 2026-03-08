@@ -115,8 +115,8 @@ impl Diagnostic {
                 note,
             } => {
                 let mut diag = Diagnostic::error(format!(
-                    "Type '{}' is not assignable to type '{}'",
-                    actual, expected
+                    "TypeMismatch: Type mismatch: expected {}, got {}",
+                    expected, actual
                 ))
                 .with_code(error_code(error))
                 .with_primary_label(
@@ -293,7 +293,7 @@ impl Diagnostic {
             }
 
             NewNonClass { name, span } => {
-                Diagnostic::error(format!("Cannot use 'new' with non-class type '{}'", name))
+                Diagnostic::error(format!("NewNonClass: Cannot use 'new' with non-class type '{}'", name))
                     .with_code(error_code(error))
                     .with_primary_label(file_id, *span, "not a class")
                     .with_help("'new' can only be used with class types")
@@ -325,7 +325,7 @@ impl Diagnostic {
             .with_code(error_code(error))
             .with_primary_label(file_id, *span, "unknown is not actionable"),
             InvalidIntrinsicInferenceContext { intrinsic, span } => Diagnostic::error(format!(
-                "Cannot infer return type for intrinsic '{}'",
+                "InvalidIntrinsicInferenceContext: Cannot infer return type for intrinsic '{}'",
                 intrinsic
             ))
             .with_code(error_code(error))
@@ -340,7 +340,7 @@ impl Diagnostic {
                 actual,
                 span,
             } => Diagnostic::error(format!(
-                "Type '{}' expects {} type argument(s), got {}",
+                "InvalidTypeReferenceArity: Type '{}' expects {} type argument(s), got {}",
                 name, expected, actual
             ))
             .with_code(error_code(error))
@@ -446,7 +446,7 @@ impl Diagnostic {
             .with_primary_label(file_id, *span, "wrong number of type arguments"),
 
             RequiredAfterOptional { name, span } => Diagnostic::error(format!(
-                "Required parameter '{}' cannot follow an optional parameter",
+                "RequiredAfterOptional: Required parameter '{}' cannot follow an optional parameter",
                 name
             ))
             .with_code(ErrorCode("E3006"))

@@ -730,6 +730,14 @@ impl Runtime {
         }
     }
 
+    fn runtime_only_ambient_builtin_names(mode: BuiltinMode) -> Vec<String> {
+        match mode {
+            BuiltinMode::RayaStrict | BuiltinMode::NodeCompat => {
+                vec!["EventEmitter".to_string()]
+            }
+        }
+    }
+
     fn ambient_builtin_export_names(mode: BuiltinMode) -> Result<Vec<String>, RuntimeError> {
         let exports = builtin_global_exports(Self::builtin_surface_mode_for_runtime(mode))
             .map_err(|error| {
@@ -747,6 +755,7 @@ impl Runtime {
                 _ => Some(name.clone()),
             })
             .collect::<Vec<_>>();
+        names.extend(Self::runtime_only_ambient_builtin_names(mode));
         names.sort();
         names.dedup();
         Ok(names)
@@ -882,6 +891,36 @@ impl Runtime {
         }
     }
 
+    fn infer_runtime_export_symbol_type(
+        ast: &raya_engine::parser::ast::Module,
+        interner: &Interner,
+        export_name: &str,
+    ) -> Option<SymbolType> {
+        for stmt in &ast.statements {
+            match stmt {
+                Statement::ClassDecl(class_decl)
+                    if interner.resolve(class_decl.name.name) == export_name =>
+                {
+                    return Some(SymbolType::Class);
+                }
+                Statement::FunctionDecl(func_decl)
+                    if interner.resolve(func_decl.name.name) == export_name =>
+                {
+                    return Some(SymbolType::Function);
+                }
+                Statement::VariableDecl(var_decl) => {
+                    let mut names = Vec::new();
+                    Self::collect_pattern_names(&var_decl.pattern, interner, &mut names);
+                    if names.iter().any(|name| name == export_name) {
+                        return Some(SymbolType::Constant);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     fn populate_builtin_runtime_exports(
         module: &mut Module,
         ast: &raya_engine::parser::ast::Module,
@@ -894,10 +933,11 @@ impl Runtime {
         let module_name = module.metadata.name.clone();
 
         for export_name in export_names {
-            let Some(declared) = declared_exports.symbols.get(export_name) else {
-                continue;
-            };
-            let Some(symbol_type) = Self::export_symbol_type(declared.kind) else {
+            let declared = declared_exports.symbols.get(export_name);
+            let Some(symbol_type) = declared
+                .and_then(|declared| Self::export_symbol_type(declared.kind))
+                .or_else(|| Self::infer_runtime_export_symbol_type(ast, interner, export_name))
+            else {
                 continue;
             };
 
@@ -921,8 +961,8 @@ impl Runtime {
                 index,
                 symbol_id: symbol_id_from_name(&module_name, SymbolScope::Module, export_name),
                 scope: SymbolScope::Module,
-                signature_hash: declared.signature_hash,
-                type_signature: Some(declared.type_signature.clone()),
+                signature_hash: declared.map(|declared| declared.signature_hash).unwrap_or(0),
+                type_signature: declared.map(|declared| declared.type_signature.clone()),
                 nominal_type: matches!(symbol_type, SymbolType::Class).then_some(
                     NominalTypeExport {
                         local_nominal_type_index: index as u32,
@@ -951,18 +991,18 @@ impl Runtime {
                     Ok(exports) => exports,
                     Err(error) => return Err(error.to_string()),
                 };
-            let ambient_names = declared_exports
-                .symbols
-                .iter()
-                .filter_map(|(name, exported)| match exported.kind {
-                    SymbolKind::TypeAlias | SymbolKind::TypeParameter | SymbolKind::Interface => {
-                        None
-                    }
-                    _ => Some(name.clone()),
-                })
-                .collect::<Vec<_>>();
             let ambient_names = {
-                let mut names = ambient_names;
+                let mut names = declared_exports
+                    .symbols
+                    .iter()
+                    .filter_map(|(name, exported)| match exported.kind {
+                        SymbolKind::TypeAlias | SymbolKind::TypeParameter | SymbolKind::Interface => {
+                            None
+                        }
+                        _ => Some(name.clone()),
+                    })
+                    .collect::<Vec<_>>();
+                names.extend(Self::runtime_only_ambient_builtin_names(mode));
                 names.sort();
                 names.dedup();
                 names

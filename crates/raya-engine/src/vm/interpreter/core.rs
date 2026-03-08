@@ -15,7 +15,7 @@ use crate::vm::native_handler::NativeHandler;
 use crate::vm::object::{Class, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
-use crate::vm::sync::MutexRegistry;
+use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
 use crate::vm::value::Value;
 use crate::vm::VmError;
 use crossbeam_deque::Injector;
@@ -239,6 +239,9 @@ pub struct Interpreter<'a> {
     /// Reference to the mutex registry
     pub(in crate::vm::interpreter) mutex_registry: &'a MutexRegistry,
 
+    /// Reference to the semaphore registry
+    pub(in crate::vm::interpreter) semaphore_registry: &'a SemaphoreRegistry,
+
     /// Safepoint coordinator for GC
     pub(in crate::vm::interpreter) safepoint: &'a SafepointCoordinator,
 
@@ -293,7 +296,7 @@ pub struct Interpreter<'a> {
 
     /// Offline AOT profile collector populated from interpreter execution.
     pub(in crate::vm::interpreter) aot_profile:
-        &'a RwLock<crate::aot::profile::AotProfileCollector>,
+        &'a RwLock<crate::aot_profile::AotProfileCollector>,
 
     /// IO submission sender for NativeCallResult::Suspend (None in tests without reactor)
     pub(in crate::vm::interpreter) io_submit_tx:
@@ -337,8 +340,7 @@ pub struct Interpreter<'a> {
     pub(in crate::vm::interpreter) compilation_policy:
         crate::jit::profiling::policy::CompilationPolicy,
 
-    /// Current function ID being executed (tracked for loop profiling)
-    #[cfg(feature = "jit")]
+    /// Current function ID being executed for profiling/bookkeeping.
     pub(in crate::vm::interpreter) current_func_id_for_profiling: usize,
 
     /// Current module Arc used by loop-based JIT profiling requests.
@@ -552,10 +554,6 @@ impl<'a> Interpreter<'a> {
         class: Class,
         layout_names: impl Into<Option<&'static [&'static str]>>,
     ) -> usize {
-        assert_eq!(
-            class.id, 0,
-            "runtime class registration must not supply nominal IDs directly"
-        );
         let layout_id = self.allocate_nominal_layout_id();
         let field_count = class.field_count;
         let class_name = class.name.clone();
@@ -729,6 +727,7 @@ impl<'a> Interpreter<'a> {
         classes: &'a RwLock<ClassRegistry>,
         layouts: &'a RwLock<crate::vm::interpreter::RuntimeLayoutRegistry>,
         mutex_registry: &'a MutexRegistry,
+        semaphore_registry: &'a SemaphoreRegistry,
         safepoint: &'a SafepointCoordinator,
         globals_by_index: &'a RwLock<Vec<Value>>,
         builtin_global_slots: &'a RwLock<FxHashMap<String, usize>>,
@@ -750,7 +749,7 @@ impl<'a> Interpreter<'a> {
         structural_object_shapes: &'a RwLock<FxHashMap<crate::vm::object::LayoutId, Vec<String>>>,
         type_handles: &'a RwLock<crate::vm::interpreter::shared_state::RuntimeTypeHandleRegistry>,
         prop_keys: &'a RwLock<crate::vm::interpreter::shared_state::PropertyKeyRegistry>,
-        aot_profile: &'a RwLock<crate::aot::profile::AotProfileCollector>,
+        aot_profile: &'a RwLock<crate::aot_profile::AotProfileCollector>,
         io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
         max_preemptions: u32,
         stack_pool: &'a crate::vm::scheduler::StackPool,
@@ -760,6 +759,7 @@ impl<'a> Interpreter<'a> {
             classes,
             layouts,
             mutex_registry,
+            semaphore_registry,
             safepoint,
             globals_by_index,
             builtin_global_slots,
@@ -791,7 +791,6 @@ impl<'a> Interpreter<'a> {
             jit_telemetry: None,
             #[cfg(feature = "jit")]
             compilation_policy: crate::jit::profiling::policy::CompilationPolicy::new(),
-            #[cfg(feature = "jit")]
             current_func_id_for_profiling: 0,
             #[cfg(feature = "jit")]
             current_module_for_profiling: None,
@@ -1356,6 +1355,7 @@ impl<'a> Interpreter<'a> {
                                         self.classes,
                                         self.layouts,
                                         self.mutex_registry,
+                                        self.semaphore_registry,
                                         self.globals_by_index,
                                         self.builtin_global_slots,
                                         self.tasks,
@@ -1890,6 +1890,8 @@ impl<'a> Interpreter<'a> {
             | Opcode::Sleep
             | Opcode::MutexLock
             | Opcode::MutexUnlock
+            | Opcode::SemAcquire
+            | Opcode::SemRelease
             | Opcode::Yield
             | Opcode::TaskCancel => {
                 self.exec_concurrency_ops(stack, ip, code, module, task, opcode)
@@ -1928,6 +1930,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::DynGetKeyed
             | Opcode::DynSetKeyed
             | Opcode::NewMutex
+            | Opcode::NewSemaphore
             | Opcode::NewChannel
             | Opcode::LoadStatic
             | Opcode::StoreStatic
@@ -2427,7 +2430,7 @@ impl<'a> Interpreter<'a> {
     #[inline]
     pub(in crate::vm::interpreter) fn record_aot_shape_site(
         &self,
-        kind: crate::aot::profile::AotSiteKind,
+        kind: crate::aot_profile::AotSiteKind,
         layout_id: crate::vm::object::LayoutId,
     ) {
         self.aot_profile.write().record_layout_site(

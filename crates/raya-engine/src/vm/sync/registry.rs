@@ -1,6 +1,6 @@
-//! Global registry for all mutexes
+//! Global registries for task-aware synchronization primitives
 
-use crate::vm::sync::{Mutex, MutexId};
+use crate::vm::sync::{Mutex, MutexId, Semaphore, SemaphoreId};
 use dashmap::DashMap;
 use std::sync::Arc;
 
@@ -63,6 +63,59 @@ impl MutexRegistry {
 }
 
 impl Default for MutexRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Global registry of all semaphores.
+pub struct SemaphoreRegistry {
+    semaphores: DashMap<SemaphoreId, Arc<Semaphore>>,
+}
+
+impl SemaphoreRegistry {
+    /// Create a new empty semaphore registry.
+    pub fn new() -> Self {
+        Self {
+            semaphores: DashMap::new(),
+        }
+    }
+
+    /// Create a new semaphore and register it.
+    pub fn create_semaphore(&self, permits: usize) -> (SemaphoreId, Arc<Semaphore>) {
+        let id = SemaphoreId::new();
+        let semaphore = Arc::new(Semaphore::new(id, permits));
+        self.semaphores.insert(id, semaphore.clone());
+        (id, semaphore)
+    }
+
+    /// Get a semaphore by ID.
+    pub fn get(&self, id: SemaphoreId) -> Option<Arc<Semaphore>> {
+        self.semaphores.get(&id).map(|entry| entry.clone())
+    }
+
+    /// Remove a semaphore from the registry.
+    pub fn remove(&self, id: SemaphoreId) -> Option<Arc<Semaphore>> {
+        self.semaphores.remove(&id).map(|(_, semaphore)| semaphore)
+    }
+
+    /// Get the number of registered semaphores.
+    pub fn count(&self) -> usize {
+        self.semaphores.len()
+    }
+
+    /// Clear all semaphores.
+    pub fn clear(&self) {
+        self.semaphores.clear();
+    }
+
+    /// Register an existing semaphore (for restoration paths).
+    pub fn register(&self, semaphore: Arc<Semaphore>) {
+        self.semaphores.insert(semaphore.id(), semaphore);
+    }
+}
+
+impl Default for SemaphoreRegistry {
     fn default() -> Self {
         Self::new()
     }

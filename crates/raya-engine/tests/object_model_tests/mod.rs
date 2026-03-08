@@ -7,20 +7,28 @@
 //! - Method dispatch via vtables
 //! - GC integration with objects
 
-use raya_engine::compiler::{Function, Module, Opcode};
+use raya_engine::compiler::{ClassDef, Function, Module, Opcode};
 use raya_engine::vm::interpreter::Vm;
-use raya_engine::vm::object::Class;
+use raya_engine::vm::object::layout_id_from_ordered_names;
 use raya_engine::vm::value::Value;
+use std::sync::Arc;
+
+fn class_def(name: &str, field_count: usize, parent_id: Option<u32>) -> ClassDef {
+    ClassDef {
+        name: name.to_string(),
+        field_count,
+        parent_id,
+        methods: Vec::new(),
+    }
+}
 
 #[test]
 fn test_object_creation_and_field_access() {
-    // Create Point class with 2 fields (x, y)
     let mut vm = Vm::new();
-    let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.register_class(point_class);
 
     // Bytecode: new Point(), set x=10, y=20, read x
     let mut module = Module::new("test".to_string());
+    module.classes.push(class_def("Point", 2, None));
     let main_fn = Function {
         name: "main".to_string(),
         param_count: 0,
@@ -197,18 +205,13 @@ fn test_array_length() {
 
 #[test]
 fn test_multiple_objects() {
-    // Create two different classes
     let mut vm = Vm::new();
-
-    let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.register_class(point_class);
-
-    let rect_class = Class::new(1, "Rectangle".to_string(), 4);
-    vm.register_class(rect_class);
 
     // Bytecode: create Point with x=5, y=10, create Rectangle with x1=0, y1=0, x2=100, y2=50
     // return Point.x + Point.y + Rectangle.x2
     let mut module = Module::new("test".to_string());
+    module.classes.push(class_def("Point", 2, None));
+    module.classes.push(class_def("Rectangle", 4, None));
     let main_fn = Function {
         name: "main".to_string(),
         param_count: 0,
@@ -299,11 +302,9 @@ fn test_object_with_gc() {
     // Test that objects survive GC when they're referenced
     let mut vm = Vm::new();
 
-    let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.register_class(point_class);
-
     // Create an object, store it in a local, trigger GC, access it
     let mut module = Module::new("test".to_string());
+    module.classes.push(class_def("Point", 2, None));
     let main_fn = Function {
         name: "main".to_string(),
         param_count: 0,
@@ -352,48 +353,21 @@ fn test_object_literal() {
     // Test OBJECT_LITERAL + INIT_OBJECT opcodes
     // Creates Point{x: 10, y: 20} using literal syntax
     let mut vm = Vm::new();
-    let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.register_class(point_class);
-
+    let layout_id = layout_id_from_ordered_names(&["x".to_string(), "y".to_string()]);
     let mut module = Module::new("test".to_string());
+    let mut code = vec![Opcode::ObjectLiteral as u8];
+    code.extend_from_slice(&layout_id.to_le_bytes());
+    code.extend_from_slice(&2u16.to_le_bytes());
+    code.extend_from_slice(&[Opcode::ConstI32 as u8, 10, 0, 0, 0]);
+    code.extend_from_slice(&[Opcode::InitObject as u8, 0, 0]);
+    code.extend_from_slice(&[Opcode::ConstI32 as u8, 20, 0, 0, 0]);
+    code.extend_from_slice(&[Opcode::InitObject as u8, 1, 0]);
+    code.extend_from_slice(&[Opcode::LoadFieldExact as u8, 0, 0, Opcode::Return as u8]);
     let main_fn = Function {
         name: "main".to_string(),
         param_count: 0,
         local_count: 0,
-        code: vec![
-            // OBJECT_LITERAL class=0, field_count=2
-            Opcode::ObjectLiteral as u8,
-            0,
-            0, // class index 0
-            2,
-            0, // field count 2
-            // Push value for field 0 (x = 10)
-            Opcode::ConstI32 as u8,
-            10,
-            0,
-            0,
-            0,
-            // INIT_OBJECT field_offset=0
-            Opcode::InitObject as u8,
-            0,
-            0,
-            // Push value for field 1 (y = 20)
-            Opcode::ConstI32 as u8,
-            20,
-            0,
-            0,
-            0,
-            // INIT_OBJECT field_offset=1
-            Opcode::InitObject as u8,
-            1,
-            0,
-            // Object is now on stack with both fields set
-            // Read field 0 to verify
-            Opcode::LoadFieldExact as u8,
-            0,
-            0,
-            Opcode::Return as u8,
-        ],
+        code,
     };
     module.functions.push(main_fn);
 
@@ -462,12 +436,8 @@ fn test_static_fields() {
     // Test LOAD_STATIC + STORE_STATIC opcodes
     let mut vm = Vm::new();
 
-    // Create class with 2 instance fields and 2 static fields
-    let mut counter_class = Class::new(0, "Counter".to_string(), 2);
-    counter_class.static_fields = vec![Value::i32(0), Value::i32(100)];
-    vm.register_class(counter_class);
-
     let mut module = Module::new("test".to_string());
+    module.classes.push(class_def("Counter", 2, None));
     let main_fn = Function {
         name: "main".to_string(),
         param_count: 0,
@@ -503,7 +473,23 @@ fn test_static_fields() {
     };
     module.functions.push(main_fn);
 
-    let result = vm.execute(&module).unwrap();
+    let runtime_module = Arc::new(Module::decode(&module.encode()).unwrap());
+    vm.shared_state().register_module(runtime_module.clone()).unwrap();
+    let nominal_type_base = vm
+        .shared_state()
+        .module_layouts
+        .read()
+        .get(&runtime_module.checksum)
+        .unwrap()
+        .nominal_type_base;
+    vm.shared_state()
+        .classes
+        .write()
+        .get_class_mut(nominal_type_base)
+        .unwrap()
+        .static_fields = vec![Value::i32(0), Value::i32(100)];
+
+    let result = vm.execute(runtime_module.as_ref()).unwrap();
     assert_eq!(result, Value::i32(142)); // 100 + 42
 }
 
@@ -511,10 +497,8 @@ fn test_static_fields() {
 fn test_optional_field_non_null() {
     // Test OPTIONAL_FIELD opcode with non-null object
     let mut vm = Vm::new();
-    let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.register_class(point_class);
-
     let mut module = Module::new("test".to_string());
+    module.classes.push(class_def("Point", 2, None));
     let main_fn = Function {
         name: "main".to_string(),
         param_count: 0,
@@ -559,9 +543,6 @@ fn test_optional_field_non_null() {
 fn test_optional_field_null() {
     // Test OPTIONAL_FIELD opcode with null object
     let mut vm = Vm::new();
-    let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.register_class(point_class);
-
     let mut module = Module::new("test".to_string());
     let main_fn = Function {
         name: "main".to_string(),
@@ -588,12 +569,8 @@ fn test_constructor_no_args() {
     // Test CALL_CONSTRUCTOR with no arguments
     let mut vm = Vm::new();
 
-    // Create Point class with constructor
-    let mut point_class = Class::new(0, "Point".to_string(), 2);
-    point_class.set_constructor(1); // Constructor is function 1
-    vm.register_class(point_class);
-
     let mut module = Module::new("test".to_string());
+    module.classes.push(class_def("Point", 2, None));
 
     // Main function: calls constructor with no args
     let main_fn = Function {
@@ -604,7 +581,10 @@ fn test_constructor_no_args() {
             // CALL_CONSTRUCTOR class=0, arg_count=0
             Opcode::CallConstructor as u8,
             0,
+            0,
+            0,
             0, // class index 0
+            0,
             0, // arg count 0
             // Store returned object
             Opcode::StoreLocal as u8,
@@ -636,7 +616,7 @@ fn test_constructor_no_args() {
 
     // Empty constructor
     let constructor_fn = Function {
-        name: "Point_constructor".to_string(),
+        name: "Point::constructor".to_string(),
         param_count: 1, // just this
         local_count: 1, // total locals = 1 (this only)
         code: vec![
@@ -656,12 +636,8 @@ fn test_constructor_basic() {
     // Test CALL_CONSTRUCTOR opcode
     let mut vm = Vm::new();
 
-    // Create Point class with constructor
-    let mut point_class = Class::new(0, "Point".to_string(), 2);
-    point_class.set_constructor(1); // Constructor is function 1
-    vm.register_class(point_class);
-
     let mut module = Module::new("test".to_string());
+    module.classes.push(class_def("Point", 2, None));
 
     // Main function: calls constructor with args 10, 20
     let main_fn = Function {
@@ -683,8 +659,11 @@ fn test_constructor_basic() {
             // CALL_CONSTRUCTOR class=0, arg_count=2
             Opcode::CallConstructor as u8,
             0,
+            0,
+            0,
             0, // class index 0
-            2, // arg count 2
+            2,
+            0, // arg count 2
             // Store returned object
             Opcode::StoreLocal as u8,
             0,
@@ -703,7 +682,7 @@ fn test_constructor_basic() {
 
     // Constructor function: initializes fields from args
     let constructor_fn = Function {
-        name: "Point_constructor".to_string(),
+        name: "Point::constructor".to_string(),
         param_count: 3, // this + 2 args
         local_count: 3, // total locals = 3 (this + x + y)
         code: vec![
@@ -747,17 +726,9 @@ fn test_call_super() {
     // Test CALL_SUPER opcode (calling parent constructor)
     let mut vm = Vm::new();
 
-    // Create Shape class (parent)
-    let mut shape_class = Class::new(0, "Shape".to_string(), 1); // 1 field: color
-    shape_class.set_constructor(1); // Constructor is function 1
-    vm.register_class(shape_class);
-
-    // Create Circle class (child) with parent
-    let mut circle_class = Class::with_parent(1, "Circle".to_string(), 2, 0); // 2 fields: color (inherited) + radius
-    circle_class.set_constructor(2); // Constructor is function 2
-    vm.register_class(circle_class);
-
     let mut module = Module::new("test".to_string());
+    module.classes.push(class_def("Shape", 1, None));
+    module.classes.push(class_def("Circle", 2, Some(0)));
 
     // Main function: creates Circle(5, "red")
     let main_fn = Function {
@@ -780,7 +751,10 @@ fn test_call_super() {
             Opcode::CallConstructor as u8,
             1,
             0,
+            0,
+            0,
             2,
+            0,
             // Store object
             Opcode::StoreLocal as u8,
             0,
@@ -799,7 +773,7 @@ fn test_call_super() {
 
     // Shape constructor: sets color
     let shape_constructor = Function {
-        name: "Shape_constructor".to_string(),
+        name: "Shape::constructor".to_string(),
         param_count: 2, // this + color
         local_count: 2, // total locals = 2 (this + color)
         code: vec![
@@ -821,7 +795,7 @@ fn test_call_super() {
 
     // Circle constructor: calls super, then sets radius
     let circle_constructor = Function {
-        name: "Circle_constructor".to_string(),
+        name: "Circle::constructor".to_string(),
         param_count: 3, // this + radius + color
         local_count: 3, // total locals = 3 (this + radius + color)
         code: vec![
@@ -835,8 +809,11 @@ fn test_call_super() {
             // CALL_SUPER class=1 (Circle, which has Shape as parent), arg_count=1
             Opcode::CallSuper as u8,
             1,
+            0,
+            0,
             0, // current class 1 (Circle)
-            1, // arg count 1 (just color)
+            1,
+            0, // arg count 1 (just color)
             // Now set radius (field 1)
             Opcode::LoadLocal as u8,
             0,

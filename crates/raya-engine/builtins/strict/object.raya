@@ -20,7 +20,7 @@ class Object {
 
     // Check equality with another object (identity comparison)
     // Default implementation compares by object identity
-    equals(other: Object): boolean {
+    equals(other: unknown): boolean {
         return __NATIVE_CALL<boolean>(OBJECT_EQUALS, this, other);
     }
 

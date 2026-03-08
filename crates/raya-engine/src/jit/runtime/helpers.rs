@@ -22,7 +22,7 @@ use crate::vm::reflect::ClassMetadataRegistry;
 use crate::vm::scheduler::IoSubmission;
 use crate::vm::scheduler::{Task, TaskId};
 use crate::vm::stack::Stack;
-use crate::vm::sync::MutexRegistry;
+use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
 use crate::vm::value::Value;
 use crate::vm::VmError;
 use crossbeam_deque::Injector;
@@ -60,6 +60,7 @@ pub struct JitRuntimeBridgeContext {
     pub classes: *const parking_lot::RwLock<ClassRegistry>,
     pub layouts: *const parking_lot::RwLock<RuntimeLayoutRegistry>,
     pub mutex_registry: *const MutexRegistry,
+    pub semaphore_registry: *const SemaphoreRegistry,
     pub globals_by_index: *const parking_lot::RwLock<Vec<Value>>,
     pub builtin_global_slots: *const parking_lot::RwLock<FxHashMap<String, usize>>,
     pub tasks: *const Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
@@ -77,7 +78,7 @@ pub struct JitRuntimeBridgeContext {
     pub structural_shape_adapters: *const parking_lot::RwLock<
         FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
-    pub aot_profile: *const parking_lot::RwLock<crate::aot::profile::AotProfileCollector>,
+    pub aot_profile: *const parking_lot::RwLock<crate::aot_profile::AotProfileCollector>,
     pub type_handles:
         *const parking_lot::RwLock<crate::vm::interpreter::RuntimeTypeHandleRegistry>,
     pub prop_keys: *const parking_lot::RwLock<crate::vm::interpreter::PropertyKeyRegistry>,
@@ -96,6 +97,7 @@ pub fn build_runtime_bridge_context(
     classes: &parking_lot::RwLock<ClassRegistry>,
     layouts: &parking_lot::RwLock<RuntimeLayoutRegistry>,
     mutex_registry: &MutexRegistry,
+    semaphore_registry: &SemaphoreRegistry,
     globals_by_index: &parking_lot::RwLock<Vec<Value>>,
     builtin_global_slots: &parking_lot::RwLock<FxHashMap<String, usize>>,
     tasks: &Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
@@ -110,7 +112,7 @@ pub fn build_runtime_bridge_context(
     structural_shape_adapters: &parking_lot::RwLock<
         FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
-    aot_profile: &parking_lot::RwLock<crate::aot::profile::AotProfileCollector>,
+    aot_profile: &parking_lot::RwLock<crate::aot_profile::AotProfileCollector>,
     type_handles: &parking_lot::RwLock<crate::vm::interpreter::RuntimeTypeHandleRegistry>,
     prop_keys: &parking_lot::RwLock<crate::vm::interpreter::PropertyKeyRegistry>,
     stack_pool: &crate::vm::scheduler::StackPool,
@@ -126,6 +128,7 @@ pub fn build_runtime_bridge_context(
         classes: classes as *const _,
         layouts: layouts as *const _,
         mutex_registry: mutex_registry as *const _,
+        semaphore_registry: semaphore_registry as *const _,
         globals_by_index: globals_by_index as *const _,
         builtin_global_slots: builtin_global_slots as *const _,
         tasks: tasks as *const _,
@@ -433,6 +436,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         || bridge.classes.is_null()
         || bridge.layouts.is_null()
         || bridge.mutex_registry.is_null()
+        || bridge.semaphore_registry.is_null()
         || bridge.safepoint.is_null()
         || bridge.globals_by_index.is_null()
         || bridge.builtin_global_slots.is_null()
@@ -458,6 +462,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         unsafe { &*bridge.classes },
         unsafe { &*bridge.layouts },
         unsafe { &*bridge.mutex_registry },
+        unsafe { &*bridge.semaphore_registry },
         unsafe { &*bridge.safepoint },
         unsafe { &*bridge.globals_by_index },
         unsafe { &*bridge.builtin_global_slots },
@@ -1591,6 +1596,7 @@ mod tests {
             &shared.classes,
             &shared.layouts,
             &shared.mutex_registry,
+            &shared.semaphore_registry,
             &shared.globals_by_index,
             &shared.builtin_global_slots,
             &shared.tasks,
@@ -1654,6 +1660,7 @@ mod tests {
             &shared.classes,
             &shared.layouts,
             &shared.mutex_registry,
+            &shared.semaphore_registry,
             &shared.globals_by_index,
             &shared.builtin_global_slots,
             &shared.tasks,
@@ -1743,6 +1750,7 @@ mod tests {
             &shared.classes,
             &shared.layouts,
             &shared.mutex_registry,
+            &shared.semaphore_registry,
             &shared.globals_by_index,
             &shared.builtin_global_slots,
             &shared.tasks,

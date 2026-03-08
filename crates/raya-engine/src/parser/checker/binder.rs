@@ -9,7 +9,7 @@ use super::symbols::{ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind, Symbol
 use super::{CheckerPolicy, TypeSystemMode};
 use crate::parser::ast::*;
 use crate::parser::types::try_hydrate_type_from_canonical_signature;
-use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type};
+use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type, TypeReference};
 use crate::parser::types::{TypeContext, TypeId};
 use crate::parser::Interner;
 use crate::parser::Span;
@@ -203,6 +203,179 @@ impl<'a> Binder<'a> {
                 self.register_builtin_function(func_sig);
             }
         }
+
+        self.register_builtin_event_emitter();
+    }
+
+    fn register_builtin_event_emitter(&mut self) {
+        if self.symbols.resolve("EventEmitter").is_some() {
+            return;
+        }
+
+        let type_param_name = "E".to_string();
+        let event_map_ty = self.type_ctx.type_variable(type_param_name.clone());
+        let event_key_ty = self.type_ctx.string_type();
+        let event_index_ty = self.type_ctx.keyof_type(event_map_ty);
+        let event_payload_ty = self
+            .type_ctx
+            .indexed_access_type(event_map_ty, event_index_ty);
+        let void_ty = self.type_ctx.void_type();
+        let bool_ty = self.type_ctx.boolean_type();
+        let number_ty = self.type_ctx.number_type();
+        let string_ty = self.type_ctx.string_type();
+
+        let listener_ty =
+            self.type_ctx
+                .function_type_with_rest(vec![], void_ty, false, 0, Some(event_payload_ty));
+        let this_ref_ty = self.type_ctx.intern(Type::Reference(TypeReference {
+            name: "EventEmitter".to_string(),
+            type_args: Some(vec![event_map_ty]),
+        }));
+        let listener_array_ty = self.type_ctx.array_type(listener_ty);
+        let string_array_ty = self.type_ctx.array_type(string_ty);
+
+        let methods = vec![
+            MethodSignature {
+                name: "on".to_string(),
+                ty: self.type_ctx.function_type(
+                    vec![event_key_ty, listener_ty],
+                    this_ref_ty,
+                    false,
+                ),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+            MethodSignature {
+                name: "once".to_string(),
+                ty: self.type_ctx.function_type(
+                    vec![event_key_ty, listener_ty],
+                    this_ref_ty,
+                    false,
+                ),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+            MethodSignature {
+                name: "off".to_string(),
+                ty: self.type_ctx.function_type(
+                    vec![event_key_ty, listener_ty],
+                    this_ref_ty,
+                    false,
+                ),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+            MethodSignature {
+                name: "addListener".to_string(),
+                ty: self.type_ctx.function_type(
+                    vec![event_key_ty, listener_ty],
+                    this_ref_ty,
+                    false,
+                ),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+            MethodSignature {
+                name: "removeListener".to_string(),
+                ty: self.type_ctx.function_type(
+                    vec![event_key_ty, listener_ty],
+                    this_ref_ty,
+                    false,
+                ),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+            MethodSignature {
+                name: "emit".to_string(),
+                ty: self.type_ctx.function_type_with_rest(
+                    vec![event_key_ty],
+                    bool_ty,
+                    false,
+                    1,
+                    Some(event_payload_ty),
+                ),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+            MethodSignature {
+                name: "listeners".to_string(),
+                ty: self.type_ctx.function_type(
+                    vec![event_key_ty],
+                    listener_array_ty,
+                    false,
+                ),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+            MethodSignature {
+                name: "listenerCount".to_string(),
+                ty: self
+                    .type_ctx
+                    .function_type(vec![string_ty], number_ty, false),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+            MethodSignature {
+                name: "eventNames".to_string(),
+                ty: self.type_ctx.function_type(vec![], string_array_ty, false),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+            MethodSignature {
+                name: "setMaxListeners".to_string(),
+                ty: self
+                    .type_ctx
+                    .function_type(vec![number_ty], this_ref_ty, false),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+            MethodSignature {
+                name: "getMaxListeners".to_string(),
+                ty: self.type_ctx.function_type(vec![], number_ty, false),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+            MethodSignature {
+                name: "removeAllListeners".to_string(),
+                ty: self.type_ctx.function_type_with_min_params(
+                    vec![string_ty],
+                    this_ref_ty,
+                    false,
+                    0,
+                ),
+                type_params: Vec::new(),
+                visibility: Default::default(),
+            },
+        ];
+
+        let class_ty = self.type_ctx.intern(Type::Class(ClassType {
+            name: "EventEmitter".to_string(),
+            type_params: vec![type_param_name],
+            properties: Vec::new(),
+            methods,
+            static_properties: Vec::new(),
+            static_methods: Vec::new(),
+            extends: None,
+            implements: Vec::new(),
+            is_abstract: false,
+        }));
+        self.type_ctx
+            .register_named_type("EventEmitter".to_string(), class_ty);
+        let _ = self.symbols.define(Symbol {
+            name: "EventEmitter".to_string(),
+            kind: SymbolKind::Class,
+            ty: class_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span::new(0, 0, 0, 0),
+            referenced: false,
+        });
     }
 
     /// Define an imported symbol
@@ -3221,8 +3394,11 @@ impl<'a> Binder<'a> {
 
             // Bind catch parameter
             if let Some(ref param) = catch.param {
-                // Strict mode defaults catch variables to unknown.
-                let error_ty = self.inference_fallback_type();
+                let error_ty = if self.policy.use_unknown_in_catch_variables {
+                    self.type_ctx.unknown_type()
+                } else {
+                    self.type_ctx.jsobject_type()
+                };
 
                 // Bind all names in the pattern (handles destructuring)
                 self.bind_pattern_names(param, error_ty, true, false)?;

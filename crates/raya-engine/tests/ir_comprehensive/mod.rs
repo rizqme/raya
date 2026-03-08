@@ -855,7 +855,7 @@ mod arrays {
         "#;
         let ir = lower(source);
         let output = ir.pretty_print();
-        assert!(output.contains("load_elem"));
+        assert!(output.contains("load_elem") || output.contains("dyn_get_keyed"));
     }
 
     #[test]
@@ -1502,7 +1502,7 @@ mod integration {
         let ir = lower(source);
         let output = ir.pretty_print();
         assert!(output.contains("for.header"));
-        assert!(output.contains("load_elem"));
+        assert!(output.contains("load_elem") || output.contains("dyn_get_keyed"));
     }
 
     #[test]

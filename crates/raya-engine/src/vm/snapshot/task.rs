@@ -320,6 +320,9 @@ pub enum BlockedReason {
     /// Waiting on a mutex
     AwaitingMutex(u64), // Mutex ID
 
+    /// Waiting on a semaphore
+    AwaitingSemaphore(u64), // Semaphore ID
+
     /// Other blocking operations
     Other(String),
 }
@@ -336,8 +339,12 @@ impl BlockedReason {
                 writer.write_all(&[1])?;
                 writer.write_all(&mutex_id.to_le_bytes())?;
             }
-            BlockedReason::Other(s) => {
+            BlockedReason::AwaitingSemaphore(semaphore_id) => {
                 writer.write_all(&[2])?;
+                writer.write_all(&semaphore_id.to_le_bytes())?;
+            }
+            BlockedReason::Other(s) => {
+                writer.write_all(&[3])?;
                 let bytes = s.as_bytes();
                 writer.write_all(&(bytes.len() as u64).to_le_bytes())?;
                 writer.write_all(bytes)?;
@@ -368,6 +375,12 @@ impl BlockedReason {
                 Ok(BlockedReason::AwaitingMutex(mutex_id))
             }
             2 => {
+                let mut buf = [0u8; 8];
+                reader.read_exact(&mut buf)?;
+                let semaphore_id = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap);
+                Ok(BlockedReason::AwaitingSemaphore(semaphore_id))
+            }
+            3 => {
                 let mut buf = [0u8; 8];
                 reader.read_exact(&mut buf)?;
                 let len = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;

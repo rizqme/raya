@@ -282,7 +282,8 @@ class ClassBuilder {
     }
 
     build(): number {
-        return __NATIVE_CALL<number>(CB_BUILD, this._id);
+        let typeRef = __NATIVE_CALL<unknown>(CB_BUILD, this._id) as { nominalTypeId: number };
+        return typeRef.nominalTypeId;
     }
 }
 

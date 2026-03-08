@@ -17,6 +17,16 @@ fn jsobject_generic_inner(type_ctx: &TypeContext, generic: &GenericType) -> Opti
     }
 }
 
+fn special_reference_kind(type_ref: &TypeReference) -> Option<&str> {
+    match type_ref.name.as_str() {
+        "any" => Some("any"),
+        "unknown" => Some("unknown"),
+        "never" => Some("never"),
+        "JSObject" => Some("jsobject"),
+        _ => None,
+    }
+}
+
 /// Context for checking subtyping relationships
 ///
 /// Maintains a substitution map for type variables during checking.
@@ -125,6 +135,15 @@ impl<'a> SubtypingContext<'a> {
         };
 
         let result = match (sub_ty, sup_ty) {
+            // Some declaration-backed builtin surfaces still retain these names as
+            // references; normalize them at the relation layer.
+            (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("never") => true,
+            (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("any") => true,
+            (_, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("any") => true,
+            (_, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("unknown") => true,
+            (Type::Reference(type_ref), t) if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) => true,
+            (t, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) => true,
+
             // Never is subtype of everything
             (Type::Never, _) => true,
 
@@ -510,38 +529,7 @@ impl<'a> SubtypingContext<'a> {
                             .any(|m1| m1.name == m2.name && self.is_subtype(m1.ty, m2.ty))
                     });
 
-                let static_props_match = c2
-                    .static_properties
-                    .iter()
-                    .filter(|p2| p2.visibility == Visibility::Public)
-                    .all(|p2| {
-                        match c1
-                            .static_properties
-                            .iter()
-                            .filter(|p1| p1.visibility == Visibility::Public)
-                            .find(|p1| p1.name == p2.name)
-                        {
-                            Some(p1) => {
-                                (p2.optional || !p1.optional)
-                                    && (!p2.readonly || p1.readonly)
-                                    && self.is_subtype(p1.ty, p2.ty)
-                            }
-                            None => p2.optional,
-                        }
-                    });
-
-                let static_methods_match = c2
-                    .static_methods
-                    .iter()
-                    .filter(|m2| m2.visibility == Visibility::Public)
-                    .all(|m2| {
-                        c1.static_methods
-                            .iter()
-                            .filter(|m1| m1.visibility == Visibility::Public)
-                            .any(|m1| m1.name == m2.name && self.is_subtype(m1.ty, m2.ty))
-                    });
-
-                if props_match && methods_match && static_props_match && static_methods_match {
+                if props_match && methods_match {
                     return true;
                 }
 

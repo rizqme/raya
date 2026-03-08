@@ -3,12 +3,22 @@
 #![allow(unused_variables)]
 #![allow(unused_imports)]
 
-use raya_engine::compiler::{Function, Module, Opcode};
+use raya_engine::compiler::{ClassDef, Function, Module, Opcode};
 use raya_engine::vm::interpreter::{SafepointCoordinator, StopReason, Vm};
+use raya_engine::vm::object::layout_id_from_ordered_names;
 use raya_engine::vm::value::Value;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
+
+fn class_def(name: &str, field_count: usize, parent_id: Option<u32>) -> ClassDef {
+    ClassDef {
+        name: name.to_string(),
+        field_count,
+        parent_id,
+        methods: Vec::new(),
+    }
+}
 
 #[test]
 fn test_safepoint_no_pause() {
@@ -80,11 +90,8 @@ fn test_safepoint_on_allocation() {
     let mut vm = Vm::with_worker_count(1);
     let safepoint = vm.safepoint().clone();
 
-    // Pre-register a class for object creation
-    let point_class = raya_engine::vm::object::Class::new(0, "Point".to_string(), 2);
-    vm.register_class(point_class);
-
     let mut module = Module::new("test".to_string());
+    module.classes.push(class_def("Point", 2, None));
     module.functions.push(Function {
         name: "main".to_string(),
         param_count: 0,
@@ -321,48 +328,21 @@ fn test_safepoint_on_object_literal() {
     let mut vm = Vm::with_worker_count(1);
     let safepoint = vm.safepoint().clone();
 
-    // Pre-register Point class
-    let point_class = raya_engine::vm::object::Class::new(0, "Point".to_string(), 2);
-    vm.register_class(point_class);
-
+    let layout_id = layout_id_from_ordered_names(&["x".to_string(), "y".to_string()]);
     let mut module = Module::new("test".to_string());
+    let mut code = vec![Opcode::ObjectLiteral as u8];
+    code.extend_from_slice(&layout_id.to_le_bytes());
+    code.extend_from_slice(&2u16.to_le_bytes());
+    code.extend_from_slice(&[Opcode::ConstI32 as u8, 10, 0, 0, 0]);
+    code.extend_from_slice(&[Opcode::InitObject as u8, 0, 0]);
+    code.extend_from_slice(&[Opcode::ConstI32 as u8, 20, 0, 0, 0]);
+    code.extend_from_slice(&[Opcode::InitObject as u8, 1, 0]);
+    code.extend_from_slice(&[Opcode::LoadFieldExact as u8, 0, 0, Opcode::Return as u8]);
     module.functions.push(Function {
         name: "main".to_string(),
         param_count: 0,
         local_count: 0,
-        code: vec![
-            // OBJECT_LITERAL (should trigger safepoint poll)
-            Opcode::ObjectLiteral as u8,
-            0,
-            0, // class index 0
-            2,
-            0, // field count 2
-            // Push field 0 value
-            Opcode::ConstI32 as u8,
-            10,
-            0,
-            0,
-            0,
-            // INIT_OBJECT field 0
-            Opcode::InitObject as u8,
-            0,
-            0,
-            // Push field 1 value
-            Opcode::ConstI32 as u8,
-            20,
-            0,
-            0,
-            0,
-            // INIT_OBJECT field 1
-            Opcode::InitObject as u8,
-            1,
-            0,
-            // Load field 0 to verify
-            Opcode::LoadFieldExact as u8,
-            0,
-            0,
-            Opcode::Return as u8,
-        ],
+        code,
     });
 
     let result = vm.execute(&module).unwrap();
@@ -433,93 +413,89 @@ fn test_safepoint_at_all_allocation_types() {
     let mut vm = Vm::with_worker_count(1);
     let safepoint = vm.safepoint().clone();
 
-    // Pre-register classes
-    let point_class = raya_engine::vm::object::Class::new(0, "Point".to_string(), 2);
-    vm.register_class(point_class);
-
+    let layout_id = layout_id_from_ordered_names(&["x".to_string(), "y".to_string()]);
     let mut module = Module::new("test".to_string());
+    module.classes.push(class_def("Point", 2, None));
 
+    let mut code = vec![
+        // 1. Object allocation (NEW)
+        Opcode::NewType as u8,
+        0,
+        0,
+        Opcode::StoreLocal as u8,
+        0,
+        0,
+        // 2. Array allocation (NEW_ARRAY)
+        Opcode::ConstI32 as u8,
+        3,
+        0,
+        0,
+        0,
+        Opcode::NewArray as u8,
+        0,
+        0,
+        Opcode::StoreLocal as u8,
+        1,
+        0,
+        // 3. Object literal (OBJECT_LITERAL)
+        Opcode::ObjectLiteral as u8,
+    ];
+    code.extend_from_slice(&layout_id.to_le_bytes());
+    code.extend_from_slice(&2u16.to_le_bytes());
+    code.extend_from_slice(&[
+        Opcode::ConstI32 as u8,
+        1,
+        0,
+        0,
+        0,
+        Opcode::InitObject as u8,
+        0,
+        0,
+        Opcode::ConstI32 as u8,
+        2,
+        0,
+        0,
+        0,
+        Opcode::InitObject as u8,
+        1,
+        0,
+        Opcode::StoreLocal as u8,
+        2,
+        0,
+        Opcode::ConstI32 as u8,
+        5,
+        0,
+        0,
+        0,
+        Opcode::ConstI32 as u8,
+        6,
+        0,
+        0,
+        0,
+        Opcode::ArrayLiteral as u8,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        Opcode::StoreLocal as u8,
+        3,
+        0,
+        Opcode::ConstI32 as u8,
+        42,
+        0,
+        0,
+        0,
+        Opcode::Return as u8,
+    ]);
     module.functions.push(Function {
         name: "main".to_string(),
         param_count: 0,
         local_count: 4,
-        code: vec![
-            // 1. Object allocation (NEW)
-            Opcode::NewType as u8,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            0,
-            0,
-            // 2. Array allocation (NEW_ARRAY)
-            Opcode::ConstI32 as u8,
-            3,
-            0,
-            0,
-            0,
-            Opcode::NewArray as u8,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            1,
-            0,
-            // 3. Object literal (OBJECT_LITERAL)
-            Opcode::ObjectLiteral as u8,
-            0,
-            0, // class 0
-            2,
-            0, // field count 2
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
-            Opcode::InitObject as u8,
-            0,
-            0,
-            Opcode::ConstI32 as u8,
-            2,
-            0,
-            0,
-            0,
-            Opcode::InitObject as u8,
-            1,
-            0,
-            Opcode::StoreLocal as u8,
-            2,
-            0,
-            // 4. Array literal (ARRAY_LITERAL)
-            // Push elements first
-            Opcode::ConstI32 as u8,
-            5,
-            0,
-            0,
-            0,
-            Opcode::ConstI32 as u8,
-            6,
-            0,
-            0,
-            0,
-            Opcode::ArrayLiteral as u8,
-            0,
-            0,
-            0,
-            0, // type 0 (u32)
-            2,
-            0,
-            0,
-            0, // length 2 (u32)
-            Opcode::StoreLocal as u8,
-            3,
-            0,
-            // Return 42 to verify execution completed
-            Opcode::ConstI32 as u8,
-            42,
-            0,
-            0,
-            0,
-            Opcode::Return as u8,
-        ],
+        code,
     });
 
     let result = vm.execute(&module).unwrap();
@@ -535,11 +511,8 @@ fn test_safepoint_integration_with_gc() {
     let mut vm = Vm::with_worker_count(1);
     let safepoint = vm.safepoint().clone();
 
-    // Pre-register class
-    let point_class = raya_engine::vm::object::Class::new(0, "Point".to_string(), 2);
-    vm.register_class(point_class);
-
     let mut module = Module::new("test".to_string());
+    module.classes.push(class_def("Point", 2, None));
     module.functions.push(Function {
         name: "main".to_string(),
         param_count: 0,

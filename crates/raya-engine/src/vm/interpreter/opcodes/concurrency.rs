@@ -7,7 +7,7 @@ use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{Array, BoundMethod, Closure};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
-use crate::vm::sync::MutexId;
+use crate::vm::sync::{MutexId, SemaphoreId};
 use crate::vm::value::Value;
 use crate::vm::VmError;
 use std::sync::Arc;
@@ -426,8 +426,88 @@ impl<'a> Interpreter<'a> {
                             if let Some(waiter_id) = next_waiter {
                                 let tasks = self.tasks.read();
                                 if let Some(waiter_task) = tasks.get(&waiter_id) {
-                                    // The mutex is now owned by the waiter (set by mutex.unlock)
-                                    waiter_task.add_held_mutex(mutex_id);
+                                    // Only wake tasks that have already finished parking.
+                                    // If the waiter is still Running, the reactor will notice that
+                                    // ownership was transferred once its suspend result is handled.
+                                    if waiter_task.state() == TaskState::Suspended {
+                                        waiter_task.add_held_mutex(mutex_id);
+                                        if matches!(
+                                            waiter_task.suspend_reason(),
+                                            Some(crate::vm::scheduler::SuspendReason::MutexLockCall { .. })
+                                        ) {
+                                            waiter_task.set_resume_value(Value::null());
+                                        }
+                                        waiter_task.set_state(TaskState::Resumed);
+                                        waiter_task.clear_suspend_reason();
+                                        self.injector.push(waiter_task.clone());
+                                    }
+                                }
+                            }
+                            OpcodeResult::Continue
+                        }
+                        Err(e) => OpcodeResult::Error(VmError::RuntimeError(format!("{}", e))),
+                    }
+                } else {
+                    OpcodeResult::Error(VmError::RuntimeError(format!(
+                        "Mutex {:?} not found",
+                        mutex_id
+                    )))
+                }
+            }
+
+            Opcode::SemAcquire => {
+                let count_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let sem_id_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                let count = count_val
+                    .as_i64()
+                    .filter(|v| *v >= 0)
+                    .unwrap_or(0) as usize;
+                let semaphore_id = SemaphoreId::from_u64(sem_id_val.as_i64().unwrap_or(0) as u64);
+
+                if let Some(semaphore) = self.semaphore_registry.get(semaphore_id) {
+                    match semaphore.try_acquire(task.id(), count) {
+                        Ok(()) => OpcodeResult::Continue,
+                        Err(_) => OpcodeResult::Suspend(SuspendReason::SemaphoreAcquire {
+                            semaphore_id,
+                        }),
+                    }
+                } else {
+                    OpcodeResult::Error(VmError::RuntimeError(format!(
+                        "Semaphore {:?} not found",
+                        semaphore_id
+                    )))
+                }
+            }
+
+            Opcode::SemRelease => {
+                let count_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let sem_id_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                let count = count_val
+                    .as_i64()
+                    .filter(|v| *v >= 0)
+                    .unwrap_or(0) as usize;
+                let semaphore_id = SemaphoreId::from_u64(sem_id_val.as_i64().unwrap_or(0) as u64);
+
+                if let Some(semaphore) = self.semaphore_registry.get(semaphore_id) {
+                    match semaphore.release(count) {
+                        Ok(resumed_tasks) => {
+                            let tasks = self.tasks.read();
+                            for waiter_id in resumed_tasks {
+                                if let Some(waiter_task) = tasks.get(&waiter_id) {
                                     waiter_task.set_state(TaskState::Resumed);
                                     waiter_task.clear_suspend_reason();
                                     self.injector.push(waiter_task.clone());
@@ -439,8 +519,8 @@ impl<'a> Interpreter<'a> {
                     }
                 } else {
                     OpcodeResult::Error(VmError::RuntimeError(format!(
-                        "Mutex {:?} not found",
-                        mutex_id
+                        "Semaphore {:?} not found",
+                        semaphore_id
                     )))
                 }
             }

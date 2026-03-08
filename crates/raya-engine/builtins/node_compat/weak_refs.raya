@@ -51,7 +51,7 @@ class FinalizationRegistry<T> {
         return removed;
     }
 
-    cleanupSome(_callback: ((heldValue: T) => void) | null): void {
+    cleanupSome(_callback: unknown): void {
         let callback = this._cleanupCallback;
         if (_callback != null) {
             callback = _callback as (heldValue: T) => void;

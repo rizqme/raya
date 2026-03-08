@@ -1823,6 +1823,7 @@ pub const fn helper_table_size() -> usize {
 mod tests {
     use super::*;
     use cranelift_codegen::settings;
+    use std::mem::offset_of;
 
     #[test]
     fn test_aot_entry_signature() {
@@ -1836,21 +1837,26 @@ mod tests {
 
     #[test]
     fn test_helper_table_size() {
-        // 25 function pointers × 8 bytes = 200 bytes
-        assert_eq!(helper_table_size(), 200);
+        assert_eq!(helper_table_size(), std::mem::size_of::<AotHelperTable>());
     }
 
     #[test]
     fn test_helper_offsets() {
-        assert_eq!(helper_table_field_offset(&HelperCall::AllocFrame), Some(0));
-        assert_eq!(helper_table_field_offset(&HelperCall::FreeFrame), Some(8));
+        assert_eq!(
+            helper_table_field_offset(&HelperCall::AllocFrame),
+            Some(offset_of!(AotHelperTable, alloc_frame) as i32)
+        );
+        assert_eq!(
+            helper_table_field_offset(&HelperCall::FreeFrame),
+            Some(offset_of!(AotHelperTable, free_frame) as i32)
+        );
         assert_eq!(
             helper_table_field_offset(&HelperCall::SafepointPoll),
-            Some(16)
+            Some(offset_of!(AotHelperTable, safepoint_poll) as i32)
         );
         assert_eq!(
             helper_table_field_offset(&HelperCall::LoadF64Constant),
-            Some(24 * 8)
+            Some(offset_of!(AotHelperTable, load_f64_constant) as i32)
         );
         // Compound operations return None
         assert_eq!(helper_table_field_offset(&HelperCall::GenericAdd), None);

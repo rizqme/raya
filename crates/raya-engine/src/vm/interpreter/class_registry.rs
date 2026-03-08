@@ -280,22 +280,23 @@ mod tests {
         Class::with_parent(id, name.to_string(), field_count, parent_id)
     }
 
+    fn register_auto_class(registry: &mut ClassRegistry, name: &str, field_count: usize) -> usize {
+        registry.register_class(class_with_id(0, name, field_count))
+    }
+
     #[test]
     fn test_register_class() {
         let mut registry = ClassRegistry::new();
-        let class = class_with_id(1, "Point", 2);
-
-        let id = registry.register_class(class);
+        let id = register_auto_class(&mut registry, "Point", 2);
         assert_eq!(id, 1);
     }
 
     #[test]
     fn test_get_class_by_id() {
         let mut registry = ClassRegistry::new();
-        let class = class_with_id(1, "Point", 2);
-        registry.register_class(class);
+        let id = register_auto_class(&mut registry, "Point", 2);
 
-        let retrieved = registry.get_class(1).unwrap();
+        let retrieved = registry.get_class(id).unwrap();
         assert_eq!(retrieved.name, "Point");
         assert_eq!(retrieved.field_count, 2);
     }
@@ -303,11 +304,10 @@ mod tests {
     #[test]
     fn test_get_class_by_name() {
         let mut registry = ClassRegistry::new();
-        let class = class_with_id(1, "Point", 2);
-        registry.register_class(class);
+        let id = register_auto_class(&mut registry, "Point", 2);
 
         let retrieved = registry.get_class_by_name("Point").unwrap();
-        assert_eq!(retrieved.id, 1);
+        assert_eq!(retrieved.id, id);
         assert_eq!(retrieved.field_count, 2);
     }
 
@@ -315,14 +315,11 @@ mod tests {
     fn test_multiple_classes() {
         let mut registry = ClassRegistry::new();
 
-        let class1 = class_with_id(1, "Point", 2);
-        let class2 = class_with_id(2, "Circle", 3);
+        let id1 = register_auto_class(&mut registry, "Point", 2);
+        let id2 = register_auto_class(&mut registry, "Circle", 3);
 
-        registry.register_class(class1);
-        registry.register_class(class2);
-
-        assert_eq!(registry.get_class(1).unwrap().name, "Point");
-        assert_eq!(registry.get_class(2).unwrap().name, "Circle");
+        assert_eq!(registry.get_class(id1).unwrap().name, "Point");
+        assert_eq!(registry.get_class(id2).unwrap().name, "Circle");
         assert_eq!(registry.next_nominal_type_id(), 3);
     }
 
@@ -331,8 +328,7 @@ mod tests {
         let mut registry = ClassRegistry::new();
         assert_eq!(registry.next_nominal_type_id(), 1);
 
-        let class = class_with_id(1, "Point", 2);
-        registry.register_class(class);
+        register_auto_class(&mut registry, "Point", 2);
         assert_eq!(registry.next_nominal_type_id(), 2);
     }
 
@@ -358,7 +354,7 @@ mod tests {
     #[test]
     fn test_register_class_no_longer_requires_layout_id() {
         let mut registry = ClassRegistry::new();
-        let id = registry.register_class(Class::new(1, "Point".to_string(), 2));
+        let id = registry.register_class(Class::new(0, "Point".to_string(), 2));
         assert_eq!(id, 1);
     }
 

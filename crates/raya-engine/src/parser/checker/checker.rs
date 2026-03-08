@@ -2399,7 +2399,7 @@ impl<'a> TypeChecker<'a> {
                         if self.policy.use_unknown_in_catch_variables {
                             self.type_ctx.unknown_type()
                         } else {
-                            self.inference_fallback_type()
+                            self.type_ctx.jsobject_type()
                         }
                     }
                     // Destructuring catch params need to accept arbitrary thrown values.

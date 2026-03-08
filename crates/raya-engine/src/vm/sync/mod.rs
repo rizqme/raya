@@ -14,6 +14,6 @@ mod serialize;
 pub use guard::{MutexGuard, OwnedMutexGuard};
 pub use mutex::{BlockReason, Mutex, MutexError};
 pub use mutex_id::MutexId;
-pub use registry::MutexRegistry;
+pub use registry::{MutexRegistry, SemaphoreRegistry};
 pub use semaphore::{Semaphore, SemaphoreBlockReason, SemaphoreError, SemaphoreId};
 pub use serialize::SerializedMutex;
