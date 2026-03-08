@@ -261,13 +261,13 @@ impl<'a> Interpreter<'a> {
                     let tasks_guard = self.tasks.read();
                     for i in 0..task_count {
                         let elem = arr.get(i).unwrap_or(Value::null());
-                        let task_id_u64 = match elem.as_u64() {
-                            Some(id) => id,
-                            None => {
-                                return OpcodeResult::Error(VmError::TypeError(
-                                    "Expected TaskId in array".to_string(),
-                                ));
-                            }
+                        let Some(task_id_u64) = elem.as_u64() else {
+                            // WaitAll arrays can be re-executed after suspension with
+                            // elements that are already materialized results (for
+                            // example pointer-backed strings). Treat them like Await:
+                            // non-task values are already resolved literals.
+                            results.push(elem);
+                            continue;
                         };
                         let awaited_id = TaskId::from_u64(task_id_u64);
 
@@ -303,8 +303,10 @@ impl<'a> Interpreter<'a> {
                                 }
                             }
                         } else {
-                            missing_task = Some(awaited_id);
-                            break;
+                            // Mirror Await semantics: if the numeric handle no longer
+                            // refers to a live task, treat the value as an already
+                            // resolved literal rather than failing the aggregate await.
+                            results.push(elem);
                         }
                     }
                 } // tasks_guard dropped here
@@ -320,13 +322,17 @@ impl<'a> Interpreter<'a> {
                     if let Some(awaited_task) = self.tasks.read().get(&awaited_id).cloned() {
                         awaited_task.mark_rejection_observed();
                     }
-                    if let Some(exc_val) = exc {
-                        task.set_exception(exc_val);
-                    }
-                    return OpcodeResult::Error(VmError::RuntimeError(format!(
-                        "Awaited task {:?} failed in WaitAll",
-                        awaited_id
-                    )));
+                    let waitall_msg = format!("Awaited task {:?} failed in WaitAll", awaited_id);
+                    let wrapped_exc = {
+                        let mut gc = self.gc.lock();
+                        let gc_ptr = gc.allocate(crate::vm::RayaString::new(waitall_msg.clone()));
+                        unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        }
+                    };
+                    task.set_exception(wrapped_exc);
+                    let _ = exc; // child rejection is observed above; aggregate await throws its own failure surface
+                    return OpcodeResult::Error(VmError::RuntimeError(waitall_msg));
                 }
 
                 if all_completed {

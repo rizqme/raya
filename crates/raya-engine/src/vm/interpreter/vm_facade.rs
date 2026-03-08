@@ -889,6 +889,7 @@ impl Vm {
 
     /// Extract a human-readable error message from a failed task's exception
     fn extract_exception_message(task: &Task) -> String {
+        use crate::vm::gc::header_ptr_from_value_ptr;
         let Some(exc) = task.current_exception() else {
             return "Main task failed".to_string();
         };
@@ -901,17 +902,24 @@ impl Vm {
             return format!("Main task failed: {:?}", exc);
         }
 
-        // Try string
-        if let Some(s) = unsafe { exc.as_ptr::<RayaString>() } {
-            return format!("Main task failed: {}", unsafe { &*s.as_ptr() }.data);
+        let Some(ptr) = (unsafe { exc.as_ptr::<u8>() }) else {
+            return "Main task failed".to_string();
+        };
+        let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
+
+        if header.type_id() == std::any::TypeId::of::<RayaString>() {
+            let s = unsafe { &*ptr.cast::<RayaString>().as_ptr() };
+            return format!("Main task failed: {}", s.data);
         }
 
-        // Try Error object (message is field 0)
-        if let Some(obj) = unsafe { exc.as_ptr::<Object>() } {
-            if let Some(msg_val) = unsafe { &*obj.as_ptr() }.get_field(0) {
-                if msg_val.is_ptr() {
-                    if let Some(s) = unsafe { msg_val.as_ptr::<RayaString>() } {
-                        return format!("Main task failed: {}", unsafe { &*s.as_ptr() }.data);
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let obj = unsafe { &*ptr.cast::<Object>().as_ptr() };
+            if let Some(msg_val) = obj.get_field(0) {
+                if let Some(msg_ptr) = unsafe { msg_val.as_ptr::<u8>() } {
+                    let msg_header = unsafe { &*header_ptr_from_value_ptr(msg_ptr.as_ptr()) };
+                    if msg_header.type_id() == std::any::TypeId::of::<RayaString>() {
+                        let s = unsafe { &*msg_ptr.cast::<RayaString>().as_ptr() };
+                        return format!("Main task failed: {}", s.data);
                     }
                 }
             }

@@ -622,20 +622,31 @@ impl<'a> Interpreter<'a> {
 
     #[inline]
     fn format_exception_value(exception: Value) -> String {
+        use crate::vm::gc::header_ptr_from_value_ptr;
         if exception.is_null() {
             return "null".to_string();
         }
         if !exception.is_ptr() {
             return format!("{:?}", exception);
         }
-        if let Some(s) = unsafe { exception.as_ptr::<RayaString>() } {
-            return unsafe { &*s.as_ptr() }.data.clone();
+
+        let Some(ptr) = (unsafe { exception.as_ptr::<u8>() }) else {
+            return format!("{:?}", exception);
+        };
+        let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
+
+        if header.type_id() == std::any::TypeId::of::<RayaString>() {
+            let s = unsafe { &*ptr.cast::<RayaString>().as_ptr() };
+            return s.data.clone();
         }
-        if let Some(obj) = unsafe { exception.as_ptr::<Object>() } {
-            if let Some(msg_val) = unsafe { &*obj.as_ptr() }.get_field(0) {
-                if msg_val.is_ptr() {
-                    if let Some(s) = unsafe { msg_val.as_ptr::<RayaString>() } {
-                        return unsafe { &*s.as_ptr() }.data.clone();
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let obj = unsafe { &*ptr.cast::<Object>().as_ptr() };
+            if let Some(msg_val) = obj.get_field(0) {
+                if let Some(msg_ptr) = unsafe { msg_val.as_ptr::<u8>() } {
+                    let msg_header = unsafe { &*header_ptr_from_value_ptr(msg_ptr.as_ptr()) };
+                    if msg_header.type_id() == std::any::TypeId::of::<RayaString>() {
+                        let s = unsafe { &*msg_ptr.cast::<RayaString>().as_ptr() };
+                        return s.data.clone();
                     }
                 }
             }
