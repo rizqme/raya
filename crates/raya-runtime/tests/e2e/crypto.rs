@@ -4,8 +4,8 @@
 //! including hashing, HMAC, random generation, encoding, and comparison.
 
 use super::harness::{
-    compile_and_run_with_builtins, expect_bool_with_builtins, expect_i32_with_builtins,
-    expect_string_with_builtins,
+    compile_and_run_string_with_builtins, compile_and_run_with_builtins,
+    expect_bool_with_builtins, expect_i32_with_builtins, expect_string_with_builtins,
 };
 
 // ============================================================================
@@ -175,8 +175,7 @@ fn test_crypto_random_bytes_returns_buffer() {
 #[test]
 fn test_crypto_random_bytes_different() {
     // Two calls to randomBytes should (almost certainly) produce different hex results
-    use raya_engine::vm::RayaString;
-    let r1 = compile_and_run_with_builtins(
+    let r1 = compile_and_run_string_with_builtins(
         r#"
         import crypto from "std:crypto";
         let buf: Buffer = crypto.randomBytes(32);
@@ -184,7 +183,7 @@ fn test_crypto_random_bytes_different() {
     "#,
     )
     .expect("first randomBytes should work");
-    let r2 = compile_and_run_with_builtins(
+    let r2 = compile_and_run_string_with_builtins(
         r#"
         import crypto from "std:crypto";
         let buf: Buffer = crypto.randomBytes(32);
@@ -192,9 +191,7 @@ fn test_crypto_random_bytes_different() {
     "#,
     )
     .expect("second randomBytes should work");
-    let s1 = unsafe { &*r1.as_ptr::<RayaString>().unwrap().as_ptr() };
-    let s2 = unsafe { &*r2.as_ptr::<RayaString>().unwrap().as_ptr() };
-    assert_ne!(s1.data, s2.data, "Two random byte sequences should differ");
+    assert_ne!(r1, r2, "Two random byte sequences should differ");
 }
 
 // ============================================================================
@@ -251,24 +248,21 @@ fn test_crypto_random_uuid_returns_string() {
 #[test]
 fn test_crypto_random_uuid_unique() {
     // Two UUIDs should be different (compare in Rust to avoid type inference issues)
-    use raya_engine::vm::RayaString;
-    let r1 = compile_and_run_with_builtins(
+    let r1 = compile_and_run_string_with_builtins(
         r#"
         import crypto from "std:crypto";
         return crypto.randomUUID();
     "#,
     )
     .expect("first randomUUID should work");
-    let r2 = compile_and_run_with_builtins(
+    let r2 = compile_and_run_string_with_builtins(
         r#"
         import crypto from "std:crypto";
         return crypto.randomUUID();
     "#,
     )
     .expect("second randomUUID should work");
-    let s1 = unsafe { &*r1.as_ptr::<RayaString>().unwrap().as_ptr() };
-    let s2 = unsafe { &*r2.as_ptr::<RayaString>().unwrap().as_ptr() };
-    assert_ne!(s1.data, s2.data, "Two UUIDs should differ");
+    assert_ne!(r1, r2, "Two UUIDs should differ");
 }
 
 // ============================================================================

@@ -10,7 +10,7 @@ use raya_engine::vm::scheduler::SchedulerLimits;
 use raya_engine::vm::{Array, Object, RayaString, Value, Vm, VmError};
 use raya_runtime::{BuiltinMode, StdNativeHandler};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 #[cfg(feature = "jit")]
@@ -170,6 +170,21 @@ where
         .expect("e2e helper thread panicked")
 }
 
+fn harness_vm_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn with_harness_vm_lock<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    let _guard = harness_vm_lock()
+        .lock()
+        .expect("test harness VM lock poisoned");
+    f()
+}
+
 fn compile_program_with_mode(
     source: &str,
     mode: BuiltinMode,
@@ -214,19 +229,21 @@ fn map_runtime_error(error: raya_runtime::RuntimeError) -> E2EError {
 /// The source code should have a `main` function that returns a value,
 /// or use a `return` statement at the top level.
 pub fn compile_and_run(source: &str) -> E2EResult<Value> {
-    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
-    // Use single worker to avoid resource contention during parallel test execution.
-    let mut vm = Vm::with_worker_count(1);
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            finalize_vm_after_result(&value, vm);
-            Ok(value)
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+        // Use single worker to avoid resource contention during parallel test execution.
+        let mut vm = Vm::with_worker_count(1);
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                finalize_vm_after_result(&value, vm);
+                Ok(value)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
 fn compile_and_run_isolated(source: &str) -> E2EResult<Value> {
@@ -238,28 +255,30 @@ fn compile_and_run_isolated(source: &str) -> E2EResult<Value> {
 ///
 /// Use this for tests that use Map, Set, Buffer, Date, Channel, Logger, etc.
 pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
-    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
 
-    // Use single worker with StdNativeHandler for stdlib support (logger, etc.).
-    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+        // Use single worker with StdNativeHandler for stdlib support (logger, etc.).
+        let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
 
-    // Register symbolic native functions for ModuleNativeCall dispatch.
-    {
-        let mut registry = vm.native_registry().write();
-        raya_stdlib::register_stdlib(&mut registry);
-        raya_stdlib_posix::register_posix(&mut registry);
-    }
-
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            finalize_vm_after_result(&value, vm);
-            Ok(value)
+        // Register symbolic native functions for ModuleNativeCall dispatch.
+        {
+            let mut registry = vm.native_registry().write();
+            raya_stdlib::register_stdlib(&mut registry);
+            raya_stdlib_posix::register_posix(&mut registry);
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
+
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                finalize_vm_after_result(&value, vm);
+                Ok(value)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-    }
+    })
 }
 
 /// Compile and execute using the production runtime compile pipeline.
@@ -272,25 +291,27 @@ pub fn compile_and_run_runtime(source: &str) -> E2EResult<Value> {
 /// Compile and execute using the production runtime compile pipeline with an
 /// explicit builtin compatibility mode.
 pub fn compile_and_run_runtime_with_mode(source: &str, mode: BuiltinMode) -> E2EResult<Value> {
-    let (runtime, program) = compile_program_with_mode(source, mode)?;
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, mode)?;
 
-    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
-    {
-        let mut registry = vm.native_registry().write();
-        raya_stdlib::register_stdlib(&mut registry);
-        raya_stdlib_posix::register_posix(&mut registry);
-    }
+        let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+        {
+            let mut registry = vm.native_registry().write();
+            raya_stdlib::register_stdlib(&mut registry);
+            raya_stdlib_posix::register_posix(&mut registry);
+        }
 
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            finalize_vm_after_result(&value, vm);
-            Ok(value)
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                finalize_vm_after_result(&value, vm);
+                Ok(value)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
 pub fn compile_and_run_runtime_node_compat(source: &str) -> E2EResult<Value> {
@@ -298,42 +319,46 @@ pub fn compile_and_run_runtime_node_compat(source: &str) -> E2EResult<Value> {
 }
 
 fn compile_and_run_string(source: &str) -> E2EResult<String> {
-    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
-    let mut vm = Vm::with_worker_count(1);
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            let result = extract_live_string(&value, source);
-            finalize_vm_after_result(&value, vm);
-            Ok(result)
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+        let mut vm = Vm::with_worker_count(1);
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                let result = extract_live_string(&value, source);
+                finalize_vm_after_result(&value, vm);
+                Ok(result)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
-fn compile_and_run_string_with_builtins(source: &str) -> E2EResult<String> {
-    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+pub fn compile_and_run_string_with_builtins(source: &str) -> E2EResult<String> {
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
 
-    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
-    {
-        let mut registry = vm.native_registry().write();
-        raya_stdlib::register_stdlib(&mut registry);
-        raya_stdlib_posix::register_posix(&mut registry);
-    }
+        let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+        {
+            let mut registry = vm.native_registry().write();
+            raya_stdlib::register_stdlib(&mut registry);
+            raya_stdlib_posix::register_posix(&mut registry);
+        }
 
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            let result = extract_live_string(&value, source);
-            finalize_vm_after_result(&value, vm);
-            Ok(result)
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                let result = extract_live_string(&value, source);
+                finalize_vm_after_result(&value, vm);
+                Ok(result)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
 fn compile_and_run_string_runtime(source: &str) -> E2EResult<String> {
@@ -341,26 +366,28 @@ fn compile_and_run_string_runtime(source: &str) -> E2EResult<String> {
 }
 
 fn compile_and_run_string_runtime_with_mode(source: &str, mode: BuiltinMode) -> E2EResult<String> {
-    let (runtime, program) = compile_program_with_mode(source, mode)?;
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, mode)?;
 
-    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
-    {
-        let mut registry = vm.native_registry().write();
-        raya_stdlib::register_stdlib(&mut registry);
-        raya_stdlib_posix::register_posix(&mut registry);
-    }
+        let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+        {
+            let mut registry = vm.native_registry().write();
+            raya_stdlib::register_stdlib(&mut registry);
+            raya_stdlib_posix::register_posix(&mut registry);
+        }
 
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            let result = extract_live_string(&value, source);
-            finalize_vm_after_result(&value, vm);
-            Ok(result)
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                let result = extract_live_string(&value, source);
+                finalize_vm_after_result(&value, vm);
+                Ok(result)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
 fn compile_and_run_string_runtime_node_compat(source: &str) -> E2EResult<String> {
@@ -368,131 +395,143 @@ fn compile_and_run_string_runtime_node_compat(source: &str) -> E2EResult<String>
 }
 
 fn compile_and_run_array_i32(source: &str) -> E2EResult<Vec<i32>> {
-    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
-    let mut vm = Vm::with_worker_count(1);
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            let result = extract_array_i32(&value, source);
-            finalize_vm_after_result(&value, vm);
-            Ok(result)
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+        let mut vm = Vm::with_worker_count(1);
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                let result = extract_array_i32(&value, source);
+                finalize_vm_after_result(&value, vm);
+                Ok(result)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
 fn compile_and_run_array_i32_with_builtins(source: &str) -> E2EResult<Vec<i32>> {
-    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
 
-    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
-    {
-        let mut registry = vm.native_registry().write();
-        raya_stdlib::register_stdlib(&mut registry);
-        raya_stdlib_posix::register_posix(&mut registry);
-    }
+        let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+        {
+            let mut registry = vm.native_registry().write();
+            raya_stdlib::register_stdlib(&mut registry);
+            raya_stdlib_posix::register_posix(&mut registry);
+        }
 
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            let result = extract_array_i32(&value, source);
-            finalize_vm_after_result(&value, vm);
-            Ok(result)
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                let result = extract_array_i32(&value, source);
+                finalize_vm_after_result(&value, vm);
+                Ok(result)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
 fn compile_and_run_array_i32_multiworker_with_builtins(
     source: &str,
     worker_count: usize,
 ) -> E2EResult<Vec<i32>> {
-    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
-    let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
-    {
-        let mut registry = vm.native_registry().write();
-        raya_stdlib::register_stdlib(&mut registry);
-        raya_stdlib_posix::register_posix(&mut registry);
-    }
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+        let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
+        {
+            let mut registry = vm.native_registry().write();
+            raya_stdlib::register_stdlib(&mut registry);
+            raya_stdlib_posix::register_posix(&mut registry);
+        }
 
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            let result = extract_array_i32(&value, source);
-            finalize_vm_after_result(&value, vm);
-            Ok(result)
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                let result = extract_array_i32(&value, source);
+                finalize_vm_after_result(&value, vm);
+                Ok(result)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
 fn compile_and_run_object_i32_fields(source: &str) -> E2EResult<Vec<i32>> {
-    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
-    let mut vm = Vm::with_worker_count(1);
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            let result = extract_object_i32_fields(&value, source);
-            finalize_vm_after_result(&value, vm);
-            Ok(result)
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+        let mut vm = Vm::with_worker_count(1);
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                let result = extract_object_i32_fields(&value, source);
+                finalize_vm_after_result(&value, vm);
+                Ok(result)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
 fn compile_and_run_object_i32_fields_with_builtins(source: &str) -> E2EResult<Vec<i32>> {
-    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
 
-    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
-    {
-        let mut registry = vm.native_registry().write();
-        raya_stdlib::register_stdlib(&mut registry);
-        raya_stdlib_posix::register_posix(&mut registry);
-    }
+        let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+        {
+            let mut registry = vm.native_registry().write();
+            raya_stdlib::register_stdlib(&mut registry);
+            raya_stdlib_posix::register_posix(&mut registry);
+        }
 
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            let result = extract_object_i32_fields(&value, source);
-            finalize_vm_after_result(&value, vm);
-            Ok(result)
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                let result = extract_object_i32_fields(&value, source);
+                finalize_vm_after_result(&value, vm);
+                Ok(result)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
 fn compile_and_run_object_i32_fields_multiworker_with_builtins(
     source: &str,
     worker_count: usize,
 ) -> E2EResult<Vec<i32>> {
-    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
-    let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
-    {
-        let mut registry = vm.native_registry().write();
-        raya_stdlib::register_stdlib(&mut registry);
-        raya_stdlib_posix::register_posix(&mut registry);
-    }
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+        let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
+        {
+            let mut registry = vm.native_registry().write();
+            raya_stdlib::register_stdlib(&mut registry);
+            raya_stdlib_posix::register_posix(&mut registry);
+        }
 
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            let result = extract_object_i32_fields(&value, source);
-            finalize_vm_after_result(&value, vm);
-            Ok(result)
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                let result = extract_object_i32_fields(&value, source);
+                finalize_vm_after_result(&value, vm);
+                Ok(result)
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
 #[cfg(feature = "jit")]
@@ -500,26 +539,28 @@ pub fn compile_and_run_runtime_with_mode_jit(
     source: &str,
     mode: BuiltinMode,
 ) -> E2EResult<(Value, JitTelemetrySnapshot)> {
-    let (runtime, program) = compile_program_with_mode_jit(source, mode)?;
+    with_harness_vm_lock(|| {
+        let (runtime, program) = compile_program_with_mode_jit(source, mode)?;
 
-    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
-    {
-        let mut registry = vm.native_registry().write();
-        raya_stdlib::register_stdlib(&mut registry);
-        raya_stdlib_posix::register_posix(&mut registry);
-    }
+        let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+        {
+            let mut registry = vm.native_registry().write();
+            raya_stdlib::register_stdlib(&mut registry);
+            raya_stdlib_posix::register_posix(&mut registry);
+        }
 
-    match runtime.execute_program_with_vm(&program, &mut vm) {
-        Ok(value) => {
-            let telemetry = vm.get_jit_telemetry();
-            finalize_vm_after_result(&value, vm);
-            Ok((value, telemetry))
+        match runtime.execute_program_with_vm(&program, &mut vm) {
+            Ok(value) => {
+                let telemetry = vm.get_jit_telemetry();
+                finalize_vm_after_result(&value, vm);
+                Ok((value, telemetry))
+            }
+            Err(error) => {
+                finalize_vm_after_error(vm);
+                Err(map_runtime_error(error))
+            }
         }
-        Err(error) => {
-            finalize_vm_after_error(vm);
-            Err(map_runtime_error(error))
-        }
-    }
+    })
 }
 
 #[cfg(feature = "jit")]
@@ -1060,18 +1101,20 @@ fn compile_and_run_multiworker_with_timeout(
 ) -> E2EResult<Value> {
     let owned = source.to_string();
     run_joined("raya-e2e-multiworker", move || {
-        let (runtime, program) = compile_program_with_mode(&owned, BuiltinMode::RayaStrict)?;
-        let mut vm = Vm::with_worker_count(worker_count);
-        match runtime.execute_program_with_vm(&program, &mut vm) {
-            Ok(value) => {
-                finalize_vm_after_result(&value, vm);
-                Ok(value)
+        with_harness_vm_lock(|| {
+            let (runtime, program) = compile_program_with_mode(&owned, BuiltinMode::RayaStrict)?;
+            let mut vm = Vm::with_worker_count(worker_count);
+            match runtime.execute_program_with_vm(&program, &mut vm) {
+                Ok(value) => {
+                    finalize_vm_after_result(&value, vm);
+                    Ok(value)
+                }
+                Err(error) => {
+                    finalize_vm_after_error(vm);
+                    Err(map_runtime_error(error))
+                }
             }
-            Err(error) => {
-                finalize_vm_after_error(vm);
-                Err(map_runtime_error(error))
-            }
-        }
+        })
     })
 }
 
@@ -1082,27 +1125,29 @@ fn compile_and_run_multiworker_with_builtins_timeout(
 ) -> E2EResult<Value> {
     let owned = source.to_string();
     run_joined("raya-e2e-multiworker-builtins", move || {
-        let (runtime, program) = compile_program_with_mode(&owned, BuiltinMode::RayaStrict)?;
+        with_harness_vm_lock(|| {
+            let (runtime, program) = compile_program_with_mode(&owned, BuiltinMode::RayaStrict)?;
 
-        let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
+            let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
 
-        // Register symbolic native functions for ModuleNativeCall dispatch.
-        {
-            let mut registry = vm.native_registry().write();
-            raya_stdlib::register_stdlib(&mut registry);
-            raya_stdlib_posix::register_posix(&mut registry);
-        }
-
-        match runtime.execute_program_with_vm(&program, &mut vm) {
-            Ok(value) => {
-                finalize_vm_after_result(&value, vm);
-                Ok(value)
+            // Register symbolic native functions for ModuleNativeCall dispatch.
+            {
+                let mut registry = vm.native_registry().write();
+                raya_stdlib::register_stdlib(&mut registry);
+                raya_stdlib_posix::register_posix(&mut registry);
             }
-            Err(error) => {
-                finalize_vm_after_error(vm);
-                Err(map_runtime_error(error))
+
+            match runtime.execute_program_with_vm(&program, &mut vm) {
+                Ok(value) => {
+                    finalize_vm_after_result(&value, vm);
+                    Ok(value)
+                }
+                Err(error) => {
+                    finalize_vm_after_error(vm);
+                    Err(map_runtime_error(error))
+                }
             }
-        }
+        })
     })
 }
 
