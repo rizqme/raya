@@ -179,7 +179,7 @@ impl NativeContext for EngineContext<'_> {
         }
 
         // Buffer values are always wrapped as Buffer class objects.
-        let (buffer_class_id, buffer_field_count, buffer_layout_id) = {
+        let (buffer_nominal_type_id, buffer_field_count, buffer_layout_id) = {
             let mut classes = self.classes.write();
             if let Some(id) = classes.get_class_by_name("Buffer").map(|class| class.id) {
                 let (layout_id, field_count) = self
@@ -208,8 +208,11 @@ impl NativeContext for EngineContext<'_> {
             let buf_ptr = gc.allocate(buffer);
             let handle = buf_ptr.as_ptr() as u64;
 
-            let mut obj =
-                Object::new_nominal(buffer_layout_id, buffer_class_id as u32, buffer_field_count);
+            let mut obj = Object::new_nominal(
+                buffer_layout_id,
+                buffer_nominal_type_id as u32,
+                buffer_field_count,
+            );
             let _ = obj.set_field(0, Value::u64(handle));
             let _ = obj.set_field(1, Value::i32(data.len() as i32));
             gc.allocate(obj)

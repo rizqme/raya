@@ -604,18 +604,18 @@ impl<'a> Interpreter<'a> {
                     })?;
                     let obj = unsafe { obj_ptr.as_ref() };
                     if let Some(slot) = self.reflect_method_slot_for_object(obj, &property_key) {
-                        let Some(runtime_class_id) = obj.nominal_type_id_usize() else {
+                        let Some(runtime_nominal_type_id) = obj.nominal_type_id_usize() else {
                             return Err(VmError::RuntimeError(
                                 "Method fallback requires nominal runtime type".to_string(),
                             ));
                         };
                         let classes = self.classes.read();
-                        let class = match classes.get_class(runtime_class_id) {
+                        let class = match classes.get_class(runtime_nominal_type_id) {
                             Some(c) => c,
                             None => {
                                 return Err(VmError::RuntimeError(format!(
-                                    "Invalid class index: {}",
-                                    runtime_class_id
+                                    "Invalid nominal type id: {}",
+                                    runtime_nominal_type_id
                                 )));
                             }
                         };
@@ -2510,13 +2510,13 @@ impl<'a> Interpreter<'a> {
                 };
 
                 drop(classes_write);
-                let new_class_id = self.register_runtime_class(new_class);
+                let new_nominal_type_id = self.register_runtime_class(new_class);
 
                 let mut class_metadata_write = self.class_metadata.write();
-                class_metadata_write.register(new_class_id, new_metadata);
+                class_metadata_write.register(new_nominal_type_id, new_metadata);
                 drop(class_metadata_write);
 
-                self.reflect_alloc_nominal_type_ref(new_class_id)
+                self.reflect_alloc_nominal_type_ref(new_nominal_type_id)
             }
 
             // ===== Phase 17: DynamicModule (0x0E10-0x0E15) =====

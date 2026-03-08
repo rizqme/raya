@@ -5880,7 +5880,7 @@ impl<'a> Lowerer<'a> {
             let name = self.interner.resolve(ident.name);
             if name == TC::ARRAY_TYPE_NAME {
                 // Lower `new Array(...)` directly to array IR so it compiles to bytecode
-                // without relying on the legacy ARRAY_NEW native constructor path.
+                // without relying on the removed ARRAY_NEW native constructor path.
                 let array_dest = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
                 match new_expr.arguments.len() {
                     0 => {

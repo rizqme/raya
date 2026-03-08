@@ -702,16 +702,6 @@ pub enum JitInstr {
     },
 
     // ===== Dynamic-object Operations =====
-    DynGet {
-        dest: Reg,
-        object: Reg,
-        key_index: u32,
-    },
-    DynSet {
-        object: Reg,
-        key_index: u32,
-        value: Reg,
-    },
     DynDelete {
         object: Reg,
         key_index: u32,
@@ -933,8 +923,7 @@ impl JitInstr {
             JitInstr::LoadModule { dest, .. } | JitInstr::LoadConst { dest, .. } => Some(*dest),
 
             // Dynamic-object ops with dest
-            JitInstr::DynGet { dest, .. }
-            | JitInstr::DynGetKeyed { dest, .. }
+            JitInstr::DynGetKeyed { dest, .. }
             | JitInstr::DynArrayPop { dest, .. }
             | JitInstr::DynHas { dest }
             | JitInstr::DynNewObject { dest }
@@ -970,7 +959,6 @@ impl JitInstr {
             | JitInstr::EndTry
             | JitInstr::Throw { .. }
             | JitInstr::Rethrow
-            | JitInstr::DynSet { .. }
             | JitInstr::DynDelete { .. }
             | JitInstr::DynSetKeyed { .. }
             | JitInstr::DynArrayPush { .. } => None,

@@ -1563,7 +1563,7 @@ impl IrCodeGenerator {
         ctx.emit(opcode);
     }
 
-    /// Emit binary operation (type-aware version) - legacy
+    /// Emit binary operation using the current type-aware opcode selection.
     #[allow(dead_code)]
     fn emit_binary_op_typed(
         &self,

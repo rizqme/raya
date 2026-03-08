@@ -605,16 +605,6 @@ impl fmt::Display for JitInstr {
             }
 
             // JSON
-            JitInstr::DynGet {
-                dest,
-                object,
-                key_index,
-            } => write!(f, "{} = json.get {}.@{}", dest, object, key_index),
-            JitInstr::DynSet {
-                object,
-                key_index,
-                value,
-            } => write!(f, "json.set {}.@{}, {}", object, key_index, value),
             JitInstr::DynDelete { object, key_index } => {
                 write!(f, "json.delete {}.@{}", object, key_index)
             }

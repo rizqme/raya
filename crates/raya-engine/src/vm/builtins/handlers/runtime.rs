@@ -2015,7 +2015,8 @@ fn ensure_buffer_class_layout(ctx: &RuntimeHandlerContext<'_>) -> (usize, usize,
 }
 
 fn allocate_buffer_object(ctx: &RuntimeHandlerContext<'_>, data: &[u8]) -> Result<Value, VmError> {
-    let (buffer_class_id, buffer_field_count, buffer_layout_id) = ensure_buffer_class_layout(ctx);
+    let (buffer_nominal_type_id, buffer_field_count, buffer_layout_id) =
+        ensure_buffer_class_layout(ctx);
     let mut buffer = Buffer::new(data.len());
     for (i, &byte) in data.iter().enumerate() {
         let _ = buffer.set_byte(i, byte);
@@ -2025,7 +2026,11 @@ fn allocate_buffer_object(ctx: &RuntimeHandlerContext<'_>, data: &[u8]) -> Resul
     let buffer_ptr = gc.allocate(buffer);
     let handle = buffer_ptr.as_ptr() as u64;
 
-    let mut obj = Object::new_nominal(buffer_layout_id, buffer_class_id as u32, buffer_field_count);
+    let mut obj = Object::new_nominal(
+        buffer_layout_id,
+        buffer_nominal_type_id as u32,
+        buffer_field_count,
+    );
     obj.set_field(0, Value::u64(handle))
         .map_err(VmError::RuntimeError)?;
     if buffer_field_count > 1 {

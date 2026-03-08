@@ -995,10 +995,10 @@ impl SharedVmState {
         let mut classes = self.classes.write();
         let mut class_metadata_registry = self.class_metadata.write();
         for (i, class_def) in module.classes.iter().enumerate() {
-            let global_class_id = nominal_type_base + i;
+            let global_nominal_type_id = nominal_type_base + i;
             let mut class = if let Some(parent_id) = class_def.parent_id {
                 let mut c = crate::vm::object::Class::with_parent(
-                    global_class_id,
+                    global_nominal_type_id,
                     class_def.name.clone(),
                     class_def.field_count,
                     nominal_type_base + parent_id as usize,
@@ -1012,7 +1012,7 @@ impl SharedVmState {
                 c
             } else {
                 crate::vm::object::Class::new(
-                    global_class_id,
+                    global_nominal_type_id,
                     class_def.name.clone(),
                     class_def.field_count,
                 )
@@ -1057,7 +1057,7 @@ impl SharedVmState {
             let layout_id = self.allocate_nominal_layout_id();
             classes.register_class(class);
             self.layouts.write().register_nominal_layout(
-                global_class_id,
+                global_nominal_type_id,
                 layout_id,
                 class_def.field_count,
                 Some(class_def.name.clone()),
@@ -1111,7 +1111,7 @@ impl SharedVmState {
                 || !class_meta.field_names.is_empty()
                 || !class_meta.static_field_names.is_empty()
             {
-                class_metadata_registry.register(global_class_id, class_meta);
+                class_metadata_registry.register(global_nominal_type_id, class_meta);
             }
         }
     }
