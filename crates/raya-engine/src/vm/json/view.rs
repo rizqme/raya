@@ -8,7 +8,7 @@
 
 use std::any::TypeId;
 
-use crate::vm::gc::GcHeader;
+use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::object::{Array, LayoutId, NominalTypeId, Object, RayaString};
 use crate::vm::value::Value;
 
@@ -72,11 +72,7 @@ pub fn js_classify(val: Value) -> JSView {
         None => return JSView::Other,
     };
 
-    // The GcHeader is stored immediately before the object data.
-    let type_id = unsafe {
-        let header = &*ptr.cast::<GcHeader>().sub(1);
-        header.type_id()
-    };
+    let type_id = unsafe { (&*header_ptr_from_value_ptr(ptr)).type_id() };
 
     if type_id == TypeId::of::<RayaString>() {
         JSView::Str(ptr as *const RayaString)

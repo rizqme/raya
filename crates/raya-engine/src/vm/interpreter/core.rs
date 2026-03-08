@@ -251,6 +251,14 @@ pub struct Interpreter<'a> {
     /// Ambient builtin global slot mapping (name -> absolute global slot index).
     pub(in crate::vm::interpreter) builtin_global_slots: &'a RwLock<FxHashMap<String, usize>>,
 
+    /// VM-local interned constant strings keyed by `(module checksum, constant index)`.
+    pub(in crate::vm::interpreter) constant_string_cache:
+        &'a RwLock<FxHashMap<([u8; 32], usize), Value>>,
+
+    /// Freshly allocated values rooted only until they are published into a
+    /// stable root set such as task state or a shared cache.
+    pub(in crate::vm::interpreter) ephemeral_gc_roots: &'a RwLock<Vec<Value>>,
+
     /// Task registry (for spawn/await)
     pub(in crate::vm::interpreter) tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
 
@@ -731,6 +739,8 @@ impl<'a> Interpreter<'a> {
         safepoint: &'a SafepointCoordinator,
         globals_by_index: &'a RwLock<Vec<Value>>,
         builtin_global_slots: &'a RwLock<FxHashMap<String, usize>>,
+        constant_string_cache: &'a RwLock<FxHashMap<([u8; 32], usize), Value>>,
+        ephemeral_gc_roots: &'a RwLock<Vec<Value>>,
         tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
         injector: &'a Arc<Injector<Arc<Task>>>,
         metadata: &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
@@ -763,6 +773,8 @@ impl<'a> Interpreter<'a> {
             safepoint,
             globals_by_index,
             builtin_global_slots,
+            constant_string_cache,
+            ephemeral_gc_roots,
             tasks,
             injector,
             metadata,
@@ -1184,17 +1196,18 @@ impl<'a> Interpreter<'a> {
 
             ip += 1;
 
-            if std::env::var("RAYA_DEBUG_OPCODE_TRACE").is_ok()
-                && matches!(
-                    opcode,
-                    Opcode::Call
-                        | Opcode::DynGetKeyed
-                        | Opcode::LoadFieldExact
-                        | Opcode::LoadFieldShape
-                        | Opcode::CallMethodExact
-                        | Opcode::CallMethodShape
-                        | Opcode::NativeCall
-                )
+            if (std::env::var("RAYA_DEBUG_OPCODE_TRACE_ALL").is_ok()
+                || (std::env::var("RAYA_DEBUG_OPCODE_TRACE").is_ok()
+                    && matches!(
+                        opcode,
+                        Opcode::Call
+                            | Opcode::DynGetKeyed
+                            | Opcode::LoadFieldExact
+                            | Opcode::LoadFieldShape
+                            | Opcode::CallMethodExact
+                            | Opcode::CallMethodShape
+                            | Opcode::NativeCall
+                    )))
             {
                 let func_name = module
                     .functions
@@ -1358,6 +1371,8 @@ impl<'a> Interpreter<'a> {
                                         self.semaphore_registry,
                                         self.globals_by_index,
                                         self.builtin_global_slots,
+                                        self.constant_string_cache,
+                                        self.ephemeral_gc_roots,
                                         self.tasks,
                                         self.injector,
                                         self.module_layouts,
@@ -1632,12 +1647,22 @@ impl<'a> Interpreter<'a> {
                     // Set exception on task if not already set
                     if !task.has_exception() {
                         let error_msg = e.to_string();
-                        let raya_string = RayaString::new(error_msg);
-                        let gc_ptr = self.gc.lock().allocate(raya_string);
-                        let exc_val = unsafe {
-                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        let exc_val = {
+                            let mut gc = self.gc.lock();
+                            let gc_ptr = gc.allocate(RayaString::new(error_msg));
+                            let value = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                            };
+                            self.ephemeral_gc_roots.write().push(value);
+                            value
                         };
                         task.set_exception(exc_val);
+                        let mut ephemeral = self.ephemeral_gc_roots.write();
+                        if let Some(index) =
+                            ephemeral.iter().rposition(|candidate| *candidate == exc_val)
+                        {
+                            ephemeral.swap_remove(index);
+                        }
                     }
 
                     let exception = task.current_exception().unwrap_or_else(Value::null);

@@ -2,7 +2,7 @@
 //!
 //! This module provides `GcPtr<T>`, a smart pointer type for GC-managed objects.
 
-use super::header::GcHeader;
+use super::header::{header_mut_ptr_from_value_ptr, header_ptr_from_value_ptr, GcHeader};
 use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -59,8 +59,7 @@ impl<T: ?Sized> GcPtr<T> {
     /// The caller must ensure the pointer is still valid (not freed).
     #[inline]
     pub unsafe fn header(&self) -> &GcHeader {
-        let header_ptr = (self.ptr.as_ptr() as *const u8).sub(std::mem::size_of::<GcHeader>());
-        &*(header_ptr as *const GcHeader)
+        &*header_ptr_from_value_ptr(self.ptr.as_ptr() as *const u8)
     }
 
     /// Get a mutable reference to the GC header
@@ -73,8 +72,7 @@ impl<T: ?Sized> GcPtr<T> {
     #[inline]
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn header_mut(&self) -> &mut GcHeader {
-        let header_ptr = (self.ptr.as_ptr() as *mut u8).sub(std::mem::size_of::<GcHeader>());
-        &mut *(header_ptr as *mut GcHeader)
+        &mut *header_mut_ptr_from_value_ptr(self.ptr.as_ptr() as *mut u8)
     }
 
     /// Check if this object is marked

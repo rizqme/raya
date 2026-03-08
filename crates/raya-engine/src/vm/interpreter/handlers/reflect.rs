@@ -1,7 +1,7 @@
 //! Reflect built-in method handlers and helpers
 
 use crate::compiler::Module;
-use crate::vm::gc::GcHeader;
+use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
@@ -113,8 +113,7 @@ impl<'a> Interpreter<'a> {
             return false;
         }
         let header = unsafe {
-            let hp = (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
-            &*(hp as *const GcHeader)
+            &*header_ptr_from_value_ptr(value.as_ptr::<u8>().unwrap().as_ptr())
         };
         header.type_id() == std::any::TypeId::of::<Closure>()
             || header.type_id() == std::any::TypeId::of::<BoundMethod>()

@@ -63,6 +63,9 @@ pub struct JitRuntimeBridgeContext {
     pub semaphore_registry: *const SemaphoreRegistry,
     pub globals_by_index: *const parking_lot::RwLock<Vec<Value>>,
     pub builtin_global_slots: *const parking_lot::RwLock<FxHashMap<String, usize>>,
+    pub constant_string_cache:
+        *const parking_lot::RwLock<FxHashMap<([u8; 32], usize), Value>>,
+    pub ephemeral_gc_roots: *const parking_lot::RwLock<Vec<Value>>,
     pub tasks: *const Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     pub injector: *const Arc<Injector<Arc<Task>>>,
     pub module_layouts:
@@ -100,6 +103,8 @@ pub fn build_runtime_bridge_context(
     semaphore_registry: &SemaphoreRegistry,
     globals_by_index: &parking_lot::RwLock<Vec<Value>>,
     builtin_global_slots: &parking_lot::RwLock<FxHashMap<String, usize>>,
+    constant_string_cache: &parking_lot::RwLock<FxHashMap<([u8; 32], usize), Value>>,
+    ephemeral_gc_roots: &parking_lot::RwLock<Vec<Value>>,
     tasks: &Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     injector: &Arc<Injector<Arc<Task>>>,
     module_layouts: &parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
@@ -131,6 +136,8 @@ pub fn build_runtime_bridge_context(
         semaphore_registry: semaphore_registry as *const _,
         globals_by_index: globals_by_index as *const _,
         builtin_global_slots: builtin_global_slots as *const _,
+        constant_string_cache: constant_string_cache as *const _,
+        ephemeral_gc_roots: ephemeral_gc_roots as *const _,
         tasks: tasks as *const _,
         injector: injector as *const _,
         module_layouts: module_layouts as *const _,
@@ -191,10 +198,7 @@ unsafe fn jit_object_ptr_checked(value: Value) -> Option<NonNull<Object>> {
         return None;
     }
     let ptr = value.as_ptr::<u8>()?;
-    let header = {
-        let hp = ptr.as_ptr().sub(std::mem::size_of::<crate::vm::gc::GcHeader>());
-        &*(hp as *const crate::vm::gc::GcHeader)
-    };
+    let header = &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr());
     if header.type_id() == std::any::TypeId::of::<Object>() {
         value.as_ptr::<Object>()
     } else {
@@ -440,6 +444,8 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         || bridge.safepoint.is_null()
         || bridge.globals_by_index.is_null()
         || bridge.builtin_global_slots.is_null()
+        || bridge.constant_string_cache.is_null()
+        || bridge.ephemeral_gc_roots.is_null()
         || bridge.tasks.is_null()
         || bridge.injector.is_null()
         || bridge.metadata.is_null()
@@ -466,6 +472,8 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         unsafe { &*bridge.safepoint },
         unsafe { &*bridge.globals_by_index },
         unsafe { &*bridge.builtin_global_slots },
+        unsafe { &*bridge.constant_string_cache },
+        unsafe { &*bridge.ephemeral_gc_roots },
         unsafe { &*bridge.tasks },
         unsafe { &*bridge.injector },
         unsafe { &*bridge.metadata },
@@ -1599,6 +1607,8 @@ mod tests {
             &shared.semaphore_registry,
             &shared.globals_by_index,
             &shared.builtin_global_slots,
+            &shared.constant_string_cache,
+            &shared.ephemeral_gc_roots,
             &shared.tasks,
             &shared.injector,
             &shared.module_layouts,
@@ -1663,6 +1673,8 @@ mod tests {
             &shared.semaphore_registry,
             &shared.globals_by_index,
             &shared.builtin_global_slots,
+            &shared.constant_string_cache,
+            &shared.ephemeral_gc_roots,
             &shared.tasks,
             &shared.injector,
             &shared.module_layouts,
@@ -1753,6 +1765,8 @@ mod tests {
             &shared.semaphore_registry,
             &shared.globals_by_index,
             &shared.builtin_global_slots,
+            &shared.constant_string_cache,
+            &shared.ephemeral_gc_roots,
             &shared.tasks,
             &shared.injector,
             &shared.module_layouts,

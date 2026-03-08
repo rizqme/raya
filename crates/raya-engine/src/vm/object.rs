@@ -2,7 +2,6 @@
 
 use crate::vm::value::Value;
 use rustc_hash::FxHashMap;
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -712,15 +711,21 @@ impl RefCell {
 pub struct RayaString {
     /// UTF-8 string data
     pub data: String,
-    /// Cached hash (computed lazily on first comparison)
-    hash: Cell<Option<u64>>,
+    /// Cached hash plus one (0 = uncached).
+    hash_plus_one: AtomicU64,
 }
 
 impl std::fmt::Debug for RayaString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RayaString")
             .field("data", &self.data)
-            .field("hash", &self.hash.get())
+            .field(
+                "hash",
+                &match self.hash_plus_one.load(Ordering::Relaxed) {
+                    0 => None,
+                    value => Some(value - 1),
+                },
+            )
             .finish()
     }
 }
@@ -729,8 +734,7 @@ impl Clone for RayaString {
     fn clone(&self) -> Self {
         Self {
             data: self.data.clone(),
-            // Copy cached hash if available
-            hash: Cell::new(self.hash.get()),
+            hash_plus_one: AtomicU64::new(self.hash_plus_one.load(Ordering::Relaxed)),
         }
     }
 }
@@ -740,7 +744,7 @@ impl RayaString {
     pub fn new(data: String) -> Self {
         Self {
             data,
-            hash: Cell::new(None),
+            hash_plus_one: AtomicU64::new(0),
         }
     }
 
@@ -756,11 +760,17 @@ impl RayaString {
 
     /// Get or compute hash (O(n) first time, O(1) subsequent)
     pub fn hash(&self) -> u64 {
-        if let Some(h) = self.hash.get() {
-            return h;
+        let cached = self.hash_plus_one.load(Ordering::Acquire);
+        if cached != 0 {
+            return cached - 1;
         }
         let h = self.compute_hash();
-        self.hash.set(Some(h));
+        self.hash_plus_one.compare_exchange(
+            0,
+            h.wrapping_add(1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ).ok();
         h
     }
 

@@ -4731,14 +4731,18 @@ impl<'a> Lowerer<'a> {
                 }
                 Expression::Member(member) => {
                     let prop_name = self.interner.resolve(member.property.name);
-                    let nominal_type_id = if self.prefers_structural_member_projection(&member.object) {
+                    let dynamic_any_object = matches!(&*member.object, Expression::Identifier(ident) if self.dynamic_any_vars.contains(&ident.name));
+                    let nominal_type_id = if dynamic_any_object
+                        || self.prefers_structural_member_projection(&member.object)
+                    {
                         None
                     } else {
                         self.infer_nominal_type_id(&member.object)
                     };
                     let object = self.lower_expr(&member.object);
                     let checker_obj_ty = self.get_expr_type(&member.object);
-                    let allow_dynamic_any_write = self.type_is_dynamic_any_like(checker_obj_ty)
+                    let allow_dynamic_any_write = dynamic_any_object
+                        || self.type_is_dynamic_any_like(checker_obj_ty)
                         || self.type_is_dynamic_any_like(object.ty);
                     let obj_ty_id = {
                         let reg_ty = object.ty.as_u32();
@@ -5143,14 +5147,18 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Instance/object field write
-                let nominal_type_id = if self.prefers_structural_member_projection(&member.object) {
+                let dynamic_any_object = matches!(&*member.object, Expression::Identifier(ident) if self.dynamic_any_vars.contains(&ident.name));
+                let nominal_type_id = if dynamic_any_object
+                    || self.prefers_structural_member_projection(&member.object)
+                {
                     None
                 } else {
                     self.infer_nominal_type_id(&member.object)
                 };
                 let object = self.lower_expr(&member.object);
                 let checker_obj_ty = self.get_expr_type(&member.object);
-                let allow_dynamic_any_write = self.type_is_dynamic_any_like(checker_obj_ty)
+                let allow_dynamic_any_write = dynamic_any_object
+                    || self.type_is_dynamic_any_like(checker_obj_ty)
                     || self.type_is_dynamic_any_like(object.ty);
                 let obj_ty_id = {
                     let reg_ty = object.ty.as_u32();
@@ -7421,7 +7429,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn type_is_dynamic_any_like(&self, ty_id: TypeId) -> bool {
+    pub(super) fn type_is_dynamic_any_like(&self, ty_id: TypeId) -> bool {
         use crate::parser::types::ty::Type;
 
         self.type_ctx
@@ -7543,6 +7551,19 @@ impl<'a> Lowerer<'a> {
                 {
                     return None;
                 }
+                if self.dynamic_any_vars.contains(&ident.name) {
+                    return None;
+                }
+                if self.type_is_dynamic_any_like(self.get_expr_type(expr)) {
+                    return None;
+                }
+                if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                    if let Some(local_reg) = self.local_registers.get(&local_idx) {
+                        if self.type_is_dynamic_any_like(local_reg.ty) {
+                            return None;
+                        }
+                    }
+                }
                 // Prefer explicit variable/class maps, then local register typing.
                 // Local register type is often more precise than checker fallback
                 // (e.g. primitive parameters should not degrade to Object class).
@@ -7569,6 +7590,9 @@ impl<'a> Lowerer<'a> {
                 self.nominal_type_id_from_type_id(self.get_expr_type(expr))
             }
             Expression::TypeCast(cast) => {
+                if self.type_is_dynamic_any_like(self.get_expr_type(expr)) {
+                    return None;
+                }
                 if self
                     .structural_projection_layout_from_type_id(
                         self.resolve_structural_slot_type_from_annotation(&cast.target_type),

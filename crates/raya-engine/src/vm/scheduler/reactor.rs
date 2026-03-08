@@ -259,16 +259,16 @@ impl Reactor {
             }
         }
 
-        // Drop senders to unblock workers
+        // Drop only the VM task sender immediately to unblock idle workers.
+        // Keep IO submission/runtime state alive until worker/reactor threads
+        // have actually exited; otherwise Tokio worker threads can still be
+        // running against dropped runtime state during teardown.
         self.vm_task_tx.take();
-        self.io_submit_tx.take();
-        self.tokio_runtime.take();
 
-        // Clear shared io_submit_tx
-        *self.shared_state.io_submit_tx.lock() = None;
-
-        // Join VM workers (2s timeout)
-        let timeout = Duration::from_secs(2);
+        // Join VM workers. In integration-test teardown we prefer a clean join
+        // over detaching live workers, so keep the timeout comfortably above
+        // the reactor settle window.
+        let timeout = Duration::from_secs(5);
         let mut all_threads_joined = true;
         for handle in self.vm_worker_handles.drain(..) {
             all_threads_joined &= Self::join_with_timeout(handle, timeout);
@@ -278,6 +278,17 @@ impl Reactor {
         if let Some(handle) = self.reactor_handle.take() {
             all_threads_joined &= Self::join_with_timeout(handle, timeout);
         }
+
+        // It is now safe to drop IO submission/runtime state; no VM worker or
+        // reactor thread should still touch it after the joins above.
+        self.io_submit_tx.take();
+        if let Some(runtime) = self.tokio_runtime.take() {
+            match Arc::try_unwrap(runtime) {
+                Ok(runtime) => runtime.shutdown_timeout(timeout),
+                Err(runtime) => drop(runtime),
+            }
+        }
+        *self.shared_state.io_submit_tx.lock() = None;
 
         self.started = false;
 
@@ -338,6 +349,8 @@ impl Reactor {
                 &state.safepoint,
                 &state.globals_by_index,
                 &state.builtin_global_slots,
+                &state.constant_string_cache,
+                &state.ephemeral_gc_roots,
                 &state.tasks,
                 &state.injector,
                 &state.metadata,
@@ -722,31 +735,34 @@ impl Reactor {
                     // worker. Park the task only if it is still Running, then
                     // check whether the awaited resource was already transferred
                     // before the suspend result reached the reactor.
-                    vr.task.try_suspend(reason.clone());
-                    match reason {
-                        SuspendReason::MutexLock { mutex_id } => {
-                            if let Some(mutex) = shared_state.mutex_registry.get(mutex_id) {
-                                if mutex.owner() == Some(vr.task.id()) {
-                                    vr.task.add_held_mutex(mutex_id);
-                                    vr.task.set_state(TaskState::Resumed);
-                                    vr.task.clear_suspend_reason();
-                                    ready_queue.push_back(vr.task);
+                    let parked = vr.task.try_suspend(reason.clone());
+                    if parked {
+                        match reason {
+                            SuspendReason::MutexLock { mutex_id } => {
+                                if let Some(mutex) = shared_state.mutex_registry.get(mutex_id) {
+                                    if mutex.owner() == Some(vr.task.id()) && vr.task.try_resume()
+                                    {
+                                        vr.task.add_held_mutex(mutex_id);
+                                        vr.task.clear_suspend_reason();
+                                        ready_queue.push_back(vr.task);
+                                    }
                                 }
                             }
-                        }
-                        SuspendReason::MutexLockCall { mutex_id } => {
-                            if let Some(mutex) = shared_state.mutex_registry.get(mutex_id) {
-                                if mutex.owner() == Some(vr.task.id()) {
-                                    vr.task.add_held_mutex(mutex_id);
-                                    vr.task.set_resume_value(Value::null());
-                                    vr.task.set_state(TaskState::Resumed);
-                                    vr.task.clear_suspend_reason();
-                                    ready_queue.push_back(vr.task);
+                            SuspendReason::MutexLockCall { mutex_id } => {
+                                if let Some(mutex) = shared_state.mutex_registry.get(mutex_id) {
+                                    if mutex.owner() == Some(vr.task.id()) && vr.task.try_resume()
+                                    {
+                                        vr.task.add_held_mutex(mutex_id);
+                                        vr.task.set_resume_value(Value::null());
+                                        vr.task.clear_suspend_reason();
+                                        ready_queue.push_back(vr.task);
+                                    }
                                 }
                             }
+                            SuspendReason::SemaphoreAcquire { .. }
+                            | SuspendReason::AwaitTask(_) => {}
+                            _ => unreachable!(),
                         }
-                        SuspendReason::SemaphoreAcquire { .. } | SuspendReason::AwaitTask(_) => {}
-                        _ => unreachable!(),
                     }
                 } else {
                     vr.task.suspend(reason.clone());
@@ -786,7 +802,11 @@ impl Reactor {
                 }
             }
             ExecutionResult::Failed(e) => {
-                vr.task.fail_with_error(&e);
+                let msg = e.to_string();
+                let exc = shared_state.allocate_ephemerally_rooted_string(msg);
+                vr.task.set_exception(exc);
+                shared_state.release_ephemeral_gc_root(exc);
+                vr.task.fail();
                 Self::wake_waiters(shared_state, &vr.task, ready_queue);
                 Self::track_unhandled_rejection(shared_state, &vr.task);
                 // Return the stack to the pool for reuse by future tasks
@@ -1059,16 +1079,14 @@ impl Reactor {
                     "[reactor] IO error for task {:?}: {}",
                     completion.task_id, msg
                 );
-                let raya_str = RayaString::new(msg);
-                let gc_ptr = shared_state.gc.lock().allocate(raya_str);
-                let err_val =
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let err_val = shared_state.allocate_ephemerally_rooted_string(msg);
                 Self::complete_task_with_exception(
                     shared_state,
                     completion.task_id,
                     err_val,
                     ready_queue,
                 );
+                shared_state.release_ephemeral_gc_root(err_val);
                 return;
             }
         };

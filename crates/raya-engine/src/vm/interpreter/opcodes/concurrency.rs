@@ -1,7 +1,7 @@
 //! Concurrency opcode handlers: Spawn, SpawnClosure, Await, WaitAll, Sleep, MutexLock, MutexUnlock, Yield, TaskCancel
 
 use crate::compiler::{Module, Opcode};
-use crate::vm::gc::GcHeader;
+use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{Array, BoundMethod, Closure};
@@ -86,9 +86,7 @@ impl<'a> Interpreter<'a> {
                 }
 
                 let header = unsafe {
-                    let hp = (closure_val.as_ptr::<u8>().unwrap().as_ptr())
-                        .sub(std::mem::size_of::<GcHeader>());
-                    &*(hp as *const GcHeader)
+                    &*header_ptr_from_value_ptr(closure_val.as_ptr::<u8>().unwrap().as_ptr())
                 };
 
                 let new_task = if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
@@ -429,7 +427,7 @@ impl<'a> Interpreter<'a> {
                                     // Only wake tasks that have already finished parking.
                                     // If the waiter is still Running, the reactor will notice that
                                     // ownership was transferred once its suspend result is handled.
-                                    if waiter_task.state() == TaskState::Suspended {
+                                    if waiter_task.try_resume() {
                                         waiter_task.add_held_mutex(mutex_id);
                                         if matches!(
                                             waiter_task.suspend_reason(),
@@ -437,7 +435,6 @@ impl<'a> Interpreter<'a> {
                                         ) {
                                             waiter_task.set_resume_value(Value::null());
                                         }
-                                        waiter_task.set_state(TaskState::Resumed);
                                         waiter_task.clear_suspend_reason();
                                         self.injector.push(waiter_task.clone());
                                     }

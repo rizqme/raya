@@ -1,7 +1,6 @@
 use crate::compiler::{Module, Opcode};
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::RayaString;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -73,10 +72,69 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
-                let raya_string = RayaString::new(s.clone());
-                let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value =
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value = {
+                    let key = (module.checksum, index);
+                    let debug_const = std::env::var("RAYA_DEBUG_CONSTSTR").is_ok();
+                    if debug_const {
+                        eprintln!(
+                            "[conststr] lookup module={} index={} value={:?}",
+                            module.metadata.name, index, s
+                        );
+                    }
+                    let cached = {
+                        let cache = self.constant_string_cache.read();
+                        cache.get(&key).copied()
+                    };
+                    if let Some(cached) = cached {
+                        if debug_const {
+                            eprintln!("[conststr] cache hit");
+                        }
+                        cached
+                    } else {
+                        if debug_const {
+                            eprintln!("[conststr] cache miss; allocate");
+                        }
+                        let interned = {
+                            let mut gc = self.gc.lock();
+                            if debug_const {
+                                eprintln!("[conststr] gc locked");
+                            }
+                            let gc_ptr = gc.allocate(crate::vm::object::RayaString::new(s.clone()));
+                            if debug_const {
+                                eprintln!("[conststr] allocated");
+                            }
+                            let value = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                            };
+                            if debug_const {
+                                eprintln!("[conststr] rooting ephemeral");
+                            }
+                            self.ephemeral_gc_roots.write().push(value);
+                            if debug_const {
+                                eprintln!("[conststr] rooted ephemeral");
+                            }
+                            value
+                        };
+                        if debug_const {
+                            eprintln!("[conststr] writing cache");
+                        }
+                        let mut cache = self.constant_string_cache.write();
+                        let published = *cache.entry(key).or_insert(interned);
+                        if debug_const {
+                            eprintln!("[conststr] cache published");
+                        }
+                        let mut ephemeral = self.ephemeral_gc_roots.write();
+                        if let Some(index) =
+                            ephemeral.iter().rposition(|candidate| *candidate == interned)
+                        {
+                            ephemeral.swap_remove(index);
+                        }
+                        if debug_const {
+                            eprintln!("[conststr] ephemeral released");
+                        }
+                        published
+                    }
+                };
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }

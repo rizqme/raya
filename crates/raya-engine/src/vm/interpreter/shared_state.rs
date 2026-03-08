@@ -337,6 +337,13 @@ pub struct SharedVmState {
     /// Maps builtin name -> global slot index.
     pub builtin_global_slots: RwLock<FxHashMap<String, usize>>,
 
+    /// VM-local interned string constants keyed by module checksum and constant index.
+    pub constant_string_cache: RwLock<FxHashMap<([u8; 32], usize), Value>>,
+
+    /// Freshly allocated values rooted only until they are published into a
+    /// stable root set such as task state or a shared cache.
+    pub ephemeral_gc_roots: RwLock<Vec<Value>>,
+
     /// Safepoint coordinator
     pub safepoint: Arc<SafepointCoordinator>,
 
@@ -468,6 +475,8 @@ impl SharedVmState {
             globals: RwLock::new(FxHashMap::default()),
             globals_by_index: RwLock::new(Vec::new()),
             builtin_global_slots: RwLock::new(FxHashMap::default()),
+            constant_string_cache: RwLock::new(FxHashMap::default()),
+            ephemeral_gc_roots: RwLock::new(Vec::new()),
             safepoint,
             tasks,
             promise_microtasks: Mutex::new(std::collections::VecDeque::new()),
@@ -505,6 +514,77 @@ impl SharedVmState {
             ),
             #[cfg(feature = "jit")]
             jit_telemetry: Arc::new(JitTelemetry::default()),
+        }
+    }
+
+    /// Snapshot heap roots reachable from globals and live tasks.
+    pub fn collect_gc_roots(&self) -> crate::vm::gc::ExternalRootSnapshot {
+        let mut roots = Vec::new();
+        let mut complete = true;
+
+        {
+            let globals = self.globals.read();
+            roots.extend(globals.values().copied().filter(|value| value.is_heap_allocated()));
+        }
+
+        {
+            let globals = self.globals_by_index.read();
+            roots.extend(globals.iter().copied().filter(|value| value.is_heap_allocated()));
+        }
+
+        {
+            let cached = self.constant_string_cache.read();
+            roots.extend(cached.values().copied().filter(|value| value.is_heap_allocated()));
+        }
+
+        {
+            let ephemeral = self.ephemeral_gc_roots.read();
+            roots.extend(ephemeral.iter().copied().filter(|value| value.is_heap_allocated()));
+        }
+
+        {
+            let tasks = self.tasks.read();
+            for task in tasks.values() {
+                let (task_roots, task_complete) = task.gc_roots();
+                roots.extend(task_roots);
+                complete &= task_complete;
+            }
+        }
+
+        crate::vm::gc::ExternalRootSnapshot { roots, complete }
+    }
+
+    /// Intern a bytecode string constant once per VM and keep it rooted in shared state.
+    pub fn intern_constant_string(&self, module: &Module, index: usize, value: &str) -> Value {
+        let key = (module.checksum, index);
+        let cached = {
+            let cache = self.constant_string_cache.read();
+            cache.get(&key).copied()
+        };
+        if let Some(cached) = cached {
+            return cached;
+        }
+
+        let interned = self.allocate_ephemerally_rooted_string(value.to_owned());
+
+        let mut cache = self.constant_string_cache.write();
+        let published = *cache.entry(key).or_insert(interned);
+        self.release_ephemeral_gc_root(interned);
+        published
+    }
+
+    pub fn allocate_ephemerally_rooted_string(&self, value: String) -> Value {
+        let mut gc = self.gc.lock();
+        let gc_ptr = gc.allocate(crate::vm::object::RayaString::new(value));
+        let rooted = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        self.ephemeral_gc_roots.write().push(rooted);
+        rooted
+    }
+
+    pub fn release_ephemeral_gc_root(&self, value: Value) {
+        let mut ephemeral = self.ephemeral_gc_roots.write();
+        if let Some(index) = ephemeral.iter().rposition(|candidate| *candidate == value) {
+            ephemeral.swap_remove(index);
         }
     }
 
@@ -926,12 +1006,24 @@ impl SharedVmState {
 
             // Constructors are lowered as dedicated functions named
             // "<ClassName>::constructor" (not regular vtable methods).
-            let constructor_name = format!("{}::constructor", class_def.name);
-            if let Some(constructor_id) = module
-                .functions
-                .iter()
-                .position(|function| function.name == constructor_name)
-            {
+            // Prefer explicit bytecode export metadata when available so runtime
+            // class registration does not depend on synthesized-name lookup.
+            let exported_constructor_id = module.exports.iter().find_map(|export| {
+                (matches!(export.symbol_type, crate::compiler::SymbolType::Class)
+                    && export
+                        .nominal_type
+                        .is_some_and(|nominal| nominal.local_nominal_type_index as usize == i))
+                .then_some(export.nominal_type.and_then(|nominal| nominal.constructor_function_index))
+                .flatten()
+                .map(|idx| idx as usize)
+            });
+            if let Some(constructor_id) = exported_constructor_id.or_else(|| {
+                let constructor_name = format!("{}::constructor", class_def.name);
+                module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == constructor_name)
+            }) {
                 class.set_constructor(constructor_id);
             }
 

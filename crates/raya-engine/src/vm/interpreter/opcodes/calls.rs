@@ -2,7 +2,7 @@
 
 use crate::compiler::{Module, Opcode};
 use crate::vm::builtin::mutex;
-use crate::vm::gc::GcHeader;
+use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id;
@@ -145,9 +145,7 @@ impl<'a> Interpreter<'a> {
 
                     // Check GcHeader to distinguish BoundMethod/BoundNativeMethod/Closure
                     let header = unsafe {
-                        let hp = (closure_val.as_ptr::<u8>().unwrap().as_ptr())
-                            .sub(std::mem::size_of::<GcHeader>());
-                        &*(hp as *const GcHeader)
+                        &*header_ptr_from_value_ptr(closure_val.as_ptr::<u8>().unwrap().as_ptr())
                     };
 
                     if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
@@ -346,6 +344,7 @@ impl<'a> Interpreter<'a> {
                                             }
                                         }
                                         Err(_) => {
+                                            task.set_resume_value(Value::null());
                                             OpcodeResult::Suspend(
                                                 crate::vm::scheduler::SuspendReason::MutexLockCall { mutex_id },
                                             )
@@ -371,9 +370,7 @@ impl<'a> Interpreter<'a> {
                                                     // If ownership is transferred before the waiter
                                                     // finishes suspending, the reactor will resume
                                                     // it when the suspend result is committed.
-                                                    if waiter_task.state()
-                                                        == crate::vm::scheduler::TaskState::Suspended
-                                                    {
+                                                    if waiter_task.try_resume() {
                                                         waiter_task.add_held_mutex(mutex_id);
                                                         if matches!(
                                                             waiter_task.suspend_reason(),
@@ -382,9 +379,6 @@ impl<'a> Interpreter<'a> {
                                                             waiter_task
                                                                 .set_resume_value(Value::null());
                                                         }
-                                                        waiter_task.set_state(
-                                                            crate::vm::scheduler::TaskState::Resumed,
-                                                        );
                                                         waiter_task.clear_suspend_reason();
                                                         self.injector.push(waiter_task.clone());
                                                     }
@@ -846,9 +840,7 @@ impl<'a> Interpreter<'a> {
                 // Dynamic vtable dispatch only applies to Object receivers.
                 // Strings/arrays/closures have dedicated opcode/native paths.
                 let receiver_header = unsafe {
-                    let hp = (receiver_val.as_ptr::<u8>().unwrap().as_ptr())
-                        .sub(std::mem::size_of::<GcHeader>());
-                    &*(hp as *const GcHeader)
+                    &*header_ptr_from_value_ptr(receiver_val.as_ptr::<u8>().unwrap().as_ptr())
                 };
                 if receiver_header.type_id() != std::any::TypeId::of::<Object>() {
                     let receiver_kind = if receiver_header.type_id()
@@ -897,9 +889,7 @@ impl<'a> Interpreter<'a> {
                     None => {
                         let receiver_kind = {
                             let header = unsafe {
-                                let hp = (receiver_val.as_ptr::<u8>().unwrap().as_ptr())
-                                    .sub(std::mem::size_of::<GcHeader>());
-                                &*(hp as *const GcHeader)
+                                &*header_ptr_from_value_ptr(receiver_val.as_ptr::<u8>().unwrap().as_ptr())
                             };
                             if header.type_id() == std::any::TypeId::of::<Object>() {
                                 "Object"

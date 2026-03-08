@@ -1,5 +1,5 @@
 use crate::compiler::Opcode;
-use crate::vm::gc::GcHeader;
+use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
@@ -14,7 +14,7 @@ impl<'a> Interpreter<'a> {
         let Some(ptr) = (unsafe { value.as_ptr::<u8>() }) else {
             return false;
         };
-        let header = unsafe { &*((ptr.as_ptr() as *const u8).sub(std::mem::size_of::<GcHeader>()) as *const GcHeader) };
+        let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr() as *const u8) };
         header.type_id() == TypeId::of::<RayaString>()
     }
 

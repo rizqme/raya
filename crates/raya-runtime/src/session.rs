@@ -17,7 +17,7 @@
 
 use std::any::TypeId;
 
-use raya_engine::vm::gc::GcHeader;
+use raya_engine::vm::gc::{header_ptr_from_value_ptr, GcHeader};
 use raya_engine::vm::object::{
     Array, BoundMethod, Buffer, ChannelObject, Closure, DateObject, MapObject, RegExpObject,
     SetObject,
@@ -159,8 +159,7 @@ fn is_declaration(code: &str) -> bool {
 /// The Value must be a valid heap pointer that hasn't been freed.
 unsafe fn read_gc_header(value: &Value) -> Option<&GcHeader> {
     let ptr = value.as_ptr::<u8>()?;
-    let header_ptr = (ptr.as_ptr()).sub(std::mem::size_of::<GcHeader>());
-    Some(&*(header_ptr as *const GcHeader))
+    Some(&*header_ptr_from_value_ptr(ptr.as_ptr()))
 }
 
 /// Format a heap-allocated value using GcHeader type info and the VM's class registry.

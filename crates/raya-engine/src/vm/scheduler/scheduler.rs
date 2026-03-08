@@ -74,6 +74,9 @@ pub struct Scheduler {
 
     /// Resource limits
     limits: SchedulerLimits,
+
+    /// GC context registered for external live-root discovery.
+    gc_context_id: crate::vm::interpreter::VmContextId,
 }
 
 impl Scheduler {
@@ -123,6 +126,20 @@ impl Scheduler {
         state.max_preemptions = limits.max_preemptions;
         state.preempt_threshold_ms = limits.preempt_threshold_ms;
         let shared_state = Arc::new(state);
+        let gc_context_id = {
+            let gc = shared_state.gc.lock();
+            gc.context_id()
+        };
+        let weak_state = Arc::downgrade(&shared_state);
+        crate::vm::gc::register_external_roots_provider(
+            gc_context_id,
+            Arc::new(move || {
+                weak_state
+                    .upgrade()
+                    .map(|shared| shared.collect_gc_roots())
+                    .unwrap_or_default()
+            }),
+        );
 
         let io_worker_count = std::env::var("RAYA_IO_THREADS")
             .ok()
@@ -139,6 +156,7 @@ impl Scheduler {
             worker_count: actual_worker_count,
             started: false,
             limits,
+            gc_context_id,
         }
     }
 
@@ -225,10 +243,12 @@ impl Scheduler {
     /// Shutdown the scheduler
     pub fn shutdown(&mut self) {
         if !self.started {
+            crate::vm::gc::unregister_external_roots_provider(self.gc_context_id);
             return;
         }
         self.reactor.shutdown();
         self.started = false;
+        crate::vm::gc::unregister_external_roots_provider(self.gc_context_id);
     }
 
     /// Wait for all tasks to complete (with timeout)
@@ -244,6 +264,45 @@ impl Scheduler {
             };
             if all_done {
                 return true;
+            }
+            if start.elapsed() > timeout {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Wait for the scheduler/reactor to reach a stable quiescent point.
+    ///
+    /// This is stronger than `wait_all()`: all tasks must be terminal and
+    /// the promise microtask queue must stay empty across a short settle
+    /// interval so reactor-side completion/reporting work has drained.
+    pub fn wait_quiescent(&self, timeout: std::time::Duration) -> bool {
+        let start = std::time::Instant::now();
+        let settle = std::time::Duration::from_millis(25);
+        loop {
+            let all_done = {
+                let tasks = self.shared_state.tasks.read();
+                tasks.values().all(|task| {
+                    let state = task.state();
+                    state == TaskState::Completed || state == TaskState::Failed
+                })
+            };
+            let microtasks_empty = self.shared_state.promise_microtasks.lock().is_empty();
+            if all_done && microtasks_empty {
+                std::thread::sleep(settle);
+                let all_done_confirm = {
+                    let tasks = self.shared_state.tasks.read();
+                    tasks.values().all(|task| {
+                        let state = task.state();
+                        state == TaskState::Completed || state == TaskState::Failed
+                    })
+                };
+                let microtasks_empty_confirm =
+                    self.shared_state.promise_microtasks.lock().is_empty();
+                if all_done_confirm && microtasks_empty_confirm {
+                    return true;
+                }
             }
             if start.elapsed() > timeout {
                 return false;

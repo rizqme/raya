@@ -1944,6 +1944,14 @@ impl<'a> Lowerer<'a> {
         if self.function_depth == 0 && self.block_depth == 0 {
             if let Some(&global_idx) = self.module_var_globals.get(&name) {
                 if let Some(init) = &decl.initializer {
+                    let explicit_dynamic_any_annotation = decl.type_annotation.as_ref().is_some_and(|type_ann| {
+                        self.type_is_dynamic_any_like(self.resolve_structural_slot_type_from_annotation(type_ann))
+                    });
+                    if explicit_dynamic_any_annotation {
+                        self.dynamic_any_vars.insert(name);
+                    } else {
+                        self.dynamic_any_vars.remove(&name);
+                    }
                     // Track class type from type annotation (same as local path)
                     if let Some(type_ann) = &decl.type_annotation {
                         if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
@@ -2031,6 +2039,10 @@ impl<'a> Lowerer<'a> {
                         self.variable_class_map.insert(name, nominal_type_id);
                         self.clear_late_bound_object_binding(name);
                     }
+                    if explicit_dynamic_any_annotation {
+                        self.variable_class_map.remove(&name);
+                        self.clear_late_bound_object_binding(name);
+                    }
                     self.track_task_result_alias_from_initializer(name, init);
                     self.track_variable_object_alias_from_initializer(name, init);
                     self.track_variable_structural_projection_from_initializer(name, init);
@@ -2086,6 +2098,10 @@ impl<'a> Lowerer<'a> {
                             self.clear_late_bound_object_binding(name);
                         }
                     }
+                    if explicit_dynamic_any_annotation {
+                        self.variable_class_map.remove(&name);
+                        self.clear_late_bound_object_binding(name);
+                    }
 
                     // Track the global's type so LoadGlobal preserves it
                     self.global_type_map.insert(global_idx, value.ty);
@@ -2130,6 +2146,18 @@ impl<'a> Lowerer<'a> {
                             }
                         }
                     }
+                } else if let Some(type_ann) = &decl.type_annotation {
+                    if self.type_is_dynamic_any_like(
+                        self.resolve_structural_slot_type_from_annotation(type_ann),
+                    ) {
+                        self.dynamic_any_vars.insert(name);
+                        self.variable_class_map.remove(&name);
+                        self.clear_late_bound_object_binding(name);
+                    } else {
+                        self.dynamic_any_vars.remove(&name);
+                    }
+                } else {
+                    self.dynamic_any_vars.remove(&name);
                 }
                 // No local allocation — resolved via LoadGlobal/StoreGlobal
                 return;
@@ -2145,6 +2173,14 @@ impl<'a> Lowerer<'a> {
         // If there's an initializer, evaluate and store
         // The register from lowering the expression will have the correct inferred type
         if let Some(init) = &decl.initializer {
+            let explicit_dynamic_any_annotation = decl.type_annotation.as_ref().is_some_and(|type_ann| {
+                self.type_is_dynamic_any_like(self.resolve_structural_slot_type_from_annotation(type_ann))
+            });
+            if explicit_dynamic_any_annotation {
+                self.dynamic_any_vars.insert(name);
+            } else {
+                self.dynamic_any_vars.remove(&name);
+            }
             // Track class type from explicit type annotation FIRST (highest priority).
             // This must come before other inference to override stale entries from other scopes
             // (variable_class_map is a flat map without scope tracking).
@@ -2237,6 +2273,10 @@ impl<'a> Lowerer<'a> {
                 self.variable_class_map.insert(name, nominal_type_id);
                 self.clear_late_bound_object_binding(name);
             }
+            if explicit_dynamic_any_annotation {
+                self.variable_class_map.remove(&name);
+                self.clear_late_bound_object_binding(name);
+            }
             self.track_task_result_alias_from_initializer(name, init);
             self.track_variable_object_alias_from_initializer(name, init);
             self.track_variable_structural_projection_from_initializer(name, init);
@@ -2287,6 +2327,10 @@ impl<'a> Lowerer<'a> {
                     self.variable_class_map.insert(name, nominal_type_id);
                     self.clear_late_bound_object_binding(name);
                 }
+            }
+            if explicit_dynamic_any_annotation {
+                self.variable_class_map.remove(&name);
+                self.clear_late_bound_object_binding(name);
             }
 
             // Transfer object field layout from register to variable
@@ -2389,6 +2433,11 @@ impl<'a> Lowerer<'a> {
             // Without this, `let x: SomeClass; ... x.method()` can lose class-based
             // method lowering (especially across try/catch assignment paths).
             if let Some(type_ann) = &decl.type_annotation {
+                if self.type_is_dynamic_any_like(self.resolve_structural_slot_type_from_annotation(type_ann)) {
+                    self.dynamic_any_vars.insert(name);
+                } else {
+                    self.dynamic_any_vars.remove(&name);
+                }
                 if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
                     self.variable_class_map.insert(name, nominal_type_id);
                 }
@@ -2408,6 +2457,13 @@ impl<'a> Lowerer<'a> {
                     self.callable_local_hints.insert(local_idx);
                     self.callable_symbol_hints.insert(name);
                 }
+                if self.type_is_dynamic_any_like(self.resolve_structural_slot_type_from_annotation(type_ann)) {
+                    self.variable_class_map.remove(&name);
+                    self.clear_late_bound_object_binding(name);
+                }
+            }
+            else {
+                self.dynamic_any_vars.remove(&name);
             }
 
             // No initializer - get type from annotation or UNRESOLVED

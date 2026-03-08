@@ -40,6 +40,12 @@ unsafe fn drop_in_place_slice_shim<T>(ptr: *mut u8, count: usize) {
     std::ptr::drop_in_place(slice_ptr);
 }
 
+#[inline]
+fn align_up(value: usize, align: usize) -> usize {
+    debug_assert!(align.is_power_of_two());
+    (value + (align - 1)) & !(align - 1)
+}
+
 impl Heap {
     /// Create a new heap for a specific context
     pub fn new(context_id: VmContextId, type_registry: Arc<TypeRegistry>) -> Self {
@@ -80,11 +86,13 @@ impl Heap {
         // Calculate layouts
         let header_layout = Layout::new::<GcHeader>();
         let value_layout = Layout::new::<T>();
-
-        // Combine layouts (header + value)
-        let (combined_layout, value_offset) = header_layout
-            .extend(value_layout)
-            .expect("Failed to calculate layout");
+        let backlink_size = std::mem::size_of::<*mut GcHeader>();
+        let total_align = header_layout.align().max(value_layout.align());
+        let value_offset = align_up(header_layout.size() + backlink_size, value_layout.align());
+        let backlink_offset = value_offset - backlink_size;
+        let total_size = align_up(value_offset + value_layout.size(), total_align);
+        let combined_layout =
+            Layout::from_size_align(total_size, total_align).expect("Failed to calculate layout");
 
         // Check heap size limit
         if self.max_heap_bytes > 0
@@ -113,10 +121,16 @@ impl Heap {
                 self.context_id,
                 type_id,
                 combined_layout.size(),
-                value_offset as u8,
+                combined_layout.align(),
+                value_offset,
                 drop_fn,
                 1, // element_count for single object
             ));
+        }
+
+        let backlink_ptr = unsafe { ptr.add(backlink_offset) as *mut *mut GcHeader };
+        unsafe {
+            backlink_ptr.write(header_ptr);
         }
 
         // Initialize value
@@ -143,11 +157,13 @@ impl Heap {
         // Calculate layouts
         let header_layout = Layout::new::<GcHeader>();
         let array_layout = Layout::array::<T>(len).expect("Failed to calculate array layout");
-
-        // Combine layouts
-        let (combined_layout, array_offset) = header_layout
-            .extend(array_layout)
-            .expect("Failed to calculate layout");
+        let backlink_size = std::mem::size_of::<*mut GcHeader>();
+        let total_align = header_layout.align().max(array_layout.align());
+        let array_offset = align_up(header_layout.size() + backlink_size, array_layout.align());
+        let backlink_offset = array_offset - backlink_size;
+        let total_size = align_up(array_offset + array_layout.size(), total_align);
+        let combined_layout =
+            Layout::from_size_align(total_size, total_align).expect("Failed to calculate layout");
 
         // Check heap size limit
         if self.max_heap_bytes > 0
@@ -176,10 +192,16 @@ impl Heap {
                 self.context_id,
                 type_id,
                 combined_layout.size(),
-                array_offset as u8,
+                combined_layout.align(),
+                array_offset,
                 drop_fn,
                 len, // element_count for array
             ));
+        }
+
+        let backlink_ptr = unsafe { ptr.add(backlink_offset) as *mut *mut GcHeader };
+        unsafe {
+            backlink_ptr.write(header_ptr);
         }
 
         // Initialize array
@@ -222,7 +244,7 @@ impl Heap {
 
         // Actually deallocate the memory
         // GcHeader is 8-byte aligned, so we use the same alignment for deallocation
-        let layout = Layout::from_size_align_unchecked(total_size, 8);
+        let layout = Layout::from_size_align_unchecked(total_size, header.align());
         dealloc(header_ptr as *mut u8, layout);
     }
 
@@ -262,7 +284,7 @@ impl Drop for Heap {
 
                 // Deallocate the memory
                 let total_size = header.size();
-                let layout = Layout::from_size_align_unchecked(total_size, 8);
+                let layout = Layout::from_size_align_unchecked(total_size, header.align());
                 dealloc(header_ptr as *mut u8, layout);
             }
         }

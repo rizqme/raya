@@ -48,8 +48,11 @@ mod ptr;
 mod roots;
 
 // Re-export public types
-pub use collector::{GarbageCollector, GcStats, HeapStats};
-pub use header::GcHeader;
+pub use collector::{
+    register_external_roots_provider, unregister_external_roots_provider, ExternalRootSnapshot,
+    GarbageCollector, GcStats, HeapStats,
+};
+pub use header::{header_mut_ptr_from_value_ptr, header_ptr_from_value_ptr, GcHeader};
 pub use heap::Heap;
 pub use nursery::Nursery;
 pub use ptr::GcPtr;

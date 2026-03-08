@@ -13,16 +13,18 @@ pub type DropFn = unsafe fn(*mut u8, usize);
 /// Layout in memory:
 /// ```text
 /// ┌─────────────────────────────────────────┐
-/// │ GcHeader (64 bytes, 8-byte aligned)     │
+/// │ GcHeader (72 bytes, 8-byte aligned)     │
 /// │  - marked: bool (1 byte)                │
 /// │  - padding: [u8; 7]                     │
 /// │  - context_id: VmContextId (8 bytes)    │
 /// │  - type_id: TypeId (16 bytes)           │
 /// │  - size: usize (8 bytes)                │
-/// │  - value_offset: u8 (1 byte)            │
+/// │  - align: usize (8 bytes)               │
+/// │  - value_offset: usize (8 bytes)        │
 /// │  - drop_fn: Option<DropFn> (8 bytes)    │
 /// │  - element_count: usize (8 bytes)       │
-/// │  - _padding2: [u8; 7]                   │
+/// ├─────────────────────────────────────────┤
+/// │ Back-pointer to GcHeader (8 bytes)      │
 /// ├─────────────────────────────────────────┤
 /// │ Object data (variable size)             │
 /// └─────────────────────────────────────────┘
@@ -45,17 +47,17 @@ pub struct GcHeader {
     /// Size of the allocation (including header)
     size: usize,
 
+    /// Allocation alignment used for deallocation.
+    align: usize,
+
     /// Offset from header start to value data
-    value_offset: u8,
+    value_offset: usize,
 
     /// Drop glue function (if type has destructor)
     drop_fn: Option<DropFn>,
 
     /// Element count (for arrays/slices)
     element_count: usize,
-
-    /// Additional padding to maintain alignment
-    _padding2: [u8; 7],
 }
 
 impl GcHeader {
@@ -64,7 +66,8 @@ impl GcHeader {
         context_id: VmContextId,
         type_id: TypeId,
         size: usize,
-        value_offset: u8,
+        align: usize,
+        value_offset: usize,
         drop_fn: Option<DropFn>,
         element_count: usize,
     ) -> Self {
@@ -74,17 +77,23 @@ impl GcHeader {
             context_id,
             type_id,
             size,
+            align,
             value_offset,
             drop_fn,
             element_count,
-            _padding2: [0; 7],
         }
     }
 
     /// Get the value offset
     #[inline]
-    pub fn value_offset(&self) -> u8 {
+    pub fn value_offset(&self) -> usize {
         self.value_offset
+    }
+
+    /// Get the allocation alignment used for this object.
+    #[inline]
+    pub fn align(&self) -> usize {
+        self.align
     }
 
     /// Get the drop function
@@ -102,7 +111,7 @@ impl GcHeader {
     /// Run the drop glue for this object (if it has one)
     pub unsafe fn run_drop(&self, header_ptr: *mut GcHeader) {
         if let Some(drop_fn) = self.drop_fn {
-            let value_ptr = (header_ptr as *mut u8).add(self.value_offset as usize);
+            let value_ptr = (header_ptr as *mut u8).add(self.value_offset);
             drop_fn(value_ptr, self.element_count);
         }
     }
@@ -144,16 +153,34 @@ impl GcHeader {
     }
 }
 
+/// Recover the GC header pointer from a value pointer using the stored back-pointer.
+///
+/// # Safety
+///
+/// `value_ptr` must point to an allocation produced by the GC heap allocator.
+#[inline]
+pub unsafe fn header_ptr_from_value_ptr(value_ptr: *const u8) -> *const GcHeader {
+    let backlink_ptr = value_ptr.sub(std::mem::size_of::<*const GcHeader>()) as *const *const GcHeader;
+    *backlink_ptr
+}
+
+/// Mutable version of [`header_ptr_from_value_ptr`].
+///
+/// # Safety
+///
+/// `value_ptr` must point to an allocation produced by the GC heap allocator.
+#[inline]
+pub unsafe fn header_mut_ptr_from_value_ptr(value_ptr: *mut u8) -> *mut GcHeader {
+    let backlink_ptr = value_ptr.sub(std::mem::size_of::<*mut GcHeader>()) as *const *mut GcHeader;
+    *backlink_ptr
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_header_size() {
-        // Header size: 1 byte (marked) + 7 bytes (padding) + 8 bytes (context_id) +
-        //              16 bytes (TypeId) + 8 bytes (size) + 1 byte (value_offset) +
-        //              7 bytes (padding) + 8 bytes (drop_fn) + 8 bytes (element_count) +
-        //              7 bytes (padding2) + 1 byte (alignment padding) = 72 bytes
         assert_eq!(std::mem::size_of::<GcHeader>(), 72);
     }
 
@@ -166,7 +193,7 @@ mod tests {
     #[test]
     fn test_header_mark_unmark() {
         let context_id = VmContextId::new();
-        let mut header = GcHeader::new(context_id, TypeId::of::<i32>(), 64, 0, None, 1);
+        let mut header = GcHeader::new(context_id, TypeId::of::<i32>(), 64, 8, 0, None, 1);
         assert!(!header.is_marked());
 
         header.mark();
@@ -179,7 +206,7 @@ mod tests {
     #[test]
     fn test_header_type_id() {
         let context_id = VmContextId::new();
-        let header = GcHeader::new(context_id, TypeId::of::<String>(), 128, 0, None, 1);
+        let header = GcHeader::new(context_id, TypeId::of::<String>(), 128, 8, 0, None, 1);
         assert_eq!(header.type_id(), TypeId::of::<String>());
     }
 }

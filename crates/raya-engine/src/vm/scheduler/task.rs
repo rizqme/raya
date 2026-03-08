@@ -12,7 +12,7 @@
 //! | InitState       | initial_args, held_mutexes                                     | VM workers only      |
 
 use crate::vm::gc::Nursery;
-use crate::vm::interpreter::execution::ExecutionFrame;
+use crate::vm::interpreter::execution::{ExecutionFrame, ReturnAction};
 use crate::vm::snapshot::{BlockedReason, SerializedFrame, SerializedTask};
 use crate::vm::snapshot::SerializedValue;
 use crate::vm::stack::Stack;
@@ -463,11 +463,17 @@ impl Task {
 
     /// Set the current state
     pub fn set_state(&self, state: TaskState) {
+        if std::env::var("RAYA_DEBUG_TASK_STATE").is_ok() {
+            eprintln!("[task {:?}] set_state {:?}", self.id(), state);
+        }
         self.lifecycle.lock().state = state;
     }
 
     /// Complete the task with a result
     pub fn complete(&self, result: Value) {
+        if std::env::var("RAYA_DEBUG_TASK_STATE").is_ok() {
+            eprintln!("[task {:?}] complete {:?}", self.id(), result);
+        }
         {
             let mut lc = self.lifecycle.lock();
             lc.result = Some(result);
@@ -502,6 +508,13 @@ impl Task {
 
     /// Mark the task as failed
     pub fn fail(&self) {
+        if std::env::var("RAYA_DEBUG_TASK_STATE").is_ok() {
+            eprintln!(
+                "[task {:?}] fail exception={:?}",
+                self.id(),
+                self.current_exception()
+            );
+        }
         self.lifecycle.lock().state = TaskState::Failed;
         self.signal_completion();
     }
@@ -613,6 +626,9 @@ impl Task {
 
     /// Set the suspension reason
     pub fn suspend(&self, reason: SuspendReason) {
+        if std::env::var("RAYA_DEBUG_TASK_STATE").is_ok() {
+            eprintln!("[task {:?}] suspend {:?}", self.id(), reason);
+        }
         let mut lc = self.lifecycle.lock();
         lc.state = TaskState::Suspended;
         lc.suspend_reason = Some(reason);
@@ -642,6 +658,20 @@ impl Task {
     /// Clear the suspension reason (when resuming)
     pub fn clear_suspend_reason(&self) {
         self.lifecycle.lock().suspend_reason = None;
+    }
+
+    /// Conditionally resume only if the task is currently Suspended.
+    ///
+    /// Returns true if the caller performed the Suspended -> Resumed transition.
+    /// Returns false if another thread already resumed or otherwise changed the state.
+    pub fn try_resume(&self) -> bool {
+        let mut lc = self.lifecycle.lock();
+        if lc.state == TaskState::Suspended {
+            lc.state = TaskState::Resumed;
+            true
+        } else {
+            false
+        }
     }
 
     /// Set the value to push when resuming (e.g., channel receive result)
@@ -690,6 +720,9 @@ impl Task {
 
     /// Set the current exception
     pub fn set_exception(&self, exception: Value) {
+        if std::env::var("RAYA_DEBUG_TASK_STATE").is_ok() {
+            eprintln!("[task {:?}] set_exception {:?}", self.id(), exception);
+        }
         self.exceptions.lock().current_exception = Some(exception);
     }
 
@@ -864,6 +897,70 @@ impl Task {
     /// Get all held mutexes (for debugging)
     pub fn get_held_mutexes(&self) -> Vec<MutexId> {
         self.init.lock().held_mutexes.clone()
+    }
+
+    /// Snapshot heap-allocated values reachable from this task for GC rooting.
+    pub fn gc_roots(&self) -> (Vec<Value>, bool) {
+        let mut roots = Vec::new();
+
+        {
+            let lifecycle = self.lifecycle.lock();
+            if let Some(value) = lifecycle.resume_value.filter(Value::is_heap_allocated) {
+                roots.push(value);
+            }
+            if let Some(value) = lifecycle.result.filter(Value::is_heap_allocated) {
+                roots.push(value);
+            }
+            if let Some(SuspendReason::ChannelSend { value, .. }) = &lifecycle.suspend_reason {
+                if value.is_heap_allocated() {
+                    roots.push(*value);
+                }
+            }
+        }
+
+        {
+            let exceptions = self.exceptions.lock();
+            if let Some(value) = exceptions.current_exception.filter(Value::is_heap_allocated) {
+                roots.push(value);
+            }
+            if let Some(value) = exceptions.caught_exception.filter(Value::is_heap_allocated) {
+                roots.push(value);
+            }
+        }
+
+        {
+            let calls = self.calls.lock();
+            for &value in &calls.closure_stack {
+                if value.is_heap_allocated() {
+                    roots.push(value);
+                }
+            }
+            for frame in &calls.execution_frames {
+                if let ReturnAction::PushObject(value) = frame.return_action {
+                    if value.is_heap_allocated() {
+                        roots.push(value);
+                    }
+                }
+            }
+        }
+
+        {
+            let init = self.init.lock();
+            for &value in &init.initial_args {
+                if value.is_heap_allocated() {
+                    roots.push(value);
+                }
+            }
+        }
+
+        let stack_complete = if let Ok(stack) = self.stack.try_lock() {
+            roots.extend(stack.iter_values().filter(|value| value.is_heap_allocated()));
+            true
+        } else {
+            false
+        };
+
+        (roots, stack_complete)
     }
 
     // =========================================================================

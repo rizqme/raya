@@ -6,7 +6,7 @@ use crate::compiler::{Module, Opcode};
 use crate::compiler::native_id;
 use crate::parser::TypeContext;
 use crate::vm::builtin::{array, channel, map, regexp, set, string};
-use crate::vm::gc::GcHeader;
+use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::{Interpreter, ReturnAction};
 use crate::vm::object::{
@@ -53,8 +53,7 @@ fn value_kind_mask(value: Value) -> u16 {
         return 0;
     };
     let header = unsafe {
-        let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
-        &*(hp as *const GcHeader)
+        &*header_ptr_from_value_ptr(ptr.as_ptr())
     };
     if header.type_id() == std::any::TypeId::of::<RayaString>() {
         return CAST_KIND_STRING;
@@ -80,8 +79,7 @@ fn object_ptr_checked(value: Value) -> Option<NonNull<Object>> {
     }
     let ptr = unsafe { value.as_ptr::<u8>() }?;
     let header = unsafe {
-        let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
-        &*(hp as *const GcHeader)
+        &*header_ptr_from_value_ptr(ptr.as_ptr())
     };
     if header.type_id() == std::any::TypeId::of::<Object>() {
         unsafe { value.as_ptr::<Object>() }
@@ -107,8 +105,7 @@ pub(in crate::vm::interpreter) fn builtin_handle_native_method_id(
     if value.is_ptr() {
         let ptr = unsafe { value.as_ptr::<u8>() }?;
         let header = unsafe {
-            let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
-            &*(hp as *const GcHeader)
+            &*header_ptr_from_value_ptr(ptr.as_ptr())
         };
         let ty = header.type_id();
         if ty == std::any::TypeId::of::<Array>() {
@@ -166,8 +163,7 @@ pub(in crate::vm::interpreter) fn builtin_handle_native_method_id(
     }
     let ptr = handle as *const u8;
     let header = unsafe {
-        let hp = ptr.sub(std::mem::size_of::<GcHeader>());
-        &*(hp as *const GcHeader)
+        &*header_ptr_from_value_ptr(ptr)
     };
     let ty = header.type_id();
     if ty == std::any::TypeId::of::<ChannelObject>() {

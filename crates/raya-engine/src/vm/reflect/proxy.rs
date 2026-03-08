@@ -23,7 +23,7 @@
 //! }
 //! ```
 
-use crate::vm::gc::GcHeader;
+use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::object::{Closure, Object, Proxy};
 use crate::vm::value::Value;
 use std::any::TypeId;
@@ -44,8 +44,7 @@ pub struct UnwrappedProxy {
 /// # Safety
 /// The pointer must be a valid GC-allocated object with a GcHeader preceding it.
 unsafe fn is_proxy_type(ptr: *const u8) -> bool {
-    let header_ptr = ptr.sub(std::mem::size_of::<GcHeader>()) as *const GcHeader;
-    let header = &*header_ptr;
+    let header = &*header_ptr_from_value_ptr(ptr);
     header.type_id() == TypeId::of::<Proxy>()
 }
 

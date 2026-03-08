@@ -607,6 +607,11 @@ impl Vm {
         self.scheduler.wait_all(timeout)
     }
 
+    /// Wait until terminal tasks and reactor-side completion work have settled.
+    pub fn wait_quiescent(&self, timeout: std::time::Duration) -> bool {
+        self.scheduler.wait_quiescent(timeout)
+    }
+
     /// Register a class with the VM's shared class registry
     pub fn register_class(&self, class: crate::vm::object::Class) {
         let shared = self.scheduler.shared_state();

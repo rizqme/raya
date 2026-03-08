@@ -9,8 +9,38 @@ use super::roots::RootSet;
 use crate::vm::interpreter::VmContextId;
 use crate::vm::types::TypeRegistry;
 use crate::vm::value::Value;
+use dashmap::DashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+#[derive(Default)]
+pub struct ExternalRootSnapshot {
+    pub roots: Vec<Value>,
+    pub complete: bool,
+}
+
+type ExternalRootProvider = dyn Fn() -> ExternalRootSnapshot + Send + Sync + 'static;
+
+fn external_root_providers() -> &'static DashMap<u64, Arc<ExternalRootProvider>> {
+    static PROVIDERS: OnceLock<DashMap<u64, Arc<ExternalRootProvider>>> = OnceLock::new();
+    PROVIDERS.get_or_init(DashMap::new)
+}
+
+fn has_external_roots_provider(context_id: VmContextId) -> bool {
+    external_root_providers().contains_key(&context_id.as_u64())
+}
+
+pub fn register_external_roots_provider(
+    context_id: VmContextId,
+    provider: Arc<ExternalRootProvider>,
+) {
+    external_root_providers().insert(context_id.as_u64(), provider);
+}
+
+pub fn unregister_external_roots_provider(context_id: VmContextId) {
+    external_root_providers().remove(&context_id.as_u64());
+}
 
 /// Garbage collector statistics
 #[derive(Debug, Clone)]
@@ -156,10 +186,15 @@ impl GarbageCollector {
         self.heap.set_max_heap_size(bytes);
     }
 
+    /// Context identity for externally registered root providers.
+    pub fn context_id(&self) -> VmContextId {
+        self.heap.context_id()
+    }
+
     /// Allocate a value
     pub fn allocate<T: 'static>(&mut self, value: T) -> GcPtr<T> {
         // Check if we should collect
-        if self.should_collect() {
+        if self.should_collect() && !has_external_roots_provider(self.heap.context_id()) {
             self.collect();
         }
 
@@ -172,7 +207,7 @@ impl GarbageCollector {
         T: 'static + Default + Clone,
     {
         // Check if we should collect
-        if self.should_collect() {
+        if self.should_collect() && !has_external_roots_provider(self.heap.context_id()) {
             self.collect();
         }
 
@@ -194,12 +229,27 @@ impl GarbageCollector {
         self.heap.allocated_bytes() > self.threshold
     }
 
+    fn external_root_snapshot(&self) -> ExternalRootSnapshot {
+        external_root_providers()
+            .get(&self.heap.context_id().as_u64())
+            .map(|entry| entry.value().clone())
+            .map(|provider| provider())
+            .unwrap_or_else(|| ExternalRootSnapshot {
+                roots: Vec::new(),
+                complete: true,
+            })
+    }
+
     /// Run garbage collection
     pub fn collect(&mut self) {
+        let snapshot = self.external_root_snapshot();
+        if !snapshot.complete {
+            return;
+        }
         let start = Instant::now();
 
         // Mark phase
-        let marked_count = self.mark();
+        let marked_count = self.mark(snapshot.roots);
 
         // Sweep phase
         let (freed_count, freed_bytes) = self.sweep();
@@ -226,7 +276,7 @@ impl GarbageCollector {
 
     /// Mark phase: mark all reachable objects
     /// Returns number of objects marked
-    fn mark(&mut self) -> usize {
+    fn mark(&mut self, external_roots: Vec<Value>) -> usize {
         // Clear all mark bits first
         for header_ptr in self.heap.iter_allocations() {
             unsafe {
@@ -237,6 +287,10 @@ impl GarbageCollector {
         // Mark from roots (collect first to avoid borrow checker issues)
         let roots: Vec<Value> = self.roots.iter().collect();
         for root in roots {
+            self.mark_value(root);
+        }
+
+        for root in external_roots {
             self.mark_value(root);
         }
 
@@ -266,9 +320,8 @@ impl GarbageCollector {
             None => return,
         };
 
-        // Get GcHeader (located before the object data)
-        // The GcHeader is stored immediately before the object in memory
-        let header_ptr = unsafe { ptr.cast::<GcHeader>().sub(1) };
+        // Recover the header through the stored back-pointer immediately before the value.
+        let header_ptr = unsafe { super::header_ptr_from_value_ptr(ptr) as *mut GcHeader };
 
         // Check if already marked (avoid cycles and redundant work)
         unsafe {

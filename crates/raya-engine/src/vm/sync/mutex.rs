@@ -103,7 +103,9 @@ impl Mutex {
                         Ok(())
                     }
                     Err(_) => {
-                        queue.push_back(task_id);
+                        if !queue.iter().any(|&id| id == task_id) {
+                            queue.push_back(task_id);
+                        }
                         Err(BlockReason::AwaitingMutex(self.id))
                     }
                 }
@@ -136,7 +138,9 @@ impl Mutex {
         // Add ourselves to the wait queue and wait on condvar
         {
             let mut queue = self.wait_queue.lock();
-            queue.push_back(task_id);
+            if !queue.iter().any(|&id| id == task_id) {
+                queue.push_back(task_id);
+            }
         }
 
         // Wait until we acquire the lock

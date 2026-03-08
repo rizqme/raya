@@ -5,11 +5,10 @@
 use raya_engine::compiler::{Compiler, Module};
 use raya_engine::parser::checker::{Binder, TypeChecker, TypeSystemMode};
 use raya_engine::parser::{Interner, Parser, TypeContext};
-use raya_engine::vm::gc::GcHeader;
+use raya_engine::vm::gc::header_ptr_from_value_ptr;
 use raya_engine::vm::scheduler::SchedulerLimits;
 use raya_engine::vm::{Array, Object, RayaString, Value, Vm, VmError};
 use raya_runtime::{BuiltinMode, StdNativeHandler};
-use std::cell::RefCell;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,36 +16,74 @@ use std::time::Duration;
 #[cfg(feature = "jit")]
 use raya_engine::vm::interpreter::JitTelemetrySnapshot;
 
-thread_local! {
-    /// Keep terminated VMs alive so pointer values returned
-    /// from `compile_and_run*` remain valid across immediate assertions.
-    ///
-    /// The VM is explicitly terminated before retention, so this preserves heap
-    /// ownership without keeping scheduler/reactor threads alive across tests.
-    ///
-    /// We intentionally do not evict older entries during the test-binary
-    /// lifetime. GC heap teardown is still not robust enough under the full
-    /// serial integration workload, so the harness avoids exercising that free
-    /// path until process exit.
-    static KEPT_VMS: RefCell<Vec<Vm>> = RefCell::new(Vec::new());
-}
-
-fn keep_vm_alive(vm: Vm) {
-    KEPT_VMS.with(|slot| {
-        let mut kept = slot.borrow_mut();
-        kept.push(vm);
-    });
-}
-
 fn finalize_vm_after_result(value: &Value, mut vm: Vm) {
-    let _ = vm.wait_all(Duration::from_secs(2));
+    let debug = std::env::var_os("RAYA_TEST_HARNESS_DEBUG").is_some();
+    if debug {
+        eprintln!("[harness] finalize: begin");
+    }
+    let _ = vm.wait_quiescent(Duration::from_secs(2));
+    if debug {
+        eprintln!("[harness] finalize: first wait_quiescent");
+    }
     if vm.get_stats().tasks > 1 {
-        std::thread::sleep(Duration::from_millis(200));
-        let _ = vm.wait_all(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(250));
+        let _ = vm.wait_quiescent(Duration::from_millis(500));
+        if debug {
+            eprintln!("[harness] finalize: settle wait_quiescent");
+        }
+    }
+    if debug {
+        eprintln!("[harness] finalize: terminate");
     }
     vm.terminate();
-    let _ = value;
-    keep_vm_alive(vm);
+    if debug {
+        eprintln!("[harness] finalize: terminated");
+    }
+    if debug {
+        if value.is_heap_allocated() {
+            eprintln!("[harness] finalize: dropped heap result vm");
+        } else {
+            eprintln!("[harness] finalize: dropped");
+        }
+    }
+}
+
+fn extract_live_string(value: &Value, source: &str) -> String {
+    if value.is_ptr() {
+        let raw_ptr = unsafe { value.as_ptr::<u8>() };
+        if let Some(ptr) = raw_ptr {
+            let header = unsafe {
+                &*header_ptr_from_value_ptr(ptr.as_ptr())
+            };
+            if header.type_id() != std::any::TypeId::of::<RayaString>() {
+                let detected = if header.type_id() == std::any::TypeId::of::<Object>() {
+                    "Object"
+                } else if header.type_id() == std::any::TypeId::of::<Array>() {
+                    "Array"
+                } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
+                    "RayaString"
+                } else {
+                    "Unknown"
+                };
+                panic!(
+                    "Expected RayaString pointer, got GC object type={} (value={:?})\nSource:\n{}",
+                    detected, value, source
+                );
+            }
+            let raya_str = unsafe { &*value.as_ptr::<RayaString>().unwrap().as_ptr() };
+            raya_str.data.clone()
+        } else {
+            panic!(
+                "Failed to extract string pointer from value {:?}\nSource:\n{}",
+                value, source
+            );
+        }
+    } else {
+        panic!(
+            "Expected string (pointer), got {:?}\nSource:\n{}",
+            value, source
+        );
+    }
 }
 
 /// Error type for e2e tests
@@ -168,6 +205,26 @@ pub fn compile_and_run(source: &str) -> E2EResult<Value> {
     Ok(value)
 }
 
+fn compile_and_run_isolated(source: &str) -> E2EResult<Value> {
+    let (tx, rx) = mpsc::channel();
+    let src = source.to_string();
+    let handle = std::thread::spawn(move || {
+        let result = compile_and_run(&src);
+        let _ = tx.send(result);
+    });
+    let result = match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(E2EError::Vm(VmError::RuntimeError(
+            "Isolated execution timed out after 30s".to_string(),
+        ))),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(E2EError::Vm(VmError::RuntimeError(
+            "Isolated execution thread disconnected unexpectedly".to_string(),
+        ))),
+    };
+    let _ = handle.join();
+    result
+}
+
 /// Compile and execute with builtins included
 ///
 /// Use this for tests that use Map, Set, Buffer, Date, Channel, Logger, etc.
@@ -219,6 +276,61 @@ pub fn compile_and_run_runtime_with_mode(source: &str, mode: BuiltinMode) -> E2E
 
 pub fn compile_and_run_runtime_node_compat(source: &str) -> E2EResult<Value> {
     compile_and_run_runtime_with_mode(source, BuiltinMode::NodeCompat)
+}
+
+fn compile_and_run_string(source: &str) -> E2EResult<String> {
+    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+    let mut vm = Vm::with_worker_count(1);
+    let value = runtime
+        .execute_program_with_vm(&program, &mut vm)
+        .map_err(map_runtime_error)?;
+    let result = extract_live_string(&value, source);
+    finalize_vm_after_result(&value, vm);
+    Ok(result)
+}
+
+fn compile_and_run_string_with_builtins(source: &str) -> E2EResult<String> {
+    let (runtime, program) = compile_program_with_mode(source, BuiltinMode::RayaStrict)?;
+
+    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+    {
+        let mut registry = vm.native_registry().write();
+        raya_stdlib::register_stdlib(&mut registry);
+        raya_stdlib_posix::register_posix(&mut registry);
+    }
+
+    let value = runtime
+        .execute_program_with_vm(&program, &mut vm)
+        .map_err(map_runtime_error)?;
+    let result = extract_live_string(&value, source);
+    finalize_vm_after_result(&value, vm);
+    Ok(result)
+}
+
+fn compile_and_run_string_runtime(source: &str) -> E2EResult<String> {
+    compile_and_run_string_runtime_with_mode(source, BuiltinMode::RayaStrict)
+}
+
+fn compile_and_run_string_runtime_with_mode(source: &str, mode: BuiltinMode) -> E2EResult<String> {
+    let (runtime, program) = compile_program_with_mode(source, mode)?;
+
+    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+    {
+        let mut registry = vm.native_registry().write();
+        raya_stdlib::register_stdlib(&mut registry);
+        raya_stdlib_posix::register_posix(&mut registry);
+    }
+
+    let value = runtime
+        .execute_program_with_vm(&program, &mut vm)
+        .map_err(map_runtime_error)?;
+    let result = extract_live_string(&value, source);
+    finalize_vm_after_result(&value, vm);
+    Ok(result)
+}
+
+fn compile_and_run_string_runtime_node_compat(source: &str) -> E2EResult<String> {
+    compile_and_run_string_runtime_with_mode(source, BuiltinMode::NodeCompat)
 }
 
 #[cfg(feature = "jit")]
@@ -308,48 +420,13 @@ pub fn expect_i32_runtime_node_compat(source: &str, expected: i32) {
 }
 
 pub fn expect_string_runtime_node_compat(source: &str, expected: &str) {
-    match compile_and_run_runtime_node_compat(source) {
-        Ok(value) => {
-            if value.is_ptr() {
-                let raw_ptr = unsafe { value.as_ptr::<u8>() };
-                if let Some(ptr) = raw_ptr {
-                    let header = unsafe {
-                        let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
-                        &*(hp as *const GcHeader)
-                    };
-                    if header.type_id() != std::any::TypeId::of::<RayaString>() {
-                        let detected = if header.type_id() == std::any::TypeId::of::<Object>() {
-                            "Object"
-                        } else if header.type_id() == std::any::TypeId::of::<Array>() {
-                            "Array"
-                        } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
-                            "RayaString"
-                        } else {
-                            "Unknown"
-                        };
-                        panic!(
-                            "Expected RayaString pointer, got GC object type={} (value={:?})\nSource:\n{}",
-                            detected, value, source
-                        );
-                    }
-                    let raya_str = unsafe { &*value.as_ptr::<RayaString>().unwrap().as_ptr() };
-                    assert_eq!(
-                        raya_str.data, expected,
-                        "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
-                        expected, raya_str.data, source
-                    );
-                } else {
-                    panic!(
-                        "Failed to extract string pointer from value {:?}\nSource:\n{}",
-                        value, source
-                    );
-                }
-            } else {
-                panic!(
-                    "Expected string (pointer), got {:?}\nSource:\n{}",
-                    value, source
-                );
-            }
+    match compile_and_run_string_runtime_node_compat(source) {
+        Ok(actual) => {
+            assert_eq!(
+                actual, expected,
+                "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
+                expected, actual, source
+            );
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
@@ -490,7 +567,7 @@ pub fn expect_bool_with_builtins(source: &str, expected: bool) {
 /// Compile and execute, expecting a specific i32 result
 /// Also accepts f64 values that represent whole numbers (since Number type is f64)
 pub fn expect_i32(source: &str, expected: i32) {
-    match compile_and_run(source) {
+    match compile_and_run_isolated(source) {
         Ok(value) => {
             // Try i32 first
             if let Some(actual) = value.as_i32() {
@@ -522,7 +599,7 @@ pub fn expect_i32(source: &str, expected: i32) {
 
 /// Compile and execute, expecting a specific f64 result
 pub fn expect_f64(source: &str, expected: f64) {
-    match compile_and_run(source) {
+    match compile_and_run_isolated(source) {
         Ok(value) => {
             let actual = value.as_f64().expect(&format!(
                 "Expected f64 result, got {:?}\nSource:\n{}",
@@ -544,7 +621,7 @@ pub fn expect_f64(source: &str, expected: f64) {
 
 /// Compile and execute, expecting a specific boolean result
 pub fn expect_bool(source: &str, expected: bool) {
-    match compile_and_run(source) {
+    match compile_and_run_isolated(source) {
         Ok(value) => {
             let actual = value.as_bool().expect(&format!(
                 "Expected bool result, got {:?}\nSource:\n{}",
@@ -560,7 +637,7 @@ pub fn expect_bool(source: &str, expected: bool) {
 
 /// Compile and execute, expecting null result
 pub fn expect_null(source: &str) {
-    match compile_and_run(source) {
+    match compile_and_run_isolated(source) {
         Ok(value) => {
             assert!(
                 value.is_null(),
@@ -578,50 +655,13 @@ pub fn expect_null(source: &str) {
 /// Compile and execute, expecting a specific string result
 #[allow(dead_code)]
 pub fn expect_string(source: &str, expected: &str) {
-    match compile_and_run(source) {
-        Ok(value) => {
-            if value.is_ptr() {
-                // Extract string from pointer with runtime type check via GC header
-                // to avoid UB when a non-string pointer is returned.
-                let raw_ptr = unsafe { value.as_ptr::<u8>() };
-                if let Some(ptr) = raw_ptr {
-                    let header = unsafe {
-                        let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
-                        &*(hp as *const GcHeader)
-                    };
-                    if header.type_id() != std::any::TypeId::of::<RayaString>() {
-                        let detected = if header.type_id() == std::any::TypeId::of::<Object>() {
-                            "Object"
-                        } else if header.type_id() == std::any::TypeId::of::<Array>() {
-                            "Array"
-                        } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
-                            "RayaString"
-                        } else {
-                            "Unknown"
-                        };
-                        panic!(
-                            "Expected RayaString pointer, got GC object type={} (value={:?})\nSource:\n{}",
-                            detected, value, source
-                        );
-                    }
-                    let raya_str = unsafe { &*value.as_ptr::<RayaString>().unwrap().as_ptr() };
-                    assert_eq!(
-                        raya_str.data, expected,
-                        "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
-                        expected, raya_str.data, source
-                    );
-                } else {
-                    panic!(
-                        "Failed to extract string pointer from value {:?}\nSource:\n{}",
-                        value, source
-                    );
-                }
-            } else {
-                panic!(
-                    "Expected string (pointer), got {:?}\nSource:\n{}",
-                    value, source
-                );
-            }
+    match compile_and_run_string(source) {
+        Ok(actual) => {
+            assert_eq!(
+                actual, expected,
+                "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
+                expected, actual, source
+            );
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
@@ -631,48 +671,13 @@ pub fn expect_string(source: &str, expected: &str) {
 
 /// Compile and execute with builtins, expecting a specific string result
 pub fn expect_string_with_builtins(source: &str, expected: &str) {
-    match compile_and_run_with_builtins(source) {
-        Ok(value) => {
-            if value.is_ptr() {
-                let raw_ptr = unsafe { value.as_ptr::<u8>() };
-                if let Some(ptr) = raw_ptr {
-                    let header = unsafe {
-                        let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
-                        &*(hp as *const GcHeader)
-                    };
-                    if header.type_id() != std::any::TypeId::of::<RayaString>() {
-                        let detected = if header.type_id() == std::any::TypeId::of::<Object>() {
-                            "Object"
-                        } else if header.type_id() == std::any::TypeId::of::<Array>() {
-                            "Array"
-                        } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
-                            "RayaString"
-                        } else {
-                            "Unknown"
-                        };
-                        panic!(
-                            "Expected RayaString pointer, got GC object type={} (value={:?})\nSource:\n{}",
-                            detected, value, source
-                        );
-                    }
-                    let raya_str = unsafe { &*value.as_ptr::<RayaString>().unwrap().as_ptr() };
-                    assert_eq!(
-                        raya_str.data, expected,
-                        "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
-                        expected, raya_str.data, source
-                    );
-                } else {
-                    panic!(
-                        "Failed to extract string pointer from value {:?}\nSource:\n{}",
-                        value, source
-                    );
-                }
-            } else {
-                panic!(
-                    "Expected string (pointer), got {:?}\nSource:\n{}",
-                    value, source
-                );
-            }
+    match compile_and_run_string_with_builtins(source) {
+        Ok(actual) => {
+            assert_eq!(
+                actual, expected,
+                "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
+                expected, actual, source
+            );
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
@@ -681,48 +686,13 @@ pub fn expect_string_with_builtins(source: &str, expected: &str) {
 }
 
 pub fn expect_string_runtime(source: &str, expected: &str) {
-    match compile_and_run_runtime(source) {
-        Ok(value) => {
-            if value.is_ptr() {
-                let raw_ptr = unsafe { value.as_ptr::<u8>() };
-                if let Some(ptr) = raw_ptr {
-                    let header = unsafe {
-                        let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
-                        &*(hp as *const GcHeader)
-                    };
-                    if header.type_id() != std::any::TypeId::of::<RayaString>() {
-                        let detected = if header.type_id() == std::any::TypeId::of::<Object>() {
-                            "Object"
-                        } else if header.type_id() == std::any::TypeId::of::<Array>() {
-                            "Array"
-                        } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
-                            "RayaString"
-                        } else {
-                            "Unknown"
-                        };
-                        panic!(
-                            "Expected RayaString pointer, got GC object type={} (value={:?})\nSource:\n{}",
-                            detected, value, source
-                        );
-                    }
-                    let raya_str = unsafe { &*value.as_ptr::<RayaString>().unwrap().as_ptr() };
-                    assert_eq!(
-                        raya_str.data, expected,
-                        "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
-                        expected, raya_str.data, source
-                    );
-                } else {
-                    panic!(
-                        "Failed to extract string pointer from value {:?}\nSource:\n{}",
-                        value, source
-                    );
-                }
-            } else {
-                panic!(
-                    "Expected string (pointer), got {:?}\nSource:\n{}",
-                    value, source
-                );
-            }
+    match compile_and_run_string_runtime(source) {
+        Ok(actual) => {
+            assert_eq!(
+                actual, expected,
+                "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
+                expected, actual, source
+            );
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
@@ -732,29 +702,13 @@ pub fn expect_string_runtime(source: &str, expected: &str) {
 
 /// Compile and execute with builtins, expecting a string result containing a pattern
 pub fn expect_string_contains_with_builtins(source: &str, pattern: &str) {
-    match compile_and_run_with_builtins(source) {
-        Ok(value) => {
-            if value.is_ptr() {
-                let str_ptr = unsafe { value.as_ptr::<RayaString>() };
-                if let Some(ptr) = str_ptr {
-                    let raya_str = unsafe { &*ptr.as_ptr() };
-                    assert!(
-                        raya_str.data.contains(pattern),
-                        "String does not contain pattern.\nExpected to contain: '{}'\nGot: '{}'\nSource:\n{}",
-                        pattern, raya_str.data, source
-                    );
-                } else {
-                    panic!(
-                        "Failed to extract string pointer from value {:?}\nSource:\n{}",
-                        value, source
-                    );
-                }
-            } else {
-                panic!(
-                    "Expected string (pointer), got {:?}\nSource:\n{}",
-                    value, source
-                );
-            }
+    match compile_and_run_string_with_builtins(source) {
+        Ok(actual) => {
+            assert!(
+                actual.contains(pattern),
+                "String does not contain pattern.\nExpected to contain: '{}'\nGot: '{}'\nSource:\n{}",
+                pattern, actual, source
+            );
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
@@ -940,7 +894,7 @@ fn compile_and_run_multiworker_with_timeout(
     let (tx, rx) = mpsc::channel();
     let src = source.to_string();
 
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let result: E2EResult<Value> = (|| {
             let (runtime, program) = compile_program_with_mode(&src, BuiltinMode::RayaStrict)?;
             let mut vm = Vm::with_worker_count(worker_count);
@@ -953,7 +907,7 @@ fn compile_and_run_multiworker_with_timeout(
         let _ = tx.send(result);
     });
 
-    match rx.recv_timeout(timeout) {
+    let result = match rx.recv_timeout(timeout) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => Err(E2EError::Vm(VmError::RuntimeError(format!(
             "Multiworker execution timed out after {:?} (workers={})",
@@ -962,7 +916,9 @@ fn compile_and_run_multiworker_with_timeout(
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(E2EError::Vm(VmError::RuntimeError(
             "Multiworker execution thread disconnected unexpectedly".to_string(),
         ))),
-    }
+    };
+    let _ = handle.join();
+    result
 }
 
 fn compile_and_run_multiworker_with_builtins_timeout(
@@ -973,7 +929,7 @@ fn compile_and_run_multiworker_with_builtins_timeout(
     let (tx, rx) = mpsc::channel();
     let src = source.to_string();
 
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let result: E2EResult<Value> = (|| {
             let (runtime, program) = compile_program_with_mode(&src, BuiltinMode::RayaStrict)?;
 
@@ -995,7 +951,7 @@ fn compile_and_run_multiworker_with_builtins_timeout(
         let _ = tx.send(result);
     });
 
-    match rx.recv_timeout(timeout) {
+    let result = match rx.recv_timeout(timeout) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => Err(E2EError::Vm(VmError::RuntimeError(format!(
             "Multiworker+builtins execution timed out after {:?} (workers={})",
@@ -1004,7 +960,9 @@ fn compile_and_run_multiworker_with_builtins_timeout(
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(E2EError::Vm(VmError::RuntimeError(
             "Multiworker+builtins execution thread disconnected unexpectedly".to_string(),
         ))),
-    }
+    };
+    let _ = handle.join();
+    result
 }
 
 /// Compile and execute with multiple workers and builtins, expecting a specific i32 result

@@ -3,7 +3,7 @@
 
 use crate::compiler::Module;
 use crate::compiler::Opcode;
-use crate::vm::gc::GcHeader;
+use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::shared_state::{
     ShapeAdapter, StructuralAdapterKey, StructuralSlotBinding,
@@ -75,11 +75,8 @@ impl<'a> Interpreter<'a> {
         if !callable.is_ptr() {
             return Ok(None);
         }
-        let header = unsafe {
-            let hp =
-                (callable.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
-            &*(hp as *const GcHeader)
-        };
+        let header =
+            unsafe { &*header_ptr_from_value_ptr(callable.as_ptr::<u8>().unwrap().as_ptr()) };
         if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
             let bm = unsafe { &*callable.as_ptr::<BoundMethod>().unwrap().as_ptr() };
             stack.push(bm.receiver)?;
@@ -424,8 +421,7 @@ impl<'a> Interpreter<'a> {
         }
 
         let header = unsafe {
-            let hp = (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
-            &*(hp as *const GcHeader)
+            &*header_ptr_from_value_ptr(value.as_ptr::<u8>().unwrap().as_ptr())
         };
         if header.type_id() == std::any::TypeId::of::<Object>() {
             return Ok(value);

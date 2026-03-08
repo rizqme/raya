@@ -9,7 +9,7 @@ use crate::compiler::native_id::{
 };
 use crate::compiler::{Module, Opcode};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set, url};
-use crate::vm::gc::GcHeader;
+use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
@@ -197,8 +197,7 @@ impl<'a> Interpreter<'a> {
             return false;
         }
         let header = unsafe {
-            let hp = (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
-            &*(hp as *const GcHeader)
+            &*header_ptr_from_value_ptr(value.as_ptr::<u8>().unwrap().as_ptr())
         };
         header.type_id() == std::any::TypeId::of::<Closure>()
             || header.type_id() == std::any::TypeId::of::<BoundMethod>()
@@ -210,8 +209,7 @@ impl<'a> Interpreter<'a> {
             return None;
         }
         let header = unsafe {
-            let hp = (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
-            &*(hp as *const GcHeader)
+            &*header_ptr_from_value_ptr(value.as_ptr::<u8>().unwrap().as_ptr())
         };
         if header.type_id() != std::any::TypeId::of::<TypeHandle>() {
             return None;

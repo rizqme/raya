@@ -467,6 +467,9 @@ pub struct Lowerer<'a> {
     loop_captured_vars: FxHashSet<Symbol>,
     /// Map from variable name to its class type (for field access resolution)
     variable_class_map: FxHashMap<Symbol, NominalTypeId>,
+    /// Variables explicitly annotated as `any`/`unknown`, which must suppress
+    /// nominal member dispatch even if their initializer was nominal.
+    dynamic_any_vars: FxHashSet<Symbol>,
     /// Map from array variable name to its element's class type (for for-of loop type inference)
     array_element_class_map: FxHashMap<Symbol, NominalTypeId>,
     /// Current class being processed (for method lowering)
@@ -1077,6 +1080,7 @@ impl<'a> Lowerer<'a> {
             loop_captured_vars: FxHashSet::default(),
             refcell_inner_types: FxHashMap::default(),
             variable_class_map: FxHashMap::default(),
+            dynamic_any_vars: FxHashSet::default(),
             array_element_class_map: FxHashMap::default(),
             current_class: None,
             this_register: None,
