@@ -111,7 +111,6 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::LoadFieldExact
         | Opcode::StoreFieldExact
         | Opcode::OptionalFieldExact
-        | Opcode::ConstStr
         | Opcode::CloseVar
         | Opcode::LoadCaptured
         | Opcode::StoreCaptured
@@ -151,7 +150,8 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         Opcode::CallMethodShape | Opcode::OptionalCallMethodShape => 1 + 8 + 2 + 2,
 
         // u32 operand
-        Opcode::LoadConst
+        Opcode::ConstStr
+        | Opcode::LoadConst
         | Opcode::NewArray
         | Opcode::TaskThen
         | Opcode::LoadModule
