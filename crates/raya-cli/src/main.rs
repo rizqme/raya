@@ -74,8 +74,8 @@ enum Commands {
         #[arg(long)]
         node_compat: bool,
         /// Parsing/type mode: raya | ts | js
-        #[arg(long, default_value = "raya")]
-        mode: String,
+        #[arg(long)]
+        mode: Option<String>,
     },
 
     /// Debug a Raya script interactively
@@ -119,8 +119,8 @@ enum Commands {
         #[arg(long)]
         node_compat: bool,
         /// Parsing/type mode: raya | ts | js
-        #[arg(long, default_value = "raya")]
-        mode: String,
+        #[arg(long)]
+        mode: Option<String>,
     },
 
     /// Type-check without building
@@ -151,8 +151,8 @@ enum Commands {
         #[arg(long)]
         node_compat: bool,
         /// Parsing/type mode: raya | ts | js
-        #[arg(long, default_value = "raya")]
-        mode: String,
+        #[arg(long)]
+        mode: Option<String>,
     },
 
     /// Evaluate an inline expression
@@ -175,8 +175,8 @@ enum Commands {
         #[arg(long)]
         node_compat: bool,
         /// Parsing/type mode: raya | ts | js
-        #[arg(long, default_value = "raya")]
-        mode: String,
+        #[arg(long)]
+        mode: Option<String>,
     },
 
     /// Run tests
@@ -238,8 +238,8 @@ enum Commands {
         #[arg(long)]
         node_compat: bool,
         /// Parsing/type mode: raya | ts | js
-        #[arg(long, default_value = "raya")]
-        mode: String,
+        #[arg(long)]
+        mode: Option<String>,
     },
 
     /// Initialize a new Raya project
@@ -397,6 +397,17 @@ fn parse_type_mode(mode: &str) -> anyhow::Result<TypeMode> {
     }
 }
 
+fn resolve_type_mode(mode: Option<&str>, node_compat: bool) -> anyhow::Result<TypeMode> {
+    match mode {
+        Some(mode) => parse_type_mode(mode),
+        None => Ok(if node_compat {
+            TypeMode::Js
+        } else {
+            TypeMode::Raya
+        }),
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // Handle implicit run: `raya ./file.raya` or `raya src/main.raya`
     let raw_args: Vec<String> = std::env::args().collect();
@@ -456,7 +467,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             cpu_prof,
             prof_interval,
             node_compat,
-            type_mode: parse_type_mode(&mode)?,
+            type_mode: resolve_type_mode(mode.as_deref(), node_compat)?,
         }),
 
         Commands::Debug {
@@ -483,7 +494,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             sourcemap,
             dry_run,
             node_compat,
-            parse_type_mode(&mode)?,
+            resolve_type_mode(mode.as_deref(), node_compat)?,
         ),
 
         Commands::Check {
@@ -505,7 +516,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             deny,
             no_warnings,
             node_compat,
-            parse_type_mode(&mode)?,
+            resolve_type_mode(mode.as_deref(), node_compat)?,
         ),
 
         Commands::Eval {
@@ -523,7 +534,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             no_jit,
             jit_threshold,
             node_compat,
-            parse_type_mode(&mode)?,
+            resolve_type_mode(mode.as_deref(), node_compat)?,
         ),
 
         Commands::Test {
@@ -561,7 +572,11 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             no_jit,
             node_compat,
             mode,
-        } => commands::repl::execute(no_jit, node_compat, parse_type_mode(&mode)?),
+        } => commands::repl::execute(
+            no_jit,
+            node_compat,
+            resolve_type_mode(mode.as_deref(), node_compat)?,
+        ),
 
         Commands::Init {
             path,
@@ -668,5 +683,17 @@ mod tests {
             }
             _ => panic!("expected init command"),
         }
+    }
+
+    #[test]
+    fn resolve_type_mode_defaults_to_raya_without_node_compat() {
+        let mode = resolve_type_mode(None, false).expect("mode should resolve");
+        assert_eq!(mode, TypeMode::Raya);
+    }
+
+    #[test]
+    fn resolve_type_mode_defaults_to_js_with_node_compat() {
+        let mode = resolve_type_mode(None, true).expect("mode should resolve");
+        assert_eq!(mode, TypeMode::Js);
     }
 }

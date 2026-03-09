@@ -249,6 +249,10 @@ pub fn load_declaration_module_from_source(
 fn strict_builtin_declaration_sources() -> &'static [(&'static str, &'static str)] {
     &[
         (
+            "strict/array.d.raya",
+            include_str!("../../../builtins/strict/array.d.raya"),
+        ),
+        (
             "strict/buffer.d.raya",
             include_str!("../../../builtins/strict/buffer.d.raya"),
         ),
@@ -305,6 +309,10 @@ fn strict_builtin_declaration_sources() -> &'static [(&'static str, &'static str
 
 fn node_compat_builtin_declaration_sources() -> &'static [(&'static str, &'static str)] {
     &[
+        (
+            "node_compat/array.d.raya",
+            include_str!("../../../builtins/node_compat/array.d.raya"),
+        ),
         (
             "node_compat/atomics.d.raya",
             include_str!("../../../builtins/node_compat/atomics.d.raya"),

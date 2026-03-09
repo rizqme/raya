@@ -223,11 +223,24 @@ fn handle_command(cmd: &str, session: &mut Session, options: &RuntimeOptions) ->
 fn needs_wrapping(code: &str) -> bool {
     let trimmed = code.trim();
     !trimmed.starts_with("function ")
+        && !trimmed.starts_with("async function ")
         && !trimmed.starts_with("class ")
+        && !trimmed.starts_with("interface ")
+        && !trimmed.starts_with("enum ")
+        && !trimmed.starts_with("type ")
+        && !trimmed.starts_with("abstract ")
+        && !trimmed.starts_with("export ")
         && !trimmed.starts_with("return ")
         && !trimmed.starts_with("import ")
         && !trimmed.starts_with("let ")
+        && !trimmed.starts_with("var ")
         && !trimmed.starts_with("const ")
+        && !trimmed.starts_with("try ")
+        && !trimmed.starts_with("if ")
+        && !trimmed.starts_with("for ")
+        && !trimmed.starts_with("while ")
+        && !trimmed.starts_with("switch ")
+        && !trimmed.starts_with("throw ")
         && !trimmed.contains('\n')
 }
 
@@ -407,9 +420,14 @@ mod tests {
     #[test]
     fn needs_wrapping_declarations() {
         assert!(!needs_wrapping("let x = 1"));
+        assert!(!needs_wrapping("var x = 1"));
         assert!(!needs_wrapping("const y = 2"));
         assert!(!needs_wrapping("function f() {}"));
+        assert!(!needs_wrapping("async function f() {}"));
         assert!(!needs_wrapping("class Foo {}"));
+        assert!(!needs_wrapping("interface Box { value: number }"));
+        assert!(!needs_wrapping("type Box = { value: number };"));
+        assert!(!needs_wrapping("export const x = 1;"));
         assert!(!needs_wrapping("import { Math } from \"std:math\""));
         assert!(!needs_wrapping("return 42"));
     }

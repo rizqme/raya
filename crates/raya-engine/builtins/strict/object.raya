@@ -24,4 +24,9 @@ class Object {
         return __NATIVE_CALL<boolean>(OBJECT_EQUALS, this, other);
     }
 
+    static is(a: unknown, b: unknown): boolean {
+        // Pragmatic baseline: strict equality. (NaN/-0 edge cases can be refined later.)
+        return a === b;
+    }
+
 }

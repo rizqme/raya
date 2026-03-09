@@ -13,4 +13,7 @@ export class Object {
     /** Check equality with another object (identity comparison) */
     equals(other: unknown): boolean;
 
+    /** JS-style static equality helper */
+    static is(a: unknown, b: unknown): boolean;
+
 }

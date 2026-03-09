@@ -29,6 +29,14 @@ class Array<T> {
         return __NATIVE_CALL<boolean>(ARRAY_IS_ARRAY, value);
     }
 
+    static from<U>(values: U[]): U[] {
+        let out: U[] = [];
+        for (let i = 0; i < values.length; i++) {
+            out.push(values[i]);
+        }
+        return out;
+    }
+
     // ── Atomic native operations ──────────────────────────────────────
 
     push(element: T): number {

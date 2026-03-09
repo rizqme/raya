@@ -1592,7 +1592,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
 
     // Check for constructor (identifier named "constructor")
     if parser.resolve(name.name) == "constructor" {
-        return parse_constructor(parser, start_span);
+        return parse_constructor(parser, start_span, visibility);
     }
 
     // Check if this is a method (has type params or parens) or a field
@@ -1697,7 +1697,11 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
 }
 
 /// Parse constructor
-fn parse_constructor(parser: &mut Parser, start_span: Span) -> Result<ClassMember, ParseError> {
+fn parse_constructor(
+    parser: &mut Parser,
+    start_span: Span,
+    visibility: Visibility,
+) -> Result<ClassMember, ParseError> {
     parser.expect(Token::LeftParen)?;
     let params = parse_function_parameters(parser)?;
     parser.expect(Token::RightParen)?;
@@ -1708,6 +1712,7 @@ fn parse_constructor(parser: &mut Parser, start_span: Span) -> Result<ClassMembe
     let span = parser.combine_spans(&start_span, &body.span);
 
     Ok(ClassMember::Constructor(ConstructorDecl {
+        visibility,
         params,
         body,
         span,
@@ -1803,6 +1808,7 @@ fn parse_decorator(parser: &mut Parser) -> Result<Decorator, ParseError> {
             callee: Box::new(expression),
             type_args: None,
             arguments,
+            optional: false,
             span,
         });
     }

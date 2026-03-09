@@ -19,6 +19,30 @@ enum ForOfIterableKind {
 }
 
 impl<'a> Lowerer<'a> {
+    fn coerce_value_to_annotation_type(
+        &mut self,
+        value: Register,
+        type_ann: &ast::TypeAnnotation,
+    ) -> Register {
+        let ann_ty = self.resolve_type_annotation(type_ann);
+        if ann_ty.as_u32() == super::NUMBER_TYPE_ID && value.ty.as_u32() == super::INT_TYPE_ID {
+            let zero = self.alloc_register(TypeId::new(super::NUMBER_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: zero.clone(),
+                value: IrValue::Constant(IrConstant::F64(0.0)),
+            });
+            let dest = self.alloc_register(TypeId::new(super::NUMBER_TYPE_ID));
+            self.emit(IrInstr::BinaryOp {
+                dest: dest.clone(),
+                op: BinaryOp::Add,
+                left: value,
+                right: zero,
+            });
+            return dest;
+        }
+        value
+    }
+
     fn materialize_current_locals_for_method_env(
         &mut self,
     ) -> FxHashMap<crate::parser::Symbol, super::MethodEnvBinding> {
@@ -2073,8 +2097,11 @@ impl<'a> Lowerer<'a> {
                         false
                     };
 
-                    let value = self
+                    let mut value = self
                         .lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
+                    if let Some(type_ann) = &decl.type_annotation {
+                        value = self.coerce_value_to_annotation_type(value, type_ann);
+                    }
 
                     if let Some(type_ann) = &decl.type_annotation {
                         let expected_ty =
@@ -2307,8 +2334,11 @@ impl<'a> Lowerer<'a> {
                 false
             };
 
-            let value =
+            let mut value =
                 self.lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
+            if let Some(type_ann) = &decl.type_annotation {
+                value = self.coerce_value_to_annotation_type(value, type_ann);
+            }
 
             if let Some(type_ann) = &decl.type_annotation {
                 let expected_ty = self.resolve_structural_slot_type_from_annotation(type_ann);

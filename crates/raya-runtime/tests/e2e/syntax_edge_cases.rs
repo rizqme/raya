@@ -378,6 +378,56 @@ fn test_optional_chain_mixed_with_regular() {
     );
 }
 
+#[test]
+fn test_optional_chain_index_access() {
+    expect_i32(
+        "
+        let values: number[] | null = [7, 8, 9];
+        return values?.[0] ?? 0;
+    ",
+        7,
+    );
+}
+
+#[test]
+fn test_optional_chain_index_access_null_short_circuit() {
+    expect_i32(
+        "
+        let values: number[] | null = null;
+        let side: number = 0;
+        let out = values?.[(side = side + 1)];
+        if (out === null && side === 0) { return 42; }
+        return 0;
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_optional_chain_call_expression() {
+    expect_i32(
+        "
+        let fn: ((x: number) => number) | null = (x: number) => x + 1;
+        return fn?.(41) ?? 0;
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_optional_chain_call_expression_null_short_circuit() {
+    expect_i32(
+        "
+        let fn: ((x: number) => number) | null = null;
+        let side: number = 0;
+        let out = fn?.((side = side + 1));
+        if (out === null && side === 0) { return 42; }
+        return 0;
+    ",
+        42,
+    );
+}
+
 // ============================================================================
 // 4. Operator Precedence
 // ============================================================================

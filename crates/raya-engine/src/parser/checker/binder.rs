@@ -3012,6 +3012,63 @@ impl<'a> Binder<'a> {
                             }
                         }
                     }
+
+                    // Track constructor signature + visibility so checker can
+                    // enforce constructor accessibility on `new`.
+                    let mut ctor_params = Vec::new();
+                    let mut ctor_rest_param_ty = None;
+                    for p in &ctor.params {
+                        if p.is_rest {
+                            if let Some(ref type_ann) = p.type_annotation {
+                                let param_ty = self.resolve_type_annotation(type_ann)?;
+                                if self.is_valid_rest_param_type(param_ty) {
+                                    ctor_rest_param_ty = Some(param_ty);
+                                } else {
+                                    return Err(BindError::InvalidRestParameter {
+                                        message: "Rest parameter type must be an array/tuple (e.g., string[] or [number, string])".to_string(),
+                                        span: type_ann.span,
+                                    });
+                                }
+                            } else {
+                                return Err(BindError::InvalidRestParameter {
+                                    message: "Rest parameter must have a type annotation (e.g., ...args: string[])".to_string(),
+                                    span: p.span,
+                                });
+                            }
+                            continue;
+                        }
+                        let param_ty = if let Some(ref ann) = p.type_annotation {
+                            self.resolve_type_annotation(ann)?
+                        } else {
+                            self.type_ctx.unknown_type()
+                        };
+                        ctor_params.push(param_ty);
+                    }
+                    self.validate_param_order(&ctor.params)?;
+                    if let Some(rest_idx) = ctor.params.iter().position(|p| p.is_rest) {
+                        if rest_idx < ctor.params.len() - 1 {
+                            return Err(BindError::InvalidRestParameter {
+                                message: "Rest parameter must be last".to_string(),
+                                span: ctor.params[rest_idx].span,
+                            });
+                        }
+                    }
+                    let ctor_min_params = ctor
+                        .params
+                        .iter()
+                        .filter(|p| !p.is_rest)
+                        .filter(|p| p.default_value.is_none() && !p.optional)
+                        .count();
+                    methods.push((
+                        "constructor".to_string(),
+                        ctor_params,
+                        self.type_ctx.void_type(),
+                        false, // constructors are never async
+                        Vec::new(),
+                        ctor.visibility,
+                        ctor_min_params,
+                        ctor_rest_param_ty,
+                    ));
                 }
                 ClassMember::StaticBlock(_) => {
                     // Static initializer blocks don't contribute to the type signature

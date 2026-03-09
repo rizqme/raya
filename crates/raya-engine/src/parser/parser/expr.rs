@@ -672,6 +672,7 @@ fn parse_infix(
                     callee: Box::new(left),
                     type_args: Some(type_args),
                     arguments,
+                    optional: false,
                     span,
                 });
                 return parse_postfix(parser, call);
@@ -726,7 +727,22 @@ fn parse_infix(
             });
             return parse_postfix(parser, cast);
         }
-        Token::In => return parse_postfix(parser, left), // in not in AST
+        Token::In => {
+            // `in` is lexed and participates in precedence, but expression-level
+            // support is intentionally not part of the AST/lowering pipeline yet.
+            // Consume and fail deterministically instead of leaving the token
+            // unconsumed (which can cause parse loops).
+            parser.advance(); // consume `in`
+            let _ = parse_expression_with_precedence(parser, precedence)?;
+            return Err(ParseError {
+                kind: ParseErrorKind::InvalidSyntax {
+                    reason: "The 'in' operator is not supported in expressions yet".to_string(),
+                },
+                span: parser.current_span(),
+                message: "Unsupported operator 'in'".to_string(),
+                suggestion: Some("Use explicit key checks for now".to_string()),
+            });
+        }
         _ => {
             return parse_postfix(parser, left);
         }
@@ -769,11 +785,14 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
                 parser.advance();
                 let arguments = parse_arguments(parser)?;
                 let span = parser.combine_spans(&start_span, &parser.current_span());
+                let optional =
+                    matches!(&expr, Expression::Index(index_expr) if index_expr.optional);
 
                 expr = Expression::Call(CallExpression {
                     callee: Box::new(expr),
                     type_args: None,
                     arguments,
+                    optional,
                     span,
                 });
             }
@@ -824,16 +843,49 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
                         optional: true,
                         span,
                     });
-                } else {
-                    return Err(ParseError {
-                        kind: ParseErrorKind::InvalidSyntax {
-                            reason: "Expected property name after '?.'".to_string(),
-                        },
-                        span: parser.current_span(),
-                        message: "Expected identifier after '?.'".to_string(),
-                        suggestion: None,
-                    });
+                    continue;
                 }
+
+                // Optional indexed access: obj?.[key]
+                if parser.check(&Token::LeftBracket) {
+                    parser.advance();
+                    let index = parse_expression(parser)?;
+                    parser.expect(Token::RightBracket)?;
+                    let span = parser.combine_spans(&start_span, &parser.current_span());
+
+                    expr = Expression::Index(IndexExpression {
+                        object: Box::new(expr),
+                        index: Box::new(index),
+                        optional: true,
+                        span,
+                    });
+                    continue;
+                }
+
+                // Optional call: fn?.(args)
+                if parser.check(&Token::LeftParen) {
+                    parser.advance();
+                    let arguments = parse_arguments(parser)?;
+                    let span = parser.combine_spans(&start_span, &parser.current_span());
+
+                    expr = Expression::Call(CallExpression {
+                        callee: Box::new(expr),
+                        type_args: None,
+                        arguments,
+                        optional: true,
+                        span,
+                    });
+                    continue;
+                }
+
+                return Err(ParseError {
+                    kind: ParseErrorKind::InvalidSyntax {
+                        reason: "Expected property, index, or call after '?.'".to_string(),
+                    },
+                    span: parser.current_span(),
+                    message: "Expected identifier, '[' or '(' after '?.'".to_string(),
+                    suggestion: None,
+                });
             }
 
             // Index access
@@ -846,6 +898,7 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
                 expr = Expression::Index(IndexExpression {
                     object: Box::new(expr),
                     index: Box::new(index),
+                    optional: false,
                     span,
                 });
             }
@@ -904,6 +957,7 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
                                 callee: Box::new(expr),
                                 type_args: Some(type_args),
                                 arguments,
+                                optional: false,
                                 span,
                             });
                         } else {
@@ -1013,6 +1067,7 @@ fn parse_new_callee(parser: &mut Parser) -> Result<Expression, ParseError> {
                 expr = Expression::Index(IndexExpression {
                     object: Box::new(expr),
                     index: Box::new(index),
+                    optional: false,
                     span,
                 });
             }

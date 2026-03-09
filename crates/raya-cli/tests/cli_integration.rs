@@ -2,7 +2,7 @@
 //!
 //! Tests the Runtime API that powers `raya run`, `raya eval`, and `raya build`.
 
-use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode};
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -634,6 +634,22 @@ fn test_session_eval_basic() {
         value.as_i32() == Some(3) || value.as_f64() == Some(3.0),
         "Expected 3, got {:?}",
         value
+    );
+}
+
+#[test]
+fn test_session_node_compat_uses_runtime_builtin_hydration() {
+    let mut session = Session::new(&RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        type_mode: Some(TypeMode::Js),
+        ..Default::default()
+    });
+    let value = session
+        .eval(r#"try { eval("1+1"); return "NO_ERR"; } catch (e) { return e.code; }"#)
+        .expect("session eval should succeed");
+    assert_eq!(
+        session.format_value(&value),
+        "\"E_UNIMPLEMENTED_BUILTIN_BEHAVIOR\""
     );
 }
 

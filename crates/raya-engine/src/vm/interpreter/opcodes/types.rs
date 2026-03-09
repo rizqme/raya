@@ -1078,10 +1078,18 @@ impl<'a> Interpreter<'a> {
                 } else if value.is_i64() || value.is_f64() {
                     "number"
                 } else if value.is_ptr() {
-                    // Check if it's a string
-                    if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
-                        let _ = ptr; // Validate it's a string
+                    // Pointer values need runtime type header inspection.
+                    // `Value::as_ptr<T>` does not verify `T`, so checking
+                    // as_ptr::<RayaString>() directly is unsound here.
+                    let ptr = unsafe { value.as_ptr::<u8>() }.expect("pointer checked");
+                    let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
+                    if header.type_id() == std::any::TypeId::of::<RayaString>() {
                         "string"
+                    } else if header.type_id() == std::any::TypeId::of::<Closure>()
+                        || header.type_id() == std::any::TypeId::of::<BoundMethod>()
+                        || header.type_id() == std::any::TypeId::of::<BoundNativeMethod>()
+                    {
+                        "function"
                     } else {
                         "object"
                     }

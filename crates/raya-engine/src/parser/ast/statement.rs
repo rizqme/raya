@@ -354,6 +354,7 @@ pub struct MethodDecl {
 /// Constructor declaration
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConstructorDecl {
+    pub visibility: Visibility,
     pub params: Vec<Parameter>,
     pub body: BlockStatement,
     pub span: Span,

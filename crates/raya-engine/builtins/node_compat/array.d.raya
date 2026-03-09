@@ -1,0 +1,27 @@
+/**
+ * Array global class declaration surface (node-compat).
+ */
+export class Array<T> {
+    length: number;
+
+    constructor();
+
+    static isArray(value: unknown): boolean;
+    static from<U>(values: U[]): U[];
+
+    push(element: T): number;
+    pop(): T;
+    shift(): T;
+    unshift(element: T): number;
+    indexOf(element: T): number;
+    lastIndexOf(element: T): number;
+    includes(element: T): boolean;
+    slice(start: number, end?: number): T[];
+    concat(other: T[]): T[];
+    join(separator: string): string;
+    reverse(): T[];
+    fill(value: T, start?: number, end?: number): T[];
+    flat(): T[];
+    splice(start: number, deleteCount?: number): T[];
+    iterator(): T[];
+}

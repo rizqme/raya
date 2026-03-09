@@ -23,6 +23,9 @@ export class Object {
     /** Check equality with another object (identity comparison) */
     equals(other: unknown): boolean;
 
+    /** JS-style static equality helper */
+    static is(a: unknown, b: unknown): boolean;
+
     /** Define a property descriptor on an object */
     static defineProperty<T, D>(obj: T, key: string, descriptor: D): T;
 

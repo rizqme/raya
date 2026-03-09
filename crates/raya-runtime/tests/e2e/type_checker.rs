@@ -172,6 +172,136 @@ fn test_private_field_accessible_within_class() {
     );
 }
 
+#[test]
+fn test_private_field_not_accessible_from_subclass() {
+    expect_compile_error(
+        "class Base {
+             private secret: number = 42;
+         }
+         class Child extends Base {
+             read(): number { return this.secret; }
+         }
+         return 0;",
+        "private",
+    );
+}
+
+#[test]
+fn test_protected_field_external_access() {
+    expect_compile_error(
+        "class Base {
+             protected code: number = 42;
+         }
+         let b = new Base();
+         return b.code;",
+        "protected",
+    );
+}
+
+#[test]
+fn test_protected_field_unrelated_class_access() {
+    expect_compile_error(
+        "class Base {
+             protected code: number = 42;
+         }
+         class Other {
+             read(b: Base): number { return b.code; }
+         }
+         return 0;",
+        "protected",
+    );
+}
+
+#[test]
+fn test_protected_field_accessible_from_subclass() {
+    expect_i32(
+        "class Base {
+             protected code: number = 42;
+         }
+         class Child extends Base {
+             read(): number { return this.code; }
+         }
+         return new Child().read();",
+        42,
+    );
+}
+
+#[test]
+fn test_private_constructor_not_instantiable() {
+    expect_compile_error(
+        "class Secret {
+             private constructor() {}
+         }
+         let s = new Secret();
+         return 0;",
+        "NewNonClass",
+    );
+}
+
+#[test]
+fn test_private_constructor_accessible_inside_declaring_class() {
+    expect_i32(
+        "class Secret {
+             private constructor() {}
+             static make(): Secret { return new Secret(); }
+         }
+         return Secret.make() != null ? 1 : 0;",
+        1,
+    );
+}
+
+#[test]
+fn test_protected_constructor_not_directly_instantiable() {
+    expect_compile_error(
+        "class Base {
+             protected constructor() {}
+         }
+         let b = new Base();
+         return 0;",
+        "NewNonClass",
+    );
+}
+
+#[test]
+fn test_public_constructor_still_instantiable() {
+    expect_i32(
+        "class Box {
+             constructor() {}
+         }
+         let b = new Box();
+         return b != null ? 1 : 0;",
+        1,
+    );
+}
+
+#[test]
+fn test_union_member_requires_all_variants() {
+    expect_compile_error(
+        "type U = { kind: \"a\", a: number } | { kind: \"b\", b: number };
+         function read(u: U): number {
+             return u.b;
+         }
+         return 0;",
+        "property",
+    );
+}
+
+#[test]
+fn test_nullable_union_array_literal_assignable_to_array_annotation() {
+    expect_i32(
+        "let arr: (number | null)[] = [1, null, 3];
+         let v = arr[2];
+         if (v === null) { return 0; }
+         return v;",
+        3,
+    );
+}
+
+#[test]
+fn test_in_operator_reports_compile_error_not_parser_hang() {
+    expect_compile_error("return \"a\" in { a: 1 };", "unsupported operator 'in'");
+}
+
 // ============================================================================
 // 4. Class Inheritance Type Checks
 //    Adapted from: typescript-go/testdata/tests/cases/compiler/checkInheritedProperty.ts

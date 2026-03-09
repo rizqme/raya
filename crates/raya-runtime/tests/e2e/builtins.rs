@@ -2163,6 +2163,27 @@ fn test_node_compat_globalthis_exists() {
 }
 
 #[test]
+fn test_node_compat_array_global_from() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let values = Array.from([1, 2, 3]);
+        return values[2];
+    "#,
+        3,
+    );
+}
+
+#[test]
+fn test_node_compat_object_is_basic() {
+    expect_bool_runtime_node_compat(
+        r#"
+        return Object.is(1, 1);
+    "#,
+        true,
+    );
+}
+
+#[test]
 fn test_node_compat_reflect_global_basic_ops() {
     expect_bool_runtime_node_compat(
         r#"

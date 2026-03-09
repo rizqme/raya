@@ -1,6 +1,6 @@
 //! `raya eval` — Evaluate an inline expression or statement.
 
-use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode, Value};
+use raya_runtime::{BuiltinMode, RuntimeOptions, Session, TypeMode};
 
 pub fn execute(
     code: String,
@@ -14,7 +14,7 @@ pub fn execute(
     if matches!(type_mode, TypeMode::Ts | TypeMode::Js) && !node_compat {
         anyhow::bail!("--mode ts/js requires --node-compat");
     }
-    let rt = Runtime::with_options(RuntimeOptions {
+    let options = RuntimeOptions {
         no_jit,
         jit_threshold,
         builtin_mode: if node_compat {
@@ -25,7 +25,8 @@ pub fn execute(
         type_mode: Some(type_mode),
         ts_options: None,
         ..Default::default()
-    });
+    };
+    let mut session = Session::new(&options);
 
     // Wrap bare expressions in a return statement for convenience.
     // Full programs (with function/class/import) are passed through as-is.
@@ -35,11 +36,13 @@ pub fn execute(
         code
     };
 
-    let value = rt.eval(&source).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let value = session
+        .eval(&source)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Print result unless --no-print, or if --print forces it
     if !no_print && (print || !value.is_null()) {
-        println!("{}", format_value(&value));
+        println!("{}", session.format_value(&value));
     }
 
     Ok(())
@@ -51,11 +54,15 @@ fn needs_wrapping(code: &str) -> bool {
     !trimmed.starts_with("function ")
         && !trimmed.starts_with("async function ")
         && !trimmed.starts_with("class ")
+        && !trimmed.starts_with("interface ")
+        && !trimmed.starts_with("enum ")
         && !trimmed.starts_with("type ")
         && !trimmed.starts_with("abstract ")
+        && !trimmed.starts_with("export ")
         && !trimmed.starts_with("return ")
         && !trimmed.starts_with("import ")
         && !trimmed.starts_with("let ")
+        && !trimmed.starts_with("var ")
         && !trimmed.starts_with("const ")
         && !trimmed.starts_with("try ")
         && !trimmed.starts_with("if ")
@@ -81,24 +88,14 @@ mod tests {
     fn wraps_simple_expression() {
         assert!(needs_wrapping("1 + 2 * 3"));
     }
-}
 
-/// Format a VM Value for display.
-fn format_value(value: &Value) -> String {
-    if value.is_null() {
-        return "null".to_string();
+    #[test]
+    fn does_not_wrap_interface_declaration() {
+        assert!(!needs_wrapping("interface Box { value: number }"));
     }
-    if let Some(b) = value.as_bool() {
-        return b.to_string();
+
+    #[test]
+    fn does_not_wrap_export_statement() {
+        assert!(!needs_wrapping("export const x = 1;"));
     }
-    if let Some(i) = value.as_i32() {
-        return i.to_string();
-    }
-    if let Some(f) = value.as_f64() {
-        if f.fract() == 0.0 && f.abs() < i64::MAX as f64 {
-            return format!("{}", f as i64);
-        }
-        return f.to_string();
-    }
-    format!("{:?}", value)
 }

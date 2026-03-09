@@ -3137,8 +3137,13 @@ impl<'a> TypeChecker<'a> {
             self.maybe_escalate_identifier_to_jsobject(&idx.object, Some(&idx.index));
         }
 
-        let callee_ty = self.check_expr(&call.callee);
-        self.check_unknown_actionable(callee_ty, "call", *call.callee.span());
+        let raw_callee_ty = self.check_expr(&call.callee);
+        self.check_unknown_actionable(raw_callee_ty, "call", *call.callee.span());
+        let callee_ty = if call.optional {
+            self.get_non_null_type(raw_callee_ty)
+        } else {
+            raw_callee_ty
+        };
 
         // Check all argument types first (before creating GenericContext)
         let arg_types: Vec<(TypeId, crate::parser::Span)> = call
@@ -4219,10 +4224,16 @@ impl<'a> TypeChecker<'a> {
 
     /// Check index access
     fn check_index(&mut self, index: &crate::parser::ast::IndexExpression) -> TypeId {
-        let object_ty = self.check_expr(&index.object);
+        let raw_object_ty = self.check_expr(&index.object);
         let index_ty = self.check_expr(&index.index);
-        self.check_unknown_actionable(object_ty, "index", *index.object.span());
+        self.check_unknown_actionable(raw_object_ty, "index", *index.object.span());
         self.maybe_escalate_identifier_to_jsobject(&index.object, Some(&index.index));
+
+        let object_ty = if index.optional {
+            self.get_non_null_type(raw_object_ty)
+        } else {
+            raw_object_ty
+        };
 
         // JSObject<T> supports dynamic key lookup.
         if self.type_ctx.jsobject_inner(object_ty).is_some()
@@ -4577,6 +4588,24 @@ impl<'a> TypeChecker<'a> {
                                 name: name.clone(),
                                 span: new_expr.span,
                             });
+                        }
+                        if let Some(ctor_sig) =
+                            class.methods.iter().find(|method| method.name == "constructor")
+                        {
+                            let allow_non_public_ctor = self
+                                .current_class_type
+                                .and_then(|ty| self.resolve_class_type(ty))
+                                .map(|current| current.name == class.name)
+                                .unwrap_or(false);
+                            if ctor_sig.visibility != crate::parser::ast::Visibility::Public
+                                && !allow_non_public_ctor
+                            {
+                                // Non-public constructors are not directly constructible.
+                                self.errors.push(CheckError::NewNonClass {
+                                    name: name.clone(),
+                                    span: new_expr.span,
+                                });
+                            }
                         }
                     }
 
@@ -5077,11 +5106,13 @@ impl<'a> TypeChecker<'a> {
                 return self.type_ctx.unknown_type();
             };
 
-            if let Some((ty, vis)) = self.lookup_class_member(&parent_class, &property_name) {
+            if let Some((ty, vis, owner_name)) =
+                self.lookup_class_member_with_owner(&parent_class, &property_name)
+            {
                 if vis == crate::parser::ast::Visibility::Private {
                     self.errors.push(CheckError::PropertyNotFound {
                         property: format!("private member '{}'", property_name),
-                        ty: parent_class.name.clone(),
+                        ty: owner_name,
                         span: member.span,
                     });
                     return self.type_ctx.unknown_type();
@@ -5344,27 +5375,31 @@ impl<'a> TypeChecker<'a> {
             let class_to_use = actual_class.as_ref().unwrap_or(class);
 
             // Look up the member in the class hierarchy (including parent classes)
-            if let Some((ty, vis)) = self.lookup_class_member(class_to_use, &property_name) {
-                // Check visibility: private members can only be accessed from within the same class
-                if vis == crate::parser::ast::Visibility::Private {
-                    // Check if we're inside the same class
-                    let accessing_own_class = self.current_class_type.is_some_and(|ct| {
-                        if let Some(crate::parser::types::Type::Class(cur_class)) =
-                            self.type_ctx.get(ct)
-                        {
-                            cur_class.name == class_to_use.name
-                        } else {
-                            false
-                        }
+            if let Some((ty, vis, owner_name)) =
+                self.lookup_class_member_with_owner(class_to_use, &property_name)
+            {
+                // Visibility:
+                // - private: only declaring class
+                // - protected: declaring class or subclasses
+                if vis == crate::parser::ast::Visibility::Private
+                    && !self.is_current_class_same_or_subclass_of(&owner_name, false)
+                {
+                    self.errors.push(CheckError::PropertyNotFound {
+                        property: format!("private member '{}'", property_name),
+                        ty: owner_name,
+                        span: member.span,
                     });
-                    if !accessing_own_class {
-                        self.errors.push(CheckError::PropertyNotFound {
-                            property: format!("private member '{}'", property_name),
-                            ty: class_to_use.name.clone(),
-                            span: member.span,
-                        });
-                        return self.type_ctx.unknown_type();
-                    }
+                    return self.type_ctx.unknown_type();
+                }
+                if vis == crate::parser::ast::Visibility::Protected
+                    && !self.is_current_class_same_or_subclass_of(&owner_name, true)
+                {
+                    self.errors.push(CheckError::PropertyNotFound {
+                        property: format!("protected member '{}'", property_name),
+                        ty: owner_name,
+                        span: member.span,
+                    });
+                    return self.type_ctx.unknown_type();
                 }
                 return ty;
             }
@@ -5413,61 +5448,69 @@ impl<'a> TypeChecker<'a> {
         if let Some(crate::parser::types::Type::Union(union)) = &obj_type {
             let null_ty = self.type_ctx.null_type();
             let mut found_types = Vec::new();
-            let mut object_like_members = 0usize;
+            let mut object_like_variants = 0usize;
+            let mut missing_on_some_object_like = false;
             for &member_id in &union.members {
                 if member_id == null_ty {
                     continue;
                 }
+                let mut variant_is_object_like = false;
+                let mut variant_has_member = false;
                 if let Some(member_ty) = self.type_ctx.get(member_id).cloned() {
                     let mut pending = vec![member_ty];
                     while let Some(variant_ty) = pending.pop() {
                         match variant_ty {
                             crate::parser::types::Type::Object(obj) => {
-                                object_like_members += 1;
+                                variant_is_object_like = true;
                                 for prop in &obj.properties {
                                     if prop.name == property_name && !found_types.contains(&prop.ty)
                                     {
                                         found_types.push(prop.ty);
+                                        variant_has_member = true;
                                     }
                                 }
                                 if let Some((_, sig_ty)) = obj.index_signature {
                                     if !found_types.contains(&sig_ty) {
                                         found_types.push(sig_ty);
                                     }
+                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Class(class) => {
-                                object_like_members += 1;
+                                variant_is_object_like = true;
                                 if let Some((ty, _vis)) =
                                     self.lookup_class_member(&class, &property_name)
                                 {
                                     if !found_types.contains(&ty) {
                                         found_types.push(ty);
                                     }
+                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Interface(interface_ty) => {
-                                object_like_members += 1;
+                                variant_is_object_like = true;
                                 if let Some(ty) =
                                     self.lookup_interface_member(&interface_ty, &property_name)
                                 {
                                     if !found_types.contains(&ty) {
                                         found_types.push(ty);
                                     }
+                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Array(arr) => {
-                                object_like_members += 1;
+                                variant_is_object_like = true;
                                 if let Some(ty) =
                                     self.get_array_method_type(&property_name, arr.element)
                                 {
                                     if !found_types.contains(&ty) {
                                         found_types.push(ty);
                                     }
+                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Map(map_ty) => {
-                                object_like_members += 1;
+                                variant_is_object_like = true;
                                 if let Some(ty) = self.get_map_method_type(
                                     &property_name,
                                     map_ty.key,
@@ -5476,16 +5519,18 @@ impl<'a> TypeChecker<'a> {
                                     if !found_types.contains(&ty) {
                                         found_types.push(ty);
                                     }
+                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Set(set_ty) => {
-                                object_like_members += 1;
+                                variant_is_object_like = true;
                                 if let Some(ty) =
                                     self.get_set_method_type(&property_name, set_ty.element)
                                 {
                                     if !found_types.contains(&ty) {
                                         found_types.push(ty);
                                     }
+                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Reference(type_ref) => {
@@ -5530,13 +5575,31 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+                if variant_is_object_like {
+                    object_like_variants += 1;
+                    if !variant_has_member {
+                        missing_on_some_object_like = true;
+                    }
+                }
+            }
+            if missing_on_some_object_like {
+                self.errors.push(CheckError::PropertyNotFound {
+                    property: property_name.clone(),
+                    ty: self.format_type(object_ty),
+                    span: member.span,
+                });
+                return self.fallback_type(
+                    member.span,
+                    FallbackReason::Unavoidable,
+                    "member-union-partial",
+                );
             }
             if found_types.len() == 1 {
                 return found_types[0];
             } else if found_types.len() > 1 {
                 return self.type_ctx.union_type(found_types);
             }
-            if object_like_members > 0 {
+            if object_like_variants > 0 {
                 self.errors.push(CheckError::PropertyNotFound {
                     property: property_name.clone(),
                     ty: self.format_type(object_ty),
@@ -5826,16 +5889,25 @@ impl<'a> TypeChecker<'a> {
         class: &crate::parser::types::ty::ClassType,
         property_name: &str,
     ) -> Option<(TypeId, crate::parser::ast::Visibility)> {
+        self.lookup_class_member_with_owner(class, property_name)
+            .map(|(ty, vis, _)| (ty, vis))
+    }
+
+    fn lookup_class_member_with_owner(
+        &mut self,
+        class: &crate::parser::types::ty::ClassType,
+        property_name: &str,
+    ) -> Option<(TypeId, crate::parser::ast::Visibility, String)> {
         // Check own properties first
         for prop in &class.properties {
             if prop.name == property_name {
-                return Some((prop.ty, prop.visibility));
+                return Some((prop.ty, prop.visibility, class.name.clone()));
             }
         }
         // Check own methods
         for method in &class.methods {
             if method.name == property_name {
-                return Some((method.ty, method.visibility));
+                return Some((method.ty, method.visibility, class.name.clone()));
             }
         }
 
@@ -5843,12 +5915,36 @@ impl<'a> TypeChecker<'a> {
         if let Some(parent_ty) = class.extends {
             if let Some(parent_class) = self.resolve_class_type(parent_ty) {
                 // Recursively check parent class
-                return self.lookup_class_member(&parent_class, property_name);
+                return self.lookup_class_member_with_owner(&parent_class, property_name);
             }
         }
 
         // Not found in class hierarchy
         None
+    }
+
+    fn is_current_class_same_or_subclass_of(
+        &mut self,
+        target_class_name: &str,
+        allow_subclass: bool,
+    ) -> bool {
+        let Some(current_ty) = self.current_class_type else {
+            return false;
+        };
+        let mut cursor = Some(current_ty);
+        while let Some(ty) = cursor {
+            let Some(class) = self.resolve_class_type(ty) else {
+                break;
+            };
+            if class.name == target_class_name {
+                return true;
+            }
+            if !allow_subclass {
+                return false;
+            }
+            cursor = class.extends;
+        }
+        false
     }
 
     fn resolve_class_type(&mut self, ty: TypeId) -> Option<crate::parser::types::ty::ClassType> {
@@ -5910,23 +6006,26 @@ impl<'a> TypeChecker<'a> {
             Some(crate::parser::types::Type::Class(c)) => c,
             _ => return None,
         };
-        let (ty, vis) = self.lookup_class_member(&class, property_name)?;
-        if vis == crate::parser::ast::Visibility::Private {
-            let accessing_own_class = self.current_class_type.is_some_and(|ct| {
-                if let Some(crate::parser::types::Type::Class(cur_class)) = self.type_ctx.get(ct) {
-                    cur_class.name == class_name
-                } else {
-                    false
-                }
+        let (ty, vis, owner_name) = self.lookup_class_member_with_owner(&class, property_name)?;
+        if vis == crate::parser::ast::Visibility::Private
+            && !self.is_current_class_same_or_subclass_of(&owner_name, false)
+        {
+            self.errors.push(CheckError::PropertyNotFound {
+                property: format!("private member '{}'", property_name),
+                ty: owner_name,
+                span,
             });
-            if !accessing_own_class {
-                self.errors.push(CheckError::PropertyNotFound {
-                    property: format!("private member '{}'", property_name),
-                    ty: class_name.to_string(),
-                    span,
-                });
-                return Some(self.type_ctx.unknown_type());
-            }
+            return Some(self.type_ctx.unknown_type());
+        }
+        if vis == crate::parser::ast::Visibility::Protected
+            && !self.is_current_class_same_or_subclass_of(&owner_name, true)
+        {
+            self.errors.push(CheckError::PropertyNotFound {
+                property: format!("protected member '{}'", property_name),
+                ty: owner_name,
+                span,
+            });
+            return Some(self.type_ctx.unknown_type());
         }
         Some(ty)
     }

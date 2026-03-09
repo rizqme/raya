@@ -384,6 +384,14 @@ impl<'a> SubtypingContext<'a> {
             // Array subtyping: T[] <: U[] if T <: U
             (Type::Array(a1), Type::Array(a2)) => self.is_subtype(a1.element, a2.element),
 
+            // Tuple-to-array subtyping: [T1, ..., Tn] <: U[] if every Ti <: U.
+            // Needed so heterogeneous tuple-like literals remain assignable to
+            // explicit array annotations such as `(A | B)[]`.
+            (Type::Tuple(tup), Type::Array(arr)) => tup
+                .elements
+                .iter()
+                .all(|&elem| self.is_subtype(elem, arr.element)),
+
             // Promise subtyping: Promise<T> <: Promise<U> if T <: U (covariant)
             (Type::Task(t1), Type::Task(t2)) => self.is_subtype(t1.result, t2.result),
 

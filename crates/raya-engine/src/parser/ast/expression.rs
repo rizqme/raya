@@ -402,6 +402,7 @@ pub struct CallExpression {
     pub callee: Box<Expression>,
     pub type_args: Option<Vec<TypeAnnotation>>,
     pub arguments: Vec<Expression>,
+    pub optional: bool, // fn?.()
     pub span: Span,
 }
 
@@ -430,6 +431,7 @@ pub struct MemberExpression {
 pub struct IndexExpression {
     pub object: Box<Expression>,
     pub index: Box<Expression>,
+    pub optional: bool, // obj?.[key]
     pub span: Span,
 }
 

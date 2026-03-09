@@ -25,7 +25,7 @@ use raya_engine::vm::object::{
 use raya_engine::vm::{Object, RayaString, Value, Vm, VmError};
 
 use crate::error::RuntimeError;
-use crate::{compile, vm_setup, RuntimeOptions};
+use crate::{vm_setup, Runtime, RuntimeOptions};
 
 /// A persistent evaluation session that maintains state across evals.
 ///
@@ -62,31 +62,23 @@ impl Session {
             format!("{}\n{}", self.declarations.join("\n"), code)
         };
 
-        let type_mode = self
-            .options
-            .type_mode
-            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
-        let (module, _interner) = compile::compile_source_with_modes_and_ts_options(
-            &full_source,
-            self.options.builtin_mode,
-            type_mode,
-            self.options.ts_options.as_ref(),
-        )?;
+        let runtime = Runtime::with_options(self.options.clone());
+        let program = runtime.compile_program_source(&full_source)?;
 
         let trimmed = code.trim();
         let mut vm = vm_setup::create_vm(&self.options);
         // REPL/session should execute only the compiler entry main and avoid
         // implicit invocation of user-defined `main`.
-        let result = match vm.execute_entry_only(&module) {
+        let result = match runtime.execute_program_with_vm(&program, &mut vm) {
             Ok(value) => value,
-            Err(VmError::RuntimeError(message))
+            Err(RuntimeError::Vm(VmError::RuntimeError(message)))
                 if message == "No main function" && is_declaration(trimmed) =>
             {
                 // Declaration-only cells are valid session updates even when they
                 // do not produce an entry function body.
                 Value::null()
             }
-            Err(error) => return Err(RuntimeError::Vm(error)),
+            Err(error) => return Err(error),
         };
 
         // If successful and this is a declaration, accumulate it.

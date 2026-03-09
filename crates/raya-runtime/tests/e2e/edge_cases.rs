@@ -1679,6 +1679,51 @@ fn test_typeof_in_ternary() {
     );
 }
 
+#[test]
+fn test_typeof_number_after_int_assignment() {
+    expect_bool(
+        "
+        let i: int = 42;
+        let n: number = i;
+        return typeof n == \"number\";
+    ",
+        true,
+    );
+}
+
+#[test]
+fn test_typeof_object_literal() {
+    expect_bool(
+        "
+        let o = {};
+        return typeof o == \"object\";
+    ",
+        true,
+    );
+}
+
+#[test]
+fn test_typeof_arrow_function() {
+    expect_bool(
+        "
+        let fnRef = (): number => 1;
+        return typeof fnRef == \"function\";
+    ",
+        true,
+    );
+}
+
+#[test]
+fn test_typeof_function_declaration() {
+    expect_bool(
+        "
+        function f(): number { return 1; }
+        return typeof f == \"function\";
+    ",
+        true,
+    );
+}
+
 // ============================================================================
 // 16. Advanced Class Patterns
 // ============================================================================

@@ -1025,6 +1025,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_call(&mut self, call: &ast::CallExpression, full_expr: &Expression) -> Register {
+        if call.optional {
+            return self.lower_optional_call(call, full_expr);
+        }
+
         // Lower arguments first
         let args: Vec<Register> = call.arguments.iter().map(|a| self.lower_expr(a)).collect();
 
@@ -3074,6 +3078,72 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
+    fn lower_optional_call(
+        &mut self,
+        call: &ast::CallExpression,
+        full_expr: &Expression,
+    ) -> Register {
+        let call_ty = self.get_expr_type(full_expr);
+        let dest = self.alloc_register(call_ty);
+        let callee = self.lower_expr(&call.callee);
+
+        let null_block = self.alloc_block();
+        let call_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+        self.set_terminator(Terminator::BranchIfNull {
+            value: callee.clone(),
+            null_block,
+            not_null_block: call_block,
+        });
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                null_block,
+                "opt.call.null",
+            ));
+        self.current_block = null_block;
+        let null_result = self.lower_null_literal();
+        let null_exit = self.current_block;
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                call_block,
+                "opt.call.invoke",
+            ));
+        self.current_block = call_block;
+        let args: Vec<Register> = call.arguments.iter().map(|a| self.lower_expr(a)).collect();
+        let call_result = self.alloc_register(dest.ty);
+        if self.type_id_is_async_callable(self.get_expr_type(&call.callee)) {
+            self.emit(IrInstr::SpawnClosure {
+                dest: call_result.clone(),
+                closure: callee,
+                args,
+            });
+        } else {
+            self.emit(IrInstr::CallClosure {
+                dest: Some(call_result.clone()),
+                closure: callee,
+                args,
+            });
+            self.propagate_type_projection_to_register(call_ty, &call_result);
+        }
+        let call_exit = self.current_block;
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                merge_block,
+                "opt.call.merge",
+            ));
+        self.current_block = merge_block;
+        self.emit(IrInstr::Phi {
+            dest: dest.clone(),
+            sources: vec![(null_exit, null_result), (call_exit, call_result)],
+        });
+        dest
+    }
+
     /// Get or build a class method IR function. Caches by "TypeName_methodName".
     fn get_or_build_class_method(&mut self, type_name: &str, method_name: &str) -> FunctionId {
         let key = format!("{}_{}", type_name, method_name);
@@ -3613,10 +3683,67 @@ impl<'a> Lowerer<'a> {
 
     fn lower_index(&mut self, index: &ast::IndexExpression, full_expr: &Expression) -> Register {
         let object = self.lower_expr(&index.object);
-        let idx = self.lower_expr(&index.index);
         let elem_ty = self.get_expr_type(full_expr);
         let dest = self.alloc_register(elem_ty);
 
+        if index.optional {
+            let null_block = self.alloc_block();
+            let load_block = self.alloc_block();
+            let merge_block = self.alloc_block();
+            self.set_terminator(Terminator::BranchIfNull {
+                value: object.clone(),
+                null_block,
+                not_null_block: load_block,
+            });
+
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(
+                    null_block,
+                    "opt.index.null",
+                ));
+            self.current_block = null_block;
+            let null_result = self.lower_null_literal();
+            let null_exit = self.current_block;
+            self.set_terminator(Terminator::Jump(merge_block));
+
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(
+                    load_block,
+                    "opt.index.load",
+                ));
+            self.current_block = load_block;
+            let idx = self.lower_expr(&index.index);
+            let load_result = self.alloc_register(dest.ty);
+            if self.index_uses_dynamic_keyed_access(self.get_expr_type(&index.object)) {
+                self.emit(IrInstr::DynGetKeyed {
+                    dest: load_result.clone(),
+                    object,
+                    key: idx,
+                });
+            } else {
+                self.emit(IrInstr::LoadElement {
+                    dest: load_result.clone(),
+                    array: object,
+                    index: idx,
+                });
+            }
+            let load_exit = self.current_block;
+            self.set_terminator(Terminator::Jump(merge_block));
+
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(
+                    merge_block,
+                    "opt.index.merge",
+                ));
+            self.current_block = merge_block;
+            self.emit(IrInstr::Phi {
+                dest: dest.clone(),
+                sources: vec![(null_exit, null_result), (load_exit, load_result)],
+            });
+            return dest;
+        }
+
+        let idx = self.lower_expr(&index.index);
         if self.index_uses_dynamic_keyed_access(self.get_expr_type(&index.object)) {
             self.emit(IrInstr::DynGetKeyed {
                 dest: dest.clone(),
@@ -6087,6 +6214,26 @@ impl<'a> Lowerer<'a> {
             self.emit(IrInstr::Assign {
                 dest: dest.clone(),
                 value: IrValue::Constant(IrConstant::String("int".to_string())),
+            });
+            return dest;
+        }
+
+        // Prefer static primitive classification when the checker already knows it.
+        // This keeps `let x: number = 42; typeof x` consistent with declared surface
+        // types even when runtime representation is stored as integer.
+        let static_typeof_name = match self.get_expr_type(&typeof_expr.argument).as_u32() {
+            NUMBER_TYPE_ID => Some("number"),
+            INT_TYPE_ID => Some("int"),
+            STRING_TYPE_ID => Some("string"),
+            BOOLEAN_TYPE_ID => Some("boolean"),
+            NULL_TYPE_ID => Some("null"),
+            _ => None,
+        };
+        if let Some(type_name) = static_typeof_name {
+            let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: dest.clone(),
+                value: IrValue::Constant(IrConstant::String(type_name.to_string())),
             });
             return dest;
         }
