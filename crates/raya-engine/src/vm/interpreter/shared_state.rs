@@ -658,13 +658,22 @@ impl SharedVmState {
             .map(Self::function_global_slot_count)
             .max()
             .unwrap_or(0);
+        let exported_constant_slots = module
+            .exports
+            .iter()
+            .filter(|export| matches!(export.symbol_type, crate::compiler::SymbolType::Constant))
+            .map(|export| export.index + 1)
+            .max()
+            .unwrap_or(0);
         let import_slots = module
             .imports
             .iter()
             .filter_map(|import| import.runtime_global_slot.map(|slot| slot as usize + 1))
             .max()
             .unwrap_or(0);
-        function_slots.max(import_slots)
+        function_slots
+            .max(import_slots)
+            .max(exported_constant_slots)
     }
 
     fn function_global_slot_count(function: &crate::compiler::Function) -> usize {

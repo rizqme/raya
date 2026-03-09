@@ -2111,7 +2111,7 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
     }
 }
 
-/// Parse export specifiers: foo, bar as baz
+/// Parse export specifiers: foo, bar as baz, foo as default
 fn parse_export_specifiers(parser: &mut Parser) -> Result<Vec<ExportSpecifier>, ParseError> {
     let mut specifiers = Vec::new();
     let mut guard = super::guards::LoopGuard::new("export_specifiers");
@@ -2119,31 +2119,58 @@ fn parse_export_specifiers(parser: &mut Parser) -> Result<Vec<ExportSpecifier>, 
     while !parser.check(&Token::RightBrace) && !parser.at_eof() {
         guard.check()?;
 
-        let name = if let Token::Identifier(name) = parser.current() {
-            let name_str = *name;
-            let name_span = parser.current_span();
-            parser.advance();
-            Identifier {
-                name: name_str,
-                span: name_span,
+        let name = match parser.current() {
+            Token::Identifier(name) => {
+                let name_str = *name;
+                let name_span = parser.current_span();
+                parser.advance();
+                Identifier {
+                    name: name_str,
+                    span: name_span,
+                }
             }
-        } else {
-            return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
+            Token::Default => {
+                let name_span = parser.current_span();
+                parser.advance();
+                Identifier {
+                    name: parser.intern("default"),
+                    span: name_span,
+                }
+            }
+            _ => {
+                return Err(
+                    parser.unexpected_token(&[Token::Identifier(Symbol::dummy()), Token::Default])
+                )
+            }
         };
 
         // Optional 'as' alias
         let alias = if parser.check(&Token::As) {
             parser.advance();
-            if let Token::Identifier(alias_name) = parser.current() {
-                let alias_str = *alias_name;
-                let alias_span = parser.current_span();
-                parser.advance();
-                Some(Identifier {
-                    name: alias_str,
-                    span: alias_span,
-                })
-            } else {
-                return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
+            match parser.current() {
+                Token::Identifier(alias_name) => {
+                    let alias_str = *alias_name;
+                    let alias_span = parser.current_span();
+                    parser.advance();
+                    Some(Identifier {
+                        name: alias_str,
+                        span: alias_span,
+                    })
+                }
+                Token::Default => {
+                    let alias_span = parser.current_span();
+                    parser.advance();
+                    Some(Identifier {
+                        name: parser.intern("default"),
+                        span: alias_span,
+                    })
+                }
+                _ => {
+                    return Err(parser.unexpected_token(&[
+                        Token::Identifier(Symbol::dummy()),
+                        Token::Default,
+                    ]))
+                }
             }
         } else {
             None
@@ -2337,5 +2364,34 @@ class Foo {
         } else {
             panic!("Expected ClassDecl");
         }
+    }
+
+    #[test]
+    fn test_export_specifier_alias_to_default() {
+        let source = r#"
+const EventEmitterShim = EventEmitter;
+export { EventEmitterShim as default, default as EventEmitter };
+"#;
+        let parser = Parser::new(source).expect("should lex");
+        let (module, interner) = parser.parse().expect("should parse");
+        assert_eq!(module.statements.len(), 2);
+        let crate::parser::ast::Statement::ExportDecl(crate::parser::ast::ExportDecl::Named {
+            specifiers,
+            ..
+        }) = &module.statements[1]
+        else {
+            panic!("Expected named export declaration");
+        };
+
+        assert_eq!(specifiers.len(), 2);
+        assert_eq!(
+            interner.resolve(specifiers[0].alias.as_ref().unwrap().name),
+            "default"
+        );
+        assert_eq!(interner.resolve(specifiers[1].name.name), "default");
+        assert_eq!(
+            interner.resolve(specifiers[1].alias.as_ref().unwrap().name),
+            "EventEmitter"
+        );
     }
 }

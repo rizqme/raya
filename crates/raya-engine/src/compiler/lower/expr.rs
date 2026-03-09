@@ -2704,11 +2704,24 @@ impl<'a> Lowerer<'a> {
                 let checker_dispatch = self.normalize_type_for_dispatch(checker_ty);
                 let field_dispatch = self.normalize_type_for_dispatch(field_ty);
 
-                if reg_dispatch != UNRESOLVED_TYPE_ID && reg_dispatch != 6 {
+                let usable = |id: u32| id != UNRESOLVED_TYPE_ID && id != 6;
+                let has_dispatch = |id: u32| {
+                    self.type_registry.lookup_method(id, method_name).is_some()
+                        || (args.is_empty()
+                            && self.type_registry.lookup_property(id, method_name).is_some())
+                };
+
+                if usable(reg_dispatch) && has_dispatch(reg_dispatch) {
                     reg_dispatch
-                } else if checker_dispatch != UNRESOLVED_TYPE_ID && checker_dispatch != 6 {
+                } else if usable(checker_dispatch) && has_dispatch(checker_dispatch) {
                     checker_dispatch
-                } else if field_dispatch != UNRESOLVED_TYPE_ID && field_dispatch != 6 {
+                } else if usable(field_dispatch) && has_dispatch(field_dispatch) {
+                    field_dispatch
+                } else if usable(reg_dispatch) {
+                    reg_dispatch
+                } else if usable(checker_dispatch) {
+                    checker_dispatch
+                } else if usable(field_dispatch) {
                     field_dispatch
                 } else {
                     UNRESOLVED_TYPE_ID
@@ -2749,6 +2762,14 @@ impl<'a> Lowerer<'a> {
             } || (nominal_type_id.is_none()
                 && (self.type_requires_late_bound_dispatch(object.ty)
                     || self.type_requires_late_bound_dispatch(self.get_expr_type(&member.object))));
+            let has_registry_dispatch =
+                obj_type_id != UNRESOLVED_TYPE_ID
+                    && (self.type_registry.lookup_method(obj_type_id, method_name).is_some()
+                        || (args.is_empty()
+                            && self
+                                .type_registry
+                                .lookup_property(obj_type_id, method_name)
+                                .is_some()));
 
             // Handle-backed Mutex<T> methods that map to dedicated bytecode opcodes.
             if obj_type_id == MUTEX_TYPE_ID && args.is_empty() {
@@ -2779,7 +2800,7 @@ impl<'a> Lowerer<'a> {
 
             // Imported-constructor objects (without local class metadata) must use
             // late-bound member lookup regardless of primitive checker fallbacks.
-            if nominal_type_id.is_none() && receiver_requires_late_bound {
+            if nominal_type_id.is_none() && receiver_requires_late_bound && !has_registry_dispatch {
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                     if let Expression::Identifier(obj_ident) = &*member.object {
                         eprintln!(

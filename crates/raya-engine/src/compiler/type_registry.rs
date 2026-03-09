@@ -588,6 +588,7 @@ impl TypeRegistry {
 
         match ty {
             Type::Array(_) | Type::Tuple(_) => Ok(TypeContext::ARRAY_TYPE_ID),
+            Type::Generic(generic) => self.normalize_type(generic.base.as_u32(), type_ctx),
             Type::Primitive(p) => {
                 use crate::parser::types::ty::PrimitiveType as P;
                 let name = match p {
@@ -622,6 +623,14 @@ impl TypeRegistry {
                     "string" => Ok(1),                         // Pre-interned: Primitive(String)
                     "RegExp" => Ok(8),                         // Pre-interned: Type::RegExp
                     "Array" => Ok(TypeContext::ARRAY_TYPE_ID), // 17
+                    "Channel" => Ok(TypeContext::CHANNEL_TYPE_ID),
+                    "Promise" => Ok(TypeContext::TASK_TYPE_ID),
+                    "Map" => Ok(TypeContext::MAP_TYPE_ID),
+                    "Set" => Ok(TypeContext::SET_TYPE_ID),
+                    "Date" => Ok(TypeContext::DATE_TYPE_ID),
+                    "Buffer" => Ok(TypeContext::BUFFER_TYPE_ID),
+                    "Mutex" => Ok(TypeContext::MUTEX_TYPE_ID),
+                    "Json" | "Object" => Ok(TypeContext::JSON_OBJECT_TYPE_ID),
                     _ => Ok(type_ctx
                         .lookup_named_type(&class_type.name)
                         .map(|id| id.as_u32())
