@@ -2022,9 +2022,11 @@ fn allocate_buffer_object(ctx: &RuntimeHandlerContext<'_>, data: &[u8]) -> Resul
         let _ = buffer.set_byte(i, byte);
     }
 
+    // Runtime stdlib handler exposes Buffer internals as opaque u64 handles.
+    // Use a stable boxed allocation for handle safety across GC cycles.
+    let handle = Box::into_raw(Box::new(buffer)) as u64;
+
     let mut gc = ctx.gc.lock();
-    let buffer_ptr = gc.allocate(buffer);
-    let handle = buffer_ptr.as_ptr() as u64;
 
     let mut obj = Object::new_nominal(
         buffer_layout_id,

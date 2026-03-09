@@ -407,6 +407,11 @@ impl<'a> Interpreter<'a> {
                 "Expected channel handle (u64)".to_string(),
             ));
         };
+        if !self.pinned_handles.read().contains(&handle) {
+            return Err(VmError::TypeError(
+                "Expected channel handle (u64)".to_string(),
+            ));
+        }
         let ch_ptr = handle as *const ChannelObject;
         if ch_ptr.is_null() {
             return Err(VmError::TypeError(
@@ -914,8 +919,7 @@ impl<'a> Interpreter<'a> {
                         // Create a new channel with given capacity
                         let capacity = args[0].as_i32().unwrap_or(0) as usize;
                         let ch = ChannelObject::new(capacity);
-                        let gc_ptr = self.gc.lock().allocate(ch);
-                        let handle = gc_ptr.as_ptr() as u64;
+                        let handle = self.allocate_pinned_handle(ch);
                         if let Err(e) = stack.push(Value::u64(handle)) {
                             return OpcodeResult::Error(e);
                         }
@@ -1089,8 +1093,7 @@ impl<'a> Interpreter<'a> {
                     id if id == buffer::NEW => {
                         let size = args[0].as_i32().unwrap_or(0) as usize;
                         let buf = Buffer::new(size);
-                        let gc_ptr = self.gc.lock().allocate(buf);
-                        let handle = gc_ptr.as_ptr() as u64;
+                        let handle = self.allocate_pinned_handle(buf);
                         let wrapped = match self.alloc_buffer_object(handle, size) {
                             Ok(v) => v,
                             Err(e) => return OpcodeResult::Error(e),
@@ -1261,10 +1264,7 @@ impl<'a> Interpreter<'a> {
                         };
                         let sliced = buf.slice(start, end);
                         let sliced_len = sliced.length() as i32;
-                        let new_handle = {
-                            let gc_ptr = self.gc.lock().allocate(sliced);
-                            gc_ptr.as_ptr() as u64
-                        };
+                        let new_handle = self.allocate_pinned_handle(sliced);
 
                         let value = match self.alloc_buffer_object(new_handle, sliced_len as usize)
                         {
@@ -1368,8 +1368,7 @@ impl<'a> Interpreter<'a> {
                         let bytes = s.data.as_bytes();
                         let mut buf = Buffer::new(bytes.len());
                         buf.data.copy_from_slice(bytes);
-                        let gc_ptr = self.gc.lock().allocate(buf);
-                        let new_handle = gc_ptr.as_ptr() as u64;
+                        let new_handle = self.allocate_pinned_handle(buf);
                         let value = match self.alloc_buffer_object(new_handle, bytes.len()) {
                             Ok(v) => v,
                             Err(e) => return OpcodeResult::Error(e),
@@ -1465,8 +1464,7 @@ impl<'a> Interpreter<'a> {
                     // Map native calls
                     id if id == map::NEW => {
                         let map = MapObject::new();
-                        let gc_ptr = self.gc.lock().allocate(map);
-                        let handle = gc_ptr.as_ptr() as u64;
+                        let handle = self.allocate_pinned_handle(map);
                         if let Err(e) = stack.push(Value::u64(handle)) {
                             return OpcodeResult::Error(e);
                         }
@@ -1671,8 +1669,7 @@ impl<'a> Interpreter<'a> {
                     // Set native calls
                     id if id == set::NEW => {
                         let set_obj = SetObject::new();
-                        let gc_ptr = self.gc.lock().allocate(set_obj);
-                        let handle = gc_ptr.as_ptr() as u64;
+                        let handle = self.allocate_pinned_handle(set_obj);
                         if let Err(e) = stack.push(Value::u64(handle)) {
                             return OpcodeResult::Error(e);
                         }
@@ -1820,8 +1817,7 @@ impl<'a> Interpreter<'a> {
                         for val in set_b.values() {
                             result.add(val);
                         }
-                        let gc_ptr = self.gc.lock().allocate(result);
-                        let handle = gc_ptr.as_ptr() as u64;
+                        let handle = self.allocate_pinned_handle(result);
                         if let Err(e) = stack.push(Value::u64(handle)) {
                             return OpcodeResult::Error(e);
                         }
@@ -1851,8 +1847,7 @@ impl<'a> Interpreter<'a> {
                                 result.add(val);
                             }
                         }
-                        let gc_ptr = self.gc.lock().allocate(result);
-                        let handle = gc_ptr.as_ptr() as u64;
+                        let handle = self.allocate_pinned_handle(result);
                         if let Err(e) = stack.push(Value::u64(handle)) {
                             return OpcodeResult::Error(e);
                         }
@@ -1882,8 +1877,7 @@ impl<'a> Interpreter<'a> {
                                 result.add(val);
                             }
                         }
-                        let gc_ptr = self.gc.lock().allocate(result);
-                        let handle = gc_ptr.as_ptr() as u64;
+                        let handle = self.allocate_pinned_handle(result);
                         if let Err(e) = stack.push(Value::u64(handle)) {
                             return OpcodeResult::Error(e);
                         }
@@ -2729,8 +2723,7 @@ impl<'a> Interpreter<'a> {
                         };
                         match RegExpObject::new(&pattern, &flags) {
                             Ok(re) => {
-                                let gc_ptr = self.gc.lock().allocate(re);
-                                let handle = gc_ptr.as_ptr() as u64;
+                                let handle = self.allocate_pinned_handle(re);
                                 if let Err(e) = stack.push(Value::u64(handle)) {
                                     return OpcodeResult::Error(e);
                                 }

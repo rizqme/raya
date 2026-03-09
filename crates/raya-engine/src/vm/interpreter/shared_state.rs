@@ -18,7 +18,7 @@ use crate::vm::value::Value;
 use crossbeam::channel::Sender;
 use crossbeam_deque::Injector;
 use parking_lot::{Mutex, RwLock};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -346,6 +346,10 @@ pub struct SharedVmState {
     /// stable root set such as task state or a shared cache.
     pub ephemeral_gc_roots: RwLock<Vec<Value>>,
 
+    /// Opaque GC-backed handles that are pinned for VM lifetime.
+    /// Reactor/native paths must validate handle membership before pointer dereference.
+    pub pinned_handles: RwLock<FxHashSet<u64>>,
+
     /// Safepoint coordinator
     pub safepoint: Arc<SafepointCoordinator>,
 
@@ -488,6 +492,7 @@ impl SharedVmState {
             builtin_global_slots: RwLock::new(FxHashMap::default()),
             constant_string_cache: RwLock::new(FxHashMap::default()),
             ephemeral_gc_roots: RwLock::new(Vec::new()),
+            pinned_handles: RwLock::new(FxHashSet::default()),
             safepoint,
             tasks,
             promise_microtasks: Mutex::new(std::collections::VecDeque::new()),
@@ -599,6 +604,26 @@ impl SharedVmState {
         let rooted = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
         self.ephemeral_gc_roots.write().push(rooted);
         rooted
+    }
+
+    /// Allocate a heap object and pin it for VM lifetime behind an opaque u64 handle.
+    ///
+    /// Native handle surfaces (Buffer/Map/Set/RegExp/Channel internals) pass raw
+    /// addresses as integers. Keep these objects rooted so GC never frees them
+    /// while the handle may still be referenced by runtime code.
+    pub fn allocate_pinned_handle<T: 'static>(&self, value: T) -> u64 {
+        let mut gc = self.gc.lock();
+        let gc_ptr = gc.allocate(value);
+        let rooted = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        self.ephemeral_gc_roots.write().push(rooted);
+        let handle = gc_ptr.as_ptr() as u64;
+        self.pinned_handles.write().insert(handle);
+        handle
+    }
+
+    /// Check whether a handle was produced by this VM's pinned-handle allocator.
+    pub fn is_valid_pinned_handle(&self, handle: u64) -> bool {
+        self.pinned_handles.read().contains(&handle)
     }
 
     pub fn release_ephemeral_gc_root(&self, value: Value) {

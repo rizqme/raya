@@ -1,6 +1,7 @@
 //! Exception handling opcode handlers: Try, EndTry, Throw, Rethrow
 
 use crate::compiler::Opcode;
+use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{Object, RayaString};
@@ -8,9 +9,33 @@ use crate::vm::scheduler::{ExceptionHandler, Task};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use std::any::TypeId;
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
+    #[inline]
+    fn object_ptr_from_value(value: Value) -> Option<NonNull<Object>> {
+        let ptr = unsafe { value.as_ptr::<u8>() }?;
+        let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
+        if header.type_id() == TypeId::of::<Object>() {
+            Some(ptr.cast())
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn string_ptr_from_value(value: Value) -> Option<NonNull<RayaString>> {
+        let ptr = unsafe { value.as_ptr::<u8>() }?;
+        let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
+        if header.type_id() == TypeId::of::<RayaString>() {
+            Some(ptr.cast())
+        } else {
+            None
+        }
+    }
+
     fn legacy_error_field_index(field_name: &str, field_count: usize) -> Option<usize> {
         let idx = match field_name {
             "message" => 0,
@@ -104,7 +129,7 @@ impl<'a> Interpreter<'a> {
         if value.is_null() {
             return Some(String::new());
         }
-        if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
+        if let Some(ptr) = Self::string_ptr_from_value(value) {
             return Some(unsafe { &*ptr.as_ptr() }.data.clone());
         }
         if let Some(i) = value.as_i32() {
@@ -198,7 +223,7 @@ impl<'a> Interpreter<'a> {
                 // Populate stack on any error-like object with a structural
                 // `name` / `message` / `stack` surface.
                 if exception.is_ptr() {
-                    if let Some(obj_ptr) = unsafe { exception.as_ptr::<Object>() } {
+                    if let Some(obj_ptr) = Self::object_ptr_from_value(exception) {
                         let obj = unsafe { &mut *obj_ptr.as_ptr() };
                         if let Some((error_name, error_message)) = self.exception_surface(obj) {
                             let stack_trace = task.build_stack_trace(&error_name, &error_message);
@@ -214,7 +239,7 @@ impl<'a> Interpreter<'a> {
 
                 // Extract a structural `message` field when present.
                 let error_msg = if exception.is_ptr() {
-                    if let Some(obj_ptr) = unsafe { exception.as_ptr::<Object>() } {
+                    if let Some(obj_ptr) = Self::object_ptr_from_value(exception) {
                         let obj = unsafe { &*obj_ptr.as_ptr() };
                         if let Some(msg) = self
                             .get_object_named_field_value(obj, "message")

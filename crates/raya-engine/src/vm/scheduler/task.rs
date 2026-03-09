@@ -469,6 +469,23 @@ impl Task {
         self.lifecycle.lock().state = state;
     }
 
+    /// Transition into `Running` only from schedulable states.
+    ///
+    /// Returns `true` when this caller acquired execution ownership for the
+    /// task and should run it on a VM worker.
+    pub fn try_enter_running(&self) -> bool {
+        let mut lifecycle = self.lifecycle.lock();
+        match lifecycle.state {
+            TaskState::Created | TaskState::Resumed => {
+                lifecycle.state = TaskState::Running;
+                true
+            }
+            TaskState::Running | TaskState::Suspended | TaskState::Completed | TaskState::Failed => {
+                false
+            }
+        }
+    }
+
     /// Complete the task with a result
     pub fn complete(&self, result: Value) {
         if std::env::var("RAYA_DEBUG_TASK_STATE").is_ok() {

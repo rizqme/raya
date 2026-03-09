@@ -25,7 +25,7 @@ impl<'a> Interpreter<'a> {
     ) -> OpcodeResult {
         match opcode {
             Opcode::Spawn => {
-                let func_index = match Self::read_u16(code, ip) {
+                let func_index = match Self::read_u32(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };

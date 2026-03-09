@@ -20,7 +20,7 @@ use crate::vm::value::Value;
 use crate::vm::VmError;
 use crossbeam_deque::Injector;
 use parking_lot::RwLock;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -259,6 +259,9 @@ pub struct Interpreter<'a> {
     /// stable root set such as task state or a shared cache.
     pub(in crate::vm::interpreter) ephemeral_gc_roots: &'a RwLock<Vec<Value>>,
 
+    /// Opaque GC-backed handles pinned for VM lifetime.
+    pub(in crate::vm::interpreter) pinned_handles: &'a RwLock<FxHashSet<u64>>,
+
     /// Task registry (for spawn/await)
     pub(in crate::vm::interpreter) tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
 
@@ -454,6 +457,17 @@ impl<'a> Interpreter<'a> {
         name: &str,
     ) -> crate::vm::object::PropKeyId {
         self.prop_keys.write().intern(name)
+    }
+
+    #[inline]
+    pub(in crate::vm::interpreter) fn allocate_pinned_handle<T: 'static>(&self, value: T) -> u64 {
+        let gc_ptr = self.gc.lock().allocate(value);
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        // Keep raw-handle-backed GC objects strongly rooted for VM lifetime.
+        self.ephemeral_gc_roots.write().push(value);
+        let handle = gc_ptr.as_ptr() as u64;
+        self.pinned_handles.write().insert(handle);
+        handle
     }
 
     #[inline]
@@ -752,6 +766,7 @@ impl<'a> Interpreter<'a> {
         builtin_global_slots: &'a RwLock<FxHashMap<String, usize>>,
         constant_string_cache: &'a RwLock<FxHashMap<([u8; 32], usize), Value>>,
         ephemeral_gc_roots: &'a RwLock<Vec<Value>>,
+        pinned_handles: &'a RwLock<FxHashSet<u64>>,
         tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
         injector: &'a Arc<Injector<Arc<Task>>>,
         metadata: &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
@@ -786,6 +801,7 @@ impl<'a> Interpreter<'a> {
             builtin_global_slots,
             constant_string_cache,
             ephemeral_gc_roots,
+            pinned_handles,
             tasks,
             injector,
             metadata,
@@ -1201,6 +1217,31 @@ impl<'a> Interpreter<'a> {
             let opcode = match Opcode::from_u8(opcode_byte) {
                 Some(op) => op,
                 None => {
+                    if std::env::var("RAYA_DEBUG_INVALID_OPCODE").is_ok() {
+                        let func_name = module
+                            .functions
+                            .get(current_func_id)
+                            .map(|f| f.name.as_str())
+                            .unwrap_or("<unknown>");
+                        let start = ip.saturating_sub(8);
+                        let end = (ip + 9).min(code.len());
+                        let window = code[start..end]
+                            .iter()
+                            .map(|b| format!("{b:02X}"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        eprintln!(
+                            "[invalid-opcode] module={} func={}#{} ip={} byte=0x{:02X} window[{}..{}]={}",
+                            module.metadata.name,
+                            func_name,
+                            current_func_id,
+                            ip,
+                            opcode_byte,
+                            start,
+                            end,
+                            window
+                        );
+                    }
                     return ExecutionResult::Failed(VmError::InvalidOpcode(opcode_byte));
                 }
             };
@@ -1384,6 +1425,7 @@ impl<'a> Interpreter<'a> {
                                         self.builtin_global_slots,
                                         self.constant_string_cache,
                                         self.ephemeral_gc_roots,
+                                        self.pinned_handles,
                                         self.tasks,
                                         self.injector,
                                         self.module_layouts,

@@ -288,14 +288,14 @@ impl<'a> CodeGenerator<'a> {
                 // Jump to end if false (short-circuit)
                 func.emit(Opcode::JmpIfFalse);
                 let jump_pos = func.current_position();
-                func.emit_i16(0); // Placeholder
+                func.emit_i32(0); // Placeholder
 
                 // Pop the duplicated value and evaluate right
                 func.emit(Opcode::Pop);
                 self.compile_expr(func, &logical.right)?;
 
                 // Patch jump offset
-                let offset = (func.current_position() as isize - (jump_pos + 2) as isize) as i16;
+                let offset = (func.current_position() as isize - (jump_pos + 4) as isize) as i32;
                 func.patch_jump(jump_pos, offset);
             }
             LogicalOperator::Or => {
@@ -308,14 +308,14 @@ impl<'a> CodeGenerator<'a> {
                 // Jump to end if true (short-circuit)
                 func.emit(Opcode::JmpIfTrue);
                 let jump_pos = func.current_position();
-                func.emit_i16(0); // Placeholder
+                func.emit_i32(0); // Placeholder
 
                 // Pop the duplicated value and evaluate right
                 func.emit(Opcode::Pop);
                 self.compile_expr(func, &logical.right)?;
 
                 // Patch jump offset
-                let offset = (func.current_position() as isize - (jump_pos + 2) as isize) as i16;
+                let offset = (func.current_position() as isize - (jump_pos + 4) as isize) as i32;
                 func.patch_jump(jump_pos, offset);
             }
             LogicalOperator::NullishCoalescing => {

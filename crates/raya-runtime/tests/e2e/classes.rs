@@ -58,7 +58,7 @@ fn test_class_field_access_debug() {
     println!("\n=== Debug Output ===\n{}", debug_output);
 
     // Try to run it
-    match super::harness::compile_and_run(source) {
+    match super::harness::compile_and_run_isolated(source) {
         Ok(v) => println!("Result: {:?}", v.as_i32()),
         Err(e) => println!("Error: {}", e),
     }

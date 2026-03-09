@@ -66,6 +66,7 @@ pub struct JitRuntimeBridgeContext {
     pub constant_string_cache:
         *const parking_lot::RwLock<FxHashMap<([u8; 32], usize), Value>>,
     pub ephemeral_gc_roots: *const parking_lot::RwLock<Vec<Value>>,
+    pub pinned_handles: *const parking_lot::RwLock<rustc_hash::FxHashSet<u64>>,
     pub tasks: *const Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     pub injector: *const Arc<Injector<Arc<Task>>>,
     pub module_layouts:
@@ -105,6 +106,7 @@ pub fn build_runtime_bridge_context(
     builtin_global_slots: &parking_lot::RwLock<FxHashMap<String, usize>>,
     constant_string_cache: &parking_lot::RwLock<FxHashMap<([u8; 32], usize), Value>>,
     ephemeral_gc_roots: &parking_lot::RwLock<Vec<Value>>,
+    pinned_handles: &parking_lot::RwLock<rustc_hash::FxHashSet<u64>>,
     tasks: &Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     injector: &Arc<Injector<Arc<Task>>>,
     module_layouts: &parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
@@ -138,6 +140,7 @@ pub fn build_runtime_bridge_context(
         builtin_global_slots: builtin_global_slots as *const _,
         constant_string_cache: constant_string_cache as *const _,
         ephemeral_gc_roots: ephemeral_gc_roots as *const _,
+        pinned_handles: pinned_handles as *const _,
         tasks: tasks as *const _,
         injector: injector as *const _,
         module_layouts: module_layouts as *const _,
@@ -446,6 +449,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         || bridge.builtin_global_slots.is_null()
         || bridge.constant_string_cache.is_null()
         || bridge.ephemeral_gc_roots.is_null()
+        || bridge.pinned_handles.is_null()
         || bridge.tasks.is_null()
         || bridge.injector.is_null()
         || bridge.metadata.is_null()
@@ -474,6 +478,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         unsafe { &*bridge.builtin_global_slots },
         unsafe { &*bridge.constant_string_cache },
         unsafe { &*bridge.ephemeral_gc_roots },
+        unsafe { &*bridge.pinned_handles },
         unsafe { &*bridge.tasks },
         unsafe { &*bridge.injector },
         unsafe { &*bridge.metadata },
@@ -1609,6 +1614,7 @@ mod tests {
             &shared.builtin_global_slots,
             &shared.constant_string_cache,
             &shared.ephemeral_gc_roots,
+            &shared.pinned_handles,
             &shared.tasks,
             &shared.injector,
             &shared.module_layouts,
@@ -1675,6 +1681,7 @@ mod tests {
             &shared.builtin_global_slots,
             &shared.constant_string_cache,
             &shared.ephemeral_gc_roots,
+            &shared.pinned_handles,
             &shared.tasks,
             &shared.injector,
             &shared.module_layouts,
@@ -1767,6 +1774,7 @@ mod tests {
             &shared.builtin_global_slots,
             &shared.constant_string_cache,
             &shared.ephemeral_gc_roots,
+            &shared.pinned_handles,
             &shared.tasks,
             &shared.injector,
             &shared.module_layouts,

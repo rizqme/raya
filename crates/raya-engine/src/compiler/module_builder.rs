@@ -159,8 +159,8 @@ impl FunctionBuilder {
     }
 
     /// Patch a jump offset at a given position
-    pub fn patch_jump(&mut self, position: usize, offset: i16) {
-        self.code[position..position + 2].copy_from_slice(&offset.to_le_bytes());
+    pub fn patch_jump(&mut self, position: usize, offset: i32) {
+        self.code[position..position + 4].copy_from_slice(&offset.to_le_bytes());
     }
 
     /// Build the final function

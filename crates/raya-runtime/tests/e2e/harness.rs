@@ -9,47 +9,28 @@ use raya_engine::vm::gc::header_ptr_from_value_ptr;
 use raya_engine::vm::scheduler::SchedulerLimits;
 use raya_engine::vm::{Array, Object, RayaString, Value, Vm, VmError};
 use raya_runtime::{BuiltinMode, StdNativeHandler};
+use std::fs::{self, File, OpenOptions};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 use std::time::Duration;
 
 #[cfg(feature = "jit")]
 use raya_engine::vm::interpreter::JitTelemetrySnapshot;
 
 fn finalize_vm_after_result(value: &Value, mut vm: Vm) {
-    let debug = std::env::var_os("RAYA_TEST_HARNESS_DEBUG").is_some();
-    if debug {
-        eprintln!("[harness] finalize: begin");
-    }
-    let _ = vm.wait_quiescent(Duration::from_secs(2));
-    if debug {
-        eprintln!("[harness] finalize: first wait_quiescent");
-    }
-    if vm.get_stats().tasks > 1 {
-        std::thread::sleep(Duration::from_millis(250));
-        let _ = vm.wait_quiescent(Duration::from_millis(500));
-        if debug {
-            eprintln!("[harness] finalize: settle wait_quiescent");
-        }
-    }
-    if debug {
-        eprintln!("[harness] finalize: terminate");
-    }
+    // Drain terminal task/microtask completion work before shutdown so scheduler
+    // teardown does not race pending reactor-side continuations across test boundaries.
+    let _ = vm.wait_quiescent(Duration::from_millis(250));
+    let _ = vm.wait_all(Duration::from_millis(250));
     vm.terminate();
-    if debug {
-        eprintln!("[harness] finalize: terminated");
-    }
-    if debug {
-        if value.is_heap_allocated() {
-            eprintln!("[harness] finalize: dropped heap result vm");
-        } else {
-            eprintln!("[harness] finalize: dropped");
-        }
-    }
+    let _ = value;
 }
 
 fn finalize_vm_after_error(mut vm: Vm) {
     let _ = vm.wait_quiescent(Duration::from_millis(250));
+    let _ = vm.wait_all(Duration::from_millis(250));
     vm.terminate();
 }
 
@@ -161,13 +142,60 @@ where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    std::thread::Builder::new()
-        .name(thread_name.to_string())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(f)
-        .expect("failed to spawn joined e2e helper thread")
-        .join()
-        .expect("e2e helper thread panicked")
+    let _slot_guard = acquire_global_harness_slot();
+    let _ = thread_name;
+    f()
+}
+
+struct GlobalHarnessSlotGuard {
+    path: PathBuf,
+    _file: File,
+}
+
+impl Drop for GlobalHarnessSlotGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn global_harness_slot_limit() -> Option<usize> {
+    if let Ok(raw) = std::env::var("RAYA_E2E_MAX_PARALLEL") {
+        let parsed = raw
+            .parse::<usize>()
+            .expect("RAYA_E2E_MAX_PARALLEL must be a positive integer");
+        return Some(parsed.max(1));
+    }
+    if std::env::var_os("CI").is_some() {
+        return Some(2);
+    }
+    None
+}
+
+fn global_harness_slot_dir() -> PathBuf {
+    std::env::temp_dir().join("raya-e2e-harness-slots")
+}
+
+fn acquire_global_harness_slot() -> Option<GlobalHarnessSlotGuard> {
+    let limit = global_harness_slot_limit()?;
+    let dir = global_harness_slot_dir();
+    fs::create_dir_all(&dir).expect("failed to create e2e slot directory");
+
+    loop {
+        for slot in 0..limit {
+            let path = dir.join(format!("slot-{}.lock", slot));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    return Some(GlobalHarnessSlotGuard {
+                        path,
+                        _file: file,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("failed to acquire e2e harness slot: {}", error),
+            }
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn harness_vm_lock() -> &'static Mutex<()> {
@@ -246,7 +274,7 @@ pub fn compile_and_run(source: &str) -> E2EResult<Value> {
     })
 }
 
-fn compile_and_run_isolated(source: &str) -> E2EResult<Value> {
+pub(crate) fn compile_and_run_isolated(source: &str) -> E2EResult<Value> {
     let owned = source.to_string();
     run_joined("raya-e2e-scalar", move || compile_and_run(&owned))
 }
@@ -977,7 +1005,7 @@ pub fn expect_compile_error(source: &str, error_pattern: &str) {
 
 /// Compile and execute, expecting a runtime error
 pub fn expect_runtime_error(source: &str, error_pattern: &str) {
-    match compile_and_run(source) {
+    match compile_and_run_isolated(source) {
         Ok(value) => {
             panic!(
                 "Expected runtime error containing '{}', but got {:?}\nSource:\n{}",

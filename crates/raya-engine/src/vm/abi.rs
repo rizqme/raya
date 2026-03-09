@@ -205,8 +205,9 @@ impl NativeContext for EngineContext<'_> {
 
         let obj_ptr = {
             let mut gc = self.gc.lock();
-            let buf_ptr = gc.allocate(buffer);
-            let handle = buf_ptr.as_ptr() as u64;
+            // Buffer handles are exposed as opaque u64 values to native callers.
+            // Use a stable boxed allocation so the handle never dangles due to GC.
+            let handle = Box::into_raw(Box::new(buffer)) as u64;
 
             let mut obj = Object::new_nominal(
                 buffer_layout_id,

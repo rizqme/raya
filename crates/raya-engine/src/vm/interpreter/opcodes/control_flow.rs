@@ -16,7 +16,7 @@ impl<'a> Interpreter<'a> {
     ) -> OpcodeResult {
         match opcode {
             Opcode::Jmp => {
-                let offset = match Self::read_i16(code, ip) {
+                let offset = match Self::read_i32(code, ip) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -30,7 +30,7 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::JmpIfTrue => {
-                let offset = match Self::read_i16(code, ip) {
+                let offset = match Self::read_i32(code, ip) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -49,7 +49,7 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::JmpIfFalse => {
-                let offset = match Self::read_i16(code, ip) {
+                let offset = match Self::read_i32(code, ip) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -68,7 +68,7 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::JmpIfNull => {
-                let offset = match Self::read_i16(code, ip) {
+                let offset = match Self::read_i32(code, ip) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -83,7 +83,7 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::JmpIfNotNull => {
-                let offset = match Self::read_i16(code, ip) {
+                let offset = match Self::read_i32(code, ip) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };

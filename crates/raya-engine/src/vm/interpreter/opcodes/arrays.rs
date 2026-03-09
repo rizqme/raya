@@ -19,7 +19,7 @@ impl<'a> Interpreter<'a> {
         match opcode {
             Opcode::NewArray => {
                 self.safepoint.poll();
-                let type_index = match Self::read_u16(code, ip) {
+                let type_index = match Self::read_u32(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };

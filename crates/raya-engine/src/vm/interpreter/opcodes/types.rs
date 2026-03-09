@@ -980,8 +980,7 @@ impl<'a> Interpreter<'a> {
                 };
                 let capacity = capacity_val.as_i32().unwrap_or(0) as usize;
                 let channel = ChannelObject::new(capacity);
-                let gc_ptr = self.gc.lock().allocate(channel);
-                let handle = gc_ptr.as_ptr() as u64;
+                let handle = self.allocate_pinned_handle(channel);
                 if let Err(e) = stack.push(Value::u64(handle)) {
                     return OpcodeResult::Error(e);
                 }

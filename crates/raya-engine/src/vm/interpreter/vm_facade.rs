@@ -788,7 +788,7 @@ impl Vm {
             .iter()
             .rposition(|f| f.name == "main")
             .ok_or_else(|| VmError::RuntimeError("No main function".to_string()))?;
-        let result = self.execute_main_task(module, entry_main_fn_id)?;
+        let result = self.execute_main_task(runtime_module.clone(), entry_main_fn_id)?;
 
         // Legacy compatibility: if the entry main returned null and the module
         // also contains a user-declared `main`, run the first `main`.
@@ -800,7 +800,7 @@ impl Vm {
                     let entry_calls_user_main =
                         Self::function_calls_target(module, entry_main_fn_id, user_main_fn_id);
                     if !entry_calls_user_main {
-                        return self.execute_main_task(module, user_main_fn_id);
+                        return self.execute_main_task(runtime_module.clone(), user_main_fn_id);
                     }
                 }
             }
@@ -859,9 +859,9 @@ impl Vm {
         false
     }
 
-    fn execute_main_task(&mut self, module: &Module, main_fn_id: usize) -> VmResult<Value> {
+    fn execute_main_task(&mut self, module: Arc<Module>, main_fn_id: usize) -> VmResult<Value> {
         // Create main task
-        let main_task = Arc::new(Task::new(main_fn_id, Arc::new(module.clone()), None));
+        let main_task = Arc::new(Task::new(main_fn_id, module, None));
         let _task_id = main_task.id();
 
         // Spawn main task
@@ -1497,6 +1497,7 @@ mod tests {
     #[test]
     fn test_conditional_branch() {
         // if (10 > 5) { return 1 } else { return 0 }
+        // Jump operands are i32 (4 bytes).
         let mut module = Module::new("test".to_string());
         module.functions.push(Function {
             name: "main".to_string(),
@@ -1515,21 +1516,23 @@ mod tests {
                 0,                 // offset 5-9
                 Opcode::Igt as u8, // offset 10
                 Opcode::JmpIfFalse as u8,
-                8,
-                0, // offset 11-13, jump +8 to offset 21
+                6,
+                0,
+                0,
+                0, // offset 11-15, jump +6 to offset 22
                 Opcode::ConstI32 as u8,
                 1,
                 0,
                 0,
-                0,                    // offset 14-18 (then branch)
-                Opcode::Return as u8, // offset 19
-                // else branch starts at offset 20
+                0,                    // offset 16-20 (then branch)
+                Opcode::Return as u8, // offset 21
+                // else branch starts at offset 22
                 Opcode::ConstI32 as u8,
                 0,
                 0,
                 0,
-                0,                    // offset 20-24
-                Opcode::Return as u8, // offset 25
+                0,                    // offset 22-26
+                Opcode::Return as u8, // offset 27
             ],
         });
 
@@ -1542,8 +1545,8 @@ mod tests {
     fn test_unconditional_jump() {
         // Jump over some code
         // After JMP instruction (offset 0), IP is at 1
-        // After reading i16 offset (2 bytes), IP is at 3
-        // Jump offset of +5 makes IP = 3 + 5 = 8 (start of second CONST_I32)
+        // After reading i32 offset (4 bytes), IP is at 5
+        // Jump offset of +5 makes IP = 5 + 5 = 10 (start of second CONST_I32)
         let mut module = Module::new("test".to_string());
         module.functions.push(Function {
             name: "main".to_string(),
@@ -1552,18 +1555,20 @@ mod tests {
             code: vec![
                 Opcode::Jmp as u8,
                 5,
-                0, // offset 0-2, jump +5 to offset 8
+                0,
+                0,
+                0, // offset 0-4, jump +5 to offset 10
                 Opcode::ConstI32 as u8,
                 99,
                 0,
                 0,
-                0, // offset 3-7 (skipped)
+                0, // offset 5-9 (skipped)
                 Opcode::ConstI32 as u8,
                 42,
                 0,
                 0,
-                0,                    // offset 8-12
-                Opcode::Return as u8, // offset 13
+                0,                    // offset 10-14
+                Opcode::Return as u8, // offset 15
             ],
         });
 

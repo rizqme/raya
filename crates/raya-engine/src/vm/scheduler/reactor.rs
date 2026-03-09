@@ -307,7 +307,11 @@ impl Reactor {
             };
 
             let task = work.task;
-            task.set_state(TaskState::Running);
+            // Defensive ownership gate: duplicated queue entries must not allow
+            // the same task to execute concurrently on multiple VM workers.
+            if !task.try_enter_running() {
+                continue;
+            }
             task.set_start_time(Instant::now());
 
             let mut interpreter = Interpreter::new(
@@ -321,6 +325,7 @@ impl Reactor {
                 &state.builtin_global_slots,
                 &state.constant_string_cache,
                 &state.ephemeral_gc_roots,
+                &state.pinned_handles,
                 &state.tasks,
                 &state.injector,
                 &state.metadata,
@@ -479,8 +484,22 @@ impl Reactor {
             // Phase 1: Try buffer operations (try_send / try_receive)
             let mut unresolved: Vec<ChannelWaiter> = Vec::new();
             for waiter in channel_waiters.drain(..) {
+                if waiter.channel_handle == 0
+                    || !shared_state.is_valid_pinned_handle(waiter.channel_handle)
+                {
+                    // Stale/invalid channel handle: wake waiter with a neutral value
+                    // instead of dereferencing unknown memory.
+                    Self::complete_task(&shared_state, waiter.task_id, Value::null(), &mut ready_queue);
+                    continue;
+                }
                 let ch_ptr = waiter.channel_handle as *const ChannelObject;
                 if ch_ptr.is_null() {
+                    Self::complete_task(
+                        &shared_state,
+                        waiter.task_id,
+                        Value::null(),
+                        &mut ready_queue,
+                    );
                     continue;
                 }
                 let channel = unsafe { &*ch_ptr };
@@ -897,6 +916,10 @@ impl Reactor {
             IoRequest::ChannelReceive { channel } => {
                 let v = native_to_value(channel);
                 let ch_handle = v.as_u64().unwrap_or(0);
+                if ch_handle == 0 || !shared_state.is_valid_pinned_handle(ch_handle) {
+                    Self::complete_task(shared_state, sub.task_id, Value::null(), ready_queue);
+                    return;
+                }
                 let ch_ptr = ch_handle as *const ChannelObject;
                 if !ch_ptr.is_null() {
                     let ch = unsafe { &*ch_ptr };
@@ -922,6 +945,10 @@ impl Reactor {
                 let v = native_to_value(channel);
                 let send_val = native_to_value(value);
                 let ch_handle = v.as_u64().unwrap_or(0);
+                if ch_handle == 0 || !shared_state.is_valid_pinned_handle(ch_handle) {
+                    Self::complete_task(shared_state, sub.task_id, Value::bool(false), ready_queue);
+                    return;
+                }
                 let ch_ptr = ch_handle as *const ChannelObject;
                 if !ch_ptr.is_null() {
                     let ch = unsafe { &*ch_ptr };
@@ -1007,9 +1034,7 @@ impl Reactor {
                 for (i, &byte) in data.iter().enumerate() {
                     let _ = buffer.set_byte(i, byte);
                 }
-                let mut gc = shared_state.gc.lock();
-                let gc_ptr = gc.allocate(buffer);
-                let handle = gc_ptr.as_ptr() as u64;
+                let handle = shared_state.allocate_pinned_handle(buffer);
 
                 // Wrap in a proper Object with Buffer nominal_type_id so vtable dispatch works
                 let (nominal_type_id, field_count, layout_id) = {
@@ -1041,6 +1066,7 @@ impl Reactor {
                 if field_count > 1 {
                     obj.fields[1] = Value::i32(data.len() as i32); // length field
                 }
+                let mut gc = shared_state.gc.lock();
                 let obj_ptr = gc.allocate(obj);
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) }
             }

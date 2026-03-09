@@ -148,8 +148,8 @@ impl FunctionContext {
     fn record_pending_jump(&mut self, target: BasicBlockId) {
         let pos = self.current_position();
         self.pending_jumps.push((pos, target));
-        // Emit placeholder (i16 to match VM's read_i16)
-        self.emit_i16(0);
+        // Emit placeholder (i32 to match VM jump operand width)
+        self.emit_i32(0);
     }
 
     /// Record a pending i32 try jump to be patched (for try/catch/finally offsets)
@@ -162,17 +162,18 @@ impl FunctionContext {
 
     /// Patch all pending jumps
     fn patch_jumps(&mut self) {
-        // Patch i16 jumps (regular jumps)
+        // Patch i32 jumps (regular jumps)
         for (source_pos, target_block) in &self.pending_jumps {
             if let Some(&target_pos) = self.block_positions.get(target_block) {
                 // Calculate relative offset
-                // Jump is relative to the instruction AFTER the offset (2 bytes for i16)
-                let offset = target_pos as i32 - (*source_pos as i32 + 2);
-                let offset_i16 = offset as i16;
-                let bytes = offset_i16.to_le_bytes();
+                // Jump is relative to the instruction AFTER the offset (4 bytes for i32)
+                let offset = target_pos as i32 - (*source_pos as i32 + 4);
+                let bytes = offset.to_le_bytes();
                 let code = self.builder.code_mut();
                 code[*source_pos] = bytes[0];
                 code[*source_pos + 1] = bytes[1];
+                code[*source_pos + 2] = bytes[2];
+                code[*source_pos + 3] = bytes[3];
             }
         }
 
@@ -1149,7 +1150,7 @@ impl IrCodeGenerator {
                 }
                 // Emit spawn opcode with function index and arg count
                 ctx.emit(Opcode::Spawn);
-                ctx.emit_u16(func.as_u32() as u16);
+                ctx.emit_u32(func.as_u32());
                 ctx.emit_u16(args.len() as u16);
                 // Store the Task handle result
                 let slot = ctx.get_or_alloc_slot(dest);
