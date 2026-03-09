@@ -261,7 +261,10 @@ fn decode_operands(
                 // CFG currently resolves relative offsets from opcode start,
                 // so normalize i16 by adding instruction size (opcode+i16 = 3).
                 JumpWidth::I16 => read_i16(code, pos, offset)? as i32 + 3,
-                JumpWidth::I32 => read_i32(code, pos, offset)?,
+                // Compiler/VM i32 jump offsets are also relative to the
+                // instruction pointer after reading the i32 immediate.
+                // Normalize to opcode-start-relative for CFG/lifter.
+                JumpWidth::I32 => read_i32(code, pos, offset)? + 5,
             };
             Ok(Operands::I32(v))
         }

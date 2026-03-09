@@ -118,6 +118,8 @@ fn test_conditional_branch() {
             Opcode::JmpIfFalse as u8,
             8,
             0, // Skip to else branch
+            0,
+            0,
             Opcode::ConstI32 as u8,
             1,
             0,
@@ -312,7 +314,7 @@ fn test_simple_loop() {
     code.push(Opcode::Ilt as u8);
     code.push(Opcode::JmpIfFalse as u8);
     let jmp_if_false_offset_pos = code.len();
-    code.extend_from_slice(&0i16.to_le_bytes()); // Placeholder
+    code.extend_from_slice(&0i32.to_le_bytes()); // Placeholder
 
     // sum = sum + i
     code.push(Opcode::LoadLocal as u8);
@@ -334,14 +336,14 @@ fn test_simple_loop() {
 
     // Jump back to loop start
     code.push(Opcode::Jmp as u8);
-    let current_pos = code.len() + 2;
-    let backward_offset = (loop_start as isize - current_pos as isize) as i16;
+    let current_pos = code.len() + 4;
+    let backward_offset = (loop_start as isize - current_pos as isize) as i32;
     code.extend_from_slice(&backward_offset.to_le_bytes());
 
     // Loop end - patch forward jump
     let loop_end = code.len();
-    let forward_offset = (loop_end as isize - (jmp_if_false_offset_pos + 2) as isize) as i16;
-    code[jmp_if_false_offset_pos..jmp_if_false_offset_pos + 2]
+    let forward_offset = (loop_end as isize - (jmp_if_false_offset_pos + 4) as isize) as i32;
+    code[jmp_if_false_offset_pos..jmp_if_false_offset_pos + 4]
         .copy_from_slice(&forward_offset.to_le_bytes());
 
     // Return sum

@@ -6,6 +6,12 @@ use raya_engine::compiler::{Function, Module, Opcode};
 use raya_engine::vm::interpreter::Vm;
 use raya_engine::vm::value::Value;
 
+fn emit_spawn(code: &mut Vec<u8>, func_index: u32, arg_count: u16) {
+    code.push(Opcode::Spawn as u8);
+    code.extend_from_slice(&func_index.to_le_bytes());
+    code.extend_from_slice(&arg_count.to_le_bytes());
+}
+
 /// Create a module with a simple task function that returns a value
 fn create_module_with_task(task_result: i32) -> Module {
     let mut module = Module::new("test".to_string());
@@ -30,19 +36,17 @@ fn create_module_with_task(task_result: i32) -> Module {
         name: "main".to_string(),
         param_count: 0,
         local_count: 0,
-        code: vec![
+        code: {
+            let mut code = Vec::new();
             // Spawn task (function 0)
-            Opcode::Spawn as u8,
-            0,
-            0, // func_index = 0 (u16)
-            0,
-            0, // arg_count = 0 (u16)
+            emit_spawn(&mut code, 0, 0);
             // Now TaskId (u64) is on stack
             // Await the task
-            Opcode::Await as u8,
+            code.push(Opcode::Await as u8);
             // Task result is now on stack
-            Opcode::Return as u8,
-        ],
+            code.push(Opcode::Return as u8);
+            code
+        },
     });
 
     module
@@ -81,62 +85,31 @@ fn create_module_with_multiple_tasks() -> Module {
         name: "main".to_string(),
         param_count: 0,
         local_count: 3, // Store 3 TaskIds
-        code: vec![
+        code: {
+            let mut code = Vec::new();
             // Spawn task1 and store TaskId in local 0
-            Opcode::Spawn as u8,
-            0,
-            0, // func_index = 0 (u16)
-            0,
-            0, // arg_count = 0 (u16)
-            Opcode::StoreLocal as u8,
-            0,
-            0,
+            emit_spawn(&mut code, 0, 0);
+            code.extend_from_slice(&[Opcode::StoreLocal as u8, 0, 0]);
             // Spawn task2 and store TaskId in local 1
-            Opcode::Spawn as u8,
-            1,
-            0, // func_index = 1 (u16)
-            0,
-            0, // arg_count = 0 (u16)
-            Opcode::StoreLocal as u8,
-            1,
-            0,
+            emit_spawn(&mut code, 1, 0);
+            code.extend_from_slice(&[Opcode::StoreLocal as u8, 1, 0]);
             // Spawn task3 and store TaskId in local 2
-            Opcode::Spawn as u8,
-            2,
-            0, // func_index = 2 (u16)
-            0,
-            0, // arg_count = 0 (u16)
-            Opcode::StoreLocal as u8,
-            2,
-            0,
+            emit_spawn(&mut code, 2, 0);
+            code.extend_from_slice(&[Opcode::StoreLocal as u8, 2, 0]);
             // Await task1
-            Opcode::LoadLocal as u8,
-            0,
-            0,
-            Opcode::Await as u8,
-            // Result 1 on stack
-
+            code.extend_from_slice(&[Opcode::LoadLocal as u8, 0, 0, Opcode::Await as u8]);
             // Await task2
-            Opcode::LoadLocal as u8,
-            1,
-            0,
-            Opcode::Await as u8,
-            // Result 2 on stack
-
+            code.extend_from_slice(&[Opcode::LoadLocal as u8, 1, 0, Opcode::Await as u8]);
             // Add results 1 and 2
-            Opcode::Iadd as u8,
+            code.push(Opcode::Iadd as u8);
             // Await task3
-            Opcode::LoadLocal as u8,
-            2,
-            0,
-            Opcode::Await as u8,
-            // Result 3 on stack
-
+            code.extend_from_slice(&[Opcode::LoadLocal as u8, 2, 0, Opcode::Await as u8]);
             // Add to previous sum
-            Opcode::Iadd as u8,
+            code.push(Opcode::Iadd as u8);
             // Return total (should be 10 + 20 + 30 = 60)
-            Opcode::Return as u8,
-        ],
+            code.push(Opcode::Return as u8);
+            code
+        },
     });
 
     module
@@ -147,78 +120,68 @@ fn create_module_with_compute_task(iterations: u32) -> Module {
     let mut module = Module::new("test".to_string());
 
     // Function 0: compute task that counts to N
+    let mut compute_code = Vec::new();
+    // counter = 0
+    compute_code.push(Opcode::ConstI32 as u8);
+    compute_code.extend_from_slice(&0i32.to_le_bytes());
+    compute_code.push(Opcode::StoreLocal as u8);
+    compute_code.extend_from_slice(&0u16.to_le_bytes());
+    // result = 0
+    compute_code.push(Opcode::ConstI32 as u8);
+    compute_code.extend_from_slice(&0i32.to_le_bytes());
+    compute_code.push(Opcode::StoreLocal as u8);
+    compute_code.extend_from_slice(&1u16.to_le_bytes());
+
+    let loop_start = compute_code.len();
+    // if counter >= iterations jump to end
+    compute_code.push(Opcode::LoadLocal as u8);
+    compute_code.extend_from_slice(&0u16.to_le_bytes());
+    compute_code.push(Opcode::ConstI32 as u8);
+    compute_code.extend_from_slice(&(iterations as i32).to_le_bytes());
+    compute_code.push(Opcode::Ilt as u8);
+    compute_code.push(Opcode::JmpIfFalse as u8);
+    let jmp_if_false_offset_pos = compute_code.len();
+    compute_code.extend_from_slice(&0i32.to_le_bytes()); // patch later
+
+    // result += 1
+    compute_code.push(Opcode::LoadLocal as u8);
+    compute_code.extend_from_slice(&1u16.to_le_bytes());
+    compute_code.push(Opcode::ConstI32 as u8);
+    compute_code.extend_from_slice(&1i32.to_le_bytes());
+    compute_code.push(Opcode::Iadd as u8);
+    compute_code.push(Opcode::StoreLocal as u8);
+    compute_code.extend_from_slice(&1u16.to_le_bytes());
+
+    // counter += 1
+    compute_code.push(Opcode::LoadLocal as u8);
+    compute_code.extend_from_slice(&0u16.to_le_bytes());
+    compute_code.push(Opcode::ConstI32 as u8);
+    compute_code.extend_from_slice(&1i32.to_le_bytes());
+    compute_code.push(Opcode::Iadd as u8);
+    compute_code.push(Opcode::StoreLocal as u8);
+    compute_code.extend_from_slice(&0u16.to_le_bytes());
+
+    // Jump back to loop start
+    compute_code.push(Opcode::Jmp as u8);
+    let current_pos = compute_code.len() + 4;
+    let backward_offset = (loop_start as isize - current_pos as isize) as i32;
+    compute_code.extend_from_slice(&backward_offset.to_le_bytes());
+
+    let loop_end = compute_code.len();
+    let forward_offset = (loop_end as isize - (jmp_if_false_offset_pos + 4) as isize) as i32;
+    compute_code[jmp_if_false_offset_pos..jmp_if_false_offset_pos + 4]
+        .copy_from_slice(&forward_offset.to_le_bytes());
+
+    // End: return result
+    compute_code.push(Opcode::LoadLocal as u8);
+    compute_code.extend_from_slice(&1u16.to_le_bytes());
+    compute_code.push(Opcode::Return as u8);
+
     module.functions.push(Function {
         name: "compute".to_string(),
         param_count: 0,
         local_count: 2, // counter, result
-        code: vec![
-            // counter = 0
-            Opcode::ConstI32 as u8,
-            0,
-            0,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            0,
-            0,
-            // result = 0
-            Opcode::ConstI32 as u8,
-            0,
-            0,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            1,
-            0,
-            // Loop start (offset 18)
-            Opcode::LoadLocal as u8,
-            0,
-            0,
-            Opcode::ConstI32 as u8,
-            (iterations & 0xFF) as u8,
-            ((iterations >> 8) & 0xFF) as u8,
-            ((iterations >> 16) & 0xFF) as u8,
-            ((iterations >> 24) & 0xFF) as u8,
-            Opcode::Ilt as u8,
-            Opcode::JmpIfFalse as u8,
-            30,
-            0, // Jump to end
-            // result += 1
-            Opcode::LoadLocal as u8,
-            1,
-            0,
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
-            Opcode::Iadd as u8,
-            Opcode::StoreLocal as u8,
-            1,
-            0,
-            // counter += 1
-            Opcode::LoadLocal as u8,
-            0,
-            0,
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
-            Opcode::Iadd as u8,
-            Opcode::StoreLocal as u8,
-            0,
-            0,
-            // Jump back to loop start
-            Opcode::Jmp as u8,
-            (-39i16 & 0xFF) as u8,
-            (((-39i16) >> 8) & 0xFF) as u8,
-            // End: return result
-            Opcode::LoadLocal as u8,
-            1,
-            0,
-            Opcode::Return as u8,
-        ],
+        code: compute_code,
     });
 
     // Function 1: main spawns and awaits compute task
@@ -226,15 +189,13 @@ fn create_module_with_compute_task(iterations: u32) -> Module {
         name: "main".to_string(),
         param_count: 0,
         local_count: 0,
-        code: vec![
-            Opcode::Spawn as u8,
-            0,
-            0, // func_index = 0 (u16)
-            0,
-            0, // arg_count = 0 (u16)
-            Opcode::Await as u8,
-            Opcode::Return as u8,
-        ],
+        code: {
+            let mut code = Vec::new();
+            emit_spawn(&mut code, 0, 0);
+            code.push(Opcode::Await as u8);
+            code.push(Opcode::Return as u8);
+            code
+        },
     });
 
     module
@@ -337,16 +298,8 @@ fn test_spawn_await_with_scheduler_stress() {
 
     // Spawn 10 tasks and store their IDs
     for i in 0..10 {
-        main_code.extend_from_slice(&[
-            Opcode::Spawn as u8,
-            0,
-            0, // func_index = 0 (u16)
-            0,
-            0, // arg_count = 0 (u16)
-            Opcode::StoreLocal as u8,
-            i as u8,
-            0,
-        ]);
+        emit_spawn(&mut main_code, 0, 0);
+        main_code.extend_from_slice(&[Opcode::StoreLocal as u8, i as u8, 0]);
     }
 
     // Await first task
@@ -396,23 +349,16 @@ fn test_nested_task_spawning() {
         name: "middle".to_string(),
         param_count: 0,
         local_count: 0,
-        code: vec![
+        code: {
+            let mut code = Vec::new();
             // Spawn leaf task
-            Opcode::Spawn as u8,
-            0,
-            0, // func_index = 0 (u16)
-            0,
-            0, // arg_count = 0 (u16)
-            Opcode::Await as u8,
+            emit_spawn(&mut code, 0, 0);
+            code.push(Opcode::Await as u8);
             // Double the result
-            Opcode::ConstI32 as u8,
-            2,
-            0,
-            0,
-            0,
-            Opcode::Imul as u8,
-            Opcode::Return as u8,
-        ],
+            code.extend_from_slice(&[Opcode::ConstI32 as u8, 2, 0, 0, 0, Opcode::Imul as u8]);
+            code.push(Opcode::Return as u8);
+            code
+        },
     });
 
     // Function 2: main spawns middle task
@@ -420,15 +366,13 @@ fn test_nested_task_spawning() {
         name: "main".to_string(),
         param_count: 0,
         local_count: 0,
-        code: vec![
-            Opcode::Spawn as u8,
-            1,
-            0, // func_index = 1 (u16)
-            0,
-            0, // arg_count = 0 (u16)
-            Opcode::Await as u8,
-            Opcode::Return as u8,
-        ],
+        code: {
+            let mut code = Vec::new();
+            emit_spawn(&mut code, 1, 0);
+            code.push(Opcode::Await as u8);
+            code.push(Opcode::Return as u8);
+            code
+        },
     });
 
     let mut vm = Vm::new();
@@ -455,15 +399,13 @@ fn test_spawn_await_returns_null() {
         name: "main".to_string(),
         param_count: 0,
         local_count: 0,
-        code: vec![
-            Opcode::Spawn as u8,
-            0,
-            0, // func_index = 0 (u16)
-            0,
-            0, // arg_count = 0 (u16)
-            Opcode::Await as u8,
-            Opcode::Return as u8,
-        ],
+        code: {
+            let mut code = Vec::new();
+            emit_spawn(&mut code, 0, 0);
+            code.push(Opcode::Await as u8);
+            code.push(Opcode::Return as u8);
+            code
+        },
     });
 
     let mut vm = Vm::new();

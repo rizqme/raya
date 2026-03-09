@@ -350,18 +350,18 @@ fn emit_jmp(code: &mut Vec<u8>, op: Opcode, offset: i32) {
     code.extend_from_slice(&offset.to_le_bytes());
 }
 
-fn emit_jmp_i16_placeholder(code: &mut Vec<u8>, op: Opcode) -> usize {
+fn emit_jmp_i32_placeholder(code: &mut Vec<u8>, op: Opcode) -> usize {
     code.push(op as u8);
     let imm_pos = code.len();
-    code.extend_from_slice(&0i16.to_le_bytes());
+    code.extend_from_slice(&0i32.to_le_bytes());
     imm_pos
 }
 
-fn patch_jmp_i16_compiler(code: &mut [u8], imm_pos: usize, target_pos: usize) {
-    // Match compiler/VM semantics: jump offset is relative to IP after reading i16.
-    let rel = target_pos as isize - (imm_pos as isize + 2);
-    let rel_i16 = i16::try_from(rel).expect("test jump offset must fit i16");
-    code[imm_pos..imm_pos + 2].copy_from_slice(&rel_i16.to_le_bytes());
+fn patch_jmp_i32_compiler(code: &mut [u8], imm_pos: usize, target_pos: usize) {
+    // Match compiler/VM semantics: jump offset is relative to IP after reading i32.
+    let rel = target_pos as isize - (imm_pos as isize + 4);
+    let rel_i32 = i32::try_from(rel).expect("test jump offset must fit i32");
+    code[imm_pos..imm_pos + 4].copy_from_slice(&rel_i32.to_le_bytes());
 }
 
 // ============================================================================
@@ -3547,7 +3547,7 @@ fn pipeline_bytecode_to_native_multi_op() {
 }
 
 #[test]
-fn pipeline_bytecode_to_native_branch_loop_i16_compiler_semantics() {
+fn pipeline_bytecode_to_native_branch_loop_i32_compiler_semantics() {
     let mut code = Vec::new();
     // i = 0
     emit_i32(&mut code, 0);
@@ -3557,17 +3557,17 @@ fn pipeline_bytecode_to_native_branch_loop_i16_compiler_semantics() {
     emit_load_local(&mut code, 0);
     emit_i32(&mut code, 64);
     emit(&mut code, Opcode::Ilt);
-    let jmp_exit = emit_jmp_i16_placeholder(&mut code, Opcode::JmpIfFalse);
+    let jmp_exit = emit_jmp_i32_placeholder(&mut code, Opcode::JmpIfFalse);
 
     emit_load_local(&mut code, 0);
     emit_i32(&mut code, 1);
     emit(&mut code, Opcode::Iadd);
     emit_store_local(&mut code, 0);
 
-    let jmp_back = emit_jmp_i16_placeholder(&mut code, Opcode::Jmp);
+    let jmp_back = emit_jmp_i32_placeholder(&mut code, Opcode::Jmp);
     let exit = code.len();
-    patch_jmp_i16_compiler(&mut code, jmp_exit, exit);
-    patch_jmp_i16_compiler(&mut code, jmp_back, loop_head);
+    patch_jmp_i32_compiler(&mut code, jmp_exit, exit);
+    patch_jmp_i32_compiler(&mut code, jmp_back, loop_head);
 
     // force unbox + typed return
     emit_load_local(&mut code, 0);

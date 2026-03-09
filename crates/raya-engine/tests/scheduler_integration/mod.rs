@@ -32,7 +32,7 @@ fn create_simple_task(name: &str, result: i32) -> Arc<Task> {
 fn create_compute_task(name: &str, iterations: u32) -> Arc<Task> {
     let mut module = Module::new("test".to_string());
 
-    // Build bytecode with correct u16 operands for LoadLocal/StoreLocal
+    // Build bytecode with current operand widths.
     let mut code = Vec::new();
 
     // Initialize counter = 0 (local 0)
@@ -64,7 +64,7 @@ fn create_compute_task(name: &str, iterations: u32) -> Arc<Task> {
     // Jump to end if false (will patch offset later)
     code.push(Opcode::JmpIfFalse as u8);
     let jmp_if_false_offset_pos = code.len();
-    code.extend_from_slice(&0i16.to_le_bytes()); // Placeholder
+    code.extend_from_slice(&0i32.to_le_bytes()); // Placeholder
 
     // result = result + 1
     code.push(Opcode::LoadLocal as u8);
@@ -86,14 +86,14 @@ fn create_compute_task(name: &str, iterations: u32) -> Arc<Task> {
 
     // Jump back to loop start
     code.push(Opcode::Jmp as u8);
-    let current_pos = code.len() + 2; // After the jump offset bytes
-    let backward_offset = (loop_start as isize - current_pos as isize) as i16;
+    let current_pos = code.len() + 4; // After the jump offset bytes
+    let backward_offset = (loop_start as isize - current_pos as isize) as i32;
     code.extend_from_slice(&backward_offset.to_le_bytes());
 
     // Loop end - patch forward jump offset
     let loop_end = code.len();
-    let forward_offset = (loop_end as isize - (jmp_if_false_offset_pos + 2) as isize) as i16;
-    code[jmp_if_false_offset_pos..jmp_if_false_offset_pos + 2]
+    let forward_offset = (loop_end as isize - (jmp_if_false_offset_pos + 4) as isize) as i32;
+    code[jmp_if_false_offset_pos..jmp_if_false_offset_pos + 4]
         .copy_from_slice(&forward_offset.to_le_bytes());
 
     // Return result (local 1)

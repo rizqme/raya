@@ -99,6 +99,8 @@ fn test_array_creation_and_access() {
             Opcode::NewArray as u8,
             0,
             0, // type index 0
+            0,
+            0,
             Opcode::StoreLocal as u8,
             0,
             0,
@@ -185,6 +187,8 @@ fn test_array_length() {
             Opcode::NewArray as u8,
             0,
             0, // type index 0
+            0,
+            0,
             Opcode::StoreLocal as u8,
             0,
             0,

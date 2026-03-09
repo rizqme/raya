@@ -130,7 +130,7 @@ mod tests {
     fn resume_guard_allows_preemption_on_jmp_with_empty_stack() {
         let mut code = Vec::new();
         code.push(Opcode::Jmp as u8);
-        code.extend_from_slice(&0i16.to_le_bytes());
+        code.extend_from_slice(&0i32.to_le_bytes());
         let func = make_function(code);
         assert!(Interpreter::can_resume_at_preemption_boundary(&func, 0));
     }
@@ -140,7 +140,7 @@ mod tests {
         let mut code = Vec::new();
         code.push(Opcode::ConstTrue as u8);
         code.push(Opcode::JmpIfFalse as u8);
-        code.extend_from_slice(&0i16.to_le_bytes());
+        code.extend_from_slice(&0i32.to_le_bytes());
         let func = make_function(code);
         assert!(!Interpreter::can_resume_at_preemption_boundary(&func, 1));
     }

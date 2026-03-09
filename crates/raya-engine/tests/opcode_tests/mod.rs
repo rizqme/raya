@@ -53,11 +53,6 @@ fn i32_bytes(val: i32) -> [u8; 4] {
     val.to_le_bytes()
 }
 
-/// Helper to encode i16 as little-endian bytes (for jump offsets)
-fn i16_bytes(val: i16) -> [u8; 2] {
-    val.to_le_bytes()
-}
-
 /// Helper to encode f64 as little-endian bytes
 fn f64_bytes(val: f64) -> [u8; 8] {
     val.to_le_bytes()
@@ -896,11 +891,13 @@ mod control_flow {
     #[test]
     fn test_jmp_forward() {
         // Jump over some instructions
-        let jump_offset = i16_bytes(6); // Skip CONST_I32 10
+        let jump_offset = i32_bytes(6); // Skip CONST_I32 10
         let result = execute_bytecode(vec![
             Opcode::Jmp as u8,
             jump_offset[0],
             jump_offset[1],
+            jump_offset[2],
+            jump_offset[3],
             // This should be skipped
             Opcode::ConstI32 as u8,
             10,
@@ -921,12 +918,14 @@ mod control_flow {
 
     #[test]
     fn test_jmp_if_true_taken() {
-        let jump_offset = i16_bytes(6);
+        let jump_offset = i32_bytes(6);
         let result = execute_bytecode(vec![
             Opcode::ConstTrue as u8,
             Opcode::JmpIfTrue as u8,
             jump_offset[0],
             jump_offset[1],
+            jump_offset[2],
+            jump_offset[3],
             // Should be skipped
             Opcode::ConstI32 as u8,
             10,
@@ -947,12 +946,14 @@ mod control_flow {
 
     #[test]
     fn test_jmp_if_true_not_taken() {
-        let jump_offset = i16_bytes(7);
+        let jump_offset = i32_bytes(7);
         let result = execute_bytecode(vec![
             Opcode::ConstFalse as u8,
             Opcode::JmpIfTrue as u8,
             jump_offset[0],
             jump_offset[1],
+            jump_offset[2],
+            jump_offset[3],
             // Should execute this
             Opcode::ConstI32 as u8,
             10,
@@ -973,12 +974,14 @@ mod control_flow {
 
     #[test]
     fn test_jmp_if_false_taken() {
-        let jump_offset = i16_bytes(6);
+        let jump_offset = i32_bytes(6);
         let result = execute_bytecode(vec![
             Opcode::ConstFalse as u8,
             Opcode::JmpIfFalse as u8,
             jump_offset[0],
             jump_offset[1],
+            jump_offset[2],
+            jump_offset[3],
             // Should be skipped
             Opcode::ConstI32 as u8,
             10,
@@ -999,12 +1002,14 @@ mod control_flow {
 
     #[test]
     fn test_jmp_if_null_taken() {
-        let jump_offset = i16_bytes(6);
+        let jump_offset = i32_bytes(6);
         let result = execute_bytecode(vec![
             Opcode::ConstNull as u8,
             Opcode::JmpIfNull as u8,
             jump_offset[0],
             jump_offset[1],
+            jump_offset[2],
+            jump_offset[3],
             // Should be skipped
             Opcode::ConstI32 as u8,
             10,
@@ -1025,7 +1030,7 @@ mod control_flow {
 
     #[test]
     fn test_jmp_if_not_null_taken() {
-        let jump_offset = i16_bytes(6);
+        let jump_offset = i32_bytes(6);
         let result = execute_bytecode(vec![
             Opcode::ConstI32 as u8,
             1,
@@ -1035,6 +1040,8 @@ mod control_flow {
             Opcode::JmpIfNotNull as u8,
             jump_offset[0],
             jump_offset[1],
+            jump_offset[2],
+            jump_offset[3],
             // Should be skipped
             Opcode::ConstI32 as u8,
             10,
@@ -1093,7 +1100,7 @@ mod composite {
         code.push(Opcode::Igt as u8);
         code.push(Opcode::JmpIfFalse as u8);
         let jmp_if_false_pos = code.len();
-        code.extend_from_slice(&0i16.to_le_bytes()); // Placeholder
+        code.extend_from_slice(&0i32.to_le_bytes()); // Placeholder
 
         // result = result * i
         code.push(Opcode::LoadLocal as u8);
@@ -1115,14 +1122,14 @@ mod composite {
 
         // Jump back to loop start
         code.push(Opcode::Jmp as u8);
-        let current_pos = code.len() + 2;
-        let backward_offset = (loop_start as isize - current_pos as isize) as i16;
+        let current_pos = code.len() + 4;
+        let backward_offset = (loop_start as isize - current_pos as isize) as i32;
         code.extend_from_slice(&backward_offset.to_le_bytes());
 
         // Loop end - patch forward jump
         let loop_end = code.len();
-        let forward_offset = (loop_end as isize - (jmp_if_false_pos + 2) as isize) as i16;
-        code[jmp_if_false_pos..jmp_if_false_pos + 2].copy_from_slice(&forward_offset.to_le_bytes());
+        let forward_offset = (loop_end as isize - (jmp_if_false_pos + 4) as isize) as i32;
+        code[jmp_if_false_pos..jmp_if_false_pos + 4].copy_from_slice(&forward_offset.to_le_bytes());
 
         // Return result
         code.push(Opcode::LoadLocal as u8);
@@ -1169,7 +1176,7 @@ mod composite {
         code.push(Opcode::Ilt as u8);
         code.push(Opcode::JmpIfFalse as u8);
         let jmp_if_false_pos = code.len();
-        code.extend_from_slice(&0i16.to_le_bytes()); // Placeholder
+        code.extend_from_slice(&0i32.to_le_bytes()); // Placeholder
 
         // tmp = a + b (local 3)
         code.push(Opcode::LoadLocal as u8);
@@ -1203,14 +1210,14 @@ mod composite {
 
         // Jump back to loop start
         code.push(Opcode::Jmp as u8);
-        let current_pos = code.len() + 2;
-        let backward_offset = (loop_start as isize - current_pos as isize) as i16;
+        let current_pos = code.len() + 4;
+        let backward_offset = (loop_start as isize - current_pos as isize) as i32;
         code.extend_from_slice(&backward_offset.to_le_bytes());
 
         // Loop end - patch forward jump
         let loop_end = code.len();
-        let forward_offset = (loop_end as isize - (jmp_if_false_pos + 2) as isize) as i16;
-        code[jmp_if_false_pos..jmp_if_false_pos + 2].copy_from_slice(&forward_offset.to_le_bytes());
+        let forward_offset = (loop_end as isize - (jmp_if_false_pos + 4) as isize) as i32;
+        code[jmp_if_false_pos..jmp_if_false_pos + 4].copy_from_slice(&forward_offset.to_le_bytes());
 
         // Return a
         code.push(Opcode::LoadLocal as u8);

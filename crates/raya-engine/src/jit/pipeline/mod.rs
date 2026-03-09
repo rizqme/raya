@@ -158,7 +158,10 @@ mod tests {
     }
     fn emit_jmp(code: &mut Vec<u8>, op: Opcode, offset: i32) {
         code.push(op as u8);
-        code.extend_from_slice(&offset.to_le_bytes());
+        // Test helpers specify jump targets relative to opcode offset.
+        // Bytecode encodes jumps relative to IP after reading i32 (opcode+imm = 5 bytes).
+        let encoded = offset - 5;
+        code.extend_from_slice(&encoded.to_le_bytes());
     }
     fn emit_store_local(code: &mut Vec<u8>, idx: u16) {
         code.push(Opcode::StoreLocal as u8);
