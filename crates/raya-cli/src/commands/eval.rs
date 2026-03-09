@@ -49,6 +49,7 @@ pub fn execute(
 fn needs_wrapping(code: &str) -> bool {
     let trimmed = code.trim();
     !trimmed.starts_with("function ")
+        && !trimmed.starts_with("async function ")
         && !trimmed.starts_with("class ")
         && !trimmed.starts_with("type ")
         && !trimmed.starts_with("abstract ")
@@ -63,6 +64,23 @@ fn needs_wrapping(code: &str) -> bool {
         && !trimmed.starts_with("switch ")
         && !trimmed.starts_with("throw ")
         && !trimmed.contains('\n')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::needs_wrapping;
+
+    #[test]
+    fn does_not_wrap_async_function_declaration() {
+        assert!(!needs_wrapping(
+            "async function ok() { return 1; } return ok();"
+        ));
+    }
+
+    #[test]
+    fn wraps_simple_expression() {
+        assert!(needs_wrapping("1 + 2 * 3"));
+    }
 }
 
 /// Format a VM Value for display.

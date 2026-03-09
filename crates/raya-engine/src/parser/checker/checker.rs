@@ -1088,6 +1088,7 @@ impl<'a> TypeChecker<'a> {
                 }
             });
 
+        let has_explicit_return_annotation = func.return_type.is_some();
         let declared_return_ty = if let Some(func_ty) = &symbol_func_ty {
             func_ty.return_type
         } else {
@@ -1153,9 +1154,17 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Set current function return type
+        // Set current function return type.
+        // Unannotated function declarations infer from collected return statements.
         let prev_return_ty = self.current_function_return_type;
-        self.current_function_return_type = Some(return_ty);
+        self.current_function_return_type = if has_explicit_return_annotation {
+            Some(return_ty)
+        } else {
+            None
+        };
+        if !has_explicit_return_annotation {
+            self.return_type_collector.push(Vec::new());
+        }
 
         // Enter function scope (mirrors binder's push_scope for function)
         self.enter_scope();
@@ -1172,11 +1181,65 @@ impl<'a> TypeChecker<'a> {
             self.check_stmt(stmt);
         }
 
+        let inferred_return_ty = if !has_explicit_return_annotation {
+            let collected = self.return_type_collector.pop().unwrap_or_default();
+            if collected.is_empty() {
+                self.type_ctx.void_type()
+            } else {
+                let mut unique = Vec::new();
+                for ty in collected {
+                    if !unique.contains(&ty) {
+                        unique.push(ty);
+                    }
+                }
+                if unique.len() == 1 {
+                    unique[0]
+                } else {
+                    self.type_ctx.union_type(unique)
+                }
+            }
+        } else {
+            self.type_ctx.void_type()
+        };
+
         // Exit function scope
         self.exit_scope();
 
         // Restore previous return type
         self.current_function_return_type = prev_return_ty;
+
+        if !has_explicit_return_annotation {
+            let inferred_func_ty = if let Some(func_ty) = &symbol_func_ty {
+                self.type_ctx.function_type_with_rest(
+                    func_ty.params.clone(),
+                    inferred_return_ty,
+                    func_ty.is_async,
+                    func_ty.min_params,
+                    func_ty.rest_param,
+                )
+            } else {
+                let min_params = func
+                    .params
+                    .iter()
+                    .filter(|p| !p.is_rest)
+                    .filter(|p| p.default_value.is_none() && !p.optional)
+                    .count();
+                self.type_ctx.function_type_with_rest(
+                    param_types,
+                    inferred_return_ty,
+                    func.is_async,
+                    min_params,
+                    None,
+                )
+            };
+
+            if let Some(symbol) = self.symbols.resolve_from_scope(&func_name, self.current_scope) {
+                if symbol.span == func.name.span {
+                    self.inferred_var_types
+                        .insert((symbol.scope_id.0, func_name.clone()), inferred_func_ty);
+                }
+            }
+        }
 
         self.type_env = saved_env;
     }
@@ -8160,6 +8223,25 @@ mod tests {
         assert!(
             result.is_ok(),
             "Expected Promise.isCancelled() to type-check, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_unannotated_async_function_return_is_inferred() {
+        let result = parse_and_check(
+            r#"
+            async function ok() { return 1; }
+            function main() {
+                let v = await [ok()];
+                return v[0];
+            }
+            return main();
+        "#,
+        );
+        assert!(
+            result.is_ok(),
+            "Expected unannotated async function return to infer as number, got {:?}",
             result
         );
     }
