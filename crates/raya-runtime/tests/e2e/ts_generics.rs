@@ -167,6 +167,20 @@ fn test_generic_class_two_params() {
     );
 }
 
+#[test]
+fn test_nested_generic_instantiation() {
+    expect_i32(
+        "class Box<T> {
+             value: T;
+             constructor(v: T) { this.value = v; }
+         }
+         let inner = new Box<int>(42);
+         let outer = new Box<Box<int>>(inner);
+         return outer.value.value;",
+        42,
+    );
+}
+
 // ============================================================================
 // 3. Generic Class Inheritance
 //    Adapted from: genericCallWithObjectTypeArgs2.ts

@@ -2126,7 +2126,10 @@ mod tests {
 
     fn emit_jmp(code: &mut Vec<u8>, op: Opcode, offset: i32) {
         code.push(op as u8);
-        code.extend_from_slice(&offset.to_le_bytes());
+        // Test sites specify offsets relative to opcode start. Bytecode encodes
+        // i32 jump immediates relative to IP after reading the immediate.
+        let encoded = offset - 5;
+        code.extend_from_slice(&encoded.to_le_bytes());
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! Type operation opcode handlers: nominal checks/casts, generic casts, dynamic keyed access,
 //! and static/runtime type helpers.
 
+use crate::compiler::native_id;
 use crate::compiler::type_registry::TypeRegistry;
 use crate::compiler::{Module, Opcode};
-use crate::compiler::native_id;
 use crate::parser::TypeContext;
 use crate::vm::builtin::{array, channel, map, regexp, set, string};
 use crate::vm::gc::header_ptr_from_value_ptr;
@@ -52,9 +52,7 @@ fn value_kind_mask(value: Value) -> u16 {
     let Some(ptr) = (unsafe { value.as_ptr::<u8>() }) else {
         return 0;
     };
-    let header = unsafe {
-        &*header_ptr_from_value_ptr(ptr.as_ptr())
-    };
+    let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
     if header.type_id() == std::any::TypeId::of::<RayaString>() {
         return CAST_KIND_STRING;
     }
@@ -78,9 +76,7 @@ fn object_ptr_checked(value: Value) -> Option<NonNull<Object>> {
         return None;
     }
     let ptr = unsafe { value.as_ptr::<u8>() }?;
-    let header = unsafe {
-        &*header_ptr_from_value_ptr(ptr.as_ptr())
-    };
+    let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
     if header.type_id() == std::any::TypeId::of::<Object>() {
         unsafe { value.as_ptr::<Object>() }
     } else {
@@ -104,9 +100,7 @@ pub(in crate::vm::interpreter) fn builtin_handle_native_method_id(
     }
     if value.is_ptr() {
         let ptr = unsafe { value.as_ptr::<u8>() }?;
-        let header = unsafe {
-            &*header_ptr_from_value_ptr(ptr.as_ptr())
-        };
+        let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
         let ty = header.type_id();
         if ty == std::any::TypeId::of::<Array>() {
             return match key {
@@ -162,9 +156,7 @@ pub(in crate::vm::interpreter) fn builtin_handle_native_method_id(
         return None;
     }
     let ptr = handle as *const u8;
-    let header = unsafe {
-        &*header_ptr_from_value_ptr(ptr)
-    };
+    let header = unsafe { &*header_ptr_from_value_ptr(ptr) };
     let ty = header.type_id();
     if ty == std::any::TypeId::of::<ChannelObject>() {
         return match key {
@@ -261,10 +253,7 @@ impl<'a> Interpreter<'a> {
             )));
         };
         let obj = unsafe { &*object_ptr.as_ptr() };
-        self.record_aot_shape_site(
-            crate::aot_profile::AotSiteKind::CastShape,
-            obj.layout_id(),
-        );
+        self.record_aot_shape_site(crate::aot_profile::AotSiteKind::CastShape, obj.layout_id());
         let Some(adapter) = self.ensure_shape_adapter_for_object(obj, required_shape) else {
             return OpcodeResult::Error(VmError::TypeError(format!(
                 "Cannot cast object(layout_id={}) to structural shape @{required_shape:016x}",
@@ -272,7 +261,10 @@ impl<'a> Interpreter<'a> {
             )));
         };
         for slot in 0..adapter.len() {
-            if matches!(adapter.binding_for_slot(slot), crate::vm::interpreter::shared_state::StructuralSlotBinding::Missing) {
+            if matches!(
+                adapter.binding_for_slot(slot),
+                crate::vm::interpreter::shared_state::StructuralSlotBinding::Missing
+            ) {
                 return OpcodeResult::Error(VmError::TypeError(format!(
                     "Cannot cast object(layout_id={}) to structural shape @{required_shape:016x}: missing required slot {}",
                     obj.layout_id(),
@@ -540,23 +532,24 @@ impl<'a> Interpreter<'a> {
                 .map(|class| class.name.clone())
                 .unwrap_or_else(|| "<unknown>".to_string())
         };
-        let (actual_nominal_type_id, actual_name) = if let Some(obj_ptr) = object_ptr_checked(obj_val) {
-            let obj = unsafe { &*obj_ptr.as_ptr() };
-            if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
-                let class_name = {
-                    let classes = self.classes.read();
-                    classes
-                        .get_class(nominal_type_id)
-                        .map(|class| class.name.clone())
-                        .unwrap_or_else(|| "<unknown>".to_string())
-                };
-                (nominal_type_id, class_name)
+        let (actual_nominal_type_id, actual_name) =
+            if let Some(obj_ptr) = object_ptr_checked(obj_val) {
+                let obj = unsafe { &*obj_ptr.as_ptr() };
+                if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
+                    let class_name = {
+                        let classes = self.classes.read();
+                        classes
+                            .get_class(nominal_type_id)
+                            .map(|class| class.name.clone())
+                            .unwrap_or_else(|| "<unknown>".to_string())
+                    };
+                    (nominal_type_id, class_name)
+                } else {
+                    (usize::MAX, "<structural-object>".to_string())
+                }
             } else {
-                (usize::MAX, "<structural-object>".to_string())
-            }
-        } else {
-            (usize::MAX, "<non-object>".to_string())
-        };
+                (usize::MAX, "<non-object>".to_string())
+            };
         let current_func_id = task.current_func_id();
         let current_func_name = module
             .functions
@@ -591,8 +584,8 @@ impl<'a> Interpreter<'a> {
                 };
                 let target_nominal_type_id =
                     match self.resolve_nominal_type_id(module, local_class_index) {
-                    Ok(id) => id,
-                    Err(error) => return OpcodeResult::Error(error),
+                        Ok(id) => id,
+                        Err(error) => return OpcodeResult::Error(error),
                     };
                 let obj_val = match stack.pop() {
                     Ok(v) => v,
@@ -639,7 +632,7 @@ impl<'a> Interpreter<'a> {
                     match self.resolve_nominal_type_id(module, local_nominal_type_index) {
                         Ok(id) => id,
                         Err(error) => return OpcodeResult::Error(error),
-                };
+                    };
                 let obj_val = match stack.pop() {
                     Ok(value) => value,
                     Err(error) => return OpcodeResult::Error(error),
@@ -753,7 +746,8 @@ impl<'a> Interpreter<'a> {
                         let key_str = key_str
                             .as_deref()
                             .expect("dyn object property access should always have a key string");
-                        if let Some(getter) = self.descriptor_accessor(actual_obj, &key_str, "get") {
+                        if let Some(getter) = self.descriptor_accessor(actual_obj, &key_str, "get")
+                        {
                             match self.callable_frame_for_value(
                                 getter,
                                 stack,
@@ -773,8 +767,8 @@ impl<'a> Interpreter<'a> {
                         let field_index = self.get_field_index_for_value(obj_val, &key_str);
                         if let Some(index) = field_index {
                             obj.get_field(index).unwrap_or(Value::null())
-                        } else if let Some(method_slot) = obj.nominal_type_id_usize().and_then(
-                            |nominal_type_id| {
+                        } else if let Some(method_slot) =
+                            obj.nominal_type_id_usize().and_then(|nominal_type_id| {
                                 let class_metadata = self.class_metadata.read();
                                 class_metadata
                                     .get(nominal_type_id)
@@ -795,7 +789,9 @@ impl<'a> Interpreter<'a> {
                                                         .rsplit("::")
                                                         .next()
                                                         .unwrap_or(method.name.as_str());
-                                                    if method.name == key_str || plain_name == key_str {
+                                                    if method.name == key_str
+                                                        || plain_name == key_str
+                                                    {
                                                         Some(method.slot)
                                                     } else {
                                                         None
@@ -803,8 +799,7 @@ impl<'a> Interpreter<'a> {
                                                 })
                                             })
                                     })
-                            },
-                        )
+                            })
                         {
                             match self.bound_method_value_for_slot(obj_val, method_slot) {
                                 Ok(value) => value,
@@ -819,7 +814,9 @@ impl<'a> Interpreter<'a> {
                     }
                     _ => {
                         if let Some(key_str) = key_str.as_deref() {
-                            if let Some(native_id) = builtin_handle_native_method_id(obj_val, key_str) {
+                            if let Some(native_id) =
+                                builtin_handle_native_method_id(obj_val, key_str)
+                            {
                                 let method = BoundNativeMethod {
                                     receiver: obj_val,
                                     native_id,
@@ -827,7 +824,8 @@ impl<'a> Interpreter<'a> {
                                 let method_ptr = self.gc.lock().allocate(method);
                                 unsafe {
                                     Value::from_ptr(
-                                        NonNull::new(method_ptr.as_ptr()).expect("bound native method ptr"),
+                                        NonNull::new(method_ptr.as_ptr())
+                                            .expect("bound native method ptr"),
                                     )
                                 }
                             } else {
@@ -890,7 +888,8 @@ impl<'a> Interpreter<'a> {
                             .as_deref()
                             .expect("dyn object property access should always have a key string");
                         let field_index = self.get_field_index_for_value(obj_val, &key_str);
-                        if let Some(setter) = self.descriptor_accessor(actual_obj, &key_str, "set") {
+                        if let Some(setter) = self.descriptor_accessor(actual_obj, &key_str, "set")
+                        {
                             match self.callable_frame_for_value(
                                 setter,
                                 stack,
@@ -940,7 +939,6 @@ impl<'a> Interpreter<'a> {
                 }
                 OpcodeResult::Continue
             }
-
 
             // =========================================================
             // Mutex Creation
@@ -1076,7 +1074,7 @@ impl<'a> Interpreter<'a> {
                 } else if value.is_bool() {
                     "boolean"
                 } else if value.is_i32() {
-                    "number"
+                    "int"
                 } else if value.is_i64() || value.is_f64() {
                     "number"
                 } else if value.is_ptr() {

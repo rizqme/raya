@@ -95,6 +95,24 @@ fn test_discriminated_union_if_error_branch() {
     );
 }
 
+#[test]
+fn test_discriminated_union_inline_literal_argument_branch_slot_mapping() {
+    expect_i32(
+        "type U =
+             | { k: \"a\"; x: number }
+             | { k: \"b\"; y: number };
+         function f(u: U): number {
+             if (u.k == \"a\") {
+                 return u.x;
+             } else {
+                 return u.y;
+             }
+         }
+         return f({ k: \"b\", y: 7 });",
+        7,
+    );
+}
+
 // ============================================================================
 // 3. Three-Way Discriminated Union
 // ============================================================================

@@ -511,48 +511,44 @@ fn test_and_short_circuit_evaluates_when_true() {
 //    [int, string], [int, int, int] etc.
 // ============================================================================
 
-// BUG DISCOVERY: Tuple types are not implemented in the type checker.
-// The syntax `[int, string]` is parsed but the type checker rejects
-// assigning array literals to tuple-typed variables with TypeMismatch.
-// All 4 tuple tests fail with the same pattern.
-// #[test]
-// fn test_tuple_basic() {
-//     expect_i32(
-//         "let pair: [int, string] = [42, \"hello\"];
-//          return pair[0];",
-//         42,
-//     );
-// }
-//
-// #[test]
-// fn test_tuple_string_element() {
-//     expect_string(
-//         "let pair: [int, string] = [42, \"hello\"];
-//          return pair[1];",
-//         "hello",
-//     );
-// }
-//
-// #[test]
-// fn test_tuple_three_elements() {
-//     expect_i32(
-//         "let triple: [int, int, int] = [10, 12, 20];
-//          return triple[0] + triple[1] + triple[2];",
-//         42,
-//     );
-// }
-//
-// #[test]
-// fn test_tuple_from_function() {
-//     expect_i32(
-//         "function divmod(a: int, b: int): [int, int] {
-//              return [a / b, a % b];
-//          }
-//          let result = divmod(42, 10);
-//          return result[0] * 10 + result[1];",
-//         42,
-//     );
-// }
+#[test]
+fn test_tuple_basic() {
+    expect_i32(
+        "let pair: [int, string] = [42, \"hello\"];
+         return pair[0];",
+        42,
+    );
+}
+
+#[test]
+fn test_tuple_string_element() {
+    expect_string(
+        "let pair: [int, string] = [42, \"hello\"];
+         return pair[1];",
+        "hello",
+    );
+}
+
+#[test]
+fn test_tuple_three_elements() {
+    expect_i32(
+        "let triple: [int, int, int] = [10, 12, 20];
+         return triple[0] + triple[1] + triple[2];",
+        42,
+    );
+}
+
+#[test]
+fn test_tuple_from_function() {
+    expect_i32(
+        "function divmod(a: int, b: int): [int, int] {
+             return [a / b, a % b];
+         }
+         let result = divmod(42, 10);
+         return result[0] * 10 + result[1];",
+        42,
+    );
+}
 
 // ============================================================================
 // 9. Arrow Function Expression Body (no braces)
@@ -767,38 +763,33 @@ fn test_void_function_return_value_errors() {
 //     switch (typeof x) { case "int": ... }
 // ============================================================================
 
-// BUG DISCOVERY: `switch (typeof x)` doesn't narrow the type of `x` in
-// case branches. The spec shows this as a supported pattern, but the
-// type checker doesn't recognize typeof narrowing in switch contexts.
-// Error: TypeMismatch for `return x` (still sees union, not narrowed int)
-// and `x.length` (doesn't narrow to string).
-// #[test]
-// fn test_typeof_switch() {
-//     expect_i32(
-//         "function process(x: int | string): int {
-//              switch (typeof x) {
-//                  case \"int\": return x;
-//                  case \"string\": return x.length;
-//              }
-//          }
-//          return process(42);",
-//         42,
-//     );
-// }
-//
-// #[test]
-// fn test_typeof_switch_string_branch() {
-//     expect_i32(
-//         "function process(x: int | string): int {
-//              switch (typeof x) {
-//                  case \"int\": return x;
-//                  case \"string\": return x.length;
-//              }
-//          }
-//          return process(\"hello world! the answer is forty-two\");",
-//         36,
-//     );
-// }
+#[test]
+fn test_typeof_switch() {
+    expect_i32(
+        "function process(x: int | string): int {
+             switch (typeof x) {
+                 case \"int\": return x;
+                 case \"string\": return x.length;
+             }
+         }
+         return process(42);",
+        42,
+    );
+}
+
+#[test]
+fn test_typeof_switch_string_branch() {
+    expect_i32(
+        "function process(x: int | string): int {
+             switch (typeof x) {
+                 case \"int\": return x;
+                 case \"string\": return x.length;
+             }
+         }
+         return process(\"hello world! the answer is forty-two\");",
+        36,
+    );
+}
 
 // ============================================================================
 // 17. Complex Compound Assignment Patterns

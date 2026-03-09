@@ -323,22 +323,20 @@ fn test_narrowing_in_nested_ifs() {
     );
 }
 
-// BUG DISCOVERY: typeof narrowing for `string | int` doesn't work (same bug as cross_feature).
-// The narrowed type is not properly used for arithmetic operations.
-// #[test]
-// fn test_typeof_narrowing_preserves_after_assignment() {
-//     expect_i32(
-//         "function process(x: string | int): int {
-//              if (typeof x === \"int\") {
-//                  let doubled = x * 2;
-//                  return doubled;
-//              }
-//              return 0;
-//          }
-//          return process(21);",
-//         42,
-//     );
-// }
+#[test]
+fn test_typeof_narrowing_preserves_after_assignment() {
+    expect_i32(
+        "function process(x: string | int): int {
+             if (typeof x === \"int\") {
+                 let doubled = x * 2;
+                 return doubled;
+             }
+             return 0;
+         }
+         return process(21);",
+        42,
+    );
+}
 
 #[test]
 fn test_instanceof_narrowing_in_array_loop() {

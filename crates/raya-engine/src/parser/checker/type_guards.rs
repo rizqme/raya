@@ -3,7 +3,7 @@
 //! This module provides utilities for detecting type guards in expressions,
 //! which are used to narrow types in conditional branches.
 
-use crate::parser::ast::{BinaryOperator, Expression, LogicalOperator};
+use crate::parser::ast::{BinaryOperator, Expression, LogicalOperator, UnaryOperator};
 use crate::parser::Interner;
 
 /// A type guard extracted from a conditional expression
@@ -106,6 +106,14 @@ pub enum TypeGuard {
 /// - `x !== null` → Nullish guard (negated)
 /// - `x === null` → Nullish guard
 pub fn extract_type_guard(expr: &Expression, interner: &Interner) -> Option<TypeGuard> {
+    // Negated guards: !(...)
+    if let Expression::Unary(unary) = expr {
+        if matches!(unary.operator, UnaryOperator::Not) {
+            return extract_type_guard(&unary.operand, interner)
+                .map(|guard| negate_extracted_guard(&guard));
+        }
+    }
+
     // Truthiness check: bare identifier (e.g., `if (s)`)
     if let Expression::Identifier(ident) = expr {
         let var_name = interner.resolve(ident.name).to_string();
@@ -336,6 +344,16 @@ fn try_extract_nullish_guard(
 /// For `a && b`, collects guards from both sides recursively.
 /// This allows `if (x != null && y != null)` to narrow both variables.
 pub fn extract_all_type_guards(expr: &Expression, interner: &Interner) -> Vec<TypeGuard> {
+    // Negated guards: !(...)
+    if let Expression::Unary(unary) = expr {
+        if matches!(unary.operator, UnaryOperator::Not) {
+            return extract_all_type_guards(&unary.operand, interner)
+                .into_iter()
+                .map(|guard| negate_extracted_guard(&guard))
+                .collect();
+        }
+    }
+
     // Handle LogicalAnd: collect guards from both sides
     if let Expression::Logical(logical) = expr {
         if matches!(logical.operator, LogicalOperator::And) {
@@ -356,6 +374,64 @@ pub fn extract_all_type_guards(expr: &Expression, interner: &Interner) -> Vec<Ty
     }
 
     vec![]
+}
+
+fn negate_extracted_guard(guard: &TypeGuard) -> TypeGuard {
+    match guard {
+        TypeGuard::TypeOf {
+            var,
+            type_name,
+            negated,
+        } => TypeGuard::TypeOf {
+            var: var.clone(),
+            type_name: type_name.clone(),
+            negated: !negated,
+        },
+        TypeGuard::Discriminant {
+            var,
+            field,
+            variant,
+            negated,
+        } => TypeGuard::Discriminant {
+            var: var.clone(),
+            field: field.clone(),
+            variant: variant.clone(),
+            negated: !negated,
+        },
+        TypeGuard::Nullish { var, negated } => TypeGuard::Nullish {
+            var: var.clone(),
+            negated: !negated,
+        },
+        TypeGuard::IsArray { var, negated } => TypeGuard::IsArray {
+            var: var.clone(),
+            negated: !negated,
+        },
+        TypeGuard::IsInteger { var, negated } => TypeGuard::IsInteger {
+            var: var.clone(),
+            negated: !negated,
+        },
+        TypeGuard::IsNaN { var, negated } => TypeGuard::IsNaN {
+            var: var.clone(),
+            negated: !negated,
+        },
+        TypeGuard::IsFinite { var, negated } => TypeGuard::IsFinite {
+            var: var.clone(),
+            negated: !negated,
+        },
+        TypeGuard::TypePredicate {
+            var,
+            predicate,
+            negated,
+        } => TypeGuard::TypePredicate {
+            var: var.clone(),
+            predicate: predicate.clone(),
+            negated: !negated,
+        },
+        TypeGuard::Truthiness { var, negated } => TypeGuard::Truthiness {
+            var: var.clone(),
+            negated: !negated,
+        },
+    }
 }
 
 #[cfg(test)]

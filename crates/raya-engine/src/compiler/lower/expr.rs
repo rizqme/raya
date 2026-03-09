@@ -8,7 +8,7 @@ use super::{
     STRING_TYPE_ID, TASK_TYPE_ID, UNKNOWN_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
 };
 use crate::compiler::ir::{
-    BinaryOp, NominalTypeId, FunctionId, IrConstant, IrInstr, IrValue, Register, Terminator,
+    BinaryOp, FunctionId, IrConstant, IrInstr, IrValue, NominalTypeId, Register, Terminator,
     UnaryOp,
 };
 use crate::compiler::CompileError;
@@ -38,19 +38,23 @@ const CAST_KIND_FUNCTION: u16 = 0x0080;
 
 enum SpreadSourceFields {
     Concrete(Vec<(String, u16)>),
-    Shape { shape_id: u64, fields: Vec<(String, u16)> },
+    Shape {
+        shape_id: u64,
+        fields: Vec<(String, u16)>,
+    },
 }
 
 impl<'a> Lowerer<'a> {
     fn projection_layout_u16_from_type_id(&self, ty: TypeId) -> Option<Vec<(String, u16)>> {
-        self.structural_projection_layout_from_type_id(ty).map(|layout| {
-            layout
-                .into_iter()
-                .filter_map(|(field_name, field_idx)| {
-                    u16::try_from(field_idx).ok().map(|slot| (field_name, slot))
-                })
-                .collect()
-        })
+        self.structural_projection_layout_from_type_id(ty)
+            .map(|layout| {
+                layout
+                    .into_iter()
+                    .filter_map(|(field_name, field_idx)| {
+                        u16::try_from(field_idx).ok().map(|slot| (field_name, slot))
+                    })
+                    .collect()
+            })
     }
 
     pub(super) fn projected_structural_layout_from_alias_name(
@@ -82,7 +86,9 @@ impl<'a> Lowerer<'a> {
                     layout
                         .iter()
                         .filter_map(|(field_name, field_idx)| {
-                            u16::try_from(*field_idx).ok().map(|slot| (field_name.clone(), slot))
+                            u16::try_from(*field_idx)
+                                .ok()
+                                .map(|slot| (field_name.clone(), slot))
                         })
                         .collect()
                 })
@@ -91,12 +97,18 @@ impl<'a> Lowerer<'a> {
                         .get(&ident.name)
                         .and_then(|alias| self.projected_structural_layout_from_alias_name(alias))
                 })
-                .or_else(|| self.projection_layout_u16_from_type_id(self.get_expr_type(object_expr))),
+                .or_else(|| {
+                    self.projection_layout_u16_from_type_id(self.get_expr_type(object_expr))
+                }),
             Expression::TypeCast(cast) => {
-                if self.try_extract_class_from_type(&cast.target_type).is_some() {
+                if self
+                    .try_extract_class_from_type(&cast.target_type)
+                    .is_some()
+                {
                     return None;
                 }
-                let target_ty = self.resolve_structural_slot_type_from_annotation(&cast.target_type);
+                let target_ty =
+                    self.resolve_structural_slot_type_from_annotation(&cast.target_type);
                 self.projection_layout_u16_from_type_id(target_ty)
             }
             Expression::Parenthesized(paren) => {
@@ -116,7 +128,8 @@ impl<'a> Lowerer<'a> {
             .get(&var_name)
             .cloned()
         {
-            self.register_structural_projection_fields.insert(dest.id, fields);
+            self.register_structural_projection_fields
+                .insert(dest.id, fields);
         }
     }
 
@@ -332,7 +345,7 @@ impl<'a> Lowerer<'a> {
             let dest = self.alloc_register(UNRESOLVED);
             self.emit(IrInstr::NewType {
                 dest: dest.clone(),
-                nominal_type_id: nominal_type_id,
+                nominal_type_id,
             });
 
             let all_fields = self.get_all_fields(nominal_type_id);
@@ -1086,7 +1099,9 @@ impl<'a> Lowerer<'a> {
                 let bind_name = self.interner.resolve(bind_member.property.name);
                 if bind_name == "bind" {
                     if let Expression::Member(target_member) = &*bind_member.object {
-                        if let Some(nominal_type_id) = self.infer_nominal_type_id(&target_member.object) {
+                        if let Some(nominal_type_id) =
+                            self.infer_nominal_type_id(&target_member.object)
+                        {
                             if let Some(&slot) = self
                                 .method_slot_map
                                 .get(&(nominal_type_id, target_member.property.name))
@@ -1580,8 +1595,12 @@ impl<'a> Lowerer<'a> {
                 });
 
                 // Propagate return type for bound method calls
-                if let Some(&(nominal_type_id, method_name)) = self.bound_method_vars.get(&ident.name) {
-                    if let Some(&ret_ty) = self.method_return_type_map.get(&(nominal_type_id, method_name))
+                if let Some(&(nominal_type_id, method_name)) =
+                    self.bound_method_vars.get(&ident.name)
+                {
+                    if let Some(&ret_ty) = self
+                        .method_return_type_map
+                        .get(&(nominal_type_id, method_name))
                     {
                         if ret_ty != UNRESOLVED {
                             dest.ty = ret_ty;
@@ -1648,8 +1667,12 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Propagate return type for bound method calls (global variable path)
-                if let Some(&(nominal_type_id, method_name)) = self.bound_method_vars.get(&ident.name) {
-                    if let Some(&ret_ty) = self.method_return_type_map.get(&(nominal_type_id, method_name))
+                if let Some(&(nominal_type_id, method_name)) =
+                    self.bound_method_vars.get(&ident.name)
+                {
+                    if let Some(&ret_ty) = self
+                        .method_return_type_map
+                        .get(&(nominal_type_id, method_name))
                     {
                         if ret_ty != UNRESOLVED {
                             dest.ty = ret_ty;
@@ -1822,11 +1845,12 @@ impl<'a> Lowerer<'a> {
             // Intercept promise-like methods before object dispatch.
             let object_ty = self.get_expr_type(&member.object);
             let inferred_is_promise_class =
-                self.infer_nominal_type_id(&member.object).is_some_and(|cid| {
-                    self.class_map
-                        .iter()
-                        .any(|(&sym, &id)| id == cid && self.interner.resolve(sym) == "Promise")
-                });
+                self.infer_nominal_type_id(&member.object)
+                    .is_some_and(|cid| {
+                        self.class_map
+                            .iter()
+                            .any(|(&sym, &id)| id == cid && self.interner.resolve(sym) == "Promise")
+                    });
             let is_promise_like = self.type_ctx.is_task_type(object_ty)
                 || matches!(
                     self.type_ctx.get(object_ty),
@@ -2183,7 +2207,8 @@ impl<'a> Lowerer<'a> {
                 if let (Expression::Member(inner_member), Some(bound_receiver)) =
                     (&*member.object, args.first().cloned())
                 {
-                    if let Some(nominal_type_id) = self.infer_nominal_type_id(&inner_member.object) {
+                    if let Some(nominal_type_id) = self.infer_nominal_type_id(&inner_member.object)
+                    {
                         if let Some(method_slot) =
                             self.find_method_slot(nominal_type_id, inner_member.property.name)
                         {
@@ -2237,8 +2262,9 @@ impl<'a> Lowerer<'a> {
 
                 if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
                     // This is a class identifier, check for static methods
-                    if let Some(&func_id) =
-                        self.static_method_map.get(&(nominal_type_id, method_name_symbol))
+                    if let Some(&func_id) = self
+                        .static_method_map
+                        .get(&(nominal_type_id, method_name_symbol))
                     {
                         // Static method call - no 'this' parameter
                         // Check if async method - emit Spawn instead of Call
@@ -2273,7 +2299,7 @@ impl<'a> Lowerer<'a> {
                     .is_some()
             {
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                if let Expression::Identifier(obj_ident) = &*member.object {
+                    if let Expression::Identifier(obj_ident) = &*member.object {
                         eprintln!(
                             "[lower] structural member call '{}.{}(...)' via shape projection",
                             self.interner.resolve(obj_ident.name),
@@ -2396,7 +2422,9 @@ impl<'a> Lowerer<'a> {
                 let is_field = all_fields
                     .iter()
                     .any(|f| self.interner.resolve(f.name) == method_name);
-                let is_method = self.find_method(nominal_type_id, method_name_symbol).is_some();
+                let is_method = self
+                    .find_method(nominal_type_id, method_name_symbol)
+                    .is_some();
 
                 if is_field && !is_method {
                     // Function-typed field: emit GetField + CallClosure
@@ -2521,7 +2549,9 @@ impl<'a> Lowerer<'a> {
                     self.propagate_type_projection_to_register(dest.ty, &dest);
 
                     return dest;
-                } else if let Some(slot) = self.find_method_slot(nominal_type_id, method_name_symbol) {
+                } else if let Some(slot) =
+                    self.find_method_slot(nominal_type_id, method_name_symbol)
+                {
                     // Abstract method with vtable slot - use virtual dispatch.
                     // The actual implementation is provided by a derived class.
                     let object = self.lower_expr(&member.object);
@@ -2923,7 +2953,8 @@ impl<'a> Lowerer<'a> {
             // Unknown/dynamic receiver fallback: lower `obj.m(...)` as
             // `CallClosure(LateBoundMember(obj, "m"), args)` so strict mode
             // can still compile unresolved-but-valid dynamic patterns.
-            if nominal_type_id.is_none() && (obj_type_id == UNRESOLVED_TYPE_ID || obj_type_id == 6) {
+            if nominal_type_id.is_none() && (obj_type_id == UNRESOLVED_TYPE_ID || obj_type_id == 6)
+            {
                 let closure = self.alloc_register(UNRESOLVED);
                 self.emit(IrInstr::LateBoundMember {
                     dest: closure.clone(),
@@ -3081,13 +3112,16 @@ impl<'a> Lowerer<'a> {
             if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
                 // This is a class identifier, check for static fields
                 // Extract global_index first to avoid borrow conflict
-                let global_index = self.class_info_map.get(&nominal_type_id).and_then(|class_info| {
-                    class_info
-                        .static_fields
-                        .iter()
-                        .find(|f| self.interner.resolve(f.name) == prop_name)
-                        .map(|sf| sf.global_index)
-                });
+                let global_index =
+                    self.class_info_map
+                        .get(&nominal_type_id)
+                        .and_then(|class_info| {
+                            class_info
+                                .static_fields
+                                .iter()
+                                .find(|f| self.interner.resolve(f.name) == prop_name)
+                                .map(|sf| sf.global_index)
+                        });
 
                 if let Some(index) = global_index {
                     // Found a static field - emit LoadGlobal
@@ -3142,15 +3176,16 @@ impl<'a> Lowerer<'a> {
         }
 
         let receiver_expr_ty = self.get_expr_type(&member.object);
-        let receiver_is_dynamic_object = matches!(
-            self.type_ctx.get(receiver_expr_ty),
-            Some(Type::JSObject) | Some(Type::Any) | Some(Type::Unknown)
-        ) || self.type_ctx.jsobject_inner(receiver_expr_ty).is_some()
-            || matches!(
-                self.type_ctx.get(object.ty),
+        let receiver_is_dynamic_object =
+            matches!(
+                self.type_ctx.get(receiver_expr_ty),
                 Some(Type::JSObject) | Some(Type::Any) | Some(Type::Unknown)
-            )
-            || self.type_ctx.jsobject_inner(object.ty).is_some();
+            ) || self.type_ctx.jsobject_inner(receiver_expr_ty).is_some()
+                || matches!(
+                    self.type_ctx.get(object.ty),
+                    Some(Type::JSObject) | Some(Type::Any) | Some(Type::Unknown)
+                )
+                || self.type_ctx.jsobject_inner(object.ty).is_some();
 
         if nominal_type_id.is_none() && receiver_is_dynamic_object {
             let member_ty = {
@@ -3269,7 +3304,9 @@ impl<'a> Lowerer<'a> {
                         }
                     };
                     if self.js_this_binding_compat {
-                        if let Some(func_id) = self.find_method(nominal_type_id, member.property.name) {
+                        if let Some(func_id) =
+                            self.find_method(nominal_type_id, member.property.name)
+                        {
                             let dest = self.alloc_register(member_ty);
                             self.emit(IrInstr::MakeClosure {
                                 dest: dest.clone(),
@@ -3296,7 +3333,10 @@ impl<'a> Lowerer<'a> {
                     this.structural_shape_slot_from_expr(&member.object, prop_name)
                 {
                     let field_ty = this
-                        .structural_field_type_from_type(this.get_expr_type(&member.object), prop_name)
+                        .structural_field_type_from_type(
+                            this.get_expr_type(&member.object),
+                            prop_name,
+                        )
                         .unwrap_or(UNRESOLVED);
                     return Some(ResolvedMemberSlot::Shape {
                         shape_id,
@@ -3323,21 +3363,40 @@ impl<'a> Lowerer<'a> {
                 })
             };
 
-            let alias_field_idx = match &*member.object {
+            let alias_field_slot = match &*member.object {
                 Expression::Identifier(ident) => self
                     .variable_object_type_aliases
                     .get(&ident.name)
-                    .and_then(|alias| self.type_alias_field_lookup(alias, prop_name)),
+                    .and_then(|alias| {
+                        self.type_alias_field_lookup(alias, prop_name).and_then(
+                            |(field_index, field_ty)| {
+                                let alias_shape_id = self
+                                    .projected_structural_layout_from_alias_name(alias)
+                                    .map(|layout| {
+                                        let names = layout
+                                            .into_iter()
+                                            .map(|(field_name, _)| field_name)
+                                            .collect::<Vec<_>>();
+                                        crate::vm::object::shape_id_from_member_names(&names)
+                                    })
+                                    .or_else(|| {
+                                        self.structural_shape_id_from_type(
+                                            self.get_expr_type(&member.object),
+                                        )
+                                    })?;
+                                Some((field_index, field_ty, alias_shape_id))
+                            },
+                        )
+                    }),
                 _ => None,
             };
 
-            if let Some((field_index, field_ty)) = alias_field_idx {
-                self.structural_shape_id_from_type(self.get_expr_type(&member.object))
-                    .map(|shape_id| ResolvedMemberSlot::Shape {
-                        shape_id,
-                        field_index,
-                        field_ty,
-                    })
+            if let Some((field_index, field_ty, shape_id)) = alias_field_slot {
+                Some(ResolvedMemberSlot::Shape {
+                    shape_id,
+                    field_index,
+                    field_ty,
+                })
             } else {
                 // Check variable_object_fields for decoded object field layout
                 let obj_field_idx = match &*member.object {
@@ -3430,56 +3489,56 @@ impl<'a> Lowerer<'a> {
                     field_index,
                     field_ty,
                 } => {
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    let obj_name = match &*member.object {
-                        Expression::Identifier(i) => self.interner.resolve(i.name).to_string(),
-                        _ => "<expr>".to_string(),
-                    };
-                    eprintln!(
-                        "[lower] LoadFieldExact: {}.{} field_index={}",
-                        obj_name, prop_name, field_index
-                    );
-                }
-                self.emit(IrInstr::LoadFieldExact {
-                    dest: dest.clone(),
-                    object,
-                    field: field_index,
-                    optional: member.optional,
-                });
-                if !self.emit_projected_shape_registration_for_register_type(&dest, field_ty) {
-                    self.emit_structural_slot_registration_for_type(dest.clone(), field_ty);
-                }
-                if let Some(nested_layout) = self
-                    .register_nested_object_fields
-                    .get(&(object_id, field_index))
-                    .cloned()
-                {
-                    self.register_object_fields.insert(dest.id, nested_layout);
-                }
+                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                        let obj_name = match &*member.object {
+                            Expression::Identifier(i) => self.interner.resolve(i.name).to_string(),
+                            _ => "<expr>".to_string(),
+                        };
+                        eprintln!(
+                            "[lower] LoadFieldExact: {}.{} field_index={}",
+                            obj_name, prop_name, field_index
+                        );
+                    }
+                    self.emit(IrInstr::LoadFieldExact {
+                        dest: dest.clone(),
+                        object,
+                        field: field_index,
+                        optional: member.optional,
+                    });
+                    if !self.emit_projected_shape_registration_for_register_type(&dest, field_ty) {
+                        self.emit_structural_slot_registration_for_type(dest.clone(), field_ty);
+                    }
+                    if let Some(nested_layout) = self
+                        .register_nested_object_fields
+                        .get(&(object_id, field_index))
+                        .cloned()
+                    {
+                        self.register_object_fields.insert(dest.id, nested_layout);
+                    }
                 }
                 ResolvedMemberSlot::Shape {
                     shape_id,
                     field_index,
                     ..
                 } => {
-                if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    let obj_name = match &*member.object {
-                        Expression::Identifier(i) => self.interner.resolve(i.name).to_string(),
-                        _ => "<expr>".to_string(),
-                    };
-                    eprintln!(
-                        "[lower] LoadFieldShape: {}.{} field_index={} shape={:016x}",
-                        obj_name, prop_name, field_index, shape_id
-                    );
-                }
-                self.emit_structural_shape_name_registration_for_expr(&member.object);
-                self.emit(IrInstr::LoadFieldShape {
-                    dest: dest.clone(),
-                    object,
-                    shape_id,
-                    field: field_index,
-                    optional: member.optional,
-                });
+                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                        let obj_name = match &*member.object {
+                            Expression::Identifier(i) => self.interner.resolve(i.name).to_string(),
+                            _ => "<expr>".to_string(),
+                        };
+                        eprintln!(
+                            "[lower] LoadFieldShape: {}.{} field_index={} shape={:016x}",
+                            obj_name, prop_name, field_index, shape_id
+                        );
+                    }
+                    self.emit_structural_shape_name_registration_for_expr(&member.object);
+                    self.emit(IrInstr::LoadFieldShape {
+                        dest: dest.clone(),
+                        object,
+                        shape_id,
+                        field: field_index,
+                        optional: member.optional,
+                    });
                 }
             }
             return dest;
@@ -4126,10 +4185,7 @@ impl<'a> Lowerer<'a> {
         object_expr: &Expression,
     ) -> bool {
         if let Some(layout) = self.projected_structural_layout_from_expr(object_expr) {
-            let names = layout
-                .into_iter()
-                .map(|(name, _)| name)
-                .collect::<Vec<_>>();
+            let names = layout.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
             self.emit_structural_shape_name_registration_for_ordered_names(names);
             return true;
         }
@@ -4558,18 +4614,158 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
+    fn store_identifier_value(&mut self, symbol: Symbol, value: Register) {
+        if let Some(&local_idx) = self.local_map.get(&symbol) {
+            if self.refcell_registers.contains_key(&local_idx) {
+                let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                self.emit(IrInstr::LoadLocal {
+                    dest: refcell_reg.clone(),
+                    index: local_idx,
+                });
+                self.emit(IrInstr::StoreRefCell {
+                    refcell: refcell_reg,
+                    value,
+                });
+            } else {
+                self.emit(IrInstr::StoreLocal {
+                    index: local_idx,
+                    value: value.clone(),
+                });
+                if value.ty.as_u32() != UNRESOLVED_TYPE_ID {
+                    if let Some(entry) = self.local_registers.get_mut(&local_idx) {
+                        entry.ty = value.ty;
+                    }
+                }
+            }
+            return;
+        }
+
+        if let Some(idx) = self.captures.iter().position(|c| c.symbol == symbol) {
+            let is_refcell = self.captures[idx].is_refcell;
+            let capture_idx = self.captures[idx].capture_idx;
+            if is_refcell {
+                let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                self.emit(IrInstr::LoadCaptured {
+                    dest: refcell_reg.clone(),
+                    index: capture_idx,
+                });
+                self.emit(IrInstr::StoreRefCell {
+                    refcell: refcell_reg,
+                    value,
+                });
+            } else {
+                self.emit(IrInstr::StoreCaptured {
+                    index: capture_idx,
+                    value,
+                });
+            }
+            return;
+        }
+
+        if let Some(ref ancestors) = self.ancestor_variables.clone() {
+            if let Some(ancestor_var) = ancestors.get(&symbol) {
+                let capture_idx = self.next_capture_slot;
+                self.next_capture_slot += 1;
+                self.captures.push(super::CaptureInfo {
+                    symbol,
+                    source: ancestor_var.source,
+                    capture_idx,
+                    ty: ancestor_var.ty,
+                    is_refcell: ancestor_var.is_refcell,
+                });
+                if ancestor_var.is_refcell {
+                    let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::LoadCaptured {
+                        dest: refcell_reg.clone(),
+                        index: capture_idx,
+                    });
+                    self.emit(IrInstr::StoreRefCell {
+                        refcell: refcell_reg,
+                        value,
+                    });
+                } else {
+                    self.emit(IrInstr::StoreCaptured {
+                        index: capture_idx,
+                        value,
+                    });
+                }
+                return;
+            }
+        }
+
+        if let Some(&global_idx) = self.module_var_globals.get(&symbol) {
+            self.emit(IrInstr::StoreGlobal {
+                index: global_idx,
+                value,
+            });
+            return;
+        }
+
+        if let Some(binding) = self
+            .current_method_env_globals
+            .as_ref()
+            .and_then(|m| m.get(&symbol))
+            .copied()
+        {
+            if binding.is_refcell {
+                let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                self.emit(IrInstr::LoadGlobal {
+                    dest: refcell_reg.clone(),
+                    index: binding.global_idx,
+                });
+                self.emit(IrInstr::StoreRefCell {
+                    refcell: refcell_reg,
+                    value,
+                });
+            } else {
+                self.emit(IrInstr::StoreGlobal {
+                    index: binding.global_idx,
+                    value,
+                });
+            }
+        }
+    }
+
     fn lower_assignment(&mut self, assign: &ast::AssignmentExpression) -> Register {
-        // ??= is short-circuiting: only evaluate and assign RHS if LHS is null
-        if assign.operator == AssignmentOperator::NullCoalesceAssign {
+        // Short-circuiting assignment operators:
+        // - ??= assign only when LHS is null
+        // - ||= assign only when LHS is falsy
+        // - &&= assign only when LHS is truthy
+        if matches!(
+            assign.operator,
+            AssignmentOperator::NullCoalesceAssign
+                | AssignmentOperator::LogicalOrAssign
+                | AssignmentOperator::LogicalAndAssign
+        ) {
             let current = self.lower_expr(&assign.left);
+            let entry_block = self.current_block;
             let assign_block = self.alloc_block();
             let merge_block = self.alloc_block();
 
-            self.set_terminator(Terminator::BranchIfNull {
-                value: current.clone(),
-                null_block: assign_block,
-                not_null_block: merge_block,
-            });
+            match assign.operator {
+                AssignmentOperator::NullCoalesceAssign => {
+                    self.set_terminator(Terminator::BranchIfNull {
+                        value: current.clone(),
+                        null_block: assign_block,
+                        not_null_block: merge_block,
+                    });
+                }
+                AssignmentOperator::LogicalOrAssign => {
+                    self.set_terminator(Terminator::Branch {
+                        cond: current.clone(),
+                        then_block: merge_block,
+                        else_block: assign_block,
+                    });
+                }
+                AssignmentOperator::LogicalAndAssign => {
+                    self.set_terminator(Terminator::Branch {
+                        cond: current.clone(),
+                        then_block: assign_block,
+                        else_block: merge_block,
+                    });
+                }
+                _ => unreachable!(),
+            }
 
             // Null path: evaluate RHS and assign to LHS
             self.current_function_mut()
@@ -4579,6 +4775,7 @@ impl<'a> Lowerer<'a> {
                 ));
             self.current_block = assign_block;
             let rhs = self.lower_expr(&assign.right);
+            let assigned_value = rhs.clone();
             // Store to LHS
             match &*assign.left {
                 Expression::Identifier(ident) => {
@@ -4796,7 +4993,9 @@ impl<'a> Lowerer<'a> {
                                             None
                                         }
                                     })
-                                    .unwrap_or_else(|| format!("class#{}", nominal_type_id.as_u32()));
+                                    .unwrap_or_else(|| {
+                                        format!("class#{}", nominal_type_id.as_u32())
+                                    });
                                 self.errors
                                     .push(crate::compiler::CompileError::InternalError {
                                         message: format!(
@@ -4879,7 +5078,12 @@ impl<'a> Lowerer<'a> {
                 .add_block(crate::ir::BasicBlock::with_label(merge_block, "nca.merge"));
             self.current_block = merge_block;
 
-            return current;
+            let result = self.alloc_register(current.ty);
+            self.emit(IrInstr::Phi {
+                dest: result.clone(),
+                sources: vec![(entry_block, current), (assign_block, assigned_value)],
+            });
+            return result;
         }
 
         // For compound assignment, we need to load the current value first
@@ -4896,8 +5100,9 @@ impl<'a> Lowerer<'a> {
             AssignmentOperator::LeftShiftAssign => Some(BinaryOp::ShiftLeft),
             AssignmentOperator::RightShiftAssign => Some(BinaryOp::ShiftRight),
             AssignmentOperator::UnsignedRightShiftAssign => Some(BinaryOp::UnsignedShiftRight),
-            AssignmentOperator::LogicalOrAssign => Some(BinaryOp::Or),
-            AssignmentOperator::LogicalAndAssign => Some(BinaryOp::And),
+            AssignmentOperator::LogicalOrAssign | AssignmentOperator::LogicalAndAssign => {
+                unreachable!()
+            }
             AssignmentOperator::NullCoalesceAssign => unreachable!(),
         };
 
@@ -4922,6 +5127,31 @@ impl<'a> Lowerer<'a> {
             && self.expression_is_callable_hint(&assign.right);
 
         match &*assign.left {
+            Expression::Array(array_lhs) => {
+                if assign.operator == AssignmentOperator::Assign {
+                    for (idx, elem) in array_lhs.elements.iter().enumerate() {
+                        let Some(ast::ArrayElement::Expression(target_expr)) = elem else {
+                            continue;
+                        };
+                        let Expression::Identifier(ident) = target_expr else {
+                            continue;
+                        };
+
+                        let idx_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: idx_reg.clone(),
+                            value: IrValue::Constant(IrConstant::I32(idx as i32)),
+                        });
+                        let elem_reg = self.alloc_register(value.ty);
+                        self.emit(IrInstr::LoadElement {
+                            dest: elem_reg.clone(),
+                            array: value.clone(),
+                            index: idx_reg,
+                        });
+                        self.store_identifier_value(ident.name, elem_reg);
+                    }
+                }
+            }
             Expression::Identifier(ident) => {
                 let mut assigned_local_idx: Option<u16> = None;
                 let mut assigned_symbol = false;
@@ -5130,12 +5360,13 @@ impl<'a> Lowerer<'a> {
                 // Check for static field write: ClassName.staticField = value
                 if let Expression::Identifier(ident) = &*member.object {
                     if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
-                        let global_index = self.class_info_map.get(&nominal_type_id).and_then(|info| {
-                            info.static_fields
-                                .iter()
-                                .find(|f| self.interner.resolve(f.name) == prop_name)
-                                .map(|sf| sf.global_index)
-                        });
+                        let global_index =
+                            self.class_info_map.get(&nominal_type_id).and_then(|info| {
+                                info.static_fields
+                                    .iter()
+                                    .find(|f| self.interner.resolve(f.name) == prop_name)
+                                    .map(|sf| sf.global_index)
+                            });
                         if let Some(index) = global_index {
                             self.emit(IrInstr::StoreGlobal {
                                 index,
@@ -6009,12 +6240,16 @@ impl<'a> Lowerer<'a> {
                 .or_else(|| self.variable_class_map.get(&ident.name).copied());
             if let Some(nominal_type_id) = nominal_type_id_opt {
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
-                    eprintln!("[lower] new {} -> nominal_type_id={}", name, nominal_type_id.as_u32());
+                    eprintln!(
+                        "[lower] new {} -> nominal_type_id={}",
+                        name,
+                        nominal_type_id.as_u32()
+                    );
                 }
                 // Create the object
                 self.emit(IrInstr::NewType {
                     dest: dest.clone(),
-                    nominal_type_id: nominal_type_id,
+                    nominal_type_id,
                 });
 
                 let constructor_func_id = self
@@ -6406,10 +6641,19 @@ impl<'a> Lowerer<'a> {
         let checker_array_awaitability = array_awaitability(self.type_ctx, checker_arg_ty);
         let lowered_array_awaitability = array_awaitability(self.type_ctx, lowered_arg_ty);
 
-        // Parallel await is an extension; only use it when element type is definitely awaitable.
-        if checker_array_awaitability == Some(Awaitability::Definite)
-            || lowered_array_awaitability == Some(Awaitability::Definite)
-        {
+        let checker_needs_waitall = matches!(
+            checker_array_awaitability,
+            Some(Awaitability::Definite | Awaitability::Maybe)
+        );
+        let lowered_needs_waitall = matches!(
+            lowered_array_awaitability,
+            Some(Awaitability::Definite | Awaitability::Maybe)
+        );
+
+        // Use WaitAll whenever the array could contain awaitables.
+        // Runtime WaitAll already handles mixed arrays by treating non-task
+        // elements as already-resolved literals.
+        if checker_needs_waitall || lowered_needs_waitall {
             let result_ty = self.get_expr_type(await_node);
             let dest = self.alloc_register(if result_ty == UNRESOLVED {
                 TypeId::new(super::ARRAY_TYPE_ID)
@@ -6548,8 +6792,9 @@ impl<'a> Lowerer<'a> {
             // Check if it's a static method call
             if let Expression::Identifier(ident) = &*member.object {
                 if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
-                    if let Some(&func_id) =
-                        self.static_method_map.get(&(nominal_type_id, method_name_symbol))
+                    if let Some(&func_id) = self
+                        .static_method_map
+                        .get(&(nominal_type_id, method_name_symbol))
                     {
                         // Spawn static method
                         self.emit(IrInstr::Spawn {
@@ -6691,7 +6936,8 @@ impl<'a> Lowerer<'a> {
         let object = self.lower_expr(&instanceof.object);
         let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
 
-        let mut target_ty = self.resolve_structural_slot_type_from_annotation(&instanceof.type_name);
+        let mut target_ty =
+            self.resolve_structural_slot_type_from_annotation(&instanceof.type_name);
         if target_ty == UNRESOLVED {
             if let ast::Type::Reference(type_ref) = &instanceof.type_name.ty {
                 let name = self.interner.resolve(type_ref.name.name);
@@ -6714,11 +6960,16 @@ impl<'a> Lowerer<'a> {
             .structural_slot_layout_from_type(target_ty)
             .or_else(|| {
                 self.try_extract_object_alias_name_from_type(&instanceof.type_name)
-                    .and_then(|alias_name| self.projected_structural_layout_from_alias_name(&alias_name))
+                    .and_then(|alias_name| {
+                        self.projected_structural_layout_from_alias_name(&alias_name)
+                    })
             });
         if let Some(layout) = structural_layout {
             let shape_id = crate::vm::object::shape_id_from_member_names(
-                &layout.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>(),
+                &layout
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>(),
             );
             self.emit_structural_shape_name_registration_for_ordered_names(
                 layout.into_iter().map(|(name, _)| name).collect(),
@@ -6844,10 +7095,7 @@ impl<'a> Lowerer<'a> {
             });
         } else if let Some(shape_id) = self.structural_shape_id_from_type(target_ty) {
             if let Some(layout) = self.structural_slot_layout_from_type(target_ty) {
-                let names = layout
-                    .into_iter()
-                    .map(|(name, _)| name)
-                    .collect::<Vec<_>>();
+                let names = layout.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
                 self.emit_structural_shape_name_registration_for_ordered_names(names);
             }
             self.emit(IrInstr::CastShape {
@@ -6950,7 +7198,11 @@ impl<'a> Lowerer<'a> {
         // slot-based member access can stay local without runtime remap registration.
         // This avoids overriding concrete object-literal slots with metadata-based
         // remaps when the source value is structurally known.
-        if let Some(layout) = self.register_structural_projection_fields.get(&dest.id).cloned() {
+        if let Some(layout) = self
+            .register_structural_projection_fields
+            .get(&dest.id)
+            .cloned()
+        {
             let mut names = layout.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
             names.sort_unstable();
             names.dedup();
@@ -7085,7 +7337,10 @@ impl<'a> Lowerer<'a> {
         Some(CAST_KIND_MASK_FLAG | CAST_ARRAY_ELEM_KIND_FLAG | elem_mask)
     }
 
-    fn resolve_nullable_class_from_union(&self, type_ann: &ast::TypeAnnotation) -> Option<NominalTypeId> {
+    fn resolve_nullable_class_from_union(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+    ) -> Option<NominalTypeId> {
         use crate::parser::ast::types::{PrimitiveType, Type};
         let Type::Union(union) = &type_ann.ty else {
             return None;
@@ -7108,7 +7363,11 @@ impl<'a> Lowerer<'a> {
 
     /// Find a method in a class or its parent classes.
     /// Returns the function ID if found.
-    fn find_method(&self, nominal_type_id: NominalTypeId, method_name: Symbol) -> Option<FunctionId> {
+    fn find_method(
+        &self,
+        nominal_type_id: NominalTypeId,
+        method_name: Symbol,
+    ) -> Option<FunctionId> {
         // First check this class
         if let Some(&func_id) = self.method_map.get(&(nominal_type_id, method_name)) {
             return Some(func_id);
@@ -7678,7 +7937,9 @@ impl<'a> Lowerer<'a> {
                         .method_return_type_alias_map
                         .get(&(obj_nominal_type_id, method_name))
                     {
-                        if let Some(ret_nominal_type_id) = self.nominal_type_id_from_type_name(ret_class_name) {
+                        if let Some(ret_nominal_type_id) =
+                            self.nominal_type_id_from_type_name(ret_class_name)
+                        {
                             return Some(ret_nominal_type_id);
                         }
                     }
@@ -7695,16 +7956,20 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     // Check if callee is a bound method variable
-                    if let Some(&(nominal_type_id, method_name)) = self.bound_method_vars.get(&ident.name)
+                    if let Some(&(nominal_type_id, method_name)) =
+                        self.bound_method_vars.get(&ident.name)
                     {
-                        if let Some(&ret_nominal_type_id) =
-                            self.method_return_class_map.get(&(nominal_type_id, method_name))
+                        if let Some(&ret_nominal_type_id) = self
+                            .method_return_class_map
+                            .get(&(nominal_type_id, method_name))
                         {
                             return Some(ret_nominal_type_id);
                         }
                     }
                     // Check function return class
-                    if let Some(&ret_nominal_type_id) = self.function_return_class_map.get(&ident.name) {
+                    if let Some(&ret_nominal_type_id) =
+                        self.function_return_class_map.get(&ident.name)
+                    {
                         return Some(ret_nominal_type_id);
                     }
                 }

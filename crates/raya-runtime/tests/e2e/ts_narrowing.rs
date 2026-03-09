@@ -189,6 +189,20 @@ fn test_null_check_not_null() {
     );
 }
 
+#[test]
+fn test_negated_null_check_narrowing() {
+    expect_i32(
+        "function process(x: int | null): int {
+             if (!(x === null)) {
+                 return x;
+             }
+             return 0;
+         }
+         return process(42);",
+        42,
+    );
+}
+
 // ============================================================================
 // 4. Truthiness-Based Narrowing
 //    Adapted from: controlFlowTruthiness.ts

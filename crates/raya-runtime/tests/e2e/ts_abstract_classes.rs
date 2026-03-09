@@ -54,6 +54,18 @@ fn test_abstract_concrete_subclass() {
 }
 
 #[test]
+fn test_concrete_subclass_missing_abstract_method_errors() {
+    expect_compile_error(
+        "abstract class Base {
+             abstract value(): number;
+         }
+         class Child extends Base {}
+         return 0;",
+        "must implement abstract member",
+    );
+}
+
+#[test]
 
 fn test_abstract_with_concrete_method() {
     expect_string(

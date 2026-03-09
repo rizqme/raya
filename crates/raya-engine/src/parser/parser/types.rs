@@ -458,17 +458,52 @@ pub fn parse_type_arguments(parser: &mut Parser) -> Result<Vec<TypeAnnotation>, 
     let mut type_args = Vec::new();
     let mut guard = super::guards::LoopGuard::new("type_arguments");
 
-    while !parser.check(&Token::Greater) && !parser.at_eof() {
+    while !is_type_argument_closer(parser.current()) && !parser.at_eof() {
         guard.check()?;
         type_args.push(parse_type_annotation(parser)?);
 
-        if !parser.check(&Token::Greater) {
+        if !is_type_argument_closer(parser.current()) {
             parser.expect(Token::Comma)?;
         }
     }
 
-    parser.expect(Token::Greater)?;
+    consume_type_argument_closer(parser)?;
     Ok(type_args)
+}
+
+fn is_type_argument_closer(token: &Token) -> bool {
+    matches!(
+        token,
+        Token::Greater | Token::GreaterGreater | Token::GreaterGreaterGreater
+    )
+}
+
+fn consume_type_argument_closer(parser: &mut Parser) -> Result<(), ParseError> {
+    match parser.current() {
+        Token::Greater => {
+            parser.advance_without_return();
+            Ok(())
+        }
+        Token::GreaterGreater => {
+            // Split `>>` into `>` + `>` so nested generic closers parse correctly.
+            let span = parser.current_span();
+            parser.tokens[parser.pos].0 = Token::Greater;
+            parser.tokens.insert(parser.pos + 1, (Token::Greater, span));
+            parser.advance_without_return();
+            Ok(())
+        }
+        Token::GreaterGreaterGreater => {
+            // Split `>>>` into `>` + `>>`; the remaining `>>` can be split by the next closer.
+            let span = parser.current_span();
+            parser.tokens[parser.pos].0 = Token::Greater;
+            parser
+                .tokens
+                .insert(parser.pos + 1, (Token::GreaterGreater, span));
+            parser.advance_without_return();
+            Ok(())
+        }
+        _ => Err(parser.unexpected_token(&[Token::Greater])),
+    }
 }
 
 /// Parse function type parameters: (x: number, y: string)

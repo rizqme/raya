@@ -593,6 +593,48 @@ fn test_waitall_failure_with_pointer_task_result() {
 }
 
 #[test]
+fn test_waitall_unannotated_async_failure_propagates() {
+    // Regression: unannotated async functions can infer to "maybe awaitable";
+    // await [..] must still lower to WaitAll and propagate child failures.
+    expect_runtime_error(
+        "
+        async function ok() {
+            return 1;
+        }
+        async function bad() {
+            throw 'boom';
+        }
+        function main(): void {
+            let _ = await [ok(), bad()];
+        }
+        main();
+    ",
+        "failed in WaitAll",
+    );
+}
+
+#[test]
+fn test_waitall_unannotated_async_success_values() {
+    // Regression: ensure await [..] materializes resolved values, not raw TaskIds.
+    expect_i32(
+        "
+        async function a() {
+            return 1;
+        }
+        async function b() {
+            return 2;
+        }
+        function main(): number {
+            let v = await [a(), b()];
+            return v[0] + v[1];
+        }
+        return main();
+    ",
+        3,
+    );
+}
+
+#[test]
 fn test_waitall_same_task_array_awaited_twice_with_strings() {
     // Await the same Promise<string>[] twice; both should return cached results in order.
     expect_string(

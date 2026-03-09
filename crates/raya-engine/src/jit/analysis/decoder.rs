@@ -550,8 +550,12 @@ mod tests {
 
     #[test]
     fn test_decode_jmp() {
+        // i32 jump immediates are encoded relative to IP after reading the
+        // immediate (opcode + i32 = 5 bytes). Decoder normalizes back to
+        // opcode-start-relative offsets for CFG/lifter.
         let mut code = vec![Opcode::Jmp as u8];
-        code.extend_from_slice(&(-10i32).to_le_bytes());
+        let encoded: i32 = -10 - 5;
+        code.extend_from_slice(&(encoded).to_le_bytes());
         let instrs = decode_function(&code).unwrap();
         assert_eq!(instrs.len(), 1);
         assert!(matches!(instrs[0].operands, Operands::I32(-10)));

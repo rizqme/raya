@@ -56,6 +56,14 @@ pub struct CheckResult {
     pub warnings: Vec<CheckWarning>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ClassAstSummary {
+    is_abstract: bool,
+    extends: Option<String>,
+    abstract_methods: FxHashSet<String>,
+    concrete_methods: FxHashSet<String>,
+}
+
 /// Negate a type guard
 fn negate_guard(guard: &TypeGuard) -> TypeGuard {
     match guard {
@@ -193,6 +201,8 @@ pub struct TypeChecker<'a> {
     policy: CheckerPolicy,
     /// True while checking the left-hand side of an assignment expression.
     in_assignment_lhs: bool,
+    /// AST-derived class summaries used for abstract-contract checks.
+    class_ast_summaries: FxHashMap<String, ClassAstSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +245,7 @@ impl<'a> TypeChecker<'a> {
             mode: TypeSystemMode::Raya,
             policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
             in_assignment_lhs: false,
+            class_ast_summaries: FxHashMap::default(),
         }
     }
 
@@ -735,6 +746,7 @@ impl<'a> TypeChecker<'a> {
     /// Returns the check result containing inferred types and capture information.
     /// Inferred types should be applied to the symbol table using `update_type`.
     pub fn check_module(mut self, module: &Module) -> Result<CheckResult, Vec<CheckError>> {
+        self.index_class_ast_summaries(module);
         // Mirror binder module scope so top-level resolution is local->global.
         self.enter_scope();
         for stmt in &module.statements {
@@ -755,6 +767,127 @@ impl<'a> TypeChecker<'a> {
             })
         } else {
             Err(self.errors)
+        }
+    }
+
+    fn index_class_ast_summaries(&mut self, module: &Module) {
+        self.class_ast_summaries.clear();
+        for stmt in &module.statements {
+            self.index_class_ast_summary_stmt(stmt);
+        }
+    }
+
+    fn index_class_ast_summary_stmt(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::ClassDecl(class) => {
+                let class_name = self.resolve(class.name.name);
+                let extends = class.extends.as_ref().and_then(|ann| match &ann.ty {
+                    crate::parser::ast::Type::Reference(reference) => {
+                        Some(self.resolve(reference.name.name))
+                    }
+                    _ => None,
+                });
+
+                let mut abstract_methods = FxHashSet::default();
+                let mut concrete_methods = FxHashSet::default();
+                for member in &class.members {
+                    if let ClassMember::Method(method) = member {
+                        let method_name = self.resolve(method.name.name);
+                        if method.is_abstract || method.body.is_none() {
+                            abstract_methods.insert(method_name);
+                        } else {
+                            concrete_methods.insert(method_name);
+                        }
+                    }
+                }
+
+                self.class_ast_summaries.insert(
+                    class_name,
+                    ClassAstSummary {
+                        is_abstract: class.is_abstract,
+                        extends,
+                        abstract_methods,
+                        concrete_methods,
+                    },
+                );
+            }
+            Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => {
+                self.index_class_ast_summary_stmt(inner_stmt);
+            }
+            _ => {}
+        }
+    }
+
+    fn required_abstract_methods_for_class(
+        &self,
+        class_name: &str,
+        visiting: &mut FxHashSet<String>,
+    ) -> FxHashSet<String> {
+        if !visiting.insert(class_name.to_string()) {
+            return FxHashSet::default();
+        }
+
+        let Some(summary) = self.class_ast_summaries.get(class_name) else {
+            return FxHashSet::default();
+        };
+
+        let mut required = if let Some(parent_name) = summary.extends.as_deref() {
+            self.required_abstract_methods_for_class(parent_name, visiting)
+        } else {
+            FxHashSet::default()
+        };
+
+        for concrete in &summary.concrete_methods {
+            required.remove(concrete);
+        }
+        if summary.is_abstract || !summary.abstract_methods.is_empty() {
+            for abstract_name in &summary.abstract_methods {
+                required.insert(abstract_name.clone());
+            }
+        }
+
+        required
+    }
+
+    fn check_abstract_class_contract(&mut self, class: &ClassDecl) {
+        if class.is_abstract {
+            return;
+        }
+
+        let Some(parent_name) = class.extends.as_ref().and_then(|ann| match &ann.ty {
+            crate::parser::ast::Type::Reference(reference) => {
+                Some(self.resolve(reference.name.name))
+            }
+            _ => None,
+        }) else {
+            return;
+        };
+
+        let mut visiting = FxHashSet::default();
+        let mut required = self.required_abstract_methods_for_class(&parent_name, &mut visiting);
+        if required.is_empty() {
+            return;
+        }
+
+        for member in &class.members {
+            if let ClassMember::Method(method) = member {
+                if !method.is_abstract && method.body.is_some() {
+                    required.remove(&self.resolve(method.name.name));
+                }
+            }
+        }
+
+        if !required.is_empty() {
+            let mut missing: Vec<_> = required.into_iter().collect();
+            missing.sort_unstable();
+            self.errors.push(CheckError::ConstraintViolation {
+                message: format!(
+                    "Class '{}' must implement abstract member(s): {}",
+                    self.resolve(class.name.name),
+                    missing.join(", ")
+                ),
+                span: class.span,
+            });
         }
     }
 
@@ -1233,7 +1366,10 @@ impl<'a> TypeChecker<'a> {
                 )
             };
 
-            if let Some(symbol) = self.symbols.resolve_from_scope(&func_name, self.current_scope) {
+            if let Some(symbol) = self
+                .symbols
+                .resolve_from_scope(&func_name, self.current_scope)
+            {
                 if symbol.span == func.name.span {
                     self.inferred_var_types
                         .insert((symbol.scope_id.0, func_name.clone()), inferred_func_ty);
@@ -1616,6 +1752,8 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+
+        self.check_abstract_class_contract(class);
 
         // Exit class scope
         self.exit_scope();
@@ -2230,6 +2368,10 @@ impl<'a> TypeChecker<'a> {
 
         match ty {
             Type::Array(arr) => arr.element,
+            Type::Primitive(crate::parser::types::PrimitiveType::String) => {
+                self.type_ctx.string_type()
+            }
+            Type::StringLiteral(_) => self.type_ctx.string_type(),
             Type::Set(set_ty) => set_ty.element,
             Type::Map(map_ty) => self.type_ctx.tuple_type(vec![map_ty.key, map_ty.value]),
             Type::Reference(reference) => match reference.name.as_str() {
@@ -2431,15 +2573,69 @@ impl<'a> TypeChecker<'a> {
             });
         }
 
+        enum SwitchNarrowingBase {
+            TypeofVar(String),
+            DiscriminantVar { var: String, field: String },
+        }
+
+        let narrowing_base = match &switch_stmt.discriminant {
+            Expression::Typeof(typeof_expr) => match &*typeof_expr.argument {
+                Expression::Identifier(ident) => {
+                    Some(SwitchNarrowingBase::TypeofVar(self.resolve(ident.name)))
+                }
+                _ => None,
+            },
+            Expression::Member(member) => match &*member.object {
+                Expression::Identifier(ident) => Some(SwitchNarrowingBase::DiscriminantVar {
+                    var: self.resolve(ident.name),
+                    field: self.resolve(member.property.name),
+                }),
+                _ => None,
+            },
+            _ => None,
+        };
+
         // Check cases
         for case in &switch_stmt.cases {
+            let saved_env = self.type_env.clone();
+
             if let Some(ref test) = case.test {
                 self.check_expr(test);
+
+                if let (Some(base), Expression::StringLiteral(lit)) =
+                    (narrowing_base.as_ref(), test)
+                {
+                    let guard = match base {
+                        SwitchNarrowingBase::TypeofVar(var) => TypeGuard::TypeOf {
+                            var: var.clone(),
+                            type_name: self.resolve(lit.value),
+                            negated: false,
+                        },
+                        SwitchNarrowingBase::DiscriminantVar { var, field } => {
+                            TypeGuard::Discriminant {
+                                var: var.clone(),
+                                field: field.clone(),
+                                variant: self.resolve(lit.value),
+                                negated: false,
+                            }
+                        }
+                    };
+
+                    let var_name = get_guard_var(&guard).clone();
+                    if let Some(var_ty) = self.get_var_type(&var_name) {
+                        if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, &guard) {
+                            self.type_env.set(var_name, narrowed_ty);
+                        }
+                    }
+                }
             }
 
             for stmt in &case.consequent {
                 self.check_stmt(stmt);
             }
+
+            // Cases are checked independently; don't leak branch narrowing into sibling cases.
+            self.type_env = saved_env;
         }
     }
 
@@ -4904,6 +5100,25 @@ impl<'a> TypeChecker<'a> {
         let object_ty = self.check_expr(&member.object);
         self.check_unknown_actionable(object_ty, "member", *member.object.span());
 
+        let lookup_object_ty = if member.optional {
+            self.get_non_null_type(object_ty)
+        } else {
+            let non_null_object_ty = self.get_non_null_type(object_ty);
+            if non_null_object_ty != object_ty {
+                self.errors.push(CheckError::TypeMismatch {
+                    expected: "non-null object".to_string(),
+                    actual: self.format_type(object_ty),
+                    span: member.span,
+                    note: Some(
+                        "Use optional chaining (?.) or a null check before member access"
+                            .to_string(),
+                    ),
+                });
+                return self.type_ctx.unknown_type();
+            }
+            object_ty
+        };
+
         // Check for forbidden access to $type/$value on bare unions
         if property_name == "$type" || property_name == "$value" {
             if let Some(crate::parser::types::Type::Union(union)) = self.type_ctx.get(object_ty) {
@@ -4953,11 +5168,11 @@ impl<'a> TypeChecker<'a> {
 
         // Get the type for property lookup.
         // For JSObject<T>, use T to keep known member checks/typing as fast as normal T.
-        let jsobject_inner = self.type_ctx.jsobject_inner(object_ty);
+        let jsobject_inner = self.type_ctx.jsobject_inner(lookup_object_ty);
         let obj_type = if let Some(inner) = jsobject_inner {
             self.type_ctx.get(inner).cloned()
         } else {
-            self.type_ctx.get(object_ty).cloned()
+            self.type_ctx.get(lookup_object_ty).cloned()
         };
         let obj_type = match obj_type {
             Some(crate::parser::types::Type::Reference(type_ref)) => {
@@ -5601,7 +5816,9 @@ impl<'a> TypeChecker<'a> {
         for (param_name, &arg_ty) in param_names.iter().zip(type_args.iter()) {
             gen_ctx.add_substitution(param_name.clone(), arg_ty);
         }
-        gen_ctx.apply_substitution(template_ty).unwrap_or(template_ty)
+        gen_ctx
+            .apply_substitution(template_ty)
+            .unwrap_or(template_ty)
     }
 
     fn lookup_class_member(
@@ -6460,8 +6677,16 @@ impl<'a> TypeChecker<'a> {
             return self.type_ctx.array_type(never);
         }
 
+        let has_spread = arr
+            .elements
+            .iter()
+            .flatten()
+            .any(|elem| matches!(elem, ArrayElement::Spread(_)));
+        let has_holes = arr.elements.iter().any(|elem| elem.is_none());
+
         // Collect all distinct element types to compute a unified element type
         let mut elem_types = Vec::new();
+        let mut ordered_elem_types = Vec::new();
         for elem in arr.elements.iter().flatten() {
             let elem_ty = match elem {
                 ArrayElement::Expression(expr) => self.check_expr(expr),
@@ -6476,9 +6701,16 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             };
+            ordered_elem_types.push(elem_ty);
             if !elem_types.contains(&elem_ty) {
                 elem_types.push(elem_ty);
             }
+        }
+
+        // Heterogeneous literals without spread/hole are tuple-like by default.
+        // This preserves positional typing for declarations like `let x: [int, string] = [1, "a"]`.
+        if !has_spread && !has_holes && elem_types.len() > 1 {
+            return self.type_ctx.tuple_type(ordered_elem_types);
         }
 
         // If all elements are the same type, use that; otherwise create a union

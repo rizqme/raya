@@ -407,72 +407,67 @@ fn test_nested_destructuring_captured() {
 // 5. Type Narrowing + Closures + Control Flow
 // ============================================================================
 
-// BUG DISCOVERY: typeof narrowing for `string | int` unions doesn't work correctly.
-// The VM returns wrong results — passing int 41 to a function with typeof check
-// still triggers the string branch. This is a real compiler/codegen bug.
-// These tests document the expected behavior; uncomment when fixed.
+#[test]
+fn test_typeof_narrowing_string_int_union() {
+    expect_i32(
+        "function process(x: string | int): int {
+             if (typeof x === \"int\") {
+                 return x + 1;
+             } else {
+                 return x.length;
+             }
+         }
+         return process(41);",
+        42,
+    );
+}
 
-// #[test]
-// fn test_typeof_narrowing_string_int_union() {
-//     expect_i32(
-//         "function process(x: string | int): int {
-//              if (typeof x === \"int\") {
-//                  return x + 1;
-//              } else {
-//                  return x.length;
-//              }
-//          }
-//          return process(41);",
-//         42,
-//     );
-// }
+#[test]
+fn test_typeof_narrowing_string_branch() {
+    expect_i32(
+        "function process(x: string | int): int {
+             if (typeof x === \"string\") {
+                 return x.length;
+             } else {
+                 return x;
+             }
+         }
+         return process(\"hello\") + process(37);",
+        42,
+    );
+}
 
-// #[test]
-// fn test_typeof_narrowing_string_branch() {
-//     expect_i32(
-//         "function process(x: string | int): int {
-//              if (typeof x === \"string\") {
-//                  return x.length;
-//              } else {
-//                  return x;
-//              }
-//          }
-//          return process(\"hello\") + process(37);",
-//         42,
-//     );
-// }
+#[test]
+fn test_typeof_narrowing_with_early_return() {
+    expect_i32(
+        "function toInt(x: string | int): int {
+             if (typeof x === \"int\") {
+                 return x;
+             }
+             return x.length;
+         }
+         return toInt(42);",
+        42,
+    );
+}
 
-// #[test]
-// fn test_typeof_narrowing_with_early_return() {
-//     expect_i32(
-//         "function toInt(x: string | int): int {
-//              if (typeof x === \"int\") {
-//                  return x;
-//              }
-//              return x.length;
-//          }
-//          return toInt(42);",
-//         42,
-//     );
-// }
-
-// #[test]
-// fn test_typeof_narrowing_three_types() {
-//     expect_i32(
-//         "function classify(x: string | int | boolean): int {
-//              if (typeof x === \"int\") {
-//                  return x;
-//              } else if (typeof x === \"string\") {
-//                  return x.length;
-//              } else {
-//                  if (x) { return 1; }
-//                  return 0;
-//              }
-//          }
-//          return classify(40) + classify(\"hi\");",
-//         42,
-//     );
-// }
+#[test]
+fn test_typeof_narrowing_three_types() {
+    expect_i32(
+        "function classify(x: string | int | boolean): int {
+             if (typeof x === \"int\") {
+                 return x;
+             } else if (typeof x === \"string\") {
+                 return x.length;
+             } else {
+                 if (x) { return 1; }
+                 return 0;
+             }
+         }
+         return classify(40) + classify(\"hi\");",
+        42,
+    );
+}
 
 // Narrowing with null (these DO work correctly)
 #[test]

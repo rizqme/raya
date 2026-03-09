@@ -176,21 +176,18 @@ fn test_generic_array_of_generic() {
 //    The spec says for-of works on arrays. Strings might also be iterable.
 // ============================================================================
 
-// BUG DISCOVERY: for-of over strings is not supported.
-// The type checker only allows for-of over arrays.
-// Error: TypeMismatch { expected: "array", actual: "TypeId(1)", note: "for-of loops require an iterable (array)" }
-// #[test]
-// fn test_for_of_over_string() {
-//     expect_i32(
-//         "let s = \"hello world!\";
-//          let count = 0;
-//          for (const c of s) {
-//              count += 1;
-//          }
-//          return count;",
-//         12,
-//     );
-// }
+#[test]
+fn test_for_of_over_string() {
+    expect_i32(
+        "let s = \"hello world!\";
+         let count = 0;
+         for (const c of s) {
+             count += 1;
+         }
+         return count;",
+        12,
+    );
+}
 
 // ============================================================================
 // 5. Array.map Returning Different Type
@@ -222,34 +219,30 @@ fn test_array_map_int_to_bool() {
 // 6. Property Access on Nullable Without Narrowing (should error)
 // ============================================================================
 
-// BUG DISCOVERY: Property/method access on nullable types without null
-// narrowing compiles successfully. `x.value` where x is `Foo | null`
-// should be a compile error, but the type checker doesn't enforce this.
-// It only fails at runtime with "Expected object for field access".
-// #[test]
-// fn test_property_access_on_nullable_errors() {
-//     expect_compile_error(
-//         "class Foo {
-//              value: int;
-//              constructor() { this.value = 42; }
-//          }
-//          let x: Foo | null = null;
-//          return x.value;",
-//         "null",
-//     );
-// }
-//
-// #[test]
-// fn test_method_call_on_nullable_errors() {
-//     expect_compile_error(
-//         "class Bar {
-//              get(): int { return 42; }
-//          }
-//          let x: Bar | null = null;
-//          x.get();",
-//         "null",
-//     );
-// }
+#[test]
+fn test_property_access_on_nullable_errors() {
+    expect_compile_error(
+        "class Foo {
+             value: int;
+             constructor() { this.value = 42; }
+         }
+         let x: Foo | null = null;
+         return x.value;",
+        "non-null object",
+    );
+}
+
+#[test]
+fn test_method_call_on_nullable_errors() {
+    expect_compile_error(
+        "class Bar {
+             get(): int { return 42; }
+         }
+         let x: Bar | null = null;
+         x.get();",
+        "non-null object",
+    );
+}
 
 // ============================================================================
 // 7. Assigning null to Non-Nullable (should error)
@@ -347,18 +340,15 @@ fn test_nullish_assign_not_null() {
     );
 }
 
-// BUG DISCOVERY: Logical assignment operators `||=` and `&&=` are not
-// supported by the parser. Fails with "Unexpected token Equal" after `||`.
-// These are standard ES2021 operators.
-// #[test]
-// fn test_or_assign() {
-//     expect_i32("let x = 0; x ||= 42; return x;", 42);
-// }
-//
-// #[test]
-// fn test_and_assign() {
-//     expect_i32("let x = 42; x &&= 99; return x;", 99);
-// }
+#[test]
+fn test_or_assign() {
+    expect_i32("let x = 0; x ||= 42; return x;", 42);
+}
+
+#[test]
+fn test_and_assign() {
+    expect_i32("let x = 42; x &&= 99; return x;", 99);
+}
 
 // ============================================================================
 // 10. Destructuring (if supported)
@@ -374,20 +364,16 @@ fn test_array_destructuring() {
     );
 }
 
-// BUG DISCOVERY: Destructuring assignment `[a, b] = [b, a]` doesn't
-// actually reassign the variables. `a` remains 1 instead of becoming 42.
-// Basic destructuring declaration (`let [a, b] = arr`) works, but
-// destructuring assignment to existing variables does not.
-// #[test]
-// fn test_array_destructuring_swap() {
-//     expect_i32(
-//         "let a = 1;
-//          let b = 42;
-//          [a, b] = [b, a];
-//          return a;",
-//         42,
-//     );
-// }
+#[test]
+fn test_array_destructuring_swap() {
+    expect_i32(
+        "let a = 1;
+         let b = 42;
+         [a, b] = [b, a];
+         return a;",
+        42,
+    );
+}
 
 // ============================================================================
 // 11. Empty and Minimal Class Patterns
