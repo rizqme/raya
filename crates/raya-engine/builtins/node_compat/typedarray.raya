@@ -130,6 +130,14 @@ class ArrayBuffer {
     }
 }
 
+function __coerceObjectToArrayBuffer(source: any): ArrayBuffer {
+    let dynSource = source as any;
+    if (dynSource.asArrayBuffer != null) {
+        return dynSource.asArrayBuffer() as ArrayBuffer;
+    }
+    return source as ArrayBuffer;
+}
+
 class Uint8Array {
     private _ab: ArrayBuffer;
     byteOffset: int;
@@ -139,12 +147,7 @@ class Uint8Array {
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         let sourceType = typeof source;
         if (sourceType != "int" && sourceType != "number") {
-            let ab = new ArrayBuffer(0);
-            if (source instanceof SharedArrayBuffer) {
-                ab = (source as SharedArrayBuffer).asArrayBuffer();
-            } else {
-                ab = source as ArrayBuffer;
-            }
+            let ab = __coerceObjectToArrayBuffer(source);
             if (byteOffset < 0 || byteOffset > ab.byteLength) {
                 throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
             }
@@ -231,12 +234,7 @@ class Int32Array {
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         let sourceType = typeof source;
         if (sourceType != "int" && sourceType != "number") {
-            let ab = new ArrayBuffer(0);
-            if (source instanceof SharedArrayBuffer) {
-                ab = (source as SharedArrayBuffer).asArrayBuffer();
-            } else {
-                ab = source as ArrayBuffer;
-            }
+            let ab = __coerceObjectToArrayBuffer(source);
             if (byteOffset < 0 || byteOffset > ab.byteLength || (byteOffset % 4) != 0) {
                 throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
             }
@@ -305,12 +303,7 @@ class Float64Array {
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         let sourceType = typeof source;
         if (sourceType != "int" && sourceType != "number") {
-            let ab = new ArrayBuffer(0);
-            if (source instanceof SharedArrayBuffer) {
-                ab = (source as SharedArrayBuffer).asArrayBuffer();
-            } else {
-                ab = source as ArrayBuffer;
-            }
+            let ab = __coerceObjectToArrayBuffer(source);
             if (byteOffset < 0 || byteOffset > ab.byteLength || (byteOffset % 8) != 0) {
                 throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
             }
@@ -413,12 +406,7 @@ class Uint16Array {
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         let sourceType = typeof source;
         if (sourceType != "int" && sourceType != "number") {
-            let ab = new ArrayBuffer(0);
-            if (source instanceof SharedArrayBuffer) {
-                ab = (source as SharedArrayBuffer).asArrayBuffer();
-            } else {
-                ab = source as ArrayBuffer;
-            }
+            let ab = __coerceObjectToArrayBuffer(source);
             if (byteOffset < 0 || byteOffset > ab.byteLength || (byteOffset % 2) != 0) {
                 throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
             }

@@ -36,6 +36,8 @@ pub enum TypeGuard {
     Nullish {
         /// Variable name being tested
         var: String,
+        /// Optional dotted member path relative to `var` (e.g. `cause`, `inner.value`)
+        field: Option<String>,
         /// Whether this is a negated check (testing for non-null)
         negated: bool,
     },
@@ -287,20 +289,10 @@ fn try_extract_discriminant_guard(
     negated: bool,
     interner: &Interner,
 ) -> Option<TypeGuard> {
-    // Left must be a member expression
-    let member = match left {
-        Expression::Member(m) => m,
-        _ => return None,
-    };
-
-    // Object must be an identifier
-    let var_name = match &*member.object {
-        Expression::Identifier(ident) => interner.resolve(ident.name).to_string(),
-        _ => return None,
-    };
-
-    // Property is always an identifier in MemberExpression
-    let field_name = interner.resolve(member.property.name).to_string();
+    // Support nested discriminant paths like `o.inner.tag == "num"` by extracting:
+    // - base variable: `o`
+    // - field path: `inner.tag`
+    let (var_name, field_name) = extract_member_path(left, interner)?;
 
     // Right must be a string literal
     let variant = match right {
@@ -316,6 +308,30 @@ fn try_extract_discriminant_guard(
     })
 }
 
+fn extract_member_path(expr: &Expression, interner: &Interner) -> Option<(String, String)> {
+    let mut segments: Vec<String> = Vec::new();
+    let mut cursor = expr;
+
+    loop {
+        match cursor {
+            Expression::Member(member) => {
+                segments.push(interner.resolve(member.property.name).to_string());
+                cursor = &member.object;
+            }
+            Expression::Identifier(ident) => {
+                segments.reverse();
+                if segments.is_empty() {
+                    return None;
+                }
+                let var = interner.resolve(ident.name).to_string();
+                let field = segments.join(".");
+                return Some((var, field));
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// Try to extract a nullish guard: `x === null` or `x !== null`
 fn try_extract_nullish_guard(
     left: &Expression,
@@ -323,16 +339,19 @@ fn try_extract_nullish_guard(
     negated: bool,
     interner: &Interner,
 ) -> Option<TypeGuard> {
-    // Left must be an identifier
-    let var_name = match left {
-        Expression::Identifier(ident) => interner.resolve(ident.name).to_string(),
-        _ => return None,
+    let (var_name, field) = match left {
+        Expression::Identifier(ident) => (interner.resolve(ident.name).to_string(), None),
+        _ => {
+            let (var, member_path) = extract_member_path(left, interner)?;
+            (var, Some(member_path))
+        }
     };
 
     // Right must be null literal
     match right {
         Expression::NullLiteral(_) => Some(TypeGuard::Nullish {
             var: var_name,
+            field,
             negated,
         }),
         _ => None,
@@ -398,8 +417,9 @@ fn negate_extracted_guard(guard: &TypeGuard) -> TypeGuard {
             variant: variant.clone(),
             negated: !negated,
         },
-        TypeGuard::Nullish { var, negated } => TypeGuard::Nullish {
+        TypeGuard::Nullish { var, field, negated } => TypeGuard::Nullish {
             var: var.clone(),
+            field: field.clone(),
             negated: !negated,
         },
         TypeGuard::IsArray { var, negated } => TypeGuard::IsArray {
@@ -521,6 +541,7 @@ mod tests {
             guard,
             TypeGuard::Nullish {
                 var: "x".to_string(),
+                field: None,
                 negated: true,
             }
         );
@@ -535,7 +556,23 @@ mod tests {
             guard,
             TypeGuard::Nullish {
                 var: "x".to_string(),
+                field: None,
                 negated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_extract_nullish_guard_member_path() {
+        let (expr, interner) = parse_expr("err.cause !== null");
+        let guard = extract_type_guard(&expr, &interner).unwrap();
+
+        assert_eq!(
+            guard,
+            TypeGuard::Nullish {
+                var: "err".to_string(),
+                field: Some("cause".to_string()),
+                negated: true,
             }
         );
     }
@@ -657,6 +694,7 @@ mod tests {
             guards[0],
             TypeGuard::Nullish {
                 var: "x".to_string(),
+                field: None,
                 negated: true,
             }
         );
@@ -671,6 +709,7 @@ mod tests {
             guards[0],
             TypeGuard::Nullish {
                 var: "x".to_string(),
+                field: None,
                 negated: true,
             }
         );
@@ -678,6 +717,7 @@ mod tests {
             guards[1],
             TypeGuard::Nullish {
                 var: "y".to_string(),
+                field: None,
                 negated: true,
             }
         );
@@ -693,6 +733,7 @@ mod tests {
             guards[0],
             TypeGuard::Nullish {
                 var: "x".to_string(),
+                field: None,
                 negated: true,
             }
         );

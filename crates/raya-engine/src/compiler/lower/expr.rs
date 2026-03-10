@@ -742,6 +742,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_binary(&mut self, binary: &ast::BinaryExpression) -> Register {
+        if let Some(lowered) = self.try_lower_typeof_number_compare(binary) {
+            return lowered;
+        }
+
         let left = self.lower_expr(&binary.left);
         let right = self.lower_expr(&binary.right);
 
@@ -765,6 +769,128 @@ impl<'a> Lowerer<'a> {
             right,
         });
         dest
+    }
+
+    fn try_lower_typeof_number_compare(
+        &mut self,
+        binary: &ast::BinaryExpression,
+    ) -> Option<Register> {
+        use ast::BinaryOperator;
+
+        let is_equality = matches!(
+            binary.operator,
+            BinaryOperator::Equal | BinaryOperator::StrictEqual
+        );
+        let is_inequality = matches!(
+            binary.operator,
+            BinaryOperator::NotEqual | BinaryOperator::StrictNotEqual
+        );
+        if !is_equality && !is_inequality {
+            return None;
+        }
+
+        let typeof_expr = match (&*binary.left, &*binary.right) {
+            (Expression::Typeof(typeof_expr), Expression::StringLiteral(s))
+                if self.interner.resolve(s.value) == "number" =>
+            {
+                typeof_expr
+            }
+            (Expression::StringLiteral(s), Expression::Typeof(typeof_expr))
+                if self.interner.resolve(s.value) == "number" =>
+            {
+                typeof_expr
+            }
+            _ => return None,
+        };
+
+        // JS-compatible numeric guard: treat both runtime `"number"` and `"int"`
+        // as matching `typeof x == "number"` while preserving plain `typeof x`.
+        let typeof_value = self.lower_typeof(typeof_expr);
+
+        let number_lit = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: number_lit.clone(),
+            value: IrValue::Constant(IrConstant::String("number".to_string())),
+        });
+        let int_lit = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: int_lit.clone(),
+            value: IrValue::Constant(IrConstant::String("int".to_string())),
+        });
+
+        let eq_number = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: eq_number.clone(),
+            op: BinaryOp::Equal,
+            left: typeof_value.clone(),
+            right: number_lit,
+        });
+
+        let eq_int = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: eq_int.clone(),
+            op: BinaryOp::Equal,
+            left: typeof_value,
+            right: int_lit,
+        });
+
+        let number_match_block = self.alloc_block();
+        let int_check_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond: eq_number,
+            then_block: number_match_block,
+            else_block: int_check_block,
+        });
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                number_match_block,
+                "typeof.number.match",
+            ));
+        self.current_block = number_match_block;
+        let true_reg = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: true_reg.clone(),
+            value: IrValue::Constant(IrConstant::Boolean(true)),
+        });
+        let number_match_exit = self.current_block;
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                int_check_block,
+                "typeof.int.check",
+            ));
+        self.current_block = int_check_block;
+        let int_check_exit = self.current_block;
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                merge_block,
+                "typeof.number.merge",
+            ));
+        self.current_block = merge_block;
+
+        let eq_any_numeric = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::Phi {
+            dest: eq_any_numeric.clone(),
+            sources: vec![(number_match_exit, true_reg), (int_check_exit, eq_int)],
+        });
+
+        if is_equality {
+            Some(eq_any_numeric)
+        } else {
+            let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+            self.emit(IrInstr::UnaryOp {
+                dest: dest.clone(),
+                op: UnaryOp::Not,
+                operand: eq_any_numeric,
+            });
+            Some(dest)
+        }
     }
 
     fn lower_unary(&mut self, unary: &ast::UnaryExpression) -> Register {
@@ -6259,14 +6385,122 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        let operand = self.lower_expr(&typeof_expr.argument);
-        let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID)); // String type (TypeId 1)
+        let should_normalize_int_to_number = self.should_normalize_typeof_int_to_number(
+            self.get_expr_type(&typeof_expr.argument),
+        );
 
+        let operand = self.lower_expr(&typeof_expr.argument);
+        let raw_typeof = self.alloc_register(TypeId::new(STRING_TYPE_ID));
         self.emit(IrInstr::Typeof {
-            dest: dest.clone(),
+            dest: raw_typeof.clone(),
             operand,
         });
+
+        if !should_normalize_int_to_number {
+            return raw_typeof;
+        }
+
+        // In declared `number` surfaces (especially unions like `string | number`),
+        // normalize runtime `"int"` to `"number"` so control-flow narrowing and
+        // `typeof` comparisons align with the declared type contract.
+        let int_lit = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: int_lit.clone(),
+            value: IrValue::Constant(IrConstant::String("int".to_string())),
+        });
+        let is_int = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: is_int.clone(),
+            op: BinaryOp::Equal,
+            left: raw_typeof.clone(),
+            right: int_lit,
+        });
+
+        let normalize_block = self.alloc_block();
+        let passthrough_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond: is_int,
+            then_block: normalize_block,
+            else_block: passthrough_block,
+        });
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                normalize_block,
+                "typeof.normalize.number",
+            ));
+        self.current_block = normalize_block;
+        let normalized = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: normalized.clone(),
+            value: IrValue::Constant(IrConstant::String("number".to_string())),
+        });
+        let normalize_exit = self.current_block;
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                passthrough_block,
+                "typeof.passthrough",
+            ));
+        self.current_block = passthrough_block;
+        let passthrough_exit = self.current_block;
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                merge_block,
+                "typeof.merge",
+            ));
+        self.current_block = merge_block;
+        let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Phi {
+            dest: dest.clone(),
+            sources: vec![
+                (normalize_exit, normalized),
+                (passthrough_exit, raw_typeof),
+            ],
+        });
         dest
+    }
+
+    fn should_normalize_typeof_int_to_number(&self, ty_id: TypeId) -> bool {
+        fn contains_type_id(
+            lowerer: &super::Lowerer<'_>,
+            ty_id: TypeId,
+            target: u32,
+            visited: &mut rustc_hash::FxHashSet<TypeId>,
+        ) -> bool {
+            if !visited.insert(ty_id) {
+                return false;
+            }
+            let Some(ty) = lowerer.type_ctx.get(ty_id).cloned() else {
+                return false;
+            };
+            match ty {
+                Type::Primitive(prim) => match prim {
+                    crate::parser::types::PrimitiveType::Number => target == NUMBER_TYPE_ID,
+                    crate::parser::types::PrimitiveType::Int => target == INT_TYPE_ID,
+                    _ => false,
+                },
+                Type::Union(union) => union
+                    .members
+                    .iter()
+                    .copied()
+                    .any(|member| contains_type_id(lowerer, member, target, visited)),
+                Type::Reference(type_ref) => {
+                    let resolved = lowerer.type_ctx.lookup_named_type(&type_ref.name);
+                    resolved
+                        .is_some_and(|resolved_ty| contains_type_id(lowerer, resolved_ty, target, visited))
+                }
+                Type::Generic(generic) => contains_type_id(lowerer, generic.base, target, visited),
+                _ => ty_id.as_u32() == target,
+            }
+        }
+
+        let mut visited_number = rustc_hash::FxHashSet::default();
+        contains_type_id(self, ty_id, NUMBER_TYPE_ID, &mut visited_number)
     }
 
     fn lower_new(&mut self, new_expr: &ast::NewExpression) -> Register {
@@ -7261,16 +7495,6 @@ impl<'a> Lowerer<'a> {
                 object,
                 nominal_type_id,
             });
-        } else if let Some(shape_id) = self.structural_shape_id_from_type(target_ty) {
-            if let Some(layout) = self.structural_slot_layout_from_type(target_ty) {
-                let names = layout.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
-                self.emit_structural_shape_name_registration_for_ordered_names(names);
-            }
-            self.emit(IrInstr::CastShape {
-                dest: dest.clone(),
-                object,
-                shape_id,
-            });
         } else if let Some(tuple_len_encoded) =
             self.resolve_runtime_tuple_len_cast_target(&cast.target_type)
         {
@@ -7279,14 +7503,6 @@ impl<'a> Lowerer<'a> {
                 object,
                 expected_len: tuple_len_encoded & 0x3FFF,
             });
-        } else if let Some(object_min_fields_encoded) =
-            self.resolve_runtime_object_min_fields_cast_target(&cast.target_type)
-        {
-            self.emit(IrInstr::CastObjectMinFields {
-                dest: dest.clone(),
-                object,
-                required_fields: object_min_fields_encoded & 0x1FFF,
-            });
         } else if let Some(array_elem_kind_encoded) =
             self.resolve_runtime_array_element_kind_cast_target(&cast.target_type)
         {
@@ -7294,6 +7510,50 @@ impl<'a> Lowerer<'a> {
                 dest: dest.clone(),
                 object,
                 expected_elem_mask: array_elem_kind_encoded & 0x00FF,
+            });
+        } else if self.is_structural_shape_cast_target(&cast.target_type)
+            && self
+                .resolve_runtime_cast_kind_mask(&cast.target_type)
+                .is_none_or(|mask| mask == CAST_KIND_OBJECT)
+        {
+            if let Some(shape_id) = self.structural_shape_id_from_type(target_ty) {
+                if let Some(layout) = self.structural_slot_layout_from_type(target_ty) {
+                    let names = layout.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
+                    self.emit_structural_shape_name_registration_for_ordered_names(names);
+                }
+                self.emit(IrInstr::CastShape {
+                    dest: dest.clone(),
+                    object,
+                    shape_id,
+                });
+            } else if let Some(object_min_fields_encoded) =
+                self.resolve_runtime_object_min_fields_cast_target(&cast.target_type)
+            {
+                self.emit(IrInstr::CastObjectMinFields {
+                    dest: dest.clone(),
+                    object,
+                    required_fields: object_min_fields_encoded & 0x1FFF,
+                });
+            } else if let Some(kind_mask) = self.resolve_runtime_cast_kind_mask(&cast.target_type)
+            {
+                self.emit(IrInstr::CastKindMask {
+                    dest: dest.clone(),
+                    object,
+                    expected_kind_mask: kind_mask,
+                });
+            } else {
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Register(object),
+                });
+            }
+        } else if let Some(object_min_fields_encoded) =
+            self.resolve_runtime_object_min_fields_cast_target(&cast.target_type)
+        {
+            self.emit(IrInstr::CastObjectMinFields {
+                dest: dest.clone(),
+                object,
+                required_fields: object_min_fields_encoded & 0x1FFF,
             });
         } else if let Some(kind_mask) = self.resolve_runtime_cast_kind_mask(&cast.target_type) {
             self.emit(IrInstr::CastKindMask {
@@ -7442,6 +7702,39 @@ impl<'a> Lowerer<'a> {
             // For class references/intersections/indexed access/keyof/typeof we currently
             // use either class-id casts or compile-time-only casts.
             _ => None,
+        }
+    }
+
+    fn is_structural_shape_cast_target(&self, type_ann: &ast::TypeAnnotation) -> bool {
+        use crate::parser::ast::types::Type;
+
+        match &type_ann.ty {
+            // Definitely non-shape runtime targets.
+            Type::Primitive(_)
+            | Type::StringLiteral(_)
+            | Type::NumberLiteral(_)
+            | Type::BooleanLiteral(_)
+            | Type::Function(_)
+            | Type::Array(_)
+            | Type::Tuple(_) => false,
+
+            // These can represent structural object surfaces.
+            Type::Object(_)
+            | Type::Reference(_)
+            | Type::Intersection(_)
+            | Type::Typeof(_)
+            | Type::IndexedAccess(_)
+            | Type::Keyof(_)
+            => true,
+
+            Type::Parenthesized(inner) => self.is_structural_shape_cast_target(inner),
+            Type::Union(union) => union
+                .types
+                .iter()
+                .any(|member| self.is_structural_shape_cast_target(member)),
+
+            // Conservative default for any unhandled syntax form.
+            _ => false,
         }
     }
 

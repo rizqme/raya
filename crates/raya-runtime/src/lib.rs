@@ -1560,6 +1560,19 @@ impl Runtime {
         vm: &mut raya_engine::vm::Vm,
         resolved: &ResolvedSymbol,
     ) -> Result<Value, RuntimeError> {
+        fn normalize_integral_numeric_constant(value: Value) -> Value {
+            if let Some(f) = value.as_f64() {
+                if f.is_finite()
+                    && f.fract() == 0.0
+                    && f >= i32::MIN as f64
+                    && f <= i32::MAX as f64
+                {
+                    return Value::i32(f as i32);
+                }
+            }
+            value
+        }
+
         let index = resolved.export.index;
 
         // Prefer global-slot-backed constants when the export index falls within
@@ -1579,7 +1592,7 @@ impl Runtime {
                     .get(global_slot)
                     .copied()
                 {
-                    return Ok(value);
+                    return Ok(normalize_integral_numeric_constant(value));
                 }
             }
         } else {
@@ -1594,7 +1607,7 @@ impl Runtime {
                 .get(global_slot)
                 .copied()
             {
-                return Ok(value);
+                return Ok(normalize_integral_numeric_constant(value));
             }
         }
 
@@ -1618,7 +1631,9 @@ impl Runtime {
         let float_base = int_base + int_len;
         let float_len = constants.floats.len();
         if index < float_base + float_len {
-            return Ok(Value::f64(constants.floats[index - float_base]));
+            return Ok(normalize_integral_numeric_constant(Value::f64(
+                constants.floats[index - float_base],
+            )));
         }
 
         Err(RuntimeError::Dependency(format!(

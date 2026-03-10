@@ -87,8 +87,13 @@ fn negate_guard(guard: &TypeGuard) -> TypeGuard {
             variant: variant.clone(),
             negated: !negated,
         },
-        TypeGuard::Nullish { var, negated } => TypeGuard::Nullish {
+        TypeGuard::Nullish {
+            var,
+            field,
+            negated,
+        } => TypeGuard::Nullish {
             var: var.clone(),
+            field: field.clone(),
             negated: !negated,
         },
         TypeGuard::IsArray { var, negated } => TypeGuard::IsArray {
@@ -2178,36 +2183,27 @@ impl<'a> TypeChecker<'a> {
         // Restore environment and apply negated guard for else branch
         self.type_env = saved_env.clone();
 
+        let apply_negated_guard = |checker: &mut TypeChecker<'_>, guard: &TypeGuard| {
+            let negated_guard = negate_guard(guard);
+            let var_name = get_guard_var(&negated_guard);
+            if let Some(var_ty) = checker.get_var_type(var_name) {
+                if let Some(narrowed_ty) =
+                    apply_type_guard(checker.type_ctx, var_ty, &negated_guard)
+                {
+                    checker.type_env.set(var_name.clone(), narrowed_ty);
+                }
+            }
+        };
+
         if let Some(ref else_branch) = if_stmt.else_branch {
             if let Some(ref guard) = type_guard {
-                // Apply negated guard
-                let negated_guard = negate_guard(guard);
-                let var_name = get_guard_var(&negated_guard);
-                if let Some(var_ty) = self.get_var_type(var_name) {
-                    if let Some(narrowed_ty) =
-                        apply_type_guard(self.type_ctx, var_ty, &negated_guard)
-                    {
-                        self.type_env.set(var_name.clone(), narrowed_ty);
-                    }
-                }
+                apply_negated_guard(self, guard);
             }
-
             self.check_stmt(else_branch);
-        } else if then_returns {
-            // No else branch but then-branch always returns.
-            // Code after the if-statement can only run when the condition was false,
-            // so apply the negated guard to narrow the continuation.
-            if let Some(ref guard) = type_guard {
-                let negated_guard = negate_guard(guard);
-                let var_name = get_guard_var(&negated_guard);
-                if let Some(var_ty) = self.get_var_type(var_name) {
-                    if let Some(narrowed_ty) =
-                        apply_type_guard(self.type_ctx, var_ty, &negated_guard)
-                    {
-                        self.type_env.set(var_name.clone(), narrowed_ty);
-                    }
-                }
-            }
+        } else if let Some(ref guard) = type_guard {
+            // No else branch: the false path still reaches continuation,
+            // so include negated-guard narrowing in the merge environment.
+            apply_negated_guard(self, guard);
         }
 
         let else_env = self.type_env.clone();
@@ -2978,11 +2974,10 @@ impl<'a> TypeChecker<'a> {
                 let left_ty = self.check_expr(&log.left);
                 let right_ty = if matches!(log.operator, LogicalOperator::And) {
                     let saved_env = self.type_env.clone();
-                    if let Some(guard) = extract_type_guard(&log.left, self.interner) {
-                        let var = get_guard_var(&guard);
+                    for guard in extract_all_type_guards(&log.left, self.interner).iter() {
+                        let var = get_guard_var(guard);
                         if let Some(var_ty) = self.type_env.get(var) {
-                            if let Some(narrowed_ty) =
-                                apply_type_guard(self.type_ctx, var_ty, &guard)
+                            if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, guard)
                             {
                                 self.type_env.set(var.clone(), narrowed_ty);
                             }
@@ -5136,18 +5131,22 @@ impl<'a> TypeChecker<'a> {
         } else {
             let non_null_object_ty = self.get_non_null_type(object_ty);
             if non_null_object_ty != object_ty {
-                self.errors.push(CheckError::TypeMismatch {
-                    expected: "non-null object".to_string(),
-                    actual: self.format_type(object_ty),
-                    span: member.span,
-                    note: Some(
-                        "Use optional chaining (?.) or a null check before member access"
-                            .to_string(),
-                    ),
-                });
-                return self.type_ctx.unknown_type();
+                if !self.in_assignment_lhs {
+                    self.errors.push(CheckError::TypeMismatch {
+                        expected: "non-null object".to_string(),
+                        actual: self.format_type(object_ty),
+                        span: member.span,
+                        note: Some(
+                            "Use optional chaining (?.) or a null check before member access"
+                                .to_string(),
+                        ),
+                    });
+                    return self.type_ctx.unknown_type();
+                }
+                non_null_object_ty
+            } else {
+                object_ty
             }
-            object_ty
         };
 
         // Check for forbidden access to $type/$value on bare unions
@@ -5458,33 +5457,51 @@ impl<'a> TypeChecker<'a> {
                 let mut variant_has_member = false;
                 if let Some(member_ty) = self.type_ctx.get(member_id).cloned() {
                     let mut pending = vec![member_ty];
+                    let mut visited_named_refs = FxHashSet::default();
                     while let Some(variant_ty) = pending.pop() {
                         match variant_ty {
                             crate::parser::types::Type::Object(obj) => {
                                 variant_is_object_like = true;
                                 for prop in &obj.properties {
-                                    if prop.name == property_name && !found_types.contains(&prop.ty)
-                                    {
-                                        found_types.push(prop.ty);
+                                    if prop.name == property_name {
                                         variant_has_member = true;
+                                        if !found_types.contains(&prop.ty) {
+                                            found_types.push(prop.ty);
+                                        }
                                     }
                                 }
                                 if let Some((_, sig_ty)) = obj.index_signature {
+                                    variant_has_member = true;
                                     if !found_types.contains(&sig_ty) {
                                         found_types.push(sig_ty);
                                     }
-                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Class(class) => {
+                                if class.methods.is_empty() && class.properties.is_empty() {
+                                    // Placeholder class-like surface (often from alias/reference
+                                    // indirection). Resolve through symbols/named types before
+                                    // treating it as a concrete class variant.
+                                    if let Some(resolved_ty) = self
+                                        .symbols
+                                        .resolve_from_scope(&class.name, self.current_scope)
+                                        .map(|sym| sym.ty)
+                                        .or_else(|| self.type_ctx.lookup_named_type(&class.name))
+                                        .and_then(|ty_id| self.type_ctx.get(ty_id).cloned())
+                                    {
+                                        pending.push(resolved_ty);
+                                        continue;
+                                    }
+                                    continue;
+                                }
                                 variant_is_object_like = true;
                                 if let Some((ty, _vis)) =
                                     self.lookup_class_member(&class, &property_name)
                                 {
+                                    variant_has_member = true;
                                     if !found_types.contains(&ty) {
                                         found_types.push(ty);
                                     }
-                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Interface(interface_ty) => {
@@ -5492,10 +5509,10 @@ impl<'a> TypeChecker<'a> {
                                 if let Some(ty) =
                                     self.lookup_interface_member(&interface_ty, &property_name)
                                 {
+                                    variant_has_member = true;
                                     if !found_types.contains(&ty) {
                                         found_types.push(ty);
                                     }
-                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Array(arr) => {
@@ -5503,10 +5520,10 @@ impl<'a> TypeChecker<'a> {
                                 if let Some(ty) =
                                     self.get_array_method_type(&property_name, arr.element)
                                 {
+                                    variant_has_member = true;
                                     if !found_types.contains(&ty) {
                                         found_types.push(ty);
                                     }
-                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Map(map_ty) => {
@@ -5516,10 +5533,10 @@ impl<'a> TypeChecker<'a> {
                                     map_ty.key,
                                     map_ty.value,
                                 ) {
+                                    variant_has_member = true;
                                     if !found_types.contains(&ty) {
                                         found_types.push(ty);
                                     }
-                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Set(set_ty) => {
@@ -5527,13 +5544,16 @@ impl<'a> TypeChecker<'a> {
                                 if let Some(ty) =
                                     self.get_set_method_type(&property_name, set_ty.element)
                                 {
+                                    variant_has_member = true;
                                     if !found_types.contains(&ty) {
                                         found_types.push(ty);
                                     }
-                                    variant_has_member = true;
                                 }
                             }
                             crate::parser::types::Type::Reference(type_ref) => {
+                                if !visited_named_refs.insert(type_ref.name.clone()) {
+                                    continue;
+                                }
                                 if let Some(named_ty) =
                                     self.type_ctx.lookup_named_type(&type_ref.name)
                                 {
@@ -6951,7 +6971,10 @@ impl<'a> TypeChecker<'a> {
             let is_this = matches!(&*member.object, Expression::This(_));
             // Allow this.field = value inside constructors
             if !(is_this && self.in_constructor) {
+                let prev = self.in_assignment_lhs;
+                self.in_assignment_lhs = true;
                 let object_ty = self.check_expr(&member.object);
+                self.in_assignment_lhs = prev;
                 let property_name = self.resolve(member.property.name);
                 if self.is_readonly_property(object_ty, &property_name) {
                     self.errors.push(CheckError::ReadonlyAssignment {
@@ -8874,5 +8897,23 @@ mod tests {
         "#,
         );
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
+    }
+
+    #[test]
+    fn test_chained_and_preserves_null_narrowing_for_member_access() {
+        let result = parse_and_check(
+            r#"
+            function main(): boolean {
+                let got: { value: string, writable: boolean } | null = null;
+                got = { value: "locked", writable: false };
+                return got != null && got.value == "locked" && got.writable == false;
+            }
+        "#,
+        );
+        assert!(
+            result.is_ok(),
+            "Expected chained && to preserve null narrowing across member accesses, got {:?}",
+            result
+        );
     }
 }

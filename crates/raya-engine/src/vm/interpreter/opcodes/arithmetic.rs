@@ -187,11 +187,17 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             Opcode::Ishl => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if let Err(e) = stack.push(Value::i32(a << (b & 31))) {
@@ -202,11 +208,17 @@ impl<'a> Interpreter<'a> {
 
             Opcode::Ishr => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if let Err(e) = stack.push(Value::i32(a >> (b & 31))) {
@@ -217,11 +229,17 @@ impl<'a> Interpreter<'a> {
 
             Opcode::Iushr => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if let Err(e) = stack.push(Value::i32(((a as u32) >> (b & 31)) as i32)) {
@@ -232,11 +250,17 @@ impl<'a> Interpreter<'a> {
 
             Opcode::Iand => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if let Err(e) = stack.push(Value::i32(a & b)) {
@@ -247,11 +271,17 @@ impl<'a> Interpreter<'a> {
 
             Opcode::Ior => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if let Err(e) = stack.push(Value::i32(a | b)) {
@@ -262,11 +292,17 @@ impl<'a> Interpreter<'a> {
 
             Opcode::Ixor => {
                 let b = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if let Err(e) = stack.push(Value::i32(a ^ b)) {
@@ -277,7 +313,10 @@ impl<'a> Interpreter<'a> {
 
             Opcode::Inot => {
                 let a = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0),
+                    Ok(v) => v
+                        .as_i32()
+                        .or_else(|| v.as_f64().map(|f| f as i32))
+                        .unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if let Err(e) = stack.push(Value::i32(!a)) {

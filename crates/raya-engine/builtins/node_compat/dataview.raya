@@ -6,7 +6,7 @@ class DataView {
     byteLength: int;
 
     constructor(buffer: ArrayBuffer, byteOffset: int = 0, byteLength: int = -1) {
-        let ab = buffer as ArrayBuffer;
+        let ab = buffer;
         if (byteOffset < 0 || byteOffset > ab.byteLength) {
             throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
         }
@@ -34,13 +34,13 @@ class DataView {
 
     getUint8(offset: int): int {
         let i = this.check(offset, 1);
-        let ab = this.buffer as ArrayBuffer;
+        let ab = this.buffer;
         return ab.getByte(i);
     }
 
     setUint8(offset: int, value: int): void {
         let i = this.check(offset, 1);
-        let ab = this.buffer as ArrayBuffer;
+        let ab = this.buffer;
         ab.setByte(i, value);
     }
 
@@ -65,7 +65,7 @@ class DataView {
             throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 4);
-        let ab = this.buffer as ArrayBuffer;
+        let ab = this.buffer;
         return ab.getInt32(i);
     }
 
@@ -74,7 +74,7 @@ class DataView {
             throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 4);
-        let ab = this.buffer as ArrayBuffer;
+        let ab = this.buffer;
         ab.setInt32(i, value);
     }
 
@@ -99,7 +99,7 @@ class DataView {
             throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 8);
-        let ab = this.buffer as ArrayBuffer;
+        let ab = this.buffer;
         return ab.getFloat64(i);
     }
 
@@ -108,7 +108,7 @@ class DataView {
             throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 8);
-        let ab = this.buffer as ArrayBuffer;
+        let ab = this.buffer;
         ab.setFloat64(i, value);
     }
 }

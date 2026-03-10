@@ -169,14 +169,15 @@ fn test_runtime_error_array_out_of_bounds() {
 
 #[test]
 fn test_runtime_error_null_dereference() {
-    // Actual error: "Expected object for field access"
+    // Use an explicit cast to bypass nullable compile-time checks and exercise runtime path.
     expect_runtime_error(
         "class Foo {
              value: int;
              constructor(v: int) { this.value = v; }
          }
          let x: Foo | null = null;
-         return x.value;",
+         let y = x as Foo;
+         return y.value;",
         "Expected object",
     );
 }

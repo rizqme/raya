@@ -26,10 +26,19 @@ impl<'a> Lowerer<'a> {
     ) -> Register {
         let ann_ty = self.resolve_type_annotation(type_ann);
         if ann_ty.as_u32() == super::NUMBER_TYPE_ID && value.ty.as_u32() == super::INT_TYPE_ID {
-            // Keep integral literals as int-backed values even when the annotation is `number`.
-            // This avoids forcing `42` into f64 (`42 + 0.0`) and keeps numeric identity stable
-            // for module-global constants/import hydration and downstream integer fast paths.
-            return value;
+            let zero = self.alloc_register(TypeId::new(super::NUMBER_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: zero.clone(),
+                value: IrValue::Constant(IrConstant::F64(0.0)),
+            });
+            let dest = self.alloc_register(TypeId::new(super::NUMBER_TYPE_ID));
+            self.emit(IrInstr::BinaryOp {
+                dest: dest.clone(),
+                op: BinaryOp::Add,
+                left: value,
+                right: zero,
+            });
+            return dest;
         }
         value
     }

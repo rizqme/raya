@@ -89,7 +89,13 @@ pub fn apply_type_guard(ctx: &mut TypeContext, ty: TypeId, guard: &TypeGuard) ->
             negated,
             ..
         } => apply_discriminant_guard(ctx, ty, field, variant, *negated),
-        TypeGuard::Nullish { negated, .. } => apply_nullish_guard(ctx, ty, *negated),
+        TypeGuard::Nullish { field, negated, .. } => {
+            if let Some(field_path) = field {
+                apply_nullish_member_guard(ctx, ty, field_path, *negated)
+            } else {
+                apply_nullish_guard(ctx, ty, *negated)
+            }
+        }
         TypeGuard::IsArray { negated, .. } => apply_is_array_guard(ctx, ty, *negated),
         TypeGuard::IsInteger { negated, .. } => apply_is_integer_guard(ctx, ty, *negated),
         TypeGuard::IsNaN { negated, .. } => apply_is_nan_guard(ctx, ty, *negated),
@@ -294,65 +300,209 @@ fn apply_discriminant_guard(
     variant: &str,
     negated: bool,
 ) -> Option<TypeId> {
-    // Get the type definition
-    let type_def = ctx.get(ty)?.clone();
+    let path: Vec<&str> = field.split('.').filter(|segment| !segment.is_empty()).collect();
+    if path.is_empty() {
+        return Some(ty);
+    }
 
-    match type_def {
-        Type::Union(union_ty) => {
-            // Filter union members based on discriminant value
-            let mut matching_members = Vec::new();
+    let is_union = matches!(ctx.get(ty), Some(Type::Union(_)));
+    match narrow_type_by_discriminant_path(ctx, ty, &path, variant, negated) {
+        Some(narrowed) => Some(narrowed),
+        None if is_union => Some(ctx.never_type()),
+        None => Some(ty),
+    }
+}
 
-            for member_id in &union_ty.members {
-                if let Some(Type::Object(obj)) = ctx.get(*member_id) {
-                    // Check if this member has the discriminant field
-                    if let Some(prop) = obj.properties.iter().find(|p| p.name == field) {
-                        // Check if the discriminant field's type is a string literal matching the variant
-                        let matches_variant = match ctx.get(prop.ty) {
-                            Some(Type::StringLiteral(lit_val)) => lit_val == variant,
-                            _ => true, // Non-literal type: can't narrow precisely, include it
-                        };
-
-                        if (!negated && matches_variant) || (negated && !matches_variant) {
-                            matching_members.push(*member_id);
-                        }
-                    } else if negated {
-                        // Doesn't have the field - matches negated check
-                        matching_members.push(*member_id);
-                    }
-                } else if negated {
-                    // Non-object members pass negated checks
-                    matching_members.push(*member_id);
+fn narrow_type_by_discriminant_path(
+    ctx: &mut TypeContext,
+    ty: TypeId,
+    path: &[&str],
+    variant: &str,
+    negated: bool,
+) -> Option<TypeId> {
+    let ty_def = ctx.get(ty)?.clone();
+    match ty_def {
+        Type::Reference(type_ref) => {
+            let named = ctx.lookup_named_type(&type_ref.name)?;
+            narrow_type_by_discriminant_path(ctx, named, path, variant, negated)
+        }
+        Type::Generic(generic) => {
+            narrow_type_by_discriminant_path(ctx, generic.base, path, variant, negated)
+        }
+        Type::Union(union) => {
+            let mut narrowed_members = Vec::new();
+            for member in union.members {
+                if let Some(narrowed_member) =
+                    narrow_type_by_discriminant_path(ctx, member, path, variant, negated)
+                {
+                    narrowed_members.push(narrowed_member);
                 }
             }
-
-            if matching_members.is_empty() {
-                // No matching variants - unreachable code
-                Some(ctx.never_type())
-            } else if matching_members.len() == 1 {
-                // Single variant - return it directly
-                Some(matching_members[0])
+            if narrowed_members.is_empty() {
+                None
+            } else if narrowed_members.len() == 1 {
+                Some(narrowed_members[0])
             } else {
-                // Multiple variants - return union
-                Some(ctx.union_type(matching_members))
+                Some(ctx.union_type(narrowed_members))
             }
         }
-        Type::Object(obj) => {
-            // Single object type - check discriminant
-            if obj.properties.iter().any(|p| p.name == field) {
-                // Has the discriminant field
-                if !negated {
-                    return Some(ty); // Matches, keep type
-                } else {
-                    return Some(ctx.never_type()); // Doesn't match, unreachable
-                }
-            }
-            Some(ty) // No discriminant field, no narrowing
-        }
+        Type::Object(obj) => narrow_object_discriminant_path(ctx, ty, obj, path, variant, negated),
         _ => {
-            // Not a discriminated union
-            Some(ty)
+            if negated {
+                Some(ty)
+            } else {
+                None
+            }
         }
     }
+}
+
+fn narrow_object_discriminant_path(
+    ctx: &mut TypeContext,
+    object_ty: TypeId,
+    mut obj: crate::parser::types::ty::ObjectType,
+    path: &[&str],
+    variant: &str,
+    negated: bool,
+) -> Option<TypeId> {
+    let (head, tail) = path.split_first()?;
+    let prop_idx = obj.properties.iter().position(|prop| prop.name == *head);
+
+    let Some(prop_idx) = prop_idx else {
+        return if negated { Some(object_ty) } else { None };
+    };
+
+    if tail.is_empty() {
+        let prop_ty = obj.properties[prop_idx].ty;
+        let matches_variant = match ctx.get(prop_ty) {
+            Some(Type::StringLiteral(lit_val)) => lit_val == variant,
+            _ => true,
+        };
+        if (!negated && matches_variant) || (negated && !matches_variant) {
+            return Some(object_ty);
+        }
+        return None;
+    }
+
+    let prop_ty = obj.properties[prop_idx].ty;
+    let narrowed_prop_ty = narrow_type_by_discriminant_path(ctx, prop_ty, tail, variant, negated)?;
+    if narrowed_prop_ty == prop_ty {
+        return Some(object_ty);
+    }
+    obj.properties[prop_idx].ty = narrowed_prop_ty;
+    Some(ctx.intern(Type::Object(obj)))
+}
+
+fn apply_nullish_member_guard(
+    ctx: &mut TypeContext,
+    ty: TypeId,
+    field_path: &str,
+    negated: bool,
+) -> Option<TypeId> {
+    let path: Vec<&str> = field_path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if path.is_empty() {
+        return apply_nullish_guard(ctx, ty, negated);
+    }
+    narrow_type_by_nullish_path(ctx, ty, &path, negated).or_else(|| Some(ty))
+}
+
+fn narrow_type_by_nullish_path(
+    ctx: &mut TypeContext,
+    ty: TypeId,
+    path: &[&str],
+    negated: bool,
+) -> Option<TypeId> {
+    let ty_def = ctx.get(ty)?.clone();
+    match ty_def {
+        Type::Reference(type_ref) => {
+            let named = ctx.lookup_named_type(&type_ref.name)?;
+            narrow_type_by_nullish_path(ctx, named, path, negated)
+        }
+        Type::Generic(generic) => narrow_type_by_nullish_path(ctx, generic.base, path, negated),
+        Type::Union(union) => {
+            let mut narrowed = Vec::new();
+            for member in union.members {
+                if let Some(member_ty) = narrow_type_by_nullish_path(ctx, member, path, negated) {
+                    narrowed.push(member_ty);
+                }
+            }
+            if narrowed.is_empty() {
+                None
+            } else if narrowed.len() == 1 {
+                Some(narrowed[0])
+            } else {
+                Some(ctx.union_type(narrowed))
+            }
+        }
+        Type::Object(obj) => narrow_object_nullish_path(ctx, ty, obj, path, negated),
+        Type::Class(class_ty) => narrow_class_nullish_path(ctx, ty, class_ty, path, negated),
+        _ => None,
+    }
+}
+
+fn narrow_object_nullish_path(
+    ctx: &mut TypeContext,
+    object_ty: TypeId,
+    mut obj: crate::parser::types::ty::ObjectType,
+    path: &[&str],
+    negated: bool,
+) -> Option<TypeId> {
+    let (head, tail) = path.split_first()?;
+    let Some(prop_idx) = obj.properties.iter().position(|prop| prop.name == *head) else {
+        return None;
+    };
+
+    let prop_ty = obj.properties[prop_idx].ty;
+    let narrowed_prop = if tail.is_empty() {
+        apply_nullish_guard(ctx, prop_ty, negated)?
+    } else {
+        narrow_type_by_nullish_path(ctx, prop_ty, tail, negated)?
+    };
+    if narrowed_prop == prop_ty {
+        return Some(object_ty);
+    }
+    obj.properties[prop_idx].ty = narrowed_prop;
+    Some(ctx.intern(Type::Object(obj)))
+}
+
+fn narrow_class_nullish_path(
+    ctx: &mut TypeContext,
+    class_ty_id: TypeId,
+    mut class_ty: crate::parser::types::ty::ClassType,
+    path: &[&str],
+    negated: bool,
+) -> Option<TypeId> {
+    let (head, tail) = path.split_first()?;
+    let Some(prop_idx) = class_ty
+        .properties
+        .iter()
+        .position(|prop| prop.name == *head)
+    else {
+        if let Some(parent_ty) = class_ty.extends {
+            let narrowed_parent = narrow_type_by_nullish_path(ctx, parent_ty, path, negated)?;
+            if narrowed_parent == parent_ty {
+                return Some(class_ty_id);
+            }
+            class_ty.extends = Some(narrowed_parent);
+            return Some(ctx.intern(Type::Class(class_ty)));
+        }
+        return None;
+    };
+
+    let prop_ty = class_ty.properties[prop_idx].ty;
+    let narrowed_prop = if tail.is_empty() {
+        apply_nullish_guard(ctx, prop_ty, negated)?
+    } else {
+        narrow_type_by_nullish_path(ctx, prop_ty, tail, negated)?
+    };
+    if narrowed_prop == prop_ty {
+        return Some(class_ty_id);
+    }
+    class_ty.properties[prop_idx].ty = narrowed_prop;
+    Some(ctx.intern(Type::Class(class_ty)))
 }
 
 /// Apply a nullish guard (x !== null or x === null)
@@ -524,6 +674,7 @@ mod tests {
 
         let guard = TypeGuard::Nullish {
             var: "x".to_string(),
+            field: None,
             negated: true, // x !== null
         };
 
@@ -540,6 +691,7 @@ mod tests {
 
         let guard = TypeGuard::Nullish {
             var: "x".to_string(),
+            field: None,
             negated: false, // x === null
         };
 

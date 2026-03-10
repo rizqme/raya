@@ -176,3 +176,25 @@ fn test_node_compat_get_own_property_descriptor_roundtrip() {
 
     expect_bool(value, true);
 }
+
+#[test]
+fn test_node_events_emit_function_payload_cast_path() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            import EventEmitter from "node:events";
+            const emitter = new EventEmitter<{ tick: [number] }>();
+            emitter.on("tick", (_: number): void => {});
+            emitter.emit("tick", 1);
+            return emitter.listenerCount("tick") == 1;
+            "#,
+        )
+        .expect("node-compat EventEmitter emit path should succeed");
+
+    expect_bool(value, true);
+}
