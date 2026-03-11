@@ -2686,7 +2686,14 @@ impl<'a> TypeChecker<'a> {
     fn check_expr(&mut self, expr: &Expression) -> TypeId {
         let ty = match expr {
             Expression::IntLiteral(_) | Expression::FloatLiteral(_) => self.type_ctx.number_type(),
-            Expression::StringLiteral(_) | Expression::TemplateLiteral(_) => {
+            Expression::StringLiteral(_) => self.type_ctx.string_type(),
+            Expression::TemplateLiteral(tpl) => {
+                // Preserve type information/diagnostics for interpolated expressions.
+                for part in &tpl.parts {
+                    if let TemplatePart::Expression(expr) = part {
+                        let _ = self.check_expr(expr);
+                    }
+                }
                 self.type_ctx.string_type()
             }
             Expression::BooleanLiteral(_) => self.type_ctx.boolean_type(),

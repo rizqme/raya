@@ -29,8 +29,38 @@ impl<'a> Interpreter<'a> {
                         arg_count
                     )));
                 }
-                let value = stack.pop()?;
-                let array_val = stack.pop()?;
+                let debug_native_stack = std::env::var("RAYA_DEBUG_NATIVE_STACK").is_ok();
+                if debug_native_stack {
+                    eprintln!(
+                        "[array.push] pre-pop stack_depth={} arg_count={}",
+                        stack.depth(),
+                        arg_count
+                    );
+                }
+                let value = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if debug_native_stack {
+                            eprintln!(
+                                "[array.push] pop value underflow stack_depth={}",
+                                stack.depth()
+                            );
+                        }
+                        return Err(e);
+                    }
+                };
+                let array_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if debug_native_stack {
+                            eprintln!(
+                                "[array.push] pop receiver underflow stack_depth={}",
+                                stack.depth()
+                            );
+                        }
+                        return Err(e);
+                    }
+                };
                 if !array_val.is_ptr() {
                     return Err(VmError::TypeError("Expected array".to_string()));
                 }

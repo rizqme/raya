@@ -1,4 +1,5 @@
 // Temporal pragmatic subset.
+const DATE_TO_ISO_STRING: number = 0x0B21;
 
 class TemporalInstant {
     epochMilliseconds: number;
@@ -12,9 +13,7 @@ class TemporalInstant {
     }
 
     toString(): string {
-        let d = new Date();
-        d.setTime(this.epochMilliseconds);
-        return d.toISOString();
+        return __NATIVE_CALL<string>(DATE_TO_ISO_STRING, this.epochMilliseconds);
     }
 }
 

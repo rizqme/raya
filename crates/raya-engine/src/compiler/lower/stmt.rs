@@ -1717,7 +1717,8 @@ impl<'a> Lowerer<'a> {
                 if self.try_extract_class_from_type(&cast.target_type).is_some() {
                     None
                 } else {
-                    let target_ty = self.resolve_structural_slot_type_from_annotation(&cast.target_type);
+                    let target_ty =
+                        self.resolve_structural_slot_type_from_annotation(&cast.target_type);
                     self.structural_projection_layout_from_type_id(target_ty)
                 }
             }
@@ -2125,6 +2126,13 @@ impl<'a> Lowerer<'a> {
                             self.clear_late_bound_object_binding(name);
                         }
                     }
+                    if !self.variable_structural_projection_fields.contains_key(&name) {
+                        if let Some(layout) = self.structural_projection_layout_from_type_id(value.ty)
+                        {
+                            self.variable_structural_projection_fields.insert(name, layout);
+                            self.variable_class_map.remove(&name);
+                        }
+                    }
                     if explicit_dynamic_any_annotation {
                         self.variable_class_map.remove(&name);
                         self.clear_late_bound_object_binding(name);
@@ -2356,6 +2364,12 @@ impl<'a> Lowerer<'a> {
                 if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(value.ty) {
                     self.variable_class_map.insert(name, nominal_type_id);
                     self.clear_late_bound_object_binding(name);
+                }
+            }
+            if !self.variable_structural_projection_fields.contains_key(&name) {
+                if let Some(layout) = self.structural_projection_layout_from_type_id(value.ty) {
+                    self.variable_structural_projection_fields.insert(name, layout);
+                    self.variable_class_map.remove(&name);
                 }
             }
             if explicit_dynamic_any_annotation {

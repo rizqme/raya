@@ -374,11 +374,24 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fdiv => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                if b_val.as_i32().is_some() && a_val.as_i32().is_some() && b_val.as_i32() == Some(0) {
+                    return OpcodeResult::Error(VmError::RuntimeError(
+                        "division by zero".to_string(),
+                    ));
+                }
+                let b = match value_to_f64(b_val) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let a = match value_to_f64(a_val) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -415,11 +428,24 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fmod => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                if b_val.as_i32().is_some() && a_val.as_i32().is_some() && b_val.as_i32() == Some(0) {
+                    return OpcodeResult::Error(VmError::RuntimeError(
+                        "division by zero".to_string(),
+                    ));
+                }
+                let b = match value_to_f64(b_val) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let a = match value_to_f64(a_val) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };

@@ -1034,9 +1034,12 @@ impl ModuleCompiler {
             .unwrap_or_else(|| vec!["EventEmitter".to_string()]);
 
         // Compile
+        let allow_unresolved_runtime_fallback =
+            !matches!(self.checker_mode, TypeSystemMode::Raya);
         let mut compiler = Compiler::new(type_ctx, &interner)
             .with_expr_types(check_result.expr_types)
-            .with_type_annotation_types(check_result.type_annotation_types);
+            .with_type_annotation_types(check_result.type_annotation_types)
+            .with_allow_unresolved_runtime_fallback(allow_unresolved_runtime_fallback);
         if let Some(ref jsx_opts) = self.jsx_options {
             compiler = compiler.with_jsx(jsx_opts.clone());
         }
@@ -2430,6 +2433,41 @@ mod tests {
         assert_eq!(
             namespace_import.type_signature.as_deref(),
             Some("obj(prop:answer:ro:req:number)")
+        );
+    }
+
+    #[test]
+    fn test_strict_named_imported_class_static_call_has_no_late_bound_fallback() {
+        let temp_dir = create_test_project();
+        let main_path = temp_dir.path().join("main.raya");
+        let dep_path = temp_dir.path().join("dep.raya");
+
+        fs::write(
+            &dep_path,
+            r#"
+            export class AppCommon {
+                static answer(): number {
+                    return 42;
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            &main_path,
+            r#"
+            import { AppCommon } from "./dep";
+            return AppCommon.answer();
+            "#,
+        )
+        .unwrap();
+
+        let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
+        let result = compiler.compile(&main_path);
+        assert!(
+            result.is_ok(),
+            "strict named imported class static call should compile: {:?}",
+            result.err()
         );
     }
 

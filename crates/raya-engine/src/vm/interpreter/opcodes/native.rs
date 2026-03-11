@@ -706,13 +706,48 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                let debug_native_stack = std::env::var("RAYA_DEBUG_NATIVE_STACK").is_ok();
+                if debug_native_stack {
+                    let func_id = task.current_func_id();
+                    let func_name = module
+                        .functions
+                        .get(func_id)
+                        .map(|f| f.name.as_str())
+                        .unwrap_or("<unknown>");
+                    eprintln!(
+                        "[native] enter {}#{} native_id={} arg_count={} stack_depth={}",
+                        func_name,
+                        func_id,
+                        native_id,
+                        arg_count,
+                        stack.depth()
+                    );
+                }
 
                 // Pop arguments
                 let mut args = Vec::with_capacity(arg_count);
                 for _ in 0..arg_count {
                     match stack.pop() {
                         Ok(v) => args.push(v),
-                        Err(e) => return OpcodeResult::Error(e),
+                        Err(e) => {
+                            if debug_native_stack {
+                                let func_id = task.current_func_id();
+                                let func_name = module
+                                    .functions
+                                    .get(func_id)
+                                    .map(|f| f.name.as_str())
+                                    .unwrap_or("<unknown>");
+                                eprintln!(
+                                    "[native] pop-underflow {}#{} native_id={} arg_count={} stack_depth={}",
+                                    func_name,
+                                    func_id,
+                                    native_id,
+                                    arg_count,
+                                    stack.depth()
+                                );
+                            }
+                            return OpcodeResult::Error(e);
+                        }
                     }
                 }
                 args.reverse();
@@ -971,16 +1006,25 @@ impl<'a> Interpreter<'a> {
                         };
 
                         if let Some(val) = channel.try_receive() {
+                            if debug_native_stack {
+                                eprintln!("[native] CHANNEL_RECEIVE immediate value");
+                            }
                             if let Err(e) = stack.push(val) {
                                 return OpcodeResult::Error(e);
                             }
                             OpcodeResult::Continue
                         } else if channel.is_closed() {
+                            if debug_native_stack {
+                                eprintln!("[native] CHANNEL_RECEIVE closed->null");
+                            }
                             if let Err(e) = stack.push(Value::null()) {
                                 return OpcodeResult::Error(e);
                             }
                             OpcodeResult::Continue
                         } else {
+                            if debug_native_stack {
+                                eprintln!("[native] CHANNEL_RECEIVE suspend");
+                            }
                             use crate::vm::scheduler::SuspendReason;
                             OpcodeResult::Suspend(SuspendReason::ChannelReceive {
                                 channel_id: handle,
@@ -1051,7 +1095,11 @@ impl<'a> Interpreter<'a> {
                             Ok(tuple) => tuple,
                             Err(err) => return OpcodeResult::Error(err),
                         };
-                        if let Err(e) = stack.push(Value::bool(channel.is_closed())) {
+                        let closed = channel.is_closed();
+                        if debug_native_stack {
+                            eprintln!("[native] CHANNEL_IS_CLOSED -> {}", closed);
+                        }
+                        if let Err(e) = stack.push(Value::bool(closed)) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

@@ -9,6 +9,15 @@ use crate::vm::value::Value;
 use crate::vm::VmError;
 use std::sync::Arc;
 
+#[inline]
+fn to_i32_arg(value: Value, default: i32) -> i32 {
+    value
+        .as_i32()
+        .or_else(|| value.as_f64().map(|f| f as i32))
+        .or_else(|| value.as_i64().map(|v| v as i32))
+        .unwrap_or(default)
+}
+
 impl<'a> Interpreter<'a> {
     /// Handle built-in string methods
     pub(in crate::vm::interpreter) fn call_string_method(
@@ -45,7 +54,7 @@ impl<'a> Interpreter<'a> {
                         arg_count
                     )));
                 }
-                let index = args[0].as_i32().unwrap_or(0) as usize;
+                let index = to_i32_arg(args[0], 0) as usize;
                 let result = s
                     .chars()
                     .nth(index)
@@ -99,7 +108,7 @@ impl<'a> Interpreter<'a> {
                     String::new()
                 };
                 let from_index = if arg_count == 2 {
-                    args[1].as_i32().unwrap_or(0).max(0) as usize
+                    to_i32_arg(args[1], 0).max(0) as usize
                 } else {
                     0
                 };
@@ -174,9 +183,9 @@ impl<'a> Interpreter<'a> {
                 };
                 let end_val = if arg_count >= 2 { Some(args[1]) } else { None };
 
-                let start = start_val.as_i32().unwrap_or(0).max(0) as usize;
+                let start = to_i32_arg(start_val, 0).max(0) as usize;
                 let end = end_val
-                    .and_then(|v| v.as_i32())
+                    .map(|v| to_i32_arg(v, 0))
                     .map(|e| e.max(0) as usize)
                     .unwrap_or(s.len());
 
@@ -209,10 +218,7 @@ impl<'a> Interpreter<'a> {
                 // Get optional limit argument (try both i32 and i64)
                 // In Raya, limit 0 means "no limit"
                 let limit = if arg_count == 2 {
-                    let raw_limit = args[1]
-                        .as_i32()
-                        .or_else(|| args[1].as_i64().map(|v| v as i32))
-                        .unwrap_or(0);
+                    let raw_limit = to_i32_arg(args[1], 0);
                     if raw_limit > 0 {
                         Some(raw_limit as usize)
                     } else {
@@ -262,7 +268,7 @@ impl<'a> Interpreter<'a> {
                         arg_count
                     )));
                 }
-                let index = args[0].as_i32().unwrap_or(0) as usize;
+                let index = to_i32_arg(args[0], 0) as usize;
                 let result = s.chars().nth(index).map(|c| c as i32).unwrap_or(-1);
                 stack.push(Value::i32(result))?;
                 Ok(())
@@ -281,7 +287,7 @@ impl<'a> Interpreter<'a> {
                     String::new()
                 };
                 let result = if arg_count == 2 {
-                    let end_index = args[1].as_i32().unwrap_or(s.len() as i32).max(0) as usize;
+                    let end_index = to_i32_arg(args[1], s.len() as i32).max(0) as usize;
                     let end = (end_index + search_str.len()).min(s.len());
                     s[..end].rfind(&search_str).map(|i| i as i32).unwrap_or(-1)
                 } else {
@@ -298,7 +304,7 @@ impl<'a> Interpreter<'a> {
                         arg_count
                     )));
                 }
-                let target_length = args[0].as_i32().unwrap_or(0) as usize;
+                let target_length = to_i32_arg(args[0], 0) as usize;
                 let pad_str = if arg_count >= 2 {
                     if let Some(ptr) = unsafe { args[1].as_ptr::<RayaString>() } {
                         unsafe { &*ptr.as_ptr() }.data.clone()
@@ -332,7 +338,7 @@ impl<'a> Interpreter<'a> {
                         arg_count
                     )));
                 }
-                let target_length = args[0].as_i32().unwrap_or(0) as usize;
+                let target_length = to_i32_arg(args[0], 0) as usize;
                 let pad_str = if arg_count >= 2 {
                     if let Some(ptr) = unsafe { args[1].as_ptr::<RayaString>() } {
                         unsafe { &*ptr.as_ptr() }.data.clone()
@@ -561,10 +567,7 @@ impl<'a> Interpreter<'a> {
                 // Get optional limit argument (try both i32 and i64)
                 // In Raya, limit 0 means "no limit"
                 let limit = if arg_count == 2 {
-                    let raw_limit = args[1]
-                        .as_i32()
-                        .or_else(|| args[1].as_i64().map(|v| v as i32))
-                        .unwrap_or(0);
+                    let raw_limit = to_i32_arg(args[1], 0);
                     if raw_limit > 0 {
                         Some(raw_limit as usize)
                     } else {
@@ -618,7 +621,7 @@ impl<'a> Interpreter<'a> {
                 let len = s.len();
 
                 // Normalize negative indices
-                let start_raw = start_val.as_i32().unwrap_or(0);
+                let start_raw = to_i32_arg(start_val, 0);
                 let start = if start_raw < 0 {
                     ((len as i32 + start_raw).max(0) as usize).min(len)
                 } else {
@@ -626,7 +629,7 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let end = end_val
-                    .and_then(|v| v.as_i32())
+                    .map(|v| to_i32_arg(v, 0))
                     .map(|e| {
                         if e < 0 {
                             ((len as i32 + e).max(0) as usize).min(len)
@@ -685,7 +688,7 @@ impl<'a> Interpreter<'a> {
                 let count = if arg_count == 0 {
                     1
                 } else {
-                    args[0].as_i32().unwrap_or(0).max(0) as usize
+                    to_i32_arg(args[0], 0).max(0) as usize
                 };
                 let result = s.repeat(count);
                 let raya_string = RayaString::new(result);

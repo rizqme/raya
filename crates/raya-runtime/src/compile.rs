@@ -342,6 +342,7 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     }
 
     // Compile via IR pipeline
+    let allow_unresolved_runtime_fallback = !matches!(type_mode, TypeMode::Raya);
     let compiler = Compiler::new(type_ctx, &interner)
         .with_expr_types(check_result.expr_types)
         .with_type_annotation_types(check_result.type_annotation_types)
@@ -349,6 +350,7 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
         .with_emit_generic_templates(options.emit_generic_templates)
         .with_monomorphization_mode(options.monomorphization_mode)
         .with_js_this_binding_compat(true)
+        .with_allow_unresolved_runtime_fallback(allow_unresolved_runtime_fallback)
         .with_source_text(full_source.clone());
     let bytecode = compiler.compile_via_ir(&ast)?;
 

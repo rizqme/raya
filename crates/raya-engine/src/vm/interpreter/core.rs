@@ -1697,6 +1697,25 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 OpcodeResult::Error(e) => {
+                    if matches!(e, VmError::StackUnderflow)
+                        && std::env::var("RAYA_DEBUG_STACK_UNDERFLOW").is_ok()
+                    {
+                        let func_name = module
+                            .functions
+                            .get(current_func_id)
+                            .map(|f| f.name.as_str())
+                            .unwrap_or("<unknown>");
+                        eprintln!(
+                            "[stack-underflow] module={} func={}#{} ip={} opcode={:?} depth={} locals_base={}",
+                            module.metadata.name,
+                            func_name,
+                            current_func_id,
+                            ip.saturating_sub(1),
+                            opcode,
+                            stack_guard.depth(),
+                            locals_base
+                        );
+                    }
                     // Set exception on task if not already set
                     if !task.has_exception() {
                         let error_msg = e.to_string();

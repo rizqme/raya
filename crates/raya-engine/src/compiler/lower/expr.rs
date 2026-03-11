@@ -45,6 +45,21 @@ enum SpreadSourceFields {
 }
 
 impl<'a> Lowerer<'a> {
+    fn narrowed_identifier_type_hint(&self, ident: &ast::Identifier) -> Option<TypeId> {
+        self.expr_types_by_span
+            .get(&(ident.span.start, ident.span.end))
+            .copied()
+            .filter(|ty| ty.as_u32() != UNRESOLVED_TYPE_ID)
+    }
+
+    fn effective_identifier_value_type(
+        &self,
+        ident: &ast::Identifier,
+        fallback: TypeId,
+    ) -> TypeId {
+        self.narrowed_identifier_type_hint(ident).unwrap_or(fallback)
+    }
+
     fn projection_layout_u16_from_type_id(&self, ty: TypeId) -> Option<Vec<(String, u16)>> {
         self.structural_projection_layout_from_type_id(ty)
             .map(|layout| {
@@ -227,6 +242,25 @@ impl<'a> Lowerer<'a> {
             value: IrValue::Constant(IrConstant::String(string_value)),
         });
         dest
+    }
+
+    fn emit_named_key_register(&mut self, property: &str) -> Register {
+        let key = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: key.clone(),
+            value: IrValue::Constant(IrConstant::String(property.to_string())),
+        });
+        key
+    }
+
+    fn emit_dyn_get_named(&mut self, dest: Register, object: Register, property: &str) {
+        let key = self.emit_named_key_register(property);
+        self.emit(IrInstr::DynGetKeyed { dest, object, key });
+    }
+
+    fn emit_dyn_set_named(&mut self, object: Register, property: &str, value: Register) {
+        let key = self.emit_named_key_register(property);
+        self.emit(IrInstr::DynSetKeyed { object, key, value });
     }
 
     fn lower_bool_literal(&mut self, lit: &ast::BooleanLiteral) -> Register {
@@ -474,6 +508,7 @@ impl<'a> Lowerer<'a> {
                     .get(&local_idx)
                     .copied()
                     .unwrap_or(UNRESOLVED);
+                let value_ty = self.effective_identifier_value_type(ident, inner_ty);
                 // Load the RefCell pointer
                 let refcell_reg = self.alloc_register(inner_ty);
                 self.emit(IrInstr::LoadLocal {
@@ -481,19 +516,21 @@ impl<'a> Lowerer<'a> {
                     index: local_idx,
                 });
                 // Load the value from the RefCell
-                let dest = self.alloc_register(inner_ty);
+                let dest = self.alloc_register(value_ty);
                 self.emit(IrInstr::LoadRefCell {
                     dest: dest.clone(),
                     refcell: refcell_reg,
                 });
+                self.propagate_type_projection_to_register(value_ty, &dest);
                 return dest;
             }
 
-            let ty = self
+            let slot_ty = self
                 .local_registers
                 .get(&local_idx)
                 .map(|r| r.ty)
                 .unwrap_or(UNRESOLVED);
+            let ty = self.effective_identifier_value_type(ident, slot_ty);
             let dest = self.alloc_register(ty);
             self.emit(IrInstr::LoadLocal {
                 dest: dest.clone(),
@@ -512,12 +549,14 @@ impl<'a> Lowerer<'a> {
                 }
             }
             self.propagate_variable_projection_to_register(ident.name, &dest);
+            self.propagate_type_projection_to_register(ty, &dest);
             return dest;
         }
 
         // Check if we've already captured this variable
         if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name) {
-            let ty = self.captures[idx].ty;
+            let capture_ty = self.captures[idx].ty;
+            let ty = self.effective_identifier_value_type(ident, capture_ty);
             let is_refcell = self.captures[idx].is_refcell;
             let capture_idx = self.captures[idx].capture_idx;
 
@@ -535,6 +574,7 @@ impl<'a> Lowerer<'a> {
                     dest: dest.clone(),
                     refcell: refcell_reg,
                 });
+                self.propagate_type_projection_to_register(ty, &dest);
                 return dest;
             } else {
                 let dest = self.alloc_register(ty);
@@ -543,6 +583,7 @@ impl<'a> Lowerer<'a> {
                     index: capture_idx,
                 });
                 self.propagate_variable_projection_to_register(ident.name, &dest);
+                self.propagate_type_projection_to_register(ty, &dest);
                 return dest;
             }
         }
@@ -552,6 +593,7 @@ impl<'a> Lowerer<'a> {
             if let Some(ancestor_var) = ancestors.get(&ident.name) {
                 // Variable is from an enclosing scope - capture it
                 let ty = ancestor_var.ty;
+                let narrowed_ty = self.effective_identifier_value_type(ident, ty);
                 let is_refcell = ancestor_var.is_refcell;
                 let capture_idx = self.next_capture_slot;
                 self.next_capture_slot += 1;
@@ -559,7 +601,7 @@ impl<'a> Lowerer<'a> {
                     symbol: ident.name,
                     source: ancestor_var.source,
                     capture_idx,
-                    ty,
+                    ty: narrowed_ty,
                     is_refcell,
                 });
 
@@ -572,19 +614,21 @@ impl<'a> Lowerer<'a> {
                         index: capture_idx,
                     });
                     // Load the value from the RefCell
-                    let dest = self.alloc_register(ty);
+                    let dest = self.alloc_register(narrowed_ty);
                     self.emit(IrInstr::LoadRefCell {
                         dest: dest.clone(),
                         refcell: refcell_reg,
                     });
+                    self.propagate_type_projection_to_register(narrowed_ty, &dest);
                     return dest;
                 } else {
-                    let dest = self.alloc_register(ty);
+                    let dest = self.alloc_register(narrowed_ty);
                     self.emit(IrInstr::LoadCaptured {
                         dest: dest.clone(),
                         index: capture_idx,
                     });
                     self.propagate_variable_projection_to_register(ident.name, &dest);
+                    self.propagate_type_projection_to_register(narrowed_ty, &dest);
                     return dest;
                 }
             }
@@ -592,11 +636,12 @@ impl<'a> Lowerer<'a> {
 
         // Check module-level variables (stored as globals)
         if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
-            let ty = self
+            let global_ty = self
                 .global_type_map
                 .get(&global_idx)
                 .copied()
                 .unwrap_or(UNRESOLVED);
+            let ty = self.effective_identifier_value_type(ident, global_ty);
             let dest = self.alloc_register(ty);
             self.emit(IrInstr::LoadGlobal {
                 dest: dest.clone(),
@@ -615,6 +660,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
             self.propagate_variable_projection_to_register(ident.name, &dest);
+            self.propagate_type_projection_to_register(ty, &dest);
             return dest;
         }
 
@@ -683,6 +729,7 @@ impl<'a> Lowerer<'a> {
                 .copied()
                 .or_else(|| self.type_ctx.lookup_named_type(name))
                 .unwrap_or(UNRESOLVED);
+            self.seed_constructor_projection_binding_from_type(ident.name, Some(expr_ty));
             let dest = self.alloc_register(expr_ty);
             let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             self.emit(IrInstr::Assign {
@@ -1026,11 +1073,7 @@ impl<'a> Lowerer<'a> {
             } {
                 self.emit_member_store(&member.object, object, field_idx, &prop_name, null_reg);
             } else if obj_ty_id == JSON_TYPE_ID || obj_ty_id == JSON_OBJECT_TYPE_ID {
-                self.emit(IrInstr::DynSetProp {
-                    object,
-                    property: prop_name,
-                    value: null_reg,
-                });
+                self.emit_dyn_set_named(object, &prop_name, null_reg);
             } else {
                 self.errors
                     .push(crate::compiler::CompileError::InternalError {
@@ -1158,8 +1201,14 @@ impl<'a> Lowerer<'a> {
         // Lower arguments first
         let args: Vec<Register> = call.arguments.iter().map(|a| self.lower_expr(a)).collect();
 
-        // Use the type checker's computed return type for this call expression
-        let call_ty = self.get_expr_type(full_expr);
+        // Prefer checker return type; if absent, derive from callee call signature.
+        let mut call_ty = self.get_expr_type(full_expr);
+        if call_ty.as_u32() == UNRESOLVED_TYPE_ID {
+            let callee_ty = self.get_expr_type(&call.callee);
+            if let Some(return_ty) = self.first_callable_return_type(callee_ty) {
+                call_ty = return_ty;
+            }
+        }
         let mut dest = self.alloc_register(call_ty);
 
         // Handle super() constructor call
@@ -2356,6 +2405,16 @@ impl<'a> Lowerer<'a> {
             // Check if this is a static method call (e.g., Utils.double(21))
             if let Expression::Identifier(ident) = &*member.object {
                 let class_name = self.interner.resolve(ident.name);
+                let is_constructor_value_ident = self.class_map.contains_key(&ident.name)
+                    || self.import_bindings.contains(&ident.name)
+                    || self.ambient_builtin_globals.contains(class_name)
+                    || self.constructor_value_type_map.contains_key(&ident.name);
+                if is_constructor_value_ident {
+                    self.seed_constructor_projection_binding_from_type(
+                        ident.name,
+                        Some(self.get_expr_type(&member.object)),
+                    );
+                }
                 let static_native_id = match (class_name, method_name) {
                     ("Object", "defineProperty") => {
                         Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTY)
@@ -2927,6 +2986,23 @@ impl<'a> Lowerer<'a> {
             // Imported-constructor objects (without local class metadata) must use
             // late-bound member lookup regardless of primitive checker fallbacks.
             if nominal_type_id.is_none() && receiver_requires_late_bound && !has_registry_dispatch {
+                if !self.allow_unresolved_runtime_fallback {
+                    self.errors
+                        .push(crate::compiler::CompileError::InternalError {
+                            message: format!(
+                                "strict mode forbids runtime late-bound fallback for member call '{}.{}(...)'",
+                                match &*member.object {
+                                    Expression::Identifier(obj_ident) => {
+                                        self.interner.resolve(obj_ident.name).to_string()
+                                    }
+                                    _ => "<expr>".to_string(),
+                                },
+                                method_name
+                            ),
+                        });
+                    self.poison_register(&dest);
+                    return dest;
+                }
                 if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
                     if let Expression::Identifier(obj_ident) = &*member.object {
                         eprintln!(
@@ -3104,7 +3180,9 @@ impl<'a> Lowerer<'a> {
             // Unknown/dynamic receiver fallback: lower `obj.m(...)` as
             // `CallClosure(LateBoundMember(obj, "m"), args)` so strict mode
             // can still compile unresolved-but-valid dynamic patterns.
-            if nominal_type_id.is_none() && (obj_type_id == UNRESOLVED_TYPE_ID || obj_type_id == 6)
+            if nominal_type_id.is_none()
+                && self.allow_unresolved_runtime_fallback
+                && (obj_type_id == UNRESOLVED_TYPE_ID || obj_type_id == 6)
             {
                 let closure = self.alloc_register(UNRESOLVED);
                 self.emit(IrInstr::LateBoundMember {
@@ -3125,6 +3203,21 @@ impl<'a> Lowerer<'a> {
                         args,
                     });
                 }
+                return dest;
+            }
+
+            if nominal_type_id.is_none()
+                && !self.allow_unresolved_runtime_fallback
+                && (obj_type_id == UNRESOLVED_TYPE_ID || obj_type_id == 6)
+            {
+                self.errors
+                    .push(crate::compiler::CompileError::InternalError {
+                        message: format!(
+                            "strict mode forbids runtime late-bound fallback for unresolved member call '{}()'",
+                            method_name
+                        ),
+                    });
+                self.poison_register(&dest);
                 return dest;
             }
 
@@ -3384,11 +3477,7 @@ impl<'a> Lowerer<'a> {
         if obj_ty_id == JSON_TYPE_ID || obj_ty_id == JSON_OBJECT_TYPE_ID {
             let json_type = TypeId::new(JSON_TYPE_ID);
             let dest = self.alloc_register(json_type);
-            self.emit(IrInstr::DynGetProp {
-                dest: dest.clone(),
-                object,
-                property: prop_name.to_string(),
-            });
+            self.emit_dyn_get_named(dest.clone(), object, prop_name);
             return dest;
         }
 
@@ -3415,11 +3504,7 @@ impl<'a> Lowerer<'a> {
                 }
             };
             let dest = self.alloc_register(member_ty);
-            self.emit(IrInstr::DynGetProp {
-                dest: dest.clone(),
-                object,
-                property: prop_name.to_string(),
-            });
+            self.emit_dyn_get_named(dest.clone(), object, prop_name);
             return dest;
         }
 
@@ -3665,35 +3750,18 @@ impl<'a> Lowerer<'a> {
             }
         };
 
-        // Check if the object is a TypeVar (generic parameter) — emit LateBoundMember
-        // so the post-monomorphization pass can resolve to the correct opcode.
-        if obj_ty_id == UNRESOLVED_TYPE_ID && nominal_type_id.is_none() {
+        let receiver_is_typevar = if obj_ty_id == UNRESOLVED_TYPE_ID && nominal_type_id.is_none() {
             let expr_ty = self.get_expr_type(&member.object);
-            let is_typevar = self
-                .type_ctx
+            self.type_ctx
                 .get(expr_ty)
-                .is_some_and(|ty| matches!(ty, crate::parser::types::ty::Type::TypeVar(_)));
-            // Also check register type for TypeVar
-            let is_typevar = is_typevar
+                .is_some_and(|ty| matches!(ty, crate::parser::types::ty::Type::TypeVar(_)))
                 || self
                     .type_ctx
                     .get(object.ty)
-                    .is_some_and(|ty| matches!(ty, crate::parser::types::ty::Type::TypeVar(_)));
-
-            if is_typevar {
-                // Resolve dest type from the constraint's property if possible
-                let constraint_prop_ty =
-                    self.resolve_typevar_property_type(&member.object, prop_name);
-                let dest_ty = constraint_prop_ty.unwrap_or(UNRESOLVED);
-                let dest = self.alloc_register(dest_ty);
-                self.emit(IrInstr::LateBoundMember {
-                    dest: dest.clone(),
-                    object,
-                    property: prop_name.to_string(),
-                });
-                return dest;
-            }
-        }
+                    .is_some_and(|ty| matches!(ty, crate::parser::types::ty::Type::TypeVar(_)))
+        } else {
+            false
+        };
 
         if let Some(resolved_field) = resolved_field {
             let object_id = object.id;
@@ -3761,6 +3829,21 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
+        // TypeVar receivers with unresolved dispatch but no structural slot mapping
+        // keep late-bound member dispatch for post-monomorphization resolution.
+        if receiver_is_typevar {
+            // Resolve dest type from the constraint's property if possible
+            let constraint_prop_ty = self.resolve_typevar_property_type(&member.object, prop_name);
+            let dest_ty = constraint_prop_ty.unwrap_or(UNRESOLVED);
+            let dest = self.alloc_register(dest_ty);
+            self.emit(IrInstr::LateBoundMember {
+                dest: dest.clone(),
+                object,
+                property: prop_name.to_string(),
+            });
+            return dest;
+        }
+
         if nominal_type_id.is_none() && std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
             eprintln!(
                 "[lower] unresolved member object AST: {:?}",
@@ -3797,6 +3880,16 @@ impl<'a> Lowerer<'a> {
             && (self.type_requires_late_bound_dispatch(object.ty)
                 || self.type_requires_late_bound_dispatch(self.get_expr_type(&member.object))));
         if nominal_type_id.is_none() && receiver_requires_late_bound {
+            if !self.allow_unresolved_runtime_fallback {
+                self.errors
+                    .push(crate::compiler::CompileError::InternalError {
+                        message: format!(
+                            "strict mode forbids runtime late-bound fallback for member property '{}.{}'",
+                            object_type, prop_name
+                        ),
+                    });
+                return self.lower_unresolved_poison();
+            }
             let dest = self.alloc_register(UNRESOLVED);
             self.emit(IrInstr::LateBoundMember {
                 dest: dest.clone(),
@@ -3808,7 +3901,10 @@ impl<'a> Lowerer<'a> {
 
         // Dynamic/member-latebound fallback: when receiver typing remains unresolved
         // (unknown/any/jsobject/etc), preserve runtime behavior instead of hard ICE.
-        if nominal_type_id.is_none() && (obj_ty_id == UNRESOLVED_TYPE_ID || obj_ty_id == 6) {
+        if nominal_type_id.is_none()
+            && self.allow_unresolved_runtime_fallback
+            && (obj_ty_id == UNRESOLVED_TYPE_ID || obj_ty_id == 6)
+        {
             let dest = self.alloc_register(UNRESOLVED);
             self.emit(IrInstr::LateBoundMember {
                 dest: dest.clone(),
@@ -3816,6 +3912,20 @@ impl<'a> Lowerer<'a> {
                 property: prop_name.to_string(),
             });
             return dest;
+        }
+
+        if nominal_type_id.is_none()
+            && !self.allow_unresolved_runtime_fallback
+            && (obj_ty_id == UNRESOLVED_TYPE_ID || obj_ty_id == 6)
+        {
+            self.errors
+                .push(crate::compiler::CompileError::InternalError {
+                    message: format!(
+                        "strict mode forbids runtime late-bound fallback for unresolved member property '{}.{}'",
+                        object_type, prop_name
+                    ),
+                });
+            return self.lower_unresolved_poison();
         }
 
         self.errors
@@ -4245,6 +4355,66 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn collect_structural_static_slot_names_from_type(
+        &self,
+        ty_id: TypeId,
+        names: &mut FxHashSet<String>,
+        visited: &mut FxHashSet<TypeId>,
+    ) -> bool {
+        if !visited.insert(ty_id) {
+            return false;
+        }
+        let Some(ty) = self.type_ctx.get(ty_id) else {
+            return false;
+        };
+        match ty {
+            crate::parser::types::Type::Class(class) => {
+                let mut found = false;
+                for property in &class.static_properties {
+                    if property.visibility == crate::parser::ast::Visibility::Public {
+                        names.insert(property.name.clone());
+                        found = true;
+                    }
+                }
+                for method in &class.static_methods {
+                    if method.visibility == crate::parser::ast::Visibility::Public {
+                        names.insert(method.name.clone());
+                        found = true;
+                    }
+                }
+                if let Some(parent) = class.extends {
+                    found |=
+                        self.collect_structural_static_slot_names_from_type(parent, names, visited);
+                }
+                found
+            }
+            crate::parser::types::Type::Reference(reference) => self
+                .type_ctx
+                .lookup_named_type(&reference.name)
+                .is_some_and(|named| {
+                    self.collect_structural_static_slot_names_from_type(named, names, visited)
+                }),
+            crate::parser::types::Type::Generic(generic) => {
+                self.collect_structural_static_slot_names_from_type(generic.base, names, visited)
+            }
+            crate::parser::types::Type::TypeVar(type_var) => type_var
+                .constraint
+                .or(type_var.default)
+                .is_some_and(|inner| {
+                    self.collect_structural_static_slot_names_from_type(inner, names, visited)
+                }),
+            crate::parser::types::Type::Union(union) => {
+                let mut found = false;
+                for &member in &union.members {
+                    found |=
+                        self.collect_structural_static_slot_names_from_type(member, names, visited);
+                }
+                found
+            }
+            _ => false,
+        }
+    }
+
     fn resolve_concrete_class_type_for_runtime_slots(
         &self,
         ty_id: TypeId,
@@ -4390,6 +4560,26 @@ impl<'a> Lowerer<'a> {
         let mut names = FxHashSet::default();
         let mut visited = FxHashSet::default();
         if !self.collect_structural_slot_names_from_type(ty_id, &mut names, &mut visited) {
+            return None;
+        }
+        let mut names: Vec<String> = names.into_iter().collect();
+        names.sort_unstable();
+        names.dedup();
+        let mut layout = Vec::with_capacity(names.len());
+        for (idx, name) in names.into_iter().enumerate() {
+            let slot = u16::try_from(idx).ok()?;
+            layout.push((name, slot));
+        }
+        Some(layout)
+    }
+
+    pub(super) fn structural_static_slot_layout_from_type(
+        &self,
+        ty_id: TypeId,
+    ) -> Option<Vec<(String, u16)>> {
+        let mut names = FxHashSet::default();
+        let mut visited = FxHashSet::default();
+        if !self.collect_structural_static_slot_names_from_type(ty_id, &mut names, &mut visited) {
             return None;
         }
         let mut names: Vec<String> = names.into_iter().collect();
@@ -5301,11 +5491,7 @@ impl<'a> Lowerer<'a> {
                     } {
                         self.emit_member_store(&member.object, object, field_idx, prop_name, rhs);
                     } else if obj_ty_id == JSON_TYPE_ID || obj_ty_id == JSON_OBJECT_TYPE_ID {
-                        self.emit(IrInstr::DynSetProp {
-                            object,
-                            property: prop_name.to_string(),
-                            value: rhs,
-                        });
+                        self.emit_dyn_set_named(object, prop_name, rhs);
                     } else {
                         let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                         self.emit(IrInstr::Assign {
@@ -5757,11 +5943,7 @@ impl<'a> Lowerer<'a> {
                             value.clone(),
                         );
                     } else if obj_ty_id == JSON_TYPE_ID || obj_ty_id == JSON_OBJECT_TYPE_ID {
-                        self.emit(IrInstr::DynSetProp {
-                            object,
-                            property: prop_name.clone(),
-                            value: value.clone(),
-                        });
+                        self.emit_dyn_set_named(object, &prop_name, value.clone());
                     } else {
                         let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                         self.emit(IrInstr::Assign {
@@ -6827,11 +7009,7 @@ impl<'a> Lowerer<'a> {
                 let cause_reg = if let Some(cause_arg) = cause_arg {
                     let options = self.lower_expr(cause_arg);
                     let extracted = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
-                    self.emit(IrInstr::DynGetProp {
-                        dest: extracted.clone(),
-                        object: options,
-                        property: "cause".to_string(),
-                    });
+                    self.emit_dyn_get_named(extracted.clone(), options, "cause");
                     extracted
                 } else {
                     self.lower_null_literal()
@@ -8086,6 +8264,40 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn first_callable_return_type(&self, ty_id: TypeId) -> Option<TypeId> {
+        use crate::parser::types::ty::Type;
+
+        match self.type_ctx.get(ty_id) {
+            Some(Type::Function(func)) => Some(func.return_type),
+            Some(Type::Object(obj)) => obj.call_signatures.iter().find_map(|sig_ty| {
+                match self.type_ctx.get(*sig_ty) {
+                    Some(Type::Function(func)) => Some(func.return_type),
+                    _ => None,
+                }
+            }),
+            Some(Type::Interface(iface)) => {
+                iface.call_signatures.iter().find_map(|sig_ty| match self.type_ctx.get(*sig_ty) {
+                    Some(Type::Function(func)) => Some(func.return_type),
+                    _ => None,
+                })
+            }
+            Some(Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .and_then(|named| self.first_callable_return_type(named)),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .and_then(|constraint| self.first_callable_return_type(constraint)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .find_map(|member| self.first_callable_return_type(member)),
+            Some(Type::Generic(generic)) => self.first_callable_return_type(generic.base),
+            _ => None,
+        }
+    }
+
     pub(crate) fn type_has_construct_signature(&self, ty_id: TypeId) -> bool {
         use crate::parser::types::ty::Type;
 
@@ -8265,6 +8477,9 @@ impl<'a> Lowerer<'a> {
                             .and_then(|reg| self.nominal_type_id_from_type_id(reg.ty))
                     });
                 }
+                if let Some(nominal_type_id) = self.variable_class_map.get(&ident.name).copied() {
+                    return Some(nominal_type_id);
+                }
                 if self
                     .variable_structural_projection_fields
                     .contains_key(&ident.name)
@@ -8287,9 +8502,6 @@ impl<'a> Lowerer<'a> {
                 // Prefer explicit variable/class maps, then local register typing.
                 // Local register type is often more precise than checker fallback
                 // (e.g. primitive parameters should not degrade to Object class).
-                if let Some(nominal_type_id) = self.variable_class_map.get(&ident.name).copied() {
-                    return Some(nominal_type_id);
-                }
                 if let Some(nominal_type_id) =
                     self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
                 {
@@ -9054,11 +9266,7 @@ impl<'a> Lowerer<'a> {
         // Emit field access: obj.property
         let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
         let field_name = self.interner.resolve(property.name).to_string();
-        self.emit(IrInstr::DynGetProp {
-            dest: dest.clone(),
-            object: obj_reg,
-            property: field_name,
-        });
+        self.emit_dyn_get_named(dest.clone(), obj_reg, &field_name);
         dest
     }
 
@@ -9151,11 +9359,7 @@ impl<'a> Lowerer<'a> {
                 ast::JsxAttribute::Attribute { name, value, .. } => {
                     let key = self.jsx_attr_name_string(name);
                     let value_reg = self.lower_jsx_attr_value(value);
-                    self.emit(IrInstr::DynSetProp {
-                        object: dest.clone(),
-                        property: key,
-                        value: value_reg,
-                    });
+                    self.emit_dyn_set_named(dest.clone(), &key, value_reg);
                 }
             }
         }
@@ -9412,6 +9616,79 @@ mod tests {
             has_unresolved_property,
             "expected unresolved member property error, got: {:?}",
             lowerer.errors()
+        );
+    }
+
+    #[test]
+    fn unresolved_member_call_does_not_emit_late_bound_when_runtime_fallback_disabled() {
+        let (module, interner) = parse_expr(
+            r#"
+            let o;
+            o.missing();
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner).with_unresolved_runtime_fallback(false);
+        let ir = lowerer.lower_module(&module);
+
+        let has_strict_no_fallback_error = lowerer.errors().iter().any(|err| {
+            err.to_string()
+                .contains("strict mode forbids runtime late-bound fallback for unresolved member call")
+        });
+        assert!(
+            has_strict_no_fallback_error,
+            "expected strict no-fallback member-call error, got: {:?}",
+            lowerer.errors()
+        );
+
+        let has_late_bound_member = ir.functions.iter().any(|func| {
+            func.blocks.iter().any(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .any(|instr| matches!(instr, IrInstr::LateBoundMember { .. }))
+            })
+        });
+        assert!(
+            !has_late_bound_member,
+            "did not expect LateBoundMember when runtime fallback is disabled"
+        );
+    }
+
+    #[test]
+    fn unresolved_member_property_does_not_emit_late_bound_when_runtime_fallback_disabled() {
+        let (module, interner) = parse_expr(
+            r#"
+            let o;
+            o.missing;
+            "#,
+        );
+        let type_ctx = crate::parser::TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner).with_unresolved_runtime_fallback(false);
+        let ir = lowerer.lower_module(&module);
+
+        let has_strict_no_fallback_error = lowerer.errors().iter().any(|err| {
+            err.to_string().contains(
+                "strict mode forbids runtime late-bound fallback for unresolved member property",
+            )
+        });
+        assert!(
+            has_strict_no_fallback_error,
+            "expected strict no-fallback member-property error, got: {:?}",
+            lowerer.errors()
+        );
+
+        let has_late_bound_member = ir.functions.iter().any(|func| {
+            func.blocks.iter().any(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .any(|instr| matches!(instr, IrInstr::LateBoundMember { .. }))
+            })
+        });
+        assert!(
+            !has_late_bound_member,
+            "did not expect LateBoundMember when runtime fallback is disabled"
         );
     }
 

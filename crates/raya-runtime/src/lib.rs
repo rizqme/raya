@@ -1114,10 +1114,17 @@ impl Runtime {
             let mut modules = Vec::with_capacity(parsed_units.len());
             for unit in parsed_units {
                 let module_identity = format!("__raya_builtin__/{}", unit.logical_path);
+                let allow_unresolved_runtime_fallback = !matches!(
+                    checker_mode,
+                    raya_engine::parser::checker::TypeSystemMode::Raya
+                );
                 let mut compiler =
                     raya_engine::compiler::Compiler::new(shared_type_ctx.clone(), &unit.interner)
                         .with_module_identity(module_identity)
                         .with_js_this_binding_compat(true)
+                        .with_allow_unresolved_runtime_fallback(
+                            allow_unresolved_runtime_fallback,
+                        )
                         .with_ambient_builtin_globals(declared_name_set.clone());
                 let mut module = match compiler.compile_via_ir(&unit.ast) {
                     Ok(module) => module,

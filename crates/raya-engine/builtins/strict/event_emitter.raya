@@ -33,33 +33,40 @@ class EventEmitter<E extends EventMap> {
         let eventKey = event;
         let group = this._listeners.get(eventKey);
         if (group != null) {
+            let listeners = group as RawListener[];
+            let remaining = [];
             let i = 0;
-            while (i < group.length) {
-                if (group[i] == (listener as RawListener)) {
-                    group.splice(i, 1);
-                    break;
+            while (i < listeners.length) {
+                if (listeners[i] != (listener as RawListener)) {
+                    remaining.push(listeners[i]);
                 }
                 i = i + 1;
             }
 
-            if (group.length == 0) {
+            if (remaining.length == 0) {
                 this._listeners.delete(eventKey);
+            } else {
+                this._listeners.set(eventKey, remaining as RawListener[]);
             }
         }
 
         let onceGroup = this._onceListeners.get(eventKey);
         if (onceGroup != null) {
+            let onceListeners = onceGroup as RawListener[];
+            let remainingOnce = [];
             let j = 0;
-            while (j < onceGroup.length) {
-                if (onceGroup[j] == (listener as RawListener)) {
-                    onceGroup.splice(j, 1);
-                    break;
+            while (j < onceListeners.length) {
+                if (onceListeners[j] != (listener as RawListener)) {
+                    remainingOnce.push(onceListeners[j]);
                 }
                 j = j + 1;
             }
 
-            if (onceGroup.length == 0) {
+            if (remainingOnce.length == 0) {
                 this._onceListeners.delete(eventKey);
+            } else {
+                this._onceListeners
+                    .set(eventKey, remainingOnce as RawListener[]);
             }
         }
 
@@ -93,8 +100,16 @@ class EventEmitter<E extends EventMap> {
         let eventKey = event;
         let group = this._listeners.get(eventKey);
         let onceGroup = this._onceListeners.get(eventKey);
-        let hasNormal = group != null && group.length > 0;
-        let hasOnce = onceGroup != null && onceGroup.length > 0;
+        let hasNormal = false;
+        if (group != null) {
+            let listeners = group as RawListener[];
+            hasNormal = listeners.length > 0;
+        }
+        let hasOnce = false;
+        if (onceGroup != null) {
+            let onceListeners = onceGroup as RawListener[];
+            hasOnce = onceListeners.length > 0;
+        }
         if (!hasNormal && !hasOnce) {
             return false;
         }
@@ -102,9 +117,10 @@ class EventEmitter<E extends EventMap> {
         let payload = args[0];
 
         if (group != null) {
+            let listeners = group as RawListener[];
             let i = 0;
-            while (i < group.length) {
-                let fn = group[i] as ((...items: E[keyof E]) => void);
+            while (i < listeners.length) {
+                let fn = listeners[i] as ((...items: E[keyof E]) => void);
                 fn(payload);
                 i = i + 1;
             }
@@ -112,9 +128,10 @@ class EventEmitter<E extends EventMap> {
 
         if (onceGroup != null) {
             this._onceListeners.delete(eventKey);
+            let onceListeners = onceGroup as RawListener[];
             let j = 0;
-            while (j < onceGroup.length) {
-                let fn = onceGroup[j] as ((...items: E[keyof E]) => void);
+            while (j < onceListeners.length) {
+                let fn = onceListeners[j] as ((...items: E[keyof E]) => void);
                 fn(payload);
                 j = j + 1;
             }
@@ -126,8 +143,8 @@ class EventEmitter<E extends EventMap> {
     listenerCount(event: string): number {
         let group = this._listeners.get(event);
         let onceGroup = this._onceListeners.get(event);
-        let normalCount = group == null ? 0 : group.length;
-        let onceCount = onceGroup == null ? 0 : onceGroup.length;
+        let normalCount = group == null ? 0 : (group as RawListener[]).length;
+        let onceCount = onceGroup == null ? 0 : (onceGroup as RawListener[]).length;
         return normalCount + onceCount;
     }
 
@@ -137,18 +154,20 @@ class EventEmitter<E extends EventMap> {
 
         let group = this._listeners.get(eventKey);
         if (group != null) {
+            let listeners = group as RawListener[];
             let i = 0;
-            while (i < group.length) {
-                out.push(group[i] as ((...args: E[keyof E]) => void));
+            while (i < listeners.length) {
+                out.push(listeners[i] as ((...args: E[keyof E]) => void));
                 i = i + 1;
             }
         }
 
         let onceGroup = this._onceListeners.get(eventKey);
         if (onceGroup != null) {
+            let onceListeners = onceGroup as RawListener[];
             let j = 0;
-            while (j < onceGroup.length) {
-                out.push(onceGroup[j] as ((...args: E[keyof E]) => void));
+            while (j < onceListeners.length) {
+                out.push(onceListeners[j] as ((...args: E[keyof E]) => void));
                 j = j + 1;
             }
         }
@@ -157,8 +176,8 @@ class EventEmitter<E extends EventMap> {
     }
 
     eventNames(): string[] {
-        let names = this._listeners.keys();
-        let onceNames = this._onceListeners.keys();
+        let names = this._listeners.keys() as string[];
+        let onceNames = this._onceListeners.keys() as string[];
 
         let i = 0;
         while (i < onceNames.length) {

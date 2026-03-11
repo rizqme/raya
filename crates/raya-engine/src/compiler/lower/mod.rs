@@ -628,6 +628,8 @@ pub struct Lowerer<'a> {
     specialized_function_cache: FxHashMap<String, FunctionId>,
     /// JS-compatible method extraction mode (`obj.method` is unbound).
     js_this_binding_compat: bool,
+    /// Whether unresolved member/call paths may lower to runtime late-bound dispatch.
+    allow_unresolved_runtime_fallback: bool,
     /// Inner type for RefCell-wrapped variables (for preserving type info through loads)
     refcell_inner_types: FxHashMap<u16, TypeId>,
 }
@@ -1145,6 +1147,7 @@ impl<'a> Lowerer<'a> {
             type_param_substitutions: FxHashMap::default(),
             specialized_function_cache: FxHashMap::default(),
             js_this_binding_compat: false,
+            allow_unresolved_runtime_fallback: true,
         }
     }
 
@@ -1178,6 +1181,12 @@ impl<'a> Lowerer<'a> {
     /// Enable JS-compatible method extraction (`obj.method` is unbound).
     pub fn with_js_this_binding_compat(mut self, enable: bool) -> Self {
         self.js_this_binding_compat = enable;
+        self
+    }
+
+    /// Enable/disable lowering unresolved member dispatch to runtime late-bound paths.
+    pub fn with_unresolved_runtime_fallback(mut self, enable: bool) -> Self {
+        self.allow_unresolved_runtime_fallback = enable;
         self
     }
 
@@ -1359,14 +1368,45 @@ impl<'a> Lowerer<'a> {
                             ast::ImportSpecifier::Namespace(alias) => alias.name,
                             ast::ImportSpecifier::Default(local) => local.name,
                         };
-                        self.module_var_globals
-                            .entry(local_name)
-                            .or_insert_with(|| {
-                                let global_index = self.next_global_index;
-                                self.next_global_index += 1;
-                                global_index
-                            });
+                        let global_index = *self.module_var_globals.entry(local_name).or_insert_with(|| {
+                            let global_index = self.next_global_index;
+                            self.next_global_index += 1;
+                            global_index
+                        });
                         self.import_bindings.insert(local_name);
+
+                        if let Some(imported_ty) =
+                            self.type_ctx.lookup_named_type(self.interner.resolve(local_name))
+                        {
+                            if imported_ty != UNRESOLVED {
+                                self.global_type_map.entry(global_index).or_insert(imported_ty);
+
+                                if self.type_has_construct_signature(imported_ty) {
+                                    self.mark_constructor_value_binding(
+                                        local_name,
+                                        local_name,
+                                        Some(imported_ty),
+                                    );
+
+                                    if let Some(layout) =
+                                        self.structural_static_slot_layout_from_type(imported_ty)
+                                    {
+                                        if !layout.is_empty() {
+                                            self.variable_structural_projection_fields.insert(
+                                                local_name,
+                                                layout
+                                                    .into_iter()
+                                                    .map(|(field_name, field_idx)| {
+                                                        (field_name, field_idx as usize)
+                                                    })
+                                                    .collect(),
+                                            );
+                                            self.variable_class_map.remove(&local_name);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -2701,6 +2741,7 @@ impl<'a> Lowerer<'a> {
         // Track parameters with destructuring patterns for later binding
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
         let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
+        let function_type_params = func.type_params.as_deref();
 
         for (decl_param_idx, param) in func.params.iter().enumerate() {
             // Skip rest parameters - they're handled separately
@@ -2723,17 +2764,23 @@ impl<'a> Lowerer<'a> {
             let ty = param
                 .type_annotation
                 .as_ref()
-                .map(|t| self.resolve_type_annotation(t))
+                .map(|t| self.resolve_param_type_from_annotation(t, function_type_params, None))
                 .unwrap_or(UNRESOLVED);
             let reg = self.alloc_register(ty);
             if let Some(type_ann) = &param.type_annotation {
-                let expected_ty = self.resolve_structural_slot_type_from_annotation(type_ann);
-                if expected_ty != UNRESOLVED {
-                    structural_param_bindings.push((reg.clone(), expected_ty));
-                    if let Some(layout) = self.structural_projection_layout_from_type_id(expected_ty)
-                    {
-                        self.register_structural_projection_fields
-                            .insert(reg.id, layout.clone());
+                let nominal_type_id =
+                    self.resolve_param_nominal_type_from_annotation(type_ann, function_type_params, None);
+                if nominal_type_id.is_none() {
+                    let expected_ty =
+                        self.resolve_param_type_from_annotation(type_ann, function_type_params, None);
+                    if expected_ty != UNRESOLVED {
+                        structural_param_bindings.push((reg.clone(), expected_ty));
+                        if let Some(layout) =
+                            self.structural_projection_layout_from_type_id(expected_ty)
+                        {
+                            self.register_structural_projection_fields
+                                .insert(reg.id, layout.clone());
+                        }
                     }
                 }
             }
@@ -2746,20 +2793,29 @@ impl<'a> Lowerer<'a> {
                 // Track class type for parameters with class type annotations
                 // so method calls can be statically resolved
                 if let Some(type_ann) = &param.type_annotation {
-                    let expected_ty = self.resolve_structural_slot_type_from_annotation(type_ann);
-                    if let Some(layout) = self.structural_projection_layout_from_type_id(expected_ty)
-                    {
-                        self.variable_structural_projection_fields
-                            .insert(ident.name, layout);
-                        self.variable_class_map.remove(&ident.name);
-                    }
-                    if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
-                        if !self
-                            .variable_structural_projection_fields
-                            .contains_key(&ident.name)
+                    let nominal_type_id = self.resolve_param_nominal_type_from_annotation(
+                        type_ann,
+                        function_type_params,
+                        None,
+                    );
+                    if nominal_type_id.is_none() {
+                        let expected_ty =
+                            self.resolve_param_type_from_annotation(type_ann, function_type_params, None);
+                        if let Some(layout) =
+                            self.structural_projection_layout_from_type_id(expected_ty)
                         {
-                            self.variable_class_map.insert(ident.name, nominal_type_id);
+                            self.variable_structural_projection_fields
+                                .insert(ident.name, layout);
+                            self.variable_class_map.remove(&ident.name);
+                        } else {
+                            self.variable_structural_projection_fields.remove(&ident.name);
+                            self.variable_class_map.remove(&ident.name);
                         }
+                    } else {
+                        self.variable_structural_projection_fields.remove(&ident.name);
+                    }
+                    if let Some(nominal_type_id) = nominal_type_id {
+                        self.variable_class_map.insert(ident.name, nominal_type_id);
                     }
                     self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                     if self.type_annotation_is_callable(type_ann) {
@@ -3120,17 +3176,25 @@ impl<'a> Lowerer<'a> {
                     // Add explicit parameters (excluding rest parameters)
                     let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
                     let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
+                    let method_type_params = method.type_params.as_deref();
+                    let class_type_params = class.type_params.as_deref();
 
                     for (decl_param_idx, param) in method.params.iter().enumerate() {
                         // Skip rest parameters - they're handled separately
                         if param.is_rest {
                             // Extract rest parameter info for later processing
                             if let Pattern::Identifier(ident) = &param.pattern {
-                                let ty = param
-                                    .type_annotation
-                                    .as_ref()
-                                    .map(|t| self.resolve_type_annotation(t))
-                                    .unwrap_or(TypeId::new(ARRAY_TYPE_ID));
+                        let ty = param
+                            .type_annotation
+                            .as_ref()
+                            .map(|t| {
+                                self.resolve_param_type_from_annotation(
+                                    t,
+                                    method_type_params,
+                                    class_type_params,
+                                )
+                            })
+                            .unwrap_or(TypeId::new(ARRAY_TYPE_ID));
                                 rest_param_info = Some((ident.name.clone(), ty));
                             }
                             continue;
@@ -3141,19 +3205,35 @@ impl<'a> Lowerer<'a> {
                         let ty = param
                             .type_annotation
                             .as_ref()
-                            .map(|t| self.resolve_type_annotation(t))
+                            .map(|t| {
+                                self.resolve_param_type_from_annotation(
+                                    t,
+                                    method_type_params,
+                                    class_type_params,
+                                )
+                            })
                             .unwrap_or(UNRESOLVED);
                         let reg = self.alloc_register(ty);
                         if let Some(type_ann) = &param.type_annotation {
-                            let expected_ty =
-                                self.resolve_structural_slot_type_from_annotation(type_ann);
-                            if expected_ty != UNRESOLVED {
-                                structural_param_bindings.push((reg.clone(), expected_ty));
-                                if let Some(layout) =
-                                    self.structural_projection_layout_from_type_id(expected_ty)
-                                {
-                                    self.register_structural_projection_fields
-                                        .insert(reg.id, layout.clone());
+                            let nominal_type_id = self.resolve_param_nominal_type_from_annotation(
+                                type_ann,
+                                method_type_params,
+                                class_type_params,
+                            );
+                            if nominal_type_id.is_none() {
+                                let expected_ty = self.resolve_param_type_from_annotation(
+                                    type_ann,
+                                    method_type_params,
+                                    class_type_params,
+                                );
+                                if expected_ty != UNRESOLVED {
+                                    structural_param_bindings.push((reg.clone(), expected_ty));
+                                    if let Some(layout) =
+                                        self.structural_projection_layout_from_type_id(expected_ty)
+                                    {
+                                        self.register_structural_projection_fields
+                                            .insert(reg.id, layout.clone());
+                                    }
                                 }
                             }
                         }
@@ -3164,24 +3244,33 @@ impl<'a> Lowerer<'a> {
 
                             // Track class type for parameters with class type annotations
                             if let Some(type_ann) = &param.type_annotation {
-                                let expected_ty =
-                                    self.resolve_structural_slot_type_from_annotation(type_ann);
-                                if let Some(layout) =
-                                    self.structural_projection_layout_from_type_id(expected_ty)
-                                {
-                                    self.variable_structural_projection_fields
-                                        .insert(ident.name, layout);
-                                    self.variable_class_map.remove(&ident.name);
-                                }
-                                if let Some(param_nominal_type_id) =
-                                    self.try_extract_class_from_type(type_ann)
-                                {
-                                    if !self
-                                        .variable_structural_projection_fields
-                                        .contains_key(&ident.name)
+                                let param_nominal_type_id =
+                                    self.resolve_param_nominal_type_from_annotation(
+                                        type_ann,
+                                        method_type_params,
+                                        class_type_params,
+                                    );
+                                if param_nominal_type_id.is_none() {
+                                    let expected_ty = self.resolve_param_type_from_annotation(
+                                        type_ann,
+                                        method_type_params,
+                                        class_type_params,
+                                    );
+                                    if let Some(layout) =
+                                        self.structural_projection_layout_from_type_id(expected_ty)
                                     {
-                                        self.variable_class_map.insert(ident.name, param_nominal_type_id);
+                                        self.variable_structural_projection_fields
+                                            .insert(ident.name, layout);
+                                        self.variable_class_map.remove(&ident.name);
+                                    } else {
+                                        self.variable_structural_projection_fields.remove(&ident.name);
+                                        self.variable_class_map.remove(&ident.name);
                                     }
+                                } else {
+                                    self.variable_structural_projection_fields.remove(&ident.name);
+                                }
+                                if let Some(param_nominal_type_id) = param_nominal_type_id {
+                                    self.variable_class_map.insert(ident.name, param_nominal_type_id);
                                 }
                                 self.register_variable_type_hints_from_annotation(
                                     ident.name, type_ann,
@@ -3407,24 +3496,35 @@ impl<'a> Lowerer<'a> {
                 // Add explicit parameters from constructor
                 let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
                 let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
+                let class_type_params = class.type_params.as_deref();
 
                 for (decl_param_idx, param) in ctor.params.iter().enumerate() {
                     let ty = param
                         .type_annotation
                         .as_ref()
-                        .map(|t| self.resolve_type_annotation(t))
+                        .map(|t| self.resolve_param_type_from_annotation(t, class_type_params, None))
                         .unwrap_or(UNRESOLVED);
                     let reg = self.alloc_register(ty);
                     if let Some(type_ann) = &param.type_annotation {
-                        let expected_ty =
-                            self.resolve_structural_slot_type_from_annotation(type_ann);
-                        if expected_ty != UNRESOLVED {
-                            structural_param_bindings.push((reg.clone(), expected_ty));
-                            if let Some(layout) =
-                                self.structural_projection_layout_from_type_id(expected_ty)
-                            {
-                                self.register_structural_projection_fields
-                                    .insert(reg.id, layout.clone());
+                        let param_nominal_type_id = self.resolve_param_nominal_type_from_annotation(
+                            type_ann,
+                            class_type_params,
+                            None,
+                        );
+                        if param_nominal_type_id.is_none() {
+                            let expected_ty = self.resolve_param_type_from_annotation(
+                                type_ann,
+                                class_type_params,
+                                None,
+                            );
+                            if expected_ty != UNRESOLVED {
+                                structural_param_bindings.push((reg.clone(), expected_ty));
+                                if let Some(layout) =
+                                    self.structural_projection_layout_from_type_id(expected_ty)
+                                {
+                                    self.register_structural_projection_fields
+                                        .insert(reg.id, layout.clone());
+                                }
                             }
                         }
                     }
@@ -3433,23 +3533,33 @@ impl<'a> Lowerer<'a> {
                         let local_idx = self.allocate_local(ident.name);
                         self.local_registers.insert(local_idx, reg.clone());
                         if let Some(type_ann) = &param.type_annotation {
-                            let expected_ty =
-                                self.resolve_structural_slot_type_from_annotation(type_ann);
-                            if let Some(layout) =
-                                self.structural_projection_layout_from_type_id(expected_ty)
-                            {
-                                self.variable_structural_projection_fields
-                                    .insert(ident.name, layout);
-                                self.variable_class_map.remove(&ident.name);
-                            }
-                            if let Some(param_nominal_type_id) = self.try_extract_class_from_type(type_ann)
-                            {
-                                if !self
-                                    .variable_structural_projection_fields
-                                    .contains_key(&ident.name)
+                            let param_nominal_type_id =
+                                self.resolve_param_nominal_type_from_annotation(
+                                    type_ann,
+                                    class_type_params,
+                                    None,
+                                );
+                            if param_nominal_type_id.is_none() {
+                                let expected_ty = self.resolve_param_type_from_annotation(
+                                    type_ann,
+                                    class_type_params,
+                                    None,
+                                );
+                                if let Some(layout) =
+                                    self.structural_projection_layout_from_type_id(expected_ty)
                                 {
-                                    self.variable_class_map.insert(ident.name, param_nominal_type_id);
+                                    self.variable_structural_projection_fields
+                                        .insert(ident.name, layout);
+                                    self.variable_class_map.remove(&ident.name);
+                                } else {
+                                    self.variable_structural_projection_fields.remove(&ident.name);
+                                    self.variable_class_map.remove(&ident.name);
                                 }
+                            } else {
+                                self.variable_structural_projection_fields.remove(&ident.name);
+                            }
+                            if let Some(param_nominal_type_id) = param_nominal_type_id {
+                                self.variable_class_map.insert(ident.name, param_nominal_type_id);
                             }
                             self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                             if self.type_annotation_is_callable(type_ann) {
@@ -5168,11 +5278,162 @@ impl<'a> Lowerer<'a> {
         &self,
         type_ann: &ast::TypeAnnotation,
     ) -> TypeId {
+        // During generic specialization, prefer fresh resolution so active
+        // type parameter substitutions are reflected in parameter/member lowering.
+        if !self.type_param_substitutions.is_empty() {
+            let resolved = self.resolve_type_annotation(type_ann);
+            if resolved != UNRESOLVED {
+                return resolved;
+            }
+        }
+
         let ann_id = type_ann as *const _ as usize;
         self.type_annotation_types
             .get(&ann_id)
             .copied()
             .unwrap_or_else(|| self.resolve_type_annotation(type_ann))
+    }
+
+    fn resolve_type_param_constraint_type(
+        &self,
+        name: &str,
+        primary: Option<&[ast::TypeParameter]>,
+        secondary: Option<&[ast::TypeParameter]>,
+    ) -> Option<TypeId> {
+        let mut resolve_from = |params: &[ast::TypeParameter]| -> Option<TypeId> {
+            for tp in params {
+                if self.interner.resolve(tp.name.name) != name {
+                    continue;
+                }
+                if let Some(constraint) = &tp.constraint {
+                    let ty = self.resolve_structural_slot_type_from_annotation(constraint);
+                    if ty != UNRESOLVED {
+                        return Some(ty);
+                    }
+                }
+                if let Some(default) = &tp.default {
+                    let ty = self.resolve_structural_slot_type_from_annotation(default);
+                    if ty != UNRESOLVED {
+                        return Some(ty);
+                    }
+                }
+            }
+            None
+        };
+
+        if let Some(params) = primary {
+            if let Some(ty) = resolve_from(params) {
+                return Some(ty);
+            }
+        }
+        if let Some(params) = secondary {
+            if let Some(ty) = resolve_from(params) {
+                return Some(ty);
+            }
+        }
+        None
+    }
+
+    fn resolve_constraint_backed_type_from_annotation(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+        primary: Option<&[ast::TypeParameter]>,
+        secondary: Option<&[ast::TypeParameter]>,
+    ) -> Option<TypeId> {
+        match &type_ann.ty {
+            ast::Type::Reference(type_ref) => {
+                let name = self.interner.resolve(type_ref.name.name);
+                self.resolve_type_param_constraint_type(name, primary, secondary)
+            }
+            ast::Type::Parenthesized(inner) => {
+                self.resolve_constraint_backed_type_from_annotation(inner, primary, secondary)
+            }
+            ast::Type::Union(union) => {
+                let mut found: Option<TypeId> = None;
+                for member in &union.types {
+                    match &member.ty {
+                        ast::Type::Primitive(ast::PrimitiveType::Null) => {}
+                        _ => {
+                            let ty = self.resolve_constraint_backed_type_from_annotation(
+                                member,
+                                primary,
+                                secondary,
+                            )?;
+                            match found {
+                                None => found = Some(ty),
+                                Some(existing) if existing == ty => {}
+                                Some(_) => return None,
+                            }
+                        }
+                    }
+                }
+                found
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_param_type_from_annotation(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+        primary: Option<&[ast::TypeParameter]>,
+        secondary: Option<&[ast::TypeParameter]>,
+    ) -> TypeId {
+        let resolved = self.resolve_structural_slot_type_from_annotation(type_ann);
+        let constraint_backed =
+            self.resolve_constraint_backed_type_from_annotation(type_ann, primary, secondary);
+        if resolved == UNRESOLVED {
+            return constraint_backed.unwrap_or(UNRESOLVED);
+        }
+
+        if let Some(constraint_ty) = constraint_backed {
+            let resolved_has_projection =
+                self.structural_projection_layout_from_type_id(resolved).is_some();
+            let constraint_has_projection = self
+                .structural_projection_layout_from_type_id(constraint_ty)
+                .is_some();
+            if !resolved_has_projection && constraint_has_projection {
+                return constraint_ty;
+            }
+        }
+
+        resolved
+    }
+
+    fn resolve_param_nominal_type_from_annotation(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+        primary: Option<&[ast::TypeParameter]>,
+        secondary: Option<&[ast::TypeParameter]>,
+    ) -> Option<NominalTypeId> {
+        if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
+            return Some(class_id);
+        }
+
+        let resolved = self.resolve_structural_slot_type_from_annotation(type_ann);
+        if resolved != UNRESOLVED {
+            if let Some(class_id) = self.nominal_type_id_from_type_id(resolved) {
+                return Some(class_id);
+            }
+            if let Some(crate::parser::types::Type::TypeVar(type_var)) = self.type_ctx.get(resolved)
+            {
+                if let Some(class_id) = type_var
+                    .constraint
+                    .and_then(|constraint| self.nominal_type_id_from_type_id(constraint))
+                {
+                    return Some(class_id);
+                }
+                if let Some(class_id) = type_var
+                    .default
+                    .and_then(|default| self.nominal_type_id_from_type_id(default))
+                {
+                    return Some(class_id);
+                }
+            }
+        }
+
+        self.resolve_constraint_backed_type_from_annotation(type_ann, primary, secondary)
+            .and_then(|ty| self.nominal_type_id_from_type_id(ty))
     }
 
     fn try_extract_object_alias_name_from_type(
@@ -5263,9 +5524,47 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    pub(super) fn seed_constructor_projection_binding_from_type(
+        &mut self,
+        name: Symbol,
+        preferred_type: Option<TypeId>,
+    ) {
+        let constructor_ty = preferred_type
+            .or_else(|| self.constructor_value_type_map.get(&name).copied())
+            .or_else(|| self.type_ctx.lookup_named_type(self.interner.resolve(name)));
+
+        let Some(constructor_ty) = constructor_ty else {
+            return;
+        };
+
+        if constructor_ty == UNRESOLVED || !self.type_has_construct_signature(constructor_ty) {
+            return;
+        }
+
+        self.mark_constructor_value_binding(name, name, Some(constructor_ty));
+        if let Some(layout) = self.structural_static_slot_layout_from_type(constructor_ty) {
+            if !layout.is_empty() {
+                self.variable_structural_projection_fields.insert(
+                    name,
+                    layout
+                        .into_iter()
+                        .map(|(field_name, field_idx)| (field_name, field_idx as usize))
+                        .collect(),
+                );
+                self.variable_class_map.remove(&name);
+            }
+        }
+    }
+
     pub(super) fn identifier_requires_late_bound_dispatch(&self, name: Symbol) -> bool {
         if self.late_bound_object_vars.contains(&name) {
             return true;
+        }
+
+        if self.variable_structural_projection_fields.contains_key(&name)
+            || self.constructor_value_ctor_map.contains_key(&name)
+        {
+            return false;
         }
 
         let resolved = self.interner.resolve(name);

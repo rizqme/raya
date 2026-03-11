@@ -728,6 +728,41 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let result = match js_classify(obj_val) {
+                    JSView::Str(ptr) => {
+                        let s = unsafe { &*ptr };
+                        if let Some(index) = array_index {
+                            if let Some(ch) = s.data.chars().nth(index) {
+                                let gc_ptr = self.gc.lock().allocate(RayaString::new(ch.to_string()));
+                                unsafe {
+                                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                                }
+                            } else {
+                                Value::null()
+                            }
+                        } else if key_str.as_deref() == Some("length") {
+                            Value::i32(s.len() as i32)
+                        } else if let Some(key_str) = key_str.as_deref() {
+                            if let Some(native_id) =
+                                builtin_handle_native_method_id(obj_val, key_str)
+                            {
+                                let method = BoundNativeMethod {
+                                    receiver: obj_val,
+                                    native_id,
+                                };
+                                let method_ptr = self.gc.lock().allocate(method);
+                                unsafe {
+                                    Value::from_ptr(
+                                        NonNull::new(method_ptr.as_ptr())
+                                            .expect("bound native method ptr"),
+                                    )
+                                }
+                            } else {
+                                Value::null()
+                            }
+                        } else {
+                            Value::null()
+                        }
+                    }
                     JSView::Arr(ptr) => {
                         let arr = unsafe { &*ptr };
                         if let Some(index) = array_index {

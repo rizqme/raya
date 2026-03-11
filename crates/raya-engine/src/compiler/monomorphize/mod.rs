@@ -336,6 +336,47 @@ fn structural_slot_index_for_property(
     u16::try_from(idx).ok()
 }
 
+/// Returns true when lowering a late-bound member to `LoadFieldExact` is sound.
+///
+/// We only allow structural slot lowering for definitely object-layout-backed types
+/// (object/interface/class and references/unions that resolve to those). For type
+/// variables and primitive-like/ambiguous shapes, preserve property-name dispatch.
+fn is_structural_slot_safe_type(
+    type_ctx: &TypeContext,
+    ty_id: TypeId,
+    visited: &mut FxHashSet<TypeId>,
+) -> bool {
+    if !visited.insert(ty_id) {
+        return true;
+    }
+    let Some(ty) = type_ctx.get(ty_id) else {
+        return false;
+    };
+    match ty {
+        crate::parser::types::Type::Object(_)
+        | crate::parser::types::Type::Interface(_)
+        | crate::parser::types::Type::Class(_) => true,
+        crate::parser::types::Type::Reference(reference) => type_ctx
+            .lookup_named_type(&reference.name)
+            .is_some_and(|named| is_structural_slot_safe_type(type_ctx, named, visited)),
+        crate::parser::types::Type::Generic(generic) => {
+            is_structural_slot_safe_type(type_ctx, generic.base, visited)
+        }
+        crate::parser::types::Type::Union(union) => {
+            !union.members.is_empty()
+                && union
+                    .members
+                    .iter()
+                    .all(|member| is_structural_slot_safe_type(type_ctx, *member, visited))
+        }
+        // TypeVar constraints can be satisfied by arrays/strings and other non-object
+        // carriers of properties (e.g. `T extends { length: number }`), so slot-based
+        // object field lowering is unsound here.
+        crate::parser::types::Type::TypeVar(_) => false,
+        _ => false,
+    }
+}
+
 /// Resolve any `LateBoundMember` instructions in the IR module.
 ///
 /// After monomorphization, TypeVar registers have been substituted with concrete types.
@@ -361,16 +402,19 @@ pub fn resolve_late_bound_members(
                         .unwrap_or(crate::compiler::type_registry::UNRESOLVED_TYPE_ID);
 
                     if dispatch_ty == crate::compiler::type_registry::UNRESOLVED_TYPE_ID {
-                        if let Some(field) =
-                            structural_slot_index_for_property(type_ctx, obj_ty, property)
-                        {
-                            *instr = IrInstr::LoadFieldExact {
-                                dest: dest.clone(),
-                                object: object.clone(),
-                                field,
-                                optional: false,
-                            };
-                            continue;
+                        let mut visited = FxHashSet::default();
+                        if is_structural_slot_safe_type(type_ctx, obj_ty, &mut visited) {
+                            if let Some(field) =
+                                structural_slot_index_for_property(type_ctx, obj_ty, property)
+                            {
+                                *instr = IrInstr::LoadFieldExact {
+                                    dest: dest.clone(),
+                                    object: object.clone(),
+                                    field,
+                                    optional: false,
+                                };
+                                continue;
+                            }
                         }
 
                         // Still unresolved after substitution: keep name-based dynamic lookup.
@@ -404,16 +448,19 @@ pub fn resolve_late_bound_members(
                         }
                     }
 
-                    if let Some(field) =
-                        structural_slot_index_for_property(type_ctx, obj_ty, property)
-                    {
-                        *instr = IrInstr::LoadFieldExact {
-                            dest: dest.clone(),
-                            object: object.clone(),
-                            field,
-                            optional: false,
-                        };
-                        continue;
+                    let mut visited = FxHashSet::default();
+                    if is_structural_slot_safe_type(type_ctx, obj_ty, &mut visited) {
+                        if let Some(field) =
+                            structural_slot_index_for_property(type_ctx, obj_ty, property)
+                        {
+                            *instr = IrInstr::LoadFieldExact {
+                                dest: dest.clone(),
+                                object: object.clone(),
+                                field,
+                                optional: false,
+                            };
+                            continue;
+                        }
                     }
 
                     // Conservative dynamic fallback: preserve property-name dispatch.

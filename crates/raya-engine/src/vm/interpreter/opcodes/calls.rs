@@ -313,24 +313,16 @@ impl<'a> Interpreter<'a> {
                     .read()
                     .get(&shape_id)
                     .and_then(|names| names.get(method_index).cloned());
+                let debug_shape_call = std::env::var("RAYA_DEBUG_SHAPE_CALL").is_ok();
 
                 if let Some(method_name) = shape_method_name.as_deref() {
                     if !receiver_val.is_ptr() {
-                        let mut args = Vec::with_capacity(arg_count);
-                        for _ in 0..arg_count {
-                            match stack.pop() {
-                                Ok(v) => args.push(v),
-                                Err(e) => return OpcodeResult::Error(e),
-                            }
-                        }
-                        match stack.pop() {
-                            Ok(_) => {}
-                            Err(e) => return OpcodeResult::Error(e),
-                        }
-                        args.reverse();
-
                         match method_name {
-                            "lock" if args.is_empty() => {
+                            "lock" if arg_count == 0 => {
+                                match stack.pop() {
+                                    Ok(_) => {}
+                                    Err(e) => return OpcodeResult::Error(e),
+                                }
                                 let mutex_id =
                                     MutexId::from_u64(receiver_val.as_i64().unwrap_or(0) as u64);
                                 if let Some(mutex) = self.mutex_registry.get(mutex_id) {
@@ -356,7 +348,11 @@ impl<'a> Interpreter<'a> {
                                     mutex_id
                                 )));
                             }
-                            "unlock" if args.is_empty() => {
+                            "unlock" if arg_count == 0 => {
+                                match stack.pop() {
+                                    Ok(_) => {}
+                                    Err(e) => return OpcodeResult::Error(e),
+                                }
                                 let mutex_id =
                                     MutexId::from_u64(receiver_val.as_i64().unwrap_or(0) as u64);
                                 if let Some(mutex) = self.mutex_registry.get(mutex_id) {
@@ -404,6 +400,18 @@ impl<'a> Interpreter<'a> {
                                 )));
                             }
                             "tryLock" => {
+                                let mut args = Vec::with_capacity(arg_count);
+                                for _ in 0..arg_count {
+                                    match stack.pop() {
+                                        Ok(v) => args.push(v),
+                                        Err(e) => return OpcodeResult::Error(e),
+                                    }
+                                }
+                                match stack.pop() {
+                                    Ok(_) => {}
+                                    Err(e) => return OpcodeResult::Error(e),
+                                }
+                                args.reverse();
                                 return self.exec_bound_native_method_call(
                                     stack,
                                     receiver_val,
@@ -414,6 +422,18 @@ impl<'a> Interpreter<'a> {
                                 );
                             }
                             "isLocked" => {
+                                let mut args = Vec::with_capacity(arg_count);
+                                for _ in 0..arg_count {
+                                    match stack.pop() {
+                                        Ok(v) => args.push(v),
+                                        Err(e) => return OpcodeResult::Error(e),
+                                    }
+                                }
+                                match stack.pop() {
+                                    Ok(_) => {}
+                                    Err(e) => return OpcodeResult::Error(e),
+                                }
+                                args.reverse();
                                 return self.exec_bound_native_method_call(
                                     stack,
                                     receiver_val,
@@ -465,6 +485,31 @@ impl<'a> Interpreter<'a> {
                 let obj_ptr = unsafe { actual_receiver.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, method_index);
+                if debug_shape_call {
+                    let binding_name = match &slot_binding {
+                        crate::vm::interpreter::shared_state::StructuralSlotBinding::Method(_) => {
+                            "method"
+                        }
+                        crate::vm::interpreter::shared_state::StructuralSlotBinding::Field(_) => {
+                            "field"
+                        }
+                        crate::vm::interpreter::shared_state::StructuralSlotBinding::Dynamic(_) => {
+                            "dynamic"
+                        }
+                        crate::vm::interpreter::shared_state::StructuralSlotBinding::Missing => {
+                            "missing"
+                        }
+                    };
+                    eprintln!(
+                        "[shape-call] shape={:016x} method_index={} name={} binding={} arg_count={} stack_depth={}",
+                        shape_id,
+                        method_index,
+                        shape_method_name.as_deref().unwrap_or("<unknown>"),
+                        binding_name,
+                        arg_count,
+                        stack.depth()
+                    );
+                }
 
                 match slot_binding {
                     crate::vm::interpreter::shared_state::StructuralSlotBinding::Method(

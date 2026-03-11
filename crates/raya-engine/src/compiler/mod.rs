@@ -75,6 +75,8 @@ pub struct Compiler<'a> {
     emit_sourcemap: bool,
     /// Use JS-compatible method extraction semantics in lowerer.
     js_this_binding_compat: bool,
+    /// Allow lowering unresolved receiver/member dispatch to runtime late-bound paths.
+    allow_unresolved_runtime_fallback: bool,
     /// Emit generic template metadata into bytecode artifacts.
     emit_generic_templates: bool,
     /// Monomorphization mode for IR pipeline.
@@ -97,6 +99,7 @@ impl<'a> Compiler<'a> {
             jsx_options: None,
             emit_sourcemap: false,
             js_this_binding_compat: false,
+            allow_unresolved_runtime_fallback: true,
             emit_generic_templates: false,
             monomorphization_mode: MonomorphizationMode::ConsumerLink,
             module_identity: None,
@@ -147,6 +150,15 @@ impl<'a> Compiler<'a> {
         self
     }
 
+    /// Enable/disable unresolved runtime fallback lowering (`LateBoundMember` paths).
+    ///
+    /// Strict Raya should disable this so unresolved member dispatch fails at compile time
+    /// instead of silently lowering to dynamic runtime lookup.
+    pub fn with_allow_unresolved_runtime_fallback(mut self, enable: bool) -> Self {
+        self.allow_unresolved_runtime_fallback = enable;
+        self
+    }
+
     /// Emit generic template metadata in the output module.
     pub fn with_emit_generic_templates(mut self, enable: bool) -> Self {
         self.emit_generic_templates = enable;
@@ -188,6 +200,7 @@ impl<'a> Compiler<'a> {
                 .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(self.emit_sourcemap)
                 .with_js_this_binding_compat(self.js_this_binding_compat)
+                .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
                 .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
@@ -225,6 +238,7 @@ impl<'a> Compiler<'a> {
                 .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(need_sourcemap)
                 .with_js_this_binding_compat(self.js_this_binding_compat)
+                .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
                 .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
@@ -266,6 +280,31 @@ impl<'a> Compiler<'a> {
         // Step 2b: Resolve late-bound member accesses (TypeVar → concrete type dispatch)
         let type_registry = type_registry::TypeRegistry::new(&self.type_ctx);
         monomorphize::resolve_late_bound_members(&mut ir_module, &type_registry, &self.type_ctx);
+
+        // Strict no-fallback invariant: unresolved runtime fallback ops must not survive
+        // lowering/monomorphization when disabled.
+        if !self.allow_unresolved_runtime_fallback {
+            for func in &ir_module.functions {
+                for block in &func.blocks {
+                    for instr in &block.instructions {
+                        let forbidden = match instr {
+                            ir::IrInstr::LateBoundMember { .. } => Some("LateBoundMember"),
+                            ir::IrInstr::DynGetProp { .. } => Some("DynGetProp"),
+                            ir::IrInstr::DynSetProp { .. } => Some("DynSetProp"),
+                            _ => None,
+                        };
+                        if let Some(kind) = forbidden {
+                            return Err(CompileError::InternalError {
+                                message: format!(
+                                    "strict mode forbids unresolved runtime fallback op '{}' in function '{}'",
+                                    kind, func.name
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
 
         // Step 3: Optimization passes
         let optimizer = optimize::Optimizer::basic();
@@ -358,6 +397,7 @@ impl<'a> Compiler<'a> {
                 .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(self.emit_sourcemap)
                 .with_js_this_binding_compat(self.js_this_binding_compat)
+                .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
                 .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
@@ -1233,5 +1273,26 @@ mod tests {
             export.name == "foo"
                 && export.symbol_id == symbol_id_from_name(identity, SymbolScope::Module, "foo")
         }));
+    }
+
+    #[test]
+    fn test_compile_via_ir_strict_disables_unresolved_runtime_fallback() {
+        let source = r#"
+            let o;
+            o.missing();
+        "#;
+        let parser = Parser::new(source).expect("lexer failure");
+        let (ast, interner) = parser.parse().expect("parse failure");
+        let compiler = Compiler::new(TypeContext::new(), &interner)
+            .with_allow_unresolved_runtime_fallback(false);
+
+        let err = compiler
+            .compile_via_ir(&ast)
+            .expect_err("strict no-fallback compile should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("strict mode forbids runtime late-bound fallback"),
+            "expected strict no-fallback diagnostic, got: {msg}"
+        );
     }
 }

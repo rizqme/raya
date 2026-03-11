@@ -2,6 +2,7 @@
 
 use crate::vm::value::Value;
 use rustc_hash::FxHashMap;
+use std::any::TypeId;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -802,16 +803,38 @@ impl HashableValue {
     /// Try to get the string content if this value is a RayaString pointer
     fn try_as_string(&self) -> Option<&str> {
         if self.0.is_ptr() {
-            // Safety: We're checking is_ptr() first, and in the context of Map/Set
-            // we expect pointer values to be RayaString when used as keys
-            let ptr = unsafe { self.0.as_ptr::<RayaString>() };
-            if let Some(non_null) = ptr {
-                // Safety: The pointer was just verified to be non-null
-                let raya_str = unsafe { &*non_null.as_ptr() };
-                return Some(&raya_str.data);
+            let raw_ptr = unsafe { self.0.as_ptr::<u8>() }?;
+            let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+            if header.type_id() == TypeId::of::<RayaString>() {
+                let ptr = unsafe { self.0.as_ptr::<RayaString>() }?;
+                let raya_str = unsafe { &*ptr.as_ptr() };
+                return Some(raya_str.data.as_str());
             }
         }
         None
+    }
+
+    /// Canonical numeric key for SameValueZero-like numeric matching.
+    ///
+    /// - `int` and `number` compare by numeric value
+    /// - `-0` and `+0` are treated as equal
+    /// - all `NaN` payloads normalize to one canonical key
+    fn numeric_key_bits(&self) -> Option<u64> {
+        let value = if let Some(i) = self.0.as_i32() {
+            i as f64
+        } else if let Some(n) = self.0.as_f64() {
+            n
+        } else {
+            return None;
+        };
+
+        if value == 0.0 {
+            return Some(0.0f64.to_bits());
+        }
+        if value.is_nan() {
+            return Some(f64::NAN.to_bits());
+        }
+        Some(value.to_bits())
     }
 }
 
@@ -822,6 +845,10 @@ impl Hash for HashableValue {
             // Hash a discriminator first to distinguish strings from raw values
             1u8.hash(state);
             s.hash(state);
+        } else if let Some(bits) = self.numeric_key_bits() {
+            // Numeric values use canonicalized SameValueZero-like hashing.
+            2u8.hash(state);
+            bits.hash(state);
         } else {
             // For primitive values (numbers, booleans, null), use raw bits
             0u8.hash(state);
@@ -835,7 +862,10 @@ impl PartialEq for HashableValue {
         // First try to compare as strings (by content)
         match (self.try_as_string(), other.try_as_string()) {
             (Some(s1), Some(s2)) => s1 == s2,
-            (None, None) => self.0 == other.0, // Both are primitives, use raw comparison
+            (None, None) => match (self.numeric_key_bits(), other.numeric_key_bits()) {
+                (Some(a), Some(b)) => a == b,
+                _ => self.0 == other.0,
+            },
             _ => false,                        // One is string, one is not
         }
     }

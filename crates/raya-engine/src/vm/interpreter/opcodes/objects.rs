@@ -18,6 +18,53 @@ use std::sync::Arc;
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
 impl<'a> Interpreter<'a> {
+    fn load_shape_field_on_non_object(
+        &mut self,
+        receiver: Value,
+        shape_id: u64,
+        field_offset: usize,
+    ) -> Option<Value> {
+        use crate::vm::json::view::{js_classify, JSView};
+
+        let member_name = {
+            let names = self.structural_shape_names.read();
+            names.get(&shape_id)?.get(field_offset)?.clone()
+        };
+
+        let bound_native = |this: &mut Self, native_id: u16| {
+            let method = crate::vm::object::BoundNativeMethod {
+                receiver,
+                native_id,
+            };
+            let method_ptr = this.gc.lock().allocate(method);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) }
+        };
+
+        match js_classify(receiver) {
+            JSView::Arr(ptr) => {
+                let arr = unsafe { &*ptr };
+                if member_name == "length" {
+                    Some(Value::i32(arr.len() as i32))
+                } else {
+                    super::types::builtin_handle_native_method_id(receiver, &member_name)
+                        .map(|native_id| bound_native(self, native_id))
+                        .or(Some(Value::null()))
+                }
+            }
+            JSView::Str(ptr) => {
+                let s = unsafe { &*ptr };
+                if member_name == "length" {
+                    Some(Value::i32(s.len() as i32))
+                } else {
+                    super::types::builtin_handle_native_method_id(receiver, &member_name)
+                        .map(|native_id| bound_native(self, native_id))
+                        .or(Some(Value::null()))
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn nominal_method_slot_by_name(&self, nominal_type_id: usize, method_name: &str) -> Option<usize> {
         let classes = self.classes.read();
         let class = classes.get_class(nominal_type_id)?;
@@ -590,6 +637,14 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
+                if let Some(value) = self.load_shape_field_on_non_object(obj_val, shape_id, field_offset)
+                {
+                    if let Err(e) = stack.push(value) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                }
+
                 let obj_val = match Self::ensure_object_receiver(obj_val, "shape field access") {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
@@ -920,6 +975,14 @@ impl<'a> Interpreter<'a> {
 
                 if obj_val.is_null() {
                     if let Err(e) = stack.push(Value::null()) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                }
+
+                if let Some(value) = self.load_shape_field_on_non_object(obj_val, shape_id, field_offset)
+                {
+                    if let Err(e) = stack.push(value) {
                         return OpcodeResult::Error(e);
                     }
                     return OpcodeResult::Continue;
