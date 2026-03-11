@@ -1,129 +1,42 @@
-# types module
+# Parser Types
 
-_Verified against source on 2026-03-06._
+This folder defines Raya's type model and the low-level relations that the checker and compiler build on. If the checker asks "are these compatible?" or the compiler needs a stable structural signature, the answer starts here.
 
-Type system representation and operations for Raya.
+## What This Folder Owns
 
-## Module Structure
+- `Type` and `TypeId`.
+- Type interning and context storage.
+- Assignability and subtyping rules.
+- Normalization and generic substitution.
+- Canonical signatures used for cross-module compatibility and metadata.
+- Discriminated-union helpers and union-specific analysis.
 
-```
-types/
-├── mod.rs            # Entry point, Type enum, TypeId, TypeContext
-├── discriminant.rs   # Discriminant inference for unions
-├── bare_union.rs     # Bare union (primitive union) handling
-├── assignability.rs  # Type assignability rules
-└── subtyping.rs      # Subtyping relationships
-```
+## File Guide
 
-## Key Types
+- `ty.rs`: core type representations.
+- `context.rs`: storage and interning for types.
+- `assignability.rs`: assignment compatibility rules.
+- `subtyping.rs`: subtype relationships.
+- `signature.rs`: canonical string/signature hashing logic.
+- `generics.rs`: generic context and substitution support.
+- `normalize.rs`: canonicalization and simplification.
+- `discriminant.rs`: discriminant inference for unions.
+- `bare_union.rs`: special handling for bare unions.
+- `error.rs`: type-layer errors.
 
-### TypeId
-Lightweight type reference (index into TypeContext).
-```rust
-#[derive(Copy, Clone, Eq, Hash)]
-pub struct TypeId(u32);
+## Start Here When
 
-// Well-known TypeIds:
-// 0 = number
-// 1 = string
-// 2 = boolean
-// 3 = null
-// 4 = void
-// 5 = never
-// 6 = unknown
-```
+- Type equality, assignability, or subtyping is wrong.
+- Generic substitution is unstable.
+- Structural signatures mismatch across modules.
+- Checker logic fails because the underlying type primitives are not expressing the right rules.
 
-### Type
-Full type representation.
-```rust
-pub enum Type {
-    Any,
-    Unknown,
-    JSObject,              // dynamic object fallback (node-compat)
-    Primitive(PrimitiveType),
-    Class(ClassType),
-    Function(FunctionType),
-    Array(ArrayType),
-    Tuple(TupleType),
-    Union(UnionType),
-    Object(ObjectType),
-    Generic(GenericType),
-    TypeParameter(TypeParameter),
-    // ...
-}
-```
+## Read Next
 
-### TypeContext
-Type registry and operations.
-```rust
-pub struct TypeContext {
-    types: Vec<Type>,
-    // caches, interned types, etc.
-}
+- Consumer: [`../checker/CLAUDE.md`](../checker/CLAUDE.md)
+- Compiler use of signatures and ids: [`../../compiler/module/CLAUDE.md`](../../compiler/module/CLAUDE.md)
 
-ctx.add_type(ty) -> TypeId
-ctx.get_type(id) -> &Type
-ctx.is_assignable(from, to) -> bool
-ctx.common_type(a, b) -> Option<TypeId>
-```
+## Things To Watch
 
-## Discriminant Inference (`discriminant.rs`)
-
-For discriminated unions, automatically infers the discriminant field:
-
-```typescript
-type Result =
-    | { status: "ok"; value: number }
-    | { status: "error"; error: string };
-// Infers "status" as discriminant
-```
-
-Priority order: `kind` > `type` > `tag` > `variant` > alphabetical
-
-## Bare Unions (`bare_union.rs`)
-
-Handles primitive-only unions that use `typeof` for narrowing:
-
-```typescript
-type ID = string | number;
-// This is a "bare union" - no discriminant, uses typeof
-```
-
-## Assignability (`assignability.rs`)
-
-Determines if one type can be assigned to another:
-- Structural subtyping for objects
-- Covariance for return types
-- Contravariance for parameter types
-- Union types are assignable if all variants are
-
-## Subtyping (`subtyping.rs`)
-
-Establishes subtype relationships:
-- `never` is subtype of everything
-- Everything is subtype of `unknown`
-- Class inheritance creates subtyping
-- Object types use structural subtyping
-
-## For AI Assistants
-
-- `TypeId` is cheap to copy, use it instead of cloning `Type`
-- TypeContext is the central registry for all types
-- Discriminated unions require a common discriminant field
-- Bare unions are for primitives only (`string | number`)
-- Assignability is NOT symmetric (`A assignable to B` ≠ `B assignable to A`)
-- Strict mode blocks unsafe coercions; non-strict modes allow selected compatibility coercions (for example primitive-to-string in concat contexts)
-- `JSObject<T>` wrappers may be used in node-compat inference to preserve known
-  fields from `T` while still allowing dynamic property access fallback
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-engine/src/parser/types`
-- Direct subdirectories: (none)
-- Direct files (excluding `CLAUDE.md`): assignability.rs, bare_union.rs, context.rs, discriminant.rs, error.rs, generics.rs, mod.rs, normalize.rs, signature.rs, subtyping.rs, ty.rs
-- Rust files in this directory: assignability.rs, bare_union.rs, context.rs, discriminant.rs, error.rs, generics.rs, mod.rs, normalize.rs, signature.rs, subtyping.rs, ty.rs
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- Signature logic is part of the import/export compatibility contract, not just an internal convenience.
+- `TypeId` and canonical signature changes can affect reflection, metadata, and runtime linking.

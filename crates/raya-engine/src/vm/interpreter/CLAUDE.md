@@ -1,202 +1,42 @@
-# interpreter module
+# VM Interpreter
 
-_Verified against source on 2026-03-06._
+This folder contains the execution engine proper. It owns the public `Vm` facade, the interpreter loop, shared runtime state, runtime registries, and the mechanics of pause/resume, marshaling, and capability checks.
 
-Single-executor bytecode interpreter with suspendable task execution.
+## What This Folder Owns
 
-## Module Structure
+- Dispatching bytecode opcodes.
+- Tracking execution frames and return/suspend behavior.
+- Holding runtime-global state shared across tasks and contexts.
+- Exposing the main `Vm` API used by higher layers.
+- Managing runtime class/module/native-module registries.
+- Handling safepoints and debugger-facing state.
 
-```
-interpreter/
-├── mod.rs                    # Module index, re-exports
-├── core.rs                   # Interpreter struct, main run() loop (~780 lines)
-├── shared_state.rs           # SharedVmState (~155 lines)
-├── vm_facade.rs              # Vm public API, VmStats, snapshot/restore, module loading
-├── context.rs                # VmContext, ContextRegistry, VmOptions, ResourceLimits
-├── execution.rs              # ExecutionResult, OpcodeResult, ControlFlow, ExecutionFrame
-├── class_registry.rs         # Runtime class registry
-├── marshal.rs                # Value marshaling (MarshalledValue, ForeignHandleManager)
-├── capabilities.rs           # Capability registry (HTTP, Log, Read)
-├── module_registry.rs        # Module tracking (by name + SHA-256 checksum, deduplication)
-├── native_module_registry.rs # Native function registration (NativeFn, NativeModule)
-├── safepoint.rs              # Safepoint coordination for GC
-│
-├── opcodes/                  # 15 categorized opcode handler modules
-│   ├── mod.rs                # Module index
-│   ├── arithmetic.rs         # IAdd/ISub/IMul/IDiv/IMod, FAdd/FSub/FMul/FDiv/FMod, INeg/FNeg
-│   ├── arrays.rs             # NewArray, LoadElem, StoreElem, ArrayLen, ArrayPush/Pop, ArrayLiteral, InitArray
-│   ├── calls.rs              # Call, CallClosure, CallMethod, CallConstructor, CallSuper
-│   ├── closures.rs           # MakeClosure, LoadCaptured, StoreCaptured, SetClosureCapture, NewRefCell, Load/StoreRefCell
-│   ├── comparison.rs         # IEq-IGe, FEq-FGe, Eq/Ne/StrictEq/StrictNe, Not/And/Or
-│   ├── concurrency.rs        # Spawn, SpawnClosure, Await, WaitAll, Sleep, MutexLock/Unlock, Yield, TaskCancel
-│   ├── constants.rs          # ConstNull/True/False, ConstI32/F64/Str
-│   ├── control_flow.rs       # Jmp, JmpIfTrue/False/Null/NotNull, Return, ReturnVoid
-│   ├── exceptions.rs         # Try, EndTry, Throw, Rethrow
-│   ├── native.rs             # NativeCall + ModuleNativeCall dispatch (~1,487 lines)
-│   ├── objects.rs            # New, LoadField, StoreField, OptionalField, ObjectLiteral, InitObject
-│   ├── stack.rs              # Nop, Pop, Dup, Swap
-│   ├── strings.rs            # Sconcat, Slen, Seq/Sne/Slt/Sle/Sgt/Sge, ToString
-│   ├── types.rs              # InstanceOf, Cast, Typeof, JsonGet/Set, static field ops
-│   └── variables.rs          # LoadLocal/StoreLocal (0/1 variants), LoadGlobal, StoreGlobal
-│
-└── handlers/                 # Native method handlers (extracted from core.rs)
-    ├── mod.rs                # Module index
-    ├── array.rs              # Array push/pop/shift/unshift/slice/splice/sort/map/filter/etc.
-    ├── string.rs             # String charAt/substring/split/replace/indexOf/includes/etc.
-    ├── regexp.rs             # RegExp test/exec/match/matchAll/replace
-    └── reflect.rs            # Reflect API Phases 1-17 (~2,749 lines, 149+ handlers)
-```
+## File Guide
 
-## Execution Model
+- `core.rs`: interpreter loop and dispatch entrypoints.
+- `execution.rs`: execution result types and control-flow framing.
+- `context.rs`: VM contexts, options, and resource limits/counters.
+- `shared_state.rs`: shared registries, telemetry, microtasks, runtime layout state.
+- `module_registry.rs`: loaded modules and runtime layout metadata.
+- `class_registry.rs`: runtime classes and layout lookups.
+- `native_module_registry.rs`: dynamically loaded native modules.
+- `marshal.rs`: value conversion across VM boundaries.
+- `capabilities.rs`: capability and permission-style runtime gating.
+- `debug_state.rs`: debugger-visible state.
+- `vm_facade.rs`: user-facing `Vm` wrapper.
+- `safepoint.rs`: stop-the-world coordination.
 
-**Single executor:** `Interpreter::run()` in `core.rs` is the sole bytecode interpreter.
+## Start Here When
 
-```
-Interpreter::run(task) → ExecutionResult
-  │
-  ├─ fetch opcode → decode → execute_opcode()
-  │
-  ├─ OpcodeResult::Continue    → advance IP, next instruction
-  ├─ OpcodeResult::PushFrame   → push frame, call function/closure/constructor
-  ├─ OpcodeResult::Return(v)   → pop frame or complete task
-  ├─ OpcodeResult::Suspend(r)  → save state, yield to scheduler
-  └─ OpcodeResult::Error(e)    → exception handling or fail
-```
+- A bytecode instruction behaves incorrectly.
+- Suspend/resume behavior is wrong.
+- VM context isolation or shared state ownership is wrong.
+- Runtime registries for modules/classes/native modules are inconsistent.
+- A high-level runtime API ultimately fails inside the VM core.
 
-- **Frame-based calls:** Function calls, closures, constructors, and callbacks all use `PushFrame` — the main loop pushes an `ExecutionFrame` and continues. No nesting, no separate executor.
-- **Suspend/resume:** `Await`, `Sleep`, `MutexLock` suspend the task. The scheduler re-enqueues it when the wait condition is met.
-- **WaitAll resume rule:** `WaitAll` re-executes with its original array operand preserved on the stack; resumed task values are not pushed for this opcode site.
-- **Compiler intrinsics:** Array callback methods (map/filter/reduce) and replaceWith are lowered to inline for-loops with `CallClosure` by the compiler — callbacks execute as normal frames.
+## Read Next
 
-## Key Types
-
-### Interpreter
-```rust
-pub struct Interpreter<'a> {
-    pub gc: &'a Mutex<GarbageCollector>,
-    pub classes: &'a RwLock<ClassRegistry>,
-    pub mutex_registry: &'a MutexRegistry,
-    pub safepoint: &'a SafepointCoordinator,
-    pub globals_by_index: &'a RwLock<Vec<Value>>,
-    pub tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
-    pub injector: &'a Arc<Injector<Arc<Task>>>,
-    pub metadata: &'a Mutex<MetadataStore>,
-    pub class_metadata: &'a RwLock<ClassMetadataRegistry>,
-    pub native_handler: &'a Arc<dyn NativeHandler>,
-    pub resolved_natives: &'a RwLock<ResolvedNatives>,
-}
-```
-
-### Execution Types
-```rust
-enum ExecutionResult { Completed(Value), Suspended(SuspendReason), Failed(VmError) }
-enum OpcodeResult { Continue, Return(Value), Suspend(SuspendReason), Error(VmError), PushFrame { ... } }
-enum ReturnAction { PushReturnValue, PushObject(Value), Discard }
-struct ExecutionFrame { func_id, ip, locals_base, is_closure, return_action }
-```
-
-### SharedVmState
-```rust
-pub struct SharedVmState {
-    pub gc: Mutex<GarbageCollector>,
-    pub classes: RwLock<ClassRegistry>,
-    pub globals: RwLock<FxHashMap<String, Value>>,
-    pub globals_by_index: RwLock<Vec<Value>>,
-    pub safepoint: Arc<SafepointCoordinator>,
-    pub tasks: Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
-    pub injector: Arc<Injector<Arc<Task>>>,
-    pub mutex_registry: MutexRegistry,
-    pub timer: Arc<TimerThread>,
-    pub metadata: Mutex<MetadataStore>,
-    pub class_metadata: RwLock<ClassMetadataRegistry>,
-    pub native_handler: Arc<dyn NativeHandler>,
-    pub resolved_natives: RwLock<ResolvedNatives>,
-    pub native_registry: RwLock<NativeFunctionRegistry>,
-    pub module_registry: RwLock<ModuleRegistry>,
-}
-```
-
-### Vm (facade)
-```rust
-pub struct Vm {
-    scheduler: Scheduler,
-    #[cfg(feature = "jit")]
-    jit_engine: Option<JitEngine>,
-}
-```
-Key methods: `new()`, `execute(&Module)`, `load_rbin(&Path)`, `load_rbin_bytes(&[u8])`,
-`snapshot_to_bytes()`, `snapshot_to_file(&Path)`, `restore_from_bytes(&[u8])`, `restore_from_file(&Path)`,
-`get_stats()`, `terminate()`, `register_class()`, `collect_garbage()`, `enable_jit()`
-
-## Opcode Dispatch
-
-`core.rs` contains a thin `execute_opcode()` dispatcher — each match arm delegates to a method in the corresponding `opcodes/` module:
-
-```rust
-match opcode {
-    Opcode::Nop | Opcode::Pop | Opcode::Dup | Opcode::Swap => self.handle_stack_op(opcode, task),
-    Opcode::IAdd | Opcode::ISub | ... => self.handle_arithmetic(opcode, task),
-    Opcode::Call | Opcode::CallClosure | ... => self.handle_call(opcode, task),
-    Opcode::NativeCall => self.handle_native_call(task),
-    // ~100 match arms, each a one-liner delegation
-}
-```
-
-## Native Call Dispatch
-
-`opcodes/native.rs` (~1,487 lines) handles `NativeCall` opcode dispatch by ID range:
-
-| Range | Target | Handler |
-|-------|--------|---------|
-| 0x01xx | Array methods | `handlers/array.rs` |
-| 0x02xx | String methods | `handlers/string.rs` |
-| 0x03xx | Mutex ops | inline |
-| 0x04xx | Channel ops | inline |
-| 0x05xx | Task ops | inline |
-| 0x07xx | Buffer ops | inline |
-| 0x08xx | Map ops | inline |
-| 0x09xx | Set ops | inline |
-| 0x0Axx | RegExp methods | `handlers/regexp.rs` |
-| 0x0Bxx | Date methods | inline |
-| 0x0D00-0x0E2F | Reflect API | `handlers/reflect.rs` |
-| 0x0Fxx | Number methods | inline |
-| 0x10xx+ | Stdlib | via `NativeHandler` trait |
-
-`ModuleNativeCall` opcode uses `resolved_natives` for name-based dispatch via `NativeFunctionRegistry`.
-
-## Reflect API Handlers (`handlers/reflect.rs`)
-
-Phases 1-17 implemented (~2,749 lines):
-- **Phase 1-5**: Metadata, introspection, field access, method invocation, object creation
-- **Phase 6-8**: Type utilities, interface queries, object inspection, memory analysis
-- **Phase 9**: Proxy objects
-- **Phase 10**: Dynamic subclass creation
-- **Phase 13-17**: Generic metadata, ClassBuilder, BytecodeBuilder, permissions, dynamic modules
-
-Native IDs: 0x0D00-0x0E2F (see `vm/builtin.rs`)
-
-## For AI Assistants
-
-- **Single executor**: `Interpreter::run()` in `core.rs` is the only bytecode interpreter
-- Opcodes are dispatched to 15 categorized modules in `opcodes/`
-- Native calls dispatch by ID in `opcodes/native.rs`, delegating to `handlers/` for complex types
-- All function calls (including callbacks) use `OpcodeResult::PushFrame` — frame-based, no nesting
-- Stdlib native calls (logger, math, crypto, etc.) delegate to `NativeHandler` trait
-- `SharedVmState` provides thread-safe concurrent access to all shared VM state
-- Task preemption is cooperative (checked at safepoints and backward jumps)
-- Reflect handlers are in `handlers/reflect.rs` (Phases 1-17, 149+ methods)
-- Array callback methods (map/filter/reduce/forEach) are **compiler intrinsics**, not runtime CallMethod
-- `Opcode::Cast` in `opcodes/types.rs` performs runtime validation for explicit
-  cast sites (class casts and runtime kind-mask casts). It is not a per-op guard system.
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-engine/src/vm/interpreter`
-- Direct subdirectories: handlers, opcodes
-- Direct files (excluding `CLAUDE.md`): capabilities.rs, class_registry.rs, context.rs, core.rs, debug_state.rs, execution.rs, marshal.rs, mod.rs, module_registry.rs, native_module_registry.rs, safepoint.rs, shared_state.rs, vm_facade.rs
-- Rust files in this directory: capabilities.rs, class_registry.rs, context.rs, core.rs, debug_state.rs, execution.rs, marshal.rs, mod.rs, module_registry.rs, native_module_registry.rs, safepoint.rs, shared_state.rs, vm_facade.rs
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- Scheduler integration: [`../scheduler/CLAUDE.md`](../scheduler/CLAUDE.md)
+- GC invariants: [`../gc/CLAUDE.md`](../gc/CLAUDE.md)
+- Bytecode source of opcodes: [`../../compiler/bytecode/CLAUDE.md`](../../compiler/bytecode/CLAUDE.md)
+- Reflection integration: [`../reflect/CLAUDE.md`](../reflect/CLAUDE.md)

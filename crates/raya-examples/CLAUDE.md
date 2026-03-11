@@ -1,63 +1,21 @@
 # raya-examples
 
-_Verified against source on 2026-03-06._
+This crate collects realistic example applications and test fixtures. It exists to exercise the toolchain the way users will, not just at the unit-test level.
 
-Example Raya applications plus end-to-end tests.
+## What This Crate Owns
 
-## Purpose
+- Fixture projects used by integration tests.
+- Helper functions that expose fixture paths to tests.
+- Scenario-driven tests that exercise runtime, CLI, stdlib, and package flows together.
 
-- Keep realistic Raya sample apps in one place.
-- Validate them through CLI-driven integration tests.
-- Exercise broad stdlib coverage in real app flows.
+## Layout
 
-## Current Fixture
+- `fixtures/`: example apps and system scenarios.
+- `src/lib.rs`: fixture path helpers and shared constants such as well-known test ports.
+- `tests/`: integration suites organized by fixture or scenario.
 
-- `fixtures/webapp/` — local loopback web app:
-  - `src/server.raya` runs an HTTP server via `std:http`
-  - `src/client.raya` calls it via `std:fetch`
-  - Entry scripts execute top-level statements directly (no implicit `main()` call)
-  - `src/app/common.raya` uses many std modules (`logger`, `math`, `crypto`,
-    `time`, `path`, `stream`, `fs`, `env`, `process`, `os`, `encoding`,
-    `semver`, `archive`)
-- `fixtures/systems/` — second-suite system scenarios:
-  - `stateful_data.raya` (stateful/persistence style flow)
-  - `concurrency_cancel.raya` (channel/task-oriented flow; cancel validated via `cancel()` + `isCancelled()`)
-  - `tcp_protocol.raya` (TCP protocol handshake flow with multi-round line framing checks)
-  - `template_archive.raya` (template + archive/compress pipeline)
-  - `fault_injection.raya` (resilience via invalid-input handling)
-- `fixtures/worker-queue/src/main.raya` now awaits `runSuite(dir)` at top level
-  (instead of relying on fixed sleep) so `result.txt` is deterministic in CI.
+## Start Here When
 
-## Tests
-
-- `tests/cli_http_e2e.rs` spawns `raya` through `cargo run -p raya-cli -- run ...`
-  and verifies end-to-end HTTP contracts plus generated artifacts.
-  It now waits for a valid socket address in `server.ready` (not just file
-  existence) before running client requests, and retries transient
-  startup failures (`fetch.request: Connection refused`, occasional
-  `Stack underflow` on first client call) to avoid startup races in CI.
-  Tests are serialized via a suite lock and always clean up spawned servers on
-  panic through a `Drop`-based server handle.
-- Current scenarios include stress workflow, diagnostics contract, echo/not-found
-  contract, health+artifact contract, and echo method-not-allowed contract.
-- Fixture suites are now one test file per fixture (full suite style):
-  - `tests/fixture_todo_kv_e2e.rs`
-  - `tests/fixture_worker_queue_e2e.rs`
-  - `tests/fixture_tcp_chat_e2e.rs`
-  - `tests/fixture_template_pipeline_e2e.rs`
-  - `tests/fixture_pkg_workflow_e2e.rs`
-  - `tests/fixture_fault_injection_e2e.rs`
-  - Shared helpers in `tests/common/mod.rs` provide CLI timeout guard (20s) and
-    summary parsing.
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-examples`
-- Direct subdirectories: fixtures, src, tests
-- Direct files (excluding `CLAUDE.md`): Cargo.toml
-- Rust files in this directory: (none)
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- You need a realistic reproduction of a user workflow.
+- A bug only appears when multiple crates interact together.
+- You want to add a new end-to-end scenario rather than a narrow unit test.

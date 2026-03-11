@@ -1,180 +1,36 @@
-# compiler module
+# Compiler
 
-_Verified against source on 2026-03-06._
+This folder takes a checked Raya program and turns it into executable bytecode modules. It is the bridge between the language frontend and the VM.
 
-Middle-end and backend of the Raya compiler: IR, optimizations, and bytecode generation.
+## Pipeline
 
-## Module Structure
+The main path is:
 
-```
-compiler/
-├── mod.rs            # Entry point, Compiler struct
-├── error.rs          # Compilation errors
-├── module_builder.rs # Bytecode module construction
-├── native_id.rs      # Native function IDs
-├── codegen_ast.rs    # Direct AST → Bytecode (legacy)
-├── lower/            # AST → IR lowering
-├── ir/               # Intermediate representation
-├── monomorphize/     # Generic specialization
-├── optimize/         # IR optimizations
-├── codegen/          # IR → Bytecode
-├── bytecode/         # Bytecode format definitions
-├── intrinsic/        # Compiler intrinsics (JSON, etc.)
-└── module/           # Multi-module compilation
-```
+typed AST -> [`lower`](lower/CLAUDE.md) -> [`ir`](ir/CLAUDE.md) -> [`monomorphize`](monomorphize/CLAUDE.md) -> [`optimize`](optimize/CLAUDE.md) -> [`codegen`](codegen/CLAUDE.md) -> [`bytecode`](bytecode/CLAUDE.md)
 
-## Compilation Pipeline
+Multi-file and stdlib-aware compilation flows through [`module`](module/CLAUDE.md).
 
-```
-AST (typed)
-    │
-    ▼
-┌─────────────────┐
-│    Lowering     │  lower/
-└────────┬────────┘
-         │
-         ▼
-IR (three-address code)
-         │
-         ▼
-┌─────────────────┐
-│ Monomorphization│  monomorphize/
-└────────┬────────┘
-         │
-         ▼
-Specialized IR
-         │
-         ▼
-┌─────────────────┐
-│  Optimizations  │  optimize/
-└────────┬────────┘
-         │
-         ▼
-Optimized IR
-         │
-         ▼
-┌─────────────────┐
-│    Codegen      │  codegen/
-└────────┬────────┘
-         │
-         ▼
-Bytecode Module
-```
+## What Lives Here
 
-## Key Types
+- `mod.rs`: top-level compiler API and configuration flags.
+- `error.rs`: compiler error types.
+- `module_builder.rs`: helpers for constructing bytecode modules programmatically.
+- `native_id.rs`: compiler-visible native id definitions used during lowering and codegen.
+- `type_registry.rs`: compiler-side type metadata not owned by parser/type checker.
+- `intrinsic/`: special lowering/codegen hooks for builtins and optimized helper paths.
+- `codegen_ast.rs`: older direct AST-to-bytecode path. Useful for compatibility and tests, but not the main evolution path.
 
-### Compiler
-```rust
-pub struct Compiler<'a> {
-    type_ctx: TypeContext,
-    interner: &'a Interner,
-    expr_types: HashMap<usize, TypeId>,
-}
+## How To Choose A Subfolder
 
-// Preferred compilation path
-compiler.compile_via_ir(&ast_module) -> CompileResult<Module>
+- Expression or statement compiles to the wrong shape: go to [`lower`](lower/CLAUDE.md).
+- You need a new intermediate instruction or register-level concept: go to [`ir`](ir/CLAUDE.md).
+- Generic specialization is wrong: go to [`monomorphize`](monomorphize/CLAUDE.md).
+- IR is correct but overly verbose or illegal for codegen: go to [`optimize`](optimize/CLAUDE.md).
+- IR is correct but emitted bytecode is wrong: go to [`codegen`](codegen/CLAUDE.md).
+- Module serialization, imports, exports, verification, or opcodes are wrong: go to [`bytecode`](bytecode/CLAUDE.md).
+- Files/imports/packages/std modules resolve incorrectly during compilation: go to [`module`](module/CLAUDE.md).
 
-// With verification
-compiler.compile_via_ir_verified(&ast_module) -> CompileResult<Module>
+## Working Rules
 
-// Debug output
-compiler.compile_with_debug(&ast_module) -> CompileResult<(Module, String)>
-```
-
-### Module (Bytecode)
-```rust
-pub struct Module {
-    pub magic: [u8; 4],        // "RAYA"
-    pub version: u32,
-    pub flags: u32,
-    pub constants: ConstantPool,
-    pub functions: Vec<Function>,
-    pub classes: Vec<ClassDef>,
-    pub exports: Vec<Export>,
-    pub imports: Vec<Import>,
-    pub checksum: [u8; 32],
-}
-```
-
-## Submodules
-
-### `lower/` - AST to IR
-See [lower/CLAUDE.md](lower/CLAUDE.md).
-- Statement lowering
-- Expression lowering
-- Control flow conversion
-
-### `ir/` - Intermediate Representation
-See [ir/CLAUDE.md](ir/CLAUDE.md).
-- Three-address code
-- Basic blocks
-- SSA-like form
-
-### `monomorphize/` - Generic Specialization
-See [monomorphize/CLAUDE.md](monomorphize/CLAUDE.md).
-- Collects generic instantiations
-- Generates specialized functions
-
-### `optimize/` - Optimizations
-See [optimize/CLAUDE.md](optimize/CLAUDE.md).
-- Constant folding
-- Dead code elimination
-- Function inlining
-
-### `codegen/` - IR to Bytecode
-See [codegen/CLAUDE.md](codegen/CLAUDE.md).
-- Register allocation
-- Instruction emission
-- Module building
-
-### `bytecode/` - Bytecode Format
-See [bytecode/CLAUDE.md](bytecode/CLAUDE.md).
-- Opcode definitions
-- Module encoding/decoding
-- Verification
-
-### `module/` - Multi-Module Compilation
-See [module/CLAUDE.md](module/CLAUDE.md).
-- Import resolution
-- Dependency graph
-- Module caching
-- Multi-file compilation
-
-## Native IDs (`native_id.rs`)
-
-Constants for native function dispatch:
-```rust
-// Object: 0x00xx
-pub const OBJECT_TO_STRING: u16 = 0x0001;
-
-// Array: 0x01xx
-pub const ARRAY_PUSH: u16 = 0x0100;
-pub const ARRAY_POP: u16 = 0x0101;
-
-// String: 0x02xx
-pub const STRING_CHAR_AT: u16 = 0x0200;
-// ... etc
-```
-
-## For AI Assistants
-
-- Use `compile_via_ir()` - it's the full optimizing pipeline
-- `codegen_ast.rs` is legacy, prefer IR-based compilation
-- Native IDs must match VM dispatch in `vm/interpreter/opcodes/native.rs`
-- Monomorphization happens before optimization
-- All generics are specialized at compile time
-- **Rest parameters** (`...args`) lowered to array allocation + argument collection
-- **Optional parameters** (`param?`) handled with default value initialization
-- **Method-level type parameters** partially supported (ongoing work)
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-engine/src/compiler`
-- Direct subdirectories: bytecode, codegen, intrinsic, ir, lower, module, monomorphize, optimize
-- Direct files (excluding `CLAUDE.md`): codegen_ast.rs, error.rs, mod.rs, module_builder.rs, native_id.rs, type_registry.rs
-- Rust files in this directory: codegen_ast.rs, error.rs, mod.rs, module_builder.rs, native_id.rs, type_registry.rs
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- Prefer extending the IR pipeline instead of pushing new behavior into `codegen_ast.rs`.
+- Compiler changes usually have contracts with parser types, VM opcodes, and runtime linking. Follow the full path before calling a fix complete.

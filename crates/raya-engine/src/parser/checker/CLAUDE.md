@@ -1,177 +1,42 @@
-# checker module
+# Parser Checker
 
-_Verified against source on 2026-03-06._
+This folder gives parsed Raya code its static meaning. It binds names to scopes, assigns types to expressions, computes warnings/errors, and produces the inferred type data used by the compiler.
 
-Type checking, inference, and semantic analysis for Raya.
+## What This Folder Owns
 
-## Module Structure
+- Scope creation and symbol tables.
+- Binding declarations and references.
+- Expression and statement type checking.
+- Flow-sensitive narrowing and exhaustiveness analysis.
+- Closure capture analysis.
+- Checker behavior differences between Raya, TS, and JS-like modes.
 
-```
-checker/
-├── mod.rs           # Entry point, TypeChecker, CheckResult
-├── checker.rs       # Main type checking logic
-├── binder.rs        # Name resolution, symbol binding
-├── symbols.rs       # Symbol table management
-├── narrowing.rs     # Control flow-based type narrowing
-├── type_guards.rs   # Type guard analysis
-├── exhaustiveness.rs# Exhaustiveness checking for unions
-├── captures.rs      # Closure capture analysis
-├── builtins.rs      # Built-in type signatures
-└── diagnostic.rs    # Error reporting
-```
+## File Guide
 
-## Key Types
+- `binder.rs`: scope construction and declaration binding.
+- `checker.rs`: main type-checking engine.
+- `builtins.rs`: builtin classes/functions/properties visible to the checker.
+- `captures.rs`: closure capture analysis.
+- `narrowing.rs`: flow-sensitive refinement after guards and control flow.
+- `exhaustiveness.rs`: union coverage checks.
+- `type_guards.rs`: recognition of guard patterns that drive narrowing.
+- `symbols.rs`: symbol and scope model.
+- `diagnostic.rs` and `error.rs`: emitted diagnostics, warnings, and formatting support.
 
-### TypeChecker
-```rust
-pub struct TypeChecker<'a> {
-    interner: &'a Interner,
-    symbols: SymbolTable,
-    type_ctx: TypeContext,
-    errors: Vec<CheckError>,
-}
+## Start Here When
 
-checker.check(&module) -> CheckResult
-```
+- A name resolves to the wrong declaration.
+- A program should type-check but does not, or vice versa.
+- Narrowing after `if`, pattern checks, or discriminant tests is wrong.
+- Closure capture behavior is wrong.
+- Builtin surface or mode-specific checker behavior diverges unexpectedly.
 
-### CheckResult
-```rust
-pub struct CheckResult {
-    pub type_ctx: TypeContext,
-    pub errors: Vec<CheckError>,
-    pub expr_types: HashMap<usize, TypeId>, // expr ptr -> type
-}
+## Read Next
 
-result.has_errors() -> bool
-result.type_context() -> TypeContext
-```
+- Type primitives and relations: [`../types/CLAUDE.md`](../types/CLAUDE.md)
+- Compiler consumer of checker output: [`../../compiler/lower/CLAUDE.md`](../../compiler/lower/CLAUDE.md)
 
-### SymbolTable
-```rust
-pub struct SymbolTable {
-    scopes: Vec<Scope>,
-    // ...
-}
+## Things To Watch
 
-symbols.define(name, kind, type_id)
-symbols.lookup(name) -> Option<SymbolInfo>
-symbols.enter_scope()
-symbols.exit_scope()
-```
-
-## Type Checking Features
-
-### Type Inference
-- Local variable types inferred from initializers
-- Generic type argument inference
-- Return type inference (when possible)
-- Mode-specific inference:
-  - `Strict`: forbids explicit/implicit `any`, forbids bare `let x;`, no `JSObject` fallback
-  - `AllowAny`: strict checks remain, but `any` is allowed
-  - `JsMode`: allows untyped flows, union widening, and `JSObject<T>` escalation for dynamic monkeypatch-like behavior
-
-### Type Narrowing (`narrowing.rs`)
-```typescript
-let x: string | number = getValue();
-if (typeof x === "string") {
-    // x is narrowed to string here
-    x.toUpperCase();
-}
-```
-
-### Type Guards (`type_guards.rs`)
-```typescript
-function isString(x: unknown): x is string {
-    return typeof x === "string";
-}
-```
-
-### Exhaustiveness (`exhaustiveness.rs`)
-```typescript
-type Status = "ok" | "error";
-function handle(s: Status) {
-    switch (s) {
-        case "ok": return;
-        case "error": return;
-        // Compiler ensures all cases covered
-    }
-}
-```
-
-### Capture Analysis (`captures.rs`)
-Analyzes which variables are captured by closures for proper code generation.
-
-## Error Types
-
-```rust
-pub enum CheckError {
-    TypeMismatch { expected: TypeId, actual: TypeId, span: Span },
-    UndefinedVariable { name: String, span: Span },
-    NotCallable { ty: TypeId, span: Span },
-    MissingProperty { name: String, ty: TypeId, span: Span },
-    ReadonlyAssignment { property: String, span: Span },  // E2018
-    // ... many more
-}
-```
-
-### Readonly Enforcement
-The checker rejects assignments to readonly properties (`obj.readonlyField = value`).
-`this.field = value` is allowed inside constructors. Readonly is checked via `is_readonly_property()` which inspects `PropertySignature.readonly` on Class, Object, and Interface types.
-
-## Warnings (`error.rs`)
-
-Configurable warning system for `raya check`:
-
-```rust
-pub enum WarningCode { UnusedVariable, UnusedImport, UnusedParameter, UnreachableCode, ShadowedVariable }
-pub enum CheckWarning { UnusedVariable { name, span }, UnreachableCode { span }, ShadowedVariable { name, original, shadow } }
-pub struct WarningConfig { disabled: HashSet<WarningCode>, deny: HashSet<WarningCode>, strict: bool }
-```
-
-- `WarningCode::from_name("unused-variable")` — CLI flag parsing
-- `WarningConfig::is_enabled(code)` / `is_denied(code)` — filtering
-- `Symbol.referenced` field tracks usage; `collect_unused_warnings()` scans for unreferenced variables
-- `_`-prefixed and exported symbols excluded from warnings
-- `Diagnostic::from_check_warning()` converts to codespan diagnostics
-
-## Built-in Types (`builtins.rs`)
-
-Pre-defined signatures for:
-- Primitives: `number`, `string`, `boolean`, `null`, `void`
-- Built-in classes: `Array<T>`, `Map<K,V>`, `Set<T>`, etc.
-- Global objects: `JSON`
-- Decorator type aliases: `ClassDecorator<T>`, `MethodDecorator<F>`, `ParameterDecorator<T>`, etc.
-
-## Scope Resolution
-
-- `check_new()`, `check_member()` use `self.symbols.resolve_from_scope(&name, self.current_scope)` (NOT `self.symbols.resolve()`) to find classes/functions in nested scopes (e.g., classes inside functions)
-- `check_object()` builds a `Type::Class` from object literal properties (not `unknown_type()`)
-- Object spread in `check_object()` merges spread-property shapes (object/class/typevar-constraint) with override semantics; non-object spread operands emit a `TypeMismatch`
-- Object destructuring defaults: when property not found, uses default expression type
-- `super(...)` constructor calls are explicitly type-checked in `check_call()` (do not treat `Expression::Super` as a normal identifier/function lookup)
-- `if (x == null) { break/continue/return/throw }` now narrows `x` in continuation paths because `stmt_definitely_returns()` treats `break/continue` as flow exits
-- Builtin generic annotations (`Map<K,V>`, `Set<T>`, `Channel<T>`) are resolved to specialized builtin types (not just unknown-parameter defaults)
-
-## For AI Assistants
-
-- Type checking is bidirectional (inference + checking)
-- `typeof` is only for primitives, `instanceof` for classes
-- Discriminated unions use a discriminant field (kind/type/tag)
-- Type behavior is mode-driven: `Strict`, `AllowAny`, `JsMode`
-- In strict mode, `unknown` is non-actionable until narrowed/casted
-- Catch variables default to `unknown` in strict mode (`useUnknownInCatchVariables` behavior)
-- Errors include span for precise location
-- `expr_types` maps expression pointers to their inferred types
-- **Scope resolution**: Always use `resolve_from_scope` with `self.current_scope` when resolving names during type checking (not bare `resolve` which uses scope 0)
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-engine/src/parser/checker`
-- Direct subdirectories: (none)
-- Direct files (excluding `CLAUDE.md`): binder.rs, builtins.rs, captures.rs, checker.rs, diagnostic.rs, error.rs, exhaustiveness.rs, mod.rs, narrowing.rs, symbols.rs, type_guards.rs
-- Rust files in this directory: binder.rs, builtins.rs, captures.rs, checker.rs, diagnostic.rs, error.rs, exhaustiveness.rs, mod.rs, narrowing.rs, symbols.rs, type_guards.rs
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- The checker emits maps keyed by AST identity and spans; lowering depends on that data surviving intact.
+- Many "compiler bugs" are actually checker bugs when the wrong type or symbol information is handed downstream.

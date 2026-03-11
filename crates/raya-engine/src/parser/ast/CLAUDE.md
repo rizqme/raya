@@ -1,163 +1,33 @@
-# ast module
+# Parser AST
 
-_Verified against source on 2026-03-06._
+This folder defines the abstract syntax tree for Raya source code. If the language has a syntactic construct, its parsed shape should be represented here.
 
-Abstract Syntax Tree definitions for Raya.
+## What This Folder Owns
 
-## Module Structure
+- Expression, statement, pattern, and type-annotation node structures.
+- Shared traversal utilities used by binder, checker, and compiler.
+- Span-carrying syntax nodes that preserve source locations.
 
-```
-ast/
-├── mod.rs          # Re-exports, Module struct
-├── statement.rs    # Statement AST nodes
-├── expression.rs   # Expression AST nodes
-├── types.rs        # Type annotation AST nodes
-├── pattern.rs      # Pattern matching AST nodes
-└── visitor.rs      # Visitor trait for AST traversal
-```
+## File Guide
 
-## Key Types
+- `expression.rs`: literals, operators, calls, member access, classes, decorators, JSX, casts, and other expression forms.
+- `statement.rs`: declarations, control flow, imports/exports, blocks, and module-level statements.
+- `pattern.rs`: destructuring and binding patterns.
+- `types.rs`: parsed type annotation syntax.
+- `visitor.rs`: AST traversal helpers.
 
-### Module (Root)
-```rust
-pub struct Module {
-    pub statements: Vec<Statement>,
-    pub span: Span,
-}
-```
+## Start Here When
 
-### Statements (`statement.rs`)
-```rust
-pub enum Statement {
-    VariableDecl(VariableDecl),
-    FunctionDecl(FunctionDecl),
-    ClassDecl(ClassDecl),
-    TypeAliasDecl(TypeAliasDecl),
-    ImportDecl(ImportDecl),
-    ExportDecl(ExportDecl),
-    Expression(ExpressionStatement),
-    If(IfStatement),
-    While(WhileStatement),
-    For(ForStatement),
-    ForOf(ForOfStatement),
-    DoWhile(DoWhileStatement),
-    Return(ReturnStatement),
-    Break(BreakStatement),
-    Continue(ContinueStatement),
-    Throw(ThrowStatement),
-    Try(TryStatement),
-    Switch(SwitchStatement),
-    Block(BlockStatement),
-    Empty(EmptyStatement),
-}
-```
+- Adding or modifying syntax.
+- A node needs extra fields for later stages.
+- Visitors miss a new construct and downstream passes silently ignore it.
 
-### Expressions (`expression.rs`)
-```rust
-pub enum Expression {
-    Identifier(Identifier),
-    IntLiteral(IntLiteral),
-    FloatLiteral(FloatLiteral),
-    StringLiteral(StringLiteral),
-    BooleanLiteral(BooleanLiteral),
-    NullLiteral(NullLiteral),
-    ArrayLiteral(ArrayLiteral),
-    ObjectLiteral(ObjectLiteral),
-    Binary(BinaryExpression),
-    Unary(UnaryExpression),
-    Assignment(AssignmentExpression),
-    Call(CallExpression),
-    Member(MemberExpression),
-    Index(IndexExpression),
-    Conditional(ConditionalExpression),
-    Arrow(ArrowFunction),
-    New(NewExpression),
-    This(ThisExpression),
-    Await(AwaitExpression),
-    TypeOf(TypeOfExpression),
-    InstanceOf(InstanceOfExpression),
-    As(AsExpression),
-    Parenthesized(ParenthesizedExpression),
-    Template(TemplateExpression),
-}
-```
+## Read Next
 
-### Type Annotations (`types.rs`)
-```rust
-pub enum Type {
-    Primitive(PrimitiveType),     // number, string, boolean, null, void
-    Reference(TypeReference),      // MyClass, Array<T>
-    Array(ArrayType),              // T[]
-    Tuple(TupleType),              // [T, U, V]
-    Function(FunctionType),        // (a: T) => U
-    Object(ObjectType),            // { x: T; y: U }
-    Union(UnionType),              // T | U
-    Intersection(IntersectionType),// T & U
-    Conditional(ConditionalType),  // T extends U ? V : W
-}
-```
+- Frontend semantics: [`../checker/CLAUDE.md`](../checker/CLAUDE.md)
+- Compiler consumption of syntax: [`../../compiler/lower/CLAUDE.md`](../../compiler/lower/CLAUDE.md)
 
-### Patterns (`pattern.rs`)
-```rust
-pub enum Pattern {
-    Identifier(Identifier),
-    Object(ObjectPattern),
-    Array(ArrayPattern),
-    Rest(RestPattern),
-}
-```
+## Things To Watch
 
-## Class Field Modifiers
-
-`FieldDecl` supports these modifiers:
-- `visibility`: `Public` (default), `Protected`, `Private`
-- `is_static`: `static` keyword
-- `is_readonly`: `readonly` keyword — field can only be assigned in the constructor
-
-`ObjectTypeProperty` supports `readonly: bool` for readonly properties in object type annotations:
-```typescript
-type Config = { readonly host: string; port: number; }
-```
-
-## Annotations
-
-AST nodes can have annotations (for features like JSON field mapping):
-```rust
-pub struct Annotation {
-    pub tag: String,      // e.g., "json"
-    pub args: Vec<String>, // e.g., ["user_name", "omitEmpty"]
-}
-
-// Usage: //@@json user_name omitEmpty
-```
-
-## Visitor Pattern
-
-```rust
-pub trait Visitor {
-    fn visit_module(&mut self, module: &Module);
-    fn visit_statement(&mut self, stmt: &Statement);
-    fn visit_expression(&mut self, expr: &Expression);
-    // ... etc
-}
-```
-
-## For AI Assistants
-
-- All nodes include `span: Span` for error reporting
-- Identifiers use `Symbol` (interned string reference)
-- Box is used for recursive structures to avoid infinite size
-- Annotations are parsed from special comments `//@@tag args...`
-- Visitor trait enables AST traversal without modifying nodes
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-engine/src/parser/ast`
-- Direct subdirectories: (none)
-- Direct files (excluding `CLAUDE.md`): expression.rs, pattern.rs, statement.rs, types.rs, visitor.rs
-- Rust files in this directory: expression.rs, pattern.rs, statement.rs, types.rs, visitor.rs
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- AST shape changes ripple outward quickly.
+- Every new node form needs parser support, visitor coverage, and often checker/lowerer updates.

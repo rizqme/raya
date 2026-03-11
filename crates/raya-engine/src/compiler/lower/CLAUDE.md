@@ -1,211 +1,38 @@
-# lower module
+# Compiler Lowering
 
-_Verified against source on 2026-03-06._
+This folder is where typed syntax becomes executable compiler IR. The parser and checker decide what the program means; the lowerer decides how to express that meaning in IR blocks, registers, and runtime calls.
 
-AST to IR lowering - transforms typed AST into three-address code IR.
+## What This Folder Owns
 
-## Module Structure
+- Converting AST nodes into IR instructions and control-flow blocks.
+- Preserving checker-derived type information so later stages can emit correct bytecode.
+- Choosing between static and dynamic/runtime fallback paths.
+- Lowering higher-level language features such as classes, decorators, JSX, closures, destructuring, and casts.
 
-```
-lower/
-├── mod.rs           # Lowerer struct, module lowering
-├── stmt.rs          # Statement lowering
-├── expr.rs          # Expression lowering
-└── control_flow.rs  # Control flow helpers
-```
+## File Guide
 
-## Key Types
+- `mod.rs`: central `Lowerer` state and shared lowering infrastructure.
+- `expr.rs`: expression lowering. Most feature bugs surface here first.
+- `stmt.rs`: statement lowering, scope-level execution flow, declarations, loops, try/catch, exports.
+- `control_flow.rs`: shared helpers for branching and loop block layout.
+- `class_methods.rs`: method/environment bridging for class bodies and captured outer scope behavior.
 
-### Lowerer
-```rust
-pub struct Lowerer<'a> {
-    type_ctx: &'a TypeContext,
-    interner: &'a Interner,
-    current_function: Option<IrFunction>,
-    current_block: BasicBlockId,
+## Start Here When
 
-    // Variable tracking
-    local_map: HashMap<Symbol, u16>,      // name -> local slot
-    local_registers: HashMap<u16, Register>,
+- Code parses and type-checks, but runtime behavior is wrong because the emitted program shape is wrong.
+- You need a new IR instruction or metadata to support a language feature.
+- Decorators, JSX, structural projection, casts, or late-bound member access change.
+- A feature works in the checker but loses type or shape information before codegen.
 
-    // Function/class maps
-    function_map: HashMap<Symbol, FunctionId>,
-    class_map: HashMap<Symbol, NominalTypeId>,
+## Read Next
 
-    // Closure support
-    captures: Vec<CaptureInfo>,
-    refcell_vars: HashSet<Symbol>,  // vars needing RefCell wrapping
+- IR data model: [`../ir/CLAUDE.md`](../ir/CLAUDE.md)
+- Optimization passes after lowering: [`../optimize/CLAUDE.md`](../optimize/CLAUDE.md)
+- Type information source: [`../../parser/checker/CLAUDE.md`](../../parser/checker/CLAUDE.md)
+- Type model details: [`../../parser/types/CLAUDE.md`](../../parser/types/CLAUDE.md)
 
-    // Loop support
-    loop_stack: Vec<LoopContext>,
+## Things To Watch
 
-    // ... more state
-}
-```
-
-## Lowering Process
-
-### Module Level
-```rust
-lowerer.lower_module(&ast_module) -> IrModule
-```
-
-1. **First pass**: Collect function/class declarations, assign IDs
-2. **Second pass**: Lower all declarations
-3. **Generate main**: Top-level statements become `main()` function
-
-### Statement Lowering (`stmt.rs`)
-
-```rust
-lowerer.lower_stmt(&stmt)
-```
-
-- `VariableDecl` → `StoreLocal`
-- `If` → Branch with then/else blocks
-- `While` → Loop with header/body/exit blocks
-- `For` → Similar to while with init/update
-- `Return` → `Terminator::Return`
-- `Throw` → `Terminator::Throw`
-- `Try/Catch` → `SetupTry`, `EndTry`, catch blocks
-- `FunctionDecl` with rest params (`...args`) → collect variadic args into array
-
-### Expression Lowering (`expr.rs`)
-
-```rust
-lowerer.lower_expr(&expr) -> Register
-```
-
-- Literals → `IrConstant`
-- Binary ops → `BinaryOp` instruction
-- Calls → `Call` or `NativeCall`
-- Member access → `LoadField`
-- Array index → `LoadElement`
-- Arrow functions → `MakeClosure` with captures
-- Optional parameters (`param?`) → default value initialization
-- `new` → `NewObject` + constructor call
-- `await` → `Await` instruction
-
-## Control Flow
-
-### If Statement
-```
-    [current block]
-         │
-         ▼
-    Branch(cond)
-     /         \
-    ▼           ▼
-[then_block] [else_block]
-     \         /
-      ▼       ▼
-    [merge_block]
-```
-
-### While Loop
-```
-    [current block]
-         │
-         ▼
-    [header_block] ◄───┐
-         │             │
-    Branch(cond)       │
-     /         \       │
-    ▼           ▼      │
-[body_block]  [exit]   │
-    │                  │
-    └──────────────────┘
-```
-
-## Closure Capture Analysis
-
-Before lowering a function, the lowerer scans for captured variables:
-
-```rust
-// Pre-scan to find variables captured by closures
-self.scan_for_captured_vars(&stmts, &locals);
-
-// Variables modified in closures need RefCell wrapping
-// for capture-by-reference semantics
-if self.refcell_vars.contains(&name) {
-    // Emit NewRefCell, LoadRefCell, StoreRefCell
-}
-```
-
-## Compiler Intrinsics (`expr.rs`)
-
-Certain method calls that take callbacks are lowered to **inline loops** instead of `CallMethod`. This avoids nested execution — callbacks execute as normal frames on the main interpreter stack.
-
-### Array Callback Intrinsics (expr.rs:1028-1040)
-
-Detected by `ARRAY_CALLBACK_METHODS` list, handled by `lower_array_intrinsic()` (expr.rs:1078):
-
-- `map`, `filter`, `reduce`, `forEach`, `find`, `findIndex`, `some`, `every`, `sort`
-
-Pattern: array length → for-loop → `CallClosure(callback, [element, index])` → accumulate result.
-
-### replaceWith Intrinsic (expr.rs:1045-1050)
-
-Detected by `REPLACE_WITH_METHODS` list, handled by `lower_replace_with_intrinsic()` (expr.rs:2139):
-
-- `string.replaceWith(regexp, callback)` (native ID 0x0217)
-- `regexp.replaceWith(string, callback)` (native ID 0x0A05)
-
-Pattern: `NativeCall(REGEXP_REPLACE_MATCHES)` → get match array → for-loop → `CallClosure(callback, [match])` → string concatenation.
-
-### Why Intrinsics
-
-These methods take callback closures. Without intrinsics, they would require a nested executor loop (the deleted `execute_nested_function`). By inlining the loop at IR level, `CallClosure` compiles to `OpcodeResult::PushFrame` — the callback runs as a normal frame in `Interpreter::run()`, with full suspend/await/exception support.
-
-## Nested Classes
-
-Classes declared inside function bodies are handled via:
-1. `register_class()` — extracted method for class registration (ID assignment, field/method/vtable setup)
-2. `pending_classes: Vec<IrClass>` — stores lowered nested classes, drained in `lower_module`
-3. Save/restore of all per-function state around `lower_class()` call (same pattern as `lower_arrow`)
-
-## Default Parameters
-
-`emit_default_params()` emits null-check + default-value assignment at function entry for params with defaults. Called from `lower_function`, method/constructor lowering in `lower_class`, and `lower_arrow`.
-
-## Object Literals
-
-`lower_object()` registers field layout in `register_object_fields` so object destructuring can resolve field names to indices. `lower_identifier()` propagates `variable_object_fields` to the loaded register.
-
-Object spread (`{ ...obj }`) is lowered via static field-copy expansion:
-- Source fields are resolved at compile time (variable/register metadata, class layout, or type info).
-- Lowering emits `LoadField` + `StoreField` copies in source order (no JSON merge path).
-- Typed initializer contexts (`let x: T = { ...obj }`) set an object-spread filter so only fields in `T` are copied from spread operands.
-
-## For AI Assistants
-
-- Lowering produces IR with explicit control flow (basic blocks)
-- Variables become local slots (u16 indices)
-- Closures capture variables, possibly via RefCell for mutations
-- Async functions are marked, become `Spawn` at call sites
-- Loop variables captured by closures get per-iteration RefCells
-- Method calls are lowered to `CallMethod` with receiver
-- For `Expression::Index`, class inference must use the **element type** (not the container class).  
-  Returning the container class (e.g. `Array`) for `arr[i]` can misroute primitive method calls
-  like `arr[i].toString()` to object/vtable dispatch and cause runtime `Expected object for method call`.
-- **Nested classes** in function bodies: save/restore function state around `lower_class()`, use `register_class()` + `pending_classes`
-- **Default params**: null-check at function entry via `emit_default_params()`
-- **Object literals**: field layout tracked in `register_object_fields` for destructuring
-- **Object spread**: uses static `LoadField`/`StoreField` expansion; unsupported dynamic spread shapes raise compile-time lowering errors.
-- **Array callback methods** (map/filter/reduce/forEach/find/findIndex/some/every/sort) are compiler intrinsics — NOT runtime CallMethod
-- **replaceWith** is also a compiler intrinsic — uses REGEXP_REPLACE_MATCHES + inline loop
-- When adding new callback-taking methods, follow the intrinsic pattern in `lower_array_intrinsic()`
-- `as T` lowering emits runtime `Cast` instructions when `T` is runtime-checkable
-  (class targets and supported runtime kind masks). Cast checks happen at cast
-  sites, not on every later operation.
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-engine/src/compiler/lower`
-- Direct subdirectories: (none)
-- Direct files (excluding `CLAUDE.md`): class_methods.rs, control_flow.rs, expr.rs, mod.rs, stmt.rs
-- Rust files in this directory: class_methods.rs, control_flow.rs, expr.rs, mod.rs, stmt.rs
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- Pointer-based and span-based type lookup both matter because some expressions are cloned during lowering.
+- New lowering behavior often requires matching VM support, not just IR changes.
+- If you add a new emitted instruction shape, confirm codegen knows how to serialize it.

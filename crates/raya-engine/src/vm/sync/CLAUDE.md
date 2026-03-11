@@ -1,158 +1,29 @@
-# sync module
+# VM Sync
 
-_Verified against source on 2026-03-06._
+This folder implements synchronization primitives for Raya tasks. These are runtime-level coordination tools, not OS-thread locks for Rust internals.
 
-Task-aware synchronization primitives for Raya.
+## What This Folder Owns
 
-## Overview
+- Task-aware mutexes and guards.
+- Task-aware semaphores.
+- Global registries used to look them up by id at runtime.
+- Serialization support for snapshot/restore paths.
 
-Provides synchronization primitives that work with the task scheduler, blocking tasks (not OS threads) when contended.
+## File Guide
 
-## Module Structure
+- `mutex.rs` and `guard.rs`: mutex behavior and guard types.
+- `semaphore.rs`: semaphore behavior and blocking semantics.
+- `registry.rs`: registries for mutexes and semaphores.
+- `mutex_id.rs`: id types and generation.
+- `serialize.rs`: snapshot-facing serialized sync state.
 
-```
-sync/
-├── mod.rs     # Re-exports
-└── mutex.rs   # Mutex implementation
-```
+## Start Here When
 
-## Mutex
+- Locking or semaphore behavior is wrong.
+- A task blocks or wakes incorrectly around synchronization primitives.
+- Snapshot restoration needs to preserve sync state.
 
-### MutexId
-```rust
-#[derive(Copy, Clone, Eq, Hash)]
-pub struct MutexId(u32);
-```
+## Read Next
 
-### Mutex
-```rust
-pub struct Mutex {
-    id: MutexId,
-    locked: AtomicBool,
-    owner: Option<TaskId>,
-    wait_queue: VecDeque<TaskId>,
-}
-
-mutex.lock(task_id) -> Result<MutexGuard, MutexError>
-mutex.try_lock(task_id) -> Option<MutexGuard>
-mutex.unlock(task_id) -> Result<(), MutexError>
-```
-
-### MutexGuard
-```rust
-pub struct MutexGuard<'a> {
-    mutex: &'a Mutex,
-    task_id: TaskId,
-}
-
-impl Drop for MutexGuard {
-    fn drop(&mut self) {
-        self.mutex.unlock(self.task_id).unwrap();
-    }
-}
-```
-
-### MutexRegistry
-```rust
-pub struct MutexRegistry {
-    mutexes: HashMap<MutexId, Mutex>,
-    next_id: AtomicU32,
-}
-
-registry.create() -> MutexId
-registry.get(id) -> Option<&Mutex>
-registry.lock(id, task_id) -> Result<(), MutexError>
-registry.unlock(id, task_id) -> Option<TaskId>  // Returns next waiter
-```
-
-## Task-Aware Blocking
-
-When a task tries to lock a held mutex:
-
-```
-Task A                    Task B
-   │                         │
-   ▼                         │
-lock(mutex) ────────────►   │
-   │                         │
-   ▼                         │
-[Acquired]                   │
-   │                         ▼
-   │                    lock(mutex)
-   │                         │
-   │                         ▼
-   │                    [Blocked]
-   │                    (task parked)
-   │                         │
-unlock(mutex) ◄─────────    │
-   │                         │
-   │    (resume Task B)      │
-   │                         ▼
-   │                    [Acquired]
-```
-
-The scheduler handles this:
-```rust
-scheduler.block_on_mutex(task_id, mutex_id)
-scheduler.resume_from_mutex(task_id)
-```
-
-## Error Handling
-
-```rust
-pub enum MutexError {
-    NotOwner,           // Unlock by non-owner
-    DoubleLock,         // Same task locking twice
-    NotFound,           // Invalid mutex ID
-    Poisoned,           // Owner task panicked
-}
-```
-
-## Bytecode Integration
-
-```
-// lock(mutex)
-LOAD_LOCAL 0          // Load mutex reference
-NATIVE_CALL MUTEX_LOCK
-
-// Critical section
-...
-
-// unlock(mutex)
-LOAD_LOCAL 0
-NATIVE_CALL MUTEX_UNLOCK
-```
-
-## Snapshot Support
-
-Mutexes are serialized in snapshots:
-```rust
-pub struct MutexSnapshot {
-    id: MutexId,
-    locked: bool,
-    owner: Option<TaskId>,
-    waiters: Vec<TaskId>,
-}
-```
-
-## For AI Assistants
-
-- Mutexes block tasks, NOT OS threads
-- FIFO wait queue for fairness
-- MutexGuard provides RAII unlock
-- Scheduler integration for blocking/resuming
-- No reader-writer locks yet (Mutex only)
-- Mutex IDs are stable across snapshots
-- Deadlock detection is NOT implemented
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-engine/src/vm/sync`
-- Direct subdirectories: (none)
-- Direct files (excluding `CLAUDE.md`): guard.rs, mod.rs, mutex.rs, mutex_id.rs, registry.rs, semaphore.rs, serialize.rs
-- Rust files in this directory: guard.rs, mod.rs, mutex.rs, mutex_id.rs, registry.rs, semaphore.rs, serialize.rs
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- Scheduler that suspends/resumes blocked tasks: [`../scheduler/CLAUDE.md`](../scheduler/CLAUDE.md)
+- Interpreter integration: [`../interpreter/CLAUDE.md`](../interpreter/CLAUDE.md)

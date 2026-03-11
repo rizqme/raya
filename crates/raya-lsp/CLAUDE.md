@@ -1,80 +1,12 @@
 # raya-lsp
 
-_Verified against source on 2026-03-06._
+This crate is reserved for the language-server implementation. Today it is mostly a placeholder, but this is still the right place for editor/LSP protocol logic rather than putting that behavior into the CLI or engine crates.
 
-Language Server Protocol (LSP) implementation for Raya.
+## Layout
 
-## Overview
+- `src/lib.rs`: current placeholder entrypoint.
 
-This crate provides IDE support for Raya through the Language Server Protocol, enabling features like:
-- Syntax highlighting
-- Code completion
-- Go to definition
-- Find references
-- Hover information
-- Diagnostics (errors/warnings)
-- Code actions (quick fixes)
+## Start Here When
 
-## Implementation Status
-
-**Status: Placeholder**
-
-The crate is currently empty, awaiting implementation.
-
-## Planned Features
-
-### Phase 1: Basic Support
-- [ ] Syntax error reporting
-- [ ] Type error diagnostics
-- [ ] Go to definition
-- [ ] Hover for type information
-
-### Phase 2: Enhanced Features
-- [ ] Code completion
-- [ ] Find all references
-- [ ] Rename symbol
-- [ ] Document symbols
-
-### Phase 3: Advanced Features
-- [ ] Code actions (quick fixes)
-- [ ] Code lens
-- [ ] Semantic highlighting
-- [ ] Formatting integration
-
-## Dependencies
-
-- `raya-engine`: For parsing and type checking
-- `tower-lsp`: LSP protocol implementation
-- `tokio`: Async runtime
-
-## Architecture
-
-```
-raya-lsp
-├── server.rs      # LSP server setup
-├── handlers.rs    # Request/notification handlers
-├── document.rs    # Document management
-├── completion.rs  # Completion provider
-├── diagnostics.rs # Error reporting
-└── hover.rs       # Hover information
-```
-
-## For AI Assistants
-
-- This crate is currently a placeholder
-- Implementation should use `tower-lsp` crate
-- Reuse `raya-engine::parser` for lexing/parsing
-- Reuse `raya-engine::parser::checker` for type information
-- Reference VS Code LSP extension examples
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-lsp`
-- Direct subdirectories: src
-- Direct files (excluding `CLAUDE.md`): Cargo.toml
-- Rust files in this directory: (none)
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- Implementing LSP features, requests, or server startup.
+- Adding types shared with the CLI `lsp` command.

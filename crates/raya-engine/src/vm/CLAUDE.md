@@ -1,166 +1,44 @@
-# vm module
+# VM
 
-_Verified against source on 2026-03-06._
+This folder executes bytecode and holds the runtime object model. It is where compiled Raya programs become running tasks, heap objects, native calls, and suspension/resume events.
 
-Raya Virtual Machine runtime: interpreter, scheduler, GC, and runtime support.
+## Runtime Shape
 
-## Module Structure
+The VM is not just "the interpreter". Execution depends on:
 
-```
-vm/
-├── mod.rs              # Entry point, VmError, re-exports
-├── value.rs            # Value representation (enum: Null, Bool, I32, I64, F64, Object, Array, String, Closure, Task, ...)
-├── object.rs           # Object model (Class, Array, RayaString, Closure, Buffer, Map, Set, etc.)
-├── stack.rs            # Call frames, operand stack
-├── builtin.rs          # Native ID constants (all ranges: 0x01xx-0x6000+)
-├── abi.rs              # Internal ABI (NativeContext, NativeValue, allocation/class/task helpers)
-├── native_handler.rs   # NativeHandler trait, NativeCallResult, NoopNativeHandler
-├── native_registry.rs  # NativeFunctionRegistry, ResolvedNatives (name-based dispatch)
-│
-├── interpreter/        # Single-executor bytecode interpreter
-│   ├── core.rs         # Interpreter struct, main run() loop
-│   ├── shared_state.rs # SharedVmState (concurrent state)
-│   ├── vm_facade.rs    # Vm public API
-│   ├── context.rs      # VmContext, VmOptions, ResourceLimits
-│   ├── execution.rs    # ExecutionResult, OpcodeResult, ControlFlow
-│   ├── opcodes/        # 15 categorized opcode handler modules
-│   ├── handlers/       # Native method handlers (array, string, regexp, reflect)
-│   └── ...             # marshal, capabilities, safepoint, module_registry, class_registry
-│
-├── scheduler/          # Unified reactor scheduler (single control thread + VM/IO workers)
-├── gc/                 # Garbage collector
-├── sync/               # Synchronization primitives (Mutex, MutexRegistry)
-├── snapshot/           # VM snapshotting
-├── module/             # Module loading and linking
-├── reflect/            # Reflection API runtime support
-│   ├── class_metadata.rs  # ClassMetadataRegistry
-│   ├── introspection.rs   # Type info, class hierarchy
-│   ├── metadata.rs        # MetadataStore for user metadata
-│   ├── snapshot.rs        # ObjectSnapshot, ObjectDiff
-│   ├── proxy.rs           # Proxy detection and trap dispatch
-│   ├── type_builder.rs    # Dynamic class creation (Phase 10)
-│   ├── generic_metadata.rs # Generic type tracking (Phase 13)
-│   ├── runtime_builder.rs # Runtime type creation (Phase 14)
-│   ├── bytecode_builder.rs # Dynamic bytecode generation (Phase 15)
-│   ├── function_builder.rs # FunctionWrapper, DecoratorRegistry (M3.9)
-│   ├── permissions.rs     # Security & permissions (Phase 16)
-│   ├── dynamic_module.rs  # Dynamic module system (Phase 17)
-│   └── bootstrap.rs       # Bootstrap context (Phase 17)
-├── (jit integration)   # Vm has optional jit_engine field (#[cfg(feature = "jit")])
-├── builtins/           # Global native handlers
-│   └── handlers/
-│       ├── runtime.rs  # std:runtime method handlers
-│       └── reflect.rs  # Global reflect registries (BytecodeBuilder, ClassBuilder)
-├── json/               # JSON parsing and serialization
-└── ffi/                # Foreign function interface
-```
+- bytecode definitions from the compiler
+- shared runtime state and object/value layout
+- task scheduling and suspension
+- garbage collection
+- module linking
+- reflection and native interop
 
-## Native ID Overview
+## Main Areas
 
-| Range | Module | Description |
-|-------|--------|-------------|
-| 0x00xx | Object | hashCode, equals, toString |
-| 0x01xx | Array | push, pop, shift, slice, sort, map, filter, splice, etc. |
-| 0x02xx | String | charAt, substring, indexOf, split, replace, etc. |
-| 0x03xx | Mutex | lock, unlock |
-| 0x04xx | Channel | send, receive, close, tryReceive, etc. |
-| 0x05xx | Task | isDone, isCancelled |
-| 0x07xx | Buffer | alloc, read/write, slice, copy, etc. |
-| 0x08xx | Map | get, set, has, delete, keys, values, etc. |
-| 0x09xx | Set | add, has, delete, values, etc. |
-| 0x0Axx | RegExp | test, exec, match, matchAll, replace, replaceMatches |
-| 0x0Bxx | Date | getYear, getMonth, format, parse, etc. |
-| 0x0D00-0x0E2F | Reflect | Phases 1-17 (149+ handlers) |
-| 0x0Fxx | Number | toFixed, toPrecision, toString(radix) |
-| 0x1000-0x1003 | Logger (stdlib) | debug, info, warn, error |
-| 0x2000-0x2016 | Math (stdlib) | abs, floor, ceil, sin, cos, sqrt, random, etc. |
-| 0x3000-0x30FF | Runtime (stdlib) | Compiler, Bytecode, Vm, Parser, TypeChecker |
-| 0x4000-0x400B | Crypto (stdlib) | hash, hmac, randomBytes, toHex, toBase64, etc. |
-| 0x5000-0x5004 | Time (stdlib) | now, monotonic, hrtime, elapsed, sleep |
-| 0x6000-0x600C | Path (stdlib) | join, normalize, dirname, basename, resolve, etc. |
+- [`interpreter/CLAUDE.md`](interpreter/CLAUDE.md): execution loop, VM facade, shared runtime state.
+- [`scheduler/CLAUDE.md`](scheduler/CLAUDE.md): task scheduling and IO/worker coordination.
+- [`gc/CLAUDE.md`](gc/CLAUDE.md): allocation, collection, and root discovery.
+- [`module/CLAUDE.md`](module/CLAUDE.md): runtime import/export resolution and linking.
+- [`reflect/CLAUDE.md`](reflect/CLAUDE.md): reflection metadata, proxies, runtime builders.
+- [`ffi/CLAUDE.md`](ffi/CLAUDE.md): C ABI and native module loading.
+- [`snapshot/CLAUDE.md`](snapshot/CLAUDE.md): serialized VM pause/resume state.
+- [`sync/CLAUDE.md`](sync/CLAUDE.md): task-aware mutexes and semaphores.
 
-## Key Types
+## Top-Level Files
 
-### Value
-```rust
-pub enum Value {
-    Null, Bool(bool), I32(i32), I64(i64), F64(f64),
-    Object(ObjectRef), Array(ArrayRef), String(StringRef),
-    Closure(ClosureRef), Task(TaskRef), ...
-}
-```
+- `builtin.rs` and `builtins/`: builtin ids and embedded runtime surfaces.
+- `native_handler.rs` and `native_registry.rs`: native dispatch traits and registries.
+- `value.rs` and `object.rs`: runtime value/object model.
+- `types/`, `stack.rs`, `abi.rs`: runtime type info, call stack, ABI helpers.
+- `json/` and `defaults.rs`: JSON/type-schema helpers and VM defaults.
 
-## Submodules
+## How To Choose A Subfolder
 
-### `interpreter/` - Single Executor
-See [interpreter/CLAUDE.md](interpreter/CLAUDE.md).
-- Single `Interpreter::run()` entry point
-- 15 opcode modules, 4 native handler modules
-- Frame-based execution (no nesting)
-
-### `scheduler/` - Unified Reactor + Worker Pools
-See [scheduler/CLAUDE.md](scheduler/CLAUDE.md).
-- Single-threaded reactor (control loop) + VM worker pool + IO worker pool
-- Task preemption (Go-style async)
-- Blocking IO offloaded to IO pool via `Suspend(BlockingWork)`
-- Task spawn optimization: lazy stacks, stack pooling, mutex consolidation
-
-### `gc/` - Garbage Collector
-See [gc/CLAUDE.md](gc/CLAUDE.md).
-- Mark-sweep collection with nursery allocator
-- Per-task 64KB bump allocator (reduces GC lock contention)
-- Object roots tracking
-- Promotion to shared heap on escape
-
-### `reflect/` - Reflection API Runtime
-- Phases 1-17 implemented (metadata, introspection, proxies, dynamic code, permissions)
-- Native IDs: 0x0D00-0x0E2F (see `builtin.rs`)
-- See `vm/reflect/CLAUDE.md` for detailed implementation info
-
-## Execution Model
-
-### Stack-Based
-```
-// CONST_I32 42
-Stack: [..., 42]
-
-// LOAD_LOCAL 0
-Stack: [..., 42, local[0]]
-
-// IADD
-Stack: [..., result]  // result = 42 + local[0]
-```
-
-### Task-Based Concurrency
-```typescript
-async function work() { ... }
-const task = work();  // Spawns task immediately
-const result = await task;  // Suspends current task
-```
-
-## For AI Assistants
-
-- VM is stack-based with local variable slots
-- Tasks are green threads, not OS threads (optimized spawn with lazy stacks + pooling)
-- Scheduler uses a unified reactor control loop with VM/IO worker pools
-- Objects have vtables for method dispatch
-- Values are NaN-boxed (64-bit tagged), not heap-boxed for primitives
-- **Nursery allocator**: per-task 64KB bump allocator for short-lived objects (no GC lock)
-- Native calls use `NativeCall` opcode + native ID (dispatched in `interpreter/opcodes/native.rs`)
-- JIT integration: `Vm` has optional `jit_engine` field (`#[cfg(feature = "jit")]`), enable via `vm.enable_jit()`. Pre-warms hot functions at module load time. Supports loops (RPO lifting, Phi insertion, deferred block sealing). Adaptive compilation via background thread with profile-guided thresholds.
-- Stdlib native calls delegate to `NativeHandler` trait (implemented by `StdNativeHandler` in raya-stdlib)
-- `ModuleNativeCall` uses `NativeFunctionRegistry` for name-based dispatch
-- Exception handling uses try/catch blocks in bytecode
-- **Builtin classes**: lowercase files (array.raya, string.raya), centralized TypeRegistry dispatch
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-engine/src/vm`
-- Direct subdirectories: builtins, ffi, gc, interpreter, json, module, reflect, scheduler, snapshot, sync, types
-- Direct files (excluding `CLAUDE.md`): abi.rs, builtin.rs, defaults.rs, mod.rs, native_handler.rs, native_registry.rs, object.rs, stack.rs, value.rs
-- Rust files in this directory: abi.rs, builtin.rs, defaults.rs, mod.rs, native_handler.rs, native_registry.rs, object.rs, stack.rs, value.rs
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- Wrong opcode behavior or VM control flow: go to [`interpreter`](interpreter/CLAUDE.md).
+- Task starvation, preemption, or blocking issues: go to [`scheduler`](scheduler/CLAUDE.md).
+- Memory leaks or invalid collection: go to [`gc`](gc/CLAUDE.md).
+- Import/export resolution at runtime: go to [`module`](module/CLAUDE.md).
+- Reflection, decorators, dynamic builders, proxies: go to [`reflect`](reflect/CLAUDE.md).
+- C/native module boundary issues: go to [`ffi`](ffi/CLAUDE.md).
+- Paused VM transfer or snapshot compatibility: go to [`snapshot`](snapshot/CLAUDE.md).
+- Mutex/semaphore behavior: go to [`sync`](sync/CLAUDE.md).

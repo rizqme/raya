@@ -1,97 +1,41 @@
-# Crates Overview
+# Workspace Crates
 
-_Verified against source on 2026-03-06._
+This directory contains the Rust crates that make up the Raya toolchain. They are not peers in practice; they form a stack.
 
-This directory contains all Rust crates that make up the Raya language implementation.
+## Dependency Shape
 
-## Crate Hierarchy
+Read the workspace roughly like this:
 
-```
-crates/
-├── raya-engine/     # Core language engine (parser, compiler, VM)
-├── raya-runtime/    # High-level Runtime API (compile, load, execute, eval, deps)
-├── raya-stdlib/     # Standard library native implementations
-├── raya-cli/        # Command-line interface
-├── raya-lsp/        # Language Server Protocol (LSP) server
-├── raya-pm/         # Package manager
-├── raya-sdk/        # Lightweight SDK for native modules
-├── raya-native/     # Proc-macros for native module development
-└── raya-examples/   # Example Raya apps + CLI-driven e2e tests
-```
+`raya-cli` -> `raya-runtime` -> `raya-engine`
 
-## Crate Dependencies
+`raya-runtime` also binds:
 
-```
-raya-cli ──────────────────┬─> raya-runtime (engine + stdlib)
-                           ├─> raya-pm (package management)
-                           └─> raya-lsp (LSP server)
+- `raya-stdlib`
+- `raya-stdlib-posix`
+- `raya-pm`
 
-raya-runtime ─────────────┬─> raya-engine (core engine)
-                           ├─> raya-stdlib (native implementations)
-                           ├─> raya-stdlib-posix (POSIX natives)
-                           └─> raya_pm (manifest parsing, URL cache)
+Native extension authors work mostly against:
 
-raya-engine ───────────────┬─> (defines NativeHandler trait)
-                           ├─> (no dependency on stdlib)
-                           ├─> cranelift-* (optional, behind "jit" feature)
-                           └─> cranelift-* (optional, behind "aot" feature)
+- `raya-sdk`
+- `raya-native`
 
-raya-stdlib ───────────────┬─> raya-sdk (FFI types)
-                           └─> raya-native (proc-macros)
+## Crate Guide
 
-Third-party native modules ┬─> raya-sdk (FFI types only)
-                           └─> raya-native (proc-macros)
-```
+- [`raya-engine/CLAUDE.md`](raya-engine/CLAUDE.md): source of truth for parsing, typing, compilation, bytecode, and VM behavior.
+- [`raya-runtime/CLAUDE.md`](raya-runtime/CLAUDE.md): the main API for compiling files, resolving dependencies, creating VMs, and running code.
+- [`raya-cli/CLAUDE.md`](raya-cli/CLAUDE.md): clap command tree and command implementations for the `raya` binary.
+- [`raya-stdlib/CLAUDE.md`](raya-stdlib/CLAUDE.md): cross-platform native stdlib modules such as math, crypto, url, and path.
+- [`raya-stdlib-posix/CLAUDE.md`](raya-stdlib-posix/CLAUDE.md): filesystem, process, networking, terminal, watch, and other OS-bound modules.
+- [`raya-pm/CLAUDE.md`](raya-pm/CLAUDE.md): manifests, lockfiles, semver, package caches, and URL cache logic.
+- [`raya-sdk/CLAUDE.md`](raya-sdk/CLAUDE.md): ABI-facing types and traits used by stdlib and third-party native modules.
+- [`raya-native/CLAUDE.md`](raya-native/CLAUDE.md): proc-macros that generate glue code for native modules.
+- [`raya-examples/CLAUDE.md`](raya-examples/CLAUDE.md): fixture apps and integration scenarios used by tests.
+- [`raya-lsp/CLAUDE.md`](raya-lsp/CLAUDE.md): currently minimal; future LSP implementation lives there.
 
-## Crate Purposes
+## How To Pick A Crate
 
-| Crate | Purpose | Status |
-|-------|---------|--------|
-| `raya-engine` | Full language engine: parser, compiler, VM, JIT + AOT (feature-gated) | Active development |
-| `raya-runtime` | High-level Runtime API + bundle format: compile, load, execute, eval, dependency resolution; hosts e2e tests | ✅ Complete (Runtime struct, 1,297 e2e + 15 bundle tests) |
-| `raya-stdlib` | Cross-platform native stdlib (logger, math, crypto, url, encoding, semver, template, etc.) | ✅ 14 modules |
-| `raya-stdlib-posix` | POSIX native stdlib (fs, net, http, process, dns, terminal, ws, etc.) | ✅ 15 modules |
-| `raya-cli` | `raya` CLI tool (run, build, eval, pkg, etc.) | ✅ run/build/eval implemented (19 integration tests) |
-| `raya-lsp` | Language server for IDE support | Placeholder |
-| `raya-pm` | Package manager (cache, resolution, manifests, URL imports) | ✅ Complete |
-| `raya-sdk` | Minimal types for native module FFI | ✅ Complete |
-| `raya-native` | Proc-macros: `#[function]`, `#[module]` | ✅ Complete |
-| `raya-examples` | Example Raya applications and CLI HTTP e2e tests | Active |
-
-## Key Design Decisions
-
-1. **Consolidated Engine**: Parser, compiler, and VM are in one crate (`raya-engine`) for easier development and internal API changes.
-
-2. **Engine/Stdlib Decoupling** (M4.2): `raya-engine` defines a `NativeHandler` trait but does NOT depend on `raya-stdlib`. The `raya-runtime` crate binds them together via `StdNativeHandler` and exposes a high-level `Runtime` API for compile/load/execute/eval.
-
-3. **Minimal SDK**: `raya-sdk` contains only FFI types (`NativeValue`, `NativeModule`, traits). Third-party native modules only depend on this crate.
-
-4. **Proc-Macro Separation**: `raya-native` is a separate proc-macro crate due to Rust's compilation model.
-
-5. **Package Manager Independence**: `raya-pm` is separate so it can be used without the full engine.
-
-## For AI Assistants
-
-When working on Raya:
-- **Most changes** go in `raya-engine` - it's the core of everything
-- **Cross-platform stdlib** goes in `raya-stdlib` (math, crypto, url, encoding, etc.)
-- **OS-dependent stdlib** goes in `raya-stdlib-posix` (fs, net, http, process, etc.)
-- **E2E tests** live in `raya-runtime` (moved from engine in M4.2)
-- **CLI commands** go in `raya-cli/src/commands/` — run/build/eval are wired through `raya-runtime::Runtime`, pkg/clean/info also functional
-- **Native module development** uses `raya-sdk` + `raya-native`
-- **Package resolution** logic is in `raya-pm`
-- **Example app fixtures + CLI e2e** live in `raya-examples`
-
-See each crate's `CLAUDE.md` for detailed guidance.
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates`
-- Direct subdirectories: raya-cli, raya-engine, raya-examples, raya-lsp, raya-native, raya-pm, raya-runtime, raya-sdk, raya-stdlib, raya-stdlib-node, raya-stdlib-posix
-- Direct files (excluding `CLAUDE.md`): (none)
-- Rust files in this directory: (none)
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- If a change affects the language semantics, start in `raya-engine`.
+- If a change affects how users run, build, or test programs, start in `raya-runtime`.
+- If a change is just command UX or flag wiring, start in `raya-cli`.
+- If a native std module behaves incorrectly, go to the relevant stdlib crate.
+- If a dependency path, lockfile, or cache is wrong, go to `raya-pm`.

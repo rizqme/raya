@@ -1,109 +1,33 @@
 # raya-sdk
 
-_Verified against source on 2026-03-06._
+This crate is the ABI-facing contract for native modules. It is intentionally smaller and more stable than the engine crate so stdlib code and third-party modules can depend on it without pulling in the whole VM implementation.
 
-SDK for writing Raya native modules and stdlib implementations.
+## What This Crate Owns
 
-## Overview
+- `NativeValue` and related conversion traits.
+- `NativeContext` abstraction for VM services exposed to native code.
+- `NativeHandler` and name-based native function registries.
+- Suspend/completion types for blocking or async-style native work.
+- Wrapper types for arrays, objects, classes, and tasks.
 
-This crate provides types and traits needed to write Raya native modules **without** depending on the full `raya-engine`. Both the core stdlib (`raya-stdlib`) and platform-specific stdlib (`raya-stdlib-posix`) depend on this crate.
+## Layout
 
-## Key Types
+- `src/value.rs`: `NativeValue`.
+- `src/context.rs`: `NativeContext` and related traits.
+- `src/handler.rs`: handler traits, registries, suspend/completion types.
+- `src/types.rs`: wrappers around object-like runtime values.
+- `src/convert.rs`: Rust-object conversion helpers.
+- `src/error.rs`: native/ABI error types.
+- `src/lib.rs`: public re-exports and backward-compatible helpers.
 
-### NativeValue
+## Start Here When
 
-Opaque value type for native handlers. Uses a tagged union internally.
+- Native handlers need new capabilities from the VM.
+- Value conversion semantics need to change.
+- Stdlib and third-party modules both need a shared ABI feature.
 
-```rust
-NativeValue::null() / .bool(v) / .i32(v) / .i64(v) / .f64(v)
-value.is_null() / .as_bool() / .as_i32() / .as_f64()
-```
+## Read Next
 
-### NativeContext (trait)
-
-VM context passed to native handlers — provides GC allocation, string/buffer access, channel operations, and scheduler access without engine dependency.
-
-```rust
-ctx.read_string(val) -> Result<String>    // Read a GC string
-ctx.create_string(&s) -> NativeValue      // Allocate a GC string
-ctx.create_buffer(&[u8]) -> NativeValue   // Allocate a GC buffer
-ctx.create_array(&[NativeValue]) -> NativeValue
-ctx.channel_send(ch, val) / ctx.channel_receive(ch)
-```
-
-### NativeCallResult
-
-```rust
-pub enum NativeCallResult {
-    Value(NativeValue),       // Synchronous return
-    Unhandled,                // ID not recognized
-    Error(String),            // Runtime error
-    Suspend(IoRequest),       // Yield to reactor (non-blocking IO)
-}
-```
-
-### IoRequest / IoCompletion
-
-For non-blocking IO via the reactor's worker pool:
-
-```rust
-pub enum IoRequest {
-    BlockingWork { work: Box<dyn FnOnce() -> IoCompletion + Send> },
-    ChannelReceive { channel }, ChannelSend { channel, value },
-    NetAccept { handle }, NetRead { handle, max_bytes }, NetWrite { handle, data },
-    NetConnect { addr }, Sleep { duration_nanos },
-}
-
-pub enum IoCompletion {
-    Bytes(Vec<u8>), String(String), Primitive(NativeValue),
-    StringArray(Vec<String>), Error(String),
-}
-```
-
-### NativeHandler (trait) / NativeFunctionRegistry
-
-```rust
-trait NativeHandler: Send + Sync {
-    fn call(&self, ctx: &dyn NativeContext, id: u16, args: &[NativeValue]) -> NativeCallResult;
-}
-
-// Name-based dispatch for ModuleNativeCall
-registry.register("fs.readFile", |ctx, args| { ... });
-```
-
-## BlockingWork Pattern
-
-Handlers that do IO return `Suspend(BlockingWork)` so the reactor runs the work on the IO pool, keeping VM workers free:
-
-```rust
-fn read_file(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let path = ctx.read_string(args[0]).unwrap();  // Extract BEFORE closure
-    NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {  // ctx is NOT available here (not Send)
-            match std::fs::read(&path) {
-                Ok(data) => IoCompletion::Bytes(data),
-                Err(e) => IoCompletion::Error(e.to_string()),
-            }
-        })
-    })
-}
-```
-
-## For AI Assistants
-
-- This crate is the dependency boundary — `raya-stdlib` and `raya-stdlib-posix` depend on this, NOT on `raya-engine`
-- `NativeContext` is NOT Send — extract all data from it BEFORE creating BlockingWork closures
-- `IoCompletion::StringArray` is for operations like `readDir` that return `string[]`
-- `IoRequest::Sleep` exists but currently sleep uses `BlockingWork` with `thread::sleep`
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-sdk`
-- Direct subdirectories: src
-- Direct files (excluding `CLAUDE.md`): Cargo.toml
-- Rust files in this directory: (none)
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- Engine FFI boundary: [`../raya-engine/src/vm/ffi/CLAUDE.md`](../raya-engine/src/vm/ffi/CLAUDE.md)
+- Macro-based authoring: [`../raya-native/CLAUDE.md`](../raya-native/CLAUDE.md)
+- Stdlib consumers: [`../raya-stdlib/CLAUDE.md`](../raya-stdlib/CLAUDE.md)

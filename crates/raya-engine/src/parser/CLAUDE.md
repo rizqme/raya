@@ -1,115 +1,34 @@
-# parser module
+# Parser
 
-_Verified against source on 2026-03-06._
+This folder is the language frontend. It turns source text into tokens, AST, symbols, types, and diagnostics that the compiler can trust.
 
-Frontend of the Raya compiler: lexer, parser, type system, and type checker.
+## Frontend Flow
 
-## Module Structure
+The main path is:
 
-```
-parser/
-├── mod.rs         # Module entry, re-exports
-├── token.rs       # Token definitions, Span
-├── lexer.rs       # Tokenization
-├── interner.rs    # String interning (Symbol)
-├── ast/           # Abstract Syntax Tree
-├── parser/        # Recursive descent parser
-├── types/         # Type system representation
-└── checker/       # Type checking and inference
-```
+source text -> lexer/token stream -> parser/AST -> binder/checker -> typed AST + inferred type maps
 
-## Submodules
+## Main Areas
 
-### `token.rs`
-Token definitions and source spans.
-```rust
-pub enum Token { ... }
-pub struct Span { start, end, line, column }
+- [`ast/CLAUDE.md`](ast/CLAUDE.md): syntax tree node definitions and visitors.
+- [`types/CLAUDE.md`](types/CLAUDE.md): the type model and low-level type relations.
+- [`checker/CLAUDE.md`](checker/CLAUDE.md): scopes, symbols, type checking, narrowing, warnings, and diagnostics.
 
-// Key tokens for recent features:
-Token::DotDotDot    // ... for rest/spread parameters
-Token::Question     // ? for optional parameters
-```
+## Top-Level Files
 
-### `lexer.rs`
-Hand-written lexer (not generated).
-```rust
-Lexer::new(source) -> Lexer
-lexer.tokenize() -> Result<(Vec<Token>, Interner), Vec<LexError>>
-```
+- `lexer.rs`: tokenization.
+- `token.rs`: token and span types.
+- `parser.rs` and `parser/`: syntactic parsing routines.
+- `interner.rs`: symbol interning so identifiers are shared cheaply.
+- `ast.rs`: AST re-exports and root node definitions.
 
-### `interner.rs`
-String interning for memory efficiency.
-```rust
-interner.intern("foo") -> Symbol
-interner.resolve(symbol) -> &str
-```
+## How To Choose A Subfolder
 
-### `ast/`
-Complete AST definitions. See [ast/CLAUDE.md](ast/CLAUDE.md).
+- Syntax tree shape is missing data or a new language form: go to [`ast`](ast/CLAUDE.md).
+- Type identities, assignability, signatures, or generic relations are wrong: go to [`types`](types/CLAUDE.md).
+- Name binding, inference, narrowing, or diagnostics are wrong: go to [`checker`](checker/CLAUDE.md).
 
-### `parser/`
-Recursive descent parser. See [parser/CLAUDE.md](parser/CLAUDE.md).
+## Things To Watch
 
-### `types/`
-Type system representation. See [types/CLAUDE.md](types/CLAUDE.md).
-
-### `checker/`
-Type checking and inference. See [checker/CLAUDE.md](checker/CLAUDE.md).
-
-## Key Types
-
-```rust
-// Parsing
-Parser::new(source) -> Result<Parser, LexError>
-parser.parse() -> Result<(ast::Module, Interner), ParseError>
-
-// Type checking
-TypeChecker::new(&interner)
-checker.check(&module) -> CheckResult
-```
-
-## Usage Flow
-
-```rust
-// 1. Parse source code
-let parser = Parser::new(source)?;
-let (module, interner) = parser.parse()?;
-
-// 2. Type check
-let mut checker = TypeChecker::new(&interner);
-let result = checker.check(&module);
-
-// 3. Handle errors
-if result.has_errors() {
-    for error in result.errors() {
-        eprintln!("{}", error);
-    }
-}
-
-// 4. Get type context for compiler
-let type_ctx = result.type_context();
-```
-
-## For AI Assistants
-
-- Lexer is hand-written for precise control
-- Parser is recursive descent (not parser generator)
-- Interner is used for all identifiers/strings
-- Type checker produces `CheckResult` with errors + type context
-- AST nodes include `Span` for error reporting
-- **Rest parameters** (`...args`) parsed via `Token::DotDotDot`
-- **Optional parameters** (`param?`) parsed via `Token::Question`
-- Parameter ordering validated: required params must come before optional params
-
-
-<!-- AUTO-FOLDER-SNAPSHOT:START -->
-## Auto Folder Snapshot
-
-- Updated: 2026-03-06
-- Directory: `crates/raya-engine/src/parser`
-- Direct subdirectories: ast, checker, parser, types
-- Direct files (excluding `CLAUDE.md`): ast.rs, interner.rs, lexer.rs, mod.rs, parser.rs, token.rs
-- Rust files in this directory: ast.rs, interner.rs, lexer.rs, mod.rs, parser.rs, token.rs
-
-<!-- AUTO-FOLDER-SNAPSHOT:END -->
+- Preserve spans carefully; the rest of the toolchain depends on them for diagnostics and source maps.
+- A frontend feature is not complete just because parsing works. The checker and compiler need aligned semantics.
