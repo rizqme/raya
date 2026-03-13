@@ -198,6 +198,13 @@ impl Default for Runtime {
 }
 
 impl Runtime {
+    fn is_source_file_extension(extension: &str) -> bool {
+        matches!(
+            extension,
+            "raya" | "js" | "mjs" | "cjs" | "ts" | "mts" | "cts" | "jsx" | "tsx"
+        )
+    }
+
     fn compile_program_source_with_virtual_entry(
         &self,
         source: &str,
@@ -299,7 +306,7 @@ impl Runtime {
         self.compile_program_source_with_virtual_entry(source, Path::new("<inline>.raya"))
     }
 
-    /// Compile a .raya source file to a bytecode module.
+    /// Compile a source file to a bytecode module.
     pub fn compile_file(&self, path: &Path) -> Result<CompiledModule, RuntimeError> {
         Ok(self.compile_program_file(path)?.entry)
     }
@@ -328,7 +335,7 @@ impl Runtime {
         })
     }
 
-    /// Compile a .raya source file with options (e.g., source map).
+    /// Compile a source file with options (e.g., source map).
     pub fn compile_file_with_options(
         &self,
         path: &Path,
@@ -356,7 +363,7 @@ impl Runtime {
         )
     }
 
-    /// Type-check a .raya source file without generating bytecode.
+    /// Type-check a source file without generating bytecode.
     pub fn check_file(&self, path: &Path) -> Result<compile::CheckDiagnostics, RuntimeError> {
         Ok(self.check_program_file(path)?.diagnostics)
     }
@@ -492,6 +499,21 @@ impl Runtime {
         program: &CompiledProgram,
         vm: &mut raya_engine::vm::Vm,
     ) -> Result<Value, RuntimeError> {
+        if program.dependencies.is_empty() && program.late_link_requirements.is_empty() {
+            self.ensure_ambient_builtin_globals_seeded(vm)?;
+            vm.shared_state()
+                .register_module(Arc::new(program.entry.module.clone()))
+                .map_err(RuntimeError::Dependency)?;
+            self.maybe_enable_jit(vm);
+            self.maybe_enable_profiling(vm);
+            let result = if self.options.builtin_mode == BuiltinMode::RayaStrict {
+                vm.execute_entry_only(&program.entry.module)?
+            } else {
+                vm.execute(&program.entry.module)?
+            };
+            return Ok(result);
+        }
+
         let deps = self.collect_program_dependencies(program)?;
         self.execute_with_deps_in_vm(vm, &program.entry, &deps)
     }
@@ -510,7 +532,7 @@ impl Runtime {
         self.execute_program(&program)
     }
 
-    /// Run a file (.raya or .ryb), auto-detecting format by extension.
+    /// Run a file (source or .ryb), auto-detecting format by extension.
     ///
     /// - `.raya` files are compiled from source then executed.
     /// - `.ryb` files are loaded as bytecode then executed.
@@ -526,11 +548,17 @@ impl Runtime {
             path.to_path_buf()
         };
 
-        if path.extension().and_then(|e| e.to_str()) == Some("raya")
+        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+        if Self::is_source_file_extension(extension)
             && self.can_use_binary_program_execution()
         {
             let program = self.compile_program_file(&path)?;
-            let result = self.execute_program(&program);
+            let result = if program.dependencies.is_empty() && program.late_link_requirements.is_empty() {
+                self.execute(&program.entry)
+            } else {
+                self.execute_program(&program)
+            };
             return match result {
                 Ok(_) => Ok(0),
                 Err(RuntimeError::Vm(e)) => {
@@ -541,15 +569,15 @@ impl Runtime {
             };
         }
 
-        let module = match path.extension().and_then(|e| e.to_str()) {
-            Some("ryb") => self.load_bytecode(&path)?,
-            Some("raya") => self.compile_file(&path)?,
+        let module = match extension {
+            "ryb" => self.load_bytecode(&path)?,
+            ext if Self::is_source_file_extension(ext) => self.compile_file(&path)?,
             #[cfg(feature = "aot")]
-            Some("bundle") => {
+            "bundle" => {
                 return self.run_bundle_file(&path);
             }
             #[cfg(not(feature = "aot"))]
-            Some("bundle") => self.load_bundle_entry_module(&path)?,
+            "bundle" => self.load_bundle_entry_module(&path)?,
             _ => {
                 return Err(RuntimeError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -604,9 +632,10 @@ impl Runtime {
         path: &Path,
         deps: &[CompiledModule],
     ) -> Result<i32, RuntimeError> {
-        let module = match path.extension().and_then(|e| e.to_str()) {
-            Some("ryb") => self.load_bytecode(path)?,
-            Some("raya") => self.compile_file(path)?,
+        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let module = match extension {
+            "ryb" => self.load_bytecode(path)?,
+            ext if Self::is_source_file_extension(ext) => self.compile_file(path)?,
             _ => {
                 return Err(RuntimeError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -2067,7 +2096,7 @@ impl Runtime {
                 .unwrap_or("");
             let loaded = match extension {
                 "ryb" => self.load_bytecode(candidate),
-                "raya" => self.compile_file(candidate),
+                ext if Self::is_source_file_extension(ext) => self.compile_file(candidate),
                 _ => continue,
             };
 
