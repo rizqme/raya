@@ -168,7 +168,7 @@ fn parse_variable_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
     // Initializer (required for const, optional for let)
     let initializer = if parser.check(&Token::Equal) {
         parser.advance();
-        Some(super::expr::parse_expression(parser)?)
+        Some(super::expr::parse_assignment_expression(parser)?)
     } else {
         if kind == VariableKind::Const {
             use super::ParseErrorKind;
@@ -356,7 +356,7 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
                 ));
             }
             parser.advance();
-            Some(super::expr::parse_expression(parser)?)
+            Some(super::expr::parse_assignment_expression(parser)?)
         } else {
             None
         };
@@ -707,7 +707,7 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
 
         let initializer = if parser.check(&Token::Equal) {
             parser.advance();
-            Some(super::expr::parse_expression(parser)?)
+            Some(parser.with_disallow_in(super::expr::parse_assignment_expression)?)
         } else {
             None
         };
@@ -751,7 +751,7 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     }
 
     // Traditional for loop with non-identifier expression init
-    let expr = super::expr::parse_expression(parser)?;
+    let expr = parser.with_disallow_in(super::expr::parse_expression)?;
     parser.expect(Token::Semicolon)?;
     parse_traditional_for(parser, start_span, Some(ForInit::Expression(expr)))
 }
@@ -795,7 +795,7 @@ fn parse_expression_from_base(
     if let Some(op) = operator {
         let start_span = *base.span();
         parser.advance();
-        let right = super::expr::parse_expression(parser)?;
+        let right = parser.with_disallow_in(super::expr::parse_expression)?;
         let span = parser.combine_spans(&start_span, right.span());
         return Ok(Expression::Assignment(AssignmentExpression {
             operator: op,

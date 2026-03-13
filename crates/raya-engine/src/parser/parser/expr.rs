@@ -94,6 +94,10 @@ pub fn parse_expression(parser: &mut Parser) -> Result<Expression, ParseError> {
     result
 }
 
+pub(super) fn parse_assignment_expression(parser: &mut Parser) -> Result<Expression, ParseError> {
+    parse_expression_with_precedence(parser, Precedence::Assignment)
+}
+
 /// Parse an expression with precedence climbing.
 ///
 /// Standard precedence climbing algorithm:
@@ -110,6 +114,10 @@ fn parse_expression_with_precedence(
 
     loop {
         let current_precedence = get_precedence(parser.current());
+
+        if parser.disallow_in_context() && matches!(parser.current(), Token::In) {
+            break;
+        }
 
         // Standard precedence climbing: continue while current_prec >= min_prec
         // Special case: allow postfix operators through even if precedence is None
@@ -1328,7 +1336,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
                 } else if parser.check(&Token::DotDotDot) {
                     // Spread element: ...arr
                     parser.advance();
-                    let expr = parse_expression(parser)?;
+                    let expr = parse_assignment_expression(parser)?;
                     elements.push(Some(ArrayElement::Spread(expr)));
 
                     if !parser.check(&Token::RightBracket) {
@@ -1336,7 +1344,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
                     }
                 } else {
                     // Regular element
-                    let elem = parse_expression(parser)?;
+                    let elem = parse_assignment_expression(parser)?;
                     elements.push(Some(ArrayElement::Expression(elem)));
 
                     if !parser.check(&Token::RightBracket) {
@@ -1418,7 +1426,7 @@ fn parse_arguments(parser: &mut Parser) -> Result<Vec<Expression>, ParseError> {
 
     while !parser.check(&Token::RightParen) && !parser.at_eof() {
         guard.check()?;
-        let arg = parse_expression(parser)?;
+        let arg = parse_assignment_expression(parser)?;
         arguments.push(arg);
 
         if !parser.check(&Token::RightParen) {
@@ -1505,7 +1513,7 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
     }
 
     parser.expect(Token::Colon)?;
-    let value = parse_expression(parser)?;
+    let value = parse_assignment_expression(parser)?;
     let span = parser.combine_spans(&start_span, value.span());
 
     Ok(ObjectProperty::Property(Property { key, value, span }))
@@ -1618,10 +1626,7 @@ fn looks_like_arrow_params(parser: &Parser) -> bool {
             // Closing paren - could be either (x) expr or (x) =>
             // Need more context - we'll parse as expression and handle single-ident case specially
             Some(Token::RightParen) => {
-                // Lookahead further: if followed by `:` or `=>`, it's arrow params
-                // We can only look one token ahead, so assume it's expression by default
-                // The expression parsing will handle (x) correctly
-                false
+                matches!(parser.peek2(), Some(Token::Colon) | Some(Token::Arrow))
             }
             // Any operator means it's an expression
             _ => false,
@@ -1695,7 +1700,7 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
                 ));
             }
             parser.advance();
-            Some(parse_expression(parser)?)
+            Some(parse_assignment_expression(parser)?)
         } else {
             None
         };
@@ -1787,11 +1792,11 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
                         parser.current_span(),
                     ));
                 }
-                parser.advance();
-                Some(parse_expression(parser)?)
-            } else {
-                None
-            };
+            parser.advance();
+            Some(parse_assignment_expression(parser)?)
+        } else {
+            None
+        };
 
             params.push(Parameter {
                 decorators,
@@ -1844,25 +1849,26 @@ impl From<u8> for Precedence {
     fn from(val: u8) -> Self {
         match val {
             0 => Precedence::None,
-            1 => Precedence::Assignment,
-            2 => Precedence::Conditional,
-            3 => Precedence::NullCoalescing,
-            4 => Precedence::LogicalOr,
-            5 => Precedence::LogicalAnd,
-            6 => Precedence::BitwiseOr,
-            7 => Precedence::BitwiseXor,
-            8 => Precedence::BitwiseAnd,
-            9 => Precedence::Equality,
-            10 => Precedence::Relational,
-            11 => Precedence::Shift,
-            12 => Precedence::Additive,
-            13 => Precedence::Multiplicative,
-            14 => Precedence::Exponentiation,
-            15 => Precedence::Unary,
-            16 => Precedence::Postfix,
-            17 => Precedence::Call,
-            18 => Precedence::Member,
-            19 => Precedence::Primary,
+            1 => Precedence::Comma,
+            2 => Precedence::Assignment,
+            3 => Precedence::Conditional,
+            4 => Precedence::NullCoalescing,
+            5 => Precedence::LogicalOr,
+            6 => Precedence::LogicalAnd,
+            7 => Precedence::BitwiseOr,
+            8 => Precedence::BitwiseXor,
+            9 => Precedence::BitwiseAnd,
+            10 => Precedence::Equality,
+            11 => Precedence::Relational,
+            12 => Precedence::Shift,
+            13 => Precedence::Additive,
+            14 => Precedence::Multiplicative,
+            15 => Precedence::Exponentiation,
+            16 => Precedence::Unary,
+            17 => Precedence::Postfix,
+            18 => Precedence::Call,
+            19 => Precedence::Member,
+            20 => Precedence::Primary,
             _ => Precedence::None,
         }
     }

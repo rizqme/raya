@@ -9,30 +9,32 @@ use crate::parser::token::Token;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Precedence {
     None = 0,
-    Assignment = 1,      // =, +=, -=, etc.
-    Conditional = 2,     // ?:
-    NullCoalescing = 3,  // ??
-    LogicalOr = 4,       // ||
-    LogicalAnd = 5,      // &&
-    BitwiseOr = 6,       // |
-    BitwiseXor = 7,      // ^
-    BitwiseAnd = 8,      // &
-    Equality = 9,        // ==, !=, ===, !==
-    Relational = 10,     // <, >, <=, >=, instanceof, in
-    Shift = 11,          // <<, >>, >>>
-    Additive = 12,       // +, -
-    Multiplicative = 13, // *, /, %
-    Exponentiation = 14, // **
-    Unary = 15,          // !, ~, +, -, ++, --, typeof, void, delete, await
-    Postfix = 16,        // ++, --
-    Call = 17,           // (), [], ., ?.
-    Member = 18,         // . (member access)
-    Primary = 19,        // Literals, identifiers, ()
+    Comma = 1,           // ,
+    Assignment = 2,      // =, +=, -=, etc.
+    Conditional = 3,     // ?:
+    NullCoalescing = 4,  // ??
+    LogicalOr = 5,       // ||
+    LogicalAnd = 6,      // &&
+    BitwiseOr = 7,       // |
+    BitwiseXor = 8,      // ^
+    BitwiseAnd = 9,      // &
+    Equality = 10,       // ==, !=, ===, !==
+    Relational = 11,     // <, >, <=, >=, instanceof, in
+    Shift = 12,          // <<, >>, >>>
+    Additive = 13,       // +, -
+    Multiplicative = 14, // *, /, %
+    Exponentiation = 15, // **
+    Unary = 16,          // !, ~, +, -, ++, --, typeof, void, delete, await
+    Postfix = 17,        // ++, --
+    Call = 18,           // (), [], ., ?.
+    Member = 19,         // . (member access)
+    Primary = 20,        // Literals, identifiers, ()
 }
 
 /// Get the precedence of a binary operator token.
 pub fn get_precedence(token: &Token) -> Precedence {
     match token {
+        Token::Comma => Precedence::Comma,
         // Assignment
         Token::Equal
         | Token::PlusEqual

@@ -39,6 +39,9 @@ pub struct Parser {
 
     /// Current recursion depth (for preventing stack overflow)
     depth: usize,
+
+    /// Nesting counter for contexts that must not consume `in` as a binary operator.
+    disallow_in: usize,
 }
 
 /// Backtracking snapshot for speculative parsing.
@@ -46,6 +49,7 @@ pub struct Parser {
 pub struct ParserCheckpoint {
     pos: usize,
     depth: usize,
+    disallow_in: usize,
 }
 
 impl Parser {
@@ -76,6 +80,7 @@ impl Parser {
             pos: 0,
             errors: Vec::new(),
             depth: 0,
+            disallow_in: 0,
         })
     }
 
@@ -105,6 +110,7 @@ impl Parser {
             pos: 0,
             errors: Vec::new(),
             depth: 0,
+            disallow_in: 0,
         }
     }
 
@@ -113,6 +119,21 @@ impl Parser {
     /// Used for parsing template literal expressions.
     pub(crate) fn parse_single_expression(&mut self) -> Result<Expression, ParseError> {
         expr::parse_expression(self)
+    }
+
+    pub(crate) fn with_disallow_in<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        self.disallow_in += 1;
+        let result = f(self);
+        self.disallow_in -= 1;
+        result
+    }
+
+    #[inline(always)]
+    pub(crate) fn disallow_in_context(&self) -> bool {
+        self.disallow_in > 0
     }
 
     /// Get a clone of the interner (for template expression parsing).
@@ -214,6 +235,7 @@ impl Parser {
         ParserCheckpoint {
             pos: self.pos,
             depth: self.depth,
+            disallow_in: self.disallow_in,
         }
     }
 
@@ -222,6 +244,7 @@ impl Parser {
     pub fn restore(&mut self, checkpoint: ParserCheckpoint) {
         self.pos = checkpoint.pos;
         self.depth = checkpoint.depth;
+        self.disallow_in = checkpoint.disallow_in;
     }
 
     /// Check if the current token matches the given kind.
