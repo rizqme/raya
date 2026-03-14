@@ -50,13 +50,15 @@ pub use error::RuntimeError;
 pub use module_system::{CompiledProgram, ProgramDiagnostics};
 pub use session::Session;
 
-use raya_engine::compiler::module::{LateLinkRequirement, LateLinkSymbolRequirement};
+use raya_engine::compiler::module::{
+    extract_module_exports, LateLinkRequirement, LateLinkSymbolRequirement, ModuleExports,
+};
 use raya_engine::compiler::{
     module_id_from_name, symbol_id_from_name, Export, Import, NominalTypeExport, SymbolScope,
     SymbolType,
 };
 use raya_engine::parser::ast::{Pattern, Statement};
-use raya_engine::parser::checker::SymbolKind;
+use raya_engine::parser::checker::{ScopeId, Symbol, SymbolFlags, SymbolKind};
 use raya_engine::parser::types::{
     signature_hash, structural_signature_is_assignable, try_hydrate_type_from_canonical_signature,
     Type, TypeContext,
@@ -810,7 +812,14 @@ impl Runtime {
     }
 
     fn ambient_builtin_export_names(mode: BuiltinMode) -> Result<Vec<String>, RuntimeError> {
-        Self::builtin_runtime_export_names(mode)
+        let mut names = Self::builtin_global_exports_for_mode(mode)?
+            .symbols
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 
     fn collect_pattern_names(pattern: &Pattern, interner: &Interner, out: &mut Vec<String>) {
@@ -964,27 +973,79 @@ impl Runtime {
         None
     }
 
+    fn seed_provisional_builtin_contract_symbols(
+        binder: &mut raya_engine::parser::checker::Binder<'_>,
+        symbols: &HashMap<String, SymbolType>,
+    ) {
+        let any_ty = binder.any_type_id();
+
+        for (name, symbol_type) in symbols {
+            match symbol_type {
+                SymbolType::Class => binder.register_external_class(name),
+                SymbolType::Function | SymbolType::Constant => {
+                    let kind = match symbol_type {
+                        SymbolType::Function => SymbolKind::Function,
+                        SymbolType::Class => unreachable!(),
+                        SymbolType::Constant => SymbolKind::Variable,
+                    };
+                    let _ = binder.define_imported(Symbol {
+                        name: name.clone(),
+                        kind,
+                        ty: any_ty,
+                        flags: SymbolFlags {
+                            is_exported: false,
+                            is_const: true,
+                            is_async: false,
+                            is_readonly: true,
+                            is_imported: false,
+                        },
+                        scope_id: ScopeId(0),
+                        span: raya_engine::parser::Span::new(0, 0, 0, 0),
+                        referenced: false,
+                    });
+                }
+            }
+        }
+
+        for name in ["undefined"] {
+            let _ = binder.define_imported(Symbol {
+                name: name.to_string(),
+                kind: SymbolKind::Variable,
+                ty: any_ty,
+                flags: SymbolFlags {
+                    is_exported: false,
+                    is_const: true,
+                    is_async: false,
+                    is_readonly: true,
+                    is_imported: false,
+                },
+                scope_id: ScopeId(0),
+                span: raya_engine::parser::Span::new(0, 0, 0, 0),
+                referenced: false,
+            });
+        }
+    }
+
     fn populate_builtin_runtime_exports(
         module: &mut Module,
         ast: &raya_engine::parser::ast::Module,
         interner: &Interner,
-        export_names: &[String],
+        contracts: &ModuleExports,
     ) {
         module.exports.clear();
         let module_global_slots = Self::collect_module_global_slots(ast, interner);
         let module_name = module.metadata.name.clone();
 
-        for export_name in export_names {
-            let Some(symbol_type) =
-                Self::infer_runtime_export_symbol_type(ast, interner, export_name)
-            else {
-                continue;
+        for (export_name, exported) in &contracts.symbols {
+            let symbol_type = match exported.kind {
+                SymbolKind::Function => SymbolType::Function,
+                SymbolKind::Class | SymbolKind::Interface => SymbolType::Class,
+                SymbolKind::Variable | SymbolKind::EnumMember => SymbolType::Constant,
+                SymbolKind::TypeAlias | SymbolKind::TypeParameter => continue,
             };
 
             let index = match symbol_type {
-                SymbolType::Function => {
-                    module.functions.iter().position(|f| f.name == *export_name)
-                }
+                SymbolType::Function => module.functions.iter().position(|f| f.name == *export_name),
                 SymbolType::Class => module.classes.iter().position(|c| c.name == *export_name),
                 SymbolType::Constant => module_global_slots
                     .get(export_name)
@@ -1000,9 +1061,9 @@ impl Runtime {
                 symbol_type: symbol_type.clone(),
                 index,
                 symbol_id: symbol_id_from_name(&module_name, SymbolScope::Module, export_name),
-                scope: SymbolScope::Module,
-                signature_hash: 0,
-                type_signature: None,
+                scope: exported.scope,
+                signature_hash: exported.signature_hash,
+                type_signature: Some(exported.type_signature.clone()),
                 nominal_type: matches!(symbol_type, SymbolType::Class).then_some(
                     NominalTypeExport {
                         local_nominal_type_index: index as u32,
@@ -1039,11 +1100,7 @@ impl Runtime {
                 export_names: Vec<String>,
             }
 
-            let checker_mode = match compile::default_type_mode_for_builtin(mode) {
-                TypeMode::Raya => raya_engine::parser::checker::TypeSystemMode::Raya,
-                TypeMode::Js => raya_engine::parser::checker::TypeSystemMode::Js,
-                TypeMode::Ts => raya_engine::parser::checker::TypeSystemMode::Ts,
-            };
+            let checker_mode = raya_engine::parser::checker::TypeSystemMode::Js;
             let checker_policy =
                 raya_engine::parser::checker::CheckerPolicy::for_mode(checker_mode);
 
@@ -1107,6 +1164,42 @@ impl Runtime {
                 });
             }
 
+            let mut provisional_symbols = HashMap::new();
+            for unit in &parsed_units {
+                for export_name in &unit.export_names {
+                    if let Some(symbol_type) =
+                        Self::infer_runtime_export_symbol_type(&unit.ast, &unit.interner, export_name)
+                    {
+                        provisional_symbols
+                            .entry(export_name.clone())
+                            .or_insert(symbol_type);
+                    }
+                }
+            }
+            provisional_symbols.insert("EventEmitter".to_string(), SymbolType::Class);
+            for name in [
+                "Reflect",
+                "Object",
+                "Symbol",
+                "Boolean",
+                "Number",
+                "String",
+                "Array",
+                "Error",
+                "AggregateError",
+                "TypeError",
+                "Function",
+                "Promise",
+                "Math",
+                "JSON",
+            ] {
+                provisional_symbols
+                    .entry(name.to_string())
+                    .or_insert(SymbolType::Constant);
+            }
+            let ambient_compiler_globals =
+                provisional_symbols.keys().cloned().collect::<HashSet<_>>();
+
             // Phase 2b: bind declarations for the whole builtin content graph first.
             let mut shared_type_ctx = TypeContext::new();
             for unit in &parsed_units {
@@ -1116,6 +1209,12 @@ impl Runtime {
                 )
                 .with_mode(checker_mode)
                 .with_policy(checker_policy);
+                binder.register_builtins(&[]);
+                let mut ambient_symbols = provisional_symbols.clone();
+                for export_name in &unit.export_names {
+                    ambient_symbols.remove(export_name);
+                }
+                Self::seed_provisional_builtin_contract_symbols(&mut binder, &ambient_symbols);
                 if let Err(errors) = binder.bind_module(&unit.ast) {
                     return Err(format!(
                         "Failed to bind builtin source '{}': {}",
@@ -1132,7 +1231,44 @@ impl Runtime {
             // Phase 2c: compile each module with stable file identity and shared declarations.
             let mut modules = Vec::with_capacity(parsed_units.len());
             for unit in parsed_units {
+                let mut contract_type_ctx = shared_type_ctx.clone();
+                let mut binder = raya_engine::parser::checker::Binder::new(
+                    &mut contract_type_ctx,
+                    &unit.interner,
+                )
+                .with_mode(checker_mode)
+                .with_policy(checker_policy);
+                binder.register_builtins(&[]);
+                let mut ambient_symbols = provisional_symbols.clone();
+                for export_name in &unit.export_names {
+                    ambient_symbols.remove(export_name);
+                }
+                Self::seed_provisional_builtin_contract_symbols(&mut binder, &ambient_symbols);
+                let mut symbols = match binder.bind_module(&unit.ast) {
+                    Ok(symbols) => symbols,
+                    Err(errors) => {
+                        return Err(format!(
+                            "Failed to bind builtin export contracts for '{}': {}",
+                            unit.logical_path,
+                            errors
+                                .iter()
+                                .map(|error| error.to_string())
+                                .collect::<Vec<_>>()
+                            .join("; ")
+                        ))
+                    }
+                };
+
                 let module_identity = format!("__raya_builtin__/{}", unit.logical_path);
+                let contract_path = Path::new(&module_identity);
+                let module_contracts = extract_module_exports(
+                    &unit.ast,
+                    contract_path,
+                    &module_identity,
+                    &symbols,
+                    &unit.interner,
+                    &contract_type_ctx,
+                );
                 let allow_unresolved_runtime_fallback = !matches!(
                     checker_mode,
                     raya_engine::parser::checker::TypeSystemMode::Raya
@@ -1144,7 +1280,7 @@ impl Runtime {
                         .with_allow_unresolved_runtime_fallback(
                             allow_unresolved_runtime_fallback,
                         )
-                        .with_ambient_builtin_globals(declared_name_set.clone());
+                        .with_ambient_builtin_globals(ambient_compiler_globals.clone());
                 let mut module = match compiler.compile_via_ir(&unit.ast) {
                     Ok(module) => module,
                     Err(error) => {
@@ -1158,7 +1294,7 @@ impl Runtime {
                     &mut module,
                     &unit.ast,
                     &unit.interner,
-                    &unit.export_names,
+                    &module_contracts,
                 );
                 let encoded = module.encode();
                 let finalized = match Module::decode(&encoded) {
@@ -1230,6 +1366,77 @@ impl Runtime {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn builtin_global_exports_for_mode(
+        mode: BuiltinMode,
+    ) -> Result<ModuleExports, RuntimeError> {
+        let module_name = match mode {
+            BuiltinMode::RayaStrict => "__raya_builtin__/strict",
+            BuiltinMode::NodeCompat => "__raya_builtin__/node_compat",
+        };
+        let mut merged = ModuleExports::new(
+            Path::new(module_name).to_path_buf(),
+            module_name.to_string(),
+        );
+
+        for module in Self::compiled_builtin_runtime_modules(mode)? {
+            for export in module.exports {
+                let Some(type_signature) = export.type_signature.clone() else {
+                    continue;
+                };
+                let export_name = export.name.clone();
+                let kind = match export.symbol_type {
+                    SymbolType::Function => SymbolKind::Function,
+                    SymbolType::Class => SymbolKind::Class,
+                    SymbolType::Constant => SymbolKind::Variable,
+                };
+                merged.add_symbol(raya_engine::compiler::module::ExportedSymbol {
+                    name: export_name.clone(),
+                    local_name: export_name.clone(),
+                    kind,
+                    ty: raya_engine::parser::types::TypeId::new(
+                        raya_engine::TypeContext::UNKNOWN_TYPE_ID,
+                    ),
+                    is_const: !matches!(kind, SymbolKind::Function),
+                    is_async: false,
+                    module_name: merged.module_name.clone(),
+                    module_id: module_id_from_name(&merged.module_name),
+                    symbol_id: symbol_id_from_name(
+                        &merged.module_name,
+                        SymbolScope::Module,
+                        &export_name,
+                    ),
+                    signature_hash: export.signature_hash,
+                    type_signature,
+                    scope: export.scope,
+                });
+            }
+        }
+
+        for name in Self::runtime_only_ambient_builtin_names(mode) {
+            if merged.has(&name) {
+                continue;
+            }
+            merged.add_symbol(raya_engine::compiler::module::ExportedSymbol {
+                name: name.clone(),
+                local_name: name.clone(),
+                kind: SymbolKind::Class,
+                ty: raya_engine::parser::types::TypeId::new(
+                    raya_engine::TypeContext::UNKNOWN_TYPE_ID,
+                ),
+                is_const: true,
+                is_async: false,
+                module_name: merged.module_name.clone(),
+                module_id: module_id_from_name(&merged.module_name),
+                symbol_id: symbol_id_from_name(&merged.module_name, SymbolScope::Module, &name),
+                signature_hash: 0,
+                type_signature: "EventEmitter".to_string(),
+                scope: SymbolScope::Module,
+            });
+        }
+
+        Ok(merged)
     }
 
     fn execute_with_deps_in_vm(

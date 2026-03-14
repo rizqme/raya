@@ -177,6 +177,7 @@ function createRangeError(code: string, message: any, options: Object | null = n
 }
 
 class Error {
+    public message: string;
     public name: string;
     public stack: string;
     public code: string;

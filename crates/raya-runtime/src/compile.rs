@@ -19,6 +19,7 @@ use crate::builtin_manifest;
 use crate::builtins;
 use crate::error::RuntimeError;
 use crate::BuiltinMode;
+use raya_engine::compiler::module::inject_ambient_exports;
 
 /// Checker behavior mode, independent from builtin API surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -309,8 +310,9 @@ pub fn compile_graph_source_with_options_and_modes_and_ts_options(
     let mut binder = Binder::new(&mut type_ctx, &interner)
         .with_mode(type_system_mode(type_mode))
         .with_policy(policy);
-    let builtin_sigs = raya_engine::builtins::to_checker_signatures();
-    binder.register_builtins(&builtin_sigs);
+    binder.register_builtins(&[]);
+    let builtin_exports = crate::Runtime::builtin_global_exports_for_mode(builtin_mode)?;
+    inject_ambient_exports(&mut binder, &ast, &interner, &builtin_exports);
 
     let mut symbols = binder.bind_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
@@ -428,8 +430,9 @@ pub fn check_graph_source_with_modes_and_ts_options(
     let mut binder = Binder::new(&mut type_ctx, &interner)
         .with_mode(type_system_mode(type_mode))
         .with_policy(policy);
-    let builtin_sigs = raya_engine::builtins::to_checker_signatures();
-    binder.register_builtins(&builtin_sigs);
+    binder.register_builtins(&[]);
+    let builtin_exports = crate::Runtime::builtin_global_exports_for_mode(builtin_mode)?;
+    inject_ambient_exports(&mut binder, &ast, &interner, &builtin_exports);
 
     let bind_result = binder.bind_module(&ast);
 

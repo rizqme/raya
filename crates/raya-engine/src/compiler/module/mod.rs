@@ -32,7 +32,10 @@ pub use declaration::{
     DeclarationError, DeclarationModule, DeclarationSourceKind, LateLinkRequirement,
     LateLinkSymbolRequirement,
 };
-pub use exports::{ExportRegistry, ExportedSymbol, ModuleExports};
+pub use exports::{
+    extract_module_exports, has_top_level_declaration_before_offset, inject_ambient_exports,
+    ExportRegistry, ExportedSymbol, ModuleExports,
+};
 pub use graph::{ModuleGraph, ModuleNode};
 pub use resolver::{
     ModuleResolver, PackageResolverConfig, PackageSpecifier, ResolveError, ResolvedModule,

@@ -65,11 +65,17 @@ impl ProgramCompiler {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+        let builtin_globals = crate::Runtime::builtin_global_exports_for_mode(self.builtin_mode)
+            .map_err(|error| ModuleCompileError::TypeError {
+                path: entry_path.clone(),
+                message: format!("Failed to load builtin bytecode contracts: {}", error),
+            })?;
 
         let mut compiler = BinaryModuleCompiler::new(project_root)
             .with_checker_mode(self.type_system_mode())
             .with_checker_policy(self.checker_policy())
-            .with_builtin_surface_mode(self.builtin_surface_mode());
+            .with_builtin_surface_mode(self.builtin_surface_mode())
+            .with_builtin_globals_override(builtin_globals);
         let mut compiled_modules = compiler.compile(&entry_path)?;
         if std::env::var("RAYA_DEBUG_MODULE_NATIVES").is_ok() {
             for compiled in &compiled_modules {
@@ -135,11 +141,17 @@ impl ProgramCompiler {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+        let builtin_globals = crate::Runtime::builtin_global_exports_for_mode(self.builtin_mode)
+            .map_err(|error| ModuleCompileError::TypeError {
+                path: entry_path.clone(),
+                message: format!("Failed to load builtin bytecode contracts: {}", error),
+            })?;
 
         let mut compiler = BinaryModuleCompiler::new(project_root)
             .with_checker_mode(self.type_system_mode())
             .with_checker_policy(self.checker_policy())
-            .with_builtin_surface_mode(self.builtin_surface_mode());
+            .with_builtin_surface_mode(self.builtin_surface_mode())
+            .with_builtin_globals_override(builtin_globals);
         let mut compiled_modules =
             compiler.compile_with_virtual_entry_source(&entry_path, source.to_string())?;
         if std::env::var("RAYA_DEBUG_MODULE_NATIVES").is_ok() {

@@ -9,9 +9,10 @@ use crate::compiler::{
     module_id_from_name, symbol_id_from_name, ModuleId, SymbolId, SymbolScope, SymbolType,
     TypeSignatureHash,
 };
-use crate::parser::checker::{Symbol, SymbolKind};
+use crate::parser::ast::{ExportDecl, Expression, Module as AstModule, Pattern, Statement};
+use crate::parser::checker::{Binder, ScopeId, ScopeKind, Symbol, SymbolKind};
 use crate::parser::types::{canonical_type_signature, TypeContext, TypeId};
-use crate::parser::Span;
+use crate::parser::{Interner, Span};
 
 /// An exported symbol from a module
 #[derive(Debug, Clone)]
@@ -176,6 +177,276 @@ impl ModuleExports {
     /// Add a re-export (export * from "./other")
     pub fn add_reexport(&mut self, path: PathBuf) {
         self.reexports.push(path);
+    }
+}
+
+fn scope_kind_to_symbol_scope(kind: ScopeKind) -> SymbolScope {
+    match kind {
+        ScopeKind::Global => SymbolScope::Global,
+        ScopeKind::Module => SymbolScope::Module,
+        ScopeKind::Function | ScopeKind::Block | ScopeKind::Class | ScopeKind::Loop => {
+            SymbolScope::Local
+        }
+    }
+}
+
+fn top_level_module_scope_id(symbols: &crate::parser::checker::SymbolTable) -> Option<ScopeId> {
+    for idx in 0..symbols.scope_count() {
+        let scope_id = ScopeId(idx as u32);
+        let scope = symbols.get_scope(scope_id);
+        if scope.kind == ScopeKind::Module && scope.parent == Some(ScopeId(0)) {
+            return Some(scope_id);
+        }
+    }
+    None
+}
+
+fn resolve_exported_symbol<'a>(
+    ast: &AstModule,
+    interner: &Interner,
+    symbols: &'a crate::parser::checker::SymbolTable,
+    local_name: &str,
+    export_offset: usize,
+) -> Option<&'a Symbol> {
+    if has_top_level_declaration_before_offset(ast, interner, local_name, export_offset) {
+        if let Some(module_scope_id) = top_level_module_scope_id(symbols) {
+            if let Some(symbol) = symbols.resolve_from_scope(local_name, module_scope_id) {
+                if symbols.get_scope(symbol.scope_id).kind == ScopeKind::Module {
+                    return Some(symbol);
+                }
+            }
+        }
+    }
+    symbols.resolve(local_name)
+}
+
+fn collect_pattern_binding_names(pattern: &Pattern, interner: &Interner, out: &mut Vec<String>) {
+    match pattern {
+        Pattern::Identifier(ident) => out.push(interner.resolve(ident.name).to_string()),
+        Pattern::Array(array) => {
+            for element in &array.elements {
+                if let Some(element) = element {
+                    collect_pattern_binding_names(&element.pattern, interner, out);
+                }
+            }
+            if let Some(rest) = &array.rest {
+                collect_pattern_binding_names(rest, interner, out);
+            }
+        }
+        Pattern::Object(object) => {
+            for property in &object.properties {
+                collect_pattern_binding_names(&property.value, interner, out);
+            }
+            if let Some(rest) = &object.rest {
+                out.push(interner.resolve(rest.name).to_string());
+            }
+        }
+        Pattern::Rest(rest) => {
+            collect_pattern_binding_names(&rest.argument, interner, out);
+        }
+    }
+}
+
+fn top_level_declaration_stmt(stmt: &Statement) -> Option<&Statement> {
+    match stmt {
+        Statement::ExportDecl(ExportDecl::Declaration(inner)) => Some(inner.as_ref()),
+        _ => Some(stmt),
+    }
+}
+
+pub fn has_top_level_declaration_before_offset(
+    ast: &AstModule,
+    interner: &Interner,
+    name: &str,
+    offset: usize,
+) -> bool {
+    for stmt in &ast.statements {
+        if stmt.span().start >= offset {
+            continue;
+        }
+        let Some(stmt) = top_level_declaration_stmt(stmt) else {
+            continue;
+        };
+        match stmt {
+            Statement::FunctionDecl(function) => {
+                if interner.resolve(function.name.name) == name {
+                    return true;
+                }
+            }
+            Statement::ClassDecl(class) => {
+                if interner.resolve(class.name.name) == name {
+                    return true;
+                }
+            }
+            Statement::VariableDecl(variable) => {
+                let mut names = Vec::new();
+                collect_pattern_binding_names(&variable.pattern, interner, &mut names);
+                if names.iter().any(|candidate| candidate == name) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
+pub fn extract_module_exports(
+    ast: &AstModule,
+    path: &std::path::Path,
+    module_name: &str,
+    symbols: &crate::parser::checker::SymbolTable,
+    interner: &Interner,
+    type_ctx: &TypeContext,
+) -> ModuleExports {
+    let mut exports = ModuleExports::new(path.to_path_buf(), module_name.to_string());
+
+    for symbol in symbols.get_exported_symbols() {
+        let scope_kind = symbols.get_scope(symbol.scope_id).kind;
+        let scope = scope_kind_to_symbol_scope(scope_kind);
+        exports.add_symbol(ExportedSymbol::from_symbol(symbol, module_name, scope, type_ctx));
+    }
+
+    for stmt in &ast.statements {
+        match stmt {
+            Statement::ExportDecl(ExportDecl::Named {
+                specifiers,
+                source: None,
+                ..
+            }) => {
+                for specifier in specifiers {
+                    let local_name = interner.resolve(specifier.name.name).to_string();
+                    let exported_name = specifier
+                        .alias
+                        .as_ref()
+                        .map(|ident| interner.resolve(ident.name).to_string())
+                        .unwrap_or_else(|| local_name.clone());
+                    if exports.has(&exported_name) {
+                        continue;
+                    }
+                    let Some(symbol) = resolve_exported_symbol(
+                        ast,
+                        interner,
+                        symbols,
+                        &local_name,
+                        stmt.span().start,
+                    ) else {
+                        continue;
+                    };
+                    let scope =
+                        scope_kind_to_symbol_scope(symbols.get_scope(symbol.scope_id).kind);
+                    exports.add_symbol(ExportedSymbol::with_alias(
+                        symbol,
+                        exported_name,
+                        module_name,
+                        scope,
+                        type_ctx,
+                    ));
+                }
+            }
+            Statement::ExportDecl(ExportDecl::Default { expression, .. }) => {
+                let Expression::Identifier(identifier) = expression.as_ref() else {
+                    continue;
+                };
+                let local_name = interner.resolve(identifier.name).to_string();
+                let Some(symbol) = resolve_exported_symbol(
+                    ast,
+                    interner,
+                    symbols,
+                    &local_name,
+                    stmt.span().start,
+                ) else {
+                    continue;
+                };
+                let scope = scope_kind_to_symbol_scope(symbols.get_scope(symbol.scope_id).kind);
+                exports.add_symbol(ExportedSymbol::with_alias(
+                    symbol,
+                    "default".to_string(),
+                    module_name,
+                    scope,
+                    type_ctx,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    exports
+}
+
+pub fn inject_ambient_exports(
+    binder: &mut Binder<'_>,
+    ast: &AstModule,
+    interner: &Interner,
+    exports: &ModuleExports,
+) {
+    let mut names = exports.symbols.keys().cloned().collect::<Vec<_>>();
+    names.sort();
+
+    for name in &names {
+        if has_top_level_declaration_before_offset(ast, interner, name, usize::MAX) {
+            continue;
+        }
+        let Some(exported) = exports.symbols.get(name) else {
+            continue;
+        };
+        if !matches!(
+            exported.kind,
+            SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeAlias
+        ) {
+            continue;
+        }
+        let imported_ty = binder.hydrate_imported_signature_type(&exported.type_signature);
+        binder.override_imported_named_type(name, imported_ty);
+        let symbol = Symbol {
+            name: name.clone(),
+            kind: exported.kind,
+            ty: imported_ty,
+            flags: crate::parser::checker::SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: ScopeId(0),
+            span: Span::new(0, 0, 0, 0),
+            referenced: false,
+        };
+        let _ = binder.define_imported(symbol);
+    }
+
+    for name in names {
+        if has_top_level_declaration_before_offset(ast, interner, &name, usize::MAX) {
+            continue;
+        }
+        let Some(exported) = exports.symbols.get(&name) else {
+            continue;
+        };
+        if matches!(
+            exported.kind,
+            SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeAlias
+        ) {
+            continue;
+        }
+        let imported_ty = binder.hydrate_imported_signature_type(&exported.type_signature);
+        let symbol = Symbol {
+            name,
+            kind: exported.kind,
+            ty: imported_ty,
+            flags: crate::parser::checker::SymbolFlags {
+                is_exported: false,
+                is_const: exported.is_const,
+                is_async: exported.is_async,
+                is_readonly: exported.is_const,
+                is_imported: false,
+            },
+            scope_id: ScopeId(0),
+            span: Span::new(0, 0, 0, 0),
+            referenced: false,
+        };
+        let _ = binder.define_imported(symbol);
     }
 }
 

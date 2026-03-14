@@ -30,7 +30,10 @@ use super::declaration::{
     specialization_template_from_symbol, BuiltinSurfaceMode, DeclarationError, DeclarationModule,
     DeclarationSourceKind, LateLinkRequirement, LateLinkSymbolRequirement,
 };
-use super::exports::{ExportRegistry, ExportedSymbol, ModuleExports};
+use super::exports::{
+    extract_module_exports, has_top_level_declaration_before_offset, inject_ambient_exports,
+    ExportRegistry, ExportedSymbol, ModuleExports,
+};
 use super::graph::{GraphError, ModuleGraph};
 use super::resolver::{ModuleResolver, ResolveError};
 use super::std_modules::StdModuleRegistry;
@@ -123,6 +126,8 @@ pub struct ModuleCompiler {
     checker_policy: CheckerPolicy,
     /// Builtin declaration surface used for global symbol seeding.
     builtin_surface_mode: BuiltinSurfaceMode,
+    /// Optional override loaded from compiled builtin artifacts instead of declarations.
+    builtin_globals_override: Option<ModuleExports>,
     /// Cached builtin global exports for the configured surface mode.
     builtin_globals: Option<ModuleExports>,
 }
@@ -215,6 +220,7 @@ impl ModuleCompiler {
             checker_mode: TypeSystemMode::Raya,
             checker_policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
+            builtin_globals_override: None,
             builtin_globals: None,
         }
     }
@@ -236,6 +242,7 @@ impl ModuleCompiler {
             checker_mode: TypeSystemMode::Raya,
             checker_policy: CheckerPolicy::for_mode(TypeSystemMode::Raya),
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
+            builtin_globals_override: None,
             builtin_globals: None,
         })
     }
@@ -265,6 +272,13 @@ impl ModuleCompiler {
             self.builtin_surface_mode = mode;
             self.builtin_globals = None;
         }
+        self
+    }
+
+    /// Override builtin global contracts with data derived from compiled builtin artifacts.
+    pub fn with_builtin_globals_override(mut self, exports: ModuleExports) -> Self {
+        self.builtin_globals_override = Some(exports.clone());
+        self.builtin_globals = Some(exports);
         self
     }
 
@@ -825,97 +839,24 @@ impl ModuleCompiler {
         current_path: &Path,
     ) -> ModuleCompileResult<()> {
         if self.builtin_globals.is_none() {
-            let exports = builtin_global_exports(self.builtin_surface_mode).map_err(|e| {
-                ModuleCompileError::TypeError {
-                    path: current_path.to_path_buf(),
-                    message: format!("Failed to load builtin declaration surface: {e}"),
-                }
-            })?;
+            let exports =
+                if let Some(override_exports) = self.builtin_globals_override.as_ref() {
+                    override_exports.clone()
+                } else {
+                    builtin_global_exports(self.builtin_surface_mode).map_err(|e| {
+                        ModuleCompileError::TypeError {
+                            path: current_path.to_path_buf(),
+                            message: format!("Failed to load builtin declaration surface: {e}"),
+                        }
+                    })?
+                };
             self.builtin_globals = Some(exports);
         }
 
         let Some(exports) = self.builtin_globals.as_ref() else {
             return Ok(());
         };
-
-        // Register type-bearing declarations first so references inside value
-        // signatures can resolve to named types during hydration.
-        let mut names = exports.symbols.keys().cloned().collect::<Vec<_>>();
-        names.sort();
-
-        for name in &names {
-            if Self::has_top_level_declaration_before_offset(ast, interner, name, usize::MAX) {
-                continue;
-            }
-            let Some(exported) = exports.symbols.get(name) else {
-                continue;
-            };
-            if !matches!(
-                exported.kind,
-                SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeAlias
-            ) {
-                continue;
-            }
-            let imported_ty = binder.hydrate_imported_signature_type(&exported.type_signature);
-            if std::env::var("RAYA_DEBUG_IMPORT_TYPES").is_ok() {
-                eprintln!(
-                    "[module-compiler] builtin type '{}' kind={:?} signature='{}' hydrated='{}'",
-                    name,
-                    exported.kind,
-                    exported.type_signature,
-                    binder.format_type_id(imported_ty)
-                );
-            }
-            binder.override_imported_named_type(name, imported_ty);
-            let symbol = Symbol {
-                name: name.clone(),
-                kind: exported.kind,
-                ty: imported_ty,
-                flags: SymbolFlags {
-                    is_exported: false,
-                    is_const: true,
-                    is_async: false,
-                    is_readonly: true,
-                    is_imported: false,
-                },
-                scope_id: ScopeId(0),
-                span: Span::new(0, 0, 0, 0),
-                referenced: false,
-            };
-            let _ = binder.define_imported(symbol);
-        }
-
-        for name in names {
-            if Self::has_top_level_declaration_before_offset(ast, interner, &name, usize::MAX) {
-                continue;
-            }
-            let Some(exported) = exports.symbols.get(&name) else {
-                continue;
-            };
-            if matches!(
-                exported.kind,
-                SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeAlias
-            ) {
-                continue;
-            }
-            let imported_ty = binder.hydrate_imported_signature_type(&exported.type_signature);
-            let symbol = Symbol {
-                name,
-                kind: exported.kind,
-                ty: imported_ty,
-                flags: SymbolFlags {
-                    is_exported: false,
-                    is_const: exported.is_const,
-                    is_async: exported.is_async,
-                    is_readonly: exported.is_const,
-                    is_imported: false,
-                },
-                scope_id: ScopeId(0),
-                span: Span::new(0, 0, 0, 0),
-                referenced: false,
-            };
-            let _ = binder.define_imported(symbol);
-        }
+        inject_ambient_exports(binder, ast, interner, exports);
 
         Ok(())
     }
@@ -948,8 +889,7 @@ impl ModuleCompiler {
             .with_policy(self.checker_policy);
 
         if self.should_inject_builtin_globals(path) {
-            let builtin_sigs = crate::builtins::to_checker_signatures();
-            binder.register_builtins(&builtin_sigs);
+            binder.register_builtins(&[]);
             self.inject_builtin_globals(&mut binder, &ast, &interner, path)?;
         }
 
@@ -1013,7 +953,7 @@ impl ModuleCompiler {
         let module_name = self.module_identity(path);
         // Extract exports for dependent modules
         let module_exports =
-            self.extract_exports(&ast, path, &module_name, &symbols, &interner, &type_ctx);
+            extract_module_exports(&ast, path, &module_name, &symbols, &interner, &type_ctx);
 
         let ambient_builtin_globals: Vec<String> = self
             .builtin_globals

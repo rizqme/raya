@@ -777,6 +777,75 @@ impl<'a> Binder<'a> {
         };
         let _ = self.symbols.define(symbol);
 
+        // undefined: any
+        let symbol = Symbol {
+            name: "undefined".to_string(),
+            kind: SymbolKind::Variable,
+            ty: any_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        };
+        let _ = self.symbols.define(symbol);
+
+        // Infinity: number
+        let symbol = Symbol {
+            name: "Infinity".to_string(),
+            kind: SymbolKind::Variable,
+            ty: number_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        };
+        let _ = self.symbols.define(symbol);
+
+        // NaN: number
+        let symbol = Symbol {
+            name: "NaN".to_string(),
+            kind: SymbolKind::Variable,
+            ty: number_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        };
+        let _ = self.symbols.define(symbol);
+
         // Register JSON global object with static methods
         self.register_json_global();
     }
