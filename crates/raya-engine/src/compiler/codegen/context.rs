@@ -52,6 +52,7 @@ impl FunctionContext {
         param_count: u8,
         uses_js_this_slot: bool,
         is_constructible: bool,
+        is_generator: bool,
         visible_length: u8,
         is_strict_js: bool,
     ) -> Self {
@@ -60,6 +61,7 @@ impl FunctionContext {
                 let mut builder = FunctionBuilder::new(name, param_count);
                 builder.set_uses_js_this_slot(uses_js_this_slot);
                 builder.set_is_constructible(is_constructible);
+                builder.set_is_generator(is_generator);
                 builder.set_visible_length(visible_length);
                 builder.set_is_strict_js(is_strict_js);
                 builder
@@ -395,6 +397,7 @@ impl IrCodeGenerator {
                 param_count,
                 func.uses_js_this_slot,
                 func.is_constructible,
+                func.is_generator,
                 func.visible_length as u8,
                 func.is_strict_js,
             );

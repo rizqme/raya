@@ -30,6 +30,10 @@ export class Object {
 
     static getPrototypeOf<T>(obj: T): Object | null;
 
+    static isExtensible<T>(obj: T): boolean;
+
+    static preventExtensions<T>(obj: T): T;
+
     /** Define many properties on an object */
     static defineProperties<T, D>(obj: T, descriptors: D): T;
 }

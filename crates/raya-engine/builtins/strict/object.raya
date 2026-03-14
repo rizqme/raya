@@ -7,6 +7,8 @@ const OBJECT_EQUALS: number = 0x0003;
 const OBJECT_TO_STRING: number = 0x0001;
 const OBJECT_SAME_VALUE: number = 0x0008;
 const OBJECT_GET_PROTOTYPE_OF: number = 0x0011;
+const OBJECT_IS_EXTENSIBLE: number = 0x0015;
+const OBJECT_PREVENT_EXTENSIONS: number = 0x0016;
 
 class Object {
     // Get string representation of the object
@@ -54,6 +56,14 @@ class Object {
 
     static getPrototypeOf<T>(obj: T): Object | null {
         return __NATIVE_CALL<Object | null>(OBJECT_GET_PROTOTYPE_OF, obj);
+    }
+
+    static isExtensible<T>(obj: T): boolean {
+        return __NATIVE_CALL<boolean>(OBJECT_IS_EXTENSIBLE, obj);
+    }
+
+    static preventExtensions<T>(obj: T): T {
+        return __NATIVE_CALL<T>(OBJECT_PREVENT_EXTENSIONS, obj);
     }
 
 }

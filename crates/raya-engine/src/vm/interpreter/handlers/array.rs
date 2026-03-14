@@ -87,24 +87,7 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Value, VmError> {
-        if let Some(value) = self.try_construct_boxed_primitive(constructor, init_args, task, module)?
-        {
-            return Ok(value);
-        }
-
-        let member_names: Vec<String> = Vec::new();
-        let layout_id = layout_id_from_ordered_names(&member_names);
-        let object_ptr = self.gc.lock().allocate(Object::new_dynamic(layout_id, 0));
-        let object_value =
-            unsafe { Value::from_ptr(NonNull::new(object_ptr.as_ptr()).expect("object ptr")) };
-        self.set_constructed_object_prototype_from_constructor(object_value, constructor);
-        let returned =
-            self.invoke_callable_sync_with_this(constructor, Some(object_value), init_args, task, module)?;
-        if self.array_from_is_object_value(returned) {
-            Ok(returned)
-        } else {
-            Ok(object_value)
-        }
+        self.construct_value_with_new_target(constructor, constructor, init_args, task, module)
     }
 
     fn array_from_is_object_value(&self, value: Value) -> bool {
@@ -115,10 +98,7 @@ impl<'a> Interpreter<'a> {
 
     fn array_from_is_constructor_candidate(&self, value: Value, module: &Module) -> bool {
         let _ = module;
-        let is_builtin_constructor = ["Array", "Object", "Function", "Boolean", "Number", "String"]
-            .iter()
-            .any(|name| self.builtin_global_value(name).is_some_and(|builtin| builtin.raw() == value.raw()));
-        !is_builtin_constructor && self.callable_function_info(value).is_some()
+        self.callable_is_constructible(value)
     }
 
     fn array_from_iterator_method(
@@ -224,18 +204,33 @@ impl<'a> Interpreter<'a> {
         self.define_data_property_on_target(target, &index.to_string(), value, true, true, true)
     }
 
-    fn array_from_set_length(&self, target: Value, len: usize) -> Result<(), VmError> {
+    fn array_from_set_length(
+        &mut self,
+        target: Value,
+        len: usize,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<(), VmError> {
         let length_value = if len <= i32::MAX as usize {
             Value::i32(len as i32)
         } else {
             Value::f64(len as f64)
         };
-        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target) {
-            let array = unsafe { &mut *array_ptr.as_ptr() };
-            array.resize_holey(len);
-            return Ok(());
+        let updated = self.set_property_value_via_js_semantics(
+            target,
+            "length",
+            length_value,
+            target,
+            task,
+            module,
+        )?;
+        if updated {
+            Ok(())
+        } else {
+            Err(VmError::TypeError(
+                "Cannot assign to non-writable property 'length'".to_string(),
+            ))
         }
-        self.define_data_property_on_target(target, "length", length_value, true, false, false)
     }
 
     fn array_from_iterator_close(
@@ -292,14 +287,23 @@ impl<'a> Interpreter<'a> {
         }
         let next_result =
             self.invoke_callable_sync_with_this(next_method, Some(iterator), &[], task, module)?;
+        if debug_array_from {
+            eprintln!(
+                "[array.from] iterator next-result raw={:#x} object={} array={} callable={} null={} undefined={}",
+                next_result.raw(),
+                crate::vm::interpreter::opcodes::native::checked_object_ptr(next_result).is_some(),
+                crate::vm::interpreter::opcodes::native::checked_array_ptr(next_result).is_some(),
+                self.callable_function_info(next_result).is_some(),
+                next_result.is_null(),
+                next_result.is_undefined()
+            );
+        }
         if !self.array_from_is_object_value(next_result) {
             return Err(VmError::TypeError(
                 "Array.from iterator result must be an object".to_string(),
             ));
         }
-        let done_value = self
-            .get_field_value_by_name(next_result, "done")
-            .unwrap_or(Value::bool(false));
+        let done_value = self.array_from_iterator_result_property(next_result, "done", task, module)?;
         let done = if let Some(boolean) = done_value.as_bool() {
             boolean
         } else {
@@ -309,9 +313,27 @@ impl<'a> Interpreter<'a> {
             return Ok(None);
         }
         Ok(Some(
-            self.get_field_value_by_name(next_result, "value")
-                .unwrap_or(Value::undefined()),
+            self.array_from_iterator_result_property(next_result, "value", task, module)?,
         ))
+    }
+
+    fn array_from_iterator_result_property(
+        &mut self,
+        result: Value,
+        key: &str,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        if let Some(getter) = self.descriptor_accessor(result, key, "get") {
+            if !Self::is_callable_value(getter) {
+                return Err(VmError::TypeError(format!(
+                    "Array.from iterator result '{}' getter is not callable",
+                    key
+                )));
+            }
+            return self.invoke_callable_sync_with_this(getter, Some(result), &[], task, module);
+        }
+        Ok(self.get_field_value_by_name(result, key).unwrap_or(Value::undefined()))
     }
 
     fn array_from_target(
@@ -353,10 +375,11 @@ impl<'a> Interpreter<'a> {
                 } else {
                     None
                 };
-                let map_fn = if arg_count >= 2 {
-                    Some(stack.pop()?)
+                let map_fn_provided = arg_count >= 2;
+                let map_fn = if map_fn_provided {
+                    stack.pop()?
                 } else {
-                    None
+                    Value::undefined()
                 };
                 let items = stack.pop()?;
                 let constructor = stack.pop()?;
@@ -375,21 +398,16 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
 
-                if let Some(mapper) = map_fn {
-                    if mapper.is_heap_allocated() {
-                        self.ephemeral_gc_roots.write().push(mapper);
-                    }
-                    if !mapper.is_undefined()
-                        && !mapper.is_null()
-                        && !Self::is_callable_value(mapper)
-                    {
-                        self.array_release_ephemeral_root(mapper);
-                        self.array_release_ephemeral_root(items);
-                        self.array_release_ephemeral_root(constructor);
-                        return Err(VmError::TypeError(
-                            "Array.from mapfn must be callable".to_string(),
-                        ));
-                    }
+                if map_fn.is_heap_allocated() {
+                    self.ephemeral_gc_roots.write().push(map_fn);
+                }
+                if map_fn_provided && !map_fn.is_undefined() && !Self::is_callable_value(map_fn) {
+                    self.array_release_ephemeral_root(map_fn);
+                    self.array_release_ephemeral_root(items);
+                    self.array_release_ephemeral_root(constructor);
+                    return Err(VmError::TypeError(
+                        "Array.from mapfn must be callable".to_string(),
+                    ));
                 }
 
                 let map_this = Self::array_callback_this_arg(this_arg);
@@ -429,41 +447,35 @@ impl<'a> Interpreter<'a> {
                                 self.array_release_ephemeral_root(target);
                                 self.array_release_ephemeral_root(iterator);
                                 self.array_release_ephemeral_root(map_this);
-                                if let Some(mapper) = map_fn {
-                                    self.array_release_ephemeral_root(mapper);
-                                }
+                                self.array_release_ephemeral_root(map_fn);
                                 self.array_release_ephemeral_root(items);
                                 self.array_release_ephemeral_root(constructor);
                                 return Err(error);
                             }
                         };
-                        let mapped_value = if let Some(mapper) = map_fn {
-                            if mapper.is_undefined() || mapper.is_null() {
-                                next_value
+                        let mapped_value = if map_fn_provided && !map_fn.is_undefined() {
+                            let index_value = if index <= i32::MAX as usize {
+                                Value::i32(index as i32)
                             } else {
-                                let index_value = if index <= i32::MAX as usize {
-                                    Value::i32(index as i32)
-                                } else {
-                                    Value::f64(index as f64)
-                                };
-                                match self.invoke_callable_sync_with_this(
-                                    mapper,
-                                    Some(map_this),
-                                    &[next_value, index_value],
-                                    task,
-                                    module,
-                                ) {
-                                    Ok(value) => value,
-                                    Err(error) => {
-                                        let _ = self.array_from_iterator_close(iterator, task, module);
-                                        self.array_release_ephemeral_root(target);
-                                        self.array_release_ephemeral_root(iterator);
-                                        self.array_release_ephemeral_root(map_this);
-                                        self.array_release_ephemeral_root(mapper);
-                                        self.array_release_ephemeral_root(items);
-                                        self.array_release_ephemeral_root(constructor);
-                                        return Err(error);
-                                    }
+                                Value::f64(index as f64)
+                            };
+                            match self.invoke_callable_sync_with_this(
+                                map_fn,
+                                Some(map_this),
+                                &[next_value, index_value],
+                                task,
+                                module,
+                            ) {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    let _ = self.array_from_iterator_close(iterator, task, module);
+                                    self.array_release_ephemeral_root(target);
+                                    self.array_release_ephemeral_root(iterator);
+                                    self.array_release_ephemeral_root(map_this);
+                                    self.array_release_ephemeral_root(map_fn);
+                                    self.array_release_ephemeral_root(items);
+                                    self.array_release_ephemeral_root(constructor);
+                                    return Err(error);
                                 }
                             }
                         } else {
@@ -478,9 +490,7 @@ impl<'a> Interpreter<'a> {
                             self.array_release_ephemeral_root(target);
                             self.array_release_ephemeral_root(iterator);
                             self.array_release_ephemeral_root(map_this);
-                            if let Some(mapper) = map_fn {
-                                self.array_release_ephemeral_root(mapper);
-                            }
+                            self.array_release_ephemeral_root(map_fn);
                             self.array_release_ephemeral_root(items);
                             self.array_release_ephemeral_root(constructor);
                             return Err(error);
@@ -488,14 +498,12 @@ impl<'a> Interpreter<'a> {
                         self.array_release_ephemeral_root(mapped_value);
                         index += 1;
                     }
-                    self.array_from_set_length(target, index)?;
+                    self.array_from_set_length(target, index, task, module)?;
                     stack.push(target)?;
                     self.array_release_ephemeral_root(target);
                     self.array_release_ephemeral_root(iterator);
                     self.array_release_ephemeral_root(map_this);
-                    if let Some(mapper) = map_fn {
-                        self.array_release_ephemeral_root(mapper);
-                    }
+                    self.array_release_ephemeral_root(map_fn);
                     self.array_release_ephemeral_root(items);
                     self.array_release_ephemeral_root(constructor);
                     return Ok(());
@@ -513,23 +521,19 @@ impl<'a> Interpreter<'a> {
                 }
                 for index in 0..len {
                     let value = self.array_from_index_value(items, index);
-                    let mapped_value = if let Some(mapper) = map_fn {
-                        if mapper.is_undefined() || mapper.is_null() {
-                            value
+                    let mapped_value = if map_fn_provided && !map_fn.is_undefined() {
+                        let index_value = if index <= i32::MAX as usize {
+                            Value::i32(index as i32)
                         } else {
-                            let index_value = if index <= i32::MAX as usize {
-                                Value::i32(index as i32)
-                            } else {
-                                Value::f64(index as f64)
-                            };
-                            self.invoke_callable_sync_with_this(
-                                mapper,
-                                Some(map_this),
-                                &[value, index_value],
-                                task,
-                                module,
-                            )?
-                        }
+                            Value::f64(index as f64)
+                        };
+                        self.invoke_callable_sync_with_this(
+                            map_fn,
+                            Some(map_this),
+                            &[value, index_value],
+                            task,
+                            module,
+                        )?
                     } else {
                         value
                     };
@@ -540,22 +544,18 @@ impl<'a> Interpreter<'a> {
                         self.array_release_ephemeral_root(mapped_value);
                         self.array_release_ephemeral_root(target);
                         self.array_release_ephemeral_root(map_this);
-                        if let Some(mapper) = map_fn {
-                            self.array_release_ephemeral_root(mapper);
-                        }
+                        self.array_release_ephemeral_root(map_fn);
                         self.array_release_ephemeral_root(items);
                         self.array_release_ephemeral_root(constructor);
                         return Err(error);
                     }
                     self.array_release_ephemeral_root(mapped_value);
                 }
-                self.array_from_set_length(target, len)?;
+                self.array_from_set_length(target, len, task, module)?;
                 stack.push(target)?;
                 self.array_release_ephemeral_root(target);
                 self.array_release_ephemeral_root(map_this);
-                if let Some(mapper) = map_fn {
-                    self.array_release_ephemeral_root(mapper);
-                }
+                self.array_release_ephemeral_root(map_fn);
                 self.array_release_ephemeral_root(items);
                 self.array_release_ephemeral_root(constructor);
                 Ok(())

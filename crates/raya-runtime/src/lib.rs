@@ -50,9 +50,7 @@ pub use error::RuntimeError;
 pub use module_system::{CompiledProgram, ProgramDiagnostics};
 pub use session::Session;
 
-use raya_engine::compiler::module::{
-    builtin_global_exports, BuiltinSurfaceMode, LateLinkRequirement, LateLinkSymbolRequirement,
-};
+use raya_engine::compiler::module::{LateLinkRequirement, LateLinkSymbolRequirement};
 use raya_engine::compiler::{
     module_id_from_name, symbol_id_from_name, Export, Import, NominalTypeExport, SymbolScope,
     SymbolType,
@@ -792,13 +790,6 @@ impl Runtime {
         Ok(deps)
     }
 
-    fn builtin_surface_mode_for_runtime(mode: BuiltinMode) -> BuiltinSurfaceMode {
-        match mode {
-            BuiltinMode::RayaStrict => BuiltinSurfaceMode::RayaStrict,
-            BuiltinMode::NodeCompat => BuiltinSurfaceMode::NodeCompat,
-        }
-    }
-
     fn runtime_only_ambient_builtin_names(mode: BuiltinMode) -> Vec<String> {
         match mode {
             BuiltinMode::RayaStrict | BuiltinMode::NodeCompat => {
@@ -807,27 +798,19 @@ impl Runtime {
         }
     }
 
-    fn ambient_builtin_export_names(mode: BuiltinMode) -> Result<Vec<String>, RuntimeError> {
-        let exports = builtin_global_exports(Self::builtin_surface_mode_for_runtime(mode))
-            .map_err(|error| {
-                RuntimeError::Dependency(format!(
-                    "Failed to load builtin declaration exports for runtime seeding: {error}"
-                ))
-            })?;
-        let mut names = exports
-            .symbols
-            .iter()
-            .filter_map(|(name, exported)| match exported.kind {
-                raya_engine::parser::checker::SymbolKind::TypeAlias
-                | raya_engine::parser::checker::SymbolKind::TypeParameter
-                | raya_engine::parser::checker::SymbolKind::Interface => None,
-                _ => Some(name.clone()),
-            })
-            .collect::<Vec<_>>();
+    fn builtin_runtime_export_names(mode: BuiltinMode) -> Result<Vec<String>, RuntimeError> {
+        let mut names = Vec::new();
+        for (_, source) in builtins::builtin_source_modules_for_mode(mode) {
+            names.extend(Self::top_level_runtime_names(source)?);
+        }
         names.extend(Self::runtime_only_ambient_builtin_names(mode));
         names.sort();
         names.dedup();
         Ok(names)
+    }
+
+    fn ambient_builtin_export_names(mode: BuiltinMode) -> Result<Vec<String>, RuntimeError> {
+        Self::builtin_runtime_export_names(mode)
     }
 
     fn collect_pattern_names(pattern: &Pattern, interner: &Interner, out: &mut Vec<String>) {
@@ -951,15 +934,6 @@ impl Runtime {
         slots
     }
 
-    fn export_symbol_type(kind: SymbolKind) -> Option<SymbolType> {
-        match kind {
-            SymbolKind::Function => Some(SymbolType::Function),
-            SymbolKind::Class | SymbolKind::Interface => Some(SymbolType::Class),
-            SymbolKind::Variable | SymbolKind::EnumMember => Some(SymbolType::Constant),
-            SymbolKind::TypeAlias | SymbolKind::TypeParameter => None,
-        }
-    }
-
     fn infer_runtime_export_symbol_type(
         ast: &raya_engine::parser::ast::Module,
         interner: &Interner,
@@ -994,7 +968,6 @@ impl Runtime {
         module: &mut Module,
         ast: &raya_engine::parser::ast::Module,
         interner: &Interner,
-        declared_exports: &raya_engine::compiler::module::ModuleExports,
         export_names: &[String],
     ) {
         module.exports.clear();
@@ -1002,10 +975,8 @@ impl Runtime {
         let module_name = module.metadata.name.clone();
 
         for export_name in export_names {
-            let declared = declared_exports.symbols.get(export_name);
-            let Some(symbol_type) = declared
-                .and_then(|declared| Self::export_symbol_type(declared.kind))
-                .or_else(|| Self::infer_runtime_export_symbol_type(ast, interner, export_name))
+            let Some(symbol_type) =
+                Self::infer_runtime_export_symbol_type(ast, interner, export_name)
             else {
                 continue;
             };
@@ -1030,8 +1001,8 @@ impl Runtime {
                 index,
                 symbol_id: symbol_id_from_name(&module_name, SymbolScope::Module, export_name),
                 scope: SymbolScope::Module,
-                signature_hash: declared.map(|declared| declared.signature_hash).unwrap_or(0),
-                type_signature: declared.map(|declared| declared.type_signature.clone()),
+                signature_hash: 0,
+                type_signature: None,
                 nominal_type: matches!(symbol_type, SymbolType::Class).then_some(
                     NominalTypeExport {
                         local_nominal_type_index: index as u32,
@@ -1055,28 +1026,7 @@ impl Runtime {
         };
 
         let cached = cache.get_or_init(|| {
-            let declared_exports =
-                match builtin_global_exports(Self::builtin_surface_mode_for_runtime(mode)) {
-                    Ok(exports) => exports,
-                    Err(error) => return Err(error.to_string()),
-                };
-            let ambient_names = {
-                let mut names = declared_exports
-                    .symbols
-                    .iter()
-                    .filter_map(|(name, exported)| match exported.kind {
-                        SymbolKind::TypeAlias | SymbolKind::TypeParameter | SymbolKind::Interface => {
-                            None
-                        }
-                        _ => Some(name.clone()),
-                    })
-                    .collect::<Vec<_>>();
-                names.extend(Self::runtime_only_ambient_builtin_names(mode));
-                names.sort();
-                names.dedup();
-                names
-            };
-            let ambient_names = match Ok::<Vec<String>, RuntimeError>(ambient_names) {
+            let ambient_names = match Self::builtin_runtime_export_names(mode) {
                 Ok(names) => names,
                 Err(error) => return Err(error.to_string()),
             };
@@ -1208,7 +1158,6 @@ impl Runtime {
                     &mut module,
                     &unit.ast,
                     &unit.interner,
-                    &declared_exports,
                     &unit.export_names,
                 );
                 let encoded = module.encode();

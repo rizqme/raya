@@ -2,7 +2,9 @@
 //!
 //! Converts AST statements to IR instructions.
 
-use super::{is_module_wrapper_function_name, Lowerer, UNRESOLVED, UNRESOLVED_TYPE_ID};
+use super::{
+    is_module_wrapper_function_name, Lowerer, ARRAY_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
+};
 use crate::compiler::ir::block::BasicBlockId;
 use crate::compiler::ir::{
     BinaryOp, IrConstant, IrInstr, IrValue, Register, StringCompareMode, Terminator,
@@ -231,6 +233,7 @@ impl<'a> Lowerer<'a> {
                     let saved_current_block = self.current_block;
                     let saved_current_class = self.current_class.take();
                     let saved_this_register = self.this_register.take();
+                    let saved_generator_yield_array_local = self.generator_yield_array_local.take();
 
                     self.lower_class_declaration(class);
 
@@ -248,6 +251,7 @@ impl<'a> Lowerer<'a> {
                     self.current_block = saved_current_block;
                     self.current_class = saved_current_class;
                     self.this_register = saved_this_register;
+                    self.generator_yield_array_local = saved_generator_yield_array_local;
                     self.pending_class_method_env_globals = saved_pending_method_env;
                 } else {
                     // Already-lowered declaration: emit static blocks at declaration position
@@ -2362,6 +2366,8 @@ impl<'a> Lowerer<'a> {
             if let Some(type_ann) = &decl.type_annotation {
                 value = self.coerce_value_to_annotation_type(value, type_ann);
             }
+            let rebinding_call_result =
+                self.js_this_binding_compat && self.js_receiver_rebinding_call_expr(init);
 
             if let Some(type_ann) = &decl.type_annotation {
                 let expected_ty = self.resolve_structural_slot_type_from_annotation(type_ann);
@@ -2477,6 +2483,12 @@ impl<'a> Lowerer<'a> {
                         }
                     } else {
                         value.clone()
+                    }
+                } else if rebinding_call_result {
+                    use crate::compiler::ir::Register;
+                    Register {
+                        id: value.id,
+                        ty: UNRESOLVED,
                     }
                 } else {
                     value.clone()
@@ -2690,10 +2702,38 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        if self.generator_yield_array_local.is_some() {
+            let result = self
+                .load_generator_yield_array()
+                .unwrap_or_else(|| self.alloc_register(TypeId::new(ARRAY_TYPE_ID)));
+            self.set_terminator(Terminator::Return(Some(result)));
+            return;
+        }
+
         self.set_terminator(Terminator::Return(value));
     }
 
     fn lower_yield(&mut self, yld: &ast::YieldStatement) {
+        if self.generator_yield_array_local.is_some() {
+            let yielded = if let Some(value) = &yld.value {
+                self.lower_expr(value)
+            } else {
+                let undefined = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::Assign {
+                    dest: undefined.clone(),
+                    value: IrValue::Constant(IrConstant::Undefined),
+                });
+                undefined
+            };
+            if let Some(array_reg) = self.load_generator_yield_array() {
+                self.emit(IrInstr::ArrayPush {
+                    array: array_reg,
+                    element: yielded,
+                });
+            }
+            return;
+        }
+
         if let Some(value) = &yld.value {
             self.lower_expr(value);
         }

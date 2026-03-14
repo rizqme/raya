@@ -4,6 +4,7 @@
 class Symbol {
     private key: string;
     static iterator: Symbol = new Symbol("Symbol.iterator");
+    static asyncIterator: Symbol = new Symbol("Symbol.asyncIterator");
     static toStringTag: Symbol = new Symbol("Symbol.toStringTag");
 
     private constructor(description: any = "") {

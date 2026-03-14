@@ -64,6 +64,20 @@ struct ClassAstSummary {
     concrete_methods: FxHashSet<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HelperReceiverExpectation {
+    Instance(TypeId),
+    StaticClass(TypeId),
+}
+
+impl HelperReceiverExpectation {
+    fn type_id(self) -> TypeId {
+        match self {
+            Self::Instance(ty) | Self::StaticClass(ty) => ty,
+        }
+    }
+}
+
 /// Negate a type guard
 fn negate_guard(guard: &TypeGuard) -> TypeGuard {
     match guard {
@@ -168,9 +182,9 @@ pub struct TypeChecker<'a> {
     /// Variables currently known to store extracted (unbound) method references.
     /// Keyed by (declaration_scope_id, variable_name).
     unbound_method_vars: FxHashSet<(u32, String)>,
-    /// Expected receiver (`this`) type for unbound extracted method variables.
+    /// Expected receiver (`this`) shape for unbound extracted method variables.
     /// Keyed by (declaration_scope_id, variable_name).
-    unbound_method_receiver_types: FxHashMap<(u32, String), TypeId>,
+    unbound_method_receiver_types: FxHashMap<(u32, String), HelperReceiverExpectation>,
     /// Variables currently known to alias constructible class values.
     /// Keyed by (declaration_scope_id, variable_name).
     constructible_vars: FxHashSet<(u32, String)>,
@@ -588,6 +602,22 @@ impl<'a> TypeChecker<'a> {
         false
     }
 
+    fn lookup_static_method_in_class_hierarchy(
+        &self,
+        class: &crate::parser::types::ty::ClassType,
+        method_name: &str,
+    ) -> bool {
+        if class.static_methods.iter().any(|m| m.name == method_name) {
+            return true;
+        }
+        if let Some(parent_ty) = class.extends {
+            if let Some(crate::parser::types::Type::Class(parent)) = self.type_ctx.get(parent_ty) {
+                return self.lookup_static_method_in_class_hierarchy(parent, method_name);
+            }
+        }
+        false
+    }
+
     fn infer_method_extract_object_type(&self, expr: &Expression) -> Option<TypeId> {
         match expr {
             Expression::Identifier(ident) => {
@@ -599,18 +629,46 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn infer_extracted_unbound_method_receiver_type(&self, expr: &Expression) -> Option<TypeId> {
+    fn infer_static_method_extract_object_type(&self, expr: &Expression) -> Option<TypeId> {
+        let Expression::Identifier(ident) = expr else {
+            return None;
+        };
+        let name = self.resolve(ident.name);
+        self.symbols
+            .resolve_from_scope(&name, self.current_scope)
+            .filter(|symbol| symbol.kind == SymbolKind::Class)
+            .map(|symbol| symbol.ty)
+            .or_else(|| {
+                if self.is_js_mode() {
+                    self.type_ctx.lookup_named_type(&name)
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn infer_extracted_unbound_method_receiver_expectation(
+        &self,
+        expr: &Expression,
+    ) -> Option<HelperReceiverExpectation> {
         let Expression::Member(member) = expr else {
             return None;
         };
         let method_name = self.resolve(member.property.name);
+        if let Some(object_ty) = self.infer_static_method_extract_object_type(&member.object) {
+            if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(object_ty) {
+                if self.lookup_static_method_in_class_hierarchy(class, &method_name) {
+                    return Some(HelperReceiverExpectation::StaticClass(object_ty));
+                }
+            }
+        }
         let Some(object_ty) = self.infer_method_extract_object_type(&member.object) else {
             return None;
         };
         match self.type_ctx.get(object_ty).cloned() {
             Some(crate::parser::types::Type::Class(class)) => {
                 if self.lookup_method_in_class_hierarchy(&class, &method_name) {
-                    Some(object_ty)
+                    Some(HelperReceiverExpectation::Instance(object_ty))
                 } else {
                     None
                 }
@@ -633,7 +691,7 @@ impl<'a> TypeChecker<'a> {
         let symbol = self.symbols.resolve_from_scope(name, self.current_scope);
         let scope_id = symbol.map(|s| s.scope_id.0).unwrap_or(self.current_scope.0);
         let key = (scope_id, name.to_string());
-        if let Some(receiver_ty) = self.infer_extracted_unbound_method_receiver_type(expr) {
+        if let Some(receiver_expectation) = self.infer_extracted_unbound_method_receiver_expectation(expr) {
             if self.is_bind_call_expr(expr) {
                 self.unbound_method_vars.remove(&key);
                 self.unbound_method_receiver_types.remove(&key);
@@ -641,7 +699,7 @@ impl<'a> TypeChecker<'a> {
             }
             self.unbound_method_vars.insert(key);
             self.unbound_method_receiver_types
-                .insert((scope_id, name.to_string()), receiver_ty);
+                .insert((scope_id, name.to_string()), receiver_expectation);
         } else {
             self.unbound_method_vars.remove(&key);
             self.unbound_method_receiver_types.remove(&key);
@@ -658,7 +716,10 @@ impl<'a> TypeChecker<'a> {
             .contains(&(self.current_scope.0, name.to_string()))
     }
 
-    fn get_unbound_method_receiver_type_for_var(&self, name: &str) -> Option<TypeId> {
+    fn get_unbound_method_receiver_expectation_for_var(
+        &self,
+        name: &str,
+    ) -> Option<HelperReceiverExpectation> {
         if let Some(symbol) = self.symbols.resolve_from_scope(name, self.current_scope) {
             return self
                 .unbound_method_receiver_types
@@ -727,26 +788,88 @@ impl<'a> TypeChecker<'a> {
             .contains(&(self.current_scope.0, name.to_string()))
     }
 
-    fn infer_helper_expected_this_type(&self, target_expr: &Expression) -> Option<TypeId> {
+    fn infer_helper_expected_this_type(
+        &self,
+        target_expr: &Expression,
+    ) -> Option<HelperReceiverExpectation> {
         match target_expr {
             Expression::Identifier(ident) => {
                 let name = self.resolve(ident.name);
-                self.get_unbound_method_receiver_type_for_var(&name)
+                self.get_unbound_method_receiver_expectation_for_var(&name)
             }
-            _ => self.infer_extracted_unbound_method_receiver_type(target_expr),
+            _ => self.infer_extracted_unbound_method_receiver_expectation(target_expr),
         }
     }
 
     fn check_helper_this_arg(
         &mut self,
-        expected_this_ty: Option<TypeId>,
+        expected_this_ty: Option<HelperReceiverExpectation>,
         helper_args: &[(TypeId, crate::parser::Span)],
     ) {
+        if self.is_js_mode() {
+            return;
+        }
         let Some(expected) = expected_this_ty else {
             return;
         };
         if let Some((actual_this_ty, actual_span)) = helper_args.first().copied() {
-            self.check_assignable(actual_this_ty, expected, actual_span);
+            self.check_assignable(actual_this_ty, expected.type_id(), actual_span);
+        }
+    }
+
+    fn is_static_helper_receiver_compatible(
+        &mut self,
+        actual_this_ty: TypeId,
+        expected_this_ty: TypeId,
+    ) -> bool {
+        let Some(expected_class) = self.resolve_class_type(expected_this_ty) else {
+            return false;
+        };
+        let mut cursor = Some(actual_this_ty);
+        while let Some(ty) = cursor {
+            let Some(class) = self.resolve_class_type(ty) else {
+                return false;
+            };
+            if class.name == expected_class.name {
+                return true;
+            }
+            cursor = class.extends;
+        }
+        false
+    }
+
+    fn helper_call_preserves_return_type(
+        &mut self,
+        expected_this_ty: Option<HelperReceiverExpectation>,
+        helper_args: &[(TypeId, crate::parser::Span)],
+    ) -> bool {
+        let Some(expected) = expected_this_ty else {
+            return true;
+        };
+        let Some((actual_this_ty, _)) = helper_args.first().copied() else {
+            return false;
+        };
+        match expected {
+            HelperReceiverExpectation::Instance(expected_ty) => {
+                let mut assign_ctx = self.make_assignability_ctx();
+                assign_ctx.is_assignable(actual_this_ty, expected_ty)
+            }
+            HelperReceiverExpectation::StaticClass(expected_ty) => {
+                self.is_static_helper_receiver_compatible(actual_this_ty, expected_ty)
+            }
+        }
+    }
+
+    fn helper_call_return_type(
+        &mut self,
+        target_fn: &crate::parser::types::ty::FunctionType,
+        expected_this_ty: Option<HelperReceiverExpectation>,
+        helper_args: &[(TypeId, crate::parser::Span)],
+    ) -> TypeId {
+        if self.helper_call_preserves_return_type(expected_this_ty, helper_args) {
+            target_fn.return_type
+        } else {
+            self.inference_fallback_type()
         }
     }
 
@@ -3191,7 +3314,7 @@ impl<'a> TypeChecker<'a> {
 
         if let Expression::Identifier(ident) = call.callee.as_ref() {
             let name = self.resolve(ident.name);
-            if self.is_unbound_method_var(&name) {
+            if !self.is_js_mode() && self.is_unbound_method_var(&name) {
                 self.errors.push(CheckError::UnboundMethodCall {
                     name,
                     span: call.span,
@@ -3199,9 +3322,27 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        let helper_name = if let Expression::Member(member) = call.callee.as_ref() {
+            Some(self.resolve(member.property.name))
+        } else {
+            None
+        };
+
         // Function helper calls: fn.call(...), fn.apply(...), fn.bind(...)
         if let Some(helper_ty) = self.try_check_function_helper_call(call) {
             return helper_ty;
+        }
+        if self.is_js_mode()
+            && matches!(helper_name.as_deref(), Some("call") | Some("apply"))
+        {
+            // If helper-specific typing can't prove the target is a real
+            // Function.prototype.call/apply usage, keep the result dynamic.
+            // Treating these as ordinary method calls leaks direct-call return
+            // types across rebound receivers and miscompiles later property access.
+            for arg in &call.arguments {
+                self.check_expr(arg);
+            }
+            return self.inference_fallback_type();
         }
 
         if let Expression::Index(idx) = call.callee.as_ref() {
@@ -3510,17 +3651,62 @@ impl<'a> TypeChecker<'a> {
             .map(|arg| (self.check_expr(arg), *arg.span()))
             .collect();
         let expected_this_ty = self.infer_helper_expected_this_type(&member.object);
+        let debug_helper = std::env::var_os("RAYA_DEBUG_HELPER_CALL").is_some();
+        if debug_helper {
+            let expected_desc = expected_this_ty
+                .map(|expectation| match expectation {
+                    HelperReceiverExpectation::Instance(ty) => {
+                        format!("instance {}", self.format_type(ty))
+                    }
+                    HelperReceiverExpectation::StaticClass(ty) => {
+                        format!("static {}", self.format_type(ty))
+                    }
+                })
+                .unwrap_or_else(|| "none".to_string());
+            let actual_desc = arg_types
+                .first()
+                .map(|(ty, _)| self.format_type(*ty))
+                .unwrap_or_else(|| "<missing>".to_string());
+            eprintln!(
+                "[check-helper] helper={} target={} expected_this={} actual_this={} return={}",
+                helper,
+                self.format_type(target_ty),
+                expected_desc,
+                actual_desc,
+                self.format_type(target_fn.return_type),
+            );
+        }
 
         match helper.as_str() {
             "call" => {
                 self.check_helper_this_arg(expected_this_ty, &arg_types);
                 self.check_function_args_for_helper(&target_fn, &arg_types, 1, call.span);
-                Some(target_fn.return_type)
+                let helper_return =
+                    self.helper_call_return_type(&target_fn, expected_this_ty, &arg_types);
+                if debug_helper {
+                    eprintln!(
+                        "[check-helper] helper={} preserved={} resolved_return={}",
+                        helper,
+                        self.helper_call_preserves_return_type(expected_this_ty, &arg_types),
+                        self.format_type(helper_return),
+                    );
+                }
+                Some(helper_return)
             }
             "apply" => {
                 self.check_helper_this_arg(expected_this_ty, &arg_types);
                 self.check_apply_helper_args(&target_fn, &arg_types, call.span);
-                Some(target_fn.return_type)
+                let helper_return =
+                    self.helper_call_return_type(&target_fn, expected_this_ty, &arg_types);
+                if debug_helper {
+                    eprintln!(
+                        "[check-helper] helper={} preserved={} resolved_return={}",
+                        helper,
+                        self.helper_call_preserves_return_type(expected_this_ty, &arg_types),
+                        self.format_type(helper_return),
+                    );
+                }
+                Some(helper_return)
             }
             "bind" => {
                 self.check_helper_this_arg(expected_this_ty, &arg_types);
@@ -7405,49 +7591,85 @@ impl<'a> TypeChecker<'a> {
         // This preserves strictness for annotated variables and const bindings.
         if let Expression::Identifier(ident) = &*assign.left {
             let name = self.resolve(ident.name);
-            if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
-                let scope_id = symbol.scope_id.0;
-                let inferred_key = (scope_id, name.clone());
-                let inferred_current = self.inferred_var_types.get(&inferred_key).copied();
-                let null_ty = self.type_ctx.null_type();
+            let resolved_symbol = self.symbols.resolve_from_scope(&name, self.current_scope);
+            let resolved_scope_id = resolved_symbol.map(|symbol| symbol.scope_id.0);
+            let symbol_ty = resolved_symbol
+                .map(|symbol| symbol.ty)
+                .unwrap_or_else(|| self.inference_fallback_type());
+            let is_const = resolved_symbol.is_some_and(|symbol| symbol.flags.is_const);
+            let is_dynamic_seed =
+                resolved_symbol.map(|symbol| self.is_dynamic_seed_type(symbol.ty)).unwrap_or(self.is_js_mode());
+            let inferred_key = resolved_scope_id
+                .map(|scope_id| (scope_id, name.clone()))
+                .or_else(|| {
+                    self.scope_stack.iter().rev().find_map(|scope_id| {
+                        let key = (scope_id.0, name.clone());
+                        self.inferred_var_types.contains_key(&key).then_some(key)
+                    })
+                })
+                .unwrap_or((self.current_scope.0, name.clone()));
+            let inferred_current = self.inferred_var_types.get(&inferred_key).copied();
+            let null_ty = self.type_ctx.null_type();
+            let debug_js_assign = std::env::var("RAYA_DEBUG_JS_ASSIGN").is_ok();
+            if debug_js_assign {
+                eprintln!(
+                    "[js-assign] name={} scope={} symbol_ty={} inferred_current={:?} right_ty={} is_dynamic_seed={} const={}",
+                    name,
+                    inferred_key.0,
+                    self.format_type(symbol_ty),
+                    inferred_current.map(|ty| self.format_type(ty)),
+                    self.format_type(right_ty),
+                    is_dynamic_seed,
+                    is_const
+                );
+            }
 
-                // Variable has no explicit annotation (binder stores dynamic seed type).
-                if self.is_dynamic_seed_type(symbol.ty) && !symbol.flags.is_const {
-                    match inferred_current {
-                        // `let x = null; x = <T>;` => widen declaration to `null | T`
-                        Some(inferred_ty) if inferred_ty == null_ty && right_ty != null_ty => {
-                            let widened = self.type_ctx.union_type(vec![inferred_ty, right_ty]);
-                            self.inferred_var_types.insert(inferred_key, widened);
+            // Variable has no explicit annotation (binder stores dynamic seed type).
+            if is_dynamic_seed && !is_const {
+                match inferred_current {
+                    // `let x = null; x = <T>;` => widen declaration to `null | T`
+                    Some(inferred_ty) if inferred_ty == null_ty && right_ty != null_ty => {
+                        let widened = self.type_ctx.union_type(vec![inferred_ty, right_ty]);
+                        self.inferred_var_types.insert(inferred_key.clone(), widened);
+                        target_ty = widened;
+                    }
+                    // Node-compat auto-widen inference across contradictory assignments.
+                    Some(inferred_ty) if self.is_js_mode() => {
+                        // Use strict assignability here so non-strict coercions
+                        // (e.g. number -> string) don't suppress union widening.
+                        // In JS mode, widen whenever the new assignment is not
+                        // assignable to the current inferred declaration type,
+                        // even if the reverse direction happens to be assignable
+                        // via structural width subtyping.
+                        let mut strict_assign_ctx =
+                            AssignabilityContext::with_strict_mode(self.type_ctx, true);
+                        if !strict_assign_ctx.is_assignable(right_ty, inferred_ty) {
+                            let widened = self.join_inferred_types(inferred_ty, right_ty);
+                            if debug_js_assign {
+                                eprintln!(
+                                    "[js-assign] widening name={} from {} to {}",
+                                    name,
+                                    self.format_type(inferred_ty),
+                                    self.format_type(widened)
+                                );
+                            }
+                            self.inferred_var_types.insert(inferred_key.clone(), widened);
                             target_ty = widened;
                         }
-                        // Node-compat auto-widen inference across contradictory assignments.
-                        Some(inferred_ty) if self.is_js_mode() => {
-                            // Use strict assignability here so non-strict coercions
-                            // (e.g. number -> string) don't suppress union widening.
-                            let mut strict_assign_ctx =
-                                AssignabilityContext::with_strict_mode(self.type_ctx, true);
-                            if !strict_assign_ctx.is_assignable(right_ty, inferred_ty)
-                                && !strict_assign_ctx.is_assignable(inferred_ty, right_ty)
-                            {
-                                let widened = self.join_inferred_types(inferred_ty, right_ty);
-                                self.inferred_var_types.insert(inferred_key, widened);
-                                target_ty = widened;
-                            }
-                        }
-                        // `let x; x = <T>;` => first concrete assignment sets inferred declaration.
-                        None => {
-                            self.inferred_var_types.insert(inferred_key, right_ty);
-                            target_ty = right_ty;
-                        }
-                        _ => {}
                     }
+                    // `let x; x = <T>;` => first concrete assignment sets inferred declaration.
+                    None => {
+                        self.inferred_var_types.insert(inferred_key.clone(), right_ty);
+                        target_ty = right_ty;
+                    }
+                    _ => {}
                 }
-
-                // Assignment updates current flow type (used by branch merges).
-                self.set_unbound_method_var_state(&name, &assign.right);
-                self.set_constructible_var_state(&name, &assign.right, right_ty);
-                self.type_env.set(name, right_ty);
             }
+
+            // Assignment updates current flow type (used by branch merges).
+            self.set_unbound_method_var_state(&name, &assign.right);
+            self.set_constructible_var_state(&name, &assign.right, right_ty);
+            self.type_env.set(name, right_ty);
         } else if let Expression::Index(idx) = &*assign.left {
             self.maybe_escalate_identifier_to_jsobject(&idx.object, Some(&idx.index));
         }

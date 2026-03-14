@@ -8,6 +8,7 @@ export class Array<T> {
 
     static isArray(value: unknown): boolean;
     static from(values: any, mapfn?: any, thisArg?: any): any[];
+    static fromAsync(values: any, mapfn?: any, thisArg?: any): Promise<any[]>;
 
     push(element: T): number;
     pop(): T;

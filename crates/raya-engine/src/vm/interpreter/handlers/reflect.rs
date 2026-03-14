@@ -141,83 +141,21 @@ impl<'a> Interpreter<'a> {
     }
 
     fn reflect_set_property_value(
-        &self,
+        &mut self,
         target: Value,
         property_key: &str,
         value: Value,
+        task: &Arc<Task>,
+        module: &Module,
     ) -> Result<bool, VmError> {
-        let debug_array_prop = std::env::var("RAYA_DEBUG_ARRAY_PROP").is_ok();
-        if debug_array_prop {
-            eprintln!(
-                "[reflect.set] target={:#x} is_ptr={} key={} value={:#x}",
-                target.raw(),
-                target.is_ptr(),
-                property_key,
-                value.raw()
-            );
-        }
-        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target)
-        {
-            if property_key == "length" {
-                self.set_array_length_value(target, value)?;
-                return Ok(true);
-            }
-            if let Some(index) = Self::reflect_array_index(property_key) {
-                let array = unsafe { &mut *array_ptr.as_ptr() };
-                let _ = array.set(index, value);
-                return Ok(true);
-            }
-        }
-        if self.set_builtin_global_property(target, property_key, value) {
-            self.sync_descriptor_value(target, property_key, value);
-            return Ok(true);
-        }
-        let callable_like = self.reflect_is_callable_value(target);
-        if callable_like {
-            if let Some((writable, _, _)) =
-                self.callable_virtual_property_descriptor(target, property_key)
-            {
-                                if !writable {
-                                    return Ok(false);
-                                }
-                            }
-                            if self.descriptor_accessor(target, property_key, "get").is_some()
-                                && !self.is_field_writable(target, property_key)
-                            {
-                                return Ok(false);
-                            }
-                            if !self.is_field_writable(target, property_key) {
-                                return Ok(false);
-                            }
-                        }
-                        if let Some(mut obj_ptr) = Self::reflect_object_ptr(target) {
-            if debug_array_prop {
-                eprintln!("[reflect.set] object path");
-            }
-            let obj = unsafe { obj_ptr.as_mut() };
-            if let Some(index) = self.get_field_index_for_value(target, property_key) {
-                let updated = obj.set_field(index, value).is_ok();
-                if updated {
-                    self.sync_descriptor_value(target, property_key, value);
-                }
-                return Ok(updated);
-            }
-            obj.ensure_dyn_map()
-                .insert(self.intern_prop_key(property_key), value);
-            self.sync_descriptor_value(target, property_key, value);
-            return Ok(true);
-        }
-        if !callable_like && !target.is_ptr() {
-            if debug_array_prop {
-                eprintln!("[reflect.set] rejecting non-pointer target");
-            }
-            return Ok(false);
-        }
-        if debug_array_prop {
-            eprintln!("[reflect.set] metadata/property path");
-        }
-        self.define_data_property_on_target(target, property_key, value, true, true, true)?;
-        Ok(true)
+        self.set_property_value_via_js_semantics(
+            target,
+            property_key,
+            value,
+            target,
+            task,
+            module,
+        )
     }
 
     fn reflect_method_slot_for_object(&self, obj: &Object, property_key: &str) -> Option<usize> {
@@ -801,7 +739,13 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
 
-                Value::bool(self.reflect_set_property_value(target, &property_key, value)?)
+                Value::bool(self.reflect_set_property_value(
+                    target,
+                    &property_key,
+                    value,
+                    task,
+                    module,
+                )?)
             }
 
             reflect::HAS => {
@@ -1137,9 +1081,7 @@ impl<'a> Interpreter<'a> {
                         .filter(|value| !value.is_null() && !value.is_undefined())
                         .unwrap_or(target);
 
-                    if self.callable_function_info(new_target).is_none()
-                        && self.unwrapped_proxy_like(new_target).is_none()
-                    {
+                    if !self.callable_is_constructible(new_target) {
                         return Err(VmError::TypeError(
                             "Reflect.construct newTarget must be a constructor".to_string(),
                         ));

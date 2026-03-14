@@ -35,6 +35,8 @@ pub struct IrFunction {
     pub uses_js_this_slot: bool,
     /// Whether the function is constructible and should expose a default `prototype`.
     pub is_constructible: bool,
+    /// Whether the function originated from `function*`.
+    pub is_generator: bool,
     /// JS-visible `length` property value.
     pub visible_length: usize,
     /// Whether JS `this` should use strict semantics.
@@ -57,6 +59,7 @@ impl IrFunction {
             type_param_ids: Vec::new(),
             uses_js_this_slot: false,
             is_constructible: false,
+            is_generator: false,
             visible_length,
             is_strict_js: false,
         }

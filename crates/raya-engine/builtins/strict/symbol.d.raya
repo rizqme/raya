@@ -9,5 +9,6 @@ export class Symbol {
     static keyFor(sym: Symbol): string;
 
     static iterator: Symbol;
+    static asyncIterator: Symbol;
     static toStringTag: Symbol;
 }

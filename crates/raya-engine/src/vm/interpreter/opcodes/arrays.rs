@@ -123,20 +123,26 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                if !arr_val.is_ptr() {
-                    return OpcodeResult::Error(VmError::TypeError("Expected array".to_string()));
-                }
-
-                let arr_ptr = unsafe { arr_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let len = arr.len();
-                let len_value = if len <= i32::MAX as usize {
-                    Value::i32(len as i32)
+                if let Some(arr_ptr) =
+                    crate::vm::interpreter::opcodes::native::checked_array_ptr(arr_val)
+                {
+                    let arr = unsafe { &*arr_ptr.as_ptr() };
+                    let len = arr.len();
+                    let len_value = if len <= i32::MAX as usize {
+                        Value::i32(len as i32)
+                    } else {
+                        Value::f64(len as f64)
+                    };
+                    if let Err(e) = stack.push(len_value) {
+                        return OpcodeResult::Error(e);
+                    }
                 } else {
-                    Value::f64(len as f64)
-                };
-                if let Err(e) = stack.push(len_value) {
-                    return OpcodeResult::Error(e);
+                    let len_value = self
+                        .get_field_value_by_name(arr_val, "length")
+                        .unwrap_or(Value::null());
+                    if let Err(e) = stack.push(len_value) {
+                        return OpcodeResult::Error(e);
+                    }
                 }
                 OpcodeResult::Continue
             }

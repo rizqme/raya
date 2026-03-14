@@ -72,6 +72,7 @@ pub struct FunctionBuilder {
     param_count: u8,
     uses_js_this_slot: bool,
     is_constructible: bool,
+    is_generator: bool,
     visible_length: u8,
     is_strict_js: bool,
     code: Vec<u8>,
@@ -92,6 +93,7 @@ impl FunctionBuilder {
             param_count,
             uses_js_this_slot: false,
             is_constructible: false,
+            is_generator: false,
             visible_length: param_count,
             is_strict_js: false,
             code: Vec::new(),
@@ -174,6 +176,10 @@ impl FunctionBuilder {
         self.is_constructible = is_constructible;
     }
 
+    pub fn set_is_generator(&mut self, is_generator: bool) {
+        self.is_generator = is_generator;
+    }
+
     pub fn set_visible_length(&mut self, visible_length: u8) {
         self.visible_length = visible_length;
     }
@@ -194,6 +200,7 @@ impl FunctionBuilder {
             param_count: self.param_count as usize,
             uses_js_this_slot: self.uses_js_this_slot,
             is_constructible: self.is_constructible,
+            is_generator: self.is_generator,
             visible_length: self.visible_length as usize,
             is_strict_js: self.is_strict_js,
             local_count: self.local_count as usize,

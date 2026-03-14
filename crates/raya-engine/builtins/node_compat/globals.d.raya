@@ -28,6 +28,8 @@ export interface ReflectAPI {
     get(target: Proxy<Object> | Object | ReflectTarget, key: string): Object | string | number | boolean | null;
     set(target: Proxy<Object> | Object | ReflectTarget, key: string, value: Object | string | number | boolean | null): boolean;
     has(target: Proxy<Object> | Object | ReflectTarget, key: string): boolean;
+    isExtensible(target: Proxy<Object> | Object | ReflectTarget): boolean;
+    preventExtensions(target: Proxy<Object> | Object | ReflectTarget): boolean;
     construct(target: any, args?: any, newTarget?: any): Object;
     getFieldNames(target: Proxy<Object> | Object | ReflectTarget): string[];
     getFieldInfo(target: Proxy<Object> | Object | ReflectTarget, key: string): Object | null;

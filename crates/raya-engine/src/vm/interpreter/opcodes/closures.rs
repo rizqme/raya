@@ -1,6 +1,6 @@
 //! Closure opcode handlers: MakeClosure, LoadCaptured, StoreCaptured, SetClosureCapture, NewRefCell, LoadRefCell, StoreRefCell
 
-use crate::compiler::Opcode;
+use crate::compiler::{Module, Opcode};
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::Closure;
@@ -16,6 +16,7 @@ impl<'a> Interpreter<'a> {
         stack: &mut Stack,
         ip: &mut usize,
         code: &[u8],
+        module: &Module,
         task: &Arc<Task>,
         opcode: Opcode,
     ) -> OpcodeResult {
@@ -40,7 +41,7 @@ impl<'a> Interpreter<'a> {
                 }
                 captures.reverse();
 
-                let closure = Closure::with_module(func_index, captures, task.current_module());
+                let closure = Closure::with_module(func_index, captures, Arc::new(module.clone()));
                 let gc_ptr = self.gc.lock().allocate(closure);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };

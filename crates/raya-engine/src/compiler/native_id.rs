@@ -43,6 +43,10 @@ pub const FUNCTION_CONSTRUCTOR_HELPER: u16 = 0x0012;
 pub const OBJECT_CALL_CONSTRUCTOR_BY_NAME: u16 = 0x0013;
 /// Materialize a runtime constructor value for a module-local nominal type id.
 pub const OBJECT_GET_CLASS_VALUE: u16 = 0x0014;
+/// Object.isExtensible(obj) using JS object semantics.
+pub const OBJECT_IS_EXTENSIBLE: u16 = 0x0015;
+/// Object.preventExtensions(obj) using JS object semantics.
+pub const OBJECT_PREVENT_EXTENSIONS: u16 = 0x0016;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -660,6 +664,9 @@ pub fn native_name(id: u16) -> &'static str {
         REFLECT_CONSTRUCT => "Reflect.construct",
         REFLECT_ALLOCATE => "Reflect.allocate",
         REFLECT_CLONE => "Reflect.clone",
+
+        OBJECT_IS_EXTENSIBLE => "Object.isExtensible",
+        OBJECT_PREVENT_EXTENSIONS => "Object.preventExtensions",
 
         // Number
         NUMBER_TO_FIXED => "Number.toFixed",

@@ -417,7 +417,10 @@ impl<'a> Interpreter<'a> {
             metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
         else {
             drop(metadata);
-            return !self.is_callable_virtual_property(obj_val, field_name);
+            return self
+                .callable_virtual_property_descriptor(obj_val, field_name)
+                .map(|(writable, _, _)| writable)
+                .unwrap_or(true);
         };
         let Some(writable) = self.get_value_field_by_name(descriptor, "writable") else {
             return true;
@@ -439,6 +442,9 @@ impl<'a> Interpreter<'a> {
         let Some(descriptor) = descriptor else {
             return;
         };
+        if !self.descriptor_field_present(descriptor, "value") {
+            return;
+        }
         let Some(value_index) = self.field_index_for_value(descriptor, "value") else {
             return;
         };
@@ -453,7 +459,10 @@ impl<'a> Interpreter<'a> {
             let metadata = self.metadata.lock();
             metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
         }?;
-        self.get_value_field_by_name(descriptor, "value")
+        if !self.descriptor_field_present(descriptor, "value") {
+            return None;
+        }
+        self.get_field_value_by_name(descriptor, "value")
     }
 
     pub(crate) fn descriptor_accessor(
@@ -467,8 +476,11 @@ impl<'a> Interpreter<'a> {
             metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
         };
         if let Some(descriptor) = descriptor {
-            let accessor = self.get_value_field_by_name(descriptor, accessor_name)?;
-            if accessor.is_null() || accessor.is_undefined() {
+            if !self.descriptor_field_present(descriptor, accessor_name) {
+                return None;
+            }
+            let accessor = self.get_field_value_by_name(descriptor, accessor_name)?;
+            if accessor.is_undefined() {
                 return None;
             }
             return Some(accessor);
@@ -620,6 +632,13 @@ impl<'a> Interpreter<'a> {
                             Err(e) => return OpcodeResult::Error(e),
                         }
                     }
+                    let value = self
+                        .get_field_value_by_name(actual_obj, &field_name)
+                        .unwrap_or(Value::null());
+                    if let Err(e) = stack.push(value) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
                 }
                 // Missing fields resolve to null. This matches object destructuring defaults
                 // and allows optional object properties to be absent at runtime.
@@ -674,6 +693,10 @@ impl<'a> Interpreter<'a> {
                 let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                let member_name = {
+                    let names = self.structural_shape_names.read();
+                    names.get(&shape_id).and_then(|names| names.get(field_offset)).cloned()
+                };
                 self.record_aot_shape_site(
                     crate::aot_profile::AotSiteKind::LoadFieldShape,
                     obj.layout_id(),
@@ -713,7 +736,7 @@ impl<'a> Interpreter<'a> {
                         unreachable!()
                     }
                 };
-                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
+                if let Some(ref field_name) = member_name {
                     if let Some(getter) = self.descriptor_accessor(actual_obj, &field_name, "get") {
                         match self.callable_frame_for_value(
                             getter,
@@ -732,6 +755,13 @@ impl<'a> Interpreter<'a> {
                             Err(e) => return OpcodeResult::Error(e),
                         }
                     }
+                    let value = self
+                        .get_field_value_by_name(actual_obj, &field_name)
+                        .unwrap_or(Value::null());
+                    if let Err(e) = stack.push(value) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
                 }
                 let value = obj.get_field(field_offset).unwrap_or(Value::null());
                 if let Err(e) = stack.push(value) {
@@ -856,6 +886,10 @@ impl<'a> Interpreter<'a> {
                 let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
+                let member_name = {
+                    let names = self.structural_shape_names.read();
+                    names.get(&shape_id).and_then(|names| names.get(field_offset)).cloned()
+                };
                 self.record_aot_shape_site(
                     crate::aot_profile::AotSiteKind::StoreFieldShape,
                     obj.layout_id(),
@@ -878,7 +912,7 @@ impl<'a> Interpreter<'a> {
                         ));
                     }
                 };
-                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
+                if let Some(ref field_name) = member_name {
                     if let Some(setter) = self.descriptor_accessor(actual_obj, &field_name, "set") {
                         match self.callable_frame_for_value(
                             setter,
@@ -917,7 +951,7 @@ impl<'a> Interpreter<'a> {
                 if let Err(e) = obj.set_field(field_offset, value) {
                     return OpcodeResult::Error(VmError::RuntimeError(e));
                 }
-                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
+                if let Some(field_name) = member_name {
                     self.sync_descriptor_value(actual_obj, &field_name, value);
                 }
                 OpcodeResult::Continue
@@ -976,7 +1010,12 @@ impl<'a> Interpreter<'a> {
                         unreachable!()
                     }
                 };
-                let value = obj.get_field(field_offset).unwrap_or(Value::null());
+                let value = if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
+                    self.get_field_value_by_name(actual_obj, &field_name)
+                        .unwrap_or(Value::null())
+                } else {
+                    obj.get_field(field_offset).unwrap_or(Value::null())
+                };
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
@@ -1021,6 +1060,10 @@ impl<'a> Interpreter<'a> {
                 let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                let member_name = {
+                    let names = self.structural_shape_names.read();
+                    names.get(&shape_id).and_then(|names| names.get(field_offset)).cloned()
+                };
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);
                 if let StructuralSlotBinding::Missing = slot_binding {
                     if let Err(e) = stack.push(Value::null()) {
@@ -1056,7 +1099,12 @@ impl<'a> Interpreter<'a> {
                         unreachable!()
                     }
                 };
-                let value = obj.get_field(field_offset).unwrap_or(Value::null());
+                let value = if let Some(field_name) = member_name {
+                    self.get_field_value_by_name(actual_obj, &field_name)
+                        .unwrap_or(Value::null())
+                } else {
+                    obj.get_field(field_offset).unwrap_or(Value::null())
+                };
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }

@@ -130,6 +130,19 @@ impl<'a> Lowerer<'a> {
         )
     }
 
+    pub(super) fn js_receiver_rebinding_call_expr(&self, expr: &Expression) -> bool {
+        let Expression::Call(call) = expr else {
+            return false;
+        };
+        let Expression::Member(member) = call.callee.as_ref() else {
+            return false;
+        };
+        matches!(
+            self.interner.resolve(member.property.name),
+            "call" | "apply"
+        )
+    }
+
     fn narrowed_identifier_type_hint(&self, ident: &ast::Identifier) -> Option<TypeId> {
         self.expr_types_by_span
             .get(&(ident.span.start, ident.span.end))
@@ -529,59 +542,25 @@ impl<'a> Lowerer<'a> {
         configurable: bool,
     ) -> Register {
         let descriptor = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
-        let field_names = vec![
-            "configurable".to_string(),
-            "enumerable".to_string(),
-            "get".to_string(),
-            "set".to_string(),
-            "value".to_string(),
-            "writable".to_string(),
-        ];
-        let null_value = self.lower_null_literal();
-        let initial_fields: Vec<(u16, Register)> = (0..field_names.len())
-            .map(|i| (i as u16, null_value.clone()))
-            .collect();
-        let layout_id = self.structural_layout_id_from_ordered_names(&field_names);
-        self.emit(IrInstr::ObjectLiteral {
-            dest: descriptor.clone(),
-            type_index: layout_id,
-            fields: initial_fields,
+        self.emit(IrInstr::NativeCall {
+            dest: Some(descriptor.clone()),
+            native_id: crate::compiler::native_id::OBJECT_NEW,
+            args: vec![],
         });
 
-        let mut set_bool_field = |this: &mut Self, field: u16, bit: bool| {
+        let mut set_bool_field = |this: &mut Self, field_name: &str, bit: bool| {
             let bool_reg = this.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
             this.emit(IrInstr::Assign {
                 dest: bool_reg.clone(),
                 value: IrValue::Constant(IrConstant::Boolean(bit)),
             });
-            this.emit(IrInstr::StoreFieldExact {
-                object: descriptor.clone(),
-                field,
-                value: bool_reg,
-            });
+            this.emit_dyn_set_named(descriptor.clone(), field_name, bool_reg);
         };
 
-        set_bool_field(self, 0, configurable);
-        set_bool_field(self, 1, enumerable);
-        self.emit(IrInstr::StoreFieldExact {
-            object: descriptor.clone(),
-            field: 4,
-            value,
-        });
-        set_bool_field(self, 5, writable);
-
-        self.register_object_fields.insert(
-            descriptor.id,
-            vec![
-                ("configurable".to_string(), 0),
-                ("enumerable".to_string(), 1),
-                ("get".to_string(), 2),
-                ("set".to_string(), 3),
-                ("value".to_string(), 4),
-                ("writable".to_string(), 5),
-            ],
-        );
-        self.emit_structural_shape_name_registration_for_ordered_names(field_names);
+        set_bool_field(self, "configurable", configurable);
+        set_bool_field(self, "enumerable", enumerable);
+        self.emit_dyn_set_named(descriptor.clone(), "value", value);
+        set_bool_field(self, "writable", writable);
 
         descriptor
     }
@@ -1588,6 +1567,27 @@ impl<'a> Lowerer<'a> {
             let callee_ty = self.get_expr_type(&call.callee);
             if let Some(return_ty) = self.first_callable_return_type(callee_ty) {
                 call_ty = return_ty;
+            }
+        }
+        if self.js_this_binding_compat {
+            if let Expression::Member(member) = &*call.callee {
+                let helper_name = self.interner.resolve(member.property.name);
+                if helper_name == "call" || helper_name == "apply" {
+                    // Rebinding `this` through Function.prototype.call/apply invalidates
+                    // optimistic direct-call return typing. Keep the result dynamic so
+                    // later property reads don't miscompile to receiver-specific opcodes.
+                    call_ty = TypeId::new(UNRESOLVED_TYPE_ID);
+                }
+            }
+        }
+        if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+            if let Expression::Member(member) = &*call.callee {
+                let method_name = self.interner.resolve(member.property.name);
+                eprintln!(
+                    "[lower] call-ty method='{}' resolved_call_ty={}",
+                    method_name,
+                    call_ty.as_u32()
+                );
             }
         }
         let mut dest = self.alloc_register(call_ty);
@@ -3976,9 +3976,16 @@ impl<'a> Lowerer<'a> {
             let checker_ty = self.get_expr_type(&member.object).as_u32();
             let reg_dispatch = self.normalize_type_for_dispatch(reg_ty);
             let checker_dispatch = self.normalize_type_for_dispatch(checker_ty);
+            let js_local_runtime_type_is_authoritative = self.js_this_binding_compat
+                && matches!(
+                    &*member.object,
+                    Expression::Identifier(ident) if self.local_map.contains_key(&ident.name)
+                );
 
             if reg_dispatch != UNRESOLVED_TYPE_ID && reg_dispatch != 6 {
                 reg_dispatch
+            } else if js_local_runtime_type_is_authoritative {
+                UNRESOLVED_TYPE_ID
             } else if checker_dispatch != UNRESOLVED_TYPE_ID && checker_dispatch != 6 {
                 checker_dispatch
             } else {
@@ -6874,6 +6881,9 @@ impl<'a> Lowerer<'a> {
             self.async_closures.insert(func_id);
         }
 
+        let saved_function_depth = self.function_depth;
+        self.function_depth += 1;
+
         let saved_register = self.next_register;
         let saved_block = self.next_block;
         let saved_local_map = self.local_map.clone();
@@ -6895,6 +6905,7 @@ impl<'a> Lowerer<'a> {
         let saved_pending_constructor_prologue = self.pending_constructor_prologue.take();
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
+        let saved_generator_yield_array_local = self.generator_yield_array_local.take();
         let saved_closure_locals = std::mem::take(&mut self.closure_locals);
 
         let mut new_ancestor_vars = rustc_hash::FxHashMap::default();
@@ -6943,6 +6954,7 @@ impl<'a> Lowerer<'a> {
         self.refcell_registers.clear();
         self.loop_captured_vars.clear();
         self.refcell_inner_types.clear();
+        self.generator_yield_array_local = None;
 
         let has_destructuring_params = func.params.iter().any(|p| {
             !matches!(
@@ -7065,7 +7077,8 @@ impl<'a> Lowerer<'a> {
 
         let mut ir_func = crate::ir::IrFunction::new(&function_name, params, return_ty);
         ir_func.uses_js_this_slot = has_js_this_slot;
-        ir_func.is_constructible = true;
+        ir_func.is_constructible = !func.is_generator;
+        ir_func.is_generator = func.is_generator;
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
         if self.emit_sourcemap {
@@ -7079,6 +7092,10 @@ impl<'a> Lowerer<'a> {
         self.current_block = entry_block;
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
+
+        if func.is_generator {
+            self.init_generator_yield_array();
+        }
 
         for (param_idx, pattern, value_reg) in destructure_params {
             if let ast::Pattern::Object(_) = pattern {
@@ -7114,7 +7131,14 @@ impl<'a> Lowerer<'a> {
             self.lower_stmt(stmt);
         }
         if !self.current_block_is_terminated() {
-            self.set_terminator(crate::ir::Terminator::Return(None));
+            if func.is_generator {
+                let result = self
+                    .load_generator_yield_array()
+                    .expect("generator yield array should be initialized");
+                self.set_terminator(crate::ir::Terminator::Return(Some(result)));
+            } else {
+                self.set_terminator(crate::ir::Terminator::Return(None));
+            }
         }
 
         let captured_vars: Vec<_> = self.captures.clone();
@@ -7157,7 +7181,9 @@ impl<'a> Lowerer<'a> {
         self.pending_constructor_prologue = saved_pending_constructor_prologue;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
+        self.generator_yield_array_local = saved_generator_yield_array_local;
         self.closure_locals = saved_closure_locals;
+        self.function_depth = saved_function_depth;
 
         for sym in propagate_callable_invalidations {
             self.callable_symbol_hints.remove(&sym);
@@ -7326,6 +7352,9 @@ impl<'a> Lowerer<'a> {
             self.async_closures.insert(func_id);
         }
 
+        let saved_function_depth = self.function_depth;
+        self.function_depth += 1;
+
         // Save current lowerer state
         let saved_register = self.next_register;
         let saved_block = self.next_block;
@@ -7348,6 +7377,7 @@ impl<'a> Lowerer<'a> {
         let saved_pending_constructor_prologue = self.pending_constructor_prologue.take();
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
+        let saved_generator_yield_array_local = self.generator_yield_array_local.take();
         // closure_locals maps local-slot indices to async func IDs; it is
         // per-scope, so it must be cleared on entry and restored on exit to
         // prevent stale entries from an outer (or sibling) function bleeding
@@ -7425,6 +7455,7 @@ impl<'a> Lowerer<'a> {
         self.refcell_registers.clear();
         self.loop_captured_vars.clear();
         self.refcell_inner_types.clear();
+        self.generator_yield_array_local = None;
 
         // Check if any parameters use destructuring
         let has_destructuring_params = arrow.params.iter().any(|p| {
@@ -7672,7 +7703,9 @@ impl<'a> Lowerer<'a> {
         self.pending_constructor_prologue = saved_pending_constructor_prologue;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
+        self.generator_yield_array_local = saved_generator_yield_array_local;
         self.closure_locals = saved_closure_locals;
+        self.function_depth = saved_function_depth;
 
         for sym in propagate_callable_invalidations {
             self.callable_symbol_hints.remove(&sym);
@@ -9526,6 +9559,7 @@ impl<'a> Lowerer<'a> {
         let saved_refcell_vars = std::mem::take(&mut self.refcell_vars);
         let saved_refcell_registers = std::mem::take(&mut self.refcell_registers);
         let saved_loop_captured_vars = std::mem::take(&mut self.loop_captured_vars);
+        let saved_generator_yield_array_local = self.generator_yield_array_local.take();
 
         // Lower the specialized function
         let mut ir_func = self.lower_function(&func_ast);
@@ -9543,6 +9577,7 @@ impl<'a> Lowerer<'a> {
         self.refcell_vars = saved_refcell_vars;
         self.refcell_registers = saved_refcell_registers;
         self.loop_captured_vars = saved_loop_captured_vars;
+        self.generator_yield_array_local = saved_generator_yield_array_local;
 
         // Add to pending functions
         self.pending_arrow_functions

@@ -18,6 +18,29 @@ const SPLICE: number = 0x0117;
 const ARRAY_IS_ARRAY: number = 0x0D54;
 const ARRAY_FROM: number = 0x0118;
 
+function arrayFromAsyncIsCallable(value: any): boolean {
+    return typeof value == "function";
+}
+
+function arrayFromAsyncIsConstructor(value: any): boolean {
+    if (!arrayFromAsyncIsCallable(value)) {
+        return false;
+    }
+    try {
+        Reflect.construct(Object, [], value);
+        return true;
+    } catch (_e) {
+        return false;
+    }
+}
+
+function arrayFromAsyncTarget(receiver: any): any {
+    if (arrayFromAsyncIsConstructor(receiver)) {
+        return Reflect.construct(receiver, []);
+    }
+    return [];
+}
+
 class __ArrayIterator<T> {
     public target: T[];
     public index: number;
@@ -51,6 +74,116 @@ class Array<T> {
 
     static from(values: any, mapfn?: any, thisArg?: any): any[] {
         return __NATIVE_CALL<any[]>(ARRAY_FROM, this, values, mapfn, thisArg);
+    }
+
+    static async fromAsync(values: any, mapfn?: any, thisArg?: any): Promise<any[]> {
+        if (values == null) {
+            throw new TypeError("Array.fromAsync requires an iterable or array-like value");
+        }
+
+        let mapfnProvided = mapfn !== undefined;
+        if (mapfnProvided && !arrayFromAsyncIsCallable(mapfn)) {
+            throw new TypeError("Array.fromAsync mapfn must be callable");
+        }
+
+        let target = arrayFromAsyncTarget(this);
+        let index = 0;
+
+        let mapValue = async (value: any): Promise<any> => {
+            let awaitedValue = await value;
+            if (!mapfnProvided) {
+                return awaitedValue;
+            }
+            return await mapfn.call(thisArg, awaitedValue, index);
+        };
+
+        let closeIterator = async (iterator: any): Promise<void> => {
+            let returnMethod = iterator["return"];
+            if (returnMethod == null) {
+                return;
+            }
+            if (!arrayFromAsyncIsCallable(returnMethod)) {
+                throw new TypeError("Array.fromAsync iterator return is not callable");
+            }
+            await returnMethod.call(iterator);
+        };
+
+        let asyncIteratorMethod = values[Symbol.asyncIterator];
+        if (asyncIteratorMethod != null) {
+            if (!arrayFromAsyncIsCallable(asyncIteratorMethod)) {
+                throw new TypeError("Array.fromAsync async iterator method is not callable");
+            }
+            let iterator = asyncIteratorMethod.call(values);
+            if (iterator == null || typeof iterator != "object") {
+                throw new TypeError("Array.fromAsync iterator is not an object");
+            }
+            let nextMethod = iterator["next"];
+            if (!arrayFromAsyncIsCallable(nextMethod)) {
+                throw new TypeError("Array.fromAsync iterator next is not callable");
+            }
+            while (true) {
+                let next = await nextMethod.call(iterator);
+                if (next == null || typeof next != "object") {
+                    throw new TypeError("Array.fromAsync iterator result is not an object");
+                }
+                if (Boolean(next["done"])) {
+                    break;
+                }
+                try {
+                    target[index] = await mapValue(next["value"]);
+                    index = index + 1;
+                } catch (error) {
+                    await closeIterator(iterator);
+                    throw error;
+                }
+            }
+            target.length = index;
+            return target;
+        }
+
+        let iteratorMethod = values[Symbol.iterator];
+        if (iteratorMethod != null) {
+            if (!arrayFromAsyncIsCallable(iteratorMethod)) {
+                throw new TypeError("Array.fromAsync iterator method is not callable");
+            }
+            let iterator = iteratorMethod.call(values);
+            if (iterator == null || typeof iterator != "object") {
+                throw new TypeError("Array.fromAsync iterator is not an object");
+            }
+            let nextMethod = iterator["next"];
+            if (!arrayFromAsyncIsCallable(nextMethod)) {
+                throw new TypeError("Array.fromAsync iterator next is not callable");
+            }
+            while (true) {
+                let next = nextMethod.call(iterator);
+                if (next == null || typeof next != "object") {
+                    throw new TypeError("Array.fromAsync iterator result is not an object");
+                }
+                if (Boolean(next["done"])) {
+                    break;
+                }
+                try {
+                    target[index] = await mapValue(next["value"]);
+                    index = index + 1;
+                } catch (error) {
+                    await closeIterator(iterator);
+                    throw error;
+                }
+            }
+            target.length = index;
+            return target;
+        }
+
+        let length = values["length"];
+        if (length == null || length <= 0) {
+            length = 0;
+        }
+        while (index < length) {
+            target[index] = await mapValue(values[index]);
+            index = index + 1;
+        }
+        target.length = index;
+        return target;
     }
 
     static __speciesGetter(): any {

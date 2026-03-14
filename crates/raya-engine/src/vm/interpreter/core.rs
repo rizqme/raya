@@ -2150,7 +2150,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::SetClosureCapture
             | Opcode::NewRefCell
             | Opcode::LoadRefCell
-            | Opcode::StoreRefCell => self.exec_closure_ops(stack, ip, code, task, opcode),
+            | Opcode::StoreRefCell => self.exec_closure_ops(stack, ip, code, module, task, opcode),
 
             // =========================================================
             // String Operations

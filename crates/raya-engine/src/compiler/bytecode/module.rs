@@ -642,6 +642,8 @@ pub struct Function {
     pub uses_js_this_slot: bool,
     /// Whether the function is constructible and should expose a default `prototype`.
     pub is_constructible: bool,
+    /// Whether the function originated from `function*`.
+    pub is_generator: bool,
     /// JS-visible `length` property value.
     pub visible_length: usize,
     /// Whether JS `this` should use strict semantics.
@@ -663,6 +665,7 @@ impl Function {
         writer.emit_u32(self.param_count as u32);
         writer.emit_u8(u8::from(self.uses_js_this_slot));
         writer.emit_u8(u8::from(self.is_constructible));
+        writer.emit_u8(u8::from(self.is_generator));
         writer.emit_u32(self.visible_length as u32);
         writer.emit_u8(u8::from(self.is_strict_js));
         writer.emit_u32(self.local_count as u32);
@@ -681,6 +684,7 @@ impl Function {
         let param_count = reader.read_u32()? as usize;
         let uses_js_this_slot = reader.read_u8()? != 0;
         let is_constructible = reader.read_u8()? != 0;
+        let is_generator = reader.read_u8()? != 0;
         let visible_length = reader.read_u32()? as usize;
         let is_strict_js = reader.read_u8()? != 0;
         let local_count = reader.read_u32()? as usize;
@@ -694,6 +698,7 @@ impl Function {
             param_count,
             uses_js_this_slot,
             is_constructible,
+            is_generator,
             visible_length,
             is_strict_js,
             local_count,

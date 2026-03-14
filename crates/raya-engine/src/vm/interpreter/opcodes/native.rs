@@ -36,6 +36,9 @@ const CALLABLE_VIRTUAL_DELETE_METADATA_KEY: &str = "__callable_virtual_deleted";
 const CALLABLE_VIRTUAL_VALUE_METADATA_KEY: &str = "__callable_virtual_value";
 const FIXED_PROPERTY_DELETE_METADATA_KEY: &str = "__fixed_property_deleted";
 const OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY: &str = "__object_prototype_override__";
+const OBJECT_DESCRIPTOR_MARKER_METADATA_KEY: &str = "__object_descriptor_marker__";
+const OBJECT_DESCRIPTOR_PRESENT_METADATA_KEY: &str = "__object_descriptor_present__";
+const OBJECT_EXTENSIBLE_METADATA_KEY: &str = "__object_extensible__";
 const IMPORTED_CLASS_TYPE_HANDLE_KEY: &str = "__raya_type_handle__";
 static DYNAMIC_JS_FUNCTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -290,6 +293,119 @@ impl<'a> Interpreter<'a> {
         object_value
     }
 
+    fn construct_ordinary_callable(
+        &mut self,
+        constructor: Value,
+        new_target: Value,
+        args: &[Value],
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        let member_names: Vec<String> = Vec::new();
+        let layout_id = layout_id_from_ordered_names(&member_names);
+        let object_ptr = self.gc.lock().allocate(Object::new_dynamic(layout_id, 0));
+        let object_value =
+            unsafe { Value::from_ptr(NonNull::new(object_ptr.as_ptr()).expect("object ptr")) };
+        self.set_constructed_object_prototype_from_constructor(object_value, new_target);
+        let returned =
+            self.invoke_callable_sync_with_this(constructor, Some(object_value), args, task, module)?;
+        if self.is_js_object_value(returned) || self.callable_function_info(returned).is_some() {
+            Ok(returned)
+        } else {
+            Ok(object_value)
+        }
+    }
+
+    fn construct_builtin_object(&mut self, new_target: Value) -> Value {
+        let member_names: Vec<String> = Vec::new();
+        let layout_id = layout_id_from_ordered_names(&member_names);
+        let object_ptr = self.gc.lock().allocate(Object::new_dynamic(layout_id, 0));
+        let object_value =
+            unsafe { Value::from_ptr(NonNull::new(object_ptr.as_ptr()).expect("object ptr")) };
+        self.set_constructed_object_prototype_from_constructor(object_value, new_target);
+        object_value
+    }
+
+    fn set_constructed_value_prototype_from_constructor(&self, value: Value, constructor: Value) {
+        if let Some(prototype) = self.constructed_object_prototype_from_constructor(constructor) {
+            self.set_explicit_object_prototype(value, prototype);
+        }
+    }
+
+    fn construct_builtin_array(
+        &mut self,
+        new_target: Value,
+        args: &[Value],
+    ) -> Result<Value, VmError> {
+        let array_ptr = self.gc.lock().allocate(Array::new(0, 0));
+        let array_value =
+            unsafe { Value::from_ptr(NonNull::new(array_ptr.as_ptr()).expect("array ptr")) };
+        self.set_constructed_value_prototype_from_constructor(array_value, new_target);
+
+        let array = unsafe { &mut *array_ptr.as_ptr() };
+        if args.len() == 1 {
+            let len = self.js_array_length_from_value(args[0])?;
+            array.resize_holey(len);
+            return Ok(array_value);
+        }
+
+        for (index, value) in args.iter().copied().enumerate() {
+            if index >= array.elements.len() {
+                array.resize_holey(index + 1);
+            }
+            array.set(index, value).map_err(VmError::RuntimeError)?;
+        }
+
+        Ok(array_value)
+    }
+
+    pub(in crate::vm::interpreter) fn construct_value_with_new_target(
+        &mut self,
+        constructor: Value,
+        new_target: Value,
+        args: &[Value],
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        if !self.callable_is_constructible(constructor) {
+            return Err(VmError::TypeError("Value is not a constructor".to_string()));
+        }
+        if !self.callable_is_constructible(new_target) {
+            return Err(VmError::TypeError("Value is not a constructor".to_string()));
+        }
+
+        if let Some(value) = self.try_construct_boxed_primitive(constructor, args, task, module)? {
+            return Ok(value);
+        }
+
+        if self
+            .builtin_global_value("Array")
+            .is_some_and(|builtin| builtin.raw() == constructor.raw())
+        {
+            return self.construct_builtin_array(new_target, args);
+        }
+
+        if self
+            .builtin_global_value("Object")
+            .is_some_and(|builtin| builtin.raw() == constructor.raw())
+        {
+            return Ok(self.construct_builtin_object(new_target));
+        }
+
+        if self.callable_function_info(constructor).is_some()
+            && self
+                .constructor_nominal_type_id(constructor)
+                .or_else(|| self.nominal_type_id_from_imported_class_value(module, constructor))
+                .is_none()
+        {
+            return self.construct_ordinary_callable(constructor, new_target, args, task, module);
+        }
+
+        Err(VmError::TypeError(
+            "Value is not a supported constructor".to_string(),
+        ))
+    }
+
     fn object_to_string_tag(&self, value: Value) -> &'static str {
         if value.is_undefined() {
             return "Undefined";
@@ -536,6 +652,46 @@ impl<'a> Interpreter<'a> {
                 != Some("Symbol")
     }
 
+    fn js_value_supports_extensibility(&self, value: Value) -> bool {
+        if checked_array_ptr(value).is_some() || checked_object_ptr(value).is_some() {
+            return self.nominal_class_name_for_value(value).as_deref() != Some("Symbol");
+        }
+        self.callable_function_info(value).is_some()
+    }
+
+    fn is_js_value_extensible(&self, value: Value) -> bool {
+        if !self.js_value_supports_extensibility(value) {
+            return false;
+        }
+        self.metadata
+            .lock()
+            .get_metadata(OBJECT_EXTENSIBLE_METADATA_KEY, value)
+            .and_then(|flag| flag.as_bool())
+            .unwrap_or(true)
+    }
+
+    fn set_js_value_extensible(&self, value: Value, extensible: bool) {
+        if !self.js_value_supports_extensibility(value) {
+            return;
+        }
+        let mut metadata = self.metadata.lock();
+        if extensible {
+            metadata.delete_metadata(OBJECT_EXTENSIBLE_METADATA_KEY, value);
+        } else {
+            metadata.define_metadata(
+                OBJECT_EXTENSIBLE_METADATA_KEY.to_string(),
+                Value::bool(false),
+                value,
+            );
+        }
+    }
+
+    fn has_own_js_property(&self, target: Value, key: &str) -> bool {
+        self.get_descriptor_metadata(target, key).is_some()
+            || self.get_own_field_value_by_name(target, key).is_some()
+            || self.callable_virtual_property_descriptor(target, key).is_some()
+    }
+
     fn raw_type_handle_id(value: Value) -> Option<crate::vm::object::TypeHandleId> {
         if !value.is_ptr() {
             return None;
@@ -652,6 +808,93 @@ impl<'a> Interpreter<'a> {
             );
         }
         resolved
+    }
+
+    pub(in crate::vm::interpreter) fn materialize_constructor_static_method(
+        &self,
+        constructor: Value,
+        key: &str,
+    ) -> Option<Value> {
+        let debug_static_method = std::env::var("RAYA_DEBUG_STATIC_METHOD").is_ok();
+        if matches!(key, "prototype" | "name" | "length") {
+            return None;
+        }
+
+        let origin_nominal_type_id = self.constructor_nominal_type_id(constructor)?;
+        let mut current_nominal_type_id = Some(origin_nominal_type_id);
+
+        while let Some(nominal_type_id) = current_nominal_type_id {
+            let (class_name, class_module, parent_id) = {
+                let classes = self.classes.read();
+                let class = classes.get_class(nominal_type_id)?;
+                (class.name.clone(), class.module.clone(), class.parent_id)
+            };
+            if debug_static_method {
+                eprintln!(
+                    "[static-method] ctor={:#x} key={} nominal_type_id={} class={} has_module={}",
+                    constructor.raw(),
+                    key,
+                    nominal_type_id,
+                    class_name,
+                    class_module.is_some()
+                );
+            }
+
+            let Some(module) = class_module else {
+                current_nominal_type_id = parent_id;
+                continue;
+            };
+
+            let static_method_name = format!("{}::static::{}", class_name, key);
+            if debug_static_method {
+                let sample = module
+                    .functions
+                    .iter()
+                    .filter(|function| function.name.starts_with(&format!("{}::static::", class_name)))
+                    .take(8)
+                    .map(|function| function.name.clone())
+                    .collect::<Vec<_>>();
+                eprintln!(
+                    "[static-method] seek={} module={} sample={:?}",
+                    static_method_name,
+                    module.metadata.name,
+                    sample
+                );
+            }
+            let Some(func_id) = module
+                .functions
+                .iter()
+                .position(|function| function.name == static_method_name)
+            else {
+                current_nominal_type_id = parent_id;
+                continue;
+            };
+
+            let closure = Closure::with_module(func_id, Vec::new(), module.clone());
+            let closure_ptr = self.gc.lock().allocate(closure);
+            let closure_value = unsafe {
+                Value::from_ptr(
+                    std::ptr::NonNull::new(closure_ptr.as_ptr())
+                        .expect("constructor static method ptr"),
+                )
+            };
+            let property_target = if nominal_type_id == origin_nominal_type_id {
+                constructor
+            } else {
+                self.constructor_value_for_nominal_type(nominal_type_id)?
+            };
+            let _ = self.define_data_property_on_target(
+                property_target,
+                key,
+                closure_value,
+                true,
+                false,
+                true,
+            );
+            return Some(closure_value);
+        }
+
+        None
     }
 
     pub(in crate::vm::interpreter) fn callable_virtual_property_deleted(
@@ -935,6 +1178,42 @@ impl<'a> Interpreter<'a> {
                 return false;
             };
             return self.callable_is_constructible(unsafe { &*bound_ptr.as_ptr() }.target);
+        }
+
+        self.constructor_nominal_type_id(target).is_some()
+            || self.builtin_global_name_for_value(target).is_some()
+    }
+
+    fn callable_exposes_default_prototype(&self, target: Value) -> bool {
+        let target = self
+            .unwrapped_proxy_like(target)
+            .map(|proxy| proxy.target)
+            .unwrap_or(target);
+
+        let Some(raw_ptr) = (unsafe { target.as_ptr::<u8>() }) else {
+            return false;
+        };
+        let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+
+        if header.type_id() == std::any::TypeId::of::<Closure>() {
+            let Some(closure_ptr) = (unsafe { target.as_ptr::<Closure>() }) else {
+                return false;
+            };
+            let closure = unsafe { &*closure_ptr.as_ptr() };
+            let Some(module) = closure.module() else {
+                return false;
+            };
+            return module
+                .functions
+                .get(closure.func_id)
+                .is_some_and(|function| function.is_constructible || function.is_generator);
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
+            let Some(bound_ptr) = (unsafe { target.as_ptr::<BoundFunction>() }) else {
+                return false;
+            };
+            return self.callable_exposes_default_prototype(unsafe { &*bound_ptr.as_ptr() }.target);
         }
 
         self.constructor_nominal_type_id(target).is_some()
@@ -1493,13 +1772,13 @@ impl<'a> Interpreter<'a> {
             return self.ordinary_object_prototype_value();
         }
 
-        if unsafe { value.as_ptr::<Array>() }.is_some() {
+        if checked_array_ptr(value).is_some() {
             return self
                 .builtin_global_value("Array")
                 .and_then(|ctor| self.array_constructor_prototype_value(ctor));
         }
 
-        if unsafe { value.as_ptr::<RayaString>() }.is_some() {
+        if checked_string_ptr(value).is_some() {
             return self
                 .builtin_global_value("String")
                 .and_then(|ctor| self.string_constructor_prototype_value(ctor));
@@ -1512,6 +1791,16 @@ impl<'a> Interpreter<'a> {
         &self,
         constructor: Value,
     ) -> Option<Value> {
+        if let Some(existing) = self.metadata_data_property_value(constructor, "prototype") {
+            if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
+                eprintln!(
+                    "[ctor-proto] ctor={:#x} metadata={:#x}",
+                    constructor.raw(),
+                    existing.raw()
+                );
+            }
+            return Some(existing);
+        }
         if let Some(existing) = self.cached_callable_virtual_property_value(constructor, "prototype")
         {
             if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
@@ -1561,6 +1850,17 @@ impl<'a> Interpreter<'a> {
         prototype
     }
 
+    fn constructed_object_prototype_from_constructor(&self, constructor: Value) -> Option<Value> {
+        if let Some(prototype) = self.constructor_prototype_value(constructor) {
+            if self.is_js_object_value(prototype) {
+                return Some(prototype);
+            }
+        }
+
+        self.builtin_global_value("Object")
+            .and_then(|ctor| self.object_constructor_prototype_value(ctor))
+    }
+
     pub(in crate::vm::interpreter) fn set_constructed_object_prototype_from_value(
         &self,
         object: Value,
@@ -1580,7 +1880,7 @@ impl<'a> Interpreter<'a> {
         object: Value,
         constructor: Value,
     ) {
-        if let Some(prototype) = self.constructor_prototype_value(constructor) {
+        if let Some(prototype) = self.constructed_object_prototype_from_constructor(constructor) {
             if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
                 eprintln!(
                     "[set-ctor-proto] object={:#x} ctor={:#x} proto={:#x}",
@@ -1607,6 +1907,164 @@ impl<'a> Interpreter<'a> {
         let array = unsafe { &mut *array_ptr.as_ptr() };
         array.resize_holey(new_len);
         Ok(())
+    }
+
+    fn set_property_value_on_receiver(
+        &self,
+        receiver: Value,
+        key: &str,
+        value: Value,
+    ) -> Result<bool, VmError> {
+        if let Some(array_ptr) = checked_array_ptr(receiver) {
+            if key == "length" {
+                self.set_array_length_value(receiver, value)?;
+                return Ok(true);
+            }
+            if let Ok(index) = key.parse::<usize>() {
+                let array = unsafe { &mut *array_ptr.as_ptr() };
+                if !self.is_js_value_extensible(receiver) && array.get(index).is_none() {
+                    return Ok(false);
+                }
+                if index >= array.elements.len() {
+                    array.resize_holey(index + 1);
+                }
+                array.set(index, value).map_err(VmError::RuntimeError)?;
+                return Ok(true);
+            }
+        }
+
+        if self.set_builtin_global_property(receiver, key, value) {
+            self.sync_descriptor_value(receiver, key, value);
+            return Ok(true);
+        }
+
+        if self.get_descriptor_metadata(receiver, key).is_some()
+            && checked_object_ptr(receiver).is_none()
+        {
+            self.metadata.lock().define_metadata_property(
+                NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
+                value,
+                receiver,
+                key.to_string(),
+            );
+            self.sync_descriptor_value(receiver, key, value);
+            self.set_callable_virtual_property_deleted(receiver, key, false);
+            self.set_fixed_property_deleted(receiver, key, false);
+            return Ok(true);
+        }
+
+        if self.callable_function_info(receiver).is_some()
+            && self.get_descriptor_metadata(receiver, key).is_none()
+        {
+            if let Some((writable, _, _)) = self.callable_virtual_property_descriptor(receiver, key)
+            {
+                if !writable {
+                    return Ok(false);
+                }
+                self.set_cached_callable_virtual_property_value(receiver, key, value);
+                self.sync_descriptor_value(receiver, key, value);
+                self.set_callable_virtual_property_deleted(receiver, key, false);
+                self.set_fixed_property_deleted(receiver, key, false);
+                return Ok(true);
+            }
+        }
+
+        if let Some(obj_ptr) = checked_object_ptr(receiver) {
+            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+            if let Some(index) = self.get_field_index_for_value(receiver, key) {
+                obj.set_field(index, value).map_err(VmError::RuntimeError)?;
+            } else {
+                if !self.is_js_value_extensible(receiver) {
+                    return Ok(false);
+                }
+                obj.ensure_dyn_map().insert(self.intern_prop_key(key), value);
+            }
+            self.sync_descriptor_value(receiver, key, value);
+            self.set_callable_virtual_property_deleted(receiver, key, false);
+            self.set_fixed_property_deleted(receiver, key, false);
+            return Ok(true);
+        }
+
+        if receiver.is_ptr() || self.callable_function_info(receiver).is_some() {
+            self.define_data_property_on_target(receiver, key, value, true, true, true)?;
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    pub(in crate::vm::interpreter) fn set_property_value_via_js_semantics(
+        &mut self,
+        target: Value,
+        key: &str,
+        value: Value,
+        receiver: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<bool, VmError> {
+        if target.raw() == receiver.raw() {
+            if let Some(array_ptr) = checked_array_ptr(target) {
+                if key == "length" {
+                    self.set_array_length_value(target, value)?;
+                    return Ok(true);
+                }
+                if let Ok(index) = key.parse::<usize>() {
+                    let array = unsafe { &mut *array_ptr.as_ptr() };
+                    if index >= array.elements.len() {
+                        array.resize_holey(index + 1);
+                    }
+                    array.set(index, value).map_err(VmError::RuntimeError)?;
+                    return Ok(true);
+                }
+            }
+
+            if self.set_builtin_global_property(target, key, value) {
+                self.sync_descriptor_value(target, key, value);
+                return Ok(true);
+            }
+        }
+
+        if let Some(setter) = self.descriptor_accessor(target, key, "set") {
+            let _ = self.invoke_callable_sync_with_this(
+                setter,
+                Some(receiver),
+                &[value],
+                caller_task,
+                caller_module,
+            )?;
+            return Ok(true);
+        }
+
+        let has_getter_only = self.descriptor_accessor(target, key, "get").is_some()
+            && !self.is_field_writable(target, key);
+        if has_getter_only {
+            return Ok(false);
+        }
+
+        let has_own_property = self.get_descriptor_metadata(target, key).is_some()
+            || self.get_own_field_value_by_name(target, key).is_some()
+            || self.callable_virtual_property_descriptor(target, key).is_some();
+        if has_own_property {
+            if !self.is_field_writable(target, key) {
+                return Ok(false);
+            }
+            return self.set_property_value_on_receiver(receiver, key, value);
+        }
+
+        if let Some(prototype) = self.prototype_of_value(target) {
+            if prototype != target {
+                return self.set_property_value_via_js_semantics(
+                    prototype,
+                    key,
+                    value,
+                    receiver,
+                    caller_task,
+                    caller_module,
+                );
+            }
+        }
+
+        self.set_property_value_on_receiver(receiver, key, value)
     }
 
     pub(in crate::vm::interpreter) fn try_proxy_like_get_property(
@@ -1816,10 +2274,10 @@ impl<'a> Interpreter<'a> {
             }
             return Some(existing);
         }
-        if !self.callable_is_constructible(class_value) {
+        if !self.callable_exposes_default_prototype(class_value) {
             if debug_dynamic_function {
                 eprintln!(
-                    "[generic-fn-proto] target={:#x} not-constructible",
+                    "[generic-fn-proto] target={:#x} no-default-prototype",
                     class_value.raw()
                 );
             }
@@ -2034,6 +2492,12 @@ impl<'a> Interpreter<'a> {
         if self.callable_virtual_property_deleted(target, key) {
             return None;
         }
+        if let Some(value) = self.metadata_data_property_value(target, key) {
+            return Some(value);
+        }
+        if let Some(value) = self.cached_callable_virtual_property_value(target, key) {
+            return Some(value);
+        }
         match key {
             "prototype" => self.constructor_prototype_value(target),
             "name" | "length" => self.callable_property_value(target, key),
@@ -2046,9 +2510,12 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> Option<(bool, bool, bool)> {
+        if self.callable_virtual_property_deleted(target, key) {
+            return None;
+        }
         match key {
             "prototype" if self.constructor_prototype_value(target).is_some() => {
-                Some((false, false, false))
+                Some((true, false, false))
             }
             "name" | "length" if self.callable_property_value(target, key).is_some() => {
                 Some((false, true, false))
@@ -2391,7 +2858,7 @@ impl<'a> Interpreter<'a> {
         obj_val: Value,
         field_name: &str,
     ) -> Option<usize> {
-        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
+        let obj_ptr = checked_object_ptr(obj_val)?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
         let nominal_type_id = obj.nominal_type_id_usize();
         let class_metadata = self.class_metadata.read();
@@ -2419,8 +2886,20 @@ impl<'a> Interpreter<'a> {
         if self.fixed_property_deleted(obj_val, field_name) {
             return None;
         }
-        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
+        let obj_ptr = checked_object_ptr(obj_val)?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
+        let debug_field_lookup = std::env::var("RAYA_DEBUG_FIELD_LOOKUP").is_ok();
+        if debug_field_lookup {
+            eprintln!(
+                "[field.lookup] target={:#x} key={} layout={} nominal={:?} dyn_map={} field_count={}",
+                obj_val.raw(),
+                field_name,
+                obj.layout_id(),
+                obj.nominal_type_id(),
+                obj.dyn_map().is_some(),
+                obj.field_count()
+            );
+        }
         if let Some(index) = self.get_field_index_for_value(obj_val, field_name) {
             if let Some(value) = obj.get_field(index) {
                 if !value.is_null()
@@ -2433,6 +2912,9 @@ impl<'a> Interpreter<'a> {
             }
         }
         let key = self.intern_prop_key(field_name);
+        if debug_field_lookup {
+            eprintln!("[field.lookup] target={:#x} dyn-key={}", obj_val.raw(), key);
+        }
         obj.dyn_map()
             .and_then(|map| map.get(&key).copied())
             .or_else(|| self.callable_virtual_property_value(obj_val, field_name))
@@ -2444,6 +2926,10 @@ impl<'a> Interpreter<'a> {
         field_name: &str,
     ) -> Option<Value> {
         if let Some(value) = self.get_own_field_value_by_name(obj_val, field_name) {
+            return Some(value);
+        }
+
+        if let Some(value) = self.materialize_constructor_static_method(obj_val, field_name) {
             return Some(value);
         }
 
@@ -2469,6 +2955,9 @@ impl<'a> Interpreter<'a> {
     }
 
     fn descriptor_flag(&self, descriptor: Value, field_name: &str, default: bool) -> bool {
+        if !self.descriptor_field_present(descriptor, field_name) {
+            return default;
+        }
         let Some(value) = self.get_field_value_by_name(descriptor, field_name) else {
             return default;
         };
@@ -2531,42 +3020,13 @@ impl<'a> Interpreter<'a> {
                     .set_field(field_index, field_value)
                     .map_err(VmError::RuntimeError)?;
             }
+            self.set_descriptor_field_present(descriptor, field_name, true);
         }
-
-        if let Some(obj_ptr) = checked_object_ptr(target) {
-            if debug_array_prop {
-                eprintln!("[defineData] object storage path");
-            }
-            let obj = unsafe { &mut *obj_ptr.as_ptr() };
-            if let Some(field_index) = self.get_field_index_for_value(target, key) {
-                obj.set_field(field_index, value)
-                    .map_err(VmError::RuntimeError)?;
-            } else {
-                let prop_key = self.intern_prop_key(key);
-                obj.ensure_dyn_map().insert(prop_key, value);
-            }
-        } else {
-            if debug_array_prop {
-                eprintln!("[defineData] metadata storage path");
-            }
-            self.metadata.lock().define_metadata_property(
-                NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
-                value,
-                target,
-                key.to_string(),
-            );
-        }
-
+        let result = self.apply_descriptor_to_target(target, key, descriptor);
         if debug_array_prop {
-            eprintln!("[defineData] descriptor metadata");
+            eprintln!("[defineData] done result={:?}", result);
         }
-        self.set_descriptor_metadata(target, key, descriptor);
-        self.set_callable_virtual_property_deleted(target, key, false);
-        self.set_fixed_property_deleted(target, key, false);
-        if debug_array_prop {
-            eprintln!("[defineData] done");
-        }
-        Ok(())
+        result
     }
 
     fn get_descriptor_metadata(&self, target: Value, key: &str) -> Option<Value> {
@@ -2587,6 +3047,56 @@ impl<'a> Interpreter<'a> {
         }
         let metadata = self.metadata.lock();
         metadata.get_metadata_property(NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY, target, key)
+    }
+
+    fn is_descriptor_object(&self, value: Value) -> bool {
+        self.metadata
+            .lock()
+            .get_metadata(OBJECT_DESCRIPTOR_MARKER_METADATA_KEY, value)
+            .and_then(|marker| marker.as_bool())
+            .unwrap_or(false)
+    }
+
+    pub(in crate::vm::interpreter) fn descriptor_field_present(
+        &self,
+        descriptor: Value,
+        field_name: &str,
+    ) -> bool {
+        if self.is_descriptor_object(descriptor) {
+            return self
+                .metadata
+                .lock()
+                .get_metadata_property(OBJECT_DESCRIPTOR_PRESENT_METADATA_KEY, descriptor, field_name)
+                .and_then(|present| present.as_bool())
+                .unwrap_or(false);
+        }
+        self.get_own_field_value_by_name(descriptor, field_name).is_some()
+    }
+
+    pub(in crate::vm::interpreter) fn set_descriptor_field_present(
+        &self,
+        descriptor: Value,
+        field_name: &str,
+        present: bool,
+    ) {
+        if !self.is_descriptor_object(descriptor) {
+            return;
+        }
+        let mut metadata = self.metadata.lock();
+        if present {
+            metadata.define_metadata_property(
+                OBJECT_DESCRIPTOR_PRESENT_METADATA_KEY.to_string(),
+                Value::bool(true),
+                descriptor,
+                field_name.to_string(),
+            );
+        } else {
+            let _ = metadata.delete_metadata_property(
+                OBJECT_DESCRIPTOR_PRESENT_METADATA_KEY,
+                descriptor,
+                field_name,
+            );
+        }
     }
 
     pub(in crate::vm::interpreter) fn is_property_enumerable(
@@ -2624,25 +3134,45 @@ impl<'a> Interpreter<'a> {
                     key
                 )));
             }
+        } else if !self.has_own_js_property(target, key) && !self.is_js_value_extensible(target) {
+            return Err(VmError::TypeError(format!(
+                "Cannot define property '{}': object is not extensible",
+                key
+            )));
         }
 
-        let getter = self.get_field_value_by_name(descriptor, "get");
-        let setter = self.get_field_value_by_name(descriptor, "set");
-        let has_accessor =
-            getter.is_some_and(|v| !v.is_null()) || setter.is_some_and(|v| !v.is_null());
-        let value_field = self.get_field_value_by_name(descriptor, "value");
-        let has_value = value_field.is_some_and(|v| !v.is_null());
+        let has_getter = self.descriptor_field_present(descriptor, "get");
+        let getter = if has_getter {
+            self.get_field_value_by_name(descriptor, "get")
+        } else {
+            None
+        };
+        let has_setter = self.descriptor_field_present(descriptor, "set");
+        let setter = if has_setter {
+            self.get_field_value_by_name(descriptor, "set")
+        } else {
+            None
+        };
+        let has_accessor = has_getter || has_setter;
+        let has_value = self.descriptor_field_present(descriptor, "value");
+        let value_field = if has_value {
+            self.get_field_value_by_name(descriptor, "value")
+        } else {
+            None
+        };
 
-        if let Some(getter_val) = getter.filter(|v| !v.is_null()) {
-            if !Self::is_callable_value(getter_val) {
+        if has_getter {
+            let getter_val = getter.unwrap_or(Value::undefined());
+            if !getter_val.is_undefined() && !Self::is_callable_value(getter_val) {
                 return Err(VmError::TypeError(format!(
                     "Getter for property '{}' must be callable",
                     key
                 )));
             }
         }
-        if let Some(setter_val) = setter.filter(|v| !v.is_null()) {
-            if !Self::is_callable_value(setter_val) {
+        if has_setter {
+            let setter_val = setter.unwrap_or(Value::undefined());
+            if !setter_val.is_undefined() && !Self::is_callable_value(setter_val) {
                 return Err(VmError::TypeError(format!(
                     "Setter for property '{}' must be callable",
                     key
@@ -2657,9 +3187,12 @@ impl<'a> Interpreter<'a> {
         }
 
         // Apply data descriptor value directly to the target field if provided.
-        if let Some(value) = value_field.filter(|v| !v.is_null()) {
+        if let Some(value) = value_field {
             if self.set_builtin_global_property(target, key, value) {
                 self.set_descriptor_metadata(target, key, descriptor);
+                if self.callable_virtual_property_descriptor(target, key).is_some() {
+                    self.set_cached_callable_virtual_property_value(target, key, value);
+                }
                 self.set_callable_virtual_property_deleted(target, key, false);
                 self.set_fixed_property_deleted(target, key, false);
                 return Ok(());
@@ -2680,6 +3213,9 @@ impl<'a> Interpreter<'a> {
                     target,
                     key.to_string(),
                 );
+            }
+            if self.callable_virtual_property_descriptor(target, key).is_some() {
+                self.set_cached_callable_virtual_property_value(target, key, value);
             }
         }
 
@@ -2927,31 +3463,38 @@ impl<'a> Interpreter<'a> {
         let object_field_count = field_names.len();
         let mut obj = Object::new_structural(object_layout_id, object_field_count);
         if object_field_count > 0 {
-            obj.set_field(0, Value::null())
+            obj.set_field(0, Value::undefined())
                 .map_err(VmError::RuntimeError)?;
         }
         if object_field_count > 1 {
-            obj.set_field(1, Value::bool(true))
+            obj.set_field(1, Value::bool(false))
                 .map_err(VmError::RuntimeError)?;
         }
         if object_field_count > 2 {
-            obj.set_field(2, Value::bool(true))
+            obj.set_field(2, Value::bool(false))
                 .map_err(VmError::RuntimeError)?;
         }
         if object_field_count > 3 {
-            obj.set_field(3, Value::bool(true))
+            obj.set_field(3, Value::bool(false))
                 .map_err(VmError::RuntimeError)?;
         }
         if object_field_count > 4 {
-            obj.set_field(4, Value::null())
+            obj.set_field(4, Value::undefined())
                 .map_err(VmError::RuntimeError)?;
         }
         if object_field_count > 5 {
-            obj.set_field(5, Value::null())
+            obj.set_field(5, Value::undefined())
                 .map_err(VmError::RuntimeError)?;
         }
         let obj_ptr = self.gc.lock().allocate(obj);
-        Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
+        let descriptor =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) };
+        self.metadata.lock().define_metadata(
+            OBJECT_DESCRIPTOR_MARKER_METADATA_KEY.to_string(),
+            Value::bool(true),
+            descriptor,
+        );
+        Ok(descriptor)
     }
 
     fn alloc_symbol_object(&self, key: &str) -> Result<Value, VmError> {
@@ -2979,7 +3522,9 @@ impl<'a> Interpreter<'a> {
         if self.fixed_property_deleted(target, key) {
             return Ok(None);
         }
-        let callable_value = self.callable_virtual_property_value(target, key);
+        let callable_value = self
+            .callable_virtual_property_value(target, key)
+            .or_else(|| self.materialize_constructor_static_method(target, key));
         let builtin_global_value = self.builtin_global_property_value(target, key);
         let object_value = checked_object_ptr(target).map(|obj_ptr| {
             let obj = unsafe { &*obj_ptr.as_ptr() };
@@ -3602,6 +4147,30 @@ impl<'a> Interpreter<'a> {
                             Ok(value) => value,
                             Err(error) => return OpcodeResult::Error(error),
                         } {
+                            if let Err(error) = stack.push(value) {
+                                return OpcodeResult::Error(error);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+
+                        if self.callable_is_constructible(args[0])
+                            && self
+                                .constructor_nominal_type_id(args[0])
+                                .or_else(|| {
+                                    self.nominal_type_id_from_imported_class_value(module, args[0])
+                                })
+                                .is_none()
+                        {
+                            let value = match self.construct_value_with_new_target(
+                                args[0],
+                                args[0],
+                                &args[1..],
+                                task,
+                                module,
+                            ) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
                             if let Err(error) = stack.push(value) {
                                 return OpcodeResult::Error(error);
                             }
@@ -5135,6 +5704,32 @@ impl<'a> Interpreter<'a> {
                             )));
                         };
                         if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_IS_EXTENSIBLE => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.isExtensible requires 1 argument".to_string(),
+                            ));
+                        }
+                        if let Err(e) =
+                            stack.push(Value::bool(self.is_js_value_extensible(args[0])))
+                        {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_PREVENT_EXTENSIONS => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.preventExtensions requires 1 argument".to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        self.set_js_value_extensible(target, false);
+                        if let Err(e) = stack.push(target) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

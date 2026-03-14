@@ -639,6 +639,8 @@ pub struct Lowerer<'a> {
     allow_unresolved_runtime_fallback: bool,
     /// Inner type for RefCell-wrapped variables (for preserving type info through loads)
     refcell_inner_types: FxHashMap<u16, TypeId>,
+    /// Active per-function array local used to collect lowered generator `yield` values.
+    generator_yield_array_local: Option<u16>,
 }
 
 // ─── Standalone helpers for closure capture pre-scan ───────────────────────
@@ -1255,6 +1257,7 @@ impl<'a> Lowerer<'a> {
             js_this_binding_compat: false,
             js_strict_context: false,
             allow_unresolved_runtime_fallback: true,
+            generator_yield_array_local: None,
         }
     }
 
@@ -1339,6 +1342,32 @@ impl<'a> Lowerer<'a> {
     /// Get the native function table (consumed after lowering)
     pub fn take_native_function_table(&mut self) -> Vec<String> {
         std::mem::take(&mut self.native_function_table)
+    }
+
+    pub(super) fn init_generator_yield_array(&mut self) {
+        let local_idx = self.allocate_anonymous_local();
+        let len = self.emit_i32_const(0);
+        let array_reg = self.alloc_register(TypeId::new(ARRAY_TYPE_ID));
+        self.emit(IrInstr::NewArray {
+            dest: array_reg.clone(),
+            len,
+            elem_ty: TypeId::new(UNKNOWN_TYPE_ID),
+        });
+        self.emit(IrInstr::StoreLocal {
+            index: local_idx,
+            value: array_reg,
+        });
+        self.generator_yield_array_local = Some(local_idx);
+    }
+
+    pub(super) fn load_generator_yield_array(&mut self) -> Option<Register> {
+        let local_idx = self.generator_yield_array_local?;
+        let array_reg = self.alloc_register(TypeId::new(ARRAY_TYPE_ID));
+        self.emit(IrInstr::LoadLocal {
+            dest: array_reg.clone(),
+            index: local_idx,
+        });
+        Some(array_reg)
     }
 
     /// Try to evaluate an expression as a compile-time constant
@@ -2839,6 +2868,7 @@ impl<'a> Lowerer<'a> {
     fn lower_function(&mut self, func: &ast::FunctionDecl) -> IrFunction {
         // Track that we're inside a function (prevents var decls from hijacking module globals)
         self.function_depth += 1;
+        self.generator_yield_array_local = None;
         let has_js_this_slot = self.js_this_binding_compat;
 
         // Check if any parameters use destructuring
@@ -3046,7 +3076,8 @@ impl<'a> Lowerer<'a> {
         // Create function with fixed parameter count only
         let mut ir_func = IrFunction::new(name, params, return_ty);
         ir_func.uses_js_this_slot = has_js_this_slot;
-        ir_func.is_constructible = true;
+        ir_func.is_constructible = !func.is_generator;
+        ir_func.is_generator = func.is_generator;
         ir_func.visible_length = visible_length;
         ir_func.is_strict_js = is_strict_js;
         if let Some(type_params) = &func.type_params {
@@ -3070,6 +3101,10 @@ impl<'a> Lowerer<'a> {
         self.current_block = entry_block;
         self.current_function_mut()
             .add_block(BasicBlock::with_label(entry_block, "entry"));
+
+        if func.is_generator {
+            self.init_generator_yield_array();
+        }
 
         // Bind destructuring patterns in function parameters
         // This must happen after entry block is created so we can emit instructions
@@ -3194,6 +3229,8 @@ impl<'a> Lowerer<'a> {
         if !self.current_block_is_terminated() {
             self.set_terminator(Terminator::Return(None));
         }
+
+        self.generator_yield_array_local = None;
 
         self.current_function.take().unwrap()
     }

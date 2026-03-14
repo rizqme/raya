@@ -379,6 +379,17 @@ impl<'a> Interpreter<'a> {
         })
     }
 
+    fn descriptor_data_value_with_protocol_alias(&self, target: Value, key: &str) -> Option<Value> {
+        self.descriptor_data_value(target, key).or_else(|| {
+            for alias in protocol_alias_names(key) {
+                if let Some(value) = self.descriptor_data_value(target, alias) {
+                    return Some(value);
+                }
+            }
+            None
+        })
+    }
+
     fn is_symbol_constructor_value(&self, value: Value) -> bool {
         if value.is_ptr() {
             if let Some(raw_ptr) = unsafe { value.as_ptr::<u8>() } {
@@ -408,12 +419,29 @@ impl<'a> Interpreter<'a> {
         &mut self,
         object_value: Value,
         property: &str,
-        _caller_task: &std::sync::Arc<crate::vm::scheduler::Task>,
-        _caller_module: &crate::compiler::Module,
+        caller_task: &std::sync::Arc<crate::vm::scheduler::Task>,
+        caller_module: &crate::compiler::Module,
     ) -> Result<Option<Value>, VmError> {
         let Some(symbol_key) = well_known_symbol_lookup_name(property) else {
             return Ok(None);
         };
+        if let Some(getter) =
+            self.descriptor_accessor_with_protocol_alias(object_value, symbol_key, "get")
+        {
+            if !Self::is_callable_value(getter) {
+                return Err(VmError::TypeError(format!(
+                    "Property '{}' getter is not callable",
+                    symbol_key
+                )));
+            }
+            let value =
+                self.invoke_callable_sync_with_this(getter, Some(object_value), &[], caller_task, caller_module)?;
+            return Ok(Some(value));
+        }
+        if let Some(value) = self.descriptor_data_value_with_protocol_alias(object_value, symbol_key)
+        {
+            return Ok(Some(value));
+        }
         if let Some(value) = self.property_value_with_protocol_alias(object_value, symbol_key) {
             return Ok(Some(value));
         }
@@ -1230,190 +1258,8 @@ impl<'a> Interpreter<'a> {
                         {
                             value
                         } else {
-                            let field_index =
-                                self.get_field_index_for_value(obj_val, &key_str).or_else(|| {
-                                    for alias in protocol_alias_names(&key_str) {
-                                        if let Some(index) =
-                                            self.get_field_index_for_value(obj_val, alias)
-                                        {
-                                            return Some(index);
-                                        }
-                                    }
-                                    None
-                                });
-                            let virtual_value =
-                                self.callable_virtual_property_value(actual_obj, &key_str);
-                            let fixed_field_value =
-                                field_index.and_then(|index| obj.get_field(index));
-                            if let Some(value) = fixed_field_value {
-                                if !value.is_null() || virtual_value.is_none() {
-                                    value
-                                } else if let Some(method_slot) =
-                                obj.nominal_type_id_usize().and_then(|nominal_type_id| {
-                                    let class_metadata = self.class_metadata.read();
-                                    class_metadata
-                                        .get(nominal_type_id)
-                                        .and_then(|meta| {
-                                            meta.get_method_index(key_str).or_else(|| {
-                                                for alias in protocol_alias_names(key_str) {
-                                                    if let Some(index) = meta.get_method_index(alias) {
-                                                        return Some(index);
-                                                    }
-                                                }
-                                                None
-                                            })
-                                        })
-                                        .or_else(|| {
-                                            drop(class_metadata);
-                                            let classes = self.classes.read();
-                                            let class = classes.get_class(nominal_type_id)?;
-                                            let module = class.module.as_ref()?;
-                                            module
-                                                .classes
-                                                .iter()
-                                                .find(|class_def| class_def.name == class.name)
-                                                .and_then(|class_def| {
-                                                    class_def.methods.iter().find_map(|method| {
-                                                        let plain_name = method
-                                                            .name
-                                                            .rsplit("::")
-                                                            .next()
-                                                            .unwrap_or(method.name.as_str());
-                                                        if method.name == key_str
-                                                            || plain_name == key_str
-                                                        {
-                                                            Some(method.slot)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    })
-                                                })
-                                        })
-                                })
-                                {
-                                    match self.bound_method_value_for_slot(obj_val, method_slot) {
-                                        Ok(value) => value,
-                                        Err(_) => Value::null(),
-                                    }
-                                } else {
-                                    let key = self.intern_prop_key(&key_str);
-                                    obj.dyn_map()
-                                        .and_then(|dyn_map| dyn_map.get(&key).copied())
-                                        .or_else(|| self.get_field_value_by_name(obj_val, &key_str))
-                                        .or_else(|| {
-                                            if key_str == "prototype" {
-                                                if self
-                                                    .builtin_global_value("Object")
-                                                    .is_some_and(|value| value.raw() == actual_obj.raw())
-                                                {
-                                                    return self.object_constructor_prototype_value(actual_obj);
-                                                }
-                                                if self
-                                                    .builtin_global_value("Array")
-                                                    .is_some_and(|value| value.raw() == actual_obj.raw())
-                                                {
-                                                    return self.array_constructor_prototype_value(actual_obj);
-                                                }
-                                                if self
-                                                    .builtin_global_value("String")
-                                                    .is_some_and(|value| value.raw() == actual_obj.raw())
-                                                {
-                                                    return self.string_constructor_prototype_value(actual_obj);
-                                                }
-                                                if self
-                                                    .builtin_global_value("Function")
-                                                    .is_some_and(|value| value.raw() == actual_obj.raw())
-                                                {
-                                                    return self.function_constructor_prototype_value(actual_obj);
-                                                }
-                                            }
-                                            virtual_value
-                                        })
-                                        .unwrap_or(Value::null())
-                                }
-                            } else if let Some(method_slot) =
-                            obj.nominal_type_id_usize().and_then(|nominal_type_id| {
-                                let class_metadata = self.class_metadata.read();
-                                class_metadata
-                                    .get(nominal_type_id)
-                                    .and_then(|meta| {
-                                        meta.get_method_index(key_str).or_else(|| {
-                                            for alias in protocol_alias_names(key_str) {
-                                                if let Some(index) = meta.get_method_index(alias) {
-                                                    return Some(index);
-                                                }
-                                            }
-                                            None
-                                        })
-                                    })
-                                    .or_else(|| {
-                                        drop(class_metadata);
-                                        let classes = self.classes.read();
-                                        let class = classes.get_class(nominal_type_id)?;
-                                        let module = class.module.as_ref()?;
-                                        module
-                                            .classes
-                                            .iter()
-                                            .find(|class_def| class_def.name == class.name)
-                                            .and_then(|class_def| {
-                                                class_def.methods.iter().find_map(|method| {
-                                                    let plain_name = method
-                                                        .name
-                                                        .rsplit("::")
-                                                        .next()
-                                                        .unwrap_or(method.name.as_str());
-                                                    if method.name == key_str
-                                                        || plain_name == key_str
-                                                    {
-                                                        Some(method.slot)
-                                                    } else {
-                                                        None
-                                                    }
-                                                })
-                                            })
-                                    })
-                            })
-                            {
-                                match self.bound_method_value_for_slot(obj_val, method_slot) {
-                                    Ok(value) => value,
-                                    Err(_) => Value::null(),
-                                }
-                            } else {
-                                let key = self.intern_prop_key(&key_str);
-                                obj.dyn_map()
-                                    .and_then(|dyn_map| dyn_map.get(&key).copied())
-                                    .or_else(|| self.get_field_value_by_name(obj_val, &key_str))
-                                    .or_else(|| {
-                                        if key_str == "prototype" {
-                                            if self
-                                                .builtin_global_value("Object")
-                                                .is_some_and(|value| value.raw() == actual_obj.raw())
-                                            {
-                                                return self.object_constructor_prototype_value(actual_obj);
-                                            }
-                                            if self
-                                                .builtin_global_value("Array")
-                                                .is_some_and(|value| value.raw() == actual_obj.raw())
-                                            {
-                                                return self.array_constructor_prototype_value(actual_obj);
-                                            }
-                                            if self
-                                                .builtin_global_value("String")
-                                                .is_some_and(|value| value.raw() == actual_obj.raw())
-                                            {
-                                                return self.string_constructor_prototype_value(actual_obj);
-                                            }
-                                            if self
-                                                .builtin_global_value("Function")
-                                                .is_some_and(|value| value.raw() == actual_obj.raw())
-                                            {
-                                                return self.function_constructor_prototype_value(actual_obj);
-                                            }
-                                        }
-                                        virtual_value
-                                    })
-                                    .unwrap_or(Value::null())
-                            }
+                            self.get_field_value_by_name(actual_obj, &key_str)
+                                .unwrap_or(Value::null())
                         }
                     }
                     _ => {
@@ -1448,6 +1294,10 @@ impl<'a> Interpreter<'a> {
                             } else if key_str == "prototype" {
                                 self.constructor_prototype_value(obj_val).unwrap_or(Value::null())
                             } else if let Some(value) = self.callable_property_value(obj_val, key_str) {
+                                value
+                            } else if let Some(value) =
+                                self.materialize_constructor_static_method(obj_val, key_str)
+                            {
                                 value
                             } else if let Some(native_id) =
                                 builtin_handle_native_method_id(obj_val, key_str)
@@ -1607,11 +1457,13 @@ impl<'a> Interpreter<'a> {
                             let _ = obj.set_field(index, value);
                             self.sync_descriptor_value(actual_obj, &key_str, value);
                             self.set_callable_virtual_property_deleted(actual_obj, &key_str, false);
+                            self.set_descriptor_field_present(actual_obj, &key_str, true);
                         } else {
                             let key = self.intern_prop_key(&key_str);
                             obj.ensure_dyn_map().insert(key, value);
                             self.sync_descriptor_value(actual_obj, &key_str, value);
                             self.set_callable_virtual_property_deleted(actual_obj, &key_str, false);
+                            self.set_descriptor_field_present(actual_obj, &key_str, true);
                         }
                     }
                     _ => {
