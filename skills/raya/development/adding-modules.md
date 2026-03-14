@@ -41,11 +41,7 @@ export function myFunc2(y: string): string {
 }
 ```
 
-**mymodule.d.raya** (type definitions):
-```typescript
-export function myFunc1(x: int): int;
-export function myFunc2(y: string): string;
-```
+Type contracts now come from the compiled `.raya` module / `.ryb` export metadata. No separate declaration sidecar is required.
 
 ### 3. Register in std:* Module System
 
@@ -207,7 +203,7 @@ registry.register("mymodule", "myFunc", Box::new(my_func));
 ## Example: Adding std:base64
 
 1. ✅ IDs: 0x7100-0x7101 (encode, decode)
-2. ✅ Files: `base64.raya`, `base64.d.raya`
+2. ✅ Files: `base64.raya`
 3. ✅ Register: `std_modules.rs`
 4. ✅ Implement: `crates/raya-stdlib/src/base64.rs`
 5. ✅ Route: `handler.rs` (0x7100-0x7101 range)

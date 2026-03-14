@@ -73,26 +73,6 @@ pub struct ResolvedModule {
 }
 
 impl ResolvedModule {
-    /// Get the path to the legacy type definition file (.d.raya), if present.
-    pub fn typedef_path(&self) -> Option<PathBuf> {
-        self.package_info.as_ref()?;
-
-        // Cached packages may still ship a legacy declaration sidecar for older tooling.
-        let parent = self.path.parent()?;
-        let typedef_path = parent.join("module.d.raya");
-
-        if typedef_path.exists() {
-            Some(typedef_path)
-        } else {
-            None
-        }
-    }
-
-    /// Check whether a legacy declaration sidecar is available.
-    pub fn has_typedef(&self) -> bool {
-        self.typedef_path().is_some()
-    }
-
     /// Get the path to the package manifest (raya.toml)
     /// Returns None for local modules, Some for cached packages
     pub fn manifest_path(&self) -> Option<PathBuf> {

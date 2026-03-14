@@ -14,7 +14,7 @@ This crate implements the parts of the standard library that need OS access: fil
 - `src/registry.rs`: registration of exported native functions.
 - `src/handles.rs`: handle registries for sockets, servers, watchers, subprocesses, and similar resources.
 - `src/*.rs`: module implementations such as `fs`, `net`, `http`, `fetch`, `dns`, `process`, `terminal`, `watch`, `ws`, `readline`, and more.
-- `raya/`: `.raya` and `.d.raya` wrapper/type files for std modules.
+- `raya/`: `.raya` wrapper files for std modules.
 
 ## Start Here When
 

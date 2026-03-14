@@ -1,6 +1,6 @@
 //! Declaration-module support for binary linking.
 //!
-//! This module parses declaration files (`.d.raya` and `.d.ts` subset), derives
+//! This module parses declaration files (`.d.ts` subset), derives
 //! canonical structural signatures, and builds export metadata for late-link
 //! placeholder modules.
 
@@ -30,7 +30,6 @@ use super::exports::{ExportedSymbol, ModuleExports};
 /// Source format backing a declaration module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeclarationSourceKind {
-    DRaya,
     DTs,
 }
 
@@ -142,8 +141,6 @@ impl DeclarationSourceKind {
         let file_name = path.file_name()?.to_string_lossy();
         if file_name.ends_with(".d.ts") {
             Some(Self::DTs)
-        } else if file_name.ends_with(".d.raya") {
-            Some(Self::DRaya)
         } else {
             None
         }
@@ -177,7 +174,7 @@ pub fn load_declaration_module(
             path: declaration_path.to_path_buf(),
             line: 1,
             column: 1,
-            message: "Declaration path must end with .d.raya or .d.ts".to_string(),
+            message: "Declaration path must end with .d.ts".to_string(),
         }
     })?;
 
@@ -282,19 +279,13 @@ fn detect_unsupported_dts_syntax(path: &Path, source: &str) -> Result<(), Declar
     Ok(())
 }
 
-fn normalize_declaration_source(kind: DeclarationSourceKind, source: &str) -> String {
-    let normalized = if kind == DeclarationSourceKind::DRaya {
-        source.to_string()
-    } else {
-        let mut out = String::with_capacity(source.len());
-        for line in source.lines() {
-            let normalized = normalize_dts_line(line);
-            out.push_str(&normalized);
-            out.push('\n');
-        }
-        out
-    };
-
+fn normalize_declaration_source(_kind: DeclarationSourceKind, source: &str) -> String {
+    let mut normalized = String::with_capacity(source.len());
+    for line in source.lines() {
+        let line = normalize_dts_line(line);
+        normalized.push_str(&line);
+        normalized.push('\n');
+    }
     materialize_declaration_stubs(&normalized)
 }
 
@@ -1193,10 +1184,7 @@ fn escape(value: &str) -> String {
 /// Compute canonical runtime module identity path for a declaration file.
 pub fn declaration_runtime_identity_path(declaration_path: &Path) -> Option<PathBuf> {
     let file_name = declaration_path.file_name()?.to_string_lossy();
-    let replacement = if file_name.ends_with(".d.raya") {
-        let stem = file_name.trim_end_matches(".d.raya");
-        format!("{}.raya", stem)
-    } else if file_name.ends_with(".d.ts") {
+    let replacement = if file_name.ends_with(".d.ts") {
         let stem = file_name.trim_end_matches(".d.ts");
         format!("{}.raya", stem)
     } else {
@@ -1221,12 +1209,7 @@ mod tests {
 
     #[test]
     fn declaration_identity_path_rewrites_suffixes() {
-        let a = PathBuf::from("/tmp/mod.d.raya");
         let b = PathBuf::from("/tmp/mod.d.ts");
-        assert_eq!(
-            declaration_runtime_identity_path(&a).unwrap(),
-            PathBuf::from("/tmp/mod.raya")
-        );
         assert_eq!(
             declaration_runtime_identity_path(&b).unwrap(),
             PathBuf::from("/tmp/mod.raya")
@@ -1243,25 +1226,25 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_d_raya_and_d_ts_produce_same_structural_signatures() {
+    fn equivalent_d_ts_inputs_produce_same_structural_signatures() {
         let temp = TempDir::new().expect("temp dir");
-        let draya = temp.path().join("dep.d.raya");
-        let dts = temp.path().join("dep.d.ts");
+        let dts_a = temp.path().join("dep_a.d.ts");
+        let dts_b = temp.path().join("dep_b.d.ts");
 
         std::fs::write(
-            &draya,
+            &dts_a,
             r#"
-            export function foo(a: number, b: string): number;
-            export class Box {
+            export declare function foo(a: number, b: string): number;
+            export declare class Box {
                 value: number;
                 get(): number;
             }
             "#,
         )
-        .expect("write d.raya");
+        .expect("write first d.ts");
 
         std::fs::write(
-            &dts,
+            &dts_b,
             r#"
             export declare function foo(a: number, b: string): number;
             export declare class Box {
@@ -1275,18 +1258,18 @@ mod tests {
         let module_identity = temp.path().join("dep.raya").to_string_lossy().to_string();
         let virtual_path = temp.path().join("__virtual_dep__.raya");
 
-        let from_draya = load_declaration_module(&draya, &module_identity, &virtual_path)
-            .expect("load d.raya declaration");
-        let from_dts = load_declaration_module(&dts, &module_identity, &virtual_path)
-            .expect("load d.ts declaration");
+        let from_dts_a = load_declaration_module(&dts_a, &module_identity, &virtual_path)
+            .expect("load first d.ts declaration");
+        let from_dts_b = load_declaration_module(&dts_b, &module_identity, &virtual_path)
+            .expect("load second d.ts declaration");
 
         for symbol in ["foo", "Box"] {
-            let left = from_draya
+            let left = from_dts_a
                 .exports
                 .symbols
                 .get(symbol)
-                .unwrap_or_else(|| panic!("missing symbol {symbol} in d.raya"));
-            let right = from_dts
+                .unwrap_or_else(|| panic!("missing symbol {symbol} in first d.ts"));
+            let right = from_dts_b
                 .exports
                 .symbols
                 .get(symbol)
@@ -1299,8 +1282,8 @@ mod tests {
     #[test]
     fn declaration_class_member_order_does_not_change_signature_hash() {
         let temp = TempDir::new().expect("temp dir");
-        let a = temp.path().join("a.d.raya");
-        let b = temp.path().join("b.d.raya");
+        let a = temp.path().join("a.d.ts");
+        let b = temp.path().join("b.d.ts");
 
         std::fs::write(
             &a,
@@ -1352,8 +1335,8 @@ mod tests {
     #[test]
     fn declaration_interface_optional_method_affects_signature() {
         let temp = TempDir::new().expect("temp dir");
-        let a = temp.path().join("a.d.raya");
-        let b = temp.path().join("b.d.raya");
+        let a = temp.path().join("a.d.ts");
+        let b = temp.path().join("b.d.ts");
 
         std::fs::write(
             &a,
@@ -1431,7 +1414,7 @@ mod tests {
                 toString(): string;
             }
         "#;
-        let normalized = normalize_declaration_source(DeclarationSourceKind::DRaya, src);
+        let normalized = normalize_declaration_source(DeclarationSourceKind::DTs, src);
 
         assert!(
             normalized.contains("get: (() => Object) | null;"),
@@ -1450,8 +1433,8 @@ mod tests {
     #[test]
     fn declaration_interface_call_and_construct_signatures_are_canonicalized() {
         let temp = TempDir::new().expect("temp dir");
-        let a = temp.path().join("a.d.raya");
-        let b = temp.path().join("b.d.raya");
+        let a = temp.path().join("a.d.ts");
+        let b = temp.path().join("b.d.ts");
 
         std::fs::write(
             &a,

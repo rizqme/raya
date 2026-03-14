@@ -110,7 +110,7 @@ rt.execute(&module)?;
 - `semver_mod.rs` - Semantic versioning
 - `template.rs` - Template engine
 
-**Raya Sources:** `raya/` directory with `.raya` and `.d.raya` files
+**Raya Sources:** `raya/` directory with `.raya` wrapper files
 
 **Dependencies:**
 - `raya-sdk` (NativeHandler trait)

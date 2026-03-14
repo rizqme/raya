@@ -7,7 +7,7 @@
 //! - Cycle detection
 //! - Module caching
 //! - Cross-module symbol resolution
-//! - Type definition parsing (`.d.raya` files)
+//! - Type definition parsing (`.d.ts` subset)
 
 mod cache;
 mod builtin_contract;
@@ -17,7 +17,6 @@ mod exports;
 mod graph;
 mod resolver;
 mod std_modules;
-mod typedef;
 
 /// The import specifier prefix for standard library modules (e.g., `"std:io"`).
 pub const STD_MODULE_PREFIX: &str = "std:";
@@ -43,7 +42,3 @@ pub use resolver::{
     ResolvedPackageInfo,
 };
 pub use std_modules::StdModuleRegistry;
-pub use typedef::{
-    load_typedef, ClassMemberSignature, ClassSignature, FunctionSignature, TypeAliasSignature,
-    TypeDefError, TypeDefExport, TypeDefFile, TypeDefParser, VariableSignature,
-};

@@ -168,7 +168,6 @@ Omit:
 
 Files:
 - `crates/raya-engine/builtins/node_compat/date.raya`
-- `crates/raya-engine/builtins/node_compat/date.d.raya`
 
 ### String legacy HTML methods
 
@@ -189,7 +188,6 @@ Omit:
 
 Files:
 - `crates/raya-engine/builtins/node_compat/globals.raya`
-- `crates/raya-engine/builtins/node_compat/globals.d.raya`
 - `crates/raya-engine/builtins/strict/string.raya`
 - `crates/raya-engine/src/compiler/lower/class_methods.rs`
 
@@ -203,7 +201,6 @@ Omit:
 
 Files:
 - `crates/raya-engine/builtins/node_compat/globals.raya`
-- `crates/raya-engine/builtins/node_compat/globals.d.raya`
 
 ### RegExp legacy statics, accessors, and `compile`
 

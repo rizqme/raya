@@ -24,7 +24,7 @@ High-performance JSON parsing and stringification using Raya's custom JSON parse
 - Native FFI wrapper in ([json_native.rs](src/json_native.rs))
 
 **Type Definitions:**
-See [json.d.raya](json.d.raya) for TypeScript-style type definitions.
+The standard library surface is defined by the shipped `.raya` wrapper modules.
 
 ## Building
 
@@ -114,8 +114,7 @@ raya-stdlib/
 ├── tests/
 │   ├── json_native.rs      # Module initialization tests
 │   └── json_dynamic_loading.rs  # Dynamic loading tests
-├── json.d.raya             # TypeScript type definitions
-├── reflect.d.raya          # Reflection API type definitions
+├── reflect.raya            # Reflection API wrapper
 └── Cargo.toml
 ```
 

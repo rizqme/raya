@@ -13,7 +13,7 @@ This crate implements platform-independent native standard-library modules. It i
 - `src/handler.rs`: id-based stdlib dispatch for VM native call ids.
 - `src/registry.rs`: name-based stdlib registration.
 - `src/*.rs`: module implementations such as `logger`, `math`, `crypto`, `path`, `stream`, `url`, `compress`, `encoding`, `semver_mod`, `template`, `json_toml`, and `test`.
-- `raya/`: `.raya` and `.d.raya` wrapper/type files for exported std modules.
+- `raya/`: `.raya` wrapper files for exported std modules.
 
 ## Start Here When
 

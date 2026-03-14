@@ -664,7 +664,7 @@ mod tests {
     fn compile_program_file_collects_late_link_requirements_for_declaration_imports() {
         let temp = TempDir::new().expect("temp dir");
         let main_path = temp.path().join("main.raya");
-        let decl_path = temp.path().join("dep.d.raya");
+        let decl_path = temp.path().join("dep.d.ts");
 
         fs::write(
             &main_path,
@@ -966,7 +966,7 @@ mod tests {
     fn execute_program_late_links_declaration_backed_binary_dependency() {
         let temp = TempDir::new().expect("temp dir");
         let dep_source_path = temp.path().join("dep.raya");
-        let dep_decl_path = temp.path().join("dep.d.raya");
+        let dep_decl_path = temp.path().join("dep.d.ts");
         let dep_binary_path = temp.path().join("dep.ryb");
         let main_path = temp.path().join("main.raya");
 
@@ -1017,7 +1017,7 @@ mod tests {
     fn execute_program_late_link_fails_on_signature_mismatch() {
         let temp = TempDir::new().expect("temp dir");
         let dep_source_path = temp.path().join("dep.raya");
-        let dep_decl_path = temp.path().join("dep.d.raya");
+        let dep_decl_path = temp.path().join("dep.d.ts");
         let dep_binary_path = temp.path().join("dep.ryb");
         let main_path = temp.path().join("main.raya");
 
@@ -1072,7 +1072,7 @@ mod tests {
     fn execute_program_late_link_fails_on_missing_specialization_contract() {
         let temp = TempDir::new().expect("temp dir");
         let dep_source_path = temp.path().join("dep.raya");
-        let dep_decl_path = temp.path().join("dep.d.raya");
+        let dep_decl_path = temp.path().join("dep.d.ts");
         let dep_binary_path = temp.path().join("dep.ryb");
         let main_path = temp.path().join("main.raya");
 
@@ -1129,7 +1129,7 @@ mod tests {
     fn execute_program_late_link_accepts_specialization_contract() {
         let temp = TempDir::new().expect("temp dir");
         let dep_source_path = temp.path().join("dep.raya");
-        let dep_decl_path = temp.path().join("dep.d.raya");
+        let dep_decl_path = temp.path().join("dep.d.ts");
         let dep_binary_path = temp.path().join("dep.ryb");
         let main_path = temp.path().join("main.raya");
 
@@ -1180,7 +1180,7 @@ mod tests {
     fn execute_program_late_link_accepts_alpha_equivalent_generic_signatures() {
         let temp = TempDir::new().expect("temp dir");
         let dep_source_path = temp.path().join("dep.raya");
-        let dep_decl_path = temp.path().join("dep.d.raya");
+        let dep_decl_path = temp.path().join("dep.d.ts");
         let dep_binary_path = temp.path().join("dep.ryb");
         let main_path = temp.path().join("main.raya");
 

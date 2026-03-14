@@ -18,7 +18,6 @@ This folder handles compilation once a program stops being "just one file". It r
 - `cache.rs`: compiled module cache.
 - `exports.rs`: export registry used for cross-module checks and signatures.
 - `declaration.rs`: builtin/global declarations and declaration-backed imports.
-- `typedef.rs`: `.d.raya` parsing and signature extraction.
 - `std_modules.rs`: embedded standard-library source registry.
 
 ## Start Here When

@@ -419,9 +419,7 @@ impl ModuleCompiler {
         if base.extension().is_some() {
             candidates.push(base.clone());
         } else {
-            candidates.push(base.with_extension("d.raya"));
             candidates.push(base.with_extension("d.ts"));
-            candidates.push(base.join("index.d.raya"));
             candidates.push(base.join("index.d.ts"));
         }
 
@@ -1513,7 +1511,7 @@ impl ModuleCompiler {
                     module_identity: module_identity.to_string(),
                     module_id,
                     declaration_path: PathBuf::new(),
-                    source_kind: super::declaration::DeclarationSourceKind::DRaya,
+                    source_kind: super::declaration::DeclarationSourceKind::DTs,
                     module_specifiers: Vec::new(),
                     symbols: Vec::new(),
                 });
@@ -2234,7 +2232,7 @@ mod tests {
     fn test_strict_default_import_rejects_unknown_signature_without_dynamic_fallback() {
         let temp_dir = create_test_project();
         let main_path = temp_dir.path().join("main.raya");
-        let dep_decl_path = temp_dir.path().join("dep.d.raya");
+        let dep_decl_path = temp_dir.path().join("dep.d.ts");
 
         fs::write(
             &main_path,
@@ -2271,7 +2269,7 @@ mod tests {
     fn test_strict_named_import_rejects_unknown_signature_without_dynamic_fallback() {
         let temp_dir = create_test_project();
         let main_path = temp_dir.path().join("main.raya");
-        let dep_decl_path = temp_dir.path().join("dep.d.raya");
+        let dep_decl_path = temp_dir.path().join("dep.d.ts");
 
         fs::write(
             &main_path,
@@ -2304,7 +2302,7 @@ mod tests {
     fn test_strict_namespace_import_rejects_unknown_member_signature_without_dynamic_fallback() {
         let temp_dir = create_test_project();
         let main_path = temp_dir.path().join("main.raya");
-        let dep_decl_path = temp_dir.path().join("dep.d.raya");
+        let dep_decl_path = temp_dir.path().join("dep.d.ts");
 
         fs::write(
             &main_path,
@@ -2545,10 +2543,10 @@ mod tests {
     }
 
     #[test]
-    fn test_declaration_import_uses_d_raya_when_source_missing() {
+    fn test_declaration_import_uses_d_ts_when_source_missing() {
         let temp_dir = create_test_project();
         let main_path = temp_dir.path().join("main.raya");
-        let dep_decl_path = temp_dir.path().join("dep.d.raya");
+        let dep_decl_path = temp_dir.path().join("dep.d.ts");
 
         fs::write(
             &main_path,
@@ -2610,10 +2608,9 @@ mod tests {
     }
 
     #[test]
-    fn test_declaration_import_prefers_d_raya_over_d_ts() {
+    fn test_declaration_import_records_d_ts_contract() {
         let temp_dir = create_test_project();
         let main_path = temp_dir.path().join("main.raya");
-        let dep_d_raya = temp_dir.path().join("dep.d.raya");
         let dep_d_ts = temp_dir.path().join("dep.d.ts");
 
         fs::write(
@@ -2624,7 +2621,6 @@ mod tests {
             "#,
         )
         .unwrap();
-        fs::write(&dep_d_raya, "export function foo(a: number): number;").unwrap();
         fs::write(&dep_d_ts, "export function foo(a: string): string;").unwrap();
 
         let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
@@ -2641,14 +2637,14 @@ mod tests {
             .expect("foo import");
         let type_signature = foo_import.type_signature.as_ref().expect("type signature");
         assert!(
-            type_signature.contains("number"),
-            "expected .d.raya function signature, got: {}",
+            type_signature.contains("string"),
+            "expected .d.ts function signature, got: {}",
             type_signature
         );
 
         let late_links = compiler.late_link_requirements();
         assert_eq!(late_links.len(), 1);
-        assert_eq!(late_links[0].source_kind, DeclarationSourceKind::DRaya);
+        assert_eq!(late_links[0].source_kind, DeclarationSourceKind::DTs);
     }
 
     #[test]
