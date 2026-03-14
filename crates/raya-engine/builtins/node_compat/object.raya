@@ -102,3 +102,5 @@ class Object {
         return __NATIVE_CALL<T>(OBJECT_DEFINE_PROPERTIES, obj, descriptors);
     }
 }
+
+export { Object };

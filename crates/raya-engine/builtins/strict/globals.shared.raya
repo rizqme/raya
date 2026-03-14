@@ -4,8 +4,22 @@
 const Infinity: number = 1.0 / 0.0;
 const NaN: number = 0.0 / 0.0;
 const __GLOBAL_NUM_DIGITS: string = "0123456789";
+const __JSON_STRINGIFY: number = 0x0C00;
+const __JSON_PARSE: number = 0x0C01;
 
 type PrimitiveCoercible = any;
+
+class __JSONGlobal {
+    stringify(value: any): string {
+        return __NATIVE_CALL<string>(__JSON_STRINGIFY, value);
+    }
+
+    parse(value: string): any {
+        return __NATIVE_CALL<any>(__JSON_PARSE, value);
+    }
+}
+
+const JSON: __JSONGlobal = new __JSONGlobal();
 
 function __isPrimitiveValue(value: any): boolean {
     if (value == null) {
@@ -210,6 +224,15 @@ function Number(value: PrimitiveCoercible): number {
     return sign * (intPart + fracPart / scale);
 }
 
+(Number as any)["NaN"] = NaN;
+(Number as any)["POSITIVE_INFINITY"] = Infinity;
+(Number as any)["NEGATIVE_INFINITY"] = -Infinity;
+(Number as any)["MAX_VALUE"] = 1.7976931348623157e308;
+(Number as any)["MIN_VALUE"] = 5e-324;
+(Number as any)["MAX_SAFE_INTEGER"] = 9007199254740991;
+(Number as any)["MIN_SAFE_INTEGER"] = -9007199254740991;
+(Number as any)["EPSILON"] = 2.220446049250313e-16;
+
 function String(value: PrimitiveCoercible): string {
     if (value === undefined) {
         return "undefined";
@@ -311,3 +334,16 @@ function decodeURIComponent(input: string): string {
     let out = input.split("%20").join(" ");
     return out.split("%25").join("%");
 }
+
+export {
+    Infinity,
+    NaN,
+    JSON,
+    Boolean,
+    Number,
+    String,
+    encodeURI,
+    decodeURI,
+    encodeURIComponent,
+    decodeURIComponent,
+};

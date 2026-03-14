@@ -77,3 +77,5 @@ class Map<K, V> {
         __NATIVE_CALL<void>(MAP_FOR_EACH, this.mapPtr, fn);
     }
 }
+
+export { Map };

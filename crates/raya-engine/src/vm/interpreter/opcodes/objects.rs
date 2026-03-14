@@ -10,6 +10,7 @@ use crate::vm::interpreter::shared_state::{
 };
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{Array, BoundMethod, Closure, Object, RayaString};
+use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -80,7 +81,8 @@ impl<'a> Interpreter<'a> {
         let module = class.module.as_ref()?;
         for (slot, function_id) in class.vtable.methods.iter().copied().enumerate() {
             let function = module.functions.get(function_id)?;
-            if function.name == method_name || function.name.ends_with(&format!("::{method_name}")) {
+            if function.name == method_name || function.name.ends_with(&format!("::{method_name}"))
+            {
                 return Some(slot);
             }
         }
@@ -98,11 +100,9 @@ impl<'a> Interpreter<'a> {
             VmError::TypeError("Cannot bind method on structural object value".to_string())
         })?;
         let classes = self.classes.read();
-        let class = classes
-            .get_class(nominal_type_id)
-            .ok_or_else(|| {
-                VmError::RuntimeError(format!("Invalid nominal type id: {}", nominal_type_id))
-            })?;
+        let class = classes.get_class(nominal_type_id).ok_or_else(|| {
+            VmError::RuntimeError(format!("Invalid nominal type id: {}", nominal_type_id))
+        })?;
         let func_id = class.vtable.get_method(method_slot).ok_or_else(|| {
             VmError::RuntimeError(format!(
                 "Invalid method slot: {} for class {}",
@@ -499,9 +499,7 @@ impl<'a> Interpreter<'a> {
             )));
         }
 
-        let header = unsafe {
-            &*header_ptr_from_value_ptr(value.as_ptr::<u8>().unwrap().as_ptr())
-        };
+        let header = unsafe { &*header_ptr_from_value_ptr(value.as_ptr::<u8>().unwrap().as_ptr()) };
         if header.type_id() == std::any::TypeId::of::<Object>() {
             return Ok(value);
         }
@@ -530,6 +528,7 @@ impl<'a> Interpreter<'a> {
         ip: &mut usize,
         code: &[u8],
         module: &Module,
+        task: &Arc<Task>,
         opcode: Opcode,
     ) -> OpcodeResult {
         match opcode {
@@ -677,7 +676,8 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                if let Some(value) = self.load_shape_field_on_non_object(obj_val, shape_id, field_offset)
+                if let Some(value) =
+                    self.load_shape_field_on_non_object(obj_val, shape_id, field_offset)
                 {
                     if let Err(e) = stack.push(value) {
                         return OpcodeResult::Error(e);
@@ -695,7 +695,10 @@ impl<'a> Interpreter<'a> {
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
                 let member_name = {
                     let names = self.structural_shape_names.read();
-                    names.get(&shape_id).and_then(|names| names.get(field_offset)).cloned()
+                    names
+                        .get(&shape_id)
+                        .and_then(|names| names.get(field_offset))
+                        .cloned()
                 };
                 self.record_aot_shape_site(
                     crate::aot_profile::AotSiteKind::LoadFieldShape,
@@ -793,8 +796,7 @@ impl<'a> Interpreter<'a> {
                 // TODO: Full trap support would call handler.set(target, fieldName, value)
                 let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
 
-                let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
-                let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
+                let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() }.unwrap();
                 let slot_binding = StructuralSlotBinding::Field(field_offset);
                 let field_offset = match slot_binding {
                     StructuralSlotBinding::Field(offset) => offset,
@@ -815,47 +817,26 @@ impl<'a> Interpreter<'a> {
                         ));
                     }
                 };
-                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
-                    if let Some(setter) = self.descriptor_accessor(actual_obj, &field_name, "set") {
-                        match self.callable_frame_for_value(
-                            setter,
-                            stack,
-                            &[value],
-                            Some(actual_obj),
-                            ReturnAction::Discard,
-                        ) {
-                            Ok(Some(frame)) => return frame,
-                            Ok(None) => {
-                                return OpcodeResult::Error(VmError::TypeError(format!(
-                                    "Property '{}' setter is not callable",
-                                    field_name
-                                )));
-                            }
-                            Err(e) => return OpcodeResult::Error(e),
-                        }
-                    }
-                    if self
-                        .descriptor_accessor(actual_obj, &field_name, "get")
-                        .is_some()
-                        && !self.is_field_writable(actual_obj, &field_name)
-                    {
-                        return OpcodeResult::Error(VmError::TypeError(format!(
-                            "Cannot set property '{}' which has only a getter",
-                            field_name
-                        )));
-                    }
-                    if !self.is_field_writable(actual_obj, &field_name) {
-                        return OpcodeResult::Error(VmError::TypeError(format!(
-                            "Cannot assign to non-writable property '{}'",
-                            field_name
-                        )));
-                    }
+                let field_name = {
+                    let obj = unsafe { &*obj_ptr.as_ptr() };
+                    self.field_name_for_offset(obj, field_offset)
+                };
+                if let Some(field_name) = field_name {
+                    return match self.set_property_value_via_js_semantics(
+                        actual_obj,
+                        &field_name,
+                        value,
+                        actual_obj,
+                        task,
+                        module,
+                    ) {
+                        Ok(_) => OpcodeResult::Continue,
+                        Err(error) => OpcodeResult::Error(error),
+                    };
                 }
+                let obj = unsafe { &mut *obj_ptr.as_ptr() };
                 if let Err(e) = obj.set_field(field_offset, value) {
                     return OpcodeResult::Error(VmError::RuntimeError(e));
-                }
-                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
-                    self.sync_descriptor_value(actual_obj, &field_name, value);
                 }
                 OpcodeResult::Continue
             }
@@ -884,12 +865,15 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
-                let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
-                let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
+                let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() }.unwrap();
                 let member_name = {
                     let names = self.structural_shape_names.read();
-                    names.get(&shape_id).and_then(|names| names.get(field_offset)).cloned()
+                    names
+                        .get(&shape_id)
+                        .and_then(|names| names.get(field_offset))
+                        .cloned()
                 };
+                let obj = unsafe { &mut *obj_ptr.as_ptr() };
                 self.record_aot_shape_site(
                     crate::aot_profile::AotSiteKind::StoreFieldShape,
                     obj.layout_id(),
@@ -913,46 +897,15 @@ impl<'a> Interpreter<'a> {
                     }
                 };
                 if let Some(ref field_name) = member_name {
-                    if let Some(setter) = self.descriptor_accessor(actual_obj, &field_name, "set") {
-                        match self.callable_frame_for_value(
-                            setter,
-                            stack,
-                            &[value],
-                            Some(actual_obj),
-                            ReturnAction::Discard,
-                        ) {
-                            Ok(Some(frame)) => return frame,
-                            Ok(None) => {
-                                return OpcodeResult::Error(VmError::TypeError(format!(
-                                    "Property '{}' setter is not callable",
-                                    field_name
-                                )));
-                            }
-                            Err(e) => return OpcodeResult::Error(e),
-                        }
-                    }
-                    if self
-                        .descriptor_accessor(actual_obj, &field_name, "get")
-                        .is_some()
-                        && !self.is_field_writable(actual_obj, &field_name)
-                    {
-                        return OpcodeResult::Error(VmError::TypeError(format!(
-                            "Cannot set property '{}' which has only a getter",
-                            field_name
-                        )));
-                    }
-                    if !self.is_field_writable(actual_obj, &field_name) {
-                        return OpcodeResult::Error(VmError::TypeError(format!(
-                            "Cannot assign to non-writable property '{}'",
-                            field_name
-                        )));
-                    }
+                    return match self.set_property_value_via_js_semantics(
+                        actual_obj, field_name, value, actual_obj, task, module,
+                    ) {
+                        Ok(_) => OpcodeResult::Continue,
+                        Err(error) => OpcodeResult::Error(error),
+                    };
                 }
                 if let Err(e) = obj.set_field(field_offset, value) {
                     return OpcodeResult::Error(VmError::RuntimeError(e));
-                }
-                if let Some(field_name) = member_name {
-                    self.sync_descriptor_value(actual_obj, &field_name, value);
                 }
                 OpcodeResult::Continue
             }
@@ -1010,7 +963,8 @@ impl<'a> Interpreter<'a> {
                         unreachable!()
                     }
                 };
-                let value = if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
+                let value = if let Some(field_name) = self.field_name_for_offset(obj, field_offset)
+                {
                     self.get_field_value_by_name(actual_obj, &field_name)
                         .unwrap_or(Value::null())
                 } else {
@@ -1043,7 +997,8 @@ impl<'a> Interpreter<'a> {
                     return OpcodeResult::Continue;
                 }
 
-                if let Some(value) = self.load_shape_field_on_non_object(obj_val, shape_id, field_offset)
+                if let Some(value) =
+                    self.load_shape_field_on_non_object(obj_val, shape_id, field_offset)
                 {
                     if let Err(e) = stack.push(value) {
                         return OpcodeResult::Error(e);
@@ -1062,7 +1017,10 @@ impl<'a> Interpreter<'a> {
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
                 let member_name = {
                     let names = self.structural_shape_names.read();
-                    names.get(&shape_id).and_then(|names| names.get(field_offset)).cloned()
+                    names
+                        .get(&shape_id)
+                        .and_then(|names| names.get(field_offset))
+                        .cloned()
                 };
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);
                 if let StructuralSlotBinding::Missing = slot_binding {

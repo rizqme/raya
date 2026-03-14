@@ -44,7 +44,7 @@ fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module 
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
-                structural_shapes: vec![],
+            structural_shapes: vec![],
             structural_layouts: vec![],
         },
         exports: vec![],

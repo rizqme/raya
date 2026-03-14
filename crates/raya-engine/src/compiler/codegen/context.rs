@@ -391,16 +391,15 @@ impl IrCodeGenerator {
         func: &IrFunction,
     ) -> CompileResult<(Function, Option<FunctionDebugInfo>)> {
         let param_count = func.param_count() as u8;
-        let mut ctx =
-            FunctionContext::new(
-                func.name.clone(),
-                param_count,
-                func.uses_js_this_slot,
-                func.is_constructible,
-                func.is_generator,
-                func.visible_length as u8,
-                func.is_strict_js,
-            );
+        let mut ctx = FunctionContext::new(
+            func.name.clone(),
+            param_count,
+            func.uses_js_this_slot,
+            func.is_constructible,
+            func.is_generator,
+            func.visible_length as u8,
+            func.is_strict_js,
+        );
 
         // Pre-allocate slots for parameters
         for (i, param) in func.params.iter().enumerate() {
@@ -1553,8 +1552,7 @@ impl IrCodeGenerator {
                     | BinaryOp::NotEqual
                     | BinaryOp::StrictEqual
                     | BinaryOp::StrictNotEqual
-            )
-        {
+            ) {
             // Nullish comparison must use the generic JS equality opcodes.
             match op {
                 BinaryOp::Equal => Opcode::Eq,

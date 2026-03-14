@@ -17,6 +17,14 @@ class TemporalInstant {
     }
 }
 
+export {
+    TemporalInstant,
+    TemporalPlainDate,
+    TemporalPlainTime,
+    TemporalZonedDateTime,
+    Temporal,
+};
+
 class TemporalPlainDate {
     year: number;
     month: number;

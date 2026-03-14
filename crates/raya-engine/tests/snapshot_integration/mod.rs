@@ -110,7 +110,10 @@ fn test_snapshot_with_completed_task() {
     let restored = &reader.tasks()[0];
     assert_eq!(restored.state, TaskState::Completed);
     assert!(restored.result.is_some());
-    assert_eq!(restored.result.as_ref().and_then(|value| value.as_i32()), Some(42));
+    assert_eq!(
+        restored.result.as_ref().and_then(|value| value.as_i32()),
+        Some(42)
+    );
 }
 
 #[test]
@@ -297,7 +300,8 @@ fn test_large_snapshot() {
 
         // Add some stack values
         for j in 0..10 {
-            task.stack.push(SerializedValue::from(Value::i32((i * 10 + j) as i32)));
+            task.stack
+                .push(SerializedValue::from(Value::i32((i * 10 + j) as i32)));
         }
 
         writer.add_task(task);

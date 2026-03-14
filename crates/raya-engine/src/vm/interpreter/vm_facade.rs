@@ -77,9 +77,9 @@ fn serialize_heap(
     for header_ptr in gc.heap().iter_allocations() {
         let header = unsafe { &*header_ptr };
         let value_ptr = raw_heap_value_ptr(header_ptr);
-        let object_id = *pointer_map
-            .get(&value_ptr)
-            .ok_or_else(|| VmError::RuntimeError(format!("missing snapshot object id for 0x{value_ptr:x}")))?;
+        let object_id = *pointer_map.get(&value_ptr).ok_or_else(|| {
+            VmError::RuntimeError(format!("missing snapshot object id for 0x{value_ptr:x}"))
+        })?;
         let type_id = header.type_id();
         let entry = if type_id == TypeId::of::<Object>() {
             let object = unsafe { &*(value_ptr as *const Object) };
@@ -244,9 +244,7 @@ fn restore_heap_snapshot(
                 unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
             }
             SerializedHeapEntry::Array {
-                type_id,
-                elements,
-                ..
+                type_id, elements, ..
             } => {
                 let ptr = gc.allocate(Array::new(*type_id, elements.len()));
                 unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
@@ -311,7 +309,9 @@ fn restore_heap_snapshot(
     }
 
     for entry in snapshot.entries() {
-        let value = *values.get(&entry.object_id()).expect("snapshot object allocated");
+        let value = *values
+            .get(&entry.object_id())
+            .expect("snapshot object allocated");
         match entry {
             SerializedHeapEntry::Object {
                 object_id,
@@ -394,16 +394,16 @@ fn restore_heap_snapshot(
                     .to_live(&values)
                     .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
             }
-            SerializedHeapEntry::RefCell { value: cell_value, .. } => {
+            SerializedHeapEntry::RefCell {
+                value: cell_value, ..
+            } => {
                 let ptr = unsafe { value.as_ptr::<RefCell>() }.unwrap();
                 let cell = unsafe { &mut *ptr.as_ptr() };
                 cell.value = cell_value
                     .to_live(&values)
                     .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
             }
-            SerializedHeapEntry::Channel {
-                queue, closed, ..
-            } => {
+            SerializedHeapEntry::Channel { queue, closed, .. } => {
                 let ptr = unsafe { value.as_ptr::<ChannelObject>() }.unwrap();
                 let channel = unsafe { &mut *ptr.as_ptr() };
                 for queued in queue {
@@ -649,10 +649,7 @@ impl Vm {
     }
 
     /// Write the offline AOT profile to disk as JSON.
-    pub fn write_aot_profile(
-        &self,
-        path: impl AsRef<std::path::Path>,
-    ) -> Result<(), String> {
+    pub fn write_aot_profile(&self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
         let profile = self.snapshot_aot_profile();
         let json = serde_json::to_string_pretty(&profile)
             .map_err(|err| format!("Failed to encode AOT profile JSON: {err}"))?;
@@ -1002,8 +999,9 @@ impl Vm {
         }
 
         object.dyn_map().and_then(|map| {
-            map.iter()
-                .find_map(|(key, value)| (shared.prop_key_name(*key).as_deref() == Some(field_name)).then_some(*value))
+            map.iter().find_map(|(key, value)| {
+                (shared.prop_key_name(*key).as_deref() == Some(field_name)).then_some(*value)
+            })
         })
     }
 
@@ -1071,8 +1069,10 @@ impl Vm {
         let tasks = shared.tasks.read();
         for task in tasks.values() {
             writer.add_task(
-                task.to_serialized_with_values(|value| SerializedValue::from_live(value, &pointer_map))
-                    .map_err(|e| VmError::IoError(e.to_string()))?,
+                task.to_serialized_with_values(|value| {
+                    SerializedValue::from_live(value, &pointer_map)
+                })
+                .map_err(|e| VmError::IoError(e.to_string()))?,
             );
         }
 

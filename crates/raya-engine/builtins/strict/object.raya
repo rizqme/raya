@@ -67,3 +67,5 @@ class Object {
     }
 
 }
+
+export { Object };

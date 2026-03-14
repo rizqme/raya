@@ -9,7 +9,9 @@ use super::symbols::{ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind, Symbol
 use super::{CheckerPolicy, TypeSystemMode};
 use crate::parser::ast::*;
 use crate::parser::types::try_hydrate_type_from_canonical_signature;
-use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type, TypeReference};
+use crate::parser::types::ty::{
+    ClassType, MethodSignature, PropertySignature, Type, TypeReference,
+};
 use crate::parser::types::{TypeContext, TypeId};
 use crate::parser::Interner;
 use crate::parser::Span;
@@ -145,6 +147,7 @@ impl<'a> Binder<'a> {
     /// Used to pre-register builtin primitive types (e.g., RegExp, Array) before
     /// compiling a `.raya` file that cross-references them.
     pub fn register_external_class(&mut self, name: &str) {
+        let implicit_object_base = self.implicit_object_base_type(name);
         // Preserve primitive named types (`string`, `number`, ...) as primitives.
         // Builtin wrapper classes for those names need their own class TypeId so
         // previously interned primitive references are not rewritten into classes.
@@ -158,7 +161,7 @@ impl<'a> Binder<'a> {
                     methods: Vec::new(),
                     static_properties: Vec::new(),
                     static_methods: Vec::new(),
-                    extends: None,
+                    extends: implicit_object_base,
                     implements: Vec::new(),
                     is_abstract: false,
                 })),
@@ -171,7 +174,7 @@ impl<'a> Binder<'a> {
                 methods: Vec::new(),
                 static_properties: Vec::new(),
                 static_methods: Vec::new(),
-                extends: None,
+                extends: implicit_object_base,
                 implements: Vec::new(),
                 is_abstract: false,
             }));
@@ -253,9 +256,13 @@ impl<'a> Binder<'a> {
         let number_ty = self.type_ctx.number_type();
         let string_ty = self.type_ctx.string_type();
 
-        let listener_ty =
-            self.type_ctx
-                .function_type_with_rest(vec![], void_ty, false, 0, Some(event_payload_ty));
+        let listener_ty = self.type_ctx.function_type_with_rest(
+            vec![],
+            void_ty,
+            false,
+            0,
+            Some(event_payload_ty),
+        );
         let this_ref_ty = self.type_ctx.intern(Type::Reference(TypeReference {
             name: "EventEmitter".to_string(),
             type_args: Some(vec![event_map_ty]),
@@ -328,11 +335,9 @@ impl<'a> Binder<'a> {
             },
             MethodSignature {
                 name: "listeners".to_string(),
-                ty: self.type_ctx.function_type(
-                    vec![event_key_ty],
-                    listener_array_ty,
-                    false,
-                ),
+                ty: self
+                    .type_ctx
+                    .function_type(vec![event_key_ty], listener_array_ty, false),
                 type_params: Vec::new(),
                 visibility: Default::default(),
             },
@@ -1621,27 +1626,32 @@ impl<'a> Binder<'a> {
 
         let class_ty = if let Some(symbol) = self.symbols.resolve(&class_sig.name) {
             if symbol.kind == SymbolKind::Class {
-                self.type_ctx.replace_type(symbol.ty, Type::Class(class_type));
+                self.type_ctx
+                    .replace_type(symbol.ty, Type::Class(class_type));
                 symbol.ty
             } else if let Some(existing) = self.type_ctx.lookup_named_type(&class_sig.name) {
-                self.type_ctx.replace_type(existing, Type::Class(class_type));
+                self.type_ctx
+                    .replace_type(existing, Type::Class(class_type));
                 existing
             } else {
                 let id = self.type_ctx.intern(Type::Class(class_type));
-                self.type_ctx.register_named_type(class_sig.name.clone(), id);
+                self.type_ctx
+                    .register_named_type(class_sig.name.clone(), id);
                 id
             }
         } else if let Some(existing) = self.type_ctx.lookup_named_type(&class_sig.name) {
             match self.type_ctx.get(existing) {
                 Some(Type::Class(_)) => {
-                    self.type_ctx.replace_type(existing, Type::Class(class_type));
+                    self.type_ctx
+                        .replace_type(existing, Type::Class(class_type));
                     existing
                 }
                 _ => self.type_ctx.intern(Type::Class(class_type)),
             }
         } else {
             let id = self.type_ctx.intern(Type::Class(class_type));
-            self.type_ctx.register_named_type(class_sig.name.clone(), id);
+            self.type_ctx
+                .register_named_type(class_sig.name.clone(), id);
             id
         };
 
@@ -1677,7 +1687,16 @@ impl<'a> Binder<'a> {
         if class_name != "Error" && class_name.ends_with("Error") {
             return Some("Error");
         }
+        if class_name != "Object" {
+            return Some("Object");
+        }
         None
+    }
+
+    fn implicit_object_base_type(&self, class_name: &str) -> Option<TypeId> {
+        (class_name != "Object")
+            .then(|| self.type_ctx.lookup_named_type("Object"))
+            .flatten()
     }
 
     /// Register a single builtin function
@@ -1950,7 +1969,7 @@ impl<'a> Binder<'a> {
             methods: vec![],
             static_properties: vec![],
             static_methods: vec![],
-            extends: None,
+            extends: self.implicit_object_base_type(&class_name),
             implements: vec![],
             is_abstract: class.is_abstract,
         };
@@ -2274,8 +2293,7 @@ impl<'a> Binder<'a> {
             Pattern::Identifier(ident) => {
                 let name = self.resolve(ident.name);
                 if let Some(existing) = self.symbols.resolve_from_scope(&name, scope_id) {
-                    if existing.scope_id == scope_id && existing.kind == SymbolKind::TypeAlias
-                    {
+                    if existing.scope_id == scope_id && existing.kind == SymbolKind::TypeAlias {
                         // Allow value binding to coexist with a same-name type alias in this scope.
                         // The checker resolves identifiers by TypeId, so the type alias symbol
                         // can service both type and value references for helper-generated shims.
@@ -2685,8 +2703,7 @@ impl<'a> Binder<'a> {
         let min_params = if self.mode == TypeSystemMode::Js {
             0
         } else {
-            func
-                .params
+            func.params
                 .iter()
                 .filter(|p| !p.is_rest)
                 .filter(|p| p.default_value.is_none() && !p.optional)
@@ -2841,7 +2858,7 @@ impl<'a> Binder<'a> {
             methods: vec![],
             static_properties: vec![],
             static_methods: vec![],
-            extends: None,
+            extends: self.implicit_object_base_type(&class_name),
             implements: vec![],
             is_abstract: class.is_abstract,
         };
@@ -3321,7 +3338,7 @@ impl<'a> Binder<'a> {
         let extends_ty = if let Some(ref extends_ann) = class.extends {
             Some(self.resolve_type_annotation(extends_ann)?)
         } else {
-            None
+            self.implicit_object_base_type(&class_name)
         };
 
         // Create the full class type with properties and methods
@@ -3715,7 +3732,9 @@ impl<'a> Binder<'a> {
         for (param_name, &arg_ty) in param_names.iter().zip(resolved_args.iter()) {
             gen_ctx.add_substitution(param_name.clone(), arg_ty);
         }
-        gen_ctx.apply_substitution(template_ty).unwrap_or(template_ty)
+        gen_ctx
+            .apply_substitution(template_ty)
+            .unwrap_or(template_ty)
     }
 
     /// Resolve type to TypeId

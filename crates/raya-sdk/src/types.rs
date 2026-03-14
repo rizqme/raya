@@ -419,7 +419,10 @@ pub struct NativeClass {
 
 impl NativeClass {
     /// Look up class by ID
-    pub fn from_nominal_type_id(ctx: &dyn NativeContext, nominal_type_id: usize) -> AbiResult<Self> {
+    pub fn from_nominal_type_id(
+        ctx: &dyn NativeContext,
+        nominal_type_id: usize,
+    ) -> AbiResult<Self> {
         Ok(Self {
             info: ctx.nominal_type_info(nominal_type_id)?,
         })
@@ -538,7 +541,11 @@ pub struct NativeMethod {
 
 impl NativeMethod {
     /// Resolve a method from class metadata
-    pub fn resolve(ctx: &dyn NativeContext, nominal_type_id: usize, method_name: &str) -> AbiResult<Self> {
+    pub fn resolve(
+        ctx: &dyn NativeContext,
+        nominal_type_id: usize,
+        method_name: &str,
+    ) -> AbiResult<Self> {
         let methods = ctx.nominal_type_method_entries(nominal_type_id)?;
         let (_, vtable_index) = methods
             .iter()

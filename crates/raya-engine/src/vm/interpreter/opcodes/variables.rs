@@ -1,10 +1,13 @@
 use crate::compiler::Module;
 use crate::compiler::Opcode;
+use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
+use crate::vm::object::{Closure, Object, RayaString, TypeHandle};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use std::any::TypeId;
 
 impl<'a> Interpreter<'a> {
     pub(in crate::vm::interpreter) fn exec_variable_ops(
@@ -114,7 +117,10 @@ impl<'a> Interpreter<'a> {
                         ))
                     }
                 };
-                let value = current_args.get(index).copied().unwrap_or(Value::undefined());
+                let value = current_args
+                    .get(index)
+                    .copied()
+                    .unwrap_or(Value::undefined());
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
@@ -146,6 +152,51 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                if std::env::var("RAYA_DEBUG_STORE_GLOBALS").is_ok()
+                    && module.metadata.name.contains("node_compat/globals.raya")
+                {
+                    let kind = if value.is_ptr() && !value.is_null() {
+                        let raw_ptr = unsafe { value.as_ptr::<u8>() }.map(|ptr| ptr.as_ptr());
+                        if let Some(raw_ptr) = raw_ptr {
+                            let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr) };
+                            if header.type_id() == TypeId::of::<Object>() {
+                                "Object"
+                            } else if header.type_id() == TypeId::of::<Closure>() {
+                                "Closure"
+                            } else if header.type_id() == TypeId::of::<TypeHandle>() {
+                                "TypeHandle"
+                            } else if header.type_id() == TypeId::of::<RayaString>() {
+                                "String"
+                            } else {
+                                "OtherPtr"
+                            }
+                        } else {
+                            "Ptr?"
+                        }
+                    } else if value.as_i32().is_some() {
+                        "I32"
+                    } else if value.as_f64().is_some() {
+                        "F64"
+                    } else if value.is_null() {
+                        "Null"
+                    } else if value.is_undefined() {
+                        "Undefined"
+                    } else {
+                        "Other"
+                    };
+                    eprintln!(
+                        "[store-global] module={} local={} absolute={} kind={} ptr={} i32={:?} f64={:?} null={} undef={}",
+                        module.metadata.name,
+                        local_index,
+                        index,
+                        kind,
+                        value.is_ptr(),
+                        value.as_i32(),
+                        value.as_f64(),
+                        value.is_null(),
+                        value.is_undefined(),
+                    );
+                }
                 let mut globals = self.globals_by_index.write();
                 if index >= globals.len() {
                     globals.resize(index + 1, Value::null());

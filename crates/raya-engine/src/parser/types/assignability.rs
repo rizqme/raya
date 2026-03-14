@@ -123,85 +123,108 @@ impl<'a> AssignabilityContext<'a> {
             )
         };
 
-        let result =
-            match (source_ty, target_ty) {
-                // Some declaration-backed surfaces still retain these well-known types
-                // as unresolved references; treat them identically to their canonical forms.
-                (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("any") => true,
-                (_, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("any") => true,
-                (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("unknown") && !self.strict_mode => true,
-                (_, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("unknown") && !self.strict_mode => true,
-                (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("never") => true,
-                (Type::Reference(type_ref), t) if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) => true,
-                (t, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) => true,
+        let result = match (source_ty, target_ty) {
+            // Some declaration-backed surfaces still retain these well-known types
+            // as unresolved references; treat them identically to their canonical forms.
+            (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("any") => {
+                true
+            }
+            (_, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("any") => {
+                true
+            }
+            (Type::Reference(type_ref), _)
+                if special_reference_kind(type_ref) == Some("unknown") && !self.strict_mode =>
+            {
+                true
+            }
+            (_, Type::Reference(type_ref))
+                if special_reference_kind(type_ref) == Some("unknown") && !self.strict_mode =>
+            {
+                true
+            }
+            (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("never") => {
+                true
+            }
+            (Type::Reference(type_ref), t)
+                if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) =>
+            {
+                true
+            }
+            (t, Type::Reference(type_ref))
+                if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) =>
+            {
+                true
+            }
 
-                // Node-compat dynamic `any`: assignable to/from everything.
-                (Type::Any, _) | (_, Type::Any) => true,
+            // Node-compat dynamic `any`: assignable to/from everything.
+            (Type::Any, _) | (_, Type::Any) => true,
 
-                // TypeVar (unresolved generic) is compatible with any type
-                // Raya uses monomorphization, so generics are resolved at compile time.
-                // The checker runs before monomorphization and shouldn't reject
-                // assignments involving unresolved type parameters.
-                (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
+            // TypeVar (unresolved generic) is compatible with any type
+            // Raya uses monomorphization, so generics are resolved at compile time.
+            // The checker runs before monomorphization and shouldn't reject
+            // assignments involving unresolved type parameters.
+            (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
 
-                // JSObject is a permissive object-ish fallback type used in node-compat.
-                (Type::JSObject, t) | (t, Type::JSObject) if is_object_like(t) => true,
-                (Type::Generic(g), t)
-                    if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) =>
-                {
-                    true
-                }
-                (t, Type::Generic(g))
-                    if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) =>
-                {
-                    true
-                }
+            // JSObject is a permissive object-ish fallback type used in node-compat.
+            (Type::JSObject, t) | (t, Type::JSObject) if is_object_like(t) => true,
+            (Type::Generic(g), t)
+                if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) =>
+            {
+                true
+            }
+            (t, Type::Generic(g))
+                if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) =>
+            {
+                true
+            }
 
-                // In non-strict mode, unknown acts like permissive top/bottom for compatibility.
-                // In strict mode, this path is disabled and subtyping still allows T <: unknown
-                // while blocking unknown -> concrete T without cast/narrowing.
-                (Type::Unknown, _) | (_, Type::Unknown) if !self.strict_mode => true,
+            // In non-strict mode, unknown acts like permissive top/bottom for compatibility.
+            // In strict mode, this path is disabled and subtyping still allows T <: unknown
+            // while blocking unknown -> concrete T without cast/narrowing.
+            (Type::Unknown, _) | (_, Type::Unknown) if !self.strict_mode => true,
 
-                // Implicit primitive-to-string coercions are non-strict only.
-                (
-                    Type::Primitive(PrimitiveType::Number),
-                    Type::Primitive(PrimitiveType::String),
-                ) if !self.strict_mode => true,
+            // Implicit primitive-to-string coercions are non-strict only.
+            (Type::Primitive(PrimitiveType::Number), Type::Primitive(PrimitiveType::String))
+                if !self.strict_mode =>
+            {
+                true
+            }
 
-                // int ~> string
-                (Type::Primitive(PrimitiveType::Int), Type::Primitive(PrimitiveType::String))
-                    if !self.strict_mode =>
-                {
-                    true
-                }
+            // int ~> string
+            (Type::Primitive(PrimitiveType::Int), Type::Primitive(PrimitiveType::String))
+                if !self.strict_mode =>
+            {
+                true
+            }
 
-                // boolean ~> string
-                (
-                    Type::Primitive(PrimitiveType::Boolean),
-                    Type::Primitive(PrimitiveType::String),
-                ) if !self.strict_mode => true,
+            // boolean ~> string
+            (Type::Primitive(PrimitiveType::Boolean), Type::Primitive(PrimitiveType::String))
+                if !self.strict_mode =>
+            {
+                true
+            }
 
-                // null ~> string
-                (Type::Primitive(PrimitiveType::Null), Type::Primitive(PrimitiveType::String))
-                    if !self.strict_mode =>
-                {
-                    true
-                }
+            // null ~> string
+            (Type::Primitive(PrimitiveType::Null), Type::Primitive(PrimitiveType::String))
+                if !self.strict_mode =>
+            {
+                true
+            }
 
-                // Union assignability: T1 | T2 | ... | Tn ~> U if Ti ~> U for all i
-                (Type::Union(union), _) => union
-                    .members
-                    .iter()
-                    .all(|&member| self.is_assignable(member, target)),
+            // Union assignability: T1 | T2 | ... | Tn ~> U if Ti ~> U for all i
+            (Type::Union(union), _) => union
+                .members
+                .iter()
+                .all(|&member| self.is_assignable(member, target)),
 
-                // Assignability to union: T ~> U1 | U2 | ... | Un if T ~> Ui for some i
-                (_, Type::Union(union)) => union
-                    .members
-                    .iter()
-                    .any(|&member| self.is_assignable(source, member)),
+            // Assignability to union: T ~> U1 | U2 | ... | Un if T ~> Ui for some i
+            (_, Type::Union(union)) => union
+                .members
+                .iter()
+                .any(|&member| self.is_assignable(source, member)),
 
-                _ => false,
-            };
+            _ => false,
+        };
 
         self.pair_cache.insert(pair, result);
         self.active_pairs.remove(&pair);

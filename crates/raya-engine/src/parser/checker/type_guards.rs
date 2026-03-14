@@ -417,7 +417,11 @@ fn negate_extracted_guard(guard: &TypeGuard) -> TypeGuard {
             variant: variant.clone(),
             negated: !negated,
         },
-        TypeGuard::Nullish { var, field, negated } => TypeGuard::Nullish {
+        TypeGuard::Nullish {
+            var,
+            field,
+            negated,
+        } => TypeGuard::Nullish {
             var: var.clone(),
             field: field.clone(),
             negated: !negated,

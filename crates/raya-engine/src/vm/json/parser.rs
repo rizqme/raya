@@ -433,7 +433,10 @@ impl<'a> Parser<'a> {
             let obj_ptr = self.gc.allocate(obj);
             Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
         } else {
-            let mut field_names = entries.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>();
+            let mut field_names = entries
+                .iter()
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
             field_names.sort_unstable();
             field_names.dedup();
             let layout_id = layout_id_from_ordered_names(&field_names);
@@ -561,11 +564,21 @@ mod tests {
         match js_classify(result) {
             JSView::Struct { ptr, layout_id, .. } => {
                 let obj = unsafe { &*ptr };
-                let names = crate::vm::object::global_layout_names(layout_id).expect("layout names");
-                let name_index = names.iter().position(|name| name == "name").expect("name field");
-                let age_index = names.iter().position(|name| name == "age").expect("age field");
+                let names =
+                    crate::vm::object::global_layout_names(layout_id).expect("layout names");
+                let name_index = names
+                    .iter()
+                    .position(|name| name == "name")
+                    .expect("name field");
+                let age_index = names
+                    .iter()
+                    .position(|name| name == "age")
+                    .expect("age field");
                 assert!(obj.get_field(name_index).is_some());
-                assert_eq!(obj.get_field(age_index).and_then(|v| v.as_f64()), Some(30.0));
+                assert_eq!(
+                    obj.get_field(age_index).and_then(|v| v.as_f64()),
+                    Some(30.0)
+                );
             }
             _ => panic!("Expected Object"),
         }
@@ -589,7 +602,8 @@ mod tests {
         match js_classify(result) {
             JSView::Struct { ptr, layout_id, .. } => {
                 let obj = unsafe { &*ptr };
-                let names = crate::vm::object::global_layout_names(layout_id).expect("layout names");
+                let names =
+                    crate::vm::object::global_layout_names(layout_id).expect("layout names");
                 let user_val = obj
                     .get_field(names.iter().position(|name| name == "user").expect("user"))
                     .unwrap();
@@ -600,10 +614,15 @@ mod tests {
                         ..
                     } => {
                         let user_obj = unsafe { &*user_ptr };
-                        let user_names =
-                            crate::vm::object::global_layout_names(user_layout).expect("user names");
+                        let user_names = crate::vm::object::global_layout_names(user_layout)
+                            .expect("user names");
                         let tags_val = user_obj
-                            .get_field(user_names.iter().position(|name| name == "tags").expect("tags"))
+                            .get_field(
+                                user_names
+                                    .iter()
+                                    .position(|name| name == "tags")
+                                    .expect("tags"),
+                            )
                             .unwrap();
                         match js_classify(tags_val) {
                             JSView::Arr(tags_ptr) => {
@@ -615,7 +634,12 @@ mod tests {
                     _ => panic!("Expected Object for user"),
                 }
                 let count_val = obj
-                    .get_field(names.iter().position(|name| name == "count").expect("count"))
+                    .get_field(
+                        names
+                            .iter()
+                            .position(|name| name == "count")
+                            .expect("count"),
+                    )
                     .unwrap();
                 assert_eq!(count_val.as_f64(), Some(42.0));
             }

@@ -27,7 +27,11 @@ impl<'a> Interpreter<'a> {
         let number = if value.is_undefined() || value.is_null() {
             0.0
         } else if let Some(boolean) = value.as_bool() {
-            if boolean { 1.0 } else { 0.0 }
+            if boolean {
+                1.0
+            } else {
+                0.0
+            }
         } else {
             value_to_f64(value)?
         };
@@ -140,8 +144,7 @@ impl<'a> Interpreter<'a> {
             let array = unsafe { &*array_ptr.as_ptr() };
             return Ok(array.len());
         }
-        if let Some(string_ptr) =
-            crate::vm::interpreter::opcodes::native::checked_string_ptr(items)
+        if let Some(string_ptr) = crate::vm::interpreter::opcodes::native::checked_string_ptr(items)
         {
             let string = unsafe { &*string_ptr.as_ptr() };
             return Ok(string.data.chars().count());
@@ -154,7 +157,11 @@ impl<'a> Interpreter<'a> {
             return Ok(0);
         }
         let numeric = if let Some(boolean) = length_value.as_bool() {
-            if boolean { 1.0 } else { 0.0 }
+            if boolean {
+                1.0
+            } else {
+                0.0
+            }
         } else {
             value_to_f64(length_value)?
         };
@@ -169,8 +176,7 @@ impl<'a> Interpreter<'a> {
             let array = unsafe { &*array_ptr.as_ptr() };
             return array.get(index).unwrap_or(Value::undefined());
         }
-        if let Some(string_ptr) =
-            crate::vm::interpreter::opcodes::native::checked_string_ptr(items)
+        if let Some(string_ptr) = crate::vm::interpreter::opcodes::native::checked_string_ptr(items)
         {
             let string = unsafe { &*string_ptr.as_ptr() };
             if let Some(ch) = string.data.chars().nth(index) {
@@ -191,14 +197,13 @@ impl<'a> Interpreter<'a> {
         index: usize,
         value: Value,
     ) -> Result<(), VmError> {
-        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target) {
+        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target)
+        {
             let array = unsafe { &mut *array_ptr.as_ptr() };
             if index >= array.elements.len() {
                 array.resize_holey(index + 1);
             }
-            array
-                .set(index, value)
-                .map_err(VmError::RuntimeError)?;
+            array.set(index, value).map_err(VmError::RuntimeError)?;
             return Ok(());
         }
         self.define_data_property_on_target(target, &index.to_string(), value, true, true, true)
@@ -250,7 +255,8 @@ impl<'a> Interpreter<'a> {
                 "Array.from iterator return is not callable".to_string(),
             ));
         }
-        let _ = self.invoke_callable_sync_with_this(return_method, Some(iterator), &[], task, module)?;
+        let _ =
+            self.invoke_callable_sync_with_this(return_method, Some(iterator), &[], task, module)?;
         Ok(())
     }
 
@@ -266,7 +272,8 @@ impl<'a> Interpreter<'a> {
                 eprintln!(
                     "[array.from] iterator missing next iterator={:#x} proto={:?}",
                     iterator.raw(),
-                    self.prototype_of_value(iterator).map(|v| format!("{:#x}", v.raw()))
+                    self.prototype_of_value(iterator)
+                        .map(|v| format!("{:#x}", v.raw()))
                 );
             }
             return Err(VmError::TypeError(
@@ -303,7 +310,8 @@ impl<'a> Interpreter<'a> {
                 "Array.from iterator result must be an object".to_string(),
             ));
         }
-        let done_value = self.array_from_iterator_result_property(next_result, "done", task, module)?;
+        let done_value =
+            self.array_from_iterator_result_property(next_result, "done", task, module)?;
         let done = if let Some(boolean) = done_value.as_bool() {
             boolean
         } else {
@@ -312,9 +320,12 @@ impl<'a> Interpreter<'a> {
         if done {
             return Ok(None);
         }
-        Ok(Some(
-            self.array_from_iterator_result_property(next_result, "value", task, module)?,
-        ))
+        Ok(Some(self.array_from_iterator_result_property(
+            next_result,
+            "value",
+            task,
+            module,
+        )?))
     }
 
     fn array_from_iterator_result_property(
@@ -333,7 +344,9 @@ impl<'a> Interpreter<'a> {
             }
             return self.invoke_callable_sync_with_this(getter, Some(result), &[], task, module);
         }
-        Ok(self.get_field_value_by_name(result, key).unwrap_or(Value::undefined()))
+        Ok(self
+            .get_field_value_by_name(result, key)
+            .unwrap_or(Value::undefined()))
     }
 
     fn array_from_target(
@@ -414,7 +427,9 @@ impl<'a> Interpreter<'a> {
                 if map_this.is_heap_allocated() {
                     self.ephemeral_gc_roots.write().push(map_this);
                 }
-                if let Some(iterator_method) = self.array_from_iterator_method(items, task, module)? {
+                if let Some(iterator_method) =
+                    self.array_from_iterator_method(items, task, module)?
+                {
                     let iterator = self.invoke_callable_sync_with_this(
                         iterator_method,
                         Some(items),
@@ -427,7 +442,8 @@ impl<'a> Interpreter<'a> {
                             "[array.from] iterator call method={:#x} result={:#x} proto={:?}",
                             iterator_method.raw(),
                             iterator.raw(),
-                            self.prototype_of_value(iterator).map(|v| format!("{:#x}", v.raw()))
+                            self.prototype_of_value(iterator)
+                                .map(|v| format!("{:#x}", v.raw()))
                         );
                     }
                     if iterator.is_heap_allocated() {
@@ -439,7 +455,8 @@ impl<'a> Interpreter<'a> {
                     }
                     let mut index = 0usize;
                     loop {
-                        let next_value = match self.array_from_iterator_step(iterator, task, module) {
+                        let next_value = match self.array_from_iterator_step(iterator, task, module)
+                        {
                             Ok(Some(value)) => value,
                             Ok(None) => break,
                             Err(error) => {
@@ -484,7 +501,9 @@ impl<'a> Interpreter<'a> {
                         if mapped_value.is_heap_allocated() {
                             self.ephemeral_gc_roots.write().push(mapped_value);
                         }
-                        if let Err(error) = self.array_from_define_index(target, index, mapped_value) {
+                        if let Err(error) =
+                            self.array_from_define_index(target, index, mapped_value)
+                        {
                             let _ = self.array_from_iterator_close(iterator, task, module);
                             self.array_release_ephemeral_root(mapped_value);
                             self.array_release_ephemeral_root(target);
@@ -1423,9 +1442,9 @@ impl<'a> Interpreter<'a> {
                                 task,
                                 module,
                             )?;
-                            result.as_i32().unwrap_or_else(|| {
-                                result.as_f64().map(|f| f as i32).unwrap_or(0)
-                            })
+                            result
+                                .as_i32()
+                                .unwrap_or_else(|| result.as_f64().map(|f| f as i32).unwrap_or(0))
                         } else {
                             self.array_sort_compare_default(prev, key)
                         };

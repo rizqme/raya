@@ -727,10 +727,9 @@ impl<'a> LoweringContext<'a> {
                 let fallback = builder
                     .ins()
                     .iconst(types::I32, JIT_STRING_LEN_FALLBACK_SENTINEL as i64);
-                let is_fallback =
-                    builder
-                        .ins()
-                        .icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_fallback = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, fallback);
                 let fast_continue = builder.create_block();
                 builder
                     .ins()
@@ -833,7 +832,9 @@ impl<'a> LoweringContext<'a> {
                 let object_val = self.boxed_reg_value(builder, *object);
                 let shape_val = builder.ins().iconst(types::I64, *shape_id as i64);
                 let slot_val = builder.ins().iconst(types::I32, *offset as i64);
-                let optional_val = builder.ins().iconst(types::I8, if *optional { 1 } else { 0 });
+                let optional_val = builder
+                    .ins()
+                    .iconst(types::I8, if *optional { 1 } else { 0 });
                 let func_id = builder
                     .ins()
                     .iconst(types::I32, self.func.func_index as i64);
@@ -854,10 +855,9 @@ impl<'a> LoweringContext<'a> {
                 let fallback = builder
                     .ins()
                     .iconst(types::I64, JIT_SHAPE_FIELD_FALLBACK_SENTINEL as i64);
-                let is_fallback =
-                    builder
-                        .ins()
-                        .icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_fallback = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, fallback);
                 let fast_continue = builder.create_block();
                 builder
                     .ins()
@@ -903,7 +903,9 @@ impl<'a> LoweringContext<'a> {
                     &[nominal_type_id_val, module_ptr, shared_state],
                 );
                 let object_ptr = builder.inst_results(call)[0];
-                let is_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, object_ptr, 0);
+                let is_null = builder
+                    .ins()
+                    .icmp_imm(condcodes::IntCC::Equal, object_ptr, 0);
                 builder
                     .ins()
                     .brif(is_null, fallback_block, &[], success_block, &[]);
@@ -1167,7 +1169,9 @@ impl<'a> LoweringContext<'a> {
                 let success_block = builder.create_block();
                 let done = builder.create_block();
                 builder.append_block_param(done, types::I64);
-                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
 
                 builder.switch_to_block(call_block);
@@ -1184,7 +1188,9 @@ impl<'a> LoweringContext<'a> {
                 let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
                 for (i, reg) in args.iter().take(arg_count).enumerate() {
                     let boxed = self.boxed_reg_value(builder, *reg);
-                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
                 }
                 let opcode_val = builder.ins().iconst(types::I8, Opcode::Call as u8 as i64);
                 let operand_u64 = builder.ins().iconst(types::I64, 0);
@@ -1214,8 +1220,12 @@ impl<'a> LoweringContext<'a> {
                 let exception = builder
                     .ins()
                     .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
-                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let is_fallback = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, exception);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()
@@ -1262,7 +1272,9 @@ impl<'a> LoweringContext<'a> {
                 let success_block = builder.create_block();
                 let done = builder.create_block();
                 builder.append_block_param(done, types::I64);
-                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
 
                 builder.switch_to_block(call_block);
@@ -1279,7 +1291,9 @@ impl<'a> LoweringContext<'a> {
                 let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
                 for (i, reg) in args.iter().take(arg_count).enumerate() {
                     let boxed = self.boxed_reg_value(builder, *reg);
-                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
                 }
                 let opcode_val = builder.ins().iconst(
                     types::I8,
@@ -1314,8 +1328,12 @@ impl<'a> LoweringContext<'a> {
                 let exception = builder
                     .ins()
                     .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
-                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let is_fallback = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, exception);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()
@@ -1360,7 +1378,9 @@ impl<'a> LoweringContext<'a> {
                 let success_block = builder.create_block();
                 let done = builder.create_block();
                 builder.append_block_param(done, types::I64);
-                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
 
                 builder.switch_to_block(call_block);
@@ -1377,7 +1397,9 @@ impl<'a> LoweringContext<'a> {
                 let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
                 for (i, reg) in args.iter().take(arg_count).enumerate() {
                     let boxed = self.boxed_reg_value(builder, *reg);
-                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
                 }
                 let opcode_val = builder.ins().iconst(
                     types::I8,
@@ -1412,8 +1434,12 @@ impl<'a> LoweringContext<'a> {
                 let exception = builder
                     .ins()
                     .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
-                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let is_fallback = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, exception);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()
@@ -1456,7 +1482,9 @@ impl<'a> LoweringContext<'a> {
                 let success_block = builder.create_block();
                 let done = builder.create_block();
                 builder.append_block_param(done, types::I64);
-                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
                 builder.switch_to_block(call_block);
                 let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
@@ -1472,9 +1500,13 @@ impl<'a> LoweringContext<'a> {
                 let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
                 for (i, reg) in args.iter().take(arg_count).enumerate() {
                     let boxed = self.boxed_reg_value(builder, *reg);
-                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
                 }
-                let opcode_val = builder.ins().iconst(types::I8, Opcode::ConstructType as u8 as i64);
+                let opcode_val = builder
+                    .ins()
+                    .iconst(types::I8, Opcode::ConstructType as u8 as i64);
                 let operand_u64 = builder.ins().iconst(types::I64, 0);
                 let operand_u32 = builder.ins().iconst(types::I32, *nominal_type_id as i64);
                 let receiver_val = self.boxed_reg_value(builder, *object);
@@ -1500,8 +1532,12 @@ impl<'a> LoweringContext<'a> {
                 let exception = builder
                     .ins()
                     .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
-                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let is_fallback = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, exception);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()
@@ -1554,7 +1590,9 @@ impl<'a> LoweringContext<'a> {
                 let success_block = builder.create_block();
                 let done = builder.create_block();
                 builder.append_block_param(done, types::I64);
-                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
 
                 builder.switch_to_block(call_block);
@@ -1571,7 +1609,9 @@ impl<'a> LoweringContext<'a> {
                 let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
                 for (i, reg) in args.iter().take(arg_count).enumerate() {
                     let boxed = self.boxed_reg_value(builder, *reg);
-                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
                 }
                 let opcode_val = builder.ins().iconst(types::I8, call_opcode as u8 as i64);
                 let operand_u64 = builder.ins().iconst(types::I64, 0);
@@ -1599,8 +1639,12 @@ impl<'a> LoweringContext<'a> {
                 let exception = builder
                     .ins()
                     .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
-                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let is_fallback = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, exception);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()
@@ -1642,7 +1686,9 @@ impl<'a> LoweringContext<'a> {
                 let success_block = builder.create_block();
                 let done = builder.create_block();
                 builder.append_block_param(done, types::I64);
-                builder.ins().brif(is_ctx_null, fallback_block, &[], call_block, &[]);
+                builder
+                    .ins()
+                    .brif(is_ctx_null, fallback_block, &[], call_block, &[]);
                 builder.seal_block(call_block);
                 builder.switch_to_block(call_block);
                 let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
@@ -1658,9 +1704,13 @@ impl<'a> LoweringContext<'a> {
                 let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
                 for (i, reg) in args.iter().take(arg_count).enumerate() {
                     let boxed = self.boxed_reg_value(builder, *reg);
-                    builder.ins().store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
                 }
-                let opcode_val = builder.ins().iconst(types::I8, Opcode::CallSuper as u8 as i64);
+                let opcode_val = builder
+                    .ins()
+                    .iconst(types::I8, Opcode::CallSuper as u8 as i64);
                 let operand_u64 = builder.ins().iconst(types::I64, 0);
                 let operand_u32 = builder.ins().iconst(types::I32, *nominal_type_id as i64);
                 let receiver_val = self.boxed_reg_value(builder, *receiver);
@@ -1686,8 +1736,12 @@ impl<'a> LoweringContext<'a> {
                 let exception = builder
                     .ins()
                     .iconst(types::I64, JIT_INTERPRETER_EXCEPTION_SENTINEL as i64);
-                let is_fallback = builder.ins().icmp(condcodes::IntCC::Equal, result, fallback);
-                let is_exception = builder.ins().icmp(condcodes::IntCC::Equal, result, exception);
+                let is_fallback = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, fallback);
+                let is_exception = builder
+                    .ins()
+                    .icmp(condcodes::IntCC::Equal, result, exception);
                 let after_fallback_check = builder.create_block();
                 builder
                     .ins()

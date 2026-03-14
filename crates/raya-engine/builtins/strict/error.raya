@@ -289,3 +289,18 @@ class AssertionError extends Error {
         this.name = "AssertionError";
     }
 }
+
+export {
+    Error,
+    TypeError,
+    RangeError,
+    ReferenceError,
+    SyntaxError,
+    URIError,
+    EvalError,
+    InternalError,
+    AggregateError,
+    SuppressedError,
+    ChannelClosedError,
+    AssertionError,
+};

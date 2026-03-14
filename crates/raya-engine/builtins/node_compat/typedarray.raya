@@ -130,6 +130,23 @@ class ArrayBuffer {
     }
 }
 
+export {
+    ArrayBuffer,
+    Uint8Array,
+    Int8Array,
+    Int32Array,
+    Float64Array,
+    Uint8ClampedArray,
+    Uint16Array,
+    Int16Array,
+    Uint32Array,
+    Float32Array,
+    Float16Array,
+    BigInt64Array,
+    BigUint64Array,
+    TypedArray,
+};
+
 function __coerceObjectToArrayBuffer(source: any): ArrayBuffer {
     let dynSource = source as any;
     if (dynSource.asArrayBuffer != null) {

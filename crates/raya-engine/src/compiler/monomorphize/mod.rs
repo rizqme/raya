@@ -35,7 +35,7 @@ pub use substitute::TypeSubstitution;
 
 use crate::compiler::bytecode::{GenericTemplateInfo, MonoDebugEntry, TemplateSymbolEntry};
 use crate::compiler::ir::instr::IrInstr;
-use crate::compiler::ir::{NominalTypeId, FunctionId, IrModule};
+use crate::compiler::ir::{FunctionId, IrModule, NominalTypeId};
 use crate::compiler::type_registry::TypeRegistry;
 use crate::parser::{Interner, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -102,7 +102,11 @@ impl MonoKey {
             GenericId::Function(id) => hasher.update(format!("fn:{}", id.as_u32())),
             GenericId::Class(id) => hasher.update(format!("class:{}", id.as_u32())),
             GenericId::Method(nominal_type_id, method_idx) => {
-                hasher.update(format!("method:{}:{}", nominal_type_id.as_u32(), method_idx));
+                hasher.update(format!(
+                    "method:{}:{}",
+                    nominal_type_id.as_u32(),
+                    method_idx
+                ));
             }
             GenericId::Constructor(nominal_type_id) => {
                 hasher.update(format!("ctor:{}", nominal_type_id.as_u32()));

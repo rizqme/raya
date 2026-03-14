@@ -10,7 +10,7 @@ use super::{
     InstantiationKind, MonoKey, MonomorphizationContext, MonomorphizationResult,
     PendingInstantiation,
 };
-use crate::compiler::ir::instr::{NominalTypeId, FunctionId};
+use crate::compiler::ir::instr::{FunctionId, NominalTypeId};
 use crate::compiler::ir::module::{IrClass, IrField, IrModule};
 use crate::parser::{Interner, TypeContext, TypeId};
 use rustc_hash::FxHashMap;
@@ -234,7 +234,12 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// Specialize a generic class
-    fn specialize_class(&mut self, module: &mut IrModule, key: &MonoKey, nominal_type_id: NominalTypeId) {
+    fn specialize_class(
+        &mut self,
+        module: &mut IrModule,
+        key: &MonoKey,
+        nominal_type_id: NominalTypeId,
+    ) {
         // Check if already specialized
         if self.ctx.has_class(key) {
             return;

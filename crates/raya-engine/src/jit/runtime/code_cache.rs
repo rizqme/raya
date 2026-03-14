@@ -98,12 +98,7 @@ impl CodeCache {
     /// Insert compiled code for a function
     ///
     /// Returns false if the cache is full and the entry was not inserted.
-    pub fn insert(
-        &self,
-        module_id: u64,
-        func_index: u32,
-        code: ExecutableCode,
-    ) -> bool {
+    pub fn insert(&self, module_id: u64, func_index: u32, code: ExecutableCode) -> bool {
         self.insert_with_dependencies(module_id, func_index, code, std::iter::empty())
     }
 

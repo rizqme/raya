@@ -235,14 +235,22 @@ impl fmt::Display for JitInstr {
                 } else {
                     "load.field.shape"
                 };
-                write!(f, "{} = {} {}.@{:016x}.{}", dest, op, object, shape_id, offset)
+                write!(
+                    f,
+                    "{} = {} {}.@{:016x}.{}",
+                    dest, op, object, shape_id, offset
+                )
             }
             JitInstr::ImplementsShape {
                 dest,
                 object,
                 shape_id,
                 ..
-            } => write!(f, "{} = implements.shape {}, @{shape_id:016x}", dest, object),
+            } => write!(
+                f,
+                "{} = implements.shape {}, @{shape_id:016x}",
+                dest, object
+            ),
             JitInstr::CastShape {
                 dest,
                 object,
@@ -412,7 +420,11 @@ impl fmt::Display for JitInstr {
                 } else {
                     "call.method.shape"
                 };
-                write!(f, "{} {}.@{:016x}.{} (", op, receiver, shape_id, method_index)?;
+                write!(
+                    f,
+                    "{} {}.@{:016x}.{} (",
+                    op, receiver, shape_id, method_index
+                )?;
                 format_args_list(f, args)?;
                 write!(f, ")")
             }
@@ -423,7 +435,11 @@ impl fmt::Display for JitInstr {
                 args,
                 ..
             } => {
-                write!(f, "{} = construct.type @{} {} (", dest, nominal_type_id, object)?;
+                write!(
+                    f,
+                    "{} = construct.type @{} {} (",
+                    dest, nominal_type_id, object
+                )?;
                 format_args_list(f, args)?;
                 write!(f, ")")
             }

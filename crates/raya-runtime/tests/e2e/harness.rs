@@ -38,9 +38,7 @@ fn extract_live_string(value: &Value, source: &str) -> String {
     if value.is_ptr() {
         let raw_ptr = unsafe { value.as_ptr::<u8>() };
         if let Some(ptr) = raw_ptr {
-            let header = unsafe {
-                &*header_ptr_from_value_ptr(ptr.as_ptr())
-            };
+            let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
             if header.type_id() != std::any::TypeId::of::<RayaString>() {
                 let detected = if header.type_id() == std::any::TypeId::of::<Object>() {
                     "Object"
@@ -185,10 +183,7 @@ fn acquire_global_harness_slot() -> Option<GlobalHarnessSlotGuard> {
             let path = dir.join(format!("slot-{}.lock", slot));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => {
-                    return Some(GlobalHarnessSlotGuard {
-                        path,
-                        _file: file,
-                    });
+                    return Some(GlobalHarnessSlotGuard { path, _file: file });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => panic!("failed to acquire e2e harness slot: {}", error),

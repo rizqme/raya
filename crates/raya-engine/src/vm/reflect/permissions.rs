@@ -746,7 +746,10 @@ mod tests {
         store
             .set_nominal_type(10, ReflectionPermission::FULL_ACCESS)
             .unwrap();
-        assert_eq!(store.get_nominal_type(10), Some(ReflectionPermission::FULL_ACCESS));
+        assert_eq!(
+            store.get_nominal_type(10),
+            Some(ReflectionPermission::FULL_ACCESS)
+        );
     }
 
     #[test]

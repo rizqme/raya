@@ -2,7 +2,7 @@
 
 use crate::vm::scheduler::{TaskId, TaskState};
 use crate::vm::snapshot::value::SerializedValue;
-    use crate::vm::value::Value;
+use crate::vm::value::Value;
 use std::io::{Read, Write};
 
 /// Serialized task state

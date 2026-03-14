@@ -13,6 +13,8 @@ class WeakRef<T extends Object> {
     }
 }
 
+export { WeakRef, FinalizationRegistry };
+
 class FinalizationRegistry<T> {
     private _targets: Object[];
     private _heldValues: T[];

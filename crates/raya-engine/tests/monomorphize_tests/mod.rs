@@ -6,7 +6,7 @@
 
 use raya_engine::compiler::ir::block::{BasicBlock, BasicBlockId, Terminator};
 use raya_engine::compiler::ir::function::IrFunction;
-use raya_engine::compiler::ir::instr::{BinaryOp, NominalTypeId, FunctionId, IrInstr};
+use raya_engine::compiler::ir::instr::{BinaryOp, FunctionId, IrInstr, NominalTypeId};
 use raya_engine::compiler::ir::module::{IrClass, IrField, IrModule};
 use raya_engine::compiler::ir::value::{IrConstant, IrValue, Register, RegisterId};
 use raya_engine::compiler::monomorphize::{

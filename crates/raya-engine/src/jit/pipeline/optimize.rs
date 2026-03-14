@@ -261,8 +261,12 @@ fn replace_reg_uses(instr: &mut JitInstr, subs: &rustc_hash::FxHashMap<Reg, Reg>
         | JitInstr::INot { operand, .. }
         | JitInstr::FNeg { operand, .. }
         | JitInstr::Not { operand, .. }
-        | JitInstr::ImplementsShape { object: operand, .. }
-        | JitInstr::CastShape { object: operand, .. } => {
+        | JitInstr::ImplementsShape {
+            object: operand, ..
+        }
+        | JitInstr::CastShape {
+            object: operand, ..
+        } => {
             sub(operand, subs);
         }
 
@@ -578,14 +582,22 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
             used.insert(*index);
         }
 
-        JitInstr::Call { closure: None, args, .. }
+        JitInstr::Call {
+            closure: None,
+            args,
+            ..
+        }
         | JitInstr::CallStatic { args, .. }
         | JitInstr::CallSuper { args, .. } => {
             for arg in args {
                 used.insert(*arg);
             }
         }
-        JitInstr::Call { closure: Some(closure), args, .. } => {
+        JitInstr::Call {
+            closure: Some(closure),
+            args,
+            ..
+        } => {
             used.insert(*closure);
             for arg in args {
                 used.insert(*arg);

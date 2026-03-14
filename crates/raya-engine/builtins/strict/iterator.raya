@@ -10,6 +10,8 @@ class IteratorResult<T> {
     }
 }
 
+export { IteratorResult, Iterator };
+
 class Iterator<T> {
     private _values: T[];
     private _index: number;

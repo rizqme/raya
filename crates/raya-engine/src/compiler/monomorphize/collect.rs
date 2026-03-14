@@ -4,7 +4,7 @@
 //! This is the first phase of monomorphization.
 
 use super::{InstantiationKind, MonoKey, PendingInstantiation};
-use crate::compiler::ir::instr::{NominalTypeId, FunctionId, IrInstr};
+use crate::compiler::ir::instr::{FunctionId, IrInstr, NominalTypeId};
 use crate::compiler::ir::module::IrModule;
 use crate::parser::{Interner, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};

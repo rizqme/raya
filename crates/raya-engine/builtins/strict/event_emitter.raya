@@ -217,3 +217,5 @@ class EventEmitter<E extends EventMap> {
         return this;
     }
 }
+
+export { EventEmitter };

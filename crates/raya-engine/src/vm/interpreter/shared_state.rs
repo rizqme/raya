@@ -473,7 +473,9 @@ pub struct SharedVmState {
 
 impl SharedVmState {
     fn is_builtin_module(module: &Module) -> bool {
-        if module.metadata.name.starts_with("__raya_builtin__/") {
+        if module.metadata.name.starts_with("__raya_builtin__/")
+            || module.metadata.name.contains("builtins/")
+        {
             return true;
         }
         module
@@ -483,11 +485,7 @@ impl SharedVmState {
             .is_some_and(|path| path.contains("builtins/"))
     }
 
-    fn seed_builtin_global_exports(
-        &self,
-        module: &Arc<Module>,
-        layout: &ModuleRuntimeLayout,
-    ) {
+    fn seed_builtin_global_exports(&self, module: &Arc<Module>, layout: &ModuleRuntimeLayout) {
         if !Self::is_builtin_module(module) {
             return;
         }
@@ -495,8 +493,11 @@ impl SharedVmState {
         for export in &module.exports {
             let value = match export.symbol_type {
                 crate::compiler::SymbolType::Function => {
-                    let closure =
-                        crate::vm::object::Closure::with_module(export.index, Vec::new(), module.clone());
+                    let closure = crate::vm::object::Closure::with_module(
+                        export.index,
+                        Vec::new(),
+                        module.clone(),
+                    );
                     let gc_ptr = self.gc.lock().allocate(closure);
                     Some(unsafe {
                         Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
@@ -508,7 +509,8 @@ impl SharedVmState {
                         .map(|nominal| nominal.local_nominal_type_index as usize)
                         .unwrap_or(export.index);
                     let global_nominal_type_id = layout.nominal_type_base + local_nominal_type_id;
-                    let Some((layout_id, _)) = self.nominal_allocation(global_nominal_type_id) else {
+                    let Some((layout_id, _)) = self.nominal_allocation(global_nominal_type_id)
+                    else {
                         continue;
                     };
                     let handle_id =
@@ -524,7 +526,13 @@ impl SharedVmState {
                 crate::compiler::SymbolType::Constant => self
                     .globals_by_index
                     .read()
-                    .get(layout.global_base + export.index)
+                    .get(
+                        layout.global_base
+                            + export
+                                .runtime_global_slot
+                                .map(|slot| slot as usize)
+                                .unwrap_or(export.index),
+                    )
                     .copied(),
             };
 
@@ -618,22 +626,42 @@ impl SharedVmState {
 
         {
             let globals = self.globals.read();
-            roots.extend(globals.values().copied().filter(|value| value.is_heap_allocated()));
+            roots.extend(
+                globals
+                    .values()
+                    .copied()
+                    .filter(|value| value.is_heap_allocated()),
+            );
         }
 
         {
             let globals = self.globals_by_index.read();
-            roots.extend(globals.iter().copied().filter(|value| value.is_heap_allocated()));
+            roots.extend(
+                globals
+                    .iter()
+                    .copied()
+                    .filter(|value| value.is_heap_allocated()),
+            );
         }
 
         {
             let cached = self.constant_string_cache.read();
-            roots.extend(cached.values().copied().filter(|value| value.is_heap_allocated()));
+            roots.extend(
+                cached
+                    .values()
+                    .copied()
+                    .filter(|value| value.is_heap_allocated()),
+            );
         }
 
         {
             let ephemeral = self.ephemeral_gc_roots.read();
-            roots.extend(ephemeral.iter().copied().filter(|value| value.is_heap_allocated()));
+            roots.extend(
+                ephemeral
+                    .iter()
+                    .copied()
+                    .filter(|value| value.is_heap_allocated()),
+            );
         }
 
         {
@@ -1182,7 +1210,11 @@ impl SharedVmState {
                     && export
                         .nominal_type
                         .is_some_and(|nominal| nominal.local_nominal_type_index as usize == i))
-                .then_some(export.nominal_type.and_then(|nominal| nominal.constructor_function_index))
+                .then_some(
+                    export
+                        .nominal_type
+                        .and_then(|nominal| nominal.constructor_function_index),
+                )
                 .flatten()
                 .map(|idx| idx as usize)
             });

@@ -28,6 +28,9 @@ pub enum DispatchAction {
     Opcode(OpcodeKind),
     /// Emit CallMethodExact with this builtin method ID (VM handles natively)
     NativeCall(u16),
+    /// Builtin primitive instance field declared in source.
+    /// Carries the resolved field type when it can be determined.
+    DeclaredField(Option<u32>),
     /// Emit Call to a pre-compiled class method function.
     /// Contains (type_name, method_name) to look up the IR builder.
     ClassMethod(String, String),
@@ -406,13 +409,16 @@ impl TypeRegistry {
         // Step 3: Extract methods and their dispatch behavior
         let methods = extract_methods(source, &constants);
 
-        // Step 4: Check for constructor
+        // Step 4: Extract declared instance fields
+        let declared_fields = extract_declared_fields(source, type_ctx);
+
+        // Step 5: Check for constructor
         let constructor_id = extract_constructor(source, &constants);
 
-        // Step 5: Extract //@@class_method annotated methods
+        // Step 6: Extract //@@class_method annotated methods
         let class_methods = extract_class_method_names(source);
 
-        // Step 6: Register in dispatch tables
+        // Step 7: Register in dispatch tables
         if type_name == crate::parser::TypeContext::ARRAY_TYPE_NAME {
             // Array has special dispatch: matches any array TypeId
             for (prop_name, kind) in &opcode_props {
@@ -428,6 +434,12 @@ impl TypeRegistry {
                 {
                     self.method_return_types.insert(native_id, ret_tid);
                 }
+            }
+            for (field_name, field_type) in &declared_fields {
+                self.array_properties.insert(
+                    field_name.clone(),
+                    DispatchAction::DeclaredField(*field_type),
+                );
             }
             // Register class methods (callback methods like map, filter, etc.)
             for cm_name in &class_methods {
@@ -450,6 +462,15 @@ impl TypeRegistry {
                     let props = self.property_dispatch.entry(tid).or_default();
                     for (prop_name, kind) in &opcode_props {
                         props.insert(prop_name.clone(), DispatchAction::Opcode(*kind));
+                    }
+                }
+                if !declared_fields.is_empty() {
+                    let props = self.property_dispatch.entry(tid).or_default();
+                    for (field_name, field_type) in &declared_fields {
+                        props.insert(
+                            field_name.clone(),
+                            DispatchAction::DeclaredField(*field_type),
+                        );
                     }
                 }
 
@@ -567,7 +588,11 @@ impl TypeRegistry {
     ///
     /// This powers late-bound runtime member calls so they can reuse the same
     /// dispatch table as compile-time lowering.
-    pub fn native_method_id_for_type_name(&self, type_name: &str, method_name: &str) -> Option<u16> {
+    pub fn native_method_id_for_type_name(
+        &self,
+        type_name: &str,
+        method_name: &str,
+    ) -> Option<u16> {
         let type_id = canonical_dispatch_type_id(type_name)?;
         match self.lookup_method(type_id, method_name) {
             Some(DispatchAction::NativeCall(id)) => Some(id),
@@ -984,6 +1009,58 @@ fn extract_constructor(source: &str, constants: &FxHashMap<String, u16>) -> Opti
     }
 
     None
+}
+
+/// Extract declared instance fields from a builtin primitive source.
+fn extract_declared_fields(source: &str, type_ctx: &TypeContext) -> Vec<(String, Option<u32>)> {
+    let mut result = Vec::new();
+    let mut in_class = false;
+    let mut depth = 0i32;
+
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+
+        if !in_class {
+            if line.starts_with("class ") && line.contains('{') {
+                in_class = true;
+                depth = 1;
+            }
+            continue;
+        }
+
+        let open_count = line.matches('{').count() as i32;
+        let close_count = line.matches('}').count() as i32;
+
+        if depth == 1
+            && line.ends_with(';')
+            && line.contains(':')
+            && !line.contains('(')
+            && !line.starts_with("private ")
+        {
+            let without_semicolon = line.trim_end_matches(';').trim();
+            if let Some((field_name, type_name)) = without_semicolon.split_once(':') {
+                let field_name = field_name
+                    .trim()
+                    .strip_prefix("readonly ")
+                    .unwrap_or(field_name.trim())
+                    .to_string();
+                let field_type = type_ctx
+                    .lookup_named_type(type_name.trim())
+                    .map(|id| id.as_u32());
+                result.push((field_name, field_type));
+            }
+        }
+
+        depth += open_count - close_count;
+        if depth <= 0 {
+            break;
+        }
+    }
+
+    result
 }
 
 // ============================================================================

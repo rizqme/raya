@@ -136,3 +136,5 @@ class Date {
         return __NATIVE_CALL<string>(DATE_TO_TIME_STRING, this.timestamp);
     }
 }
+
+export { Date };

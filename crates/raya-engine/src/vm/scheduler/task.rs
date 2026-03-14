@@ -13,8 +13,8 @@
 
 use crate::vm::gc::Nursery;
 use crate::vm::interpreter::execution::{ExecutionFrame, ReturnAction};
-use crate::vm::snapshot::{BlockedReason, SerializedFrame, SerializedTask};
 use crate::vm::snapshot::SerializedValue;
+use crate::vm::snapshot::{BlockedReason, SerializedFrame, SerializedTask};
 use crate::vm::stack::Stack;
 use crate::vm::sync::{MutexId, SemaphoreId};
 use crate::vm::value::Value;
@@ -480,9 +480,10 @@ impl Task {
                 lifecycle.state = TaskState::Running;
                 true
             }
-            TaskState::Running | TaskState::Suspended | TaskState::Completed | TaskState::Failed => {
-                false
-            }
+            TaskState::Running
+            | TaskState::Suspended
+            | TaskState::Completed
+            | TaskState::Failed => false,
         }
     }
 
@@ -956,7 +957,10 @@ impl Task {
 
         {
             let exceptions = self.exceptions.lock();
-            if let Some(value) = exceptions.current_exception.filter(Value::is_heap_allocated) {
+            if let Some(value) = exceptions
+                .current_exception
+                .filter(Value::is_heap_allocated)
+            {
                 roots.push(value);
             }
             if let Some(value) = exceptions.caught_exception.filter(Value::is_heap_allocated) {
@@ -990,7 +994,11 @@ impl Task {
         }
 
         let stack_complete = if let Ok(stack) = self.stack.try_lock() {
-            roots.extend(stack.iter_values().filter(|value| value.is_heap_allocated()));
+            roots.extend(
+                stack
+                    .iter_values()
+                    .filter(|value| value.is_heap_allocated()),
+            );
             true
         } else {
             false
@@ -1014,7 +1022,10 @@ impl Task {
     }
 
     /// Serialize this task using a snapshot-aware value mapper.
-    pub fn to_serialized_with_values<F>(&self, mut encode_value: F) -> std::io::Result<SerializedTask>
+    pub fn to_serialized_with_values<F>(
+        &self,
+        mut encode_value: F,
+    ) -> std::io::Result<SerializedTask>
     where
         F: FnMut(Value) -> std::io::Result<SerializedValue>,
     {
@@ -1046,7 +1057,10 @@ impl Task {
                             .get(ef.func_id)
                             .map(|function| function.local_count)
                             .unwrap_or(0);
-                        let end = ef.locals_base.saturating_add(local_count).min(stack_values.len());
+                        let end = ef
+                            .locals_base
+                            .saturating_add(local_count)
+                            .min(stack_values.len());
                         stack_values[ef.locals_base.min(end)..end]
                             .iter()
                             .copied()
@@ -1193,8 +1207,8 @@ impl Task {
         // Rebuild stack from serialized values
         let mut stack = Stack::new();
         for value in &serialized.stack {
-            let decoded = decode_value(value)
-                .expect("snapshot restore failed: could not decode stack value");
+            let decoded =
+                decode_value(value).expect("snapshot restore failed: could not decode stack value");
             let _ = stack.push(decoded);
         }
 
@@ -1611,7 +1625,10 @@ mod tests {
         let serialized = task.to_serialized();
 
         assert_eq!(serialized.state, TaskState::Completed);
-        assert_eq!(serialized.result, Some(SerializedValue::from(Value::i32(42))));
+        assert_eq!(
+            serialized.result,
+            Some(SerializedValue::from(Value::i32(42)))
+        );
     }
 
     #[test]

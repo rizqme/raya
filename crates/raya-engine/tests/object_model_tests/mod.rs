@@ -478,7 +478,9 @@ fn test_static_fields() {
     module.functions.push(main_fn);
 
     let runtime_module = Arc::new(Module::decode(&module.encode()).unwrap());
-    vm.shared_state().register_module(runtime_module.clone()).unwrap();
+    vm.shared_state()
+        .register_module(runtime_module.clone())
+        .unwrap();
     let nominal_type_base = vm
         .shared_state()
         .module_layouts

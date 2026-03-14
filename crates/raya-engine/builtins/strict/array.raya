@@ -22,6 +22,8 @@ function arrayFromAsyncIsCallable(value: any): boolean {
     return typeof value == "function";
 }
 
+export { Array };
+
 function arrayFromAsyncIsConstructor(value: any): boolean {
     if (!arrayFromAsyncIsCallable(value)) {
         return false;
@@ -37,6 +39,13 @@ function arrayFromAsyncIsConstructor(value: any): boolean {
 function arrayFromAsyncTarget(receiver: any): any {
     if (arrayFromAsyncIsConstructor(receiver)) {
         return Reflect.construct(receiver, []);
+    }
+    return [];
+}
+
+function arrayOfTarget(receiver: any, length: number): any {
+    if (arrayFromAsyncIsConstructor(receiver)) {
+        return Reflect.construct(receiver, [length]);
     }
     return [];
 }
@@ -74,6 +83,23 @@ class Array<T> {
 
     static from(values: any, mapfn?: any, thisArg?: any): any[] {
         return __NATIVE_CALL<any[]>(ARRAY_FROM, this, values, mapfn, thisArg);
+    }
+
+    static of(...items: any[]): any[] {
+        let length = items.length;
+        let target = arrayOfTarget(this, length);
+        let index = 0;
+        while (index < length) {
+            Object.defineProperty(target, "" + index, {
+                value: items[index],
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            });
+            index = index + 1;
+        }
+        target.length = length;
+        return target;
     }
 
     static async fromAsync(values: any, mapfn?: any, thisArg?: any): Promise<any[]> {

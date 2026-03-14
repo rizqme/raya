@@ -160,7 +160,8 @@ impl GcHeader {
 /// `value_ptr` must point to an allocation produced by the GC heap allocator.
 #[inline]
 pub unsafe fn header_ptr_from_value_ptr(value_ptr: *const u8) -> *const GcHeader {
-    let backlink_ptr = value_ptr.sub(std::mem::size_of::<*const GcHeader>()) as *const *const GcHeader;
+    let backlink_ptr =
+        value_ptr.sub(std::mem::size_of::<*const GcHeader>()) as *const *const GcHeader;
     *backlink_ptr
 }
 

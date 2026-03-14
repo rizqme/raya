@@ -71,3 +71,5 @@ class Buffer {
         return __NATIVE_CALL<string>(BUFFER_TO_STRING, this, encoding);
     }
 }
+
+export { Buffer };

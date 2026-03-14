@@ -23,6 +23,16 @@ class Function {
     }
 }
 
+export {
+    Function,
+    AsyncFunction,
+    Generator,
+    AsyncGenerator,
+    GeneratorFunction,
+    AsyncGeneratorFunction,
+    AsyncIterator,
+};
+
 class AsyncFunction extends Function {
     constructor(body: string) {
         super(body);

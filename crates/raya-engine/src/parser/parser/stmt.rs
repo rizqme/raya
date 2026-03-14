@@ -214,10 +214,7 @@ fn parse_variable_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
         return Ok(Statement::VariableDecl(decls.pop().expect("single decl")));
     }
 
-    let end_span = decls
-        .last()
-        .map(|decl| decl.span)
-        .unwrap_or(start_span);
+    let end_span = decls.last().map(|decl| decl.span).unwrap_or(start_span);
     Ok(Statement::Block(BlockStatement {
         statements: decls.into_iter().map(Statement::VariableDecl).collect(),
         span: parser.combine_spans(&start_span, &end_span),
@@ -2105,7 +2102,7 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
     } else {
         // export const/let/function/class declaration
         let declaration = match parser.current() {
-                Token::Let | Token::Const | Token::Var => parse_variable_declaration(parser)?,
+            Token::Let | Token::Const | Token::Var => parse_variable_declaration(parser)?,
             Token::Function | Token::Async => parse_function_declaration(parser)?,
             Token::Class | Token::Abstract => parse_class_declaration(parser)?,
             Token::Type => parse_type_alias_declaration(parser, Vec::new())?,
@@ -2186,10 +2183,8 @@ fn parse_export_specifiers(parser: &mut Parser) -> Result<Vec<ExportSpecifier>, 
                     })
                 }
                 _ => {
-                    return Err(parser.unexpected_token(&[
-                        Token::Identifier(Symbol::dummy()),
-                        Token::Default,
-                    ]))
+                    return Err(parser
+                        .unexpected_token(&[Token::Identifier(Symbol::dummy()), Token::Default]))
                 }
             }
         } else {

@@ -61,3 +61,5 @@ class Channel<T> {
         return __NATIVE_CALL<number>(CHANNEL_CAPACITY, this.channelId);
     }
 }
+
+export { Channel };

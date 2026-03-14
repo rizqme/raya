@@ -9,7 +9,9 @@
 use super::context::TypeContext;
 use super::error::TypeError;
 use super::subtyping::SubtypingContext;
-use super::ty::{ClassType, InterfaceType, MethodSignature, ObjectType, PropertySignature, Type, TypeId};
+use super::ty::{
+    ClassType, InterfaceType, MethodSignature, ObjectType, PropertySignature, Type, TypeId,
+};
 use rustc_hash::FxHashMap;
 
 /// Maximum recursion depth for type substitution to guard against infinite types

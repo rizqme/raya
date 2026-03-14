@@ -550,6 +550,8 @@ pub mod reflect {
     pub const GET_PROXY_TARGET: u16 = 0x0DB2;
     /// `Reflect.getProxyHandler(proxy)` - Get the handler of a proxy
     pub const GET_PROXY_HANDLER: u16 = 0x0DB3;
+    /// `Reflect.revokeProxy(proxy)` - Revoke a proxy by clearing its handler
+    pub const REVOKE_PROXY: u16 = 0x0DB4;
 
     // ===== Phase 10: Dynamic Subclass Creation (0x0DC0-0x0DCF) =====
 

@@ -100,8 +100,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::LoadRefCell
         | Opcode::StoreRefCell
         | Opcode::ArrayPush
-        | Opcode::ArrayPop
-        => 1,
+        | Opcode::ArrayPop => 1,
 
         // u16 operand (BindMethod: opcode + u16 method_slot)
         Opcode::BindMethod => 1 + 2,
@@ -143,9 +142,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         Opcode::ConstF64 | Opcode::CastShape | Opcode::ImplementsShape => 1 + 8,
 
         // u64 + u16 operands
-        Opcode::LoadFieldShape | Opcode::StoreFieldShape | Opcode::OptionalFieldShape => {
-            1 + 8 + 2
-        }
+        Opcode::LoadFieldShape | Opcode::StoreFieldShape | Opcode::OptionalFieldShape => 1 + 8 + 2,
 
         // u64 + u16 + u16 operands
         Opcode::CallMethodShape | Opcode::OptionalCallMethodShape => 1 + 8 + 2 + 2,

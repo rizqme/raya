@@ -300,7 +300,10 @@ fn apply_discriminant_guard(
     variant: &str,
     negated: bool,
 ) -> Option<TypeId> {
-    let path: Vec<&str> = field.split('.').filter(|segment| !segment.is_empty()).collect();
+    let path: Vec<&str> = field
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .collect();
     if path.is_empty() {
         return Some(ty);
     }

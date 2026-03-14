@@ -604,12 +604,16 @@ impl LoweringCtx {
                 }
                 let helper = self
                     .load_helper_fn_ptr(builder, &HelperCall::AllocString)
-                    .ok_or_else(|| LoweringError::Unsupported("AllocString helper not found".into()))?;
+                    .ok_or_else(|| {
+                        LoweringError::Unsupported("AllocString helper not found".into())
+                    })?;
                 let sig = helper_call_signature(&HelperCall::AllocString, self.call_conv);
                 let sig_ref = builder.import_signature(sig);
                 let ctx = self.ctx_ptr(builder);
                 let len = builder.ins().iconst(types::I32, bytes.len() as i64);
-                let inst = builder.ins().call_indirect(sig_ref, helper, &[ctx, base, len]);
+                let inst = builder
+                    .ins()
+                    .call_indirect(sig_ref, helper, &[ctx, base, len]);
                 let result = builder.inst_results(inst)[0];
                 self.def_reg(builder, *dest, result);
             }
@@ -751,10 +755,20 @@ impl LoweringCtx {
 
             // ===== Global access =====
             SmInstr::LoadGlobal { dest, index } => {
-                self.lower_helper_call(builder, Some(*dest), &HelperCall::LoadGlobalValue, &[*index])?;
+                self.lower_helper_call(
+                    builder,
+                    Some(*dest),
+                    &HelperCall::LoadGlobalValue,
+                    &[*index],
+                )?;
             }
             SmInstr::StoreGlobal { index, src } => {
-                self.lower_helper_call(builder, None, &HelperCall::StoreGlobalValue, &[*index, *src])?;
+                self.lower_helper_call(
+                    builder,
+                    None,
+                    &HelperCall::StoreGlobalValue,
+                    &[*index, *src],
+                )?;
             }
 
             // ===== Helper Calls =====
@@ -1396,9 +1410,10 @@ impl LoweringCtx {
         let func_id_val = builder.ins().iconst(types::I32, func_id as i64);
         let callee_frame_val = self.use_reg(builder, callee_frame);
         let sig_ref = builder.import_signature(sig);
-        let inst = builder
-            .ins()
-            .call_indirect(sig_ref, get_func_ptr, &[func_id_val, callee_frame_val]);
+        let inst =
+            builder
+                .ins()
+                .call_indirect(sig_ref, get_func_ptr, &[func_id_val, callee_frame_val]);
         let callee_fn_ptr = builder.inst_results(inst)[0];
 
         // Call the callee: callee_fn(callee_frame, ctx) -> u64

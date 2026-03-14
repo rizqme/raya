@@ -260,6 +260,7 @@ impl ModuleLinker {
                     scope: import.scope,
                     signature_hash: actual_hash,
                     type_signature: Some(actual_signature),
+                    runtime_global_slot: None,
                     nominal_type: None,
                 },
                 index: 0,
@@ -450,7 +451,7 @@ mod tests {
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
                 structural_shapes: vec![],
-            structural_layouts: vec![],
+                structural_layouts: vec![],
             },
             exports: vec![],
             imports: vec![],
@@ -552,6 +553,7 @@ mod tests {
             scope: SymbolScope::Module,
             signature_hash: 42,
             type_signature: Some("fn(min=0,params=[],rest=_,ret=number)".to_string()),
+            runtime_global_slot: None,
             nominal_type: None,
         });
         linker.add_module(Arc::new(module)).unwrap();
@@ -588,6 +590,7 @@ mod tests {
             scope: SymbolScope::Module,
             signature_hash: crate::parser::types::signature_hash("number"),
             type_signature: Some("number".to_string()),
+            runtime_global_slot: None,
             nominal_type: None,
         });
         linker.add_module(Arc::new(module)).unwrap();
@@ -608,7 +611,10 @@ mod tests {
         let resolved = linker
             .resolve_import(&import, "main")
             .expect("resolve namespace import");
-        assert_eq!(resolved.export.type_signature.as_deref(), Some(expected_signature.as_str()));
+        assert_eq!(
+            resolved.export.type_signature.as_deref(),
+            Some(expected_signature.as_str())
+        );
         assert_eq!(resolved.export.signature_hash, import.signature_hash);
     }
 
@@ -629,6 +635,7 @@ mod tests {
             type_signature: Some(
                 "obj(prop:a:rw:req:number,prop:b:rw:req:string,prop:c:rw:req:string)".to_string(),
             ),
+            runtime_global_slot: None,
             nominal_type: None,
         });
         linker.add_module(Arc::new(module)).unwrap();
@@ -661,6 +668,7 @@ mod tests {
             scope: SymbolScope::Module,
             signature_hash: signature_hash("number"),
             type_signature: Some("number".to_string()),
+            runtime_global_slot: None,
             nominal_type: None,
         });
         linker.add_module(Arc::new(module)).unwrap();
@@ -699,6 +707,7 @@ mod tests {
             scope: SymbolScope::Module,
             signature_hash: signature_hash("fn(min=1,params=[number],rest=_,ret=number)"),
             type_signature: Some("fn(min=1,params=[number],rest=_,ret=number)".to_string()),
+            runtime_global_slot: None,
             nominal_type: None,
         });
         linker.add_module(Arc::new(module)).unwrap();

@@ -375,10 +375,7 @@ impl NativeContext for EngineContext<'_> {
         })
     }
 
-    fn nominal_type_field_names(
-        &self,
-        nominal_type_id: usize,
-    ) -> AbiResult<Vec<(String, usize)>> {
+    fn nominal_type_field_names(&self, nominal_type_id: usize) -> AbiResult<Vec<(String, usize)>> {
         let meta = self.class_metadata.read();
         match meta.get(nominal_type_id) {
             Some(m) => Ok(m

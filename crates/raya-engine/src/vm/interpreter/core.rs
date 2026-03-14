@@ -308,8 +308,7 @@ pub struct Interpreter<'a> {
         &'a RwLock<crate::vm::interpreter::shared_state::PropertyKeyRegistry>,
 
     /// Offline AOT profile collector populated from interpreter execution.
-    pub(in crate::vm::interpreter) aot_profile:
-        &'a RwLock<crate::aot_profile::AotProfileCollector>,
+    pub(in crate::vm::interpreter) aot_profile: &'a RwLock<crate::aot_profile::AotProfileCollector>,
 
     /// IO submission sender for NativeCallResult::Suspend (None in tests without reactor)
     pub(in crate::vm::interpreter) io_submit_tx:
@@ -334,9 +333,7 @@ pub struct Interpreter<'a> {
     /// Global module-profile table used when layout changes invalidate compiled code.
     #[cfg(feature = "jit")]
     pub(in crate::vm::interpreter) module_profiles_map: Option<
-        &'a RwLock<
-            FxHashMap<[u8; 32], Arc<crate::jit::profiling::counters::ModuleProfile>>,
-        >,
+        &'a RwLock<FxHashMap<[u8; 32], Arc<crate::jit::profiling::counters::ModuleProfile>>>,
     >,
 
     /// Handle to submit compilation requests to the background JIT thread
@@ -544,11 +541,9 @@ impl<'a> Interpreter<'a> {
         ));
 
         let opcode_result = if let Some(raw_ptr) = unsafe { callable.as_ptr::<u8>() } {
-            let header =
-                unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+            let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
             if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
-                let method =
-                    unsafe { &*callable.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
+                let method = unsafe { &*callable.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
                 self.exec_bound_native_method_call(
                     &mut stack,
                     method.receiver,
@@ -618,7 +613,9 @@ impl<'a> Interpreter<'a> {
                 if let Some(closure) = closure_val {
                     callee_task.push_closure(closure);
                 }
-                self.tasks.write().insert(callee_task.id(), callee_task.clone());
+                self.tasks
+                    .write()
+                    .insert(callee_task.id(), callee_task.clone());
 
                 match self.run(&callee_task) {
                     ExecutionResult::Completed(value) => {
@@ -1009,9 +1006,7 @@ impl<'a> Interpreter<'a> {
     pub fn set_module_profiles_map(
         &mut self,
         profiles: Option<
-            &'a RwLock<
-                FxHashMap<[u8; 32], Arc<crate::jit::profiling::counters::ModuleProfile>>,
-            >,
+            &'a RwLock<FxHashMap<[u8; 32], Arc<crate::jit::profiling::counters::ModuleProfile>>>,
         >,
     ) {
         self.module_profiles_map = profiles;
@@ -1518,7 +1513,9 @@ impl<'a> Interpreter<'a> {
                     if !is_closure && jit_can_use_fast_path {
                         if let Some(ref profile) = self.module_profile {
                             let count = profile.record_call(func_id);
-                            self.aot_profile.write().record_call(module.checksum, func_id as u32);
+                            self.aot_profile
+                                .write()
+                                .record_call(module.checksum, func_id as u32);
                             if let Some(ref telemetry) = self.jit_telemetry {
                                 telemetry
                                     .call_samples
@@ -1908,8 +1905,9 @@ impl<'a> Interpreter<'a> {
                         self.ephemeral_gc_roots.write().push(exc_val);
                         task.set_exception(exc_val);
                         let mut ephemeral = self.ephemeral_gc_roots.write();
-                        if let Some(index) =
-                            ephemeral.iter().rposition(|candidate| *candidate == exc_val)
+                        if let Some(index) = ephemeral
+                            .iter()
+                            .rposition(|candidate| *candidate == exc_val)
                         {
                             ephemeral.swap_remove(index);
                         }
@@ -2038,15 +2036,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::LoadArgLocal
             | Opcode::LoadGlobal
             | Opcode::StoreGlobal => {
-                self.exec_variable_ops(
-                    stack,
-                    ip,
-                    code,
-                    module,
-                    locals_base,
-                    opcode,
-                    current_args,
-                )
+                self.exec_variable_ops(stack, ip, code, module, locals_base, opcode, current_args)
             }
 
             // =========================================================
@@ -2127,7 +2117,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::OptionalFieldShape
             | Opcode::ObjectLiteral
             | Opcode::InitObject
-            | Opcode::BindMethod => self.exec_object_ops(stack, ip, code, module, opcode),
+            | Opcode::BindMethod => self.exec_object_ops(stack, ip, code, module, task, opcode),
 
             // =========================================================
             // Array Operations

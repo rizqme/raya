@@ -61,7 +61,9 @@ pub enum BindError {
     },
 
     /// Required parameter after optional parameter
-    #[error("RequiredAfterOptional: Required parameter '{name}' cannot follow an optional parameter")]
+    #[error(
+        "RequiredAfterOptional: Required parameter '{name}' cannot follow an optional parameter"
+    )]
     RequiredAfterOptional {
         /// Parameter name
         name: String,

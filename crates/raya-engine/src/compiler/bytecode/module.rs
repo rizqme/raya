@@ -8,7 +8,7 @@ use thiserror::Error;
 pub const MAGIC: [u8; 4] = *b"RAYA";
 
 /// Current bytecode version
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 /// Stable module ID derived from canonical module identity.
 pub type ModuleId = u64;
@@ -90,6 +90,8 @@ pub struct Export {
     pub signature_hash: TypeSignatureHash,
     /// Optional canonical structural signature string (for diagnostics).
     pub type_signature: Option<String>,
+    /// Module-local runtime global slot holding the live exported binding, when applicable.
+    pub runtime_global_slot: Option<u32>,
     /// Explicit nominal constructor metadata for class exports.
     pub nominal_type: Option<NominalTypeExport>,
 }
@@ -1261,6 +1263,13 @@ impl Export {
             }
             None => writer.emit_u8(0),
         }
+        match self.runtime_global_slot {
+            Some(slot) => {
+                writer.emit_u8(1);
+                writer.emit_u32(slot);
+            }
+            None => writer.emit_u8(0),
+        }
         match self.nominal_type {
             Some(nominal_type) => {
                 writer.emit_u8(1);
@@ -1298,6 +1307,11 @@ impl Export {
         } else {
             None
         };
+        let runtime_global_slot = if reader.read_u8()? != 0 {
+            Some(reader.read_u32()?)
+        } else {
+            None
+        };
         let has_nominal_type = reader.read_u8()? != 0;
         let nominal_type = if has_nominal_type {
             Some(NominalTypeExport {
@@ -1320,6 +1334,7 @@ impl Export {
             scope,
             signature_hash,
             type_signature,
+            runtime_global_slot,
             nominal_type,
         })
     }

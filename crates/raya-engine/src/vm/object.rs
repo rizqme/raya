@@ -45,8 +45,14 @@ static NEXT_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
 /// Process-local fallback registry for structural layout names used outside a live VM.
 static GLOBAL_LAYOUT_NAMES: LazyLock<RwLock<FxHashMap<LayoutId, Vec<String>>>> =
     LazyLock::new(|| RwLock::new(FxHashMap::default()));
-pub const OBJECT_DESCRIPTOR_LAYOUT_FIELDS: &[&str] =
-    &["value", "writable", "configurable", "enumerable", "get", "set"];
+pub const OBJECT_DESCRIPTOR_LAYOUT_FIELDS: &[&str] = &[
+    "value",
+    "writable",
+    "configurable",
+    "enumerable",
+    "get",
+    "set",
+];
 pub const BUFFER_LAYOUT_FIELDS: &[&str] = &["bufferPtr", "length"];
 
 /// Generate a new unique object ID
@@ -513,7 +519,10 @@ impl Array {
 
     /// Get element at index
     pub fn get(&self, index: usize) -> Option<Value> {
-        if index < self.length && index < self.elements.len() && self.present.get(index).copied().unwrap_or(false) {
+        if index < self.length
+            && index < self.elements.len()
+            && self.present.get(index).copied().unwrap_or(false)
+        {
             return self.elements.get(index).copied();
         }
         if index < self.length {
@@ -897,12 +906,9 @@ impl RayaString {
             return cached - 1;
         }
         let h = self.compute_hash();
-        self.hash_plus_one.compare_exchange(
-            0,
-            h.wrapping_add(1),
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ).ok();
+        self.hash_plus_one
+            .compare_exchange(0, h.wrapping_add(1), Ordering::AcqRel, Ordering::Acquire)
+            .ok();
         h
     }
 
@@ -997,7 +1003,7 @@ impl PartialEq for HashableValue {
                 (Some(a), Some(b)) => a == b,
                 _ => self.0 == other.0,
             },
-            _ => false,                        // One is string, one is not
+            _ => false, // One is string, one is not
         }
     }
 }

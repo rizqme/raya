@@ -23,7 +23,7 @@ fn create_module(name: &str) -> Module {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
-                structural_shapes: vec![],
+            structural_shapes: vec![],
             structural_layouts: vec![],
         },
         exports: vec![],
@@ -55,6 +55,7 @@ fn make_export(module_name: &str, symbol: &str, index: usize) -> Export {
         scope: SymbolScope::Module,
         signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
+        runtime_global_slot: None,
         nominal_type: None,
     }
 }
@@ -269,6 +270,7 @@ fn test_link_prefers_symbol_id_over_name() {
         scope: SymbolScope::Module,
         signature_hash: symbol_id_0 ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
+        runtime_global_slot: None,
         nominal_type: None,
     });
     dup.exports.push(Export {
@@ -279,6 +281,7 @@ fn test_link_prefers_symbol_id_over_name() {
         scope: SymbolScope::Module,
         signature_hash: symbol_id_1 ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
+        runtime_global_slot: None,
         nominal_type: None,
     });
 
@@ -321,6 +324,7 @@ fn test_link_type_symbol_mismatch() {
         scope: SymbolScope::Module,
         signature_hash: 1001,
         type_signature: Some("fn(min=0,params=[],rest=_,ret=string)".to_string()),
+        runtime_global_slot: None,
         nominal_type: None,
     });
     linker.add_module(Arc::new(typed)).unwrap();
@@ -367,6 +371,7 @@ fn test_link_type_hash_diff_but_structurally_assignable() {
         scope: SymbolScope::Module,
         signature_hash: 1001,
         type_signature: Some("fn(min=0,params=[],rest=_,ret=number)".to_string()),
+        runtime_global_slot: None,
         nominal_type: None,
     });
     linker.add_module(Arc::new(typed)).unwrap();
@@ -407,6 +412,7 @@ fn test_link_scope_mismatch() {
         scope: SymbolScope::Global,
         signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
+        runtime_global_slot: None,
         nominal_type: None,
     });
     linker.add_module(Arc::new(scoped)).unwrap();
@@ -454,6 +460,7 @@ fn test_add_module_rejects_duplicate_symbol_ids() {
         scope: SymbolScope::Module,
         signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
+        runtime_global_slot: None,
         nominal_type: None,
     });
     module.exports.push(Export {
@@ -464,6 +471,7 @@ fn test_add_module_rejects_duplicate_symbol_ids() {
         scope: SymbolScope::Module,
         signature_hash: symbol_id ^ 0x00FF_00FF_00FF_00FF,
         type_signature: None,
+        runtime_global_slot: None,
         nominal_type: None,
     });
 

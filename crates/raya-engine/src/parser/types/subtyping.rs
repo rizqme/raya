@@ -137,12 +137,30 @@ impl<'a> SubtypingContext<'a> {
         let result = match (sub_ty, sup_ty) {
             // Some declaration-backed builtin surfaces still retain these names as
             // references; normalize them at the relation layer.
-            (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("never") => true,
-            (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("any") => true,
-            (_, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("any") => true,
-            (_, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("unknown") => true,
-            (Type::Reference(type_ref), t) if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) => true,
-            (t, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) => true,
+            (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("never") => {
+                true
+            }
+            (Type::Reference(type_ref), _) if special_reference_kind(type_ref) == Some("any") => {
+                true
+            }
+            (_, Type::Reference(type_ref)) if special_reference_kind(type_ref) == Some("any") => {
+                true
+            }
+            (_, Type::Reference(type_ref))
+                if special_reference_kind(type_ref) == Some("unknown") =>
+            {
+                true
+            }
+            (Type::Reference(type_ref), t)
+                if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) =>
+            {
+                true
+            }
+            (t, Type::Reference(type_ref))
+                if special_reference_kind(type_ref) == Some("jsobject") && is_object_like(t) =>
+            {
+                true
+            }
 
             // Never is subtype of everything
             (Type::Never, _) => true,

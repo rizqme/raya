@@ -291,7 +291,8 @@ impl DynamicClassBuilder {
         let static_field_count = definition.static_field_count();
 
         // Create the Class object with parent
-        let mut class = Class::with_parent(nominal_type_id, name.clone(), total_field_count, parent.id);
+        let mut class =
+            Class::with_parent(nominal_type_id, name.clone(), total_field_count, parent.id);
 
         // Copy static fields from definition
         if static_field_count > 0 {
@@ -312,8 +313,12 @@ impl DynamicClassBuilder {
         }
 
         // Create metadata (inheriting from parent if available)
-        let metadata =
-            self.build_subclass_metadata(nominal_type_id, inherited_fields, parent_metadata, definition);
+        let metadata = self.build_subclass_metadata(
+            nominal_type_id,
+            inherited_fields,
+            parent_metadata,
+            definition,
+        );
 
         (class, metadata)
     }
@@ -335,7 +340,12 @@ impl DynamicClassBuilder {
         // Create new class (same parent as original, but with extended name)
         let new_name = format!("{}$Extended", original.name);
         let mut class = if let Some(parent_id) = original.parent_id {
-            Class::with_parent(nominal_type_id, new_name.clone(), total_field_count, parent_id)
+            Class::with_parent(
+                nominal_type_id,
+                new_name.clone(),
+                total_field_count,
+                parent_id,
+            )
         } else {
             Class::new(nominal_type_id, new_name.clone(), total_field_count)
         };
@@ -369,7 +379,11 @@ impl DynamicClassBuilder {
     }
 
     /// Build metadata for a new root class
-    fn build_metadata(&self, nominal_type_id: usize, definition: &SubclassDefinition) -> ClassMetadata {
+    fn build_metadata(
+        &self,
+        nominal_type_id: usize,
+        definition: &SubclassDefinition,
+    ) -> ClassMetadata {
         let mut metadata = ClassMetadata::new();
 
         let mut field_index = 0;

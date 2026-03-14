@@ -305,7 +305,12 @@ pub fn extract_module_exports(
     for symbol in symbols.get_exported_symbols() {
         let scope_kind = symbols.get_scope(symbol.scope_id).kind;
         let scope = scope_kind_to_symbol_scope(scope_kind);
-        exports.add_symbol(ExportedSymbol::from_symbol(symbol, module_name, scope, type_ctx));
+        exports.add_symbol(ExportedSymbol::from_symbol(
+            symbol,
+            module_name,
+            scope,
+            type_ctx,
+        ));
     }
 
     for stmt in &ast.statements {
@@ -334,8 +339,7 @@ pub fn extract_module_exports(
                     ) else {
                         continue;
                     };
-                    let scope =
-                        scope_kind_to_symbol_scope(symbols.get_scope(symbol.scope_id).kind);
+                    let scope = scope_kind_to_symbol_scope(symbols.get_scope(symbol.scope_id).kind);
                     exports.add_symbol(ExportedSymbol::with_alias(
                         symbol,
                         exported_name,
@@ -350,13 +354,9 @@ pub fn extract_module_exports(
                     continue;
                 };
                 let local_name = interner.resolve(identifier.name).to_string();
-                let Some(symbol) = resolve_exported_symbol(
-                    ast,
-                    interner,
-                    symbols,
-                    &local_name,
-                    stmt.span().start,
-                ) else {
+                let Some(symbol) =
+                    resolve_exported_symbol(ast, interner, symbols, &local_name, stmt.span().start)
+                else {
                     continue;
                 };
                 let scope = scope_kind_to_symbol_scope(symbols.get_scope(symbol.scope_id).kind);

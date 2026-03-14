@@ -311,8 +311,10 @@ impl SerializedHeapEntry {
         Ok(match tag[0] {
             1 => {
                 reader.read_exact(&mut u64_buf)?;
-                let object_id =
-                    ObjectId::new(byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap));
+                let object_id = ObjectId::new(byteswap::swap_u64(
+                    u64::from_le_bytes(u64_buf),
+                    needs_byte_swap,
+                ));
                 reader.read_exact(&mut u32_buf)?;
                 let layout_id = byteswap::swap_u32(u32::from_le_bytes(u32_buf), needs_byte_swap);
                 let mut nominal_tag = [0u8; 1];
@@ -341,10 +343,13 @@ impl SerializedHeapEntry {
             }
             2 => {
                 reader.read_exact(&mut u64_buf)?;
-                let object_id =
-                    ObjectId::new(byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap));
+                let object_id = ObjectId::new(byteswap::swap_u64(
+                    u64::from_le_bytes(u64_buf),
+                    needs_byte_swap,
+                ));
                 reader.read_exact(&mut u64_buf)?;
-                let type_id = byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap) as usize;
+                let type_id =
+                    byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap) as usize;
                 let elements = Self::decode_values(reader, needs_byte_swap)?;
                 Self::Array {
                     object_id,
@@ -354,8 +359,10 @@ impl SerializedHeapEntry {
             }
             3 => {
                 reader.read_exact(&mut u64_buf)?;
-                let object_id =
-                    ObjectId::new(byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap));
+                let object_id = ObjectId::new(byteswap::swap_u64(
+                    u64::from_le_bytes(u64_buf),
+                    needs_byte_swap,
+                ));
                 reader.read_exact(&mut u64_buf)?;
                 let len = byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap) as usize;
                 let mut bytes = vec![0u8; len];
@@ -370,10 +377,13 @@ impl SerializedHeapEntry {
             }
             4 => {
                 reader.read_exact(&mut u64_buf)?;
-                let object_id =
-                    ObjectId::new(byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap));
+                let object_id = ObjectId::new(byteswap::swap_u64(
+                    u64::from_le_bytes(u64_buf),
+                    needs_byte_swap,
+                ));
                 reader.read_exact(&mut u64_buf)?;
-                let func_id = byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap) as usize;
+                let func_id =
+                    byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap) as usize;
                 let captures = Self::decode_values(reader, needs_byte_swap)?;
                 let module_checksum = Self::decode_module_checksum(reader, needs_byte_swap)?;
                 Self::Closure {
@@ -385,11 +395,14 @@ impl SerializedHeapEntry {
             }
             5 => {
                 reader.read_exact(&mut u64_buf)?;
-                let object_id =
-                    ObjectId::new(byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap));
+                let object_id = ObjectId::new(byteswap::swap_u64(
+                    u64::from_le_bytes(u64_buf),
+                    needs_byte_swap,
+                ));
                 let receiver = SerializedValue::decode(reader, needs_byte_swap)?;
                 reader.read_exact(&mut u64_buf)?;
-                let func_id = byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap) as usize;
+                let func_id =
+                    byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap) as usize;
                 let module_checksum = Self::decode_module_checksum(reader, needs_byte_swap)?;
                 Self::BoundMethod {
                     object_id,
@@ -400,8 +413,10 @@ impl SerializedHeapEntry {
             }
             6 => {
                 reader.read_exact(&mut u64_buf)?;
-                let object_id =
-                    ObjectId::new(byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap));
+                let object_id = ObjectId::new(byteswap::swap_u64(
+                    u64::from_le_bytes(u64_buf),
+                    needs_byte_swap,
+                ));
                 let receiver = SerializedValue::decode(reader, needs_byte_swap)?;
                 reader.read_exact(&mut u16_buf)?;
                 let native_id = byteswap::swap_u16(u16::from_le_bytes(u16_buf), needs_byte_swap);
@@ -413,17 +428,22 @@ impl SerializedHeapEntry {
             }
             7 => {
                 reader.read_exact(&mut u64_buf)?;
-                let object_id =
-                    ObjectId::new(byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap));
+                let object_id = ObjectId::new(byteswap::swap_u64(
+                    u64::from_le_bytes(u64_buf),
+                    needs_byte_swap,
+                ));
                 let value = SerializedValue::decode(reader, needs_byte_swap)?;
                 Self::RefCell { object_id, value }
             }
             8 => {
                 reader.read_exact(&mut u64_buf)?;
-                let object_id =
-                    ObjectId::new(byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap));
+                let object_id = ObjectId::new(byteswap::swap_u64(
+                    u64::from_le_bytes(u64_buf),
+                    needs_byte_swap,
+                ));
                 reader.read_exact(&mut u64_buf)?;
-                let capacity = byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap) as usize;
+                let capacity =
+                    byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap) as usize;
                 let mut closed = [0u8; 1];
                 reader.read_exact(&mut closed)?;
                 let queue = Self::decode_values(reader, needs_byte_swap)?;
@@ -436,8 +456,10 @@ impl SerializedHeapEntry {
             }
             9 => {
                 reader.read_exact(&mut u64_buf)?;
-                let object_id =
-                    ObjectId::new(byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap));
+                let object_id = ObjectId::new(byteswap::swap_u64(
+                    u64::from_le_bytes(u64_buf),
+                    needs_byte_swap,
+                ));
                 reader.read_exact(&mut u64_buf)?;
                 let proxy_id = byteswap::swap_u64(u64::from_le_bytes(u64_buf), needs_byte_swap);
                 let target = SerializedValue::decode(reader, needs_byte_swap)?;

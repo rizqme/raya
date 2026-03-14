@@ -131,8 +131,9 @@ impl<'a> Interpreter<'a> {
                             eprintln!("[conststr] cache published");
                         }
                         let mut ephemeral = self.ephemeral_gc_roots.write();
-                        if let Some(index) =
-                            ephemeral.iter().rposition(|candidate| *candidate == interned)
+                        if let Some(index) = ephemeral
+                            .iter()
+                            .rposition(|candidate| *candidate == interned)
                         {
                             ephemeral.swap_remove(index);
                         }

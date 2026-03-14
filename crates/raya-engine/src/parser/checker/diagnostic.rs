@@ -292,12 +292,13 @@ impl Diagnostic {
                     .with_help("Declare the variable with 'let' if it needs to be reassigned")
             }
 
-            NewNonClass { name, span } => {
-                Diagnostic::error(format!("NewNonClass: Cannot use 'new' with non-class type '{}'", name))
-                    .with_code(error_code(error))
-                    .with_primary_label(file_id, *span, "not a class")
-                    .with_help("'new' can only be used with class types")
-            }
+            NewNonClass { name, span } => Diagnostic::error(format!(
+                "NewNonClass: Cannot use 'new' with non-class type '{}'",
+                name
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "not a class")
+            .with_help("'new' can only be used with class types"),
             StrictAnyForbidden { span } => {
                 Diagnostic::error("`any` is not allowed in Raya strict mode")
                     .with_code(error_code(error))

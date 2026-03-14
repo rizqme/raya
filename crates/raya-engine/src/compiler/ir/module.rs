@@ -3,7 +3,7 @@
 //! Top-level container for a compiled module.
 
 use super::function::IrFunction;
-use super::instr::{NominalTypeId, FunctionId, TypeAliasId};
+use super::instr::{FunctionId, NominalTypeId, TypeAliasId};
 use crate::parser::TypeId;
 use rustc_hash::FxHashMap;
 

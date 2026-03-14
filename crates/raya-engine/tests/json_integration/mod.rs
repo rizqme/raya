@@ -14,8 +14,8 @@ use raya_engine::vm::gc::GarbageCollector;
 use raya_engine::vm::json::view::{js_classify, JSView};
 use raya_engine::vm::json::{parser, stringify};
 use raya_engine::vm::object::{
-    global_layout_names, layout_id_from_ordered_names, register_global_layout_names, Array,
-    Object, RayaString,
+    global_layout_names, layout_id_from_ordered_names, register_global_layout_names, Array, Object,
+    RayaString,
 };
 use raya_engine::vm::value::Value;
 

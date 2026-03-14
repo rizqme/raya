@@ -256,7 +256,10 @@ impl SerializedValue {
             Self::HeapRef(id) => *object_map.get(id).ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("snapshot heap object {} missing during restore", id.as_u64()),
+                    format!(
+                        "snapshot heap object {} missing during restore",
+                        id.as_u64()
+                    ),
                 )
             })?,
         })
@@ -282,7 +285,9 @@ impl From<Value> for SerializedValue {
         } else if let Some(v) = value.as_u64() {
             Self::U64(v)
         } else {
-            panic!("cannot convert heap pointer Value to SerializedValue without snapshot object map");
+            panic!(
+                "cannot convert heap pointer Value to SerializedValue without snapshot object map"
+            );
         }
     }
 }

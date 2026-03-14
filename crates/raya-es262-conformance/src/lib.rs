@@ -555,7 +555,10 @@ fn discover_cases(root: &Path, selectors: &[PathBuf]) -> Result<Vec<TestCase>> {
             } else if path.is_file() {
                 candidates.push(path);
             } else {
-                anyhow::bail!("selector does not exist under test262 root: {}", selector.display());
+                anyhow::bail!(
+                    "selector does not exist under test262 root: {}",
+                    selector.display()
+                );
             }
         }
     }
@@ -605,8 +608,8 @@ fn resolve_selector_path(root: &Path, selector: &Path) -> PathBuf {
 }
 
 fn collect_js_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(dir)
-        .with_context(|| format!("failed to read directory {}", dir.display()))?
+    for entry in
+        fs::read_dir(dir).with_context(|| format!("failed to read directory {}", dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
@@ -630,7 +633,10 @@ fn is_excluded_case(
     exclude_segments: &BTreeSet<String>,
 ) -> bool {
     let relative = case.relative_path.to_string_lossy();
-    if exclude_prefixes.iter().any(|prefix| relative.starts_with(prefix)) {
+    if exclude_prefixes
+        .iter()
+        .any(|prefix| relative.starts_with(prefix))
+    {
         return true;
     }
 
@@ -826,12 +832,7 @@ fn case_artifact_path(case: &TestCase) -> PathBuf {
     ))
 }
 
-fn format_failure_report(
-    index: usize,
-    total: usize,
-    case: &TestCase,
-    message: &str,
-) -> String {
+fn format_failure_report(index: usize, total: usize, case: &TestCase, message: &str) -> String {
     let mut report = format!(
         "FAIL {}/{} {}: {}",
         index,
@@ -839,19 +840,13 @@ fn format_failure_report(
         case.relative_path.display(),
         message
     );
-    report.push_str(&format!(
-        "\n  source: {}",
-        case.absolute_path.display()
-    ));
+    report.push_str(&format!("\n  source: {}", case.absolute_path.display()));
 
     if let Some(description) = case.metadata.description.as_deref() {
         report.push_str(&format!("\n  description: {}", description));
     }
     if !case.metadata.flags.is_empty() {
-        report.push_str(&format!(
-            "\n  flags: {}",
-            case.metadata.flags.join(", ")
-        ));
+        report.push_str(&format!("\n  flags: {}", case.metadata.flags.join(", ")));
     }
     if !case.metadata.includes.is_empty() {
         report.push_str(&format!(
@@ -876,10 +871,7 @@ fn format_failure_report(
 
     let artifact_path = case_artifact_path(case);
     if artifact_path.exists() {
-        report.push_str(&format!(
-            "\n  transformed: {}",
-            artifact_path.display()
-        ));
+        report.push_str(&format!("\n  transformed: {}", artifact_path.display()));
     }
     report.push_str(&format!(
         "\n  rerun: cargo run -p raya-es262-conformance -- --fail-fast {}",
@@ -959,7 +951,10 @@ fn prepare_case_source(root: &Path, case: &TestCase) -> std::result::Result<Stri
 
     let mut final_source = String::new();
     if is_raw {
-        if !case.metadata.includes.is_empty() || supported_host_hooks.is_some() || !strict_prefix.is_empty() {
+        if !case.metadata.includes.is_empty()
+            || supported_host_hooks.is_some()
+            || !strict_prefix.is_empty()
+        {
             return Err("raw test requires unsupported harness/strict injection".to_string());
         }
         final_source.push_str(&transformed);
@@ -1101,7 +1096,9 @@ negative:
         assert_eq!(meta.includes, vec!["assert.js", "sta.js"]);
         assert_eq!(meta.flags, vec!["onlyStrict"]);
         assert_eq!(
-            meta.negative.as_ref().and_then(|negative| negative.phase.as_deref()),
+            meta.negative
+                .as_ref()
+                .and_then(|negative| negative.phase.as_deref()),
             Some("runtime")
         );
         assert_eq!(

@@ -25,14 +25,15 @@ pub mod statemachine;
 pub mod traits;
 
 pub use codegen::{
-    compile_functions, compile_functions_with_profile, create_native_isa, AotBundle, AotModuleInput, CompilableFunction,
-    FuncTableEntry, GlobalFuncId,
+    compile_functions, compile_functions_with_profile, create_native_isa, AotBundle,
+    AotModuleInput, CompilableFunction, FuncTableEntry, GlobalFuncId,
 };
 pub use executor::{allocate_initial_frame, build_task_context, run_aot_function, AotRunResult};
 pub use frame::{AotEntryFn, AotFrame, AotHelperTable, AotTaskContext, SuspendReason, AOT_SUSPEND};
 pub use helpers::{
-    clear_registered_aot_functions, dispatch_registered_aot_entry, install_registered_aot_functions,
-    InstalledAotFunctionRegistry, RegisteredAotClone, RegisteredAotFunctionEntry,
+    clear_registered_aot_functions, dispatch_registered_aot_entry,
+    install_registered_aot_functions, InstalledAotFunctionRegistry, RegisteredAotClone,
+    RegisteredAotFunctionEntry,
 };
 pub use ir_adapter::IrFunctionAdapter;
 pub use linker::AotLinker;

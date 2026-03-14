@@ -273,7 +273,9 @@ fn test_deep_call_stack_snapshot() {
 
         // Add some locals
         for j in 0..5 {
-            frame.locals.push(SerializedValue::from(Value::i32((i * 10 + j) as i32)));
+            frame
+                .locals
+                .push(SerializedValue::from(Value::i32((i * 10 + j) as i32)));
         }
 
         task.frames.push(frame);
@@ -458,7 +460,8 @@ fn test_snapshot_file_write_and_read() {
 
     for i in 0..10 {
         let mut task = SerializedTask::new(TaskId::from_u64(i), i as usize);
-        task.stack.push(SerializedValue::from(Value::i32((i * 10) as i32)));
+        task.stack
+            .push(SerializedValue::from(Value::i32((i * 10) as i32)));
         writer.add_task(task);
     }
 
@@ -496,7 +499,8 @@ fn test_large_snapshot_with_many_tasks() {
 
         // Add varying amounts of stack data
         for j in 0..(i % 20) {
-            task.stack.push(SerializedValue::from(Value::i32((i * 100 + j) as i32)));
+            task.stack
+                .push(SerializedValue::from(Value::i32((i * 100 + j) as i32)));
         }
 
         writer.add_task(task);
@@ -859,7 +863,8 @@ fn test_snapshot_with_max_values() {
     task.stack.push(SerializedValue::from(Value::i32(i32::MAX)));
     task.stack.push(SerializedValue::from(Value::i32(i32::MIN)));
     task.stack.push(SerializedValue::from(Value::u32(u32::MAX)));
-    task.stack.push(SerializedValue::from(Value::u64(U64_MAX_48BIT)));
+    task.stack
+        .push(SerializedValue::from(Value::u64(U64_MAX_48BIT)));
 
     writer.add_task(task);
 

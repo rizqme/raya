@@ -194,8 +194,7 @@ pub struct AotHelperTable {
     pub object_get_shape_field: unsafe extern "C" fn(*mut AotTaskContext, u64, u64, u32, u8) -> u64,
 
     /// Store structural field by required shape slot: (ctx, obj_val, shape_id, slot, value) -> success as u8
-    pub object_set_shape_field:
-        unsafe extern "C" fn(*mut AotTaskContext, u64, u64, u32, u64) -> u8,
+    pub object_set_shape_field: unsafe extern "C" fn(*mut AotTaskContext, u64, u64, u32, u64) -> u8,
 
     /// Generic cast helper for nominal and runtime-mask casts: (ctx, value, target) -> value
     pub cast_value: unsafe extern "C" fn(*mut AotTaskContext, u64, u32) -> u64,
@@ -234,7 +233,8 @@ pub struct AotHelperTable {
 
     /// Run a statically proven sync-safe AOT function call.
     /// (ctx, func_id, local_count, args_ptr, argc) -> result
-    pub run_sync_aot_call: unsafe extern "C" fn(*mut AotTaskContext, u32, u32, *const u64, u32) -> u64,
+    pub run_sync_aot_call:
+        unsafe extern "C" fn(*mut AotTaskContext, u32, u32, *const u64, u32) -> u64,
 
     /// Prepare a resumable child AOT frame for a direct call.
     /// (ctx, func_id, local_count, args_ptr, argc) -> child_frame_ptr

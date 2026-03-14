@@ -94,7 +94,10 @@ impl<'a> Interpreter<'a> {
         object: &Object,
         field_name: &str,
     ) -> bool {
-        if self.get_object_named_field_index(object, field_name).is_some() {
+        if self
+            .get_object_named_field_index(object, field_name)
+            .is_some()
+        {
             return true;
         }
         let Some(map) = object.dyn_map() else {

@@ -88,7 +88,9 @@ pub fn emit_unbox_f64(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::
     let f64_type = ir::types::F64;
 
     // Numbers may be represented either as raw f64 bits or as tagged i32 values.
-    let tag_mask = builder.ins().iconst(i64_type, 0xFFFF_0000_0000_0000u64 as i64);
+    let tag_mask = builder
+        .ins()
+        .iconst(i64_type, 0xFFFF_0000_0000_0000u64 as i64);
     let tagged = builder.ins().band(val, tag_mask);
     let i32_tag = builder.ins().iconst(i64_type, I32_TAG_BASE as i64);
     let is_i32 = builder

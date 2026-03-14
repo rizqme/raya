@@ -691,7 +691,9 @@ impl<'a> TypeChecker<'a> {
         let symbol = self.symbols.resolve_from_scope(name, self.current_scope);
         let scope_id = symbol.map(|s| s.scope_id.0).unwrap_or(self.current_scope.0);
         let key = (scope_id, name.to_string());
-        if let Some(receiver_expectation) = self.infer_extracted_unbound_method_receiver_expectation(expr) {
+        if let Some(receiver_expectation) =
+            self.infer_extracted_unbound_method_receiver_expectation(expr)
+        {
             if self.is_bind_call_expr(expr) {
                 self.unbound_method_vars.remove(&key);
                 self.unbound_method_receiver_types.remove(&key);
@@ -736,12 +738,15 @@ impl<'a> TypeChecker<'a> {
             Expression::Identifier(ident) => {
                 let name = self.resolve(ident.name);
                 if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
-                    if symbol.kind == SymbolKind::Class {
+                    if symbol.kind == SymbolKind::Class
+                        || (self.is_js_mode() && symbol.kind == SymbolKind::Function)
+                    {
                         return true;
                     }
                 }
                 self.is_constructible_var(&name)
             }
+            Expression::Function(func) => !func.is_generator,
             Expression::Member(_) => true,
             Expression::TypeCast(cast) => self.infer_constructible_alias_expr(&cast.object),
             Expression::Parenthesized(expr) => {
@@ -757,7 +762,33 @@ impl<'a> TypeChecker<'a> {
             Some(crate::parser::types::Type::Class(_))
                 | Some(crate::parser::types::Type::Object(_))
                 | Some(crate::parser::types::Type::Interface(_))
+                | Some(crate::parser::types::Type::Function(_))
         )
+    }
+
+    fn type_is_js_constructible_callable(&self, ty: TypeId) -> bool {
+        use crate::parser::types::Type;
+
+        match self.type_ctx.get(ty) {
+            Some(Type::Class(class_ty)) => !class_ty.is_abstract,
+            Some(Type::Function(_)) => self.is_js_mode(),
+            Some(Type::Object(obj)) => !obj.construct_signatures.is_empty(),
+            Some(Type::Interface(iface)) => !iface.construct_signatures.is_empty(),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_is_js_constructible_callable(member)),
+            Some(Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .is_some_and(|named| self.type_is_js_constructible_callable(named)),
+            Some(Type::Generic(generic)) => self.type_is_js_constructible_callable(generic.base),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.type_is_js_constructible_callable(constraint)),
+            _ => false,
+        }
     }
 
     fn set_constructible_var_state(&mut self, name: &str, expr: &Expression, ty: TypeId) {
@@ -1795,8 +1826,10 @@ impl<'a> TypeChecker<'a> {
                         // In JS mode, unannotated methods infer from explicit returns
                         // instead of defaulting to `void`.
                         let prev_return_ty = self.current_function_return_type;
-                        let declared_return_ty =
-                            method.return_type.as_ref().map(|t| self.resolve_type_annotation(t));
+                        let declared_return_ty = method
+                            .return_type
+                            .as_ref()
+                            .map(|t| self.resolve_type_annotation(t));
                         let effective_return_ty = if method.is_async {
                             declared_return_ty.map(|ty| {
                                 if let Some(crate::parser::types::Type::Task(task_ty)) =
@@ -2581,9 +2614,9 @@ impl<'a> TypeChecker<'a> {
             Type::Reference(reference) => match reference.name.as_str() {
                 "Array" | "Set" => Some(
                     reference
-                    .type_args
-                    .and_then(|args| args.first().copied())
-                    .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                        .type_args
+                        .and_then(|args| args.first().copied())
+                        .unwrap_or_else(|| self.type_ctx.unknown_type()),
                 ),
                 "Map" => {
                     if let Some(args) = reference.type_args {
@@ -2593,7 +2626,8 @@ impl<'a> TypeChecker<'a> {
                     }
                     Some(self.type_ctx.unknown_type())
                 }
-                _ => self.for_of_element_from_reference(&reference.name, reference.type_args.as_deref()),
+                _ => self
+                    .for_of_element_from_reference(&reference.name, reference.type_args.as_deref()),
             },
             Type::Generic(generic) => {
                 let base_name = self.type_ctx.get(generic.base).and_then(|base| match base {
@@ -2604,10 +2638,10 @@ impl<'a> TypeChecker<'a> {
                 match base_name.as_deref() {
                     Some("Array") | Some("Set") => Some(
                         generic
-                        .type_args
-                        .first()
-                        .copied()
-                        .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                            .type_args
+                            .first()
+                            .copied()
+                            .unwrap_or_else(|| self.type_ctx.unknown_type()),
                     ),
                     Some("Map") => {
                         if generic.type_args.len() >= 2 {
@@ -2619,13 +2653,13 @@ impl<'a> TypeChecker<'a> {
                             Some(self.type_ctx.unknown_type())
                         }
                     }
-                    Some(name) => self.for_of_element_from_reference(name, Some(&generic.type_args)),
+                    Some(name) => {
+                        self.for_of_element_from_reference(name, Some(&generic.type_args))
+                    }
                     _ => None,
                 }
             }
-            Type::Class(class_ty) => {
-                self.for_of_element_from_class(&class_ty, None)
-            }
+            Type::Class(class_ty) => self.for_of_element_from_class(&class_ty, None),
             Type::Union(union) => {
                 let mut elem_types = Vec::new();
                 for member in union.members {
@@ -3163,7 +3197,8 @@ impl<'a> TypeChecker<'a> {
                     for guard in extract_all_type_guards(&log.left, self.interner).iter() {
                         let var = get_guard_var(guard);
                         if let Some(var_ty) = self.type_env.get(var) {
-                            if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, guard)
+                            if let Some(narrowed_ty) =
+                                apply_type_guard(self.type_ctx, var_ty, guard)
                             {
                                 self.type_env.set(var.clone(), narrowed_ty);
                             }
@@ -3332,9 +3367,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(helper_ty) = self.try_check_function_helper_call(call) {
             return helper_ty;
         }
-        if self.is_js_mode()
-            && matches!(helper_name.as_deref(), Some("call") | Some("apply"))
-        {
+        if self.is_js_mode() && matches!(helper_name.as_deref(), Some("call") | Some("apply")) {
             // If helper-specific typing can't prove the target is a real
             // Function.prototype.call/apply usage, keep the result dynamic.
             // Treating these as ordinary method calls leaks direct-call return
@@ -4961,8 +4994,10 @@ impl<'a> TypeChecker<'a> {
                                 span: new_expr.span,
                             });
                         }
-                        if let Some(ctor_sig) =
-                            class.methods.iter().find(|method| method.name == "constructor")
+                        if let Some(ctor_sig) = class
+                            .methods
+                            .iter()
+                            .find(|method| method.name == "constructor")
                         {
                             let allow_non_public_ctor = self
                                 .current_class_type
@@ -4999,12 +5034,17 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     return symbol.ty;
-                } else if self.is_constructible_var(&name) {
+                } else if self.is_constructible_var(&name)
+                    || self
+                        .get_var_type(&name)
+                        .is_some_and(|ty| self.type_is_js_constructible_callable(ty))
+                {
+                    let constructor_ty = self.get_var_type(&name);
                     // Support class aliases (e.g., const B = A; new B()) for imported or helper-bound constructors.
                     for arg in &new_expr.arguments {
                         self.check_expr(arg);
                     }
-                    if let Some(ty) = self.get_var_type(&name) {
+                    if let Some(ty) = constructor_ty {
                         if let Some(return_ty) = self.first_construct_signature_return_type(ty) {
                             return return_ty;
                         }
@@ -5023,7 +5063,9 @@ impl<'a> TypeChecker<'a> {
         let mut ctor_fn: Option<crate::parser::types::ty::FunctionType> = None;
         match self.type_ctx.get(callee_ty).cloned() {
             Some(crate::parser::types::Type::Function(func)) => {
-                ctor_fn = Some(func);
+                if self.is_js_mode() {
+                    ctor_fn = Some(func);
+                }
             }
             Some(crate::parser::types::Type::Object(obj)) => {
                 if let Some(sig_ty) = obj.construct_signatures.first() {
@@ -5083,6 +5125,9 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .map(|arg| (self.check_expr(arg), *arg.span()))
                 .collect();
+            if self.is_js_mode() {
+                return self.type_ctx.unknown_type();
+            }
             let (min_params, max_params) = self.compute_fn_arity_bounds(&func);
             if self.enforce_call_arity()
                 && (arg_types.len() < min_params || arg_types.len() > max_params)
@@ -5102,6 +5147,13 @@ impl<'a> TypeChecker<'a> {
             return func.return_type;
         }
 
+        if self.is_js_mode() {
+            for arg in &new_expr.arguments {
+                self.check_expr(arg);
+            }
+            return self.type_ctx.unknown_type();
+        }
+
         if let Some(name) = deferred_non_class_name {
             self.errors.push(CheckError::NewNonClass {
                 name,
@@ -5116,9 +5168,13 @@ impl<'a> TypeChecker<'a> {
         self.type_ctx.unknown_type()
     }
 
-    fn first_construct_signature_return_type(&self, ty: TypeId) -> Option<TypeId> {
+    fn first_construct_signature_return_type(&mut self, ty: TypeId) -> Option<TypeId> {
         match self.type_ctx.get(ty).cloned() {
-            Some(crate::parser::types::Type::Function(func)) => Some(func.return_type),
+            Some(crate::parser::types::Type::Function(func)) => Some(if self.is_js_mode() {
+                self.type_ctx.unknown_type()
+            } else {
+                func.return_type
+            }),
             Some(crate::parser::types::Type::Object(obj)) => obj
                 .construct_signatures
                 .first()
@@ -5554,21 +5610,29 @@ impl<'a> TypeChecker<'a> {
                         let any_ty = self.type_ctx.any_type();
                         let string_ty = self.type_ctx.string_type();
                         let string_array = self.type_ctx.array_type(string_ty);
-                        return self.type_ctx.function_type(vec![any_ty], string_array, false);
+                        return self
+                            .type_ctx
+                            .function_type(vec![any_ty], string_array, false);
                     }
                     "getOwnPropertyDescriptor" => {
                         let any_ty = self.type_ctx.any_type();
-                        return self.type_ctx.function_type(vec![any_ty, any_ty], any_ty, false);
+                        return self
+                            .type_ctx
+                            .function_type(vec![any_ty, any_ty], any_ty, false);
                     }
                     "defineProperty" => {
                         let any_ty = self.type_ctx.any_type();
-                        return self
-                            .type_ctx
-                            .function_type(vec![any_ty, any_ty, any_ty], any_ty, false);
+                        return self.type_ctx.function_type(
+                            vec![any_ty, any_ty, any_ty],
+                            any_ty,
+                            false,
+                        );
                     }
                     "defineProperties" => {
                         let any_ty = self.type_ctx.any_type();
-                        return self.type_ctx.function_type(vec![any_ty, any_ty], any_ty, false);
+                        return self
+                            .type_ctx
+                            .function_type(vec![any_ty, any_ty], any_ty, false);
                     }
                     _ => {}
                 }
@@ -5578,7 +5642,9 @@ impl<'a> TypeChecker<'a> {
                     "has" => {
                         let any_ty = self.type_ctx.any_type();
                         let bool_ty = self.type_ctx.boolean_type();
-                        return self.type_ctx.function_type(vec![any_ty, any_ty], bool_ty, false);
+                        return self
+                            .type_ctx
+                            .function_type(vec![any_ty, any_ty], bool_ty, false);
                     }
                     _ => {}
                 }
@@ -5603,19 +5669,35 @@ impl<'a> TypeChecker<'a> {
                                 let any_ty = self.type_ctx.any_type();
                                 let string_ty = self.type_ctx.string_type();
                                 let string_array = self.type_ctx.array_type(string_ty);
-                                return self.type_ctx.function_type(vec![any_ty], string_array, false);
+                                return self.type_ctx.function_type(
+                                    vec![any_ty],
+                                    string_array,
+                                    false,
+                                );
                             }
                             "getOwnPropertyDescriptor" => {
                                 let any_ty = self.type_ctx.any_type();
-                                return self.type_ctx.function_type(vec![any_ty, any_ty], any_ty, false);
+                                return self.type_ctx.function_type(
+                                    vec![any_ty, any_ty],
+                                    any_ty,
+                                    false,
+                                );
                             }
                             "defineProperty" => {
                                 let any_ty = self.type_ctx.any_type();
-                                return self.type_ctx.function_type(vec![any_ty, any_ty, any_ty], any_ty, false);
+                                return self.type_ctx.function_type(
+                                    vec![any_ty, any_ty, any_ty],
+                                    any_ty,
+                                    false,
+                                );
                             }
                             "defineProperties" => {
                                 let any_ty = self.type_ctx.any_type();
-                                return self.type_ctx.function_type(vec![any_ty, any_ty], any_ty, false);
+                                return self.type_ctx.function_type(
+                                    vec![any_ty, any_ty],
+                                    any_ty,
+                                    false,
+                                );
                             }
                             _ => {}
                         }
@@ -5625,9 +5707,11 @@ impl<'a> TypeChecker<'a> {
                             "has" => {
                                 let any_ty = self.type_ctx.any_type();
                                 let bool_ty = self.type_ctx.boolean_type();
-                                return self
-                                    .type_ctx
-                                    .function_type(vec![any_ty, any_ty], bool_ty, false);
+                                return self.type_ctx.function_type(
+                                    vec![any_ty, any_ty],
+                                    bool_ty,
+                                    false,
+                                );
                             }
                             _ => {}
                         }
@@ -5741,9 +5825,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        if self.is_js_mode()
-            && matches!(&obj_type, Some(crate::parser::types::Type::Function(_)))
-        {
+        if self.is_js_mode() && matches!(&obj_type, Some(crate::parser::types::Type::Function(_))) {
             return match property_name.as_str() {
                 "name" => self.type_ctx.string_type(),
                 "length" => self.type_ctx.number_type(),
@@ -7597,8 +7679,9 @@ impl<'a> TypeChecker<'a> {
                 .map(|symbol| symbol.ty)
                 .unwrap_or_else(|| self.inference_fallback_type());
             let is_const = resolved_symbol.is_some_and(|symbol| symbol.flags.is_const);
-            let is_dynamic_seed =
-                resolved_symbol.map(|symbol| self.is_dynamic_seed_type(symbol.ty)).unwrap_or(self.is_js_mode());
+            let is_dynamic_seed = resolved_symbol
+                .map(|symbol| self.is_dynamic_seed_type(symbol.ty))
+                .unwrap_or(self.is_js_mode());
             let inferred_key = resolved_scope_id
                 .map(|scope_id| (scope_id, name.clone()))
                 .or_else(|| {
@@ -7630,7 +7713,8 @@ impl<'a> TypeChecker<'a> {
                     // `let x = null; x = <T>;` => widen declaration to `null | T`
                     Some(inferred_ty) if inferred_ty == null_ty && right_ty != null_ty => {
                         let widened = self.type_ctx.union_type(vec![inferred_ty, right_ty]);
-                        self.inferred_var_types.insert(inferred_key.clone(), widened);
+                        self.inferred_var_types
+                            .insert(inferred_key.clone(), widened);
                         target_ty = widened;
                     }
                     // Node-compat auto-widen inference across contradictory assignments.
@@ -7653,13 +7737,15 @@ impl<'a> TypeChecker<'a> {
                                     self.format_type(widened)
                                 );
                             }
-                            self.inferred_var_types.insert(inferred_key.clone(), widened);
+                            self.inferred_var_types
+                                .insert(inferred_key.clone(), widened);
                             target_ty = widened;
                         }
                     }
                     // `let x; x = <T>;` => first concrete assignment sets inferred declaration.
                     None => {
-                        self.inferred_var_types.insert(inferred_key.clone(), right_ty);
+                        self.inferred_var_types
+                            .insert(inferred_key.clone(), right_ty);
                         target_ty = right_ty;
                     }
                     _ => {}
@@ -7674,7 +7760,11 @@ impl<'a> TypeChecker<'a> {
             self.maybe_escalate_identifier_to_jsobject(&idx.object, Some(&idx.index));
         }
 
-        self.check_assignable(right_ty, target_ty, *assign.right.span());
+        let skip_assignability = self.is_js_mode()
+            && matches!(&*assign.left, Expression::Member(_) | Expression::Index(_));
+        if !skip_assignability {
+            self.check_assignable(right_ty, target_ty, *assign.right.span());
+        }
 
         target_ty
     }

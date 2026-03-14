@@ -31,3 +31,5 @@ class Symbol {
         return sym.key;
     }
 }
+
+export { Symbol };

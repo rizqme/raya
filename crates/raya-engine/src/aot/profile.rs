@@ -50,12 +50,20 @@ impl AotProfileData {
         self.modules
             .iter()
             .find(|module| &module.checksum == checksum)
-            .and_then(|module| module.functions.iter().find(|func| func.func_index == func_index))
+            .and_then(|module| {
+                module
+                    .functions
+                    .iter()
+                    .find(|func| func.func_index == func_index)
+            })
     }
 
     pub fn function_hotness(&self, checksum: &[u8; 32], func_index: u32) -> u64 {
         self.function_profile(checksum, func_index)
-            .map(|func| func.call_count.saturating_add(func.loop_count.saturating_mul(4)))
+            .map(|func| {
+                func.call_count
+                    .saturating_add(func.loop_count.saturating_mul(4))
+            })
             .unwrap_or(0)
     }
 }

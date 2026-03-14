@@ -525,9 +525,9 @@ fn aot_shape_slot_map_for_object(
                 .get(&object.layout_id())
                 .cloned()
         });
-    let class_meta = object.nominal_type_id_usize().and_then(|nominal_type_id| {
-        shared.class_metadata.read().get(nominal_type_id).cloned()
-    });
+    let class_meta = object
+        .nominal_type_id_usize()
+        .and_then(|nominal_type_id| shared.class_metadata.read().get(nominal_type_id).cloned());
     let dynamic_binding_for = |name: &str| {
         object.dyn_map().and_then(|dyn_map| {
             dyn_map.keys().find_map(|key| {
@@ -551,7 +551,8 @@ fn aot_shape_slot_map_for_object(
                         .as_ref()
                         .and_then(|meta| meta.get_field_index(name))
                         .and_then(|index| {
-                            (index < object.field_count()).then_some(StructuralSlotBinding::Field(index))
+                            (index < object.field_count())
+                                .then_some(StructuralSlotBinding::Field(index))
                         })
                         .or_else(|| {
                             layout_names
@@ -658,7 +659,9 @@ unsafe extern "C" fn helper_object_is_nominal(
         if nominal_type_id == target_nominal_type_id {
             return 1;
         }
-        current = classes.get_class(nominal_type_id).and_then(|class| class.parent_id);
+        current = classes
+            .get_class(nominal_type_id)
+            .and_then(|class| class.parent_id);
     }
     0
 }
@@ -711,7 +714,8 @@ unsafe extern "C" fn helper_object_get_shape_field(
         return abi::NULL_VALUE;
     };
     let object_ref = &*object_ptr.as_ptr();
-    let Some(adapter) = aot_ensure_shape_adapter_for_object(shared, object_ref, required_shape) else {
+    let Some(adapter) = aot_ensure_shape_adapter_for_object(shared, object_ref, required_shape)
+    else {
         return abi::NULL_VALUE;
     };
     match adapter.binding_for_slot(expected_slot as usize) {
@@ -766,7 +770,8 @@ unsafe extern "C" fn helper_object_set_shape_field(
         return 0;
     };
     let object_ref = &mut *object_ptr.as_ptr();
-    let Some(adapter) = aot_ensure_shape_adapter_for_object(shared, object_ref, required_shape) else {
+    let Some(adapter) = aot_ensure_shape_adapter_for_object(shared, object_ref, required_shape)
+    else {
         return 0;
     };
     match adapter.binding_for_slot(expected_slot as usize) {
@@ -775,7 +780,9 @@ unsafe extern "C" fn helper_object_set_shape_field(
             .map(|_| 1)
             .unwrap_or(0),
         StructuralSlotBinding::Dynamic(key) => {
-            object_ref.ensure_dyn_map().insert(key, Value::from_raw(value_raw));
+            object_ref
+                .ensure_dyn_map()
+                .insert(key, Value::from_raw(value_raw));
             1
         }
         StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => 0,
@@ -797,11 +804,20 @@ unsafe extern "C" fn helper_cast_value(
         if (target & CAST_TUPLE_LEN_FLAG) != 0 {
             let expected_len = (target & 0x3FFF) as usize;
             let Some(ptr) = (unsafe { value.as_ptr::<Array>() }) else {
-                aot_raise_type_error(ctx, format!("Cannot cast non-array value to tuple length {}", expected_len));
+                aot_raise_type_error(
+                    ctx,
+                    format!(
+                        "Cannot cast non-array value to tuple length {}",
+                        expected_len
+                    ),
+                );
                 return abi::NULL_VALUE;
             };
             if unsafe { &*ptr.as_ptr() }.len() != expected_len {
-                aot_raise_type_error(ctx, format!("Cannot cast array to tuple length {}", expected_len));
+                aot_raise_type_error(
+                    ctx,
+                    format!("Cannot cast array to tuple length {}", expected_len),
+                );
                 return abi::NULL_VALUE;
             }
             return value.raw();
@@ -809,7 +825,13 @@ unsafe extern "C" fn helper_cast_value(
         if (target & CAST_OBJECT_MIN_FIELDS_FLAG) != 0 {
             let required_fields = (target & 0x1FFF) as usize;
             let Some(ptr) = aot_object_ptr_checked(value) else {
-                aot_raise_type_error(ctx, format!("Cannot cast non-object value to object with {} required fields", required_fields));
+                aot_raise_type_error(
+                    ctx,
+                    format!(
+                        "Cannot cast non-object value to object with {} required fields",
+                        required_fields
+                    ),
+                );
                 return abi::NULL_VALUE;
             };
             let object = unsafe { &*ptr.as_ptr() };
@@ -817,7 +839,13 @@ unsafe extern "C" fn helper_cast_value(
                 .field_count()
                 .max(object.dyn_map().map(|dyn_map| dyn_map.len()).unwrap_or(0));
             if field_count < required_fields {
-                aot_raise_type_error(ctx, format!("Cannot cast object(field_count={}) to required field count {}", field_count, required_fields));
+                aot_raise_type_error(
+                    ctx,
+                    format!(
+                        "Cannot cast object(field_count={}) to required field count {}",
+                        field_count, required_fields
+                    ),
+                );
                 return abi::NULL_VALUE;
             }
             return value.raw();
@@ -825,7 +853,13 @@ unsafe extern "C" fn helper_cast_value(
         if (target & CAST_ARRAY_ELEM_KIND_FLAG) != 0 {
             let expected = target & 0x00FF;
             let Some(ptr) = (unsafe { value.as_ptr::<Array>() }) else {
-                aot_raise_type_error(ctx, format!("Cannot cast non-array value to array element mask 0x{:02X}", expected));
+                aot_raise_type_error(
+                    ctx,
+                    format!(
+                        "Cannot cast non-array value to array element mask 0x{:02X}",
+                        expected
+                    ),
+                );
                 return abi::NULL_VALUE;
             };
             let array = unsafe { &*ptr.as_ptr() };
@@ -835,7 +869,13 @@ unsafe extern "C" fn helper_cast_value(
                     actual |= CAST_KIND_NUMBER;
                 }
                 if (actual & expected) == 0 {
-                    aot_raise_type_error(ctx, format!("Cannot cast array element to required kind mask 0x{:02X}", expected));
+                    aot_raise_type_error(
+                        ctx,
+                        format!(
+                            "Cannot cast array element to required kind mask 0x{:02X}",
+                            expected
+                        ),
+                    );
                     return abi::NULL_VALUE;
                 }
             }
@@ -876,18 +916,23 @@ unsafe extern "C" fn helper_cast_value(
                 }
             }
         }
-        aot_raise_type_error(ctx, format!("Cannot cast value to runtime kind mask 0x{:04X}", expected));
+        aot_raise_type_error(
+            ctx,
+            format!("Cannot cast value to runtime kind mask 0x{:04X}", expected),
+        );
         return abi::NULL_VALUE;
     }
 
-    let Some(target_nominal_type_id) =
-        shared.resolve_nominal_type_id(module, target as usize)
+    let Some(target_nominal_type_id) = shared.resolve_nominal_type_id(module, target as usize)
     else {
         aot_raise_type_error(ctx, format!("Unknown nominal target {}", target));
         return abi::NULL_VALUE;
     };
     let Some(object_ptr) = aot_object_ptr_checked(value) else {
-        aot_raise_type_error(ctx, "Cannot cast non-object value to nominal type".to_string());
+        aot_raise_type_error(
+            ctx,
+            "Cannot cast non-object value to nominal type".to_string(),
+        );
         return abi::NULL_VALUE;
     };
     let object = unsafe { &*object_ptr.as_ptr() };
@@ -897,7 +942,9 @@ unsafe extern "C" fn helper_cast_value(
         if nominal_type_id == target_nominal_type_id {
             return value.raw();
         }
-        current = classes.get_class(nominal_type_id).and_then(|class| class.parent_id);
+        current = classes
+            .get_class(nominal_type_id)
+            .and_then(|class| class.parent_id);
     }
     aot_raise_type_error(ctx, "Cannot cast object to target nominal type".to_string());
     abi::NULL_VALUE
@@ -985,7 +1032,13 @@ unsafe extern "C" fn helper_dyn_get_prop(
                     .read()
                     .layout_field_names(obj.layout_id())
                     .map(|names| names.to_vec())
-                    .or_else(|| shared.structural_layout_shapes.read().get(&obj.layout_id()).cloned());
+                    .or_else(|| {
+                        shared
+                            .structural_layout_shapes
+                            .read()
+                            .get(&obj.layout_id())
+                            .cloned()
+                    });
                 layout_names.and_then(|names| names.iter().position(|name| name == &key_str))
             } {
                 obj.get_field(index).unwrap_or(Value::null()).raw()
@@ -1036,7 +1089,13 @@ unsafe extern "C" fn helper_dyn_set_prop(
                     .read()
                     .layout_field_names(obj.layout_id())
                     .map(|names| names.to_vec())
-                    .or_else(|| shared.structural_layout_shapes.read().get(&obj.layout_id()).cloned());
+                    .or_else(|| {
+                        shared
+                            .structural_layout_shapes
+                            .read()
+                            .get(&obj.layout_id())
+                            .cloned()
+                    });
                 layout_names.and_then(|names| names.iter().position(|name| name == &key_str))
             } {
                 let _ = obj.set_field(index, value);
@@ -1427,7 +1486,10 @@ pub unsafe extern "C" fn dispatch_registered_aot_entry(
     target(frame, ctx)
 }
 
-unsafe extern "C" fn helper_get_aot_func_ptr(func_id: u32, callee_frame: *mut AotFrame) -> AotEntryFn {
+unsafe extern "C" fn helper_get_aot_func_ptr(
+    func_id: u32,
+    callee_frame: *mut AotFrame,
+) -> AotEntryFn {
     let registry = aot_function_registry().read();
     if let Some(entry) = registry.functions.get(&func_id) {
         if entry.clones_len > 0 {
@@ -1827,9 +1889,8 @@ mod tests {
             parent_name: None,
             methods: Vec::new(),
         });
-        let seed_module = Arc::new(
-            Module::decode(&seed_module.encode()).expect("finalize seed module checksum"),
-        );
+        let seed_module =
+            Arc::new(Module::decode(&seed_module.encode()).expect("finalize seed module checksum"));
         shared
             .register_module(seed_module)
             .expect("register seed module");

@@ -59,6 +59,8 @@ class DisposableStack {
     }
 }
 
+export { DisposableStack, AsyncDisposableStack };
+
 class AsyncDisposableStack {
     private _disposed: boolean;
     private _callbacks: (() => Promise<void>)[];

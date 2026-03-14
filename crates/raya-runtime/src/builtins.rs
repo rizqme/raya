@@ -20,27 +20,54 @@ pub fn builtin_source_modules_for_mode(
 
 fn strict_builtin_source_modules() -> &'static [(&'static str, &'static str)] {
     &[
-        ("strict/array.raya", include_str!("../../raya-engine/builtins/strict/array.raya")),
-        ("strict/regexp.raya", include_str!("../../raya-engine/builtins/strict/regexp.raya")),
-        ("strict/object.raya", include_str!("../../raya-engine/builtins/strict/object.raya")),
-        ("strict/error.raya", include_str!("../../raya-engine/builtins/strict/error.raya")),
-        ("strict/symbol.raya", include_str!("../../raya-engine/builtins/strict/symbol.raya")),
+        (
+            "strict/object.raya",
+            include_str!("../../raya-engine/builtins/strict/object.raya"),
+        ),
+        (
+            "strict/symbol.raya",
+            include_str!("../../raya-engine/builtins/strict/symbol.raya"),
+        ),
         (
             "strict/globals.shared.raya",
             include_str!("../../raya-engine/builtins/strict/globals.shared.raya"),
         ),
-        ("strict/map.raya", include_str!("../../raya-engine/builtins/strict/map.raya")),
-        ("strict/set.raya", include_str!("../../raya-engine/builtins/strict/set.raya")),
+        (
+            "strict/error.raya",
+            include_str!("../../raya-engine/builtins/strict/error.raya"),
+        ),
+        (
+            "strict/array.raya",
+            include_str!("../../raya-engine/builtins/strict/array.raya"),
+        ),
+        (
+            "strict/regexp.raya",
+            include_str!("../../raya-engine/builtins/strict/regexp.raya"),
+        ),
+        (
+            "strict/map.raya",
+            include_str!("../../raya-engine/builtins/strict/map.raya"),
+        ),
+        (
+            "strict/set.raya",
+            include_str!("../../raya-engine/builtins/strict/set.raya"),
+        ),
         (
             "strict/buffer.raya",
             include_str!("../../raya-engine/builtins/strict/buffer.raya"),
         ),
-        ("strict/date.raya", include_str!("../../raya-engine/builtins/strict/date.raya")),
+        (
+            "strict/date.raya",
+            include_str!("../../raya-engine/builtins/strict/date.raya"),
+        ),
         (
             "strict/channel.raya",
             include_str!("../../raya-engine/builtins/strict/channel.raya"),
         ),
-        ("strict/mutex.raya", include_str!("../../raya-engine/builtins/strict/mutex.raya")),
+        (
+            "strict/mutex.raya",
+            include_str!("../../raya-engine/builtins/strict/mutex.raya"),
+        ),
         (
             "strict/promise.raya",
             include_str!("../../raya-engine/builtins/strict/promise.raya"),
@@ -62,15 +89,9 @@ fn strict_builtin_source_modules() -> &'static [(&'static str, &'static str)] {
 
 fn node_compat_builtin_source_modules() -> &'static [(&'static str, &'static str)] {
     &[
-        ("strict/array.raya", include_str!("../../raya-engine/builtins/strict/array.raya")),
-        ("strict/regexp.raya", include_str!("../../raya-engine/builtins/strict/regexp.raya")),
         (
             "node_compat/object.raya",
             include_str!("../../raya-engine/builtins/node_compat/object.raya"),
-        ),
-        (
-            "node_compat/error.raya",
-            include_str!("../../raya-engine/builtins/node_compat/error.raya"),
         ),
         (
             "node_compat/symbol.raya",
@@ -79,6 +100,26 @@ fn node_compat_builtin_source_modules() -> &'static [(&'static str, &'static str
         (
             "node_compat/globals.shared.raya",
             include_str!("../../raya-engine/builtins/node_compat/globals.shared.raya"),
+        ),
+        (
+            "node_compat/error.raya",
+            include_str!("../../raya-engine/builtins/node_compat/error.raya"),
+        ),
+        (
+            "node_compat/function_families.raya",
+            include_str!("../../raya-engine/builtins/node_compat/function_families.raya"),
+        ),
+        (
+            "node_compat/globals.raya",
+            include_str!("../../raya-engine/builtins/node_compat/globals.raya"),
+        ),
+        (
+            "strict/array.raya",
+            include_str!("../../raya-engine/builtins/strict/array.raya"),
+        ),
+        (
+            "strict/regexp.raya",
+            include_str!("../../raya-engine/builtins/strict/regexp.raya"),
         ),
         (
             "node_compat/map.raya",
@@ -131,14 +172,6 @@ fn node_compat_builtin_source_modules() -> &'static [(&'static str, &'static str
         (
             "node_compat/dataview.raya",
             include_str!("../../raya-engine/builtins/node_compat/dataview.raya"),
-        ),
-        (
-            "node_compat/globals.raya",
-            include_str!("../../raya-engine/builtins/node_compat/globals.raya"),
-        ),
-        (
-            "node_compat/function_families.raya",
-            include_str!("../../raya-engine/builtins/node_compat/function_families.raya"),
         ),
         (
             "node_compat/disposal.raya",

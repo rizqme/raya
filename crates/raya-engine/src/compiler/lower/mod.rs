@@ -8,8 +8,8 @@ mod expr;
 mod stmt;
 
 use crate::compiler::ir::{
-    BasicBlock, BasicBlockId, BinaryOp, NominalTypeId, FunctionId, IrClass, IrConstant, IrField,
-    IrFunction, IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, Register, RegisterId,
+    BasicBlock, BasicBlockId, BinaryOp, FunctionId, IrClass, IrConstant, IrField, IrFunction,
+    IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, NominalTypeId, Register, RegisterId,
     Terminator, TypeAliasId,
 };
 use crate::parser::ast::{
@@ -225,7 +225,10 @@ struct DecoratorInfo {
 /// Target of a decorator (used during code generation)
 enum DecoratorTarget {
     /// Class decorator - applied to the class itself
-    Class { nominal_type_id: u32, class_name: String },
+    Class {
+        nominal_type_id: u32,
+        class_name: String,
+    },
     /// Method decorator - applied to a specific method
     Method {
         nominal_type_id: u32,
@@ -545,7 +548,7 @@ pub struct Lowerer<'a> {
     closure_globals: FxHashMap<u16, FunctionId>,
     /// Stable global slots for top-level JS function declarations.
     /// Stored in source order so later declarations overwrite earlier ones.
-    js_top_level_function_globals: Vec<(u16, FunctionId)>,
+    js_top_level_function_globals: Vec<(Symbol, u16, FunctionId)>,
     /// Expression types from type checker (maps expr ptr to TypeId)
     expr_types: FxHashMap<usize, TypeId>,
     /// Type annotation types from checker (maps annotation ptr to TypeId)
@@ -1102,7 +1105,8 @@ impl<'a> Lowerer<'a> {
                     .insert(fn_name, ret_name);
             }
             if let Some(nominal_type_id) = self.try_extract_class_from_type(ret_type) {
-                self.function_return_class_map.insert(fn_name, nominal_type_id);
+                self.function_return_class_map
+                    .insert(fn_name, nominal_type_id);
             }
         }
     }
@@ -1317,6 +1321,19 @@ impl<'a> Lowerer<'a> {
         &self.errors
     }
 
+    pub fn module_global_slots(&self) -> std::collections::HashMap<String, u32> {
+        let mut slots = std::collections::HashMap::with_capacity(
+            self.module_var_globals.len() + usize::from(self.default_export_global.is_some()),
+        );
+        for (&name, &slot) in &self.module_var_globals {
+            slots.insert(self.interner.resolve(name).to_string(), slot as u32);
+        }
+        if let Some(slot) = self.default_export_global {
+            slots.entry("default".to_string()).or_insert(slot as u32);
+        }
+        slots
+    }
+
     pub fn structural_shape_member_sets(&self) -> Vec<Vec<String>> {
         let mut entries = self
             .module_structural_shapes
@@ -1527,18 +1544,24 @@ impl<'a> Lowerer<'a> {
                             ast::ImportSpecifier::Namespace(alias) => alias.name,
                             ast::ImportSpecifier::Default(local) => local.name,
                         };
-                        let global_index = *self.module_var_globals.entry(local_name).or_insert_with(|| {
-                            let global_index = self.next_global_index;
-                            self.next_global_index += 1;
-                            global_index
-                        });
+                        let global_index = *self
+                            .module_var_globals
+                            .entry(local_name)
+                            .or_insert_with(|| {
+                                let global_index = self.next_global_index;
+                                self.next_global_index += 1;
+                                global_index
+                            });
                         self.import_bindings.insert(local_name);
 
-                        if let Some(imported_ty) =
-                            self.type_ctx.lookup_named_type(self.interner.resolve(local_name))
+                        if let Some(imported_ty) = self
+                            .type_ctx
+                            .lookup_named_type(self.interner.resolve(local_name))
                         {
                             if imported_ty != UNRESOLVED {
-                                self.global_type_map.entry(global_index).or_insert(imported_ty);
+                                self.global_type_map
+                                    .entry(global_index)
+                                    .or_insert(imported_ty);
 
                                 if self.type_has_construct_signature(imported_ty) {
                                     self.mark_constructor_value_binding(
@@ -1682,19 +1705,25 @@ impl<'a> Lowerer<'a> {
                 Statement::FunctionDecl(func) => {
                     let func_id = self.register_function_decl(func);
                     if self.js_this_binding_compat {
-                        let global_index =
-                            *self.module_var_globals.entry(func.name.name).or_insert_with(|| {
+                        let global_index = *self
+                            .module_var_globals
+                            .entry(func.name.name)
+                            .or_insert_with(|| {
                                 let global_index = self.next_global_index;
                                 self.next_global_index += 1;
                                 global_index
                             });
-                        self.js_top_level_function_globals
-                            .push((global_index, func_id));
+                        self.js_top_level_function_globals.push((
+                            func.name.name,
+                            global_index,
+                            func_id,
+                        ));
                         if func.is_async {
                             self.closure_globals.insert(global_index, func_id);
                         }
                     }
-                    let wrapper_tag = module_wrapper_alias_tag(self.interner.resolve(func.name.name));
+                    let wrapper_tag =
+                        module_wrapper_alias_tag(self.interner.resolve(func.name.name));
                     self.register_nested_classes_in_block(&func.body.statements, wrapper_tag);
                 }
                 Statement::ClassDecl(class) => {
@@ -1889,14 +1918,17 @@ impl<'a> Lowerer<'a> {
                     if !self.variable_class_map.contains_key(&name) {
                         if let Some(init) = &decl.initializer {
                             if let ast::Expression::New(new_expr) = init {
-                                if let ast::Expression::Identifier(nominal_type_ident) = &*new_expr.callee
+                                if let ast::Expression::Identifier(nominal_type_ident) =
+                                    &*new_expr.callee
                                 {
                                     let nominal_type_id = self
                                         .class_map
                                         .get(&nominal_type_ident.name)
                                         .copied()
                                         .or_else(|| {
-                                            self.variable_class_map.get(&nominal_type_ident.name).copied()
+                                            self.variable_class_map
+                                                .get(&nominal_type_ident.name)
+                                                .copied()
                                         })
                                         .or_else(|| {
                                             self.nominal_type_id_from_type_name(
@@ -1914,9 +1946,12 @@ impl<'a> Lowerer<'a> {
                                                 self.interner.resolve(nominal_type_ident.name)
                                             );
                                         }
-                                    } else if self.import_bindings.contains(&nominal_type_ident.name)
-                                        || self.ambient_builtin_globals
-                                            .contains(self.interner.resolve(nominal_type_ident.name))
+                                    } else if self
+                                        .import_bindings
+                                        .contains(&nominal_type_ident.name)
+                                        || self.ambient_builtin_globals.contains(
+                                            self.interner.resolve(nominal_type_ident.name),
+                                        )
                                     {
                                         let ctor_ty = self
                                             .get_expr_type(&new_expr.callee)
@@ -2375,7 +2410,8 @@ impl<'a> Lowerer<'a> {
         self.next_nominal_type_id += 1;
 
         // Track per-declaration class ID (survives name collisions)
-        self.class_decl_ids.insert(class.span.start, nominal_type_id);
+        self.class_decl_ids
+            .insert(class.span.start, nominal_type_id);
         self.class_decl_history
             .entry(class.name.name)
             .or_default()
@@ -2387,7 +2423,10 @@ impl<'a> Lowerer<'a> {
         if let Some(tag) = wrapper_tag {
             let class_name = self.interner.resolve(class.name.name);
             let alias = format!("__t_{}_{}", tag, class_name);
-            if let Some(prev) = self.type_alias_class_map.insert(alias.clone(), nominal_type_id) {
+            if let Some(prev) = self
+                .type_alias_class_map
+                .insert(alias.clone(), nominal_type_id)
+            {
                 if prev != nominal_type_id {
                     self.errors.push(super::error::CompileError::InternalError {
                         message: format!(
@@ -2430,9 +2469,7 @@ impl<'a> Lowerer<'a> {
                     .get(&type_ref.name.name)
                     .copied()
                     .or_else(|| self.nominal_type_id_from_type_name(&parent_name));
-                let runtime_name = parent_class
-                    .is_none()
-                    .then_some(parent_name);
+                let runtime_name = parent_class.is_none().then_some(parent_name);
                 (parent_class, runtime_name)
             } else {
                 (None, None)
@@ -2636,7 +2673,9 @@ impl<'a> Lowerer<'a> {
                     }
 
                     if let Some(ret_type) = &method.return_type {
-                        if let Some(ret_nominal_type_id) = self.try_extract_class_from_type(ret_type) {
+                        if let Some(ret_nominal_type_id) =
+                            self.try_extract_class_from_type(ret_type)
+                        {
                             self.method_return_class_map
                                 .insert((nominal_type_id, method.name.name), ret_nominal_type_id);
                         } else if let Some(ret_class_name) =
@@ -2673,7 +2712,8 @@ impl<'a> Lowerer<'a> {
                             next_slot += 1;
                             s
                         });
-                    self.method_slot_map.insert((nominal_type_id, method_name), slot);
+                    self.method_slot_map
+                        .insert((nominal_type_id, method_name), slot);
                 }
             }
         }
@@ -2977,11 +3017,17 @@ impl<'a> Lowerer<'a> {
                 .unwrap_or(UNRESOLVED);
             let reg = self.alloc_register(ty);
             if let Some(type_ann) = &param.type_annotation {
-                let nominal_type_id =
-                    self.resolve_param_nominal_type_from_annotation(type_ann, function_type_params, None);
+                let nominal_type_id = self.resolve_param_nominal_type_from_annotation(
+                    type_ann,
+                    function_type_params,
+                    None,
+                );
                 if nominal_type_id.is_none() {
-                    let expected_ty =
-                        self.resolve_param_type_from_annotation(type_ann, function_type_params, None);
+                    let expected_ty = self.resolve_param_type_from_annotation(
+                        type_ann,
+                        function_type_params,
+                        None,
+                    );
                     if expected_ty != UNRESOLVED {
                         structural_param_bindings.push((reg.clone(), expected_ty));
                         if let Some(layout) =
@@ -3008,8 +3054,11 @@ impl<'a> Lowerer<'a> {
                         None,
                     );
                     if nominal_type_id.is_none() {
-                        let expected_ty =
-                            self.resolve_param_type_from_annotation(type_ann, function_type_params, None);
+                        let expected_ty = self.resolve_param_type_from_annotation(
+                            type_ann,
+                            function_type_params,
+                            None,
+                        );
                         if let Some(layout) =
                             self.structural_projection_layout_from_type_id(expected_ty)
                         {
@@ -3017,11 +3066,13 @@ impl<'a> Lowerer<'a> {
                                 .insert(ident.name, layout);
                             self.variable_class_map.remove(&ident.name);
                         } else {
-                            self.variable_structural_projection_fields.remove(&ident.name);
+                            self.variable_structural_projection_fields
+                                .remove(&ident.name);
                             self.variable_class_map.remove(&ident.name);
                         }
                     } else {
-                        self.variable_structural_projection_fields.remove(&ident.name);
+                        self.variable_structural_projection_fields
+                            .remove(&ident.name);
                     }
                     if let Some(nominal_type_id) = nominal_type_id {
                         self.variable_class_map.insert(ident.name, nominal_type_id);
@@ -3050,28 +3101,29 @@ impl<'a> Lowerer<'a> {
             .iter()
             .take_while(|param| !param.is_rest && param.default_value.is_none() && !param.optional)
             .count();
-        let is_strict_js = self.js_strict_context || func
-            .body
-            .statements
-            .iter()
-            .take_while(|stmt| {
-                matches!(
-                    stmt,
-                    Statement::Expression(ast::ExpressionStatement {
-                        expression: Expression::StringLiteral(_),
-                        ..
-                    })
-                )
-            })
-            .any(|stmt| {
-                matches!(
-                    stmt,
-                    Statement::Expression(ast::ExpressionStatement {
-                        expression: Expression::StringLiteral(lit),
-                        ..
-                    }) if self.interner.resolve(lit.value) == "use strict"
-                )
-            });
+        let is_strict_js = self.js_strict_context
+            || func
+                .body
+                .statements
+                .iter()
+                .take_while(|stmt| {
+                    matches!(
+                        stmt,
+                        Statement::Expression(ast::ExpressionStatement {
+                            expression: Expression::StringLiteral(_),
+                            ..
+                        })
+                    )
+                })
+                .any(|stmt| {
+                    matches!(
+                        stmt,
+                        Statement::Expression(ast::ExpressionStatement {
+                            expression: Expression::StringLiteral(lit),
+                            ..
+                        }) if self.interner.resolve(lit.value) == "use strict"
+                    )
+                });
 
         // Create function with fixed parameter count only
         let mut ir_func = IrFunction::new(name, params, return_ty);
@@ -3280,8 +3332,9 @@ impl<'a> Lowerer<'a> {
             self.global_type_map.insert(global_idx, undefined.ty);
             self.emit(IrInstr::StoreGlobal {
                 index: global_idx,
-                value: undefined,
+                value: undefined.clone(),
             });
+            self.emit_js_script_global_binding(name, undefined);
         }
     }
 
@@ -3291,7 +3344,7 @@ impl<'a> Lowerer<'a> {
         }
 
         let hoists = self.js_top_level_function_globals.clone();
-        for (global_idx, func_id) in hoists {
+        for (name, global_idx, func_id) in hoists {
             let closure = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
             self.emit(IrInstr::MakeClosure {
                 dest: closure.clone(),
@@ -3301,35 +3354,26 @@ impl<'a> Lowerer<'a> {
             self.global_type_map.insert(global_idx, closure.ty);
             self.emit(IrInstr::StoreGlobal {
                 index: global_idx,
-                value: closure,
+                value: closure.clone(),
             });
+            self.emit_js_script_global_binding(name, closure);
         }
     }
 
-    fn emit_js_global_this_binding(&mut self, name: Symbol, value: Register) {
+    fn emit_js_script_global_binding(&mut self, name: Symbol, value: Register) {
         if !self.js_this_binding_compat {
             return;
         }
 
-        let global_this_ty = self
-            .type_ctx
-            .lookup_named_type("globalThis")
-            .unwrap_or(UNRESOLVED);
-        let global_this = self.alloc_register(global_this_ty);
-        let global_name = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        let prop_name = self.alloc_register(TypeId::new(STRING_TYPE_ID));
         self.emit(IrInstr::Assign {
-            dest: global_name.clone(),
-            value: IrValue::Constant(IrConstant::String("globalThis".to_string())),
+            dest: prop_name.clone(),
+            value: IrValue::Constant(IrConstant::String(self.interner.resolve(name).to_string())),
         });
         self.emit(IrInstr::NativeCall {
-            dest: Some(global_this.clone()),
-            native_id: crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL,
-            args: vec![global_name],
-        });
-        self.emit(IrInstr::DynSetProp {
-            object: global_this,
-            property: self.interner.resolve(name).to_string(),
-            value,
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_BIND_SCRIPT_GLOBAL,
+            args: vec![prop_name, value],
         });
     }
 
@@ -3554,17 +3598,17 @@ impl<'a> Lowerer<'a> {
                         if param.is_rest {
                             // Extract rest parameter info for later processing
                             if let Pattern::Identifier(ident) = &param.pattern {
-                        let ty = param
-                            .type_annotation
-                            .as_ref()
-                            .map(|t| {
-                                self.resolve_param_type_from_annotation(
-                                    t,
-                                    method_type_params,
-                                    class_type_params,
-                                )
-                            })
-                            .unwrap_or(TypeId::new(ARRAY_TYPE_ID));
+                                let ty = param
+                                    .type_annotation
+                                    .as_ref()
+                                    .map(|t| {
+                                        self.resolve_param_type_from_annotation(
+                                            t,
+                                            method_type_params,
+                                            class_type_params,
+                                        )
+                                    })
+                                    .unwrap_or(TypeId::new(ARRAY_TYPE_ID));
                                 rest_param_info = Some((ident.name.clone(), ty));
                             }
                             continue;
@@ -3614,8 +3658,8 @@ impl<'a> Lowerer<'a> {
 
                             // Track class type for parameters with class type annotations
                             if let Some(type_ann) = &param.type_annotation {
-                                let param_nominal_type_id =
-                                    self.resolve_param_nominal_type_from_annotation(
+                                let param_nominal_type_id = self
+                                    .resolve_param_nominal_type_from_annotation(
                                         type_ann,
                                         method_type_params,
                                         class_type_params,
@@ -3633,14 +3677,17 @@ impl<'a> Lowerer<'a> {
                                             .insert(ident.name, layout);
                                         self.variable_class_map.remove(&ident.name);
                                     } else {
-                                        self.variable_structural_projection_fields.remove(&ident.name);
+                                        self.variable_structural_projection_fields
+                                            .remove(&ident.name);
                                         self.variable_class_map.remove(&ident.name);
                                     }
                                 } else {
-                                    self.variable_structural_projection_fields.remove(&ident.name);
+                                    self.variable_structural_projection_fields
+                                        .remove(&ident.name);
                                 }
                                 if let Some(param_nominal_type_id) = param_nominal_type_id {
-                                    self.variable_class_map.insert(ident.name, param_nominal_type_id);
+                                    self.variable_class_map
+                                        .insert(ident.name, param_nominal_type_id);
                                 }
                                 self.register_variable_type_hints_from_annotation(
                                     ident.name, type_ann,
@@ -3740,9 +3787,10 @@ impl<'a> Lowerer<'a> {
                     }
 
                     for (param_reg, expected_ty) in structural_param_bindings {
-                        if !self
-                            .emit_projected_shape_registration_for_register_type(&param_reg, expected_ty)
-                        {
+                        if !self.emit_projected_shape_registration_for_register_type(
+                            &param_reg,
+                            expected_ty,
+                        ) {
                             self.emit_structural_slot_registration_for_type(param_reg, expected_ty);
                         }
                     }
@@ -3808,7 +3856,9 @@ impl<'a> Lowerer<'a> {
 
                     // Add instance methods to the IR class vtable with slot index
                     if !method.is_static {
-                        if let Some(&slot) = self.method_slot_map.get(&(nominal_type_id, method.name.name))
+                        if let Some(&slot) = self
+                            .method_slot_map
+                            .get(&(nominal_type_id, method.name.name))
                         {
                             ir_class.add_method_with_slot(func_id, slot);
                         } else {
@@ -3887,15 +3937,18 @@ impl<'a> Lowerer<'a> {
                     let ty = param
                         .type_annotation
                         .as_ref()
-                        .map(|t| self.resolve_param_type_from_annotation(t, class_type_params, None))
+                        .map(|t| {
+                            self.resolve_param_type_from_annotation(t, class_type_params, None)
+                        })
                         .unwrap_or(UNRESOLVED);
                     let reg = self.alloc_register(ty);
                     if let Some(type_ann) = &param.type_annotation {
-                        let param_nominal_type_id = self.resolve_param_nominal_type_from_annotation(
-                            type_ann,
-                            class_type_params,
-                            None,
-                        );
+                        let param_nominal_type_id = self
+                            .resolve_param_nominal_type_from_annotation(
+                                type_ann,
+                                class_type_params,
+                                None,
+                            );
                         if param_nominal_type_id.is_none() {
                             let expected_ty = self.resolve_param_type_from_annotation(
                                 type_ann,
@@ -3918,8 +3971,8 @@ impl<'a> Lowerer<'a> {
                         let local_idx = self.allocate_local(ident.name);
                         self.local_registers.insert(local_idx, reg.clone());
                         if let Some(type_ann) = &param.type_annotation {
-                            let param_nominal_type_id =
-                                self.resolve_param_nominal_type_from_annotation(
+                            let param_nominal_type_id = self
+                                .resolve_param_nominal_type_from_annotation(
                                     type_ann,
                                     class_type_params,
                                     None,
@@ -3937,14 +3990,17 @@ impl<'a> Lowerer<'a> {
                                         .insert(ident.name, layout);
                                     self.variable_class_map.remove(&ident.name);
                                 } else {
-                                    self.variable_structural_projection_fields.remove(&ident.name);
+                                    self.variable_structural_projection_fields
+                                        .remove(&ident.name);
                                     self.variable_class_map.remove(&ident.name);
                                 }
                             } else {
-                                self.variable_structural_projection_fields.remove(&ident.name);
+                                self.variable_structural_projection_fields
+                                    .remove(&ident.name);
                             }
                             if let Some(param_nominal_type_id) = param_nominal_type_id {
-                                self.variable_class_map.insert(ident.name, param_nominal_type_id);
+                                self.variable_class_map
+                                    .insert(ident.name, param_nominal_type_id);
                             }
                             self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                             if self.type_annotation_is_callable(type_ann) {
@@ -4035,7 +4091,10 @@ impl<'a> Lowerer<'a> {
                 }
 
                 for (param_reg, expected_ty) in structural_param_bindings {
-                    if !self.emit_projected_shape_registration_for_register_type(&param_reg, expected_ty) {
+                    if !self.emit_projected_shape_registration_for_register_type(
+                        &param_reg,
+                        expected_ty,
+                    ) {
                         self.emit_structural_slot_registration_for_type(param_reg, expected_ty);
                     }
                 }
@@ -4481,7 +4540,11 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Resolve a method slot for a class, falling back to inherited slots.
-    pub(super) fn find_method_slot(&self, nominal_type_id: NominalTypeId, method_name: Symbol) -> Option<u16> {
+    pub(super) fn find_method_slot(
+        &self,
+        nominal_type_id: NominalTypeId,
+        method_name: Symbol,
+    ) -> Option<u16> {
         self.method_slot_map
             .get(&(nominal_type_id, method_name))
             .copied()
@@ -4741,10 +4804,18 @@ impl<'a> Lowerer<'a> {
 
         // Create nominal_type_id register
         let nominal_type_id_val = match &target {
-            DecoratorTarget::Class { nominal_type_id, .. } => *nominal_type_id,
-            DecoratorTarget::Method { nominal_type_id, .. } => *nominal_type_id,
-            DecoratorTarget::Field { nominal_type_id, .. } => *nominal_type_id,
-            DecoratorTarget::Parameter { nominal_type_id, .. } => *nominal_type_id,
+            DecoratorTarget::Class {
+                nominal_type_id, ..
+            } => *nominal_type_id,
+            DecoratorTarget::Method {
+                nominal_type_id, ..
+            } => *nominal_type_id,
+            DecoratorTarget::Field {
+                nominal_type_id, ..
+            } => *nominal_type_id,
+            DecoratorTarget::Parameter {
+                nominal_type_id, ..
+            } => *nominal_type_id,
         };
         let nominal_type_id_reg = self.alloc_register(TypeId::new(0));
         self.emit(IrInstr::Assign {
@@ -4767,7 +4838,9 @@ impl<'a> Lowerer<'a> {
         // Build JS-model decorator arguments from runtime targets.
         // Registration still uses internal class IDs in separate native calls.
         let args = match &target {
-            DecoratorTarget::Class { nominal_type_id, .. } => {
+            DecoratorTarget::Class {
+                nominal_type_id, ..
+            } => {
                 vec![self.build_class_decorator_target(*nominal_type_id)]
             }
             DecoratorTarget::Method {
@@ -4941,7 +5014,12 @@ impl<'a> Lowerer<'a> {
                 self.emit(IrInstr::NativeCall {
                     dest: None,
                     native_id: registration_native_id,
-                    args: vec![nominal_type_id_reg, method_name_reg, param_index_reg, dec_name_reg],
+                    args: vec![
+                        nominal_type_id_reg,
+                        method_name_reg,
+                        param_index_reg,
+                        dec_name_reg,
+                    ],
                 });
             }
         }
@@ -4994,7 +5072,11 @@ impl<'a> Lowerer<'a> {
     ///
     /// Prefer the actual method function closure; if unresolved, fall back to
     /// class target semantics.
-    fn build_method_decorator_target(&mut self, nominal_type_id: u32, method_name: &str) -> Register {
+    fn build_method_decorator_target(
+        &mut self,
+        nominal_type_id: u32,
+        method_name: &str,
+    ) -> Register {
         let nominal_type_id = NominalTypeId::new(nominal_type_id);
         let func_id = self.interner.lookup(method_name).and_then(|sym| {
             self.method_map
@@ -5264,8 +5346,9 @@ impl<'a> Lowerer<'a> {
                             if nominal_type_id.is_some() {
                                 return None; // multiple class refs — ambiguous
                             }
-                            nominal_type_id = self
-                                .nominal_type_id_from_type_name(self.interner.resolve(type_ref.name.name));
+                            nominal_type_id = self.nominal_type_id_from_type_name(
+                                self.interner.resolve(type_ref.name.name),
+                            );
                         }
                         _ => return None, // non-null, non-class member
                     }
@@ -5358,7 +5441,11 @@ impl<'a> Lowerer<'a> {
         None
     }
 
-    fn populate_alias_object_class_map(&mut self, alias_name: &str, nominal_type_id: NominalTypeId) {
+    fn populate_alias_object_class_map(
+        &mut self,
+        alias_name: &str,
+        nominal_type_id: NominalTypeId,
+    ) {
         // Prefer type IDs resolved from explicit type-alias declarations; fall back
         // to named type lookup when available.
         let alias_ty = self
@@ -5371,7 +5458,8 @@ impl<'a> Lowerer<'a> {
             return;
         }
 
-        self.type_alias_object_class_map.insert(alias_ty, nominal_type_id);
+        self.type_alias_object_class_map
+            .insert(alias_ty, nominal_type_id);
 
         // Some checker paths materialize structurally equivalent object/interface
         // TypeIds distinct from the named alias type. Pre-populate those equivalent
@@ -5566,17 +5654,11 @@ impl<'a> Lowerer<'a> {
 
     /// Register canonical member names for a structural shape without attaching
     /// any object-specific runtime view.
-    fn emit_structural_shape_name_registration_for_ordered_names(
-        &mut self,
-        names: Vec<String>,
-    ) {
+    fn emit_structural_shape_name_registration_for_ordered_names(&mut self, names: Vec<String>) {
         self.emit_structural_registration_for_ordered_names(names);
     }
 
-    fn emit_shape_name_registration_for_projection_layout(
-        &mut self,
-        layout: Vec<(String, usize)>,
-    ) {
+    fn emit_shape_name_registration_for_projection_layout(&mut self, layout: Vec<(String, usize)>) {
         let mut names = layout.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
         names.sort_unstable();
         names.dedup();
@@ -5781,9 +5863,7 @@ impl<'a> Lowerer<'a> {
                         ast::Type::Primitive(ast::PrimitiveType::Null) => {}
                         _ => {
                             let ty = self.resolve_constraint_backed_type_from_annotation(
-                                member,
-                                primary,
-                                secondary,
+                                member, primary, secondary,
                             )?;
                             match found {
                                 None => found = Some(ty),
@@ -5813,8 +5893,9 @@ impl<'a> Lowerer<'a> {
         }
 
         if let Some(constraint_ty) = constraint_backed {
-            let resolved_has_projection =
-                self.structural_projection_layout_from_type_id(resolved).is_some();
+            let resolved_has_projection = self
+                .structural_projection_layout_from_type_id(resolved)
+                .is_some();
             let constraint_has_projection = self
                 .structural_projection_layout_from_type_id(constraint_ty)
                 .is_some();
@@ -5915,6 +5996,7 @@ impl<'a> Lowerer<'a> {
     fn expression_is_callable_hint(&self, expr: &Expression) -> bool {
         match expr {
             Expression::Arrow(_) => true,
+            Expression::Function(_) => true,
             Expression::TypeCast(cast) => {
                 self.type_annotation_is_callable(&cast.target_type)
                     || self.expression_is_callable_hint(&cast.object)
@@ -5987,7 +6069,9 @@ impl<'a> Lowerer<'a> {
             return true;
         }
 
-        if self.variable_structural_projection_fields.contains_key(&name)
+        if self
+            .variable_structural_projection_fields
+            .contains_key(&name)
             || self.constructor_value_ctor_map.contains_key(&name)
         {
             return false;
@@ -6004,7 +6088,8 @@ impl<'a> Lowerer<'a> {
 
         match self.type_ctx.get(ty_id) {
             Some(Type::Class(class_ty)) => {
-                self.nominal_type_id_from_type_name(&class_ty.name).is_none()
+                self.nominal_type_id_from_type_name(&class_ty.name)
+                    .is_none()
                     && !self.type_registry.has_builtin_dispatch_type(&class_ty.name)
             }
             Some(Type::Reference(type_ref)) => self
@@ -6019,9 +6104,7 @@ impl<'a> Lowerer<'a> {
             Some(Type::TypeVar(tv)) => tv
                 .constraint
                 .is_some_and(|constraint| self.type_requires_late_bound_dispatch(constraint)),
-            Some(Type::Generic(generic)) => {
-                self.type_requires_late_bound_dispatch(generic.base)
-            }
+            Some(Type::Generic(generic)) => self.type_requires_late_bound_dispatch(generic.base),
             _ => false,
         }
     }
@@ -6052,7 +6135,6 @@ impl<'a> Lowerer<'a> {
             );
         }
     }
-
 }
 
 #[cfg(test)]

@@ -470,11 +470,7 @@ impl DecoratorRegistry {
     }
 
     /// Check if a nominal type has a specific decorator
-    pub fn nominal_type_has_decorator(
-        &self,
-        nominal_type_id: usize,
-        decorator_name: &str,
-    ) -> bool {
+    pub fn nominal_type_has_decorator(&self, nominal_type_id: usize, decorator_name: &str) -> bool {
         self.nominal_type_decorators
             .get(&nominal_type_id)
             .map(|decorators| decorators.iter().any(|d| d.name == decorator_name))
@@ -768,7 +764,9 @@ mod tests {
         assert!(registry
             .get_parameter_decorators(999, "nonexistent", 0)
             .is_empty());
-        assert!(registry.get_nominal_types_with_decorator("Unknown").is_empty());
+        assert!(registry
+            .get_nominal_types_with_decorator("Unknown")
+            .is_empty());
         assert!(!registry.nominal_type_has_decorator(999, "Unknown"));
     }
 }

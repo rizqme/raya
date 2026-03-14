@@ -7,6 +7,9 @@ const __DIGITS: string = "0123456789abcdefghijklmnopqrstuvwxyz";
 const globalThis: Object = new Object();
 
 // Reflect/Proxy native IDs (same internal primitives used by std:reflect).
+const NC_REFLECT_GET: number = 0x0D20;
+const NC_REFLECT_SET: number = 0x0D21;
+const NC_REFLECT_HAS: number = 0x0D22;
 const NC_REFLECT_GET_FIELD_NAMES: number = 0x0D23;
 const NC_REFLECT_GET_FIELD_INFO: number = 0x0D24;
 const NC_REFLECT_GET_FIELDS: number = 0x0D25;
@@ -15,6 +18,8 @@ const NC_REFLECT_CONSTRUCT: number = 0x0D40;
 const NC_REFLECT_CREATE_PROXY: number = 0x0DB0;
 const NC_REFLECT_IS_PROXY: number = 0x0DB1;
 const NC_REFLECT_GET_PROXY_TARGET: number = 0x0DB2;
+const NC_REFLECT_GET_PROXY_HANDLER: number = 0x0DB3;
+const NC_REFLECT_REVOKE_PROXY: number = 0x0DB4;
 const NC_OBJECT_CONSTRUCT_DYNAMIC_CLASS: number = 0x0007;
 const OBJECT_IS_EXTENSIBLE: number = 0x0015;
 const OBJECT_PREVENT_EXTENSIONS: number = 0x0016;
@@ -22,6 +27,20 @@ const OBJECT_PREVENT_EXTENSIONS: number = 0x0016;
 function __is_space(ch: string): boolean {
     return ch == " " || ch == "\t" || ch == "\n" || ch == "\r";
 }
+
+export {
+    globalThis,
+    parseInt,
+    parseFloat,
+    isNaN,
+    isFinite,
+    escape,
+    unescape,
+    eval,
+    Reflect,
+    Math,
+    Proxy,
+};
 
 function parseInt(input: string, radix: number = 10): number {
     let s = input.trim();
@@ -181,71 +200,27 @@ class __NodeCompatReflect {
     }
 
     get(target: Proxy<Object> | Object, key: string): Object | string | number | boolean | null {
-        if (target instanceof Proxy) {
-            let proxy = target as Proxy<Object>;
-            let proxyTarget = proxy.getTarget();
-            if (proxyTarget == null) {
-                return null;
-            }
-
-            let handler = proxy.getHandler();
-            if (handler != null) {
-                let trap = handler["get"];
-                if (trap != null) {
-                    let fn = trap as ((target: Object, propertyKey: string) => Object | string | number | boolean | null);
-                    return fn(proxyTarget, key);
-                }
-            }
-
-            return proxyTarget[key];
-        }
-        return target[key];
+        return __NATIVE_CALL<Object | string | number | boolean | null>(NC_REFLECT_GET, target, key);
     }
 
     set(target: Proxy<Object> | Object, key: string, value: Object | string | number | boolean | null): boolean {
-        if (target instanceof Proxy) {
-            let proxy = target as Proxy<Object>;
-            let proxyTarget = proxy.getTarget();
-            if (proxyTarget == null) {
+        return __NATIVE_CALL<boolean>(NC_REFLECT_SET, target, key, value);
+    }
+
+    defineProperty(target: Proxy<Object> | Object, key: string, descriptor: Object): boolean {
+        try {
+            Object.defineProperty(target, key, descriptor);
+            return true;
+        } catch (e) {
+            if (e instanceof TypeError) {
                 return false;
             }
-
-            let handler = proxy.getHandler();
-            if (handler != null) {
-                let trap = handler["set"];
-                if (trap != null) {
-                    let fn = trap as ((target: Object, propertyKey: string, value: Object | string | number | boolean | null) => boolean);
-                    return fn(proxyTarget, key, value);
-                }
-            }
-
-            proxyTarget[key] = value;
-            return true;
+            throw e;
         }
-        target[key] = value;
-        return true;
     }
 
     has(target: Proxy<Object> | Object, key: string): boolean {
-        if (target instanceof Proxy) {
-            let proxy = target as Proxy<Object>;
-            let proxyTarget = proxy.getTarget();
-            if (proxyTarget == null) {
-                return false;
-            }
-
-            let handler = proxy.getHandler();
-            if (handler != null) {
-                let trap = handler["has"];
-                if (trap != null) {
-                    let fn = trap as ((target: Object, propertyKey: string) => boolean);
-                    return fn(proxyTarget, key);
-                }
-            }
-
-            return proxyTarget[key] != null;
-        }
-        return target[key] != null;
+        return __NATIVE_CALL<boolean>(NC_REFLECT_HAS, target, key);
     }
 
     construct(target: any, args: any = null, newTarget: any = null): Object {
@@ -313,6 +288,20 @@ class Proxy<T extends Object> {
     }
 
     getHandler(): Object | null {
-        return this._handler;
+        return __NATIVE_CALL<Object | null>(NC_REFLECT_GET_PROXY_HANDLER, this._proxy);
+    }
+
+    __revoke(): void {
+        __NATIVE_CALL<void>(NC_REFLECT_REVOKE_PROXY, this._proxy);
+    }
+
+    static revocable(target: any, handler: any): Object {
+        let proxy = new Proxy<any>(target, handler);
+        return {
+            proxy: proxy,
+            revoke: () => {
+                proxy.__revoke();
+            },
+        };
     }
 }

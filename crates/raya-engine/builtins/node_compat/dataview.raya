@@ -112,3 +112,5 @@ class DataView {
         ab.setFloat64(i, value);
     }
 }
+
+export { DataView };

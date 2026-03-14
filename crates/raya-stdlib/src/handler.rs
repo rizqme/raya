@@ -222,7 +222,13 @@ mod tests {
     #[test]
     fn test_logger_info() {
         let (gc, classes, layouts, class_metadata) = create_test_context();
-        let ctx = EngineContext::new(&gc, &classes, &layouts, TaskId::from_u64(1), &class_metadata);
+        let ctx = EngineContext::new(
+            &gc,
+            &classes,
+            &layouts,
+            TaskId::from_u64(1),
+            &class_metadata,
+        );
 
         // Allocate string arguments using the context
         let hello = ctx.create_string("hello");
@@ -236,7 +242,13 @@ mod tests {
     #[test]
     fn test_math_abs() {
         let (gc, classes, layouts, class_metadata) = create_test_context();
-        let ctx = EngineContext::new(&gc, &classes, &layouts, TaskId::from_u64(1), &class_metadata);
+        let ctx = EngineContext::new(
+            &gc,
+            &classes,
+            &layouts,
+            TaskId::from_u64(1),
+            &class_metadata,
+        );
 
         let handler = StdNativeHandler;
         let result = handler.call(&ctx, 0x2000, &[NativeValue::f64(-5.0)]);
@@ -251,7 +263,13 @@ mod tests {
     #[test]
     fn test_math_pi() {
         let (gc, classes, layouts, class_metadata) = create_test_context();
-        let ctx = EngineContext::new(&gc, &classes, &layouts, TaskId::from_u64(1), &class_metadata);
+        let ctx = EngineContext::new(
+            &gc,
+            &classes,
+            &layouts,
+            TaskId::from_u64(1),
+            &class_metadata,
+        );
 
         let handler = StdNativeHandler;
         let result = handler.call(&ctx, 0x2015, &[]);
@@ -267,7 +285,13 @@ mod tests {
     #[test]
     fn test_unhandled() {
         let (gc, classes, layouts, class_metadata) = create_test_context();
-        let ctx = EngineContext::new(&gc, &classes, &layouts, TaskId::from_u64(1), &class_metadata);
+        let ctx = EngineContext::new(
+            &gc,
+            &classes,
+            &layouts,
+            TaskId::from_u64(1),
+            &class_metadata,
+        );
 
         let handler = StdNativeHandler;
         let result = handler.call(&ctx, 0xFFFF, &[]);

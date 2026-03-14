@@ -23,6 +23,8 @@ class IntlNumberFormat {
     }
 }
 
+export { IntlNumberFormat, IntlDateTimeFormat, IntlResolvedOptions, Intl };
+
 class IntlDateTimeFormat {
     private _locale: string;
     private _options: Object | null;

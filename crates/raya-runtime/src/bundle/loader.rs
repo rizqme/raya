@@ -114,12 +114,14 @@ impl BundlePayload {
         bytecode_offset: u32,
         layout_id: u32,
     ) -> Option<&LoadedFunction> {
-        self.profile_clones.get(&global_func_id).and_then(|variants| {
-            variants.iter().find(|variant| {
-                variant.guard_bytecode_offset == Some(bytecode_offset)
-                    && variant.guard_layout_id == Some(layout_id)
+        self.profile_clones
+            .get(&global_func_id)
+            .and_then(|variants| {
+                variants.iter().find(|variant| {
+                    variant.guard_bytecode_offset == Some(bytecode_offset)
+                        && variant.guard_layout_id == Some(layout_id)
+                })
             })
-        })
     }
 }
 

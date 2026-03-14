@@ -47,6 +47,8 @@ pub const OBJECT_GET_CLASS_VALUE: u16 = 0x0014;
 pub const OBJECT_IS_EXTENSIBLE: u16 = 0x0015;
 /// Object.preventExtensions(obj) using JS object semantics.
 pub const OBJECT_PREVENT_EXTENSIONS: u16 = 0x0016;
+/// Create/update a script-style global var binding on globalThis.
+pub const OBJECT_BIND_SCRIPT_GLOBAL: u16 = 0x0017;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -547,6 +549,9 @@ pub fn native_name(id: u16) -> &'static str {
         FUNCTION_CONSTRUCTOR_HELPER => "Function.constructor",
         OBJECT_CALL_CONSTRUCTOR_BY_NAME => "Object.callConstructorByName",
         OBJECT_GET_CLASS_VALUE => "Object.getClassValue",
+        OBJECT_IS_EXTENSIBLE => "Object.isExtensible",
+        OBJECT_PREVENT_EXTENSIONS => "Object.preventExtensions",
+        OBJECT_BIND_SCRIPT_GLOBAL => "Object.bindScriptGlobal",
 
         // Array
         ARRAY_PUSH => "Array.push",
@@ -664,9 +669,6 @@ pub fn native_name(id: u16) -> &'static str {
         REFLECT_CONSTRUCT => "Reflect.construct",
         REFLECT_ALLOCATE => "Reflect.allocate",
         REFLECT_CLONE => "Reflect.clone",
-
-        OBJECT_IS_EXTENSIBLE => "Object.isExtensible",
-        OBJECT_PREVENT_EXTENSIONS => "Object.preventExtensions",
 
         // Number
         NUMBER_TO_FIXED => "Number.toFixed",

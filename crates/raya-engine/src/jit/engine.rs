@@ -306,8 +306,7 @@ impl JitEngine {
                 }
                 _ => {}
             }
-            let operand_len =
-                crate::compiler::codegen::emit::opcode_size(opcode).saturating_sub(1);
+            let operand_len = crate::compiler::codegen::emit::opcode_size(opcode).saturating_sub(1);
             ip = ip.saturating_add(operand_len.min(code.len().saturating_sub(ip)));
         }
         deps.into_iter().collect()
@@ -439,7 +438,7 @@ mod tests {
                 template_symbol_table: vec![],
                 mono_debug_map: vec![],
                 structural_shapes: vec![],
-            structural_layouts: vec![],
+                structural_layouts: vec![],
             },
             exports: vec![],
             imports: vec![],

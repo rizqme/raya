@@ -346,7 +346,12 @@ mod tests {
         field_count: usize,
         parent_id: usize,
     ) -> usize {
-        registry.register_class(Class::with_parent(0, name.to_string(), field_count, parent_id))
+        registry.register_class(Class::with_parent(
+            0,
+            name.to_string(),
+            field_count,
+            parent_id,
+        ))
     }
 
     #[test]

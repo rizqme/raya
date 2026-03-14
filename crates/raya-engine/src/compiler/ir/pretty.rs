@@ -425,7 +425,11 @@ fn format_instr(instr: &IrInstr) -> String {
             dest,
             nominal_type_id,
         } => {
-            format!("{} = new_type nominal_type{}", dest, nominal_type_id.as_u32())
+            format!(
+                "{} = new_type nominal_type{}",
+                dest,
+                nominal_type_id.as_u32()
+            )
         }
         IrInstr::NewArray { dest, len, elem_ty } => {
             format!("{} = new_array type{}[{}]", dest, elem_ty.as_u32(), len)

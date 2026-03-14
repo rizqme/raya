@@ -739,6 +739,7 @@ impl ModuleCompiler {
                 scope: exported.scope,
                 signature_hash: exported.signature_hash,
                 type_signature: Some(exported.type_signature.clone()),
+                runtime_global_slot: None,
                 nominal_type: None,
             });
         }
@@ -760,6 +761,7 @@ impl ModuleCompiler {
                 scope: exported.scope,
                 signature_hash: exported.signature_hash,
                 type_signature: Some(exported.type_signature.clone()),
+                runtime_global_slot: None,
                 nominal_type: Some(NominalTypeExport {
                     local_nominal_type_index: class_index as u32,
                     constructor_function_index: None,
@@ -778,6 +780,7 @@ impl ModuleCompiler {
                 scope: exported.scope,
                 signature_hash: exported.signature_hash,
                 type_signature: Some(exported.type_signature.clone()),
+                runtime_global_slot: None,
                 nominal_type: None,
             });
         }
@@ -839,17 +842,16 @@ impl ModuleCompiler {
         current_path: &Path,
     ) -> ModuleCompileResult<()> {
         if self.builtin_globals.is_none() {
-            let exports =
-                if let Some(override_exports) = self.builtin_globals_override.as_ref() {
-                    override_exports.clone()
-                } else {
-                    builtin_global_exports(self.builtin_surface_mode).map_err(|e| {
-                        ModuleCompileError::TypeError {
-                            path: current_path.to_path_buf(),
-                            message: format!("Failed to load builtin declaration surface: {e}"),
-                        }
-                    })?
-                };
+            let exports = if let Some(override_exports) = self.builtin_globals_override.as_ref() {
+                override_exports.clone()
+            } else {
+                builtin_global_exports(self.builtin_surface_mode).map_err(|e| {
+                    ModuleCompileError::TypeError {
+                        path: current_path.to_path_buf(),
+                        message: format!("Failed to load builtin declaration surface: {e}"),
+                    }
+                })?
+            };
             self.builtin_globals = Some(exports);
         }
 
@@ -962,13 +964,11 @@ impl ModuleCompiler {
                 let mut names = exports
                     .symbols
                     .iter()
-                    .filter_map(|(name, exported)| {
-                        match exported.kind {
-                            crate::parser::checker::SymbolKind::TypeAlias
-                            | crate::parser::checker::SymbolKind::TypeParameter
-                            | crate::parser::checker::SymbolKind::Interface => None,
-                            _ => Some(name.clone()),
-                        }
+                    .filter_map(|(name, exported)| match exported.kind {
+                        crate::parser::checker::SymbolKind::TypeAlias
+                        | crate::parser::checker::SymbolKind::TypeParameter
+                        | crate::parser::checker::SymbolKind::Interface => None,
+                        _ => Some(name.clone()),
                     })
                     .collect::<Vec<_>>();
                 if !names.iter().any(|name| name == "EventEmitter") {
@@ -980,8 +980,7 @@ impl ModuleCompiler {
             .unwrap_or_else(|| vec!["EventEmitter".to_string()]);
 
         // Compile
-        let allow_unresolved_runtime_fallback =
-            !matches!(self.checker_mode, TypeSystemMode::Raya);
+        let allow_unresolved_runtime_fallback = !matches!(self.checker_mode, TypeSystemMode::Raya);
         let js_compat_lowering = !matches!(self.checker_mode, TypeSystemMode::Raya);
         let mut compiler = Compiler::new(type_ctx, &interner)
             .with_expr_types(check_result.expr_types)
@@ -995,15 +994,21 @@ impl ModuleCompiler {
         compiler = compiler.with_emit_generic_templates(true);
         compiler = compiler.with_ambient_builtin_globals(ambient_builtin_globals);
 
-        let mut bytecode =
-            compiler
-                .compile_via_ir(&ast)
-                .map_err(|e| ModuleCompileError::CompileError {
-                    path: path.clone(),
-                    source: e,
-                })?;
+        let (mut bytecode, lowering_metadata) = compiler
+            .compile_via_ir_with_lowering_metadata(&ast)
+            .map_err(|e| ModuleCompileError::CompileError {
+                path: path.clone(),
+                source: e,
+            })?;
         bytecode.metadata.name = module_name;
-        self.populate_link_tables(&mut bytecode, path, &ast, &interner, &module_exports)?;
+        self.populate_link_tables(
+            &mut bytecode,
+            path,
+            &ast,
+            &interner,
+            &module_exports,
+            &lowering_metadata.module_global_slots,
+        )?;
         let encoded = bytecode.encode();
         bytecode = BytecodeModule::decode(&encoded).map_err(|e| ModuleCompileError::TypeError {
             path: path.clone(),
@@ -1350,9 +1355,7 @@ impl ModuleCompiler {
         exports
     }
 
-    fn top_level_module_scope_id(
-        symbols: &crate::parser::checker::SymbolTable,
-    ) -> Option<ScopeId> {
+    fn top_level_module_scope_id(symbols: &crate::parser::checker::SymbolTable) -> Option<ScopeId> {
         for idx in 0..symbols.scope_count() {
             let scope_id = ScopeId(idx as u32);
             let scope = symbols.get_scope(scope_id);
@@ -1370,8 +1373,7 @@ impl ModuleCompiler {
         local_name: &str,
         export_offset: usize,
     ) -> Option<&'a Symbol> {
-        if Self::has_top_level_declaration_before_offset(ast, interner, local_name, export_offset)
-        {
+        if Self::has_top_level_declaration_before_offset(ast, interner, local_name, export_offset) {
             if let Some(module_scope_id) = Self::top_level_module_scope_id(symbols) {
                 if let Some(symbol) = symbols.resolve_from_scope(local_name, module_scope_id) {
                     if symbols.get_scope(symbol.scope_id).kind == ScopeKind::Module {
@@ -1390,17 +1392,6 @@ impl ModuleCompiler {
             ScopeKind::Function | ScopeKind::Block | ScopeKind::Class | ScopeKind::Loop => {
                 SymbolScope::Local
             }
-        }
-    }
-
-    fn import_local_binding_name(specifier: &ImportSpecifier, interner: &Interner) -> String {
-        match specifier {
-            ImportSpecifier::Named { name, alias } => alias
-                .as_ref()
-                .map(|a| interner.resolve(a.name).to_string())
-                .unwrap_or_else(|| interner.resolve(name.name).to_string()),
-            ImportSpecifier::Default(local) => interner.resolve(local.name).to_string(),
-            ImportSpecifier::Namespace(alias) => interner.resolve(alias.name).to_string(),
         }
     }
 
@@ -1479,52 +1470,6 @@ impl ModuleCompiler {
         false
     }
 
-    fn collect_module_global_slots(ast: &AstModule, interner: &Interner) -> HashMap<String, u32> {
-        let mut slots = HashMap::new();
-        let mut next_slot = 0u32;
-
-        // Match lowerer's first reservation pass (imports + export-default) in source order.
-        for stmt in &ast.statements {
-            if let Statement::ImportDecl(import_decl) = stmt {
-                for spec in &import_decl.specifiers {
-                    let local = Self::import_local_binding_name(spec, interner);
-                    slots.entry(local).or_insert_with(|| {
-                        let slot = next_slot;
-                        next_slot = next_slot.saturating_add(1);
-                        slot
-                    });
-                }
-            }
-            if matches!(stmt, Statement::ExportDecl(ExportDecl::Default { .. })) {
-                slots.entry("default".to_string()).or_insert_with(|| {
-                    let slot = next_slot;
-                    next_slot = next_slot.saturating_add(1);
-                    slot
-                });
-            }
-        }
-
-        // Then reserve module-level variable declaration bindings.
-        for stmt in &ast.statements {
-            let Some(stmt) = Self::top_level_declaration_stmt(stmt) else {
-                continue;
-            };
-            if let Statement::VariableDecl(variable) = stmt {
-                let mut names = Vec::new();
-                Self::collect_pattern_binding_names(&variable.pattern, interner, &mut names);
-                for name in names {
-                    slots.entry(name).or_insert_with(|| {
-                        let slot = next_slot;
-                        next_slot = next_slot.saturating_add(1);
-                        slot
-                    });
-                }
-            }
-        }
-
-        slots
-    }
-
     fn record_late_link_symbol_requirement(
         &mut self,
         module_identity: &str,
@@ -1590,11 +1535,10 @@ impl ModuleCompiler {
         ast: &AstModule,
         interner: &Interner,
         module_exports: &ModuleExports,
+        module_global_slots: &HashMap<String, u32>,
     ) -> ModuleCompileResult<()> {
         bytecode.exports.clear();
         bytecode.imports.clear();
-
-        let module_global_slots = Self::collect_module_global_slots(ast, interner);
 
         // Export table: map exported symbols to runtime bytecode indices where available.
         for exported in module_exports.symbols.values() {
@@ -1636,6 +1580,7 @@ impl ModuleCompiler {
                 scope: exported.scope,
                 signature_hash: exported.signature_hash,
                 type_signature: Some(exported.type_signature.clone()),
+                runtime_global_slot: module_global_slots.get(&exported.local_name).copied(),
                 nominal_type: matches!(symbol_type, SymbolType::Class).then_some(
                     NominalTypeExport {
                         local_nominal_type_index: index as u32,
@@ -2141,16 +2086,22 @@ mod tests {
                 panic!(
                     "missing default export; module_exports={:?} class table={:?} exports={:?}",
                     exported_names,
-                    utils.bytecode
+                    utils
+                        .bytecode
                         .classes
                         .iter()
                         .map(|class| class.name.clone())
                         .collect::<Vec<_>>(),
-                    utils.bytecode
+                    utils
+                        .bytecode
                         .exports
                         .iter()
                         .map(|export| {
-                            (export.name.clone(), export.symbol_type.clone(), export.index)
+                            (
+                                export.name.clone(),
+                                export.symbol_type.clone(),
+                                export.index,
+                            )
                         })
                         .collect::<Vec<_>>()
                 )
@@ -2182,12 +2133,16 @@ mod tests {
             .find(|module| module.path == utils_path.canonicalize().unwrap())
             .expect("utils module");
 
-        assert!(utils.bytecode.exports.iter().any(|export| {
-            export.name == "Buffer" && export.symbol_type == SymbolType::Class
-        }));
-        assert!(utils.bytecode.exports.iter().any(|export| {
-            export.name == "default" && export.symbol_type == SymbolType::Class
-        }));
+        assert!(utils
+            .bytecode
+            .exports
+            .iter()
+            .any(|export| { export.name == "Buffer" && export.symbol_type == SymbolType::Class }));
+        assert!(utils
+            .bytecode
+            .exports
+            .iter()
+            .any(|export| { export.name == "default" && export.symbol_type == SymbolType::Class }));
     }
 
     #[test]
@@ -2366,7 +2321,9 @@ mod tests {
         fs::write(&dep_path, "export const answer: number = 42;").unwrap();
 
         let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
-        let compiled = compiler.compile(&main_path).expect("compile namespace import");
+        let compiled = compiler
+            .compile(&main_path)
+            .expect("compile namespace import");
         let main_module = compiled
             .iter()
             .find(|module| module.path == main_path.canonicalize().unwrap())

@@ -63,28 +63,23 @@ pub struct JitRuntimeBridgeContext {
     pub semaphore_registry: *const SemaphoreRegistry,
     pub globals_by_index: *const parking_lot::RwLock<Vec<Value>>,
     pub builtin_global_slots: *const parking_lot::RwLock<FxHashMap<String, usize>>,
-    pub constant_string_cache:
-        *const parking_lot::RwLock<FxHashMap<([u8; 32], usize), Value>>,
+    pub constant_string_cache: *const parking_lot::RwLock<FxHashMap<([u8; 32], usize), Value>>,
     pub ephemeral_gc_roots: *const parking_lot::RwLock<Vec<Value>>,
     pub pinned_handles: *const parking_lot::RwLock<rustc_hash::FxHashSet<u64>>,
     pub tasks: *const Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     pub injector: *const Arc<Injector<Arc<Task>>>,
-    pub module_layouts:
-        *const parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
+    pub module_layouts: *const parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
     pub metadata: *const parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
     pub class_metadata: *const parking_lot::RwLock<ClassMetadataRegistry>,
     pub native_handler: *const Arc<dyn NativeHandler>,
     pub resolved_natives: *const parking_lot::RwLock<ResolvedNatives>,
-    pub structural_shape_names:
-        *const parking_lot::RwLock<FxHashMap<u64, Vec<String>>>,
+    pub structural_shape_names: *const parking_lot::RwLock<FxHashMap<u64, Vec<String>>>,
     pub structural_layout_shapes:
         *const parking_lot::RwLock<FxHashMap<crate::vm::object::LayoutId, Vec<String>>>,
-    pub structural_shape_adapters: *const parking_lot::RwLock<
-        FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
-    >,
+    pub structural_shape_adapters:
+        *const parking_lot::RwLock<FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>>,
     pub aot_profile: *const parking_lot::RwLock<crate::aot_profile::AotProfileCollector>,
-    pub type_handles:
-        *const parking_lot::RwLock<crate::vm::interpreter::RuntimeTypeHandleRegistry>,
+    pub type_handles: *const parking_lot::RwLock<crate::vm::interpreter::RuntimeTypeHandleRegistry>,
     pub class_value_slots: *const parking_lot::RwLock<FxHashMap<usize, usize>>,
     pub prop_keys: *const parking_lot::RwLock<crate::vm::interpreter::PropertyKeyRegistry>,
     pub stack_pool: *const crate::vm::scheduler::StackPool,
@@ -116,7 +111,9 @@ pub fn build_runtime_bridge_context(
     native_handler: &Arc<dyn NativeHandler>,
     resolved_natives: &parking_lot::RwLock<ResolvedNatives>,
     structural_shape_names: &parking_lot::RwLock<FxHashMap<u64, Vec<String>>>,
-    structural_layout_shapes: &parking_lot::RwLock<FxHashMap<crate::vm::object::LayoutId, Vec<String>>>,
+    structural_layout_shapes: &parking_lot::RwLock<
+        FxHashMap<crate::vm::object::LayoutId, Vec<String>>,
+    >,
     structural_shape_adapters: &parking_lot::RwLock<
         FxHashMap<StructuralAdapterKey, Arc<ShapeAdapter>>,
     >,
@@ -236,16 +233,21 @@ fn jit_build_shape_slot_map_for_object(
             return None;
         }
         let key = unsafe { &*bridge.prop_keys }.write().intern(name);
-        object
-            .dyn_map()
-            .and_then(|dyn_map| dyn_map.contains_key(&key).then_some(StructuralSlotBinding::Dynamic(key)))
+        object.dyn_map().and_then(|dyn_map| {
+            dyn_map
+                .contains_key(&key)
+                .then_some(StructuralSlotBinding::Dynamic(key))
+        })
     };
 
     if let Some(nominal_type_id) = object.nominal_type_id_usize() {
         let class_meta = if bridge.class_metadata.is_null() {
             None
         } else {
-            unsafe { &*bridge.class_metadata }.read().get(nominal_type_id).cloned()
+            unsafe { &*bridge.class_metadata }
+                .read()
+                .get(nominal_type_id)
+                .cloned()
         };
         return Some(
             required_names
@@ -255,7 +257,8 @@ fn jit_build_shape_slot_map_for_object(
                         .as_ref()
                         .and_then(|meta| meta.get_field_index(name))
                         .and_then(|index| {
-                            (index < object.field_count()).then_some(StructuralSlotBinding::Field(index))
+                            (index < object.field_count())
+                                .then_some(StructuralSlotBinding::Field(index))
                         })
                         .or_else(|| {
                             layout_names
@@ -756,12 +759,12 @@ fn jit_execute_sync_frame(
     loop {
         let code = &module.functions[current_func_id].code;
         if ip >= code.len() {
-            let return_value = if stack.depth() > locals_base + module.functions[current_func_id].local_count
-            {
-                stack.pop().unwrap_or_else(|_| Value::null())
-            } else {
-                Value::null()
-            };
+            let return_value =
+                if stack.depth() > locals_base + module.functions[current_func_id].local_count {
+                    stack.pop().unwrap_or_else(|_| Value::null())
+                } else {
+                    Value::null()
+                };
             while stack.depth() > locals_base {
                 let _ = stack.pop();
             }
@@ -770,7 +773,8 @@ fn jit_execute_sync_frame(
                 task.pop_closure();
             }
             if let Some(frame) = frames.pop() {
-                if let Err(error) = jit_apply_return_action(stack, return_value, current_return_action)
+                if let Err(error) =
+                    jit_apply_return_action(stack, return_value, current_return_action)
                 {
                     jit_raise_vm_error(bridge, error);
                     finish_nested_call!(JitNestedCallResult::Exception, true);
@@ -787,10 +791,10 @@ fn jit_execute_sync_frame(
             }
             finish_nested_call!(
                 match current_return_action {
-                ReturnAction::PushReturnValue => JitNestedCallResult::Value(return_value),
-                ReturnAction::PushObject(obj) => JitNestedCallResult::Value(obj),
-                ReturnAction::Discard => JitNestedCallResult::Value(Value::null()),
-            },
+                    ReturnAction::PushReturnValue => JitNestedCallResult::Value(return_value),
+                    ReturnAction::PushObject(obj) => JitNestedCallResult::Value(obj),
+                    ReturnAction::Discard => JitNestedCallResult::Value(Value::null()),
+                },
                 false
             );
         }
@@ -815,7 +819,7 @@ fn jit_execute_sync_frame(
             locals_base,
             frame_depth,
             &current_args,
-            ) {
+        ) {
             crate::vm::interpreter::OpcodeResult::Continue => {}
             crate::vm::interpreter::OpcodeResult::Return(return_value) => {
                 while stack.depth() > locals_base {
@@ -826,7 +830,8 @@ fn jit_execute_sync_frame(
                     task.pop_closure();
                 }
                 if let Some(frame) = frames.pop() {
-                    if let Err(error) = jit_apply_return_action(stack, return_value, current_return_action)
+                    if let Err(error) =
+                        jit_apply_return_action(stack, return_value, current_return_action)
                     {
                         jit_raise_vm_error(bridge, error);
                         finish_nested_call!(JitNestedCallResult::Exception, true);
@@ -842,10 +847,11 @@ fn jit_execute_sync_frame(
                 } else {
                     finish_nested_call!(
                         match current_return_action {
-                        ReturnAction::PushReturnValue => JitNestedCallResult::Value(return_value),
-                        ReturnAction::PushObject(obj) => JitNestedCallResult::Value(obj),
-                        ReturnAction::Discard => JitNestedCallResult::Value(Value::null()),
-                    },
+                            ReturnAction::PushReturnValue =>
+                                JitNestedCallResult::Value(return_value),
+                            ReturnAction::PushObject(obj) => JitNestedCallResult::Value(obj),
+                            ReturnAction::Discard => JitNestedCallResult::Value(Value::null()),
+                        },
                         false
                     );
                 }
@@ -989,7 +995,8 @@ unsafe extern "C" fn helper_alloc_object(
     }
 
     let module = &*(module_ptr.cast::<Module>());
-    let Some(nominal_type_id) = jit_resolve_nominal_type_id(bridge, module, local_nominal_type_index)
+    let Some(nominal_type_id) =
+        jit_resolve_nominal_type_id(bridge, module, local_nominal_type_index)
     else {
         return std::ptr::null_mut();
     };
@@ -1260,7 +1267,11 @@ unsafe extern "C" fn helper_interpreter_call(
             return_action,
         } => {
             let callee_module = callee_module.unwrap_or_else(|| Arc::new(module.clone()));
-            if !jit_function_is_sync_safe(callee_module.as_ref(), func_id, &mut FxHashSet::default()) {
+            if !jit_function_is_sync_safe(
+                callee_module.as_ref(),
+                func_id,
+                &mut FxHashSet::default(),
+            ) {
                 return JIT_INTERPRETER_FALLBACK_SENTINEL;
             }
             match jit_execute_sync_frame(
@@ -1420,7 +1431,9 @@ unsafe extern "C" fn helper_object_set_field(
             object.set_field(slot, Value::from_raw(value_raw)).is_ok()
         }
         StructuralSlotBinding::Dynamic(key) => {
-            object.ensure_dyn_map().insert(key, Value::from_raw(value_raw));
+            object
+                .ensure_dyn_map()
+                .insert(key, Value::from_raw(value_raw));
             true
         }
         StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => false,
@@ -1445,7 +1458,10 @@ unsafe extern "C" fn helper_object_implements_shape(
         return false;
     };
     (0..adapter.len()).all(|slot| {
-        !matches!(adapter.binding_for_slot(slot), StructuralSlotBinding::Missing)
+        !matches!(
+            adapter.binding_for_slot(slot),
+            StructuralSlotBinding::Missing
+        )
     })
 }
 
@@ -1580,7 +1596,9 @@ unsafe extern "C" fn helper_object_set_shape_field(
             .map(|_| JIT_STORE_SUCCESS)
             .unwrap_or(JIT_STORE_FALLBACK),
         StructuralSlotBinding::Dynamic(key) => {
-            object.ensure_dyn_map().insert(key, Value::from_raw(value_raw));
+            object
+                .ensure_dyn_map()
+                .insert(key, Value::from_raw(value_raw));
             JIT_STORE_SUCCESS
         }
         StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => JIT_STORE_FALLBACK,
@@ -1754,9 +1772,8 @@ mod tests {
             parent_name: None,
             methods: Vec::new(),
         });
-        let seed_module = Arc::new(
-            Module::decode(&seed_module.encode()).expect("finalize seed module checksum"),
-        );
+        let seed_module =
+            Arc::new(Module::decode(&seed_module.encode()).expect("finalize seed module checksum"));
         shared
             .register_module(seed_module)
             .expect("register seed module");

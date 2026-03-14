@@ -11,8 +11,7 @@ use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::{Interpreter, ReturnAction};
 use crate::vm::object::{
     layout_id_from_ordered_names, Array, BoundFunction, BoundMethod, BoundNativeMethod,
-    ChannelObject, Closure,
-    MapObject, Object, RayaString, RegExpObject, SetObject, TypeHandle,
+    ChannelObject, Closure, MapObject, Object, RayaString, RegExpObject, SetObject, TypeHandle,
 };
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
@@ -363,6 +362,26 @@ impl<'a> Interpreter<'a> {
         })
     }
 
+    fn prototype_chain_property_value_with_protocol_alias(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<Value> {
+        let mut current = self.prototype_of_value(target);
+        let mut seen = vec![target.raw()];
+        while let Some(prototype) = current {
+            if seen.contains(&prototype.raw()) {
+                break;
+            }
+            seen.push(prototype.raw());
+            if let Some(value) = self.property_value_with_protocol_alias(prototype, key) {
+                return Some(value);
+            }
+            current = self.prototype_of_value(prototype);
+        }
+        None
+    }
+
     fn descriptor_accessor_with_protocol_alias(
         &self,
         target: Value,
@@ -434,11 +453,17 @@ impl<'a> Interpreter<'a> {
                     symbol_key
                 )));
             }
-            let value =
-                self.invoke_callable_sync_with_this(getter, Some(object_value), &[], caller_task, caller_module)?;
+            let value = self.invoke_callable_sync_with_this(
+                getter,
+                Some(object_value),
+                &[],
+                caller_task,
+                caller_module,
+            )?;
             return Ok(Some(value));
         }
-        if let Some(value) = self.descriptor_data_value_with_protocol_alias(object_value, symbol_key)
+        if let Some(value) =
+            self.descriptor_data_value_with_protocol_alias(object_value, symbol_key)
         {
             return Ok(Some(value));
         }
@@ -516,10 +541,12 @@ impl<'a> Interpreter<'a> {
             return Ok(parts);
         }
 
-        let hint_ptr = self.gc.lock().allocate(RayaString::new("string".to_string()));
-        let hint_value = unsafe {
-            Value::from_ptr(NonNull::new(hint_ptr.as_ptr()).expect("property key hint"))
-        };
+        let hint_ptr = self
+            .gc
+            .lock()
+            .allocate(RayaString::new("string".to_string()));
+        let hint_value =
+            unsafe { Value::from_ptr(NonNull::new(hint_ptr.as_ptr()).expect("property key hint")) };
         self.ephemeral_gc_roots.write().push(hint_value);
 
         let cleanup_hint = |roots: &mut Vec<Value>, hint_value: Value| {
@@ -956,8 +983,10 @@ impl<'a> Interpreter<'a> {
                 };
 
                 if std::env::var("RAYA_DEBUG_INSTANCEOF").is_ok() {
-                    let object_nominal_type_id = object_ptr_checked(obj_val)
-                        .and_then(|obj_ptr| unsafe { (&*obj_ptr.as_ptr()).nominal_type_id_usize() });
+                    let object_nominal_type_id =
+                        object_ptr_checked(obj_val).and_then(|obj_ptr| unsafe {
+                            (&*obj_ptr.as_ptr()).nominal_type_id_usize()
+                        });
                     eprintln!(
                         "[is-nominal] object={:#x} object_nominal={:?} target_nominal={} result={}",
                         obj_val.raw(),
@@ -1100,9 +1129,12 @@ impl<'a> Interpreter<'a> {
                         let s = unsafe { &*ptr };
                         if let Some(index) = array_index {
                             if let Some(ch) = s.data.chars().nth(index) {
-                                let gc_ptr = self.gc.lock().allocate(RayaString::new(ch.to_string()));
+                                let gc_ptr =
+                                    self.gc.lock().allocate(RayaString::new(ch.to_string()));
                                 unsafe {
-                                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                                    Value::from_ptr(
+                                        std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
+                                    )
                                 }
                             } else {
                                 Value::null()
@@ -1110,12 +1142,13 @@ impl<'a> Interpreter<'a> {
                         } else if key_str.as_deref() == Some("length") {
                             Value::i32(s.len() as i32)
                         } else if let Some(key_str) = key_str.as_deref() {
-                            if let Some(value) = self.string_constructor_prototype_value(
-                                self.builtin_global_value("String").unwrap_or(Value::null()),
-                            )
-                            .and_then(|prototype| {
-                                self.property_value_with_protocol_alias(prototype, key_str)
-                            })
+                            if let Some(value) = self
+                                .string_constructor_prototype_value(
+                                    self.builtin_global_value("String").unwrap_or(Value::null()),
+                                )
+                                .and_then(|prototype| {
+                                    self.property_value_with_protocol_alias(prototype, key_str)
+                                })
                             {
                                 value
                             } else if let Some(native_id) =
@@ -1154,12 +1187,9 @@ impl<'a> Interpreter<'a> {
                             if let Some(value) = arr.get(index) {
                                 value
                             } else if let Some(key_str) = key_str.as_deref() {
-                                self.array_constructor_prototype_value(
-                                    self.builtin_global_value("Array").unwrap_or(Value::null()),
+                                self.prototype_chain_property_value_with_protocol_alias(
+                                    obj_val, key_str,
                                 )
-                                .and_then(|prototype| {
-                                    self.property_value_with_protocol_alias(prototype, key_str)
-                                })
                                 .unwrap_or(Value::undefined())
                             } else {
                                 Value::undefined()
@@ -1172,8 +1202,11 @@ impl<'a> Interpreter<'a> {
                                 Value::f64(len as f64)
                             }
                         } else if let Some(key_str) = key_str.as_deref() {
-                            if let Some(value) =
-                                self.metadata_data_property_value(obj_val, key_str)
+                            if let Some(value) = self.metadata_data_property_value(obj_val, key_str)
+                            {
+                                value
+                            } else if let Some(value) =
+                                self.get_field_value_by_name(obj_val, key_str)
                             {
                                 value
                             } else if let Some(native_id) =
@@ -1199,12 +1232,10 @@ impl<'a> Interpreter<'a> {
                                             .expect("bound native method ptr"),
                                     )
                                 }
-                            } else if let Some(value) = self.array_constructor_prototype_value(
-                                self.builtin_global_value("Array").unwrap_or(Value::null()),
-                            )
-                            .and_then(|prototype| {
-                                self.property_value_with_protocol_alias(prototype, key_str)
-                            })
+                            } else if let Some(value) = self
+                                .prototype_chain_property_value_with_protocol_alias(
+                                    obj_val, key_str,
+                                )
                             {
                                 value
                             } else {
@@ -1218,106 +1249,64 @@ impl<'a> Interpreter<'a> {
                         let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
                         let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() }
                             .expect("JSView::Struct should always be an object");
-                        let obj = unsafe { &*obj_ptr.as_ptr() };
+                        let _obj = unsafe { &*obj_ptr.as_ptr() };
                         let key_str = key_str
                             .as_deref()
                             .expect("dyn object property access should always have a key string");
-                        if let Some(result) =
-                            match self.well_known_symbol_property_value(actual_obj, key_str, task, module)
-                            {
-                                Ok(value) => value,
-                                Err(error) => return OpcodeResult::Error(error),
-                            }
+                        if let Some(result) = match self
+                            .well_known_symbol_property_value(actual_obj, key_str, task, module)
                         {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        } {
                             if let Err(e) = stack.push(result) {
                                 return OpcodeResult::Error(e);
                             }
                             return OpcodeResult::Continue;
                         }
-                        if let Some(getter) =
-                            self.descriptor_accessor_with_protocol_alias(actual_obj, &key_str, "get")
-                        {
-                            match self.callable_frame_for_value(
-                                getter,
-                                stack,
-                                &[],
-                                Some(actual_obj),
-                                ReturnAction::PushReturnValue,
-                            ) {
-                                Ok(Some(frame)) => return frame,
-                                Ok(None) => {
-                                    return OpcodeResult::Error(VmError::TypeError(format!(
-                                        "Property '{}' getter is not callable",
-                                        key_str
-                                    )));
-                                }
-                                Err(e) => return OpcodeResult::Error(e),
-                            }
-                        }
-                        if let Some(value) = self.builtin_global_property_value(actual_obj, &key_str)
-                        {
-                            value
-                        } else {
-                            self.get_field_value_by_name(actual_obj, &key_str)
-                                .unwrap_or(Value::null())
+                        match self.get_property_value_via_js_semantics_with_context(
+                            actual_obj, key_str, task, module,
+                        ) {
+                            Ok(Some(value)) => value,
+                            Ok(None) => Value::null(),
+                            Err(error) => return OpcodeResult::Error(error),
                         }
                     }
                     _ => {
                         if let Some(key_str) = key_str.as_deref() {
-                            if let Some(getter) = self.descriptor_accessor(obj_val, key_str, "get") {
-                                match self.callable_frame_for_value(
-                                    getter,
-                                    stack,
-                                    &[],
-                                    Some(obj_val),
-                                    ReturnAction::PushReturnValue,
-                                ) {
-                                    Ok(Some(frame)) => return frame,
-                                    Ok(None) => {
-                                        return OpcodeResult::Error(VmError::TypeError(format!(
-                                            "Property '{}' getter is not callable",
-                                            key_str
-                                        )));
-                                    }
-                                    Err(e) => return OpcodeResult::Error(e),
-                                }
-                            } else if let Some(value) = self.descriptor_data_value(obj_val, key_str) {
+                            if let Some(value) = match self
+                                .well_known_symbol_property_value(obj_val, key_str, task, module)
+                            {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            } {
                                 value
-                            } else if let Some(value) =
-                                match self.well_known_symbol_property_value(obj_val, key_str, task, module)
-                                {
-                                    Ok(value) => value,
+                            } else {
+                                match self.get_property_value_via_js_semantics_with_context(
+                                    obj_val, key_str, task, module,
+                                ) {
+                                    Ok(Some(value)) => value,
+                                    Ok(None) => {
+                                        if let Some(native_id) =
+                                            builtin_handle_native_method_id(obj_val, key_str)
+                                        {
+                                            let method = BoundNativeMethod {
+                                                receiver: obj_val,
+                                                native_id,
+                                            };
+                                            let method_ptr = self.gc.lock().allocate(method);
+                                            unsafe {
+                                                Value::from_ptr(
+                                                    NonNull::new(method_ptr.as_ptr())
+                                                        .expect("bound native method ptr"),
+                                                )
+                                            }
+                                        } else {
+                                            Value::null()
+                                        }
+                                    }
                                     Err(error) => return OpcodeResult::Error(error),
                                 }
-                            {
-                                value
-                            } else if key_str == "prototype" {
-                                self.constructor_prototype_value(obj_val).unwrap_or(Value::null())
-                            } else if let Some(value) = self.callable_property_value(obj_val, key_str) {
-                                value
-                            } else if let Some(value) =
-                                self.materialize_constructor_static_method(obj_val, key_str)
-                            {
-                                value
-                            } else if let Some(native_id) =
-                                builtin_handle_native_method_id(obj_val, key_str)
-                            {
-                                let method = BoundNativeMethod {
-                                    receiver: obj_val,
-                                    native_id,
-                                };
-                                let method_ptr = self.gc.lock().allocate(method);
-                                unsafe {
-                                    Value::from_ptr(
-                                        NonNull::new(method_ptr.as_ptr())
-                                            .expect("bound native method ptr"),
-                                    )
-                                }
-                            } else if let Some(prototype) = self.prototype_of_value(obj_val) {
-                                self.get_field_value_by_name(prototype, key_str)
-                                    .unwrap_or(Value::null())
-                            } else {
-                                Value::null()
                             }
                         } else {
                             Value::null()
@@ -1358,6 +1347,30 @@ impl<'a> Interpreter<'a> {
                     Err(error) => return OpcodeResult::Error(error),
                 };
 
+                if (matches!(js_classify(obj_val), JSView::Arr(_) | JSView::Struct { .. })
+                    || Self::is_callable_value(obj_val))
+                    && key_str.is_some()
+                {
+                    let key_name = key_str.as_deref().expect("checked is_some");
+                    match self.set_property_value_via_js_semantics(
+                        obj_val, key_name, value, obj_val, task, module,
+                    ) {
+                        Ok(true) => {
+                            if let Err(e) = stack.push(value) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+                        Ok(false) => {
+                            return OpcodeResult::Error(VmError::TypeError(format!(
+                                "Cannot assign to non-writable property '{}'",
+                                key_name
+                            )));
+                        }
+                        Err(error) => return OpcodeResult::Error(error),
+                    }
+                }
+
                 match js_classify(obj_val) {
                     JSView::Arr(ptr) => {
                         if let Some(index) = array_index {
@@ -1371,8 +1384,11 @@ impl<'a> Interpreter<'a> {
                                 ));
                             };
                             if key_str == "length" {
-                                if let Err(error) = self.set_array_length_value(obj_val, value) {
-                                    return OpcodeResult::Error(error);
+                                match self.set_property_value_via_js_semantics(
+                                    obj_val, key_str, value, obj_val, task, module,
+                                ) {
+                                    Ok(_) => {}
+                                    Err(error) => return OpcodeResult::Error(error),
                                 }
                                 if let Err(e) = stack.push(value) {
                                     return OpcodeResult::Error(e);
@@ -1380,12 +1396,7 @@ impl<'a> Interpreter<'a> {
                                 return OpcodeResult::Continue;
                             }
                             if let Err(error) = self.define_data_property_on_target(
-                                obj_val,
-                                key_str,
-                                value,
-                                true,
-                                true,
-                                true,
+                                obj_val, key_str, value, true, true, true,
                             ) {
                                 return OpcodeResult::Error(error);
                             }
@@ -1536,12 +1547,7 @@ impl<'a> Interpreter<'a> {
                             )));
                         }
                         if let Err(error) = self.define_data_property_on_target(
-                            obj_val,
-                            key_str,
-                            value,
-                            true,
-                            true,
-                            true,
+                            obj_val, key_str, value, true, true, true,
                         ) {
                             return OpcodeResult::Error(error);
                         }

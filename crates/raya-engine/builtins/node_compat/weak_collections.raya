@@ -28,6 +28,8 @@ class WeakMap<V> {
     }
 }
 
+export { WeakMap, WeakSet };
+
 class WeakSet<T extends Object> {
     private _tag: string;
 

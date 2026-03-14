@@ -1002,7 +1002,7 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
 /// Parse the callee of a `new` expression.
 ///
 /// This is a restricted form of expression parsing that allows:
-/// - Identifiers: `new Foo()`
+/// - Primary expressions: `new Foo()`, `new true`, `new function() {}`
 /// - Member access: `new Foo.Bar()`, `new a.b.c()`
 /// - Index access: `new classes[0]()`
 /// - Nested new: `new new Foo()()`
@@ -1011,7 +1011,9 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
 fn parse_new_callee(parser: &mut Parser) -> Result<Expression, ParseError> {
     let start_span = parser.current_span();
 
-    // Start with an identifier (or nested new)
+    // Start with a primary expression (or nested new) and then layer
+    // member/index access on top. Call expressions are intentionally excluded
+    // here because any following `()` belongs to the surrounding `new`.
     let mut expr = if parser.check(&Token::New) {
         // Nested new: `new new Foo()`
         parser.advance();
@@ -1029,23 +1031,8 @@ fn parse_new_callee(parser: &mut Parser) -> Result<Expression, ParseError> {
             arguments,
             span,
         })
-    } else if let Token::Identifier(name) = parser.current() {
-        let name = *name;
-        parser.advance();
-        Expression::Identifier(Identifier {
-            name,
-            span: start_span,
-        })
     } else {
-        return Err(ParseError {
-            kind: ParseErrorKind::UnexpectedToken {
-                expected: vec![Token::Identifier(Symbol::dummy())],
-                found: parser.current().clone(),
-            },
-            span: parser.current_span(),
-            message: "Expected class name after 'new'".to_string(),
-            suggestion: None,
-        });
+        parse_primary(parser)?
     };
 
     // Allow member access (dot notation) and index access, but NOT calls
@@ -1974,11 +1961,11 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
                         parser.current_span(),
                     ));
                 }
-            parser.advance();
-            Some(parse_assignment_expression(parser)?)
-        } else {
-            None
-        };
+                parser.advance();
+                Some(parse_assignment_expression(parser)?)
+            } else {
+                None
+            };
 
             params.push(Parameter {
                 decorators,

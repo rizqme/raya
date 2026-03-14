@@ -238,17 +238,15 @@ where
             resolve_layout_names,
         ),
 
-        TypeKind::Array { element_type_id } => {
-            validate_array(
-                json,
-                *element_type_id,
-                schema_registry,
-                gc,
-                depth,
-                resolve_prop_key,
-                resolve_layout_names,
-            )
-        }
+        TypeKind::Array { element_type_id } => validate_array(
+            json,
+            *element_type_id,
+            schema_registry,
+            gc,
+            depth,
+            resolve_prop_key,
+            resolve_layout_names,
+        ),
 
         TypeKind::Union {
             variant_type_ids,
@@ -344,8 +342,11 @@ where
     let mut field_values = Vec::with_capacity(fields.len());
 
     for (field_name, field_type_id) in fields {
-        let field_json =
-            json.get_property_with_runtime_metadata(field_name, resolve_prop_key, resolve_layout_names);
+        let field_json = json.get_property_with_runtime_metadata(
+            field_name,
+            resolve_prop_key,
+            resolve_layout_names,
+        );
         if field_json.is_undefined() {
             return Err(VmError::TypeError(format!("Missing field: {}", field_name)));
         }
@@ -464,8 +465,11 @@ where
         }
 
         // Get discriminant value using get_property() (returns JsonValue)
-        let disc_value =
-            json.get_property_with_runtime_metadata(disc_field, resolve_prop_key, resolve_layout_names);
+        let disc_value = json.get_property_with_runtime_metadata(
+            disc_field,
+            resolve_prop_key,
+            resolve_layout_names,
+        );
         if disc_value.is_undefined() {
             return Err(VmError::TypeError(format!(
                 "Missing discriminant field: {}",
@@ -494,17 +498,15 @@ where
             let _ = disc_str.as_str(); // suppress unused warning
 
             // Try to validate against this variant
-            if let Ok(value) =
-                validate_cast_impl(
-                    json,
-                    &variant_schema,
-                    schema_registry,
-                    gc,
-                    depth + 1,
-                    resolve_prop_key,
-                    resolve_layout_names,
-                )
-            {
+            if let Ok(value) = validate_cast_impl(
+                json,
+                &variant_schema,
+                schema_registry,
+                gc,
+                depth + 1,
+                resolve_prop_key,
+                resolve_layout_names,
+            ) {
                 return Ok(value);
             }
         }
@@ -521,17 +523,15 @@ where
             })?;
 
             // Try to validate against this variant
-            if let Ok(value) =
-                validate_cast_impl(
-                    json,
-                    &variant_schema,
-                    schema_registry,
-                    gc,
-                    depth + 1,
-                    resolve_prop_key,
-                    resolve_layout_names,
-                )
-            {
+            if let Ok(value) = validate_cast_impl(
+                json,
+                &variant_schema,
+                schema_registry,
+                gc,
+                depth + 1,
+                resolve_prop_key,
+                resolve_layout_names,
+            ) {
                 return Ok(value);
             }
         }
@@ -715,7 +715,14 @@ mod tests {
 
         let obj = unsafe { &*result.as_ptr::<Object>().unwrap().as_ptr() };
         assert_eq!(obj.field_count(), 2);
-        let name = unsafe { &*obj.get_field(0).unwrap().as_ptr::<RayaString>().unwrap().as_ptr() };
+        let name = unsafe {
+            &*obj
+                .get_field(0)
+                .unwrap()
+                .as_ptr::<RayaString>()
+                .unwrap()
+                .as_ptr()
+        };
         assert_eq!(name.data, "Alice");
         assert_eq!(obj.get_field(1).unwrap().as_f64(), Some(30.0));
     }
@@ -736,9 +743,8 @@ mod tests {
 
         let mut resolve_prop_key = |_name: &str| None;
         let layout_names = names.clone();
-        let mut resolve_layout_names = move |candidate: LayoutId| {
-            (candidate == layout_id).then_some(layout_names.clone())
-        };
+        let mut resolve_layout_names =
+            move |candidate: LayoutId| (candidate == layout_id).then_some(layout_names.clone());
         let result = validate_cast_with_runtime_metadata(
             &json,
             &schema,
@@ -750,7 +756,14 @@ mod tests {
         .expect("validated cast");
 
         let obj = unsafe { &*result.as_ptr::<Object>().unwrap().as_ptr() };
-        let name = unsafe { &*obj.get_field(0).unwrap().as_ptr::<RayaString>().unwrap().as_ptr() };
+        let name = unsafe {
+            &*obj
+                .get_field(0)
+                .unwrap()
+                .as_ptr::<RayaString>()
+                .unwrap()
+                .as_ptr()
+        };
         assert_eq!(name.data, "Bob");
         assert_eq!(obj.get_field(1).unwrap().as_f64(), Some(25.0));
     }

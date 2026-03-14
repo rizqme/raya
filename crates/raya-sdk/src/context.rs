@@ -100,7 +100,10 @@ pub trait NativeContext {
     fn nominal_type_field_names(&self, nominal_type_id: usize) -> AbiResult<Vec<(String, usize)>>;
 
     /// Get class method names and their vtable indices
-    fn nominal_type_method_entries(&self, nominal_type_id: usize) -> AbiResult<Vec<(String, usize)>>;
+    fn nominal_type_method_entries(
+        &self,
+        nominal_type_id: usize,
+    ) -> AbiResult<Vec<(String, usize)>>;
 
     // ========================================================================
     // Task Operations

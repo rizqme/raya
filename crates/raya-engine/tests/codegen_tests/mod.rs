@@ -10,7 +10,7 @@
 use raya_engine::compiler::codegen;
 use raya_engine::compiler::ir::block::{BasicBlock, BasicBlockId, Terminator};
 use raya_engine::compiler::ir::function::IrFunction;
-use raya_engine::compiler::ir::instr::{BinaryOp, NominalTypeId, FunctionId, IrInstr, UnaryOp};
+use raya_engine::compiler::ir::instr::{BinaryOp, FunctionId, IrInstr, NominalTypeId, UnaryOp};
 use raya_engine::compiler::ir::module::{IrClass, IrField, IrModule};
 use raya_engine::compiler::ir::value::{IrConstant, IrValue, Register, RegisterId};
 use raya_engine::compiler::Opcode;

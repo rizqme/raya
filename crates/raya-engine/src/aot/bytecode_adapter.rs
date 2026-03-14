@@ -12,20 +12,20 @@ use crate::compiler::bytecode::module::Module;
 use crate::compiler::bytecode::opcode::Opcode;
 use rustc_hash::FxHashMap;
 
-use super::profile::{AotFunctionProfile, AotSiteKind};
 use super::analysis::{SuspensionAnalysis, SuspensionKind, SuspensionPoint};
+use super::profile::{AotFunctionProfile, AotSiteKind};
 use super::statemachine::{
-    SmBlock, SmBlockId, SmBlockKind, SmCmpOp, SmF64BinOp, SmI32BinOp, SmInstr, SmTerminator,
-    HelperCall,
+    HelperCall, SmBlock, SmBlockId, SmBlockKind, SmCmpOp, SmF64BinOp, SmI32BinOp, SmInstr,
+    SmTerminator,
 };
 use super::traits::{AotCompilable, AotProfileVariant, AotVariantGuard, AotVariantKind};
 
 #[cfg(all(feature = "aot", feature = "jit"))]
+use crate::jit::analysis::decoder::Operands;
+#[cfg(all(feature = "aot", feature = "jit"))]
 use crate::jit::ir::instr::{JitFunction, JitInstr, JitTerminator, Reg};
 #[cfg(all(feature = "aot", feature = "jit"))]
 use crate::jit::pipeline::{lifter, optimize::JitOptimizer};
-#[cfg(all(feature = "aot", feature = "jit"))]
-use crate::jit::analysis::decoder::Operands;
 
 #[cfg(all(feature = "aot", feature = "jit"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -423,21 +423,27 @@ impl LiftedFunction {
     }
 
     fn nominal_layout_names(&self, nominal_type_id: u32) -> Option<&[String]> {
-        self.nominal_layouts.get(&nominal_type_id).map(Vec::as_slice)
+        self.nominal_layouts
+            .get(&nominal_type_id)
+            .map(Vec::as_slice)
     }
 
     fn exact_layout_field_names(&self, exact: ExactLayout) -> Option<Vec<String>> {
         match exact {
-            ExactLayout::Structural(layout_id) => {
-                self.structural_layout_names(layout_id).map(|names| names.to_vec())
-            }
-            ExactLayout::Nominal(nominal_type_id) => {
-                self.nominal_layout_names(nominal_type_id).map(|names| names.to_vec())
-            }
+            ExactLayout::Structural(layout_id) => self
+                .structural_layout_names(layout_id)
+                .map(|names| names.to_vec()),
+            ExactLayout::Nominal(nominal_type_id) => self
+                .nominal_layout_names(nominal_type_id)
+                .map(|names| names.to_vec()),
         }
     }
 
-    fn profiled_exact_layout(&self, bytecode_offset: u32, kind: AotSiteKind) -> Option<ExactLayout> {
+    fn profiled_exact_layout(
+        &self,
+        bytecode_offset: u32,
+        kind: AotSiteKind,
+    ) -> Option<ExactLayout> {
         let layout_id = *self.profile_assumptions.get(&(bytecode_offset, kind))?;
         if self.structural_layouts.contains_key(&layout_id) {
             return Some(ExactLayout::Structural(layout_id));
@@ -503,7 +509,10 @@ impl LiftedFunction {
             };
             variants.push(AotProfileVariant {
                 func: Box::new(clone),
-                name_suffix: format!("$pgo_{:?}_{}_{}", site.kind, site.bytecode_offset, hot_layout.layout_id),
+                name_suffix: format!(
+                    "$pgo_{:?}_{}_{}",
+                    site.kind, site.bytecode_offset, hot_layout.layout_id
+                ),
                 kind: AotVariantKind::ProfileClone,
                 guard: Some(AotVariantGuard {
                     bytecode_offset: site.bytecode_offset,
@@ -554,7 +563,8 @@ impl LiftedFunction {
         global_state: &mut FxHashMap<u32, ExactLayout>,
         instr: &JitInstr,
     ) {
-        let reg_layout = |reg: Reg, reg_state: &FxHashMap<Reg, ExactLayout>| reg_state.get(&reg).copied();
+        let reg_layout =
+            |reg: Reg, reg_state: &FxHashMap<Reg, ExactLayout>| reg_state.get(&reg).copied();
         match instr {
             JitInstr::NewObject {
                 dest,
@@ -568,7 +578,9 @@ impl LiftedFunction {
             } => {
                 reg_state.insert(*dest, ExactLayout::Nominal(*nominal_type_id));
             }
-            JitInstr::ObjectLiteral { dest, type_index, .. } => {
+            JitInstr::ObjectLiteral {
+                dest, type_index, ..
+            } => {
                 reg_state.insert(*dest, ExactLayout::Structural(*type_index));
             }
             JitInstr::DynNewObject { dest } => {
@@ -670,7 +682,8 @@ impl LiftedFunction {
         global_state: &mut FxHashMap<u32, EntryOrigin>,
         instr: &JitInstr,
     ) {
-        let reg_origin = |reg: Reg, reg_state: &FxHashMap<Reg, EntryOrigin>| reg_state.get(&reg).copied();
+        let reg_origin =
+            |reg: Reg, reg_state: &FxHashMap<Reg, EntryOrigin>| reg_state.get(&reg).copied();
         match instr {
             JitInstr::CastShape { dest, object, .. }
             | JitInstr::Move { dest, src: object }
@@ -790,22 +803,38 @@ impl LiftedFunction {
                         object,
                         bytecode_offset,
                         ..
-                    } => Some((*bytecode_offset, AotSiteKind::LoadFieldShape, reg_state.get(object).copied())),
+                    } => Some((
+                        *bytecode_offset,
+                        AotSiteKind::LoadFieldShape,
+                        reg_state.get(object).copied(),
+                    )),
                     JitInstr::StoreFieldShape {
                         object,
                         bytecode_offset,
                         ..
-                    } => Some((*bytecode_offset, AotSiteKind::StoreFieldShape, reg_state.get(object).copied())),
+                    } => Some((
+                        *bytecode_offset,
+                        AotSiteKind::StoreFieldShape,
+                        reg_state.get(object).copied(),
+                    )),
                     JitInstr::ImplementsShape {
                         object,
                         bytecode_offset,
                         ..
-                    } => Some((*bytecode_offset, AotSiteKind::ImplementsShape, reg_state.get(object).copied())),
+                    } => Some((
+                        *bytecode_offset,
+                        AotSiteKind::ImplementsShape,
+                        reg_state.get(object).copied(),
+                    )),
                     JitInstr::CastShape {
                         object,
                         bytecode_offset,
                         ..
-                    } => Some((*bytecode_offset, AotSiteKind::CastShape, reg_state.get(object).copied())),
+                    } => Some((
+                        *bytecode_offset,
+                        AotSiteKind::CastShape,
+                        reg_state.get(object).copied(),
+                    )),
                     _ => None,
                 };
                 if let Some((bytecode_offset, kind, origin)) = site_guard {
@@ -840,9 +869,14 @@ impl LiftedFunction {
         local_state: &mut LocalLayoutState,
         global_state: &mut FxHashMap<u32, ExactLayout>,
     ) {
-        let reg_layout = |reg: Reg, reg_state: &FxHashMap<Reg, ExactLayout>| reg_state.get(&reg).copied();
+        let reg_layout =
+            |reg: Reg, reg_state: &FxHashMap<Reg, ExactLayout>| reg_state.get(&reg).copied();
         match instr {
-            JitInstr::NewObject { dest, nominal_type_id, .. } => out.push(SmInstr::CallHelper {
+            JitInstr::NewObject {
+                dest,
+                nominal_type_id,
+                ..
+            } => out.push(SmInstr::CallHelper {
                 dest: Some(dest.0),
                 helper: HelperCall::AllocObject,
                 args: vec![*nominal_type_id],
@@ -859,7 +893,11 @@ impl LiftedFunction {
                     src: value.0,
                 });
             }
-            JitInstr::LoadFieldExact { dest, object, offset } => out.push(SmInstr::CallHelper {
+            JitInstr::LoadFieldExact {
+                dest,
+                object,
+                offset,
+            } => out.push(SmInstr::CallHelper {
                 dest: Some(dest.0),
                 helper: HelperCall::ObjectGetField,
                 args: vec![object.0, *offset as u32],
@@ -876,9 +914,14 @@ impl LiftedFunction {
                 if let Some(ShapeFieldSpecialization::ExactField(field)) =
                     reg_layout(*object, reg_state)
                         .or_else(|| {
-                            self.profiled_exact_layout(*bytecode_offset, AotSiteKind::LoadFieldShape)
+                            self.profiled_exact_layout(
+                                *bytecode_offset,
+                                AotSiteKind::LoadFieldShape,
+                            )
                         })
-                        .and_then(|layout| self.specialize_shape_field_access(layout, *shape_id, *offset))
+                        .and_then(|layout| {
+                            self.specialize_shape_field_access(layout, *shape_id, *offset)
+                        })
                 {
                     out.push(SmInstr::CallHelper {
                         dest: Some(dest.0),
@@ -930,8 +973,12 @@ impl LiftedFunction {
                 bytecode_offset,
             } => {
                 if let Some(layout) = reg_layout(*object, reg_state)
-                    .or_else(|| self.profiled_exact_layout(*bytecode_offset, AotSiteKind::CastShape))
-                    .filter(|layout| self.exact_layout_satisfies_shape_by_fields(*layout, *shape_id))
+                    .or_else(|| {
+                        self.profiled_exact_layout(*bytecode_offset, AotSiteKind::CastShape)
+                    })
+                    .filter(|layout| {
+                        self.exact_layout_satisfies_shape_by_fields(*layout, *shape_id)
+                    })
                 {
                     let _ = layout;
                     out.push(SmInstr::Move {
@@ -950,7 +997,11 @@ impl LiftedFunction {
                     });
                 }
             }
-            JitInstr::StoreFieldExact { object, offset, value } => out.push(SmInstr::CallHelper {
+            JitInstr::StoreFieldExact {
+                object,
+                offset,
+                value,
+            } => out.push(SmInstr::CallHelper {
                 dest: None,
                 helper: HelperCall::ObjectSetField,
                 args: vec![object.0, *offset as u32, value.0],
@@ -966,9 +1017,14 @@ impl LiftedFunction {
                 if let Some(ShapeFieldSpecialization::ExactField(field)) =
                     reg_layout(*object, reg_state)
                         .or_else(|| {
-                            self.profiled_exact_layout(*bytecode_offset, AotSiteKind::StoreFieldShape)
+                            self.profiled_exact_layout(
+                                *bytecode_offset,
+                                AotSiteKind::StoreFieldShape,
+                            )
                         })
-                        .and_then(|layout| self.specialize_shape_field_access(layout, *shape_id, *offset))
+                        .and_then(|layout| {
+                            self.specialize_shape_field_access(layout, *shape_id, *offset)
+                        })
                 {
                     out.push(SmInstr::CallHelper {
                         dest: None,
@@ -989,12 +1045,21 @@ impl LiftedFunction {
                     });
                 }
             }
-            JitInstr::InstanceOf { dest, object, nominal_type_id } => out.push(SmInstr::CallHelper {
+            JitInstr::InstanceOf {
+                dest,
+                object,
+                nominal_type_id,
+            } => out.push(SmInstr::CallHelper {
                 dest: Some(dest.0),
                 helper: HelperCall::InstanceOf,
                 args: vec![object.0, *nominal_type_id],
             }),
-            JitInstr::Cast { dest, object, nominal_type_id, .. } => out.push(SmInstr::CallHelper {
+            JitInstr::Cast {
+                dest,
+                object,
+                nominal_type_id,
+                ..
+            } => out.push(SmInstr::CallHelper {
                 dest: Some(dest.0),
                 helper: HelperCall::Cast,
                 args: vec![object.0, *nominal_type_id],
@@ -1004,7 +1069,11 @@ impl LiftedFunction {
                 helper: HelperCall::Typeof,
                 args: vec![operand.0],
             }),
-            JitInstr::ObjectLiteral { dest, type_index, fields } => {
+            JitInstr::ObjectLiteral {
+                dest,
+                type_index,
+                fields,
+            } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(dest.0),
                     helper: HelperCall::AllocStructuralObject,
@@ -1018,12 +1087,20 @@ impl LiftedFunction {
                     });
                 }
             }
-            JitInstr::DynGetKeyed { dest, object, index } => out.push(SmInstr::CallHelper {
+            JitInstr::DynGetKeyed {
+                dest,
+                object,
+                index,
+            } => out.push(SmInstr::CallHelper {
                 dest: Some(dest.0),
                 helper: HelperCall::DynGetProp,
                 args: vec![object.0, index.0],
             }),
-            JitInstr::DynSetKeyed { object, index, value } => out.push(SmInstr::CallHelper {
+            JitInstr::DynSetKeyed {
+                object,
+                index,
+                value,
+            } => out.push(SmInstr::CallHelper {
                 dest: None,
                 helper: HelperCall::DynSetProp,
                 args: vec![object.0, index.0, value.0],
@@ -1259,9 +1336,7 @@ impl AotCompilable for LiftedFunction {
         if debug {
             eprintln!(
                 "\n=== AOT BLOCK ENTRY STATES fn={} name={:?} ===\n{:#?}",
-                self.func_index,
-                self.name,
-                block_entry_states
+                self.func_index, self.name, block_entry_states
             );
         }
         self.jit_func
@@ -1335,7 +1410,9 @@ fn classify_sm_suspension(instr: &SmInstr) -> Option<SuspensionKind> {
     match instr {
         SmInstr::CallAot { .. } => Some(SuspensionKind::AotCall),
         SmInstr::CallHelper { helper, .. } => match helper {
-            HelperCall::NativeCall | HelperCall::ModuleNativeCall => Some(SuspensionKind::NativeCall),
+            HelperCall::NativeCall | HelperCall::ModuleNativeCall => {
+                Some(SuspensionKind::NativeCall)
+            }
             HelperCall::AwaitTask | HelperCall::AwaitAll => Some(SuspensionKind::Await),
             HelperCall::YieldTask => Some(SuspensionKind::Yield),
             HelperCall::SleepTask => Some(SuspensionKind::Sleep),
@@ -1360,7 +1437,9 @@ fn sm_block_successors(block: &SmBlock) -> Vec<SmBlockId> {
             not_null_block,
             ..
         } => vec![*null_block, *not_null_block],
-        SmTerminator::BrTable { default, targets, .. } => {
+        SmTerminator::BrTable {
+            default, targets, ..
+        } => {
             let mut out = Vec::with_capacity(targets.len() + 1);
             out.push(*default);
             out.extend(targets.iter().copied());
@@ -1598,7 +1677,9 @@ mod tests {
     #[cfg(all(feature = "aot", feature = "jit"))]
     #[test]
     fn test_profile_variant_specializes_shape_load_to_exact_field() {
-        use crate::jit::ir::instr::{JitBlock, JitBlockId, JitFunction, JitInstr, JitTerminator, Reg};
+        use crate::jit::ir::instr::{
+            JitBlock, JitBlockId, JitFunction, JitInstr, JitTerminator, Reg,
+        };
         use crate::jit::ir::types::JitType;
 
         let shape_id = crate::vm::object::shape_id_from_member_names(&["a".to_string()]);
@@ -1608,18 +1689,21 @@ mod tests {
         jit_func.reg_types.insert(Reg(1), JitType::Value);
         jit_func.blocks.push(JitBlock {
             id: JitBlockId(0),
-            instrs: vec![JitInstr::LoadLocal {
-                dest: Reg(0),
-                index: 0,
-            }, JitInstr::LoadFieldShape {
-                dest: Reg(1),
-                object: Reg(0),
-                shape_id,
-                offset: 0,
-                optional: false,
-                stack: Vec::new(),
-                bytecode_offset: 12,
-            }],
+            instrs: vec![
+                JitInstr::LoadLocal {
+                    dest: Reg(0),
+                    index: 0,
+                },
+                JitInstr::LoadFieldShape {
+                    dest: Reg(1),
+                    object: Reg(0),
+                    shape_id,
+                    offset: 0,
+                    optional: false,
+                    stack: Vec::new(),
+                    bytecode_offset: 12,
+                },
+            ],
             terminator: JitTerminator::Return(Some(Reg(1))),
             predecessors: Vec::new(),
         });

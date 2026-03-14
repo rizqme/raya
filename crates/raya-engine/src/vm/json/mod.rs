@@ -75,8 +75,8 @@ impl JsonValue {
                 match js_classify(*val) {
                     JSView::Struct { ptr, layout_id, .. } => {
                         let obj = unsafe { &*ptr };
-                        if let Some(field_names) =
-                            resolve_layout_names(layout_id).or_else(|| global_layout_names(layout_id))
+                        if let Some(field_names) = resolve_layout_names(layout_id)
+                            .or_else(|| global_layout_names(layout_id))
                         {
                             if let Some(index) = field_names.iter().position(|name| name == key) {
                                 return obj

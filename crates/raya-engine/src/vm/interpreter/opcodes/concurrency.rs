@@ -326,9 +326,7 @@ impl<'a> Interpreter<'a> {
                     let wrapped_exc = {
                         let mut gc = self.gc.lock();
                         let gc_ptr = gc.allocate(crate::vm::RayaString::new(waitall_msg.clone()));
-                        unsafe {
-                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-                        }
+                        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
                     };
                     task.set_exception(wrapped_exc);
                     let _ = exc; // child rejection is observed above; aggregate await throws its own failure surface
@@ -477,18 +475,15 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                let count = count_val
-                    .as_i64()
-                    .filter(|v| *v >= 0)
-                    .unwrap_or(0) as usize;
+                let count = count_val.as_i64().filter(|v| *v >= 0).unwrap_or(0) as usize;
                 let semaphore_id = SemaphoreId::from_u64(sem_id_val.as_i64().unwrap_or(0) as u64);
 
                 if let Some(semaphore) = self.semaphore_registry.get(semaphore_id) {
                     match semaphore.try_acquire(task.id(), count) {
                         Ok(()) => OpcodeResult::Continue,
-                        Err(_) => OpcodeResult::Suspend(SuspendReason::SemaphoreAcquire {
-                            semaphore_id,
-                        }),
+                        Err(_) => {
+                            OpcodeResult::Suspend(SuspendReason::SemaphoreAcquire { semaphore_id })
+                        }
                     }
                 } else {
                     OpcodeResult::Error(VmError::RuntimeError(format!(
@@ -508,10 +503,7 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                let count = count_val
-                    .as_i64()
-                    .filter(|v| *v >= 0)
-                    .unwrap_or(0) as usize;
+                let count = count_val.as_i64().filter(|v| *v >= 0).unwrap_or(0) as usize;
                 let semaphore_id = SemaphoreId::from_u64(sem_id_val.as_i64().unwrap_or(0) as u64);
 
                 if let Some(semaphore) = self.semaphore_registry.get(semaphore_id) {

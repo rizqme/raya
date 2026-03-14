@@ -150,7 +150,10 @@ impl<'a> IrFunctionAdapter<'a> {
         let mut next_temp = self.base_reg_capacity();
         for block in &self.func.blocks {
             for instr in &block.instructions {
-                if matches!(instr, IrInstr::DynGetProp { .. } | IrInstr::DynSetProp { .. }) {
+                if matches!(
+                    instr,
+                    IrInstr::DynGetProp { .. } | IrInstr::DynSetProp { .. }
+                ) {
                     next_temp = next_temp.saturating_add(1);
                 }
             }
@@ -197,9 +200,9 @@ impl<'a> IrFunctionAdapter<'a> {
 
     fn exact_layout_field_names(&self, exact: ExactLayout) -> Option<Vec<String>> {
         match exact {
-            ExactLayout::Structural(layout_id) => {
-                self.structural_layout_names(layout_id).map(|names| names.to_vec())
-            }
+            ExactLayout::Structural(layout_id) => self
+                .structural_layout_names(layout_id)
+                .map(|names| names.to_vec()),
             ExactLayout::Nominal(nominal_type_id) => {
                 let class = self.nominal_class(nominal_type_id)?;
                 let mut names = vec![String::new(); class.fields.len()];
@@ -353,19 +356,28 @@ impl<'a> IrFunctionAdapter<'a> {
             } => {
                 set_reg_layout(reg_state, dest, Some(ExactLayout::Structural(*type_index)));
             }
-            IrInstr::CastShape { dest, object, .. }
-            | IrInstr::CastNominal { dest, object, .. } => {
+            IrInstr::CastShape { dest, object, .. } | IrInstr::CastNominal { dest, object, .. } => {
                 set_reg_layout(reg_state, dest, reg_layout(reg_state, object));
             }
             IrInstr::Phi { dest, .. }
             | IrInstr::BinaryOp { dest, .. }
             | IrInstr::UnaryOp { dest, .. }
-            | IrInstr::Call { dest: Some(dest), .. }
-            | IrInstr::CallMethodExact { dest: Some(dest), .. }
-            | IrInstr::CallMethodShape { dest: Some(dest), .. }
+            | IrInstr::Call {
+                dest: Some(dest), ..
+            }
+            | IrInstr::CallMethodExact {
+                dest: Some(dest), ..
+            }
+            | IrInstr::CallMethodShape {
+                dest: Some(dest), ..
+            }
             | IrInstr::BindMethod { dest, .. }
-            | IrInstr::NativeCall { dest: Some(dest), .. }
-            | IrInstr::ModuleNativeCall { dest: Some(dest), .. }
+            | IrInstr::NativeCall {
+                dest: Some(dest), ..
+            }
+            | IrInstr::ModuleNativeCall {
+                dest: Some(dest), ..
+            }
             | IrInstr::IsNominal { dest, .. }
             | IrInstr::ImplementsShape { dest, .. }
             | IrInstr::CastTupleLen { dest, .. }
@@ -434,42 +446,40 @@ impl<'a> IrFunctionAdapter<'a> {
              -> Option<ExactLayout> { reg_state.get(&reg.id.as_u32()).copied() };
         match instr {
             // === Assignment (constant or register copy) ===
-            IrInstr::Assign { dest, value } => {
-                match value {
-                    IrValue::Constant(c) => match c {
-                        IrConstant::I32(v) => out.push(SmInstr::ConstI32 {
+            IrInstr::Assign { dest, value } => match value {
+                IrValue::Constant(c) => match c {
+                    IrConstant::I32(v) => out.push(SmInstr::ConstI32 {
+                        dest: Self::reg(dest),
+                        value: *v,
+                    }),
+                    IrConstant::F64(v) => out.push(SmInstr::ConstF64 {
+                        dest: Self::reg(dest),
+                        bits: v.to_bits(),
+                    }),
+                    IrConstant::Boolean(v) => out.push(SmInstr::ConstBool {
+                        dest: Self::reg(dest),
+                        value: *v,
+                    }),
+                    IrConstant::Null => out.push(SmInstr::ConstNull {
+                        dest: Self::reg(dest),
+                    }),
+                    IrConstant::Undefined => out.push(SmInstr::ConstNull {
+                        dest: Self::reg(dest),
+                    }),
+                    IrConstant::String(value) => {
+                        out.push(SmInstr::ConstString {
                             dest: Self::reg(dest),
-                            value: *v,
-                        }),
-                        IrConstant::F64(v) => out.push(SmInstr::ConstF64 {
-                            dest: Self::reg(dest),
-                            bits: v.to_bits(),
-                        }),
-                        IrConstant::Boolean(v) => out.push(SmInstr::ConstBool {
-                            dest: Self::reg(dest),
-                            value: *v,
-                        }),
-                        IrConstant::Null => out.push(SmInstr::ConstNull {
-                            dest: Self::reg(dest),
-                        }),
-                        IrConstant::Undefined => out.push(SmInstr::ConstNull {
-                            dest: Self::reg(dest),
-                        }),
-                        IrConstant::String(value) => {
-                            out.push(SmInstr::ConstString {
-                                dest: Self::reg(dest),
-                                value: value.clone(),
-                            });
-                        }
-                    },
-                    IrValue::Register(src) => {
-                        out.push(SmInstr::Move {
-                            dest: Self::reg(dest),
-                            src: Self::reg(src),
+                            value: value.clone(),
                         });
                     }
+                },
+                IrValue::Register(src) => {
+                    out.push(SmInstr::Move {
+                        dest: Self::reg(dest),
+                        src: Self::reg(src),
+                    });
                 }
-            }
+            },
 
             // === Binary Operations (type-dispatched) ===
             IrInstr::BinaryOp {
@@ -529,12 +539,14 @@ impl<'a> IrFunctionAdapter<'a> {
                             left: l,
                             right: r,
                         }),
-                        BinaryOp::NotEqual | BinaryOp::StrictNotEqual => out.push(SmInstr::I32Cmp {
-                            dest: d,
-                            op: SmCmpOp::Ne,
-                            left: l,
-                            right: r,
-                        }),
+                        BinaryOp::NotEqual | BinaryOp::StrictNotEqual => {
+                            out.push(SmInstr::I32Cmp {
+                                dest: d,
+                                op: SmCmpOp::Ne,
+                                left: l,
+                                right: r,
+                            })
+                        }
                         BinaryOp::Less => out.push(SmInstr::I32Cmp {
                             dest: d,
                             op: SmCmpOp::Lt,
@@ -1243,9 +1255,9 @@ impl<'a> IrFunctionAdapter<'a> {
                 object,
                 shape_id,
             } => {
-                if let Some(layout) = reg_layout(object, reg_state)
-                    .filter(|layout| self.exact_layout_satisfies_shape_by_fields(*layout, *shape_id))
-                {
+                if let Some(layout) = reg_layout(object, reg_state).filter(|layout| {
+                    self.exact_layout_satisfies_shape_by_fields(*layout, *shape_id)
+                }) {
                     let _ = layout;
                     out.push(SmInstr::Move {
                         dest: Self::reg(dest),
@@ -1287,7 +1299,9 @@ impl<'a> IrFunctionAdapter<'a> {
                     helper: HelperCall::Cast,
                     args: vec![
                         Self::reg(object),
-                        CAST_KIND_MASK_FLAG | CAST_OBJECT_MIN_FIELDS_FLAG | (*required_fields as u32),
+                        CAST_KIND_MASK_FLAG
+                            | CAST_OBJECT_MIN_FIELDS_FLAG
+                            | (*required_fields as u32),
                     ],
                 });
             }
@@ -1301,7 +1315,9 @@ impl<'a> IrFunctionAdapter<'a> {
                     helper: HelperCall::Cast,
                     args: vec![
                         Self::reg(object),
-                        CAST_KIND_MASK_FLAG | CAST_ARRAY_ELEM_KIND_FLAG | (*expected_elem_mask as u32),
+                        CAST_KIND_MASK_FLAG
+                            | CAST_ARRAY_ELEM_KIND_FLAG
+                            | (*expected_elem_mask as u32),
                     ],
                 });
             }

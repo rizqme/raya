@@ -5,8 +5,7 @@
 use super::{
     ClassFieldInfo, ConstantValue, Lowerer, ARRAY_TYPE_ID, BOOLEAN_TYPE_ID, CHANNEL_TYPE_ID,
     INT_TYPE_ID, JSON_OBJECT_TYPE_ID, JSON_TYPE_ID, MUTEX_TYPE_ID, NULL_TYPE_ID, NUMBER_TYPE_ID,
-    REGEXP_TYPE_ID, STRING_TYPE_ID, TASK_TYPE_ID, UNKNOWN_TYPE_ID, UNRESOLVED,
-    UNRESOLVED_TYPE_ID,
+    REGEXP_TYPE_ID, STRING_TYPE_ID, TASK_TYPE_ID, UNKNOWN_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
 };
 use crate::compiler::ir::{
     BinaryOp, FunctionId, IrConstant, IrInstr, IrValue, NominalTypeId, Register, Terminator,
@@ -22,7 +21,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 // Re-export VM builtin method IDs (canonical source of truth)
 #[allow(unused_imports)]
 use crate::vm::builtin::number as builtin_number;
-use crate::vm::builtin::regexp as builtin_regexp;
 
 const CAST_KIND_MASK_FLAG: u16 = 0x8000;
 const CAST_TUPLE_LEN_FLAG: u16 = 0x4000;
@@ -106,8 +104,10 @@ impl<'a> Lowerer<'a> {
         object_expr: &Expression,
         object_reg_ty: TypeId,
     ) -> bool {
-        matches!(self.type_ctx.get(self.get_expr_type(object_expr)), Some(Type::Function(_)))
-            || matches!(self.type_ctx.get(object_reg_ty), Some(Type::Function(_)))
+        matches!(
+            self.type_ctx.get(self.get_expr_type(object_expr)),
+            Some(Type::Function(_))
+        ) || matches!(self.type_ctx.get(object_reg_ty), Some(Type::Function(_)))
     }
 
     fn member_read_uses_dynamic_property_path(
@@ -150,12 +150,9 @@ impl<'a> Lowerer<'a> {
             .filter(|ty| ty.as_u32() != UNRESOLVED_TYPE_ID)
     }
 
-    fn effective_identifier_value_type(
-        &self,
-        ident: &ast::Identifier,
-        fallback: TypeId,
-    ) -> TypeId {
-        self.narrowed_identifier_type_hint(ident).unwrap_or(fallback)
+    fn effective_identifier_value_type(&self, ident: &ast::Identifier, fallback: TypeId) -> TypeId {
+        self.narrowed_identifier_type_hint(ident)
+            .unwrap_or(fallback)
     }
 
     fn projection_layout_u16_from_type_id(&self, ty: TypeId) -> Option<Vec<(String, u16)>> {
@@ -294,7 +291,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_js_arguments_object(&mut self) -> Register {
         let element_ty = TypeId::new(UNKNOWN_TYPE_ID);
-        let array_ty = TypeId::new(ARRAY_TYPE_ID);
+        let object_ty = TypeId::new(JSON_OBJECT_TYPE_ID);
         let skips_js_this = self
             .current_function
             .as_ref()
@@ -319,11 +316,12 @@ impl<'a> Lowerer<'a> {
             });
         }
 
-        let array_reg = self.alloc_register(array_ty);
-        self.emit(IrInstr::NewArray {
-            dest: array_reg.clone(),
-            len: arg_count_reg.clone(),
-            elem_ty: element_ty,
+        let object_reg = self.alloc_register(object_ty);
+        let type_index = self.structural_layout_id_from_ordered_names(&[]);
+        self.emit(IrInstr::ObjectLiteral {
+            dest: object_reg.clone(),
+            type_index,
+            fields: vec![],
         });
 
         let loop_idx_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
@@ -349,7 +347,7 @@ impl<'a> Lowerer<'a> {
             dest: cond_reg.clone(),
             op: BinaryOp::Less,
             left: loop_idx_reg.clone(),
-            right: arg_count_reg,
+            right: arg_count_reg.clone(),
         });
         self.set_terminator(Terminator::Branch {
             cond: cond_reg,
@@ -387,9 +385,9 @@ impl<'a> Lowerer<'a> {
             dest: arg_val_reg.clone(),
             index: source_index_reg,
         });
-        self.emit(IrInstr::StoreElement {
-            array: array_reg.clone(),
-            index: loop_idx_reg.clone(),
+        self.emit(IrInstr::DynSetKeyed {
+            object: object_reg.clone(),
+            key: loop_idx_reg.clone(),
             value: arg_val_reg,
         });
 
@@ -413,7 +411,9 @@ impl<'a> Lowerer<'a> {
             ));
         self.current_block = exit_block;
 
-        array_reg
+        self.emit_dyn_set_named(object_reg.clone(), "length", arg_count_reg);
+
+        object_reg
     }
 
     /// Lower an expression, returning the register holding its value
@@ -712,11 +712,24 @@ impl<'a> Lowerer<'a> {
         }
 
         // Fallback path when no RegExp class is present in scope.
+        // Go through dynamic class construction so literals produce full RegExp
+        // objects instead of raw native handles.
         let dest = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
+        let ctor_value = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
+        let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: name_reg.clone(),
+            value: IrValue::Constant(IrConstant::String(TC::REGEXP_TYPE_NAME.to_string())),
+        });
+        self.emit(IrInstr::NativeCall {
+            dest: Some(ctor_value.clone()),
+            native_id: crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL,
+            args: vec![name_reg],
+        });
         self.emit(IrInstr::NativeCall {
             dest: Some(dest.clone()),
-            native_id: builtin_regexp::NEW,
-            args: vec![pattern_reg, flags_reg],
+            native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
+            args: vec![ctor_value, pattern_reg, flags_reg],
         });
         dest
     }
@@ -2849,10 +2862,18 @@ impl<'a> Lowerer<'a> {
                     ("Object", "defineProperties") => {
                         Some(crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES)
                     }
+                    ("Reflect", "get") => Some(crate::compiler::native_id::REFLECT_GET),
+                    ("Reflect", "set") => Some(crate::compiler::native_id::REFLECT_SET),
                     ("Reflect", "has") => Some(crate::compiler::native_id::REFLECT_HAS),
                     _ => None,
                 };
                 if let Some(native_id) = static_native_id {
+                    if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                        eprintln!(
+                            "[lower] native static call '{}.{}' -> 0x{:04x}",
+                            class_name, method_name, native_id
+                        );
+                    }
                     self.emit(IrInstr::NativeCall {
                         dest: Some(dest.clone()),
                         native_id,
@@ -3310,7 +3331,10 @@ impl<'a> Lowerer<'a> {
                 let has_dispatch = |id: u32| {
                     self.type_registry.lookup_method(id, method_name).is_some()
                         || (args.is_empty()
-                            && self.type_registry.lookup_property(id, method_name).is_some())
+                            && self
+                                .type_registry
+                                .lookup_property(id, method_name)
+                                .is_some())
                 };
 
                 if usable(reg_dispatch) && has_dispatch(reg_dispatch) {
@@ -3364,14 +3388,16 @@ impl<'a> Lowerer<'a> {
             } || (nominal_type_id.is_none()
                 && (self.type_requires_late_bound_dispatch(object.ty)
                     || self.type_requires_late_bound_dispatch(self.get_expr_type(&member.object))));
-            let has_registry_dispatch =
-                obj_type_id != UNRESOLVED_TYPE_ID
-                    && (self.type_registry.lookup_method(obj_type_id, method_name).is_some()
-                        || (args.is_empty()
-                            && self
-                                .type_registry
-                                .lookup_property(obj_type_id, method_name)
-                                .is_some()));
+            let has_registry_dispatch = obj_type_id != UNRESOLVED_TYPE_ID
+                && (self
+                    .type_registry
+                    .lookup_method(obj_type_id, method_name)
+                    .is_some()
+                    || (args.is_empty()
+                        && self
+                            .type_registry
+                            .lookup_property(obj_type_id, method_name)
+                            .is_some()));
 
             // Handle-backed Mutex<T> methods that map to dedicated bytecode opcodes.
             if obj_type_id == MUTEX_TYPE_ID && args.is_empty() {
@@ -3514,6 +3540,7 @@ impl<'a> Lowerer<'a> {
                             });
                             return dest;
                         }
+                        crate::compiler::type_registry::DispatchAction::DeclaredField(_) => None,
                         crate::compiler::type_registry::DispatchAction::Opcode(_) => None,
                     }
                 } else {
@@ -3606,13 +3633,16 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
+            let receiver_runtime_dynamic = nominal_type_id.is_none()
+                && self.allow_unresolved_runtime_fallback
+                && (obj_type_id == UNRESOLVED_TYPE_ID
+                    || self.type_is_runtime_dynamic_dispatch(object.ty)
+                    || self.type_is_runtime_dynamic_dispatch(self.get_expr_type(&member.object)));
+
             // Unknown/dynamic receiver fallback: lower `obj.m(...)` as
             // `CallClosure(LateBoundMember(obj, "m"), args)` so strict mode
             // can still compile unresolved-but-valid dynamic patterns.
-            if nominal_type_id.is_none()
-                && self.allow_unresolved_runtime_fallback
-                && (obj_type_id == UNRESOLVED_TYPE_ID || obj_type_id == 6)
-            {
+            if receiver_runtime_dynamic {
                 let closure = self.alloc_register(UNRESOLVED);
                 self.emit(IrInstr::LateBoundMember {
                     dest: closure.clone(),
@@ -3634,7 +3664,9 @@ impl<'a> Lowerer<'a> {
 
             if nominal_type_id.is_none()
                 && !self.allow_unresolved_runtime_fallback
-                && (obj_type_id == UNRESOLVED_TYPE_ID || obj_type_id == 6)
+                && (obj_type_id == UNRESOLVED_TYPE_ID
+                    || self.type_is_runtime_dynamic_dispatch(object.ty)
+                    || self.type_is_runtime_dynamic_dispatch(self.get_expr_type(&member.object)))
             {
                 self.errors
                     .push(crate::compiler::CompileError::InternalError {
@@ -4002,10 +4034,9 @@ impl<'a> Lowerer<'a> {
         }
 
         let receiver_expr_ty = self.get_expr_type(&member.object);
-        let receiver_is_function_object = matches!(
-            self.type_ctx.get(receiver_expr_ty),
-            Some(Type::Function(_))
-        ) || matches!(self.type_ctx.get(object.ty), Some(Type::Function(_)));
+        let receiver_is_function_object =
+            matches!(self.type_ctx.get(receiver_expr_ty), Some(Type::Function(_)))
+                || matches!(self.type_ctx.get(object.ty), Some(Type::Function(_)));
         let receiver_is_dynamic_object =
             matches!(
                 self.type_ctx.get(receiver_expr_ty),
@@ -4017,8 +4048,19 @@ impl<'a> Lowerer<'a> {
                 )
                 || self.type_ctx.jsobject_inner(object.ty).is_some()
                 || receiver_is_function_object;
+        let receiver_has_structural_named_view = nominal_type_id.is_none()
+            && (self
+                .structural_shape_slot_from_expr(&member.object, prop_name)
+                .is_some()
+                || self
+                    .structural_shape_id_from_type(receiver_expr_ty)
+                    .is_some()
+                || self.structural_shape_id_from_type(object.ty).is_some());
+        let receiver_prefers_runtime_named_lookup = nominal_type_id.is_none()
+            && (receiver_is_dynamic_object
+                || (self.js_this_binding_compat && receiver_has_structural_named_view));
 
-        if nominal_type_id.is_none() && receiver_is_dynamic_object {
+        if receiver_prefers_runtime_named_lookup {
             let member_ty = {
                 let member_expr = Expression::Member(member.clone());
                 let inferred = self.get_expr_type(&member_expr);
@@ -4067,12 +4109,30 @@ impl<'a> Lowerer<'a> {
                         });
                         return dest;
                     }
+                    crate::compiler::type_registry::DispatchAction::DeclaredField(field_type) => {
+                        let member_ty = {
+                            let member_expr = Expression::Member(member.clone());
+                            let inferred = self.get_expr_type(&member_expr);
+                            if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                                field_type.map(TypeId::new).unwrap_or(UNRESOLVED)
+                            } else {
+                                inferred
+                            }
+                        };
+                        let dest = self.alloc_register(member_ty);
+                        self.emit_dyn_get_named(dest.clone(), object, prop_name);
+                        return dest;
+                    }
                     crate::compiler::type_registry::DispatchAction::ClassMethod(_, _) => {
                         // Properties shouldn't use ClassMethod
                     }
                 }
             }
-            if self.type_registry.lookup_method(obj_ty_id, prop_name).is_some() {
+            if self
+                .type_registry
+                .lookup_method(obj_ty_id, prop_name)
+                .is_some()
+            {
                 let member_ty = {
                     let member_expr = Expression::Member(member.clone());
                     let inferred = self.get_expr_type(&member_expr);
@@ -4442,7 +4502,9 @@ impl<'a> Lowerer<'a> {
         // (unknown/any/jsobject/etc), preserve runtime behavior instead of hard ICE.
         if nominal_type_id.is_none()
             && self.allow_unresolved_runtime_fallback
-            && (obj_ty_id == UNRESOLVED_TYPE_ID || obj_ty_id == 6)
+            && (obj_ty_id == UNRESOLVED_TYPE_ID
+                || self.type_is_runtime_dynamic_dispatch(object.ty)
+                || self.type_is_runtime_dynamic_dispatch(self.get_expr_type(&member.object)))
         {
             let dest = self.alloc_register(UNRESOLVED);
             self.emit(IrInstr::LateBoundMember {
@@ -4455,7 +4517,9 @@ impl<'a> Lowerer<'a> {
 
         if nominal_type_id.is_none()
             && !self.allow_unresolved_runtime_fallback
-            && (obj_ty_id == UNRESOLVED_TYPE_ID || obj_ty_id == 6)
+            && (obj_ty_id == UNRESOLVED_TYPE_ID
+                || self.type_is_runtime_dynamic_dispatch(object.ty)
+                || self.type_is_runtime_dynamic_dispatch(self.get_expr_type(&member.object)))
         {
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
@@ -4667,7 +4731,9 @@ impl<'a> Lowerer<'a> {
         }
 
         match self.type_ctx.get(object_ty) {
-            Some(Type::Array(_)) | Some(Type::Tuple(_)) | Some(Type::Primitive(PrimitiveType::String)) => {
+            Some(Type::Array(_))
+            | Some(Type::Tuple(_))
+            | Some(Type::Primitive(PrimitiveType::String)) => {
                 !self.expr_is_es_array_index_key(index_expr)
             }
             _ => false,
@@ -6965,7 +7031,8 @@ impl<'a> Lowerer<'a> {
         let has_js_this_slot = self.js_this_binding_compat;
         let js_this_slots = usize::from(has_js_this_slot);
         if has_destructuring_params {
-            let fixed_param_count = func.params.iter().filter(|p| !p.is_rest).count() + js_this_slots;
+            let fixed_param_count =
+                func.params.iter().filter(|p| !p.is_rest).count() + js_this_slots;
             self.next_local = fixed_param_count as u16;
         } else {
             self.next_local = js_this_slots as u16;
@@ -7045,28 +7112,29 @@ impl<'a> Lowerer<'a> {
             .iter()
             .take_while(|param| !param.is_rest && param.default_value.is_none() && !param.optional)
             .count();
-        let is_strict_js = self.js_strict_context || func
-            .body
-            .statements
-            .iter()
-            .take_while(|stmt| {
-                matches!(
-                    stmt,
-                    ast::Statement::Expression(ast::ExpressionStatement {
-                        expression: ast::Expression::StringLiteral(_),
-                        ..
-                    })
-                )
-            })
-            .any(|stmt| {
-                matches!(
-                    stmt,
-                    ast::Statement::Expression(ast::ExpressionStatement {
-                        expression: ast::Expression::StringLiteral(lit),
-                        ..
-                    }) if self.interner.resolve(lit.value) == "use strict"
-                )
-            });
+        let is_strict_js = self.js_strict_context
+            || func
+                .body
+                .statements
+                .iter()
+                .take_while(|stmt| {
+                    matches!(
+                        stmt,
+                        ast::Statement::Expression(ast::ExpressionStatement {
+                            expression: ast::Expression::StringLiteral(_),
+                            ..
+                        })
+                    )
+                })
+                .any(|stmt| {
+                    matches!(
+                        stmt,
+                        ast::Statement::Expression(ast::ExpressionStatement {
+                            expression: ast::Expression::StringLiteral(lit),
+                            ..
+                        }) if self.interner.resolve(lit.value) == "use strict"
+                    )
+                });
 
         let mut closure_locals = FxHashSet::default();
         for param in &func.params {
@@ -7105,7 +7173,8 @@ impl<'a> Lowerer<'a> {
                     .and_then(|p| p.type_annotation.as_ref())
                 {
                     if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
-                        self.register_object_fields.insert(value_reg.id, field_layout);
+                        self.register_object_fields
+                            .insert(value_reg.id, field_layout);
                     }
                     if let Some(nested_array_layouts) =
                         self.extract_array_element_object_layouts_from_type(type_ann)
@@ -7252,29 +7321,28 @@ impl<'a> Lowerer<'a> {
                         let capture_idx = if let Some(idx) = parent_capture_idx {
                             idx
                         } else {
-                            let (source, is_refcell) =
-                                if let Some(ref ancestors) = child_ancestor_variables {
-                                    if let Some(ancestor_var) = ancestors.get(&cap.symbol) {
-                                        (ancestor_var.source, ancestor_var.is_refcell)
-                                    } else if let Some(&local_idx) = self.local_map.get(&cap.symbol)
-                                    {
-                                        (
-                                            super::AncestorSource::ImmediateParentLocal(local_idx),
-                                            cap.is_refcell,
-                                        )
-                                    } else {
-                                        (super::AncestorSource::Ancestor, cap.is_refcell)
-                                    }
+                            let (source, is_refcell) = if let Some(ref ancestors) =
+                                child_ancestor_variables
+                            {
+                                if let Some(ancestor_var) = ancestors.get(&cap.symbol) {
+                                    (ancestor_var.source, ancestor_var.is_refcell)
                                 } else if let Some(&local_idx) = self.local_map.get(&cap.symbol) {
-                                    let is_refcell =
-                                        self.refcell_registers.contains_key(&local_idx);
                                     (
                                         super::AncestorSource::ImmediateParentLocal(local_idx),
-                                        is_refcell,
+                                        cap.is_refcell,
                                     )
                                 } else {
                                     (super::AncestorSource::Ancestor, cap.is_refcell)
-                                };
+                                }
+                            } else if let Some(&local_idx) = self.local_map.get(&cap.symbol) {
+                                let is_refcell = self.refcell_registers.contains_key(&local_idx);
+                                (
+                                    super::AncestorSource::ImmediateParentLocal(local_idx),
+                                    is_refcell,
+                                )
+                            } else {
+                                (super::AncestorSource::Ancestor, cap.is_refcell)
+                            };
 
                             let idx = self.captures.len() as u16;
                             self.captures.push(super::CaptureInfo {
@@ -7303,9 +7371,8 @@ impl<'a> Lowerer<'a> {
             capture_regs.insert(idx, this_reg);
         }
 
-        let dest = self.alloc_register(self.closure_value_type_for_expr(
-            &Expression::Function(func.clone()),
-        ));
+        let dest = self
+            .alloc_register(self.closure_value_type_for_expr(&Expression::Function(func.clone())));
         self.emit(IrInstr::MakeClosure {
             dest: dest.clone(),
             func: func_id,
@@ -7921,9 +7988,8 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        let should_normalize_int_to_number = self.should_normalize_typeof_int_to_number(
-            self.get_expr_type(&typeof_expr.argument),
-        );
+        let should_normalize_int_to_number =
+            self.should_normalize_typeof_int_to_number(self.get_expr_type(&typeof_expr.argument));
 
         let operand = self.lower_expr(&typeof_expr.argument);
         let raw_typeof = self.alloc_register(TypeId::new(STRING_TYPE_ID));
@@ -7993,10 +8059,7 @@ impl<'a> Lowerer<'a> {
         let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
         self.emit(IrInstr::Phi {
             dest: dest.clone(),
-            sources: vec![
-                (normalize_exit, normalized),
-                (passthrough_exit, raw_typeof),
-            ],
+            sources: vec![(normalize_exit, normalized), (passthrough_exit, raw_typeof)],
         });
         dest
     }
@@ -8027,8 +8090,9 @@ impl<'a> Lowerer<'a> {
                     .any(|member| contains_type_id(lowerer, member, target, visited)),
                 Type::Reference(type_ref) => {
                     let resolved = lowerer.type_ctx.lookup_named_type(&type_ref.name);
-                    resolved
-                        .is_some_and(|resolved_ty| contains_type_id(lowerer, resolved_ty, target, visited))
+                    resolved.is_some_and(|resolved_ty| {
+                        contains_type_id(lowerer, resolved_ty, target, visited)
+                    })
                 }
                 Type::Generic(generic) => contains_type_id(lowerer, generic.base, target, visited),
                 _ => ty_id.as_u32() == target,
@@ -8047,93 +8111,6 @@ impl<'a> Lowerer<'a> {
         if let Expression::Identifier(ident) = &*new_expr.callee {
             // Handle built-in primitive constructors
             let name = self.interner.resolve(ident.name);
-            if name == TC::ARRAY_TYPE_NAME {
-                // Lower `new Array(...)` directly to array IR so it compiles to bytecode
-                // without relying on the removed ARRAY_NEW native constructor path.
-                let array_dest = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
-                match new_expr.arguments.len() {
-                    0 => {
-                        let zero = self.emit_i32_const(0);
-                        self.emit(IrInstr::NewArray {
-                            dest: array_dest.clone(),
-                            len: zero,
-                            elem_ty: TypeId::new(NUMBER_TYPE_ID),
-                        });
-                    }
-                    1 => match &new_expr.arguments[0] {
-                        // JS-compatible pragmatic subset: numeric single arg = length.
-                        Expression::IntLiteral(_) | Expression::FloatLiteral(_) => {
-                            let len = self.lower_expr(&new_expr.arguments[0]);
-                            self.emit(IrInstr::NewArray {
-                                dest: array_dest.clone(),
-                                len,
-                                elem_ty: TypeId::new(NUMBER_TYPE_ID),
-                            });
-                        }
-                        // Non-numeric single arg = array with one element.
-                        _ => {
-                            let zero = self.emit_i32_const(0);
-                            self.emit(IrInstr::NewArray {
-                                dest: array_dest.clone(),
-                                len: zero,
-                                elem_ty: TypeId::new(NUMBER_TYPE_ID),
-                            });
-                            let element = self.lower_expr(&new_expr.arguments[0]);
-                            self.emit(IrInstr::ArrayPush {
-                                array: array_dest.clone(),
-                                element,
-                            });
-                        }
-                    },
-                    _ => {
-                        // Two or more args become initial elements.
-                        let zero = self.emit_i32_const(0);
-                        self.emit(IrInstr::NewArray {
-                            dest: array_dest.clone(),
-                            len: zero,
-                            elem_ty: TypeId::new(NUMBER_TYPE_ID),
-                        });
-                        for arg in &new_expr.arguments {
-                            let element = self.lower_expr(arg);
-                            self.emit(IrInstr::ArrayPush {
-                                array: array_dest.clone(),
-                                element,
-                            });
-                        }
-                    }
-                }
-                return array_dest;
-            }
-
-            if name == TC::REGEXP_TYPE_NAME {
-                // RegExp may not be declared as a local class in this module.
-                // Fall back to direct native constructor only in that case.
-                let has_regexp_class = self.class_map.contains_key(&ident.name)
-                    || self.variable_class_map.contains_key(&ident.name);
-                if !has_regexp_class {
-                    let regexp_dest = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
-                    let mut args = Vec::new();
-                    for arg in &new_expr.arguments {
-                        args.push(self.lower_expr(arg));
-                    }
-                    // If flags not provided, pass empty string
-                    if args.len() == 1 {
-                        let empty_flags = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                        self.emit(IrInstr::Assign {
-                            dest: empty_flags.clone(),
-                            value: IrValue::Constant(IrConstant::String(String::new())),
-                        });
-                        args.push(empty_flags);
-                    }
-                    self.emit(IrInstr::NativeCall {
-                        dest: Some(regexp_dest.clone()),
-                        native_id: builtin_regexp::NEW,
-                        args,
-                    });
-                    return regexp_dest;
-                }
-            }
-
             if name == TC::CHANNEL_TYPE_NAME {
                 // When the Channel class definition is unavailable, lower directly to opcode IR.
                 // If the Channel class exists in this module, use normal class
@@ -8517,12 +8494,8 @@ impl<'a> Lowerer<'a> {
                     self.current_block = define_cause_block;
                     let cause_value = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
                     self.emit_dyn_get_named(cause_value.clone(), options, "cause");
-                    let descriptor = self.lower_data_property_descriptor(
-                        cause_value,
-                        true,
-                        false,
-                        true,
-                    );
+                    let descriptor =
+                        self.lower_data_property_descriptor(cause_value, true, false, true);
                     let cause_key = self.emit_named_key_register("cause");
                     let define_result = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
                     self.emit(IrInstr::NativeCall {
@@ -9189,8 +9162,7 @@ impl<'a> Lowerer<'a> {
                     object,
                     required_fields: object_min_fields_encoded & 0x1FFF,
                 });
-            } else if let Some(kind_mask) = self.resolve_runtime_cast_kind_mask(&cast.target_type)
-            {
+            } else if let Some(kind_mask) = self.resolve_runtime_cast_kind_mask(&cast.target_type) {
                 self.emit(IrInstr::CastKindMask {
                     dest: dest.clone(),
                     object,
@@ -9379,8 +9351,7 @@ impl<'a> Lowerer<'a> {
             | Type::Intersection(_)
             | Type::Typeof(_)
             | Type::IndexedAccess(_)
-            | Type::Keyof(_)
-            => true,
+            | Type::Keyof(_) => true,
 
             Type::Parenthesized(inner) => self.is_structural_shape_cast_target(inner),
             Type::Union(union) => union
@@ -9753,17 +9724,22 @@ impl<'a> Lowerer<'a> {
 
         match self.type_ctx.get(ty_id) {
             Some(Type::Function(func)) => Some(func.return_type),
-            Some(Type::Object(obj)) => obj.call_signatures.iter().find_map(|sig_ty| {
-                match self.type_ctx.get(*sig_ty) {
-                    Some(Type::Function(func)) => Some(func.return_type),
-                    _ => None,
-                }
-            }),
+            Some(Type::Object(obj)) => {
+                obj.call_signatures
+                    .iter()
+                    .find_map(|sig_ty| match self.type_ctx.get(*sig_ty) {
+                        Some(Type::Function(func)) => Some(func.return_type),
+                        _ => None,
+                    })
+            }
             Some(Type::Interface(iface)) => {
-                iface.call_signatures.iter().find_map(|sig_ty| match self.type_ctx.get(*sig_ty) {
-                    Some(Type::Function(func)) => Some(func.return_type),
-                    _ => None,
-                })
+                iface
+                    .call_signatures
+                    .iter()
+                    .find_map(|sig_ty| match self.type_ctx.get(*sig_ty) {
+                        Some(Type::Function(func)) => Some(func.return_type),
+                        _ => None,
+                    })
             }
             Some(Type::Reference(type_ref)) => self
                 .type_ctx
@@ -9783,12 +9759,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn runtime_call_may_be_callable(&self, ty_id: TypeId) -> bool {
-        let raw = ty_id.as_u32();
-        self.allow_unresolved_runtime_fallback
-            && matches!(
-                raw,
-                UNRESOLVED_TYPE_ID | UNKNOWN_TYPE_ID | JSON_OBJECT_TYPE_ID
-            )
+        self.allow_unresolved_runtime_fallback && self.type_is_runtime_dynamic_dispatch(ty_id)
     }
 
     pub(crate) fn type_has_construct_signature(&self, ty_id: TypeId) -> bool {
@@ -9796,6 +9767,7 @@ impl<'a> Lowerer<'a> {
 
         match self.type_ctx.get(ty_id) {
             Some(Type::Class(class_ty)) => !class_ty.is_abstract,
+            Some(Type::Function(_)) => self.js_this_binding_compat,
             Some(Type::Object(obj)) => !obj.construct_signatures.is_empty(),
             Some(Type::Interface(iface)) => !iface.construct_signatures.is_empty(),
             Some(Type::Reference(type_ref)) => self
@@ -9820,7 +9792,11 @@ impl<'a> Lowerer<'a> {
 
         match self.type_ctx.get(ty_id) {
             Some(Type::Class(_)) => Some(ty_id),
-            Some(Type::Function(func)) => Some(func.return_type),
+            Some(Type::Function(func)) => Some(if self.js_this_binding_compat {
+                UNRESOLVED
+            } else {
+                func.return_type
+            }),
             Some(Type::Object(obj)) => {
                 obj.construct_signatures.iter().find_map(|sig_ty| {
                     match self.type_ctx.get(*sig_ty) {
@@ -9860,6 +9836,17 @@ impl<'a> Lowerer<'a> {
         self.type_ctx
             .get(ty_id)
             .is_some_and(|ty| matches!(ty, Type::Any | Type::Unknown))
+    }
+
+    fn type_is_runtime_dynamic_dispatch(&self, ty_id: TypeId) -> bool {
+        use crate::parser::types::ty::Type;
+
+        match ty_id.as_u32() {
+            UNRESOLVED_TYPE_ID | UNKNOWN_TYPE_ID | JSON_OBJECT_TYPE_ID => true,
+            _ => self.type_ctx.get(ty_id).is_some_and(|ty| {
+                matches!(ty, Type::Any | Type::Unknown | Type::Never | Type::JSObject)
+            }),
+        }
     }
 
     fn is_structural_object_type(&self, ty_id: TypeId) -> bool {
@@ -11121,12 +11108,14 @@ mod tests {
             "#,
         );
         let type_ctx = crate::parser::TypeContext::new();
-        let mut lowerer = Lowerer::new(&type_ctx, &interner).with_unresolved_runtime_fallback(false);
+        let mut lowerer =
+            Lowerer::new(&type_ctx, &interner).with_unresolved_runtime_fallback(false);
         let ir = lowerer.lower_module(&module);
 
         let has_strict_no_fallback_error = lowerer.errors().iter().any(|err| {
-            err.to_string()
-                .contains("strict mode forbids runtime late-bound fallback for unresolved member call")
+            err.to_string().contains(
+                "strict mode forbids runtime late-bound fallback for unresolved member call",
+            )
         });
         assert!(
             has_strict_no_fallback_error,
@@ -11157,7 +11146,8 @@ mod tests {
             "#,
         );
         let type_ctx = crate::parser::TypeContext::new();
-        let mut lowerer = Lowerer::new(&type_ctx, &interner).with_unresolved_runtime_fallback(false);
+        let mut lowerer =
+            Lowerer::new(&type_ctx, &interner).with_unresolved_runtime_fallback(false);
         let ir = lowerer.lower_module(&module);
 
         let has_strict_no_fallback_error = lowerer.errors().iter().any(|err| {

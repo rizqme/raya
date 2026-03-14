@@ -256,8 +256,7 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::LoadRefCell
         | Opcode::StoreRefCell
         | Opcode::ArrayPush
-        | Opcode::ArrayPop
-        => 0,
+        | Opcode::ArrayPop => 0,
 
         // BindMethod has 2-byte operand (u16 method_slot)
         Opcode::BindMethod => 2,

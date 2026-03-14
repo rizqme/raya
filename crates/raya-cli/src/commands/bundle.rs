@@ -153,9 +153,8 @@ mod aot_impl {
             .map(|path| {
                 let json = std::fs::read_to_string(&path)
                     .map_err(|e| anyhow::anyhow!("Failed to read AOT profile '{}': {}", path, e))?;
-                serde_json::from_str::<raya_engine::aot::AotProfileData>(&json).map_err(|e| {
-                    anyhow::anyhow!("Failed to parse AOT profile '{}': {}", path, e)
-                })
+                serde_json::from_str::<raya_engine::aot::AotProfileData>(&json)
+                    .map_err(|e| anyhow::anyhow!("Failed to parse AOT profile '{}': {}", path, e))
             })
             .transpose()?;
 
@@ -205,7 +204,11 @@ mod aot_impl {
     fn collect_reachable_functions(
         module: &raya_engine::compiler::bytecode::Module,
     ) -> anyhow::Result<Vec<u32>> {
-        if module.functions.iter().all(|function| function.name != "main") {
+        if module
+            .functions
+            .iter()
+            .all(|function| function.name != "main")
+        {
             anyhow::bail!("No main function");
         }
         Ok((0..module.functions.len() as u32).collect())

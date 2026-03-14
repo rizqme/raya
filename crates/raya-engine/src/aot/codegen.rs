@@ -246,9 +246,9 @@ pub fn compile_functions_with_profile(
             variant_guard: None,
             display_name: None,
         });
-        if let Some(profile) =
-            profile.and_then(|profile| profile.function_profile(&compilable.module_checksum, compilable.func_index as u32))
-        {
+        if let Some(profile) = profile.and_then(|profile| {
+            profile.function_profile(&compilable.module_checksum, compilable.func_index as u32)
+        }) {
             for variant in compilable.func.profile_variants(Some(profile)) {
                 let display_name = match compilable.func.name() {
                     Some(name) => Some(format!("{}{}", name, variant.name_suffix)),
@@ -301,10 +301,7 @@ pub fn compile_functions_with_profile(
         if std::env::var_os("RAYA_DEBUG_AOT_DUMP").is_some() {
             eprintln!(
                 "\n=== AOT SM {}::{:#06x} {} ===\n{:#?}",
-                scheduled.module_index,
-                scheduled.func_index,
-                func_name,
-                sm_func
+                scheduled.module_index, scheduled.func_index, func_name, sm_func
             );
         }
 
@@ -576,8 +573,8 @@ mod tests {
             }],
         };
 
-        let bundle =
-            compile_functions_with_profile(&functions, isa, Some(&profile)).expect("Compilation failed");
+        let bundle = compile_functions_with_profile(&functions, isa, Some(&profile))
+            .expect("Compilation failed");
         assert_eq!(bundle.function_count(), 2);
         let baseline = bundle
             .func_table

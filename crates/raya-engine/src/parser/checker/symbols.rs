@@ -147,10 +147,7 @@ impl SymbolTable {
     }
 
     /// Persist generic type alias parameter ordering for checker-time instantiation.
-    pub fn set_generic_type_alias_params(
-        &mut self,
-        params: FxHashMap<String, Vec<String>>,
-    ) {
+    pub fn set_generic_type_alias_params(&mut self, params: FxHashMap<String, Vec<String>>) {
         self.generic_type_alias_params = params;
     }
 

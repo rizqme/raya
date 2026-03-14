@@ -679,8 +679,7 @@ impl<'a> StateMachineTransformer<'a> {
 
             // Find the continuation block for this suspension point.
             // The continuation is the block that was split after the suspension.
-            let continuation_id = if let Some(id) = self.continuation_block_ids.get(&idx).copied()
-            {
+            let continuation_id = if let Some(id) = self.continuation_block_ids.get(&idx).copied() {
                 id
             } else {
                 self.alloc_block_id()
@@ -703,7 +702,8 @@ impl<'a> StateMachineTransformer<'a> {
             }
 
             let terminator = if matches!(point.kind, super::analysis::SuspensionKind::AotCall) {
-                if let Some((call_dest, _)) = self.aot_call_metadata(point.block_id, point.instr_index)
+                if let Some((call_dest, _)) =
+                    self.aot_call_metadata(point.block_id, point.instr_index)
                 {
                     restore_instrs.push(SmInstr::LoadResumeValue { dest: call_dest });
                 }
@@ -982,7 +982,9 @@ impl<'a> StateMachineTransformer<'a> {
                 super::analysis::SuspensionKind::NativeCall => {
                     super::frame::SuspendReason::NativeCallBoundary as i32
                 }
-                super::analysis::SuspensionKind::AotCall => super::frame::SuspendReason::None as i32,
+                super::analysis::SuspensionKind::AotCall => {
+                    super::frame::SuspendReason::None as i32
+                }
                 super::analysis::SuspensionKind::PreemptionCheck => {
                     super::frame::SuspendReason::Preempted as i32
                 }
@@ -1079,28 +1081,16 @@ fn max_sm_reg(blocks: &[SmBlock]) -> u32 {
                 SmInstr::StoreGlobal { index, src } => max_reg = max_reg.max(*index).max(*src),
                 SmInstr::IsSuspend { dest, value } => max_reg = max_reg.max(*dest).max(*value),
                 SmInstr::I32BinOp {
-                    dest,
-                    left,
-                    right,
-                    ..
+                    dest, left, right, ..
                 }
                 | SmInstr::F64BinOp {
-                    dest,
-                    left,
-                    right,
-                    ..
+                    dest, left, right, ..
                 }
                 | SmInstr::I32Cmp {
-                    dest,
-                    left,
-                    right,
-                    ..
+                    dest, left, right, ..
                 }
                 | SmInstr::F64Cmp {
-                    dest,
-                    left,
-                    right,
-                    ..
+                    dest, left, right, ..
                 }
                 | SmInstr::BoolAnd { dest, left, right }
                 | SmInstr::BoolOr { dest, left, right } => {
@@ -1122,9 +1112,7 @@ fn max_sm_reg(blocks: &[SmBlock]) -> u32 {
                     }
                 }
                 SmInstr::CallAot {
-                    dest,
-                    callee_frame,
-                    ..
+                    dest, callee_frame, ..
                 } => {
                     max_reg = max_reg.max(*dest).max(*callee_frame);
                 }
@@ -1213,7 +1201,9 @@ fn helper_arg_is_register(instr: &SmInstr, arg_index: usize) -> bool {
         HelperCall::RunSyncAotCall | HelperCall::PrepareAotCallFrame => arg_index >= 2,
         HelperCall::ThrowException => true,
         HelperCall::GetAotFuncPtr => arg_index == 1,
-        HelperCall::LoadStringConstant | HelperCall::LoadI32Constant | HelperCall::LoadF64Constant => false,
+        HelperCall::LoadStringConstant
+        | HelperCall::LoadI32Constant
+        | HelperCall::LoadF64Constant => false,
         HelperCall::GetArgCount => false,
         HelperCall::LoadArgLocal => false,
         HelperCall::NewObject | HelperCall::ObjectLiteral | HelperCall::ArrayLiteral => false,

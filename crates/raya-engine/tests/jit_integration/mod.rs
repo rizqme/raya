@@ -177,7 +177,7 @@ fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module 
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
-                structural_shapes: vec![],
+            structural_shapes: vec![],
             structural_layouts: vec![],
         },
         exports: vec![],
@@ -210,7 +210,7 @@ fn make_vm_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Modu
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
-                structural_shapes: vec![],
+            structural_shapes: vec![],
             structural_layouts: vec![],
         },
         exports: vec![],
@@ -237,7 +237,7 @@ fn make_custom_module(functions: Vec<Function>, classes: Vec<ClassDef>) -> Modul
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
-                structural_shapes: vec![],
+            structural_shapes: vec![],
             structural_layouts: vec![],
         },
         exports: vec![],
@@ -258,9 +258,7 @@ fn new_shared_vm_state() -> (
     std::sync::Arc<raya_engine::vm::interpreter::SafepointCoordinator>,
     std::sync::Arc<raya_engine::vm::interpreter::SharedVmState>,
 ) {
-    let safepoint = std::sync::Arc::new(
-        raya_engine::vm::interpreter::SafepointCoordinator::new(1),
-    );
+    let safepoint = std::sync::Arc::new(raya_engine::vm::interpreter::SafepointCoordinator::new(1));
     let tasks = std::sync::Arc::new(parking_lot::RwLock::new(FxHashMap::default()));
     let injector = std::sync::Arc::new(crossbeam_deque::Injector::new());
     let shared = std::sync::Arc::new(raya_engine::vm::interpreter::SharedVmState::new(
@@ -713,20 +711,25 @@ fn jit_call_executes_sync_callee_via_runtime_helper() {
         vec![],
     ));
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let (_resolved_natives, bridge) = build_bridge_and_ctx(&safepoint, &shared, &task, &module);
-    let mut ctx = raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
     assert!(matches!(
-        jit_func.blocks[0].instrs.iter().find(|instr| matches!(instr, JitInstr::Call { .. })),
+        jit_func.blocks[0]
+            .instrs
+            .iter()
+            .find(|instr| matches!(instr, JitInstr::Call { .. })),
         Some(JitInstr::Call { func_index: 1, .. })
     ));
 
-    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
-        &jit_func,
-        &mut [],
-        (&mut ctx as *mut _),
-    );
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -771,16 +774,18 @@ fn jit_call_static_executes_sync_callee_via_runtime_helper() {
         vec![],
     ));
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let (_resolved_natives, bridge) = build_bridge_and_ctx(&safepoint, &shared, &task, &module);
-    let mut ctx = raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
-    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
-        &jit_func,
-        &mut [],
-        (&mut ctx as *mut _),
-    );
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -803,8 +808,12 @@ fn jit_load_field_shape_uses_runtime_helper_fastpath() {
     let object_raw = {
         let mut gc = shared.gc.lock();
         let mut object = raya_engine::vm::object::Object::new_structural(layout_id, 2);
-        object.set_field(0, raya_engine::vm::value::Value::i32(11)).unwrap();
-        object.set_field(1, raya_engine::vm::value::Value::i32(7)).unwrap();
+        object
+            .set_field(0, raya_engine::vm::value::Value::i32(11))
+            .unwrap();
+        object
+            .set_field(1, raya_engine::vm::value::Value::i32(7))
+            .unwrap();
         let ptr = gc.allocate(object);
         unsafe {
             raya_engine::vm::value::Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap())
@@ -820,17 +829,19 @@ fn jit_load_field_shape_uses_runtime_helper_fastpath() {
     emit(&mut code, Opcode::Return);
 
     let module = finalize_module(make_module(code, 0, 1));
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let (_resolved_natives, bridge) = build_bridge_and_ctx(&safepoint, &shared, &task, &module);
-    let mut ctx = raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let mut locals = vec![object_raw];
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
-    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
-        &jit_func,
-        &mut locals,
-        (&mut ctx as *mut _),
-    );
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut locals, (&mut ctx as *mut _));
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -852,8 +863,12 @@ fn jit_store_field_shape_uses_runtime_helper_fastpath() {
     let object_raw = {
         let mut gc = shared.gc.lock();
         let mut object = raya_engine::vm::object::Object::new_structural(layout_id, 2);
-        object.set_field(0, raya_engine::vm::value::Value::i32(11)).unwrap();
-        object.set_field(1, raya_engine::vm::value::Value::i32(7)).unwrap();
+        object
+            .set_field(0, raya_engine::vm::value::Value::i32(11))
+            .unwrap();
+        object
+            .set_field(1, raya_engine::vm::value::Value::i32(7))
+            .unwrap();
         let ptr = gc.allocate(object);
         unsafe {
             raya_engine::vm::value::Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap())
@@ -874,17 +889,19 @@ fn jit_store_field_shape_uses_runtime_helper_fastpath() {
     emit(&mut code, Opcode::Return);
 
     let module = finalize_module(make_module(code, 0, 1));
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let (_resolved_natives, bridge) = build_bridge_and_ctx(&safepoint, &shared, &task, &module);
-    let mut ctx = raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let mut locals = vec![object_raw];
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
-    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
-        &jit_func,
-        &mut locals,
-        (&mut ctx as *mut _),
-    );
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut locals, (&mut ctx as *mut _));
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -938,16 +955,18 @@ fn jit_call_method_exact_executes_via_runtime_helper() {
         .register_module(module.clone())
         .expect("register method module");
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let (_resolved_natives, bridge) = build_bridge_and_ctx(&safepoint, &shared, &task, &module);
-    let mut ctx = raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
-    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
-        &jit_func,
-        &mut [],
-        (&mut ctx as *mut _),
-    );
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1005,18 +1024,22 @@ fn jit_call_method_shape_executes_via_runtime_helper() {
         .register_module(module.clone())
         .expect("register structural method module");
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let (_resolved_natives, bridge) = build_bridge_and_ctx(&safepoint, &shared, &task, &module);
-    let mut ctx = raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            &module,
-            &mut [],
-            (&mut ctx as *mut _),
-        );
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        &module,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1072,18 +1095,22 @@ fn jit_construct_type_executes_constructor_via_runtime_helper() {
         .register_module(module.clone())
         .expect("register construct module");
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let (_resolved_natives, bridge) = build_bridge_and_ctx(&safepoint, &shared, &task, &module);
-    let mut ctx = raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            &module,
-            &mut [],
-            (&mut ctx as *mut _),
-        );
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        &module,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1147,18 +1174,22 @@ fn jit_call_constructor_executes_via_runtime_helper() {
         .register_module(module.clone())
         .expect("register constructor module");
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let (_resolved_natives, bridge) = build_bridge_and_ctx(&safepoint, &shared, &task, &module);
-    let mut ctx = raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            &module,
-            &mut [],
-            (&mut ctx as *mut _),
-        );
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        &module,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1233,18 +1264,22 @@ fn jit_call_super_executes_via_runtime_helper() {
         .register_module(module.clone())
         .expect("register super module");
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let (_resolved_natives, bridge) = build_bridge_and_ctx(&safepoint, &shared, &task, &module);
-    let mut ctx = raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
+    let mut ctx =
+        raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let jit_func = lift_function(&module.functions[0], &module, 0).expect("Lift failed");
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            &module,
-            &mut [],
-            (&mut ctx as *mut _),
-        );
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        &module,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1285,9 +1320,7 @@ fn jit_new_type_lifts_to_new_object() {
 
 #[test]
 fn jit_new_type_uses_alloc_object_helper() {
-    let safepoint = std::sync::Arc::new(
-        raya_engine::vm::interpreter::SafepointCoordinator::new(1),
-    );
+    let safepoint = std::sync::Arc::new(raya_engine::vm::interpreter::SafepointCoordinator::new(1));
     let tasks = std::sync::Arc::new(parking_lot::RwLock::new(FxHashMap::default()));
     let injector = std::sync::Arc::new(crossbeam_deque::Injector::new());
     let shared = std::sync::Arc::new(raya_engine::vm::interpreter::SharedVmState::new(
@@ -1322,7 +1355,11 @@ fn jit_new_type_uses_alloc_object_helper() {
     let func = &module.functions[0];
     let jit_func = lift_function(func, &module, 0).expect("Lift failed");
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let resolved_natives = parking_lot::RwLock::new(shared.resolved_natives.read().clone());
     let bridge = raya_engine::jit::runtime::helpers::build_runtime_bridge_context(
         safepoint.as_ref(),
@@ -1358,13 +1395,12 @@ fn jit_new_type_uses_alloc_object_helper() {
     let mut ctx =
         raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            &module,
-            &mut [],
-            (&mut ctx as *mut _),
-        );
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        &module,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1383,9 +1419,7 @@ fn jit_new_type_uses_alloc_object_helper() {
 
 #[test]
 fn jit_implements_shape_uses_runtime_helper() {
-    let safepoint = std::sync::Arc::new(
-        raya_engine::vm::interpreter::SafepointCoordinator::new(1),
-    );
+    let safepoint = std::sync::Arc::new(raya_engine::vm::interpreter::SafepointCoordinator::new(1));
     let tasks = std::sync::Arc::new(parking_lot::RwLock::new(FxHashMap::default()));
     let injector = std::sync::Arc::new(crossbeam_deque::Injector::new());
     let shared = std::sync::Arc::new(raya_engine::vm::interpreter::SharedVmState::new(
@@ -1404,8 +1438,12 @@ fn jit_implements_shape_uses_runtime_helper() {
     let object_raw = {
         let mut gc = shared.gc.lock();
         let mut object = raya_engine::vm::object::Object::new_structural(layout_id, 2);
-        object.set_field(0, raya_engine::vm::value::Value::i32(11)).unwrap();
-        object.set_field(1, raya_engine::vm::value::Value::i32(7)).unwrap();
+        object
+            .set_field(0, raya_engine::vm::value::Value::i32(11))
+            .unwrap();
+        object
+            .set_field(1, raya_engine::vm::value::Value::i32(7))
+            .unwrap();
         let ptr = gc.allocate(object);
         unsafe {
             raya_engine::vm::value::Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap())
@@ -1423,7 +1461,11 @@ fn jit_implements_shape_uses_runtime_helper() {
     let func = &module.functions[0];
     let jit_func = lift_function(func, &module, 0).expect("Lift failed");
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let resolved_natives = parking_lot::RwLock::new(shared.resolved_natives.read().clone());
     let bridge = raya_engine::jit::runtime::helpers::build_runtime_bridge_context(
         safepoint.as_ref(),
@@ -1460,13 +1502,12 @@ fn jit_implements_shape_uses_runtime_helper() {
         raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let mut locals = vec![object_raw];
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            &module,
-            &mut locals,
-            (&mut ctx as *mut _),
-        );
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        &module,
+        &mut locals,
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1477,9 +1518,7 @@ fn jit_implements_shape_uses_runtime_helper() {
 
 #[test]
 fn jit_cast_shape_uses_runtime_helper_fastpath() {
-    let safepoint = std::sync::Arc::new(
-        raya_engine::vm::interpreter::SafepointCoordinator::new(1),
-    );
+    let safepoint = std::sync::Arc::new(raya_engine::vm::interpreter::SafepointCoordinator::new(1));
     let tasks = std::sync::Arc::new(parking_lot::RwLock::new(FxHashMap::default()));
     let injector = std::sync::Arc::new(crossbeam_deque::Injector::new());
     let shared = std::sync::Arc::new(raya_engine::vm::interpreter::SharedVmState::new(
@@ -1498,8 +1537,12 @@ fn jit_cast_shape_uses_runtime_helper_fastpath() {
     let object_raw = {
         let mut gc = shared.gc.lock();
         let mut object = raya_engine::vm::object::Object::new_structural(layout_id, 2);
-        object.set_field(0, raya_engine::vm::value::Value::i32(11)).unwrap();
-        object.set_field(1, raya_engine::vm::value::Value::i32(7)).unwrap();
+        object
+            .set_field(0, raya_engine::vm::value::Value::i32(11))
+            .unwrap();
+        object
+            .set_field(1, raya_engine::vm::value::Value::i32(7))
+            .unwrap();
         let ptr = gc.allocate(object);
         unsafe {
             raya_engine::vm::value::Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap())
@@ -1521,7 +1564,11 @@ fn jit_cast_shape_uses_runtime_helper_fastpath() {
         Some(JitInstr::CastShape { .. })
     ));
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let resolved_natives = parking_lot::RwLock::new(shared.resolved_natives.read().clone());
     let bridge = raya_engine::jit::runtime::helpers::build_runtime_bridge_context(
         safepoint.as_ref(),
@@ -1558,13 +1605,12 @@ fn jit_cast_shape_uses_runtime_helper_fastpath() {
         raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let mut locals = vec![object_raw];
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            &module,
-            &mut locals,
-            (&mut ctx as *mut _),
-        );
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        &module,
+        &mut locals,
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1574,9 +1620,7 @@ fn jit_cast_shape_uses_runtime_helper_fastpath() {
 
 #[test]
 fn jit_cast_shape_failure_exits_with_interpreter_boundary() {
-    let safepoint = std::sync::Arc::new(
-        raya_engine::vm::interpreter::SafepointCoordinator::new(1),
-    );
+    let safepoint = std::sync::Arc::new(raya_engine::vm::interpreter::SafepointCoordinator::new(1));
     let tasks = std::sync::Arc::new(parking_lot::RwLock::new(FxHashMap::default()));
     let injector = std::sync::Arc::new(crossbeam_deque::Injector::new());
     let shared = std::sync::Arc::new(raya_engine::vm::interpreter::SharedVmState::new(
@@ -1595,7 +1639,9 @@ fn jit_cast_shape_failure_exits_with_interpreter_boundary() {
     let object_raw = {
         let mut gc = shared.gc.lock();
         let mut object = raya_engine::vm::object::Object::new_structural(layout_id, 1);
-        object.set_field(0, raya_engine::vm::value::Value::i32(11)).unwrap();
+        object
+            .set_field(0, raya_engine::vm::value::Value::i32(11))
+            .unwrap();
         let ptr = gc.allocate(object);
         unsafe {
             raya_engine::vm::value::Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap())
@@ -1613,7 +1659,11 @@ fn jit_cast_shape_failure_exits_with_interpreter_boundary() {
     let func = &module.functions[0];
     let jit_func = lift_function(func, &module, 0).expect("Lift failed");
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let resolved_natives = parking_lot::RwLock::new(shared.resolved_natives.read().clone());
     let bridge = raya_engine::jit::runtime::helpers::build_runtime_bridge_context(
         safepoint.as_ref(),
@@ -1650,13 +1700,12 @@ fn jit_cast_shape_failure_exits_with_interpreter_boundary() {
         raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let mut locals = vec![object_raw];
 
-    let (_raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            module.as_ref(),
-            &mut locals,
-            (&mut ctx as *mut _),
-        );
+    let (_raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        module.as_ref(),
+        &mut locals,
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
@@ -1672,9 +1721,7 @@ fn jit_cast_shape_failure_exits_with_interpreter_boundary() {
 
 #[test]
 fn jit_is_nominal_uses_runtime_helper() {
-    let safepoint = std::sync::Arc::new(
-        raya_engine::vm::interpreter::SafepointCoordinator::new(1),
-    );
+    let safepoint = std::sync::Arc::new(raya_engine::vm::interpreter::SafepointCoordinator::new(1));
     let tasks = std::sync::Arc::new(parking_lot::RwLock::new(FxHashMap::default()));
     let injector = std::sync::Arc::new(crossbeam_deque::Injector::new());
     let shared = std::sync::Arc::new(raya_engine::vm::interpreter::SharedVmState::new(
@@ -1706,7 +1753,11 @@ fn jit_is_nominal_uses_runtime_helper() {
     let func = &module.functions[0];
     let jit_func = lift_function(func, &module, 0).expect("Lift failed");
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        module.clone(),
+        None,
+    ));
     let resolved_natives = parking_lot::RwLock::new(shared.resolved_natives.read().clone());
     let bridge = raya_engine::jit::runtime::helpers::build_runtime_bridge_context(
         safepoint.as_ref(),
@@ -1759,13 +1810,12 @@ fn jit_is_nominal_uses_runtime_helper() {
         raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, module.as_ref());
     let mut locals = vec![object_raw];
 
-    let (raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            &module,
-            &mut locals,
-            (&mut ctx as *mut _),
-        );
+    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        &module,
+        &mut locals,
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
@@ -1776,9 +1826,7 @@ fn jit_is_nominal_uses_runtime_helper() {
 
 #[test]
 fn jit_cast_nominal_failure_exits_with_interpreter_boundary() {
-    let safepoint = std::sync::Arc::new(
-        raya_engine::vm::interpreter::SafepointCoordinator::new(1),
-    );
+    let safepoint = std::sync::Arc::new(raya_engine::vm::interpreter::SafepointCoordinator::new(1));
     let tasks = std::sync::Arc::new(parking_lot::RwLock::new(FxHashMap::default()));
     let injector = std::sync::Arc::new(crossbeam_deque::Injector::new());
     let shared = std::sync::Arc::new(raya_engine::vm::interpreter::SharedVmState::new(
@@ -1824,7 +1872,11 @@ fn jit_cast_nominal_failure_exits_with_interpreter_boundary() {
     let func = &target_module.functions[0];
     let jit_func = lift_function(func, &target_module, 0).expect("Lift failed");
 
-    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(0, target_module.clone(), None));
+    let task = std::sync::Arc::new(raya_engine::vm::scheduler::Task::new(
+        0,
+        target_module.clone(),
+        None,
+    ));
     let resolved_natives = parking_lot::RwLock::new(shared.resolved_natives.read().clone());
     let bridge = raya_engine::jit::runtime::helpers::build_runtime_bridge_context(
         safepoint.as_ref(),
@@ -1877,13 +1929,12 @@ fn jit_cast_nominal_failure_exits_with_interpreter_boundary() {
         raya_engine::jit::runtime::helpers::build_runtime_context(&bridge, target_module.as_ref());
     let mut locals = vec![object_raw];
 
-    let (_raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            target_module.as_ref(),
-            &mut locals,
-            (&mut ctx as *mut _),
-        );
+    let (_raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        target_module.as_ref(),
+        &mut locals,
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
@@ -2001,11 +2052,8 @@ fn jit_native_call_zero_arg_ctx_fastpath_returns_value() {
         },
     };
 
-    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
-        &jit_func,
-        &mut [],
-        (&mut ctx as *mut _),
-    );
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
     assert!(is_i32(raw));
     assert_eq!(decode_i32(raw), 42);
     assert_eq!(
@@ -2122,13 +2170,12 @@ fn jit_native_call_zero_arg_ctx_fastpath_sentinel_suspends() {
         },
     };
 
-    let (_raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            &module,
-            &mut [],
-            (&mut ctx as *mut _),
-        );
+    let (_raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        &module,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
@@ -2251,11 +2298,8 @@ fn jit_native_call_args_ctx_fastpath_returns_value() {
         },
     };
 
-    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
-        &jit_func,
-        &mut [],
-        (&mut ctx as *mut _),
-    );
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
     assert!(is_i32(raw));
     assert_eq!(decode_i32(raw), 99);
     assert_eq!(
@@ -2375,13 +2419,12 @@ fn jit_native_call_args_ctx_fastpath_sentinel_suspends() {
         },
     };
 
-    let (_raw, exit) =
-        jit_compile_and_call_with_locals_exit_and_ctx_and_module(
-            &jit_func,
-            &module,
-            &mut [],
-            (&mut ctx as *mut _),
-        );
+    let (_raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx_and_module(
+        &jit_func,
+        &module,
+        &mut [],
+        (&mut ctx as *mut _),
+    );
     assert_eq!(
         exit.kind,
         raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
@@ -2510,11 +2553,8 @@ fn jit_check_preemption_exits_with_suspend_kind_when_helper_requests_preempt() {
         },
     };
 
-    let (raw, exit) = jit_compile_and_call_with_locals_exit_and_ctx(
-        &jit_func,
-        &mut [],
-        (&mut ctx as *mut _),
-    );
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
     assert_eq!(raw, NULL_VALUE);
     assert_eq!(
         exit.kind,
@@ -3638,7 +3678,7 @@ fn engine_prewarm_selects_hot() {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
-                structural_shapes: vec![],
+            structural_shapes: vec![],
             structural_layouts: vec![],
         },
         exports: vec![],
@@ -3883,7 +3923,7 @@ fn background_compiler_processes_request() {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
-                structural_shapes: vec![],
+            structural_shapes: vec![],
             structural_layouts: vec![],
         },
         exports: vec![],
@@ -3969,7 +4009,7 @@ fn jit_hints_encode_decode_roundtrip() {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
-                structural_shapes: vec![],
+            structural_shapes: vec![],
             structural_layouts: vec![],
         },
         exports: vec![],
@@ -4030,7 +4070,7 @@ fn jit_hints_absent_when_no_flag() {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
-                structural_shapes: vec![],
+            structural_shapes: vec![],
             structural_layouts: vec![],
         },
         exports: vec![],
@@ -4121,7 +4161,7 @@ fn prewarm_candidates_submitted_to_background() {
             generic_templates: vec![],
             template_symbol_table: vec![],
             mono_debug_map: vec![],
-                structural_shapes: vec![],
+            structural_shapes: vec![],
             structural_layouts: vec![],
         },
         exports: vec![],

@@ -4,7 +4,7 @@
 
 use super::{MonoKey, MonomorphizationContext};
 use crate::compiler::ir::function::IrFunction;
-use crate::compiler::ir::instr::{NominalTypeId, FunctionId, IrInstr};
+use crate::compiler::ir::instr::{FunctionId, IrInstr, NominalTypeId};
 use crate::compiler::ir::module::IrModule;
 use crate::parser::TypeId;
 use rustc_hash::FxHashMap;
@@ -38,7 +38,11 @@ impl<'a> CallSiteRewriter<'a> {
     }
 
     /// Register a generic class's type parameters
-    pub fn register_generic_class(&mut self, nominal_type_id: NominalTypeId, type_params: Vec<TypeId>) {
+    pub fn register_generic_class(
+        &mut self,
+        nominal_type_id: NominalTypeId,
+        type_params: Vec<TypeId>,
+    ) {
         self.generic_classes.insert(nominal_type_id, type_params);
     }
 

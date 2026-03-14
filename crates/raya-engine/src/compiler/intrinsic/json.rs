@@ -31,7 +31,10 @@ mod tests {
             JsonIntrinsic::detect_intrinsic("JSON", "stringify"),
             Some("stringify")
         );
-        assert_eq!(JsonIntrinsic::detect_intrinsic("JSON", "parse"), Some("parse"));
+        assert_eq!(
+            JsonIntrinsic::detect_intrinsic("JSON", "parse"),
+            Some("parse")
+        );
         assert_eq!(JsonIntrinsic::detect_intrinsic("JSON", "encode"), None);
         assert_eq!(JsonIntrinsic::detect_intrinsic("JSON", "decode"), None);
         assert_eq!(JsonIntrinsic::detect_intrinsic("JSON", "unknown"), None);

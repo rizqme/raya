@@ -522,7 +522,12 @@ impl Reactor {
                 {
                     // Stale/invalid channel handle: wake waiter with a neutral value
                     // instead of dereferencing unknown memory.
-                    Self::complete_task(&shared_state, waiter.task_id, Value::null(), &mut ready_queue);
+                    Self::complete_task(
+                        &shared_state,
+                        waiter.task_id,
+                        Value::null(),
+                        &mut ready_queue,
+                    );
                     continue;
                 }
                 let ch_ptr = waiter.channel_handle as *const ChannelObject;
@@ -779,8 +784,7 @@ impl Reactor {
                         match reason {
                             SuspendReason::MutexLock { mutex_id } => {
                                 if let Some(mutex) = shared_state.mutex_registry.get(mutex_id) {
-                                    if mutex.owner() == Some(vr.task.id()) && vr.task.try_resume()
-                                    {
+                                    if mutex.owner() == Some(vr.task.id()) && vr.task.try_resume() {
                                         vr.task.add_held_mutex(mutex_id);
                                         vr.task.clear_suspend_reason();
                                         ready_queue.push_back(vr.task);
@@ -789,8 +793,7 @@ impl Reactor {
                             }
                             SuspendReason::MutexLockCall { mutex_id } => {
                                 if let Some(mutex) = shared_state.mutex_registry.get(mutex_id) {
-                                    if mutex.owner() == Some(vr.task.id()) && vr.task.try_resume()
-                                    {
+                                    if mutex.owner() == Some(vr.task.id()) && vr.task.try_resume() {
                                         vr.task.add_held_mutex(mutex_id);
                                         vr.task.set_resume_value(Value::null());
                                         vr.task.clear_suspend_reason();
@@ -874,10 +877,7 @@ impl Reactor {
             .push_back(PromiseMicrotask::ReportUnhandledRejection(task.id(), 1));
     }
 
-    fn drain_promise_microtasks(
-        shared_state: &Arc<SharedVmState>,
-        quiescent_checkpoint: bool,
-    ) {
+    fn drain_promise_microtasks(shared_state: &Arc<SharedVmState>, quiescent_checkpoint: bool) {
         let mut drained = Vec::new();
         {
             let mut queue = shared_state.promise_microtasks.lock();
@@ -1081,11 +1081,10 @@ impl Reactor {
                         (id, field_count.max(2), layout_id)
                     } else {
                         drop(classes);
-                        let id =
-                            shared_state.register_runtime_class_with_layout_names(
-                                Class::new(0, "Buffer".to_string(), 2),
-                                Some(crate::vm::object::BUFFER_LAYOUT_FIELDS),
-                            );
+                        let id = shared_state.register_runtime_class_with_layout_names(
+                            Class::new(0, "Buffer".to_string(), 2),
+                            Some(crate::vm::object::BUFFER_LAYOUT_FIELDS),
+                        );
                         let (layout_id, field_count) = shared_state
                             .layouts
                             .read()

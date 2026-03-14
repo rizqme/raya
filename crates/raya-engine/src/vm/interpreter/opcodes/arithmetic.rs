@@ -382,7 +382,8 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if b_val.as_i32().is_some() && a_val.as_i32().is_some() && b_val.as_i32() == Some(0) {
+                if b_val.as_i32().is_some() && a_val.as_i32().is_some() && b_val.as_i32() == Some(0)
+                {
                     return OpcodeResult::Error(VmError::RuntimeError(
                         "division by zero".to_string(),
                     ));
@@ -436,7 +437,8 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if b_val.as_i32().is_some() && a_val.as_i32().is_some() && b_val.as_i32() == Some(0) {
+                if b_val.as_i32().is_some() && a_val.as_i32().is_some() && b_val.as_i32() == Some(0)
+                {
                     return OpcodeResult::Error(VmError::RuntimeError(
                         "division by zero".to_string(),
                     ));

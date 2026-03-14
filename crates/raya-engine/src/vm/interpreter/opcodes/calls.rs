@@ -4,8 +4,8 @@ use crate::compiler::{Module, Opcode};
 use crate::vm::builtin::mutex;
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
-use crate::vm::interpreter::Interpreter;
 use crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id;
+use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
     Array, BoundFunction, BoundMethod, BoundNativeMethod, Closure, Object, RayaString,
 };
@@ -50,7 +50,14 @@ impl<'a> Interpreter<'a> {
             arg_count_u8,
         ];
         let mut native_ip = 0usize;
-        self.exec_native_ops(stack, &mut native_ip, &code, module, task, Opcode::NativeCall)
+        self.exec_native_ops(
+            stack,
+            &mut native_ip,
+            &code,
+            module,
+            task,
+            Opcode::NativeCall,
+        )
     }
 
     pub(crate) fn exec_call_ops(
@@ -174,8 +181,9 @@ impl<'a> Interpreter<'a> {
                             return_action: ReturnAction::PushReturnValue,
                         }
                     } else if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
-                        let bm =
-                            unsafe { &*closure_val.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
+                        let bm = unsafe {
+                            &*closure_val.as_ptr::<BoundNativeMethod>().unwrap().as_ptr()
+                        };
                         let mut native_args = Vec::with_capacity(arg_count + 1);
                         if self.native_callable_uses_receiver(bm.native_id) {
                             native_args.push(bm.receiver);
@@ -242,7 +250,9 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
                         let target_header = unsafe {
-                            &*header_ptr_from_value_ptr(bound.target.as_ptr::<u8>().unwrap().as_ptr())
+                            &*header_ptr_from_value_ptr(
+                                bound.target.as_ptr::<u8>().unwrap().as_ptr(),
+                            )
                         };
                         if target_header.type_id() == std::any::TypeId::of::<BoundMethod>() {
                             let method =
@@ -321,7 +331,8 @@ impl<'a> Interpreter<'a> {
                             {
                                 Value::undefined()
                             } else {
-                                self.builtin_global_value("globalThis").unwrap_or(Value::undefined())
+                                self.builtin_global_value("globalThis")
+                                    .unwrap_or(Value::undefined())
                             };
                             if let Err(e) = stack.push(implicit_this) {
                                 return OpcodeResult::Error(e);
@@ -363,7 +374,8 @@ impl<'a> Interpreter<'a> {
                         {
                             Value::undefined()
                         } else {
-                            self.builtin_global_value("globalThis").unwrap_or(Value::undefined())
+                            self.builtin_global_value("globalThis")
+                                .unwrap_or(Value::undefined())
                         };
                         if let Err(e) = stack.push(implicit_this) {
                             return OpcodeResult::Error(e);
@@ -428,7 +440,8 @@ impl<'a> Interpreter<'a> {
                     {
                         Value::undefined()
                     } else {
-                        self.builtin_global_value("globalThis").unwrap_or(Value::undefined())
+                        self.builtin_global_value("globalThis")
+                            .unwrap_or(Value::undefined())
                     };
                     if let Err(e) = stack.push(implicit_this) {
                         return OpcodeResult::Error(e);
@@ -565,12 +578,9 @@ impl<'a> Interpreter<'a> {
                                                 OpcodeResult::Continue
                                             }
                                         }
-                                        Err(e) => {
-                                            OpcodeResult::Error(VmError::RuntimeError(format!(
-                                                "{}",
-                                                e
-                                            )))
-                                        }
+                                        Err(e) => OpcodeResult::Error(VmError::RuntimeError(
+                                            format!("{}", e),
+                                        )),
                                     };
                                 }
                                 return OpcodeResult::Error(VmError::RuntimeError(format!(
@@ -652,14 +662,13 @@ impl<'a> Interpreter<'a> {
                     }
                 }
 
-                let receiver_val =
-                    match crate::vm::interpreter::Interpreter::ensure_object_receiver(
-                        receiver_val,
-                        "shape method call",
-                    ) {
-                        Ok(v) => v,
-                        Err(e) => return OpcodeResult::Error(e),
-                    };
+                let receiver_val = match crate::vm::interpreter::Interpreter::ensure_object_receiver(
+                    receiver_val,
+                    "shape method call",
+                ) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
                 let actual_receiver = crate::vm::reflect::unwrap_proxy_target(receiver_val);
                 let obj_ptr = unsafe { actual_receiver.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
@@ -1115,7 +1124,9 @@ impl<'a> Interpreter<'a> {
                     None => {
                         let receiver_kind = {
                             let header = unsafe {
-                                &*header_ptr_from_value_ptr(receiver_val.as_ptr::<u8>().unwrap().as_ptr())
+                                &*header_ptr_from_value_ptr(
+                                    receiver_val.as_ptr::<u8>().unwrap().as_ptr(),
+                                )
                             };
                             if header.type_id() == std::any::TypeId::of::<Object>() {
                                 "Object"
