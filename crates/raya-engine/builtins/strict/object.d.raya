@@ -7,6 +7,10 @@ export class Object {
     /** Get string representation of the object */
     toString(): string;
 
+    valueOf(): Object;
+
+    isPrototypeOf(value: unknown): boolean;
+
     /** Get hash code for this object (based on object identity) */
     hashCode(): number;
 
@@ -15,5 +19,7 @@ export class Object {
 
     /** JS-style static equality helper */
     static is(a: unknown, b: unknown): boolean;
+
+    static getPrototypeOf<T>(obj: T): Object | null;
 
 }

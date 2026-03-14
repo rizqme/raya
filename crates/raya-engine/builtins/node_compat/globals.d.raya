@@ -28,6 +28,7 @@ export interface ReflectAPI {
     get(target: Proxy<Object> | Object | ReflectTarget, key: string): Object | string | number | boolean | null;
     set(target: Proxy<Object> | Object | ReflectTarget, key: string, value: Object | string | number | boolean | null): boolean;
     has(target: Proxy<Object> | Object | ReflectTarget, key: string): boolean;
+    construct(target: any, args?: any, newTarget?: any): Object;
     getFieldNames(target: Proxy<Object> | Object | ReflectTarget): string[];
     getFieldInfo(target: Proxy<Object> | Object | ReflectTarget, key: string): Object | null;
     getFields(target: Proxy<Object> | Object | ReflectTarget): Object[];
@@ -37,3 +38,9 @@ export interface ReflectAPI {
 }
 
 export const Reflect: ReflectAPI;
+
+export interface MathAPI {
+    pow(base: number, exponent: number): number;
+}
+
+export const Math: MathAPI;

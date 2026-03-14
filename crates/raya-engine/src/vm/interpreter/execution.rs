@@ -130,6 +130,8 @@ pub struct ExecutionFrame {
     pub return_action: ReturnAction,
     /// Argument count for the current call (for rest parameters)
     pub arg_count: usize,
+    /// Runtime argument values for the current call.
+    pub args: Vec<Value>,
 }
 
 impl OpcodeResult {

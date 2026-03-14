@@ -32,9 +32,6 @@ export class Error {
     /** Stack trace (if available) */
     stack: string;
 
-    /** Error cause (for chained failures) */
-    cause: Error | null;
-
     /** Optional operational fields for system-like errors */
     code: string;
     errno: number;
@@ -84,8 +81,7 @@ export class InternalError extends Error {
 
 /** Aggregate multiple errors into one throwable */
 export class AggregateError extends Error {
-    errors: ErrorLike[];
-    constructor(errors: ErrorLike[], message?: string, options?: ErrorOptions | null);
+    constructor(errors: any, message?: string, options?: ErrorOptions | null);
 }
 
 /** Error wrapper for suppression semantics */

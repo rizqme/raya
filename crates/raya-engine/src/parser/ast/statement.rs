@@ -134,10 +134,10 @@ impl Statement {
 // Variable Declaration
 // ============================================================================
 
-/// Variable declaration: let x = 42; or const y: number = 10;
+/// Variable declaration: let/const/var.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VariableDecl {
-    /// let or const
+    /// let, const, or var
     pub kind: VariableKind,
 
     /// Pattern (identifier or destructuring)
@@ -156,6 +156,7 @@ pub struct VariableDecl {
 pub enum VariableKind {
     Let,
     Const,
+    Var,
 }
 
 // ============================================================================

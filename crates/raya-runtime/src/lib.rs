@@ -1208,12 +1208,21 @@ impl Runtime {
             return Ok(());
         }
 
-        for module in Self::compiled_builtin_runtime_modules(self.options.builtin_mode)? {
-            let builtin_module = Arc::new(module);
+        let builtin_modules = Self::compiled_builtin_runtime_modules(self.options.builtin_mode)?
+            .into_iter()
+            .map(Arc::new)
+            .collect::<Vec<_>>();
+
+        // Bootstrap the whole builtin graph before executing any builtin top-level code.
+        // `register_module()` seeds function/class exports into ambient globals, so later
+        // builtin initializers can depend on foundational globals like `String`.
+        for builtin_module in &builtin_modules {
             vm.shared_state()
                 .register_module(builtin_module.clone())
                 .map_err(RuntimeError::Dependency)?;
+        }
 
+        for builtin_module in &builtin_modules {
             if !vm.shared_state().is_module_initialized(&builtin_module) {
                 match vm.execute_entry_only(&builtin_module) {
                     Ok(_) => {}

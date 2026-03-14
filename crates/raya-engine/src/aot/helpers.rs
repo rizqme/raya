@@ -1824,6 +1824,7 @@ mod tests {
             name: "Seed".to_string(),
             field_count: 1,
             parent_id: None,
+            parent_name: None,
             methods: Vec::new(),
         });
         let seed_module = Arc::new(
@@ -1838,6 +1839,7 @@ mod tests {
             name: "Target".to_string(),
             field_count: 3,
             parent_id: None,
+            parent_name: None,
             methods: Vec::new(),
         });
         let target_module = Arc::new(

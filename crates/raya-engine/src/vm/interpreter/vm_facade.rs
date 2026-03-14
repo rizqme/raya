@@ -877,7 +877,7 @@ impl Vm {
         match final_state {
             TaskState::Completed => Ok(main_task.result().unwrap_or_default()),
             TaskState::Failed => {
-                let msg = Self::extract_exception_message(&main_task);
+                let msg = self.extract_exception_message(&main_task);
                 Err(VmError::RuntimeError(msg))
             }
             other => Err(VmError::RuntimeError(format!(
@@ -888,7 +888,7 @@ impl Vm {
     }
 
     /// Extract a human-readable error message from a failed task's exception
-    fn extract_exception_message(task: &Task) -> String {
+    fn extract_exception_message(&self, task: &Task) -> String {
         use crate::vm::gc::header_ptr_from_value_ptr;
         let Some(exc) = task.current_exception() else {
             return "Main task failed".to_string();
@@ -914,18 +914,97 @@ impl Vm {
 
         if header.type_id() == std::any::TypeId::of::<Object>() {
             let obj = unsafe { &*ptr.cast::<Object>().as_ptr() };
-            if let Some(msg_val) = obj.get_field(0) {
-                if let Some(msg_ptr) = unsafe { msg_val.as_ptr::<u8>() } {
-                    let msg_header = unsafe { &*header_ptr_from_value_ptr(msg_ptr.as_ptr()) };
-                    if msg_header.type_id() == std::any::TypeId::of::<RayaString>() {
-                        let s = unsafe { &*msg_ptr.cast::<RayaString>().as_ptr() };
-                        return format!("Main task failed: {}", s.data);
-                    }
+            let error_name = Self::object_named_field_value(self.shared_state(), obj, "name")
+                .and_then(Self::value_to_plain_string)
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "Error".to_string());
+            let error_message = Self::object_named_field_value(self.shared_state(), obj, "message")
+                .and_then(Self::value_to_plain_string)
+                .unwrap_or_default();
+            if error_message.is_empty() {
+                return format!("Main task failed: {}", error_name);
+            }
+            return format!("Main task failed: {}: {}", error_name, error_message);
+        }
+
+        "Main task failed".to_string()
+    }
+
+    fn value_to_plain_string(value: Value) -> Option<String> {
+        if value.is_null() || value.is_undefined() {
+            return None;
+        }
+        if let Some(ptr) = unsafe { value.as_ptr::<u8>() } {
+            use crate::vm::gc::header_ptr_from_value_ptr;
+            let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
+            if header.type_id() == TypeId::of::<RayaString>() {
+                let s = unsafe { &*ptr.cast::<RayaString>().as_ptr() };
+                return Some(s.data.clone());
+            }
+        }
+        if let Some(i) = value.as_i32() {
+            return Some(i.to_string());
+        }
+        if let Some(f) = value.as_f64() {
+            if f.fract() == 0.0 {
+                return Some(format!("{}", f as i64));
+            }
+            return Some(f.to_string());
+        }
+        if let Some(b) = value.as_bool() {
+            return Some(b.to_string());
+        }
+        None
+    }
+
+    fn object_named_field_value(
+        shared: &SharedVmState,
+        object: &Object,
+        field_name: &str,
+    ) -> Option<Value> {
+        if let Some(nominal_type_id) = object.nominal_type_id_usize() {
+            let class_metadata = shared.class_metadata.read();
+            if let Some(index) = class_metadata
+                .get(nominal_type_id)
+                .and_then(|meta| meta.get_field_index(field_name))
+            {
+                if let Some(value) = object.get_field(index) {
+                    return Some(value);
                 }
             }
         }
 
-        "Main task failed".to_string()
+        if let Some(index) = shared
+            .layout_field_names_for_object(object)
+            .and_then(|names| names.iter().position(|name| name == field_name))
+        {
+            if let Some(value) = object.get_field(index) {
+                return Some(value);
+            }
+        }
+
+        let legacy_index = match field_name {
+            "message" => Some(0),
+            "name" => Some(1),
+            "stack" => Some(2),
+            "cause" => Some(3),
+            "code" => Some(4),
+            "errno" => Some(5),
+            "syscall" => Some(6),
+            "path" => Some(7),
+            "errors" => Some(8),
+            _ => None,
+        };
+        if let Some(index) = legacy_index.filter(|index| *index < object.field_count()) {
+            if let Some(value) = object.get_field(index) {
+                return Some(value);
+            }
+        }
+
+        object.dyn_map().and_then(|map| {
+            map.iter()
+                .find_map(|(key, value)| (shared.prop_key_name(*key).as_deref() == Some(field_name)).then_some(*value))
+        })
     }
 
     /// Collect prewarm candidates from embedded JIT hints or runtime heuristics.

@@ -2,6 +2,9 @@
 
 export class Function {
     constructor(body: string);
+    call(thisArg: any, ...args: any[]): any;
+    apply(thisArg: any, args?: any): any;
+    bind(thisArg: any, ...args: any[]): any;
 }
 
 export class AsyncFunction extends Function {

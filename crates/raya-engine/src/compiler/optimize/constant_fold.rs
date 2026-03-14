@@ -161,7 +161,13 @@ impl ConstantFolder {
             (BinaryOp::Equal, IrConstant::I32(a), IrConstant::I32(b)) => {
                 Some(IrConstant::Boolean(a == b))
             }
+            (BinaryOp::StrictEqual, IrConstant::I32(a), IrConstant::I32(b)) => {
+                Some(IrConstant::Boolean(a == b))
+            }
             (BinaryOp::NotEqual, IrConstant::I32(a), IrConstant::I32(b)) => {
+                Some(IrConstant::Boolean(a != b))
+            }
+            (BinaryOp::StrictNotEqual, IrConstant::I32(a), IrConstant::I32(b)) => {
                 Some(IrConstant::Boolean(a != b))
             }
             (BinaryOp::Less, IrConstant::I32(a), IrConstant::I32(b)) => {
@@ -181,7 +187,13 @@ impl ConstantFolder {
             (BinaryOp::Equal, IrConstant::F64(a), IrConstant::F64(b)) => {
                 Some(IrConstant::Boolean(a == b))
             }
+            (BinaryOp::StrictEqual, IrConstant::F64(a), IrConstant::F64(b)) => {
+                Some(IrConstant::Boolean(a == b))
+            }
             (BinaryOp::NotEqual, IrConstant::F64(a), IrConstant::F64(b)) => {
+                Some(IrConstant::Boolean(a != b))
+            }
+            (BinaryOp::StrictNotEqual, IrConstant::F64(a), IrConstant::F64(b)) => {
                 Some(IrConstant::Boolean(a != b))
             }
             (BinaryOp::Less, IrConstant::F64(a), IrConstant::F64(b)) => {

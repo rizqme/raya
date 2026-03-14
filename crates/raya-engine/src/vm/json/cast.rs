@@ -426,7 +426,10 @@ where
     // Create typed array
     let arr = crate::vm::object::Array {
         type_id: element_type_id,
+        length: len,
         elements: element_values,
+        present: vec![true; len],
+        sparse_elements: rustc_hash::FxHashMap::default(),
     };
 
     let arr_ptr = gc.allocate(arr);

@@ -70,6 +70,10 @@ impl ModuleBuilder {
 pub struct FunctionBuilder {
     name: String,
     param_count: u8,
+    uses_js_this_slot: bool,
+    is_constructible: bool,
+    visible_length: u8,
+    is_strict_js: bool,
     code: Vec<u8>,
     local_count: u16,
     locals: FxHashMap<String, u16>,
@@ -86,6 +90,10 @@ impl FunctionBuilder {
         Self {
             name,
             param_count,
+            uses_js_this_slot: false,
+            is_constructible: false,
+            visible_length: param_count,
+            is_strict_js: false,
             code: Vec::new(),
             local_count: param_count as u16,
             locals,
@@ -158,6 +166,22 @@ impl FunctionBuilder {
         self.local_count = count;
     }
 
+    pub fn set_uses_js_this_slot(&mut self, uses_js_this_slot: bool) {
+        self.uses_js_this_slot = uses_js_this_slot;
+    }
+
+    pub fn set_is_constructible(&mut self, is_constructible: bool) {
+        self.is_constructible = is_constructible;
+    }
+
+    pub fn set_visible_length(&mut self, visible_length: u8) {
+        self.visible_length = visible_length;
+    }
+
+    pub fn set_is_strict_js(&mut self, is_strict_js: bool) {
+        self.is_strict_js = is_strict_js;
+    }
+
     /// Patch a jump offset at a given position
     pub fn patch_jump(&mut self, position: usize, offset: i32) {
         self.code[position..position + 4].copy_from_slice(&offset.to_le_bytes());
@@ -168,6 +192,10 @@ impl FunctionBuilder {
         Function {
             name: self.name,
             param_count: self.param_count as usize,
+            uses_js_this_slot: self.uses_js_this_slot,
+            is_constructible: self.is_constructible,
+            visible_length: self.visible_length as usize,
+            is_strict_js: self.is_strict_js,
             local_count: self.local_count as usize,
             code: self.code,
         }

@@ -73,6 +73,9 @@ pub enum Expression {
     /// Arrow function: (x) => x + 1
     Arrow(ArrowFunction),
 
+    /// Function expression: function foo() {}, function() {}
+    Function(FunctionExpression),
+
     /// Await expression: await promise
     Await(AwaitExpression),
 
@@ -134,6 +137,7 @@ impl Expression {
             Expression::Index(e) => &e.span,
             Expression::New(e) => &e.span,
             Expression::Arrow(e) => &e.span,
+            Expression::Function(e) => &e.span,
             Expression::Await(e) => &e.span,
             Expression::Typeof(e) => &e.span,
             Expression::Parenthesized(e) => &e.span,
@@ -257,7 +261,15 @@ pub enum ObjectProperty {
 pub struct Property {
     pub key: PropertyKey,
     pub value: Expression,
+    pub kind: PropertyKind,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyKind {
+    Init,
+    Get,
+    Set,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -451,6 +463,19 @@ pub struct ArrowFunction {
     pub return_type: Option<TypeAnnotation>,
     pub body: ArrowBody,
     pub is_async: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionExpression {
+    pub name: Option<Identifier>,
+    pub type_params: Option<Vec<TypeParameter>>,
+    pub params: Vec<Parameter>,
+    pub return_type: Option<TypeAnnotation>,
+    pub body: BlockStatement,
+    pub is_method: bool,
+    pub is_async: bool,
+    pub is_generator: bool,
     pub span: Span,
 }
 

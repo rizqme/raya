@@ -452,6 +452,9 @@ impl<'a> IrFunctionAdapter<'a> {
                         IrConstant::Null => out.push(SmInstr::ConstNull {
                             dest: Self::reg(dest),
                         }),
+                        IrConstant::Undefined => out.push(SmInstr::ConstNull {
+                            dest: Self::reg(dest),
+                        }),
                         IrConstant::String(value) => {
                             out.push(SmInstr::ConstString {
                                 dest: Self::reg(dest),
@@ -520,13 +523,13 @@ impl<'a> IrFunctionAdapter<'a> {
                             right: r,
                         }),
                         // Comparison
-                        BinaryOp::Equal => out.push(SmInstr::I32Cmp {
+                        BinaryOp::Equal | BinaryOp::StrictEqual => out.push(SmInstr::I32Cmp {
                             dest: d,
                             op: SmCmpOp::Eq,
                             left: l,
                             right: r,
                         }),
-                        BinaryOp::NotEqual => out.push(SmInstr::I32Cmp {
+                        BinaryOp::NotEqual | BinaryOp::StrictNotEqual => out.push(SmInstr::I32Cmp {
                             dest: d,
                             op: SmCmpOp::Ne,
                             left: l,
@@ -1521,8 +1524,8 @@ impl<'a> IrFunctionAdapter<'a> {
             BinaryOp::Div => HelperCall::GenericDiv,
             BinaryOp::Mod => HelperCall::GenericMod,
             BinaryOp::Pow => HelperCall::GenericMul, // TODO: GenericPow
-            BinaryOp::Equal => HelperCall::GenericEquals,
-            BinaryOp::NotEqual => HelperCall::GenericNotEqual,
+            BinaryOp::Equal | BinaryOp::StrictEqual => HelperCall::GenericEquals,
+            BinaryOp::NotEqual | BinaryOp::StrictNotEqual => HelperCall::GenericNotEqual,
             BinaryOp::Less => HelperCall::GenericLessThan,
             BinaryOp::LessEqual => HelperCall::GenericLessEqual,
             BinaryOp::Greater => HelperCall::GenericGreater,

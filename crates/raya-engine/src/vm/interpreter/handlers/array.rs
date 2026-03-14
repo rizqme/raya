@@ -1,27 +1,565 @@
 //! Array built-in method handlers
 
 use crate::compiler::Module;
+use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, RayaString};
+use crate::vm::object::{layout_id_from_ordered_names, Array, Object, RayaString};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
+    fn array_release_ephemeral_root(&self, value: Value) {
+        let mut roots = self.ephemeral_gc_roots.write();
+        if let Some(index) = roots.iter().rposition(|candidate| *candidate == value) {
+            roots.swap_remove(index);
+        }
+    }
+
+    fn array_callback_this_arg(optional_this: Option<Value>) -> Value {
+        optional_this.unwrap_or(Value::undefined())
+    }
+
+    fn array_integer_argument(&self, value: Value) -> Result<i64, VmError> {
+        let number = if value.is_undefined() || value.is_null() {
+            0.0
+        } else if let Some(boolean) = value.as_bool() {
+            if boolean { 1.0 } else { 0.0 }
+        } else {
+            value_to_f64(value)?
+        };
+        if !number.is_finite() || number == 0.0 {
+            return Ok(0);
+        }
+        let truncated = if number.is_sign_negative() {
+            number.ceil()
+        } else {
+            number.floor()
+        };
+        if truncated <= i64::MIN as f64 {
+            Ok(i64::MIN)
+        } else if truncated >= i64::MAX as f64 {
+            Ok(i64::MAX)
+        } else {
+            Ok(truncated as i64)
+        }
+    }
+
+    fn array_sort_compare_default(&self, left: Value, right: Value) -> i32 {
+        let left_string = self.value_to_js_string(left);
+        let right_string = self.value_to_js_string(right);
+        match left_string.cmp(&right_string) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        }
+    }
+
+    fn value_to_js_string(&self, value: Value) -> String {
+        if let Some(ptr) = crate::vm::interpreter::opcodes::native::checked_string_ptr(value) {
+            return unsafe { &*ptr.as_ptr() }.data.clone();
+        }
+        if let Some(i) = value.as_i32() {
+            return i.to_string();
+        }
+        if let Some(f) = value.as_f64() {
+            return f.to_string();
+        }
+        if let Some(b) = value.as_bool() {
+            return b.to_string();
+        }
+        if value.is_undefined() {
+            return "undefined".to_string();
+        }
+        if value.is_null() {
+            return "null".to_string();
+        }
+        String::new()
+    }
+
+    fn array_from_constructor_target(
+        &mut self,
+        constructor: Value,
+        init_args: &[Value],
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        if let Some(value) = self.try_construct_boxed_primitive(constructor, init_args, task, module)?
+        {
+            return Ok(value);
+        }
+
+        let member_names: Vec<String> = Vec::new();
+        let layout_id = layout_id_from_ordered_names(&member_names);
+        let object_ptr = self.gc.lock().allocate(Object::new_dynamic(layout_id, 0));
+        let object_value =
+            unsafe { Value::from_ptr(NonNull::new(object_ptr.as_ptr()).expect("object ptr")) };
+        self.set_constructed_object_prototype_from_constructor(object_value, constructor);
+        let returned =
+            self.invoke_callable_sync_with_this(constructor, Some(object_value), init_args, task, module)?;
+        if self.array_from_is_object_value(returned) {
+            Ok(returned)
+        } else {
+            Ok(object_value)
+        }
+    }
+
+    fn array_from_is_object_value(&self, value: Value) -> bool {
+        crate::vm::interpreter::opcodes::native::checked_array_ptr(value).is_some()
+            || crate::vm::interpreter::opcodes::native::checked_object_ptr(value).is_some()
+            || self.callable_function_info(value).is_some()
+    }
+
+    fn array_from_is_constructor_candidate(&self, value: Value, module: &Module) -> bool {
+        let _ = module;
+        let is_builtin_constructor = ["Array", "Object", "Function", "Boolean", "Number", "String"]
+            .iter()
+            .any(|name| self.builtin_global_value(name).is_some_and(|builtin| builtin.raw() == value.raw()));
+        !is_builtin_constructor && self.callable_function_info(value).is_some()
+    }
+
+    fn array_from_iterator_method(
+        &mut self,
+        items: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        let debug_array_from = std::env::var("RAYA_DEBUG_ARRAY_FROM").is_ok();
+        let Some(iterator_method) =
+            self.well_known_symbol_property_value(items, "Symbol.iterator", task, module)?
+        else {
+            if debug_array_from {
+                eprintln!("[array.from] no @@iterator on items={:#x}", items.raw());
+            }
+            return Ok(None);
+        };
+        if debug_array_from {
+            eprintln!(
+                "[array.from] @@iterator items={:#x} method={:#x} callable={}",
+                items.raw(),
+                iterator_method.raw(),
+                Self::is_callable_value(iterator_method)
+            );
+        }
+        if iterator_method.is_undefined() || iterator_method.is_null() {
+            return Ok(None);
+        }
+        if !Self::is_callable_value(iterator_method) {
+            return Err(VmError::TypeError(
+                "Array.from iterator method is not callable".to_string(),
+            ));
+        }
+        Ok(Some(iterator_method))
+    }
+
+    fn array_from_length_of_array_like(&self, items: Value) -> Result<usize, VmError> {
+        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(items) {
+            let array = unsafe { &*array_ptr.as_ptr() };
+            return Ok(array.len());
+        }
+        if let Some(string_ptr) =
+            crate::vm::interpreter::opcodes::native::checked_string_ptr(items)
+        {
+            let string = unsafe { &*string_ptr.as_ptr() };
+            return Ok(string.data.chars().count());
+        }
+
+        let length_value = self
+            .get_field_value_by_name(items, "length")
+            .unwrap_or(Value::undefined());
+        if length_value.is_undefined() || length_value.is_null() {
+            return Ok(0);
+        }
+        let numeric = if let Some(boolean) = length_value.as_bool() {
+            if boolean { 1.0 } else { 0.0 }
+        } else {
+            value_to_f64(length_value)?
+        };
+        if !numeric.is_finite() || numeric <= 0.0 {
+            return Ok(0);
+        }
+        Ok(numeric.floor().min(u32::MAX as f64) as usize)
+    }
+
+    fn array_from_index_value(&self, items: Value, index: usize) -> Value {
+        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(items) {
+            let array = unsafe { &*array_ptr.as_ptr() };
+            return array.get(index).unwrap_or(Value::undefined());
+        }
+        if let Some(string_ptr) =
+            crate::vm::interpreter::opcodes::native::checked_string_ptr(items)
+        {
+            let string = unsafe { &*string_ptr.as_ptr() };
+            if let Some(ch) = string.data.chars().nth(index) {
+                let ptr = self.gc.lock().allocate(RayaString::new(ch.to_string()));
+                return unsafe {
+                    Value::from_ptr(NonNull::new(ptr.as_ptr()).expect("string char ptr"))
+                };
+            }
+            return Value::undefined();
+        }
+        self.get_field_value_by_name(items, &index.to_string())
+            .unwrap_or(Value::undefined())
+    }
+
+    fn array_from_define_index(
+        &self,
+        target: Value,
+        index: usize,
+        value: Value,
+    ) -> Result<(), VmError> {
+        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target) {
+            let array = unsafe { &mut *array_ptr.as_ptr() };
+            if index >= array.elements.len() {
+                array.resize_holey(index + 1);
+            }
+            array
+                .set(index, value)
+                .map_err(VmError::RuntimeError)?;
+            return Ok(());
+        }
+        self.define_data_property_on_target(target, &index.to_string(), value, true, true, true)
+    }
+
+    fn array_from_set_length(&self, target: Value, len: usize) -> Result<(), VmError> {
+        let length_value = if len <= i32::MAX as usize {
+            Value::i32(len as i32)
+        } else {
+            Value::f64(len as f64)
+        };
+        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target) {
+            let array = unsafe { &mut *array_ptr.as_ptr() };
+            array.resize_holey(len);
+            return Ok(());
+        }
+        self.define_data_property_on_target(target, "length", length_value, true, false, false)
+    }
+
+    fn array_from_iterator_close(
+        &mut self,
+        iterator: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<(), VmError> {
+        let Some(return_method) = self.get_field_value_by_name(iterator, "return") else {
+            return Ok(());
+        };
+        if return_method.is_undefined() || return_method.is_null() {
+            return Ok(());
+        }
+        if !Self::is_callable_value(return_method) {
+            return Err(VmError::TypeError(
+                "Array.from iterator return is not callable".to_string(),
+            ));
+        }
+        let _ = self.invoke_callable_sync_with_this(return_method, Some(iterator), &[], task, module)?;
+        Ok(())
+    }
+
+    fn array_from_iterator_step(
+        &mut self,
+        iterator: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        let debug_array_from = std::env::var("RAYA_DEBUG_ARRAY_FROM").is_ok();
+        let Some(next_method) = self.get_field_value_by_name(iterator, "next") else {
+            if debug_array_from {
+                eprintln!(
+                    "[array.from] iterator missing next iterator={:#x} proto={:?}",
+                    iterator.raw(),
+                    self.prototype_of_value(iterator).map(|v| format!("{:#x}", v.raw()))
+                );
+            }
+            return Err(VmError::TypeError(
+                "Array.from iterator is missing next()".to_string(),
+            ));
+        };
+        if debug_array_from {
+            eprintln!(
+                "[array.from] iterator next iterator={:#x} next={:#x}",
+                iterator.raw(),
+                next_method.raw()
+            );
+        }
+        if !Self::is_callable_value(next_method) {
+            return Err(VmError::TypeError(
+                "Array.from iterator next is not callable".to_string(),
+            ));
+        }
+        let next_result =
+            self.invoke_callable_sync_with_this(next_method, Some(iterator), &[], task, module)?;
+        if !self.array_from_is_object_value(next_result) {
+            return Err(VmError::TypeError(
+                "Array.from iterator result must be an object".to_string(),
+            ));
+        }
+        let done_value = self
+            .get_field_value_by_name(next_result, "done")
+            .unwrap_or(Value::bool(false));
+        let done = if let Some(boolean) = done_value.as_bool() {
+            boolean
+        } else {
+            !done_value.is_null() && !done_value.is_undefined()
+        };
+        if done {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.get_field_value_by_name(next_result, "value")
+                .unwrap_or(Value::undefined()),
+        ))
+    }
+
+    fn array_from_target(
+        &mut self,
+        constructor: Value,
+        init_args: &[Value],
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        if self.array_from_is_constructor_candidate(constructor, module) {
+            return self.array_from_constructor_target(constructor, init_args, task, module);
+        }
+        let array_ptr = self.gc.lock().allocate(Array::new(0, 0));
+        Ok(unsafe { Value::from_ptr(NonNull::new(array_ptr.as_ptr()).expect("array ptr")) })
+    }
+
     /// Handle built-in array methods
     pub(in crate::vm::interpreter) fn call_array_method(
         &mut self,
-        _task: &Arc<Task>,
+        task: &Arc<Task>,
         stack: &mut Stack,
         method_id: u16,
         arg_count: usize,
-        _module: &Module,
+        module: &Module,
     ) -> Result<(), VmError> {
         use crate::vm::builtin::array;
 
         match method_id {
+            array::FROM => {
+                if arg_count == 0 || arg_count > 3 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.from expects 1-3 arguments, got {}",
+                        arg_count
+                    )));
+                }
+
+                let this_arg = if arg_count == 3 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let map_fn = if arg_count >= 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let items = stack.pop()?;
+                let constructor = stack.pop()?;
+                if constructor.is_heap_allocated() {
+                    self.ephemeral_gc_roots.write().push(constructor);
+                }
+                if items.is_heap_allocated() {
+                    self.ephemeral_gc_roots.write().push(items);
+                }
+
+                if items.is_null() || items.is_undefined() {
+                    self.array_release_ephemeral_root(items);
+                    self.array_release_ephemeral_root(constructor);
+                    return Err(VmError::TypeError(
+                        "Array.from requires an iterable or array-like value".to_string(),
+                    ));
+                }
+
+                if let Some(mapper) = map_fn {
+                    if mapper.is_heap_allocated() {
+                        self.ephemeral_gc_roots.write().push(mapper);
+                    }
+                    if !mapper.is_undefined()
+                        && !mapper.is_null()
+                        && !Self::is_callable_value(mapper)
+                    {
+                        self.array_release_ephemeral_root(mapper);
+                        self.array_release_ephemeral_root(items);
+                        self.array_release_ephemeral_root(constructor);
+                        return Err(VmError::TypeError(
+                            "Array.from mapfn must be callable".to_string(),
+                        ));
+                    }
+                }
+
+                let map_this = Self::array_callback_this_arg(this_arg);
+                if map_this.is_heap_allocated() {
+                    self.ephemeral_gc_roots.write().push(map_this);
+                }
+                if let Some(iterator_method) = self.array_from_iterator_method(items, task, module)? {
+                    let iterator = self.invoke_callable_sync_with_this(
+                        iterator_method,
+                        Some(items),
+                        &[],
+                        task,
+                        module,
+                    )?;
+                    if std::env::var("RAYA_DEBUG_ARRAY_FROM").is_ok() {
+                        eprintln!(
+                            "[array.from] iterator call method={:#x} result={:#x} proto={:?}",
+                            iterator_method.raw(),
+                            iterator.raw(),
+                            self.prototype_of_value(iterator).map(|v| format!("{:#x}", v.raw()))
+                        );
+                    }
+                    if iterator.is_heap_allocated() {
+                        self.ephemeral_gc_roots.write().push(iterator);
+                    }
+                    let target = self.array_from_target(constructor, &[], task, module)?;
+                    if target.is_heap_allocated() {
+                        self.ephemeral_gc_roots.write().push(target);
+                    }
+                    let mut index = 0usize;
+                    loop {
+                        let next_value = match self.array_from_iterator_step(iterator, task, module) {
+                            Ok(Some(value)) => value,
+                            Ok(None) => break,
+                            Err(error) => {
+                                let _ = self.array_from_iterator_close(iterator, task, module);
+                                self.array_release_ephemeral_root(target);
+                                self.array_release_ephemeral_root(iterator);
+                                self.array_release_ephemeral_root(map_this);
+                                if let Some(mapper) = map_fn {
+                                    self.array_release_ephemeral_root(mapper);
+                                }
+                                self.array_release_ephemeral_root(items);
+                                self.array_release_ephemeral_root(constructor);
+                                return Err(error);
+                            }
+                        };
+                        let mapped_value = if let Some(mapper) = map_fn {
+                            if mapper.is_undefined() || mapper.is_null() {
+                                next_value
+                            } else {
+                                let index_value = if index <= i32::MAX as usize {
+                                    Value::i32(index as i32)
+                                } else {
+                                    Value::f64(index as f64)
+                                };
+                                match self.invoke_callable_sync_with_this(
+                                    mapper,
+                                    Some(map_this),
+                                    &[next_value, index_value],
+                                    task,
+                                    module,
+                                ) {
+                                    Ok(value) => value,
+                                    Err(error) => {
+                                        let _ = self.array_from_iterator_close(iterator, task, module);
+                                        self.array_release_ephemeral_root(target);
+                                        self.array_release_ephemeral_root(iterator);
+                                        self.array_release_ephemeral_root(map_this);
+                                        self.array_release_ephemeral_root(mapper);
+                                        self.array_release_ephemeral_root(items);
+                                        self.array_release_ephemeral_root(constructor);
+                                        return Err(error);
+                                    }
+                                }
+                            }
+                        } else {
+                            next_value
+                        };
+                        if mapped_value.is_heap_allocated() {
+                            self.ephemeral_gc_roots.write().push(mapped_value);
+                        }
+                        if let Err(error) = self.array_from_define_index(target, index, mapped_value) {
+                            let _ = self.array_from_iterator_close(iterator, task, module);
+                            self.array_release_ephemeral_root(mapped_value);
+                            self.array_release_ephemeral_root(target);
+                            self.array_release_ephemeral_root(iterator);
+                            self.array_release_ephemeral_root(map_this);
+                            if let Some(mapper) = map_fn {
+                                self.array_release_ephemeral_root(mapper);
+                            }
+                            self.array_release_ephemeral_root(items);
+                            self.array_release_ephemeral_root(constructor);
+                            return Err(error);
+                        }
+                        self.array_release_ephemeral_root(mapped_value);
+                        index += 1;
+                    }
+                    self.array_from_set_length(target, index)?;
+                    stack.push(target)?;
+                    self.array_release_ephemeral_root(target);
+                    self.array_release_ephemeral_root(iterator);
+                    self.array_release_ephemeral_root(map_this);
+                    if let Some(mapper) = map_fn {
+                        self.array_release_ephemeral_root(mapper);
+                    }
+                    self.array_release_ephemeral_root(items);
+                    self.array_release_ephemeral_root(constructor);
+                    return Ok(());
+                }
+
+                let len = self.array_from_length_of_array_like(items)?;
+                let len_value = if len <= i32::MAX as usize {
+                    Value::i32(len as i32)
+                } else {
+                    Value::f64(len as f64)
+                };
+                let target = self.array_from_target(constructor, &[len_value], task, module)?;
+                if target.is_heap_allocated() {
+                    self.ephemeral_gc_roots.write().push(target);
+                }
+                for index in 0..len {
+                    let value = self.array_from_index_value(items, index);
+                    let mapped_value = if let Some(mapper) = map_fn {
+                        if mapper.is_undefined() || mapper.is_null() {
+                            value
+                        } else {
+                            let index_value = if index <= i32::MAX as usize {
+                                Value::i32(index as i32)
+                            } else {
+                                Value::f64(index as f64)
+                            };
+                            self.invoke_callable_sync_with_this(
+                                mapper,
+                                Some(map_this),
+                                &[value, index_value],
+                                task,
+                                module,
+                            )?
+                        }
+                    } else {
+                        value
+                    };
+                    if mapped_value.is_heap_allocated() {
+                        self.ephemeral_gc_roots.write().push(mapped_value);
+                    }
+                    if let Err(error) = self.array_from_define_index(target, index, mapped_value) {
+                        self.array_release_ephemeral_root(mapped_value);
+                        self.array_release_ephemeral_root(target);
+                        self.array_release_ephemeral_root(map_this);
+                        if let Some(mapper) = map_fn {
+                            self.array_release_ephemeral_root(mapper);
+                        }
+                        self.array_release_ephemeral_root(items);
+                        self.array_release_ephemeral_root(constructor);
+                        return Err(error);
+                    }
+                    self.array_release_ephemeral_root(mapped_value);
+                }
+                self.array_from_set_length(target, len)?;
+                stack.push(target)?;
+                self.array_release_ephemeral_root(target);
+                self.array_release_ephemeral_root(map_this);
+                if let Some(mapper) = map_fn {
+                    self.array_release_ephemeral_root(mapper);
+                }
+                self.array_release_ephemeral_root(items);
+                self.array_release_ephemeral_root(constructor);
+                Ok(())
+            }
             array::PUSH => {
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
@@ -249,6 +787,7 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             array::SPLICE => {
+                let debug_splice = std::env::var("RAYA_DEBUG_SPLICE").is_ok();
                 // splice(start, deleteCount?, ...items): remove elements and optionally insert new ones
                 // Returns array of removed elements
                 if arg_count < 1 {
@@ -278,45 +817,87 @@ impl<'a> Interpreter<'a> {
                 }
                 let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
                 let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+                if debug_splice {
+                    eprintln!(
+                        "[splice] before receiver={:#x} len={} elems={} present={}",
+                        array_val.raw(),
+                        arr.length,
+                        arr.elements.len(),
+                        arr.present.len()
+                    );
+                }
 
                 let len = arr.len();
-                let start = start_val.as_i32().unwrap_or(0) as usize;
-                let start = if start > len { len } else { start };
+                let relative_start = self.array_integer_argument(start_val)?;
+                let start = if relative_start < 0 {
+                    len.saturating_sub(relative_start.unsigned_abs() as usize)
+                } else {
+                    (relative_start as usize).min(len)
+                };
 
                 // Calculate delete count (default to rest of array if not specified)
                 let delete_count = if let Some(dc_val) = delete_count_val {
-                    dc_val.as_i32().unwrap_or(0).max(0) as usize
+                    self.array_integer_argument(dc_val)?.max(0) as usize
                 } else {
                     len.saturating_sub(start)
                 };
 
                 // Calculate actual end of deletion
                 let end = (start + delete_count).min(len);
+                if debug_splice {
+                    eprintln!(
+                        "[splice] arg_count={} start={} delete_count={} end={} items={}",
+                        arg_count,
+                        start,
+                        delete_count,
+                        end,
+                        items.len()
+                    );
+                }
 
                 // Collect removed elements
                 let removed_vals: Vec<Value> = (start..end).filter_map(|i| arr.get(i)).collect();
 
-                // Build new elements list: [0..start] + items + [end..len]
+                // Build new dense storage: [0..start] + items + [end..len].
+                // Keep the logical length and presence bitmap in sync so live
+                // length-sensitive iteration observes mutations immediately.
                 let mut new_elements: Vec<Value> = Vec::new();
+                let mut new_present: Vec<bool> = Vec::new();
                 for i in 0..start {
                     new_elements.push(arr.elements[i]);
+                    new_present.push(arr.present.get(i).copied().unwrap_or(false));
                 }
                 for item in items {
                     new_elements.push(item);
+                    new_present.push(true);
                 }
                 for i in end..len {
                     new_elements.push(arr.elements[i]);
+                    new_present.push(arr.present.get(i).copied().unwrap_or(false));
                 }
 
                 // Update array elements - use std::mem::take to avoid reallocation
                 let old_elements = std::mem::take(&mut arr.elements);
                 arr.elements = new_elements;
+                arr.present = new_present;
+                arr.length = arr.present.len();
+                arr.sparse_elements
+                    .retain(|index, _| (*index as usize) < arr.length);
+                if debug_splice {
+                    eprintln!(
+                        "[splice] after receiver={:#x} len={} elems={} present={}",
+                        array_val.raw(),
+                        arr.length,
+                        arr.elements.len(),
+                        arr.present.len()
+                    );
+                }
                 drop(old_elements); // Explicitly drop old elements
 
                 // Create removed array with same element type as source array
                 let mut removed = Array::new(arr.type_id, removed_vals.len());
                 for (i, v) in removed_vals.iter().enumerate() {
-                    removed.elements[i] = *v;
+                    let _ = removed.set(i, *v);
                 }
 
                 // Return removed elements
@@ -525,9 +1106,341 @@ impl<'a> Interpreter<'a> {
                 stack.push(value)?;
                 Ok(())
             }
-            // NOTE: SORT, REDUCE, FILTER, MAP, FIND, FIND_INDEX, FOR_EACH, EVERY, SOME
-            // are now compiled as inline loops by the compiler (see lower_array_intrinsic in expr.rs)
-            // and never reach this handler at runtime.
+            array::FOR_EACH => {
+                if !(1..=2).contains(&arg_count) {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.forEach expects 1-2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let this_arg = if arg_count == 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let callback = stack.pop()?;
+                let array_val = stack.pop()?;
+                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
+                    return Err(VmError::TypeError("Expected array".to_string()));
+                };
+                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let callback_this = Self::array_callback_this_arg(this_arg);
+                for (index, element) in elements.iter().copied().enumerate() {
+                    let _ = self.invoke_callable_sync_with_this(
+                        callback,
+                        Some(callback_this),
+                        &[element, Value::i32(index as i32), array_val],
+                        task,
+                        module,
+                    )?;
+                }
+                stack.push(Value::undefined())?;
+                Ok(())
+            }
+            array::FILTER => {
+                if !(1..=2).contains(&arg_count) {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.filter expects 1-2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let this_arg = if arg_count == 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let callback = stack.pop()?;
+                let array_val = stack.pop()?;
+                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
+                    return Err(VmError::TypeError("Expected array".to_string()));
+                };
+                let (array_type_id, elements) = {
+                    let arr = unsafe { &*arr_ptr.as_ptr() };
+                    (arr.type_id, arr.elements.clone())
+                };
+                let callback_this = Self::array_callback_this_arg(this_arg);
+                let mut result = Array::new(array_type_id, 0);
+                for (index, element) in elements.iter().copied().enumerate() {
+                    let keep = self.invoke_callable_sync_with_this(
+                        callback,
+                        Some(callback_this),
+                        &[element, Value::i32(index as i32), array_val],
+                        task,
+                        module,
+                    )?;
+                    if keep.is_truthy() {
+                        result.push(element);
+                    }
+                }
+                let gc_ptr = self.gc.lock().allocate(result);
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                stack.push(value)?;
+                Ok(())
+            }
+            array::FIND => {
+                if !(1..=2).contains(&arg_count) {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.find expects 1-2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let this_arg = if arg_count == 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let callback = stack.pop()?;
+                let array_val = stack.pop()?;
+                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
+                    return Err(VmError::TypeError("Expected array".to_string()));
+                };
+                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let callback_this = Self::array_callback_this_arg(this_arg);
+                for (index, element) in elements.iter().copied().enumerate() {
+                    let found = self.invoke_callable_sync_with_this(
+                        callback,
+                        Some(callback_this),
+                        &[element, Value::i32(index as i32), array_val],
+                        task,
+                        module,
+                    )?;
+                    if found.is_truthy() {
+                        stack.push(element)?;
+                        return Ok(());
+                    }
+                }
+                stack.push(Value::undefined())?;
+                Ok(())
+            }
+            array::FIND_INDEX => {
+                if !(1..=2).contains(&arg_count) {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.findIndex expects 1-2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let this_arg = if arg_count == 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let callback = stack.pop()?;
+                let array_val = stack.pop()?;
+                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
+                    return Err(VmError::TypeError("Expected array".to_string()));
+                };
+                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let callback_this = Self::array_callback_this_arg(this_arg);
+                for (index, element) in elements.iter().copied().enumerate() {
+                    let found = self.invoke_callable_sync_with_this(
+                        callback,
+                        Some(callback_this),
+                        &[element, Value::i32(index as i32), array_val],
+                        task,
+                        module,
+                    )?;
+                    if found.is_truthy() {
+                        stack.push(Value::i32(index as i32))?;
+                        return Ok(());
+                    }
+                }
+                stack.push(Value::i32(-1))?;
+                Ok(())
+            }
+            array::EVERY => {
+                if !(1..=2).contains(&arg_count) {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.every expects 1-2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let this_arg = if arg_count == 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let callback = stack.pop()?;
+                let array_val = stack.pop()?;
+                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
+                    return Err(VmError::TypeError("Expected array".to_string()));
+                };
+                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let callback_this = Self::array_callback_this_arg(this_arg);
+                for (index, element) in elements.iter().copied().enumerate() {
+                    let keep = self.invoke_callable_sync_with_this(
+                        callback,
+                        Some(callback_this),
+                        &[element, Value::i32(index as i32), array_val],
+                        task,
+                        module,
+                    )?;
+                    if !keep.is_truthy() {
+                        stack.push(Value::bool(false))?;
+                        return Ok(());
+                    }
+                }
+                stack.push(Value::bool(true))?;
+                Ok(())
+            }
+            array::SOME => {
+                if !(1..=2).contains(&arg_count) {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.some expects 1-2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let this_arg = if arg_count == 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let callback = stack.pop()?;
+                let array_val = stack.pop()?;
+                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
+                    return Err(VmError::TypeError("Expected array".to_string()));
+                };
+                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let callback_this = Self::array_callback_this_arg(this_arg);
+                for (index, element) in elements.iter().copied().enumerate() {
+                    let keep = self.invoke_callable_sync_with_this(
+                        callback,
+                        Some(callback_this),
+                        &[element, Value::i32(index as i32), array_val],
+                        task,
+                        module,
+                    )?;
+                    if keep.is_truthy() {
+                        stack.push(Value::bool(true))?;
+                        return Ok(());
+                    }
+                }
+                stack.push(Value::bool(false))?;
+                Ok(())
+            }
+            array::MAP => {
+                if !(1..=2).contains(&arg_count) {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.map expects 1-2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let this_arg = if arg_count == 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let callback = stack.pop()?;
+                let array_val = stack.pop()?;
+                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
+                    return Err(VmError::TypeError("Expected array".to_string()));
+                };
+                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let callback_this = Self::array_callback_this_arg(this_arg);
+                let mut result = Array::new(0, 0);
+                for (index, element) in elements.iter().copied().enumerate() {
+                    let mapped = self.invoke_callable_sync_with_this(
+                        callback,
+                        Some(callback_this),
+                        &[element, Value::i32(index as i32), array_val],
+                        task,
+                        module,
+                    )?;
+                    result.push(mapped);
+                }
+                let gc_ptr = self.gc.lock().allocate(result);
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                stack.push(value)?;
+                Ok(())
+            }
+            array::REDUCE => {
+                if !(1..=2).contains(&arg_count) {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.reduce expects 1-2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let initial = if arg_count == 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let callback = stack.pop()?;
+                let array_val = stack.pop()?;
+                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
+                    return Err(VmError::TypeError("Expected array".to_string()));
+                };
+                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let (mut acc, start_index) = if let Some(initial) = initial {
+                    (initial, 0usize)
+                } else if let Some(first) = elements.first().copied() {
+                    (first, 1usize)
+                } else {
+                    return Err(VmError::TypeError(
+                        "Reduce of empty array with no initial value".to_string(),
+                    ));
+                };
+                for (index, element) in elements.iter().copied().enumerate().skip(start_index) {
+                    acc = self.invoke_callable_sync_with_this(
+                        callback,
+                        Some(Value::undefined()),
+                        &[acc, element, Value::i32(index as i32), array_val],
+                        task,
+                        module,
+                    )?;
+                }
+                stack.push(acc)?;
+                Ok(())
+            }
+            array::SORT => {
+                if arg_count > 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.sort expects 0-1 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let compare_fn = if arg_count == 1 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let array_val = stack.pop()?;
+                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
+                    return Err(VmError::TypeError("Expected array".to_string()));
+                };
+                let mut elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                for i in 1..elements.len() {
+                    let key = elements[i];
+                    let mut j = i;
+                    while j > 0 {
+                        let prev = elements[j - 1];
+                        let ordering = if let Some(compare_fn) = compare_fn {
+                            let result = self.invoke_callable_sync_with_this(
+                                compare_fn,
+                                Some(Value::undefined()),
+                                &[prev, key],
+                                task,
+                                module,
+                            )?;
+                            result.as_i32().unwrap_or_else(|| {
+                                result.as_f64().map(|f| f as i32).unwrap_or(0)
+                            })
+                        } else {
+                            self.array_sort_compare_default(prev, key)
+                        };
+                        if ordering <= 0 {
+                            break;
+                        }
+                        elements[j] = prev;
+                        j -= 1;
+                    }
+                    elements[j] = key;
+                }
+                unsafe { &mut *arr_ptr.as_ptr() }.elements = elements;
+                stack.push(array_val)?;
+                Ok(())
+            }
             array::JOIN => {
                 // join(separator?) - arg_count is 0 or 1
                 let sep = if arg_count >= 1 {

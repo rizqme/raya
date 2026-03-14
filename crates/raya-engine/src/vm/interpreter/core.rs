@@ -12,7 +12,7 @@ use crate::vm::builtins::handlers::{
 };
 use crate::vm::gc::GarbageCollector;
 use crate::vm::native_handler::NativeHandler;
-use crate::vm::object::{Class, Object, RayaString};
+use crate::vm::object::{BoundNativeMethod, Class, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
@@ -516,6 +516,121 @@ impl<'a> Interpreter<'a> {
             .cloned()
     }
 
+    pub(in crate::vm::interpreter) fn invoke_callable_sync(
+        &mut self,
+        callable: Value,
+        args: &[Value],
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Value, VmError> {
+        self.invoke_callable_sync_with_this(callable, None, args, caller_task, caller_module)
+    }
+
+    pub(in crate::vm::interpreter) fn invoke_callable_sync_with_this(
+        &mut self,
+        callable: Value,
+        explicit_this: Option<Value>,
+        args: &[Value],
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Value, VmError> {
+        let mut stack = Stack::new();
+        let scratch_task = Arc::new(Task::new(
+            caller_task.current_func_id(),
+            caller_task.current_module(),
+            Some(caller_task.id()),
+        ));
+
+        let opcode_result = if let Some(raw_ptr) = unsafe { callable.as_ptr::<u8>() } {
+            let header =
+                unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+            if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
+                let method =
+                    unsafe { &*callable.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
+                self.exec_bound_native_method_call(
+                    &mut stack,
+                    method.receiver,
+                    method.native_id,
+                    args.to_vec(),
+                    caller_module,
+                    &scratch_task,
+                )
+            } else {
+                match self.callable_frame_for_value(
+                    callable,
+                    &mut stack,
+                    args,
+                    explicit_this,
+                    ReturnAction::PushReturnValue,
+                )? {
+                    Some(result) => result,
+                    None => return Err(VmError::TypeError("Value is not callable".to_string())),
+                }
+            }
+        } else {
+            return Err(VmError::TypeError("Value is not callable".to_string()));
+        };
+
+        match opcode_result {
+            OpcodeResult::Continue => {
+                if stack.depth() == 0 {
+                    Ok(Value::undefined())
+                } else {
+                    stack.pop()
+                }
+            }
+            OpcodeResult::Return(value) => Ok(value),
+            OpcodeResult::Error(error) => Err(error),
+            OpcodeResult::Suspend(_) => Err(VmError::RuntimeError(
+                "Synchronous callable invocation suspended unexpectedly".to_string(),
+            )),
+            OpcodeResult::PushFrame {
+                func_id,
+                arg_count,
+                is_closure: _,
+                closure_val,
+                module,
+                return_action: _,
+            } => {
+                let callee_module = module.unwrap_or_else(|| caller_task.current_module());
+                let depth = stack.depth();
+                let args_start = depth.saturating_sub(arg_count);
+                let mut frame_args = Vec::with_capacity(arg_count);
+                for offset in 0..arg_count {
+                    frame_args.push(stack.peek_at(args_start + offset)?);
+                }
+
+                let callee_task = Arc::new(Task::with_args(
+                    func_id,
+                    callee_module.clone(),
+                    Some(caller_task.id()),
+                    frame_args,
+                ));
+                if let Some(closure) = closure_val {
+                    callee_task.push_closure(closure);
+                }
+                self.tasks.write().insert(callee_task.id(), callee_task.clone());
+
+                match self.run(&callee_task) {
+                    ExecutionResult::Completed(value) => {
+                        callee_task.complete(value);
+                        Ok(value)
+                    }
+                    ExecutionResult::Suspended(reason) => {
+                        callee_task.suspend(reason);
+                        Err(VmError::RuntimeError(
+                            "Synchronous callable invocation suspended unexpectedly".to_string(),
+                        ))
+                    }
+                    ExecutionResult::Failed(error) => {
+                        callee_task.fail();
+                        Err(error)
+                    }
+                }
+            }
+        }
+    }
+
     #[inline]
     pub(in crate::vm::interpreter) fn layout_field_names_for_object(
         &self,
@@ -949,8 +1064,8 @@ impl<'a> Interpreter<'a> {
         }
         self.profiler_func_id = current_func_id;
 
-        let entry_local_count = match module.functions.get(current_func_id) {
-            Some(f) => f.local_count,
+        let (entry_local_count, entry_param_count) = match module.functions.get(current_func_id) {
+            Some(f) => (f.local_count, f.param_count),
             None => {
                 return ExecutionResult::Failed(VmError::RuntimeError(format!(
                     "Function {} not found",
@@ -963,6 +1078,7 @@ impl<'a> Interpreter<'a> {
         let mut ip = task.ip();
         let mut code: &[u8] = &module.functions[current_func_id].code;
         let mut locals_base = task.current_locals_base();
+        let mut current_args = Vec::new(); // Track current function's arguments for JS `arguments`/rest access
         let mut current_arg_count = 0usize; // Track current function's arg count (for rest parameters)
 
         // Check if we're resuming from suspension.
@@ -1035,6 +1151,7 @@ impl<'a> Interpreter<'a> {
                     code = &module.functions[frame.func_id].code;
                     ip = frame.ip;
                     locals_base = frame.locals_base;
+                    current_args = frame.args;
                     current_arg_count = frame.arg_count;
                 } else {
                     break;
@@ -1055,15 +1172,24 @@ impl<'a> Interpreter<'a> {
         if ip == 0 && stack_guard.depth() == 0 && frames.is_empty() {
             task.push_call_frame(current_func_id);
 
-            for _ in 0..entry_local_count {
-                if let Err(e) = stack_guard.push(Value::null()) {
+            let initial_args = task.take_initial_args();
+            current_arg_count = initial_args.len();
+            current_args = initial_args.clone();
+            let initial_slot_count = entry_local_count.max(current_arg_count);
+
+            for local_index in 0..initial_slot_count {
+                let initial = if local_index < entry_param_count {
+                    Value::undefined()
+                } else {
+                    Value::null()
+                };
+                if let Err(e) = stack_guard.push(initial) {
                     return ExecutionResult::Failed(e);
                 }
             }
 
-            let initial_args = task.take_initial_args();
             for (i, arg) in initial_args.into_iter().enumerate() {
-                if i < entry_local_count {
+                if i < initial_slot_count {
                     if let Err(e) = stack_guard.set_at(i, arg) {
                         return ExecutionResult::Failed(e);
                     }
@@ -1112,7 +1238,8 @@ impl<'a> Interpreter<'a> {
                     code = &module.functions[frame.func_id].code;
                     ip = frame.ip;
                     locals_base = frame.locals_base;
-                    current_arg_count = frame.arg_count; // Restore caller's arg count
+                    current_args = frame.args;
+                    current_arg_count = current_args.len();
 
                     // Push appropriate value onto caller's stack
                     if !matches!(frame.return_action, ReturnAction::Discard) {
@@ -1326,7 +1453,7 @@ impl<'a> Interpreter<'a> {
                 opcode,
                 locals_base,
                 frames.len(),
-                current_arg_count,
+                &current_args,
             ) {
                 OpcodeResult::Continue => {
                     // Continue to next instruction
@@ -1600,6 +1727,7 @@ impl<'a> Interpreter<'a> {
                         }
                     };
                     let new_local_count = new_func.local_count;
+                    let new_param_count = new_func.param_count;
 
                     // Save caller's frame
                     frames.push(ExecutionFrame {
@@ -1610,6 +1738,7 @@ impl<'a> Interpreter<'a> {
                         is_closure,
                         return_action,
                         arg_count: current_arg_count, // Save caller's arg count
+                        args: current_args.clone(),
                     });
 
                     // Push call frame for stack traces
@@ -1624,11 +1753,17 @@ impl<'a> Interpreter<'a> {
                     // Args are already on the stack from the caller
                     locals_base = stack_guard.depth() - arg_count;
 
-                    // Allocate remaining locals (initialized to null)
+                    // Allocate remaining slots. Missing parameter slots must materialize as
+                    // `undefined` in JS-compatible code; non-parameter locals stay `null`.
                     // Note: If arg_count > new_local_count, we don't discard extras.
                     // This allows rest parameters to access all arguments via LoadArgLocal.
-                    for _ in 0..(new_local_count.saturating_sub(arg_count)) {
-                        if let Err(e) = stack_guard.push(Value::null()) {
+                    for local_index in arg_count..new_local_count {
+                        let initial = if local_index < new_param_count {
+                            Value::undefined()
+                        } else {
+                            Value::null()
+                        };
+                        if let Err(e) = stack_guard.push(initial) {
                             return ExecutionResult::Failed(e);
                         }
                     }
@@ -1686,6 +1821,11 @@ impl<'a> Interpreter<'a> {
                     }
                     self.profiler_func_id = current_func_id;
                     code = &module.functions[func_id].code;
+                    current_args = stack_guard
+                        .iter_values()
+                        .skip(locals_base)
+                        .take(arg_count)
+                        .collect();
                     current_arg_count = arg_count; // Set current arg count to callee's arg count
                     #[cfg(feature = "jit")]
                     {
@@ -1718,16 +1858,28 @@ impl<'a> Interpreter<'a> {
                     }
                     // Set exception on task if not already set
                     if !task.has_exception() {
-                        let error_msg = e.to_string();
-                        let exc_val = {
-                            let mut gc = self.gc.lock();
-                            let gc_ptr = gc.allocate(RayaString::new(error_msg));
-                            let value = unsafe {
-                                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-                            };
-                            self.ephemeral_gc_roots.write().push(value);
-                            value
+                        let exc_val = match &e {
+                            VmError::TypeError(message) => {
+                                self.alloc_builtin_error_value("TypeError", message)
+                            }
+                            VmError::RangeError(message) => {
+                                self.alloc_builtin_error_value("RangeError", message)
+                            }
+                            VmError::RuntimeError(message) => {
+                                self.alloc_builtin_error_value("Error", message)
+                            }
+                            _ => {
+                                let error_msg = e.to_string();
+                                let mut gc = self.gc.lock();
+                                let gc_ptr = gc.allocate(RayaString::new(error_msg));
+                                unsafe {
+                                    Value::from_ptr(
+                                        std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
+                                    )
+                                }
+                            }
                         };
+                        self.ephemeral_gc_roots.write().push(exc_val);
                         task.set_exception(exc_val);
                         let mut ephemeral = self.ephemeral_gc_roots.write();
                         if let Some(index) =
@@ -1795,6 +1947,7 @@ impl<'a> Interpreter<'a> {
                             code = &module.functions[frame.func_id].code;
                             ip = frame.ip;
                             locals_base = frame.locals_base;
+                            current_args = frame.args;
                             current_arg_count = frame.arg_count; // Restore caller's arg count
                                                                  // Continue searching in parent frame
                         } else {
@@ -1825,7 +1978,7 @@ impl<'a> Interpreter<'a> {
         opcode: Opcode,
         locals_base: usize,
         frame_depth: usize,
-        arg_count: usize, // Current function's arg count (for rest parameters)
+        current_args: &[Value], // Current function's runtime arguments
     ) -> OpcodeResult {
         match opcode {
             // =========================================================
@@ -1839,6 +1992,7 @@ impl<'a> Interpreter<'a> {
             // Constants
             // =========================================================
             Opcode::ConstNull
+            | Opcode::ConstUndefined
             | Opcode::ConstTrue
             | Opcode::ConstFalse
             | Opcode::ConstI32
@@ -1858,7 +2012,15 @@ impl<'a> Interpreter<'a> {
             | Opcode::LoadArgLocal
             | Opcode::LoadGlobal
             | Opcode::StoreGlobal => {
-                self.exec_variable_ops(stack, ip, code, module, locals_base, opcode, arg_count)
+                self.exec_variable_ops(
+                    stack,
+                    ip,
+                    code,
+                    module,
+                    locals_base,
+                    opcode,
+                    current_args,
+                )
             }
 
             // =========================================================
@@ -2344,6 +2506,7 @@ impl<'a> Interpreter<'a> {
             let (pop, push, imm): (i32, i32, usize) = match op {
                 // constants
                 Opcode::ConstNull
+                | Opcode::ConstUndefined
                 | Opcode::ConstTrue
                 | Opcode::ConstFalse
                 | Opcode::LoadLocal0
@@ -2360,6 +2523,7 @@ impl<'a> Interpreter<'a> {
                 Opcode::ConstI32 => (0, 1, 4),
                 Opcode::ConstF64 => (0, 1, 8),
                 Opcode::ConstStr => (0, 1, 2),
+                Opcode::ConstUndefined => (0, 1, 0),
                 Opcode::LoadLocal => (0, 1, 2),
 
                 // stores/stack ops

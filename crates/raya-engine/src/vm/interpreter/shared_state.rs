@@ -11,6 +11,7 @@ use crate::vm::interpreter::{
 };
 use crate::vm::native_handler::{NativeHandler, NoopNativeHandler};
 use crate::vm::native_registry::{NativeFunctionRegistry, ResolvedNatives};
+use crate::vm::object::TypeHandle;
 use crate::vm::reflect::{ClassMetadata, ClassMetadataRegistry, MetadataStore};
 use crate::vm::scheduler::{IoSubmission, StackPool, Task, TaskId};
 use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
@@ -467,6 +468,68 @@ pub struct SharedVmState {
 }
 
 impl SharedVmState {
+    fn is_builtin_module(module: &Module) -> bool {
+        if module.metadata.name.starts_with("__raya_builtin__/") {
+            return true;
+        }
+        module
+            .metadata
+            .source_file
+            .as_deref()
+            .is_some_and(|path| path.contains("builtins/"))
+    }
+
+    fn seed_builtin_global_exports(
+        &self,
+        module: &Arc<Module>,
+        layout: &ModuleRuntimeLayout,
+    ) {
+        if !Self::is_builtin_module(module) {
+            return;
+        }
+
+        for export in &module.exports {
+            let value = match export.symbol_type {
+                crate::compiler::SymbolType::Function => {
+                    let closure =
+                        crate::vm::object::Closure::with_module(export.index, Vec::new(), module.clone());
+                    let gc_ptr = self.gc.lock().allocate(closure);
+                    Some(unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    })
+                }
+                crate::compiler::SymbolType::Class => {
+                    let local_nominal_type_id = export
+                        .nominal_type
+                        .map(|nominal| nominal.local_nominal_type_index as usize)
+                        .unwrap_or(export.index);
+                    let global_nominal_type_id = layout.nominal_type_base + local_nominal_type_id;
+                    let Some((layout_id, _)) = self.nominal_allocation(global_nominal_type_id) else {
+                        continue;
+                    };
+                    let handle_id =
+                        self.register_type_handle(global_nominal_type_id as u32, layout_id, None);
+                    let gc_ptr = self.gc.lock().allocate(TypeHandle {
+                        handle_id,
+                        shape_id: None,
+                    });
+                    Some(unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    })
+                }
+                crate::compiler::SymbolType::Constant => self
+                    .globals_by_index
+                    .read()
+                    .get(layout.global_base + export.index)
+                    .copied(),
+            };
+
+            if let Some(value) = value {
+                self.set_builtin_global(export.name.clone(), value);
+            }
+        }
+    }
+
     /// Create new shared VM state with default (no-op) native handler
     pub fn new(
         safepoint: Arc<SafepointCoordinator>,
@@ -544,6 +607,7 @@ impl SharedVmState {
 
     /// Snapshot heap roots reachable from globals and live tasks.
     pub fn collect_gc_roots(&self) -> crate::vm::gc::ExternalRootSnapshot {
+        let debug_array_prop = std::env::var("RAYA_DEBUG_ARRAY_PROP").is_ok();
         let mut roots = Vec::new();
         let mut complete = true;
 
@@ -568,12 +632,33 @@ impl SharedVmState {
         }
 
         {
+            let metadata = self.metadata.lock();
+            if debug_array_prop {
+                eprintln!("[gc-roots] collecting metadata roots");
+            }
+            roots.extend(
+                metadata
+                    .rooted_values()
+                    .into_iter()
+                    .filter(|value| value.is_heap_allocated()),
+            );
+        }
+
+        {
             let tasks = self.tasks.read();
             for task in tasks.values() {
                 let (task_roots, task_complete) = task.gc_roots();
                 roots.extend(task_roots);
                 complete &= task_complete;
             }
+        }
+
+        if debug_array_prop {
+            eprintln!(
+                "[gc-roots] total_roots={} complete={}",
+                roots.len(),
+                complete
+            );
         }
 
         crate::vm::gc::ExternalRootSnapshot { roots, complete }
@@ -1030,15 +1115,33 @@ impl SharedVmState {
         let mut class_metadata_registry = self.class_metadata.write();
         for (i, class_def) in module.classes.iter().enumerate() {
             let global_nominal_type_id = nominal_type_base + i;
-            let mut class = if let Some(parent_id) = class_def.parent_id {
+            let parent_global_id = class_def
+                .parent_id
+                .map(|parent_id| nominal_type_base + parent_id as usize)
+                .or_else(|| {
+                    class_def.parent_name.as_deref().and_then(|parent_name| {
+                        classes.get_class_by_name(parent_name).map(|class| class.id)
+                    })
+                });
+            let inherited_runtime_parent =
+                class_def.parent_id.is_none() && class_def.parent_name.is_some();
+            let inherited_field_count = parent_global_id
+                .and_then(|parent_id| classes.get_class(parent_id).map(|class| class.field_count))
+                .unwrap_or(0);
+            let total_field_count = if inherited_runtime_parent {
+                inherited_field_count + class_def.field_count
+            } else {
+                class_def.field_count
+            };
+            let mut class = if let Some(parent_id) = parent_global_id {
                 let mut c = crate::vm::object::Class::with_parent(
                     global_nominal_type_id,
                     class_def.name.clone(),
-                    class_def.field_count,
-                    nominal_type_base + parent_id as usize,
+                    total_field_count,
+                    parent_id,
                 );
                 // Inherit parent vtable entries
-                if let Some(parent) = classes.get_class(nominal_type_base + parent_id as usize) {
+                if let Some(parent) = classes.get_class(parent_id) {
                     for &method_id in &parent.vtable.methods {
                         c.add_method(method_id);
                     }
@@ -1048,7 +1151,7 @@ impl SharedVmState {
                 crate::vm::object::Class::new(
                     global_nominal_type_id,
                     class_def.name.clone(),
-                    class_def.field_count,
+                    total_field_count,
                 )
             };
             class.module = Some(module.clone());
@@ -1093,24 +1196,39 @@ impl SharedVmState {
             self.layouts.write().register_nominal_layout(
                 global_nominal_type_id,
                 layout_id,
-                class_def.field_count,
+                total_field_count,
                 Some(class_def.name.clone()),
             );
 
             // Populate runtime metadata for dynamic property lookups.
             // Prefer rich reflection data when present, and always seed method slot names
             // from class defs so imported-class dynamic member calls remain callable.
-            let mut class_meta = ClassMetadata::new();
+            let mut class_meta = if inherited_runtime_parent {
+                parent_global_id
+                    .and_then(|parent_id| class_metadata_registry.get(parent_id).cloned())
+                    .unwrap_or_default()
+            } else {
+                ClassMetadata::new()
+            };
 
             if let Some(class_reflection) =
                 module.reflection.as_ref().and_then(|r| r.classes.get(i))
             {
+                let field_offset = if inherited_runtime_parent {
+                    inherited_field_count
+                } else {
+                    0
+                };
                 for (field_index, field) in class_reflection.fields.iter().enumerate() {
                     if field.is_static {
                         class_meta.add_static_field(field.name.clone(), field_index);
                     } else {
                         let type_id = reflect_type_name_to_id(&field.type_name);
-                        class_meta.add_field_with_type(field.name.clone(), field_index, type_id);
+                        class_meta.add_field_with_type(
+                            field.name.clone(),
+                            field_offset + field_index,
+                            type_id,
+                        );
                     }
                 }
 
@@ -1205,6 +1323,10 @@ impl SharedVmState {
 
         // Register classes from the module (rebased to global class IDs).
         self.register_classes(&module, nominal_type_base);
+
+        if let Some(layout) = self.module_layouts.read().get(&module.checksum).cloned() {
+            self.seed_builtin_global_exports(&module, &layout);
+        }
 
         Ok(())
     }

@@ -173,6 +173,7 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::Dup
         | Opcode::Swap
         | Opcode::ConstNull
+        | Opcode::ConstUndefined
         | Opcode::ConstTrue
         | Opcode::ConstFalse
         | Opcode::LoadLocal0
@@ -417,7 +418,9 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::Pop => (1, 0),
         Opcode::Dup => (1, 2),
         Opcode::Swap => (2, 2),
-        Opcode::ConstNull | Opcode::ConstTrue | Opcode::ConstFalse => (0, 1),
+        Opcode::ConstNull | Opcode::ConstUndefined | Opcode::ConstTrue | Opcode::ConstFalse => {
+            (0, 1)
+        }
         Opcode::ConstI32 | Opcode::ConstF64 | Opcode::ConstStr | Opcode::LoadConst => (0, 1),
         Opcode::LoadLocal | Opcode::LoadLocal0 | Opcode::LoadLocal1 | Opcode::GetArgCount => (0, 1),
         Opcode::StoreLocal | Opcode::StoreLocal0 | Opcode::StoreLocal1 => (1, 0),
@@ -643,6 +646,10 @@ mod tests {
         module.functions.push(Function {
             name: "test".to_string(),
             param_count: 0,
+            uses_js_this_slot: false,
+            is_constructible: false,
+            visible_length: 0,
+            is_strict_js: false,
             local_count: 1,
             code: writer.into_bytes(),
         });
@@ -657,6 +664,10 @@ mod tests {
         module.functions.push(Function {
             name: "test".to_string(),
             param_count: 0,
+            uses_js_this_slot: false,
+            is_constructible: false,
+            visible_length: 0,
+            is_strict_js: false,
             local_count: 0,
             code: vec![0xFF], // Invalid opcode (unassigned)
         });
@@ -676,6 +687,10 @@ mod tests {
         module.functions.push(Function {
             name: "test".to_string(),
             param_count: 0,
+            uses_js_this_slot: false,
+            is_constructible: false,
+            visible_length: 0,
+            is_strict_js: false,
             local_count: 0,
             code: writer.into_bytes(),
         });
@@ -695,6 +710,10 @@ mod tests {
         module.functions.push(Function {
             name: "test".to_string(),
             param_count: 0,
+            uses_js_this_slot: false,
+            is_constructible: false,
+            visible_length: 0,
+            is_strict_js: false,
             local_count: 2,
             code: writer.into_bytes(),
         });
@@ -716,6 +735,10 @@ mod tests {
         module.functions.push(Function {
             name: "test".to_string(),
             param_count: 2,
+            uses_js_this_slot: false,
+            is_constructible: false,
+            visible_length: 2,
+            is_strict_js: false,
             local_count: 3,
             code: writer.into_bytes(),
         });
@@ -734,6 +757,10 @@ mod tests {
         module.functions.push(Function {
             name: "test".to_string(),
             param_count: 0,
+            uses_js_this_slot: false,
+            is_constructible: false,
+            visible_length: 0,
+            is_strict_js: false,
             local_count: 0,
             code: writer.into_bytes(),
         });

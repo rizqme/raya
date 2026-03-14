@@ -99,6 +99,8 @@ pub enum IrConstant {
     Boolean(bool),
     /// Null value
     Null,
+    /// Undefined value
+    Undefined,
 }
 
 impl IrConstant {
@@ -141,6 +143,7 @@ impl std::fmt::Display for IrConstant {
             IrConstant::String(s) => write!(f, "\"{}\"", s.escape_default()),
             IrConstant::Boolean(b) => write!(f, "{}", b),
             IrConstant::Null => write!(f, "null"),
+            IrConstant::Undefined => write!(f, "undefined"),
         }
     }
 }

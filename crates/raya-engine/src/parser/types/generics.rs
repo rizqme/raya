@@ -611,12 +611,19 @@ impl<'a> GenericContext<'a> {
                     return Ok(false);
                 };
 
-                if p1.len() != p2.len() || f1.is_async != f2.is_async {
+                if f1.is_async != f2.is_async {
+                    return Ok(false);
+                }
+
+                let shared_len = p1.len().min(p2.len());
+                let longer_1_ok = p1.len() <= p2.len() || f1.min_params <= p2.len();
+                let longer_2_ok = p2.len() <= p1.len() || f2.min_params <= p1.len();
+                if !longer_1_ok || !longer_2_ok {
                     return Ok(false);
                 }
 
                 // Unify parameters
-                for (&p1, &p2) in p1.iter().zip(&p2) {
+                for (&p1, &p2) in p1.iter().zip(&p2).take(shared_len) {
                     if !self.unify(p1, p2)? {
                         return Ok(false);
                     }

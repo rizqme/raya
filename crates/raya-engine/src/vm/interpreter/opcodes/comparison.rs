@@ -10,6 +10,34 @@ use std::any::TypeId;
 
 impl<'a> Interpreter<'a> {
     #[inline]
+    fn numeric_value(value: Value) -> Option<f64> {
+        value.as_f64().or_else(|| value.as_i32().map(|i| i as f64))
+    }
+
+    #[inline]
+    fn values_equal(a: Value, b: Value) -> bool {
+        if let (Some(a_bool), Some(b_bool)) = (a.as_bool(), b.as_bool()) {
+            return a_bool == b_bool;
+        }
+
+        if let (Some(a_num), Some(b_num)) = (Self::numeric_value(a), Self::numeric_value(b)) {
+            return a_num == b_num;
+        }
+
+        if a.is_ptr() && b.is_ptr() && Self::ptr_is_raya_string(a) && Self::ptr_is_raya_string(b) {
+            let a_str = unsafe { a.as_ptr::<RayaString>() };
+            let b_str = unsafe { b.as_ptr::<RayaString>() };
+            if let (Some(a_ptr), Some(b_ptr)) = (a_str, b_str) {
+                let a_ref = unsafe { &*a_ptr.as_ptr() };
+                let b_ref = unsafe { &*b_ptr.as_ptr() };
+                return a_ref.data == b_ref.data;
+            }
+        }
+
+        a == b
+    }
+
+    #[inline]
     fn ptr_is_raya_string(value: Value) -> bool {
         let Some(ptr) = (unsafe { value.as_ptr::<u8>() }) else {
             return false;
@@ -36,17 +64,7 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let result = if a.is_f64() || b.is_f64() {
-                    let fa = a
-                        .as_f64()
-                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    let fb = b
-                        .as_f64()
-                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    fa == fb
-                } else {
-                    a.as_i32().unwrap_or(0) == b.as_i32().unwrap_or(0)
-                };
+                let result = Self::values_equal(a, b);
                 if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
@@ -62,17 +80,7 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let result = if a.is_f64() || b.is_f64() {
-                    let fa = a
-                        .as_f64()
-                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    let fb = b
-                        .as_f64()
-                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    fa != fb
-                } else {
-                    a.as_i32().unwrap_or(0) != b.as_i32().unwrap_or(0)
-                };
+                let result = !Self::values_equal(a, b);
                 if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
@@ -187,30 +195,38 @@ impl<'a> Interpreter<'a> {
             // Float Comparisons
             // =========================================================
             Opcode::Feq => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a == b)) {
+                let result = match (Self::numeric_value(a), Self::numeric_value(b)) {
+                    (Some(a_num), Some(b_num)) => a_num == b_num,
+                    _ => false,
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
             }
 
             Opcode::Fne => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a != b)) {
+                let result = match (Self::numeric_value(a), Self::numeric_value(b)) {
+                    (Some(a_num), Some(b_num)) => a_num != b_num,
+                    _ => true,
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -332,31 +348,12 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                // NaN != NaN per IEEE 754 — f64 comparison must use float semantics
-                let result = if a.is_f64() || b.is_f64() {
-                    let fa = a
-                        .as_f64()
-                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    let fb = b
-                        .as_f64()
-                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    fa == fb
-                } else if a.is_ptr()
-                    && b.is_ptr()
-                    && Self::ptr_is_raya_string(a)
-                    && Self::ptr_is_raya_string(b)
-                {
-                    let a_str = unsafe { a.as_ptr::<RayaString>() };
-                    let b_str = unsafe { b.as_ptr::<RayaString>() };
-                    if let (Some(a_ptr), Some(b_ptr)) = (a_str, b_str) {
-                        let a_ref = unsafe { &*a_ptr.as_ptr() };
-                        let b_ref = unsafe { &*b_ptr.as_ptr() };
-                        a_ref.data == b_ref.data
-                    } else {
-                        a == b
-                    }
+                let result = if opcode == Opcode::Eq && a.is_nullish() && b.is_nullish() {
+                    true
+                } else if opcode == Opcode::StrictEq && a.is_nullish() != b.is_nullish() {
+                    false
                 } else {
-                    a == b
+                    Self::values_equal(a, b)
                 };
                 if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
@@ -373,31 +370,12 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                // NaN != NaN per IEEE 754 — f64 comparison must use float semantics
-                let result = if a.is_f64() || b.is_f64() {
-                    let fa = a
-                        .as_f64()
-                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    let fb = b
-                        .as_f64()
-                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    fa != fb
-                } else if a.is_ptr()
-                    && b.is_ptr()
-                    && Self::ptr_is_raya_string(a)
-                    && Self::ptr_is_raya_string(b)
-                {
-                    let a_str = unsafe { a.as_ptr::<RayaString>() };
-                    let b_str = unsafe { b.as_ptr::<RayaString>() };
-                    if let (Some(a_ptr), Some(b_ptr)) = (a_str, b_str) {
-                        let a_ref = unsafe { &*a_ptr.as_ptr() };
-                        let b_ref = unsafe { &*b_ptr.as_ptr() };
-                        a_ref.data != b_ref.data
-                    } else {
-                        a != b
-                    }
+                let result = if opcode == Opcode::Ne && a.is_nullish() && b.is_nullish() {
+                    false
+                } else if opcode == Opcode::StrictNe && a.is_nullish() != b.is_nullish() {
+                    true
                 } else {
-                    a != b
+                    !Self::values_equal(a, b)
                 };
                 if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);

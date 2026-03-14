@@ -17,12 +17,30 @@ pub const OBJECT_GET_OWN_PROPERTY_DESCRIPTOR: u16 = 0x0005;
 pub const OBJECT_DEFINE_PROPERTIES: u16 = 0x0006;
 /// construct(typeHandle, ...args) for constructors loaded at runtime (e.g., imported classes)
 pub const OBJECT_CONSTRUCT_DYNAMIC_CLASS: u16 = 0x0007;
+/// ES SameValue comparison used by Object.is
+pub const OBJECT_SAME_VALUE: u16 = 0x0008;
 /// construct plain Object descriptor instance with node-compat fields
 pub const OBJECT_NEW: u16 = 0x0009;
 /// load ambient builtin global value by name (e.g., ArrayBuffer, Reflect, Intl)
 pub const OBJECT_GET_AMBIENT_GLOBAL: u16 = 0x000A;
 /// instanceof(obj, runtimeClassValue) using hidden type handles on imported/ambient classes
 pub const OBJECT_INSTANCE_OF_DYNAMIC_CLASS: u16 = 0x000B;
+/// delete target[key] using JS property semantics
+pub const OBJECT_DELETE_PROPERTY: u16 = 0x000C;
+/// allocate a Symbol instance for a well-known key string
+pub const OBJECT_WELL_KNOWN_SYMBOL: u16 = 0x000D;
+/// Function.prototype.call helper
+pub const FUNCTION_CALL_HELPER: u16 = 0x000E;
+/// Function.prototype.apply helper
+pub const FUNCTION_APPLY_HELPER: u16 = 0x000F;
+/// Function.prototype.bind helper
+pub const FUNCTION_BIND_HELPER: u16 = 0x0010;
+/// Object.getPrototypeOf helper
+pub const OBJECT_GET_PROTOTYPE_OF: u16 = 0x0011;
+/// Function constructor helper
+pub const FUNCTION_CONSTRUCTOR_HELPER: u16 = 0x0012;
+/// Call a parent constructor by runtime class name with an explicit `this`.
+pub const OBJECT_CALL_CONSTRUCTOR_BY_NAME: u16 = 0x0013;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -38,19 +56,19 @@ pub const ARRAY_SLICE: u16 = 0x0106;
 pub const ARRAY_CONCAT: u16 = 0x0107;
 pub const ARRAY_REVERSE: u16 = 0x0108;
 pub const ARRAY_JOIN: u16 = 0x0109;
-// Extended array methods (not yet implemented in VM)
-pub const ARRAY_LAST_INDEX_OF: u16 = 0x010A;
-pub const ARRAY_SORT: u16 = 0x010B;
-pub const ARRAY_MAP: u16 = 0x010C;
-pub const ARRAY_FILTER: u16 = 0x010D;
-pub const ARRAY_REDUCE: u16 = 0x010E;
-pub const ARRAY_FOR_EACH: u16 = 0x010F;
-pub const ARRAY_FIND: u16 = 0x0110;
-pub const ARRAY_FIND_INDEX: u16 = 0x0111;
-pub const ARRAY_EVERY: u16 = 0x0112;
-pub const ARRAY_SOME: u16 = 0x0113;
+pub const ARRAY_FOR_EACH: u16 = 0x010A;
+pub const ARRAY_FILTER: u16 = 0x010B;
+pub const ARRAY_FIND: u16 = 0x010C;
+pub const ARRAY_FIND_INDEX: u16 = 0x010D;
+pub const ARRAY_EVERY: u16 = 0x010E;
+pub const ARRAY_SOME: u16 = 0x010F;
+pub const ARRAY_LAST_INDEX_OF: u16 = 0x0110;
+pub const ARRAY_SORT: u16 = 0x0111;
+pub const ARRAY_MAP: u16 = 0x0112;
+pub const ARRAY_REDUCE: u16 = 0x0113;
 pub const ARRAY_FILL: u16 = 0x0114;
 pub const ARRAY_FLAT: u16 = 0x0115;
+pub const ARRAY_FROM: u16 = 0x0118;
 
 // ============================================================================
 // String (0x02xx) - Must match raya-core/src/builtin.rs
@@ -514,6 +532,14 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_NEW => "Object.new",
         OBJECT_GET_AMBIENT_GLOBAL => "Object.getAmbientGlobal",
         OBJECT_INSTANCE_OF_DYNAMIC_CLASS => "Object.instanceOfDynamicClass",
+        OBJECT_DELETE_PROPERTY => "Object.deleteProperty",
+        OBJECT_WELL_KNOWN_SYMBOL => "Object.wellKnownSymbol",
+        FUNCTION_CALL_HELPER => "Function.call",
+        FUNCTION_APPLY_HELPER => "Function.apply",
+        FUNCTION_BIND_HELPER => "Function.bind",
+        OBJECT_GET_PROTOTYPE_OF => "Object.getPrototypeOf",
+        FUNCTION_CONSTRUCTOR_HELPER => "Function.constructor",
+        OBJECT_CALL_CONSTRUCTOR_BY_NAME => "Object.callConstructorByName",
 
         // Array
         ARRAY_PUSH => "Array.push",

@@ -47,9 +47,23 @@ struct FunctionContext {
 }
 
 impl FunctionContext {
-    fn new(name: String, param_count: u8) -> Self {
+    fn new(
+        name: String,
+        param_count: u8,
+        uses_js_this_slot: bool,
+        is_constructible: bool,
+        visible_length: u8,
+        is_strict_js: bool,
+    ) -> Self {
         Self {
-            builder: FunctionBuilder::new(name, param_count),
+            builder: {
+                let mut builder = FunctionBuilder::new(name, param_count);
+                builder.set_uses_js_this_slot(uses_js_this_slot);
+                builder.set_is_constructible(is_constructible);
+                builder.set_visible_length(visible_length);
+                builder.set_is_strict_js(is_strict_js);
+                builder
+            },
             register_slots: FxHashMap::default(),
             next_slot: param_count as u16,
             block_positions: FxHashMap::default(),
@@ -259,6 +273,7 @@ impl IrCodeGenerator {
                 name: class.name.clone(),
                 field_count: class.field_count(),
                 parent_id: class.parent.map(|id| id.as_u32()),
+                parent_name: class.parent_name.clone(),
                 methods,
             };
             self.module_builder.add_class(class_def);
@@ -374,7 +389,15 @@ impl IrCodeGenerator {
         func: &IrFunction,
     ) -> CompileResult<(Function, Option<FunctionDebugInfo>)> {
         let param_count = func.param_count() as u8;
-        let mut ctx = FunctionContext::new(func.name.clone(), param_count);
+        let mut ctx =
+            FunctionContext::new(
+                func.name.clone(),
+                param_count,
+                func.uses_js_this_slot,
+                func.is_constructible,
+                func.visible_length as u8,
+                func.is_strict_js,
+            );
 
         // Pre-allocate slots for parameters
         for (i, param) in func.params.iter().enumerate() {
@@ -1420,6 +1443,9 @@ impl IrCodeGenerator {
             IrConstant::Null => {
                 ctx.emit(Opcode::ConstNull);
             }
+            IrConstant::Undefined => {
+                ctx.emit(Opcode::ConstUndefined);
+            }
         }
         Ok(())
     }
@@ -1518,13 +1544,20 @@ impl IrCodeGenerator {
         let is_int = left_ty == INT_TYPE_ID && right_ty == INT_TYPE_ID;
 
         let opcode = if (left_ty == 3 || right_ty == 3)
-            && matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
+            && matches!(
+                op,
+                BinaryOp::Equal
+                    | BinaryOp::NotEqual
+                    | BinaryOp::StrictEqual
+                    | BinaryOp::StrictNotEqual
+            )
         {
-            // Null comparison — use generic Eq/Ne. Seq returns false for null==null
-            // (neither is a pointer), so null checks must use raw bit comparison.
+            // Nullish comparison must use the generic JS equality opcodes.
             match op {
                 BinaryOp::Equal => Opcode::Eq,
                 BinaryOp::NotEqual => Opcode::Ne,
+                BinaryOp::StrictEqual => Opcode::StrictEq,
+                BinaryOp::StrictNotEqual => Opcode::StrictNe,
                 _ => unreachable!(),
             }
         } else if is_string {
@@ -1533,17 +1566,29 @@ impl IrCodeGenerator {
                 BinaryOp::Add | BinaryOp::Concat => Opcode::Sconcat,
                 BinaryOp::Equal => Opcode::Seq,
                 BinaryOp::NotEqual => Opcode::Sne,
+                BinaryOp::StrictEqual => Opcode::Seq,
+                BinaryOp::StrictNotEqual => Opcode::Sne,
                 BinaryOp::Less => Opcode::Slt,
                 BinaryOp::LessEqual => Opcode::Sle,
                 BinaryOp::Greater => Opcode::Sgt,
                 BinaryOp::GreaterEqual => Opcode::Sge,
                 _ => self.get_integer_opcode(op),
             }
-        } else if use_generic && matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-            // Use generic comparison opcodes for equality with null/unknown types
+        } else if use_generic
+            && matches!(
+                op,
+                BinaryOp::Equal
+                    | BinaryOp::NotEqual
+                    | BinaryOp::StrictEqual
+                    | BinaryOp::StrictNotEqual
+            )
+        {
+            // Use generic comparison opcodes for equality with unknown/object types.
             match op {
                 BinaryOp::Equal => Opcode::Eq,
                 BinaryOp::NotEqual => Opcode::Ne,
+                BinaryOp::StrictEqual => Opcode::StrictEq,
+                BinaryOp::StrictNotEqual => Opcode::StrictNe,
                 _ => unreachable!(),
             }
         } else if use_generic {
@@ -1579,6 +1624,8 @@ impl IrCodeGenerator {
                 BinaryOp::Add | BinaryOp::Concat => Opcode::Sconcat,
                 BinaryOp::Equal => Opcode::Seq,
                 BinaryOp::NotEqual => Opcode::Sne,
+                BinaryOp::StrictEqual => Opcode::Seq,
+                BinaryOp::StrictNotEqual => Opcode::Sne,
                 BinaryOp::Less => Opcode::Slt,
                 BinaryOp::LessEqual => Opcode::Sle,
                 BinaryOp::Greater => Opcode::Sgt,
@@ -1591,6 +1638,8 @@ impl IrCodeGenerator {
             match op {
                 BinaryOp::Equal => Opcode::Eq,
                 BinaryOp::NotEqual => Opcode::Ne,
+                BinaryOp::StrictEqual => Opcode::StrictEq,
+                BinaryOp::StrictNotEqual => Opcode::StrictNe,
                 // For other comparison ops with generic types, fall back to integer
                 // (this may need to be extended for full generic comparison support)
                 _ => self.get_integer_opcode(op),
@@ -1612,6 +1661,8 @@ impl IrCodeGenerator {
             BinaryOp::Pow => Opcode::Fpow,
             BinaryOp::Equal => Opcode::Feq,
             BinaryOp::NotEqual => Opcode::Fne,
+            BinaryOp::StrictEqual => Opcode::Feq,
+            BinaryOp::StrictNotEqual => Opcode::Fne,
             BinaryOp::Less => Opcode::Flt,
             BinaryOp::LessEqual => Opcode::Fle,
             BinaryOp::Greater => Opcode::Fgt,
@@ -1640,6 +1691,8 @@ impl IrCodeGenerator {
             BinaryOp::Pow => Opcode::Ipow,
             BinaryOp::Equal => Opcode::Ieq,
             BinaryOp::NotEqual => Opcode::Ine,
+            BinaryOp::StrictEqual => Opcode::Ieq,
+            BinaryOp::StrictNotEqual => Opcode::Ine,
             BinaryOp::Less => Opcode::Ilt,
             BinaryOp::LessEqual => Opcode::Ile,
             BinaryOp::Greater => Opcode::Igt,

@@ -623,6 +623,8 @@ pub enum BinaryOp {
     // Comparison
     Equal,
     NotEqual,
+    StrictEqual,
+    StrictNotEqual,
     Less,
     LessEqual,
     Greater,
@@ -664,6 +666,8 @@ impl BinaryOp {
             self,
             BinaryOp::Equal
                 | BinaryOp::NotEqual
+                | BinaryOp::StrictEqual
+                | BinaryOp::StrictNotEqual
                 | BinaryOp::Less
                 | BinaryOp::LessEqual
                 | BinaryOp::Greater
@@ -688,6 +692,8 @@ impl std::fmt::Display for BinaryOp {
             BinaryOp::Pow => "**",
             BinaryOp::Equal => "==",
             BinaryOp::NotEqual => "!=",
+            BinaryOp::StrictEqual => "===",
+            BinaryOp::StrictNotEqual => "!==",
             BinaryOp::Less => "<",
             BinaryOp::LessEqual => "<=",
             BinaryOp::Greater => ">",

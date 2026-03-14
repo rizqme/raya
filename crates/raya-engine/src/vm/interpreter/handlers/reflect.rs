@@ -17,7 +17,32 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
+    fn reflect_array_index(property_key: &str) -> Option<usize> {
+        if property_key.is_empty() {
+            return None;
+        }
+        if property_key != "0" && property_key.starts_with('0') {
+            return None;
+        }
+        let index = property_key.parse::<u32>().ok()?;
+        if index == u32::MAX {
+            return None;
+        }
+        if index.to_string() != property_key {
+            return None;
+        }
+        Some(index as usize)
+    }
+
     fn reflect_object_ptr(value: Value) -> Option<NonNull<Object>> {
+        if !value.is_ptr() {
+            return None;
+        }
+        let raw_ptr = unsafe { value.as_ptr::<u8>() }?;
+        let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+        if header.type_id() != std::any::TypeId::of::<Object>() {
+            return None;
+        }
         unsafe { value.as_ptr::<Object>() }
     }
 
@@ -66,6 +91,20 @@ impl<'a> Interpreter<'a> {
             }
         }
 
+        if let Some(global_obj) = self.builtin_global_value("globalThis") {
+            let obj_value = unsafe { Value::from_ptr(NonNull::new(obj as *const Object as *mut Object).expect("global object ptr")) };
+            if global_obj.raw() == obj_value.raw() {
+                for name in self.builtin_global_slots.read().keys() {
+                    if self.fixed_property_deleted(obj_value, name) {
+                        continue;
+                    }
+                    if !field_names.iter().any(|existing| existing == name) {
+                        field_names.push(name.clone());
+                    }
+                }
+            }
+        }
+
         field_names
     }
 
@@ -82,22 +121,106 @@ impl<'a> Interpreter<'a> {
     }
 
     fn reflect_property_value(&self, target: Value, property_key: &str) -> Option<Value> {
-        let obj_ptr = Self::reflect_object_ptr(target)?;
-        let obj = unsafe { obj_ptr.as_ref() };
-        self.get_object_named_field_value(obj, property_key)
+        if let Some(value) = self.builtin_global_property_value(target, property_key) {
+            return Some(value);
+        }
+        let callable_like = self.reflect_is_callable_value(target);
+        if let Some(value) = self.get_field_value_by_name(target, property_key) {
+            return Some(value);
+        }
+        if Self::reflect_object_ptr(target).is_some() {
+            if !callable_like {
+                return None;
+            }
+        }
+        if !callable_like {
+            return None;
+        }
+        self.descriptor_data_value(target, property_key)
+            .or_else(|| self.callable_property_value(target, property_key))
     }
 
-    fn reflect_set_property_value(&self, target: Value, property_key: &str, value: Value) -> bool {
-        let Some(mut obj_ptr) = Self::reflect_object_ptr(target) else {
-            return false;
-        };
-        let obj = unsafe { obj_ptr.as_mut() };
-        if let Some(index) = self.get_object_named_field_index(obj, property_key) {
-            return obj.set_field(index, value).is_ok();
+    fn reflect_set_property_value(
+        &self,
+        target: Value,
+        property_key: &str,
+        value: Value,
+    ) -> Result<bool, VmError> {
+        let debug_array_prop = std::env::var("RAYA_DEBUG_ARRAY_PROP").is_ok();
+        if debug_array_prop {
+            eprintln!(
+                "[reflect.set] target={:#x} is_ptr={} key={} value={:#x}",
+                target.raw(),
+                target.is_ptr(),
+                property_key,
+                value.raw()
+            );
         }
-        obj.ensure_dyn_map()
-            .insert(self.intern_prop_key(property_key), value);
-        true
+        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target)
+        {
+            if property_key == "length" {
+                self.set_array_length_value(target, value)?;
+                return Ok(true);
+            }
+            if let Some(index) = Self::reflect_array_index(property_key) {
+                let array = unsafe { &mut *array_ptr.as_ptr() };
+                if index >= array.elements.len() {
+                    array.resize_holey(index + 1);
+                }
+                let _ = array.set(index, value);
+                return Ok(true);
+            }
+        }
+        if self.set_builtin_global_property(target, property_key, value) {
+            self.sync_descriptor_value(target, property_key, value);
+            return Ok(true);
+        }
+        let callable_like = self.reflect_is_callable_value(target);
+        if callable_like {
+            if let Some((writable, _, _)) =
+                self.callable_virtual_property_descriptor(target, property_key)
+            {
+                                if !writable {
+                                    return Ok(false);
+                                }
+                            }
+                            if self.descriptor_accessor(target, property_key, "get").is_some()
+                                && !self.is_field_writable(target, property_key)
+                            {
+                                return Ok(false);
+                            }
+                            if !self.is_field_writable(target, property_key) {
+                                return Ok(false);
+                            }
+                        }
+                        if let Some(mut obj_ptr) = Self::reflect_object_ptr(target) {
+            if debug_array_prop {
+                eprintln!("[reflect.set] object path");
+            }
+            let obj = unsafe { obj_ptr.as_mut() };
+            if let Some(index) = self.get_field_index_for_value(target, property_key) {
+                let updated = obj.set_field(index, value).is_ok();
+                if updated {
+                    self.sync_descriptor_value(target, property_key, value);
+                }
+                return Ok(updated);
+            }
+            obj.ensure_dyn_map()
+                .insert(self.intern_prop_key(property_key), value);
+            self.sync_descriptor_value(target, property_key, value);
+            return Ok(true);
+        }
+        if !callable_like && !target.is_ptr() {
+            if debug_array_prop {
+                eprintln!("[reflect.set] rejecting non-pointer target");
+            }
+            return Ok(false);
+        }
+        if debug_array_prop {
+            eprintln!("[reflect.set] metadata/property path");
+        }
+        self.define_data_property_on_target(target, property_key, value, true, true, true)?;
+        Ok(true)
     }
 
     fn reflect_method_slot_for_object(&self, obj: &Object, property_key: &str) -> Option<usize> {
@@ -108,7 +231,10 @@ impl<'a> Interpreter<'a> {
             .and_then(|meta| meta.get_method_index(property_key))
     }
 
-    fn reflect_is_callable_value(value: Value) -> bool {
+    fn reflect_is_callable_value(&self, value: Value) -> bool {
+        if self.callable_function_info(value).is_some() {
+            return true;
+        }
         if !value.is_ptr() {
             return false;
         }
@@ -121,15 +247,28 @@ impl<'a> Interpreter<'a> {
     }
 
     fn reflect_has_property(&self, target: Value, property_key: &str) -> bool {
-        let Some(obj_ptr) = Self::reflect_object_ptr(target) else {
-            return false;
-        };
-        let obj = unsafe { obj_ptr.as_ref() };
-        if self.has_object_named_field(obj, property_key) {
-            return true;
+        let callable_like = self.reflect_is_callable_value(target);
+        if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
+            let obj = unsafe { obj_ptr.as_ref() };
+            if self.get_field_value_by_name(target, property_key).is_some() {
+                return true;
+            }
+            let key = self.intern_prop_key(property_key);
+            if obj.dyn_map().is_some_and(|map| map.contains_key(&key)) {
+                return true;
+            }
+            if self.reflect_method_slot_for_object(obj, property_key).is_some() {
+                return true;
+            }
+            if !callable_like {
+                return false;
+            }
         }
-        self.reflect_method_slot_for_object(obj, property_key)
-            .is_some()
+        if !callable_like {
+            return false;
+        }
+        self.descriptor_data_value(target, property_key).is_some()
+            || self.callable_property_value(target, property_key).is_some()
     }
 
     fn reflect_alloc_string_value(&self, value: impl Into<String>) -> Value {
@@ -271,6 +410,10 @@ impl<'a> Interpreter<'a> {
             let s = unsafe { &*s_ptr.unwrap().as_ptr() };
             Ok(s.data.clone())
         };
+        let mut get_property_key = |v: Value, op_name: &str| -> Result<String, VmError> {
+            let (key, _) = self.property_key_parts_with_context(v, op_name, task, module)?;
+            key.ok_or_else(|| VmError::TypeError(format!("{op_name}: expected property key")))
+        };
 
         let result = match method_id {
             reflect::DEFINE_METADATA => {
@@ -400,7 +543,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let target = args[0];
-                let property_key = get_string(args[1])?;
+                let property_key = get_property_key(args[1], "Reflect.get")?;
 
                 let metadata = self.metadata.lock();
                 let keys = metadata.get_metadata_keys_property(target, &property_key);
@@ -588,7 +731,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let target = args[0];
-                let property_key = get_string(args[1])?;
+                let property_key = get_property_key(args[1], "Reflect.set")?;
 
                 if !target.is_ptr() {
                     return Err(VmError::TypeError(
@@ -652,7 +795,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let target = args[0];
-                let property_key = get_string(args[1])?;
+                let property_key = get_property_key(args[1], "Reflect.has")?;
                 let value = args[2];
 
                 if !target.is_ptr() {
@@ -661,7 +804,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
 
-                Value::bool(self.reflect_set_property_value(target, &property_key, value))
+                Value::bool(self.reflect_set_property_value(target, &property_key, value)?)
             }
 
             reflect::HAS => {
@@ -672,7 +815,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let target = args[0];
-                let property_key = get_string(args[1])?;
+                let property_key = get_property_key(args[1], "Reflect.getFieldInfo")?;
 
                 Value::bool(self.reflect_has_property(target, &property_key))
             }
@@ -949,7 +1092,7 @@ impl<'a> Interpreter<'a> {
                             .is_some()
                             || self
                                 .reflect_property_value(target, &method_name)
-                                .is_some_and(Self::reflect_is_callable_value)
+                                .is_some_and(|value| self.reflect_is_callable_value(value))
                     })
                     .unwrap_or(false);
                 Value::bool(has_method)
@@ -982,24 +1125,121 @@ impl<'a> Interpreter<'a> {
             // ===== Phase 5: Object Creation =====
             reflect::CONSTRUCT => {
                 // construct(typeRef, ...args) -> create instance
+                // JS mode also routes Reflect.construct(target, args, newTarget) here.
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
                         "construct requires at least 1 argument (typeRef)".to_string(),
                     ));
                 }
-                let nominal_type_id = self.reflect_require_nominal_type_id(args[0], "construct")?;
+                if self.callable_function_info(args[0]).is_some() || self.unwrapped_proxy_like(args[0]).is_some() {
+                    let target = args[0];
+                    let arg_list = args.get(1).copied().unwrap_or(Value::null());
+                    let new_target = args
+                        .get(2)
+                        .copied()
+                        .filter(|value| !value.is_null() && !value.is_undefined())
+                        .unwrap_or(target);
 
-                let (layout_id, field_count) =
-                    self.nominal_allocation(nominal_type_id).ok_or_else(|| {
-                        VmError::RuntimeError(format!("Class {} not found", nominal_type_id))
+                    if self.callable_function_info(new_target).is_none()
+                        && self.unwrapped_proxy_like(new_target).is_none()
+                    {
+                        return Err(VmError::TypeError(
+                            "Reflect.construct newTarget must be a constructor".to_string(),
+                        ));
+                    }
+
+                    let nominal_type_id = self.constructor_nominal_type_id(target).ok_or_else(|| {
+                        VmError::TypeError(
+                            "Reflect.construct target must be a supported constructor".to_string(),
+                        )
                     })?;
+                    let ctor_args = self.collect_apply_arguments(arg_list)?;
+                    let (layout_id, field_count) =
+                        self.nominal_allocation(nominal_type_id).ok_or_else(|| {
+                            VmError::RuntimeError(format!("Class {} not found", nominal_type_id))
+                        })?;
 
-                // Allocate new object
-                let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
-                let gc_ptr = self.gc.lock().allocate(obj);
-                unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                    let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
+                    let gc_ptr = self.gc.lock().allocate(obj);
+                    let obj_val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
+                    self.ephemeral_gc_roots.write().push(obj_val);
 
-                // Note: Constructor call with args requires more work (call constructor function)
+                    let prototype = match self
+                        .try_proxy_like_get_property(new_target, "prototype", task, module)?
+                    {
+                        Some(prototype) if self.is_js_object_value(prototype) => {
+                            Some(prototype)
+                        }
+                        _ => self.constructor_prototype_value(target),
+                    };
+                    if let Some(prototype) = prototype {
+                        self.set_constructed_object_prototype_from_value(obj_val, prototype);
+                    }
+
+                    let (constructor_id, constructor_module) = {
+                        let classes = self.classes.read();
+                        let class = classes.get_class(nominal_type_id).ok_or_else(|| {
+                            VmError::RuntimeError(format!("Class {} not found", nominal_type_id))
+                        })?;
+                        (class.get_constructor(), class.module.clone())
+                    };
+
+                    if let Some(constructor_id) = constructor_id {
+                        let closure = if let Some(module) = constructor_module {
+                            Closure::with_module(constructor_id, Vec::new(), module)
+                        } else {
+                            Closure::new(constructor_id, Vec::new())
+                        };
+                        let closure_ptr = self.gc.lock().allocate(closure);
+                        let closure_val = unsafe {
+                            Value::from_ptr(
+                                std::ptr::NonNull::new(closure_ptr.as_ptr())
+                                    .expect("constructor closure ptr"),
+                            )
+                        };
+                        self.ephemeral_gc_roots.write().push(closure_val);
+
+                        let mut invoke_args = Vec::with_capacity(ctor_args.len() + 1);
+                        invoke_args.push(obj_val);
+                        invoke_args.extend(ctor_args);
+                        let invoke_result =
+                            self.invoke_callable_sync(closure_val, &invoke_args, task, module);
+                        {
+                            let mut ephemeral = self.ephemeral_gc_roots.write();
+                            if let Some(index) =
+                                ephemeral.iter().rposition(|candidate| *candidate == closure_val)
+                            {
+                                ephemeral.swap_remove(index);
+                            }
+                        }
+                        invoke_result?;
+                    }
+
+                    {
+                        let mut ephemeral = self.ephemeral_gc_roots.write();
+                        if let Some(index) =
+                            ephemeral.iter().rposition(|candidate| *candidate == obj_val)
+                        {
+                            ephemeral.swap_remove(index);
+                        }
+                    }
+
+                    obj_val
+                } else {
+                    let nominal_type_id =
+                        self.reflect_require_nominal_type_id(args[0], "construct")?;
+
+                    let (layout_id, field_count) =
+                        self.nominal_allocation(nominal_type_id).ok_or_else(|| {
+                            VmError::RuntimeError(format!("Class {} not found", nominal_type_id))
+                        })?;
+
+                    let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
+                    let gc_ptr = self.gc.lock().allocate(obj);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                }
             }
 
             reflect::ALLOCATE => {
@@ -1071,7 +1311,8 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let value = args[0];
-                let is_string = value.is_ptr() && unsafe { value.as_ptr::<RayaString>().is_some() };
+                let is_string =
+                    crate::vm::interpreter::opcodes::native::checked_string_ptr(value).is_some();
                 Value::bool(is_string)
             }
 
@@ -1114,7 +1355,8 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let value = args[0];
-                let is_array = value.is_ptr() && unsafe { value.as_ptr::<Array>().is_some() };
+                let is_array =
+                    crate::vm::interpreter::opcodes::native::checked_array_ptr(value).is_some();
                 Value::bool(is_array)
             }
 
@@ -1125,7 +1367,8 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let value = args[0];
-                let is_func = value.is_ptr() && unsafe { value.as_ptr::<Closure>().is_some() };
+                let is_func =
+                    crate::vm::interpreter::opcodes::native::checked_closure_ptr(value).is_some();
                 Value::bool(is_func)
             }
 
@@ -1136,7 +1379,8 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let value = args[0];
-                let is_obj = value.is_ptr() && unsafe { value.as_ptr::<Object>().is_some() };
+                let is_obj =
+                    crate::vm::interpreter::opcodes::native::checked_object_ptr(value).is_some();
                 Value::bool(is_obj)
             }
 
@@ -1863,6 +2107,9 @@ impl<'a> Interpreter<'a> {
                 if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
                     let obj = unsafe { obj_ptr.as_ref() };
                     for name in self.reflect_object_field_names(obj) {
+                        if !self.is_property_enumerable(target, &name) {
+                            continue;
+                        }
                         let s = RayaString::new(name);
                         let s_ptr = self.gc.lock().allocate(s);
                         arr.push(unsafe {

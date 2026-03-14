@@ -709,6 +709,10 @@ impl ModuleCompiler {
             bytecode.functions.push(BytecodeFunction {
                 name: format!("__decl_stub_{}", exported.name),
                 param_count: 0,
+                uses_js_this_slot: false,
+                is_constructible: false,
+                visible_length: 0,
+                is_strict_js: false,
                 local_count: 0,
                 code: vec![Opcode::ConstNull.to_u8(), Opcode::Return.to_u8()],
             });
@@ -730,6 +734,7 @@ impl ModuleCompiler {
                 name: exported.name.clone(),
                 field_count: 0,
                 parent_id: None,
+                parent_name: None,
                 methods: Vec::new(),
             });
             bytecode.exports.push(Export {
@@ -1036,9 +1041,11 @@ impl ModuleCompiler {
         // Compile
         let allow_unresolved_runtime_fallback =
             !matches!(self.checker_mode, TypeSystemMode::Raya);
+        let js_compat_lowering = !matches!(self.checker_mode, TypeSystemMode::Raya);
         let mut compiler = Compiler::new(type_ctx, &interner)
             .with_expr_types(check_result.expr_types)
             .with_type_annotation_types(check_result.type_annotation_types)
+            .with_js_this_binding_compat(js_compat_lowering)
             .with_allow_unresolved_runtime_fallback(allow_unresolved_runtime_fallback);
         if let Some(ref jsx_opts) = self.jsx_options {
             compiler = compiler.with_jsx(jsx_opts.clone());

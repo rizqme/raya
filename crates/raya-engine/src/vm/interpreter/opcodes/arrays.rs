@@ -107,15 +107,16 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                if !arr_val.is_ptr() {
+                let Some(arr_ptr) =
+                    crate::vm::interpreter::opcodes::native::checked_array_ptr(arr_val)
+                else {
                     return OpcodeResult::Error(VmError::TypeError("Expected array".to_string()));
+                };
+                let arr = unsafe { &mut *arr_ptr.as_ptr() };
+                if index >= arr.elements.len() {
+                    arr.resize_holey(index + 1);
                 }
-
-                let arr_ptr = unsafe { arr_val.as_ptr::<Array>() };
-                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
-                if let Err(e) = arr.set(index, value) {
-                    return OpcodeResult::Error(VmError::RuntimeError(e));
-                }
+                let _ = arr.set(index, value);
                 OpcodeResult::Continue
             }
 
@@ -131,7 +132,13 @@ impl<'a> Interpreter<'a> {
 
                 let arr_ptr = unsafe { arr_val.as_ptr::<Array>() };
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                if let Err(e) = stack.push(Value::i32(arr.len() as i32)) {
+                let len = arr.len();
+                let len_value = if len <= i32::MAX as usize {
+                    Value::i32(len as i32)
+                } else {
+                    Value::f64(len as f64)
+                };
+                if let Err(e) = stack.push(len_value) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue

@@ -44,7 +44,12 @@ impl<'a> Interpreter<'a> {
             JSView::Arr(ptr) => {
                 let arr = unsafe { &*ptr };
                 if member_name == "length" {
-                    Some(Value::i32(arr.len() as i32))
+                    let len = arr.len();
+                    Some(if len <= i32::MAX as usize {
+                        Value::i32(len as i32)
+                    } else {
+                        Value::f64(len as f64)
+                    })
                 } else {
                     super::types::builtin_handle_native_method_id(receiver, &member_name)
                         .map(|native_id| bound_native(self, native_id))
@@ -65,7 +70,11 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn nominal_method_slot_by_name(&self, nominal_type_id: usize, method_name: &str) -> Option<usize> {
+    pub(in crate::vm::interpreter) fn nominal_method_slot_by_name(
+        &self,
+        nominal_type_id: usize,
+        method_name: &str,
+    ) -> Option<usize> {
         let classes = self.classes.read();
         let class = classes.get_class(nominal_type_id)?;
         let module = class.module.as_ref()?;
@@ -79,7 +88,7 @@ impl<'a> Interpreter<'a> {
     }
 
     pub(in crate::vm::interpreter) fn bound_method_value_for_slot(
-        &mut self,
+        &self,
         receiver: Value,
         method_slot: usize,
     ) -> Result<Value, VmError> {
@@ -117,6 +126,7 @@ impl<'a> Interpreter<'a> {
         callable: Value,
         stack: &mut Stack,
         args: &[Value],
+        explicit_this: Option<Value>,
         return_action: ReturnAction,
     ) -> Result<Option<OpcodeResult>, VmError> {
         if !callable.is_ptr() {
@@ -142,12 +152,20 @@ impl<'a> Interpreter<'a> {
         if header.type_id() == std::any::TypeId::of::<Closure>() {
             let closure_module =
                 unsafe { &*callable.as_ptr::<Closure>().unwrap().as_ptr() }.module();
+            let mut arg_count = args.len();
+            if self.callable_uses_js_this_slot(callable) {
+                stack.push(self.js_this_value_for_callable(callable, explicit_this))?;
+                arg_count += 1;
+            } else if let Some(this_arg) = explicit_this {
+                stack.push(this_arg)?;
+                arg_count += 1;
+            }
             for arg in args {
                 stack.push(*arg)?;
             }
             return Ok(Some(OpcodeResult::PushFrame {
                 func_id: unsafe { &*callable.as_ptr::<Closure>().unwrap().as_ptr() }.func_id(),
-                arg_count: args.len(),
+                arg_count,
                 is_closure: true,
                 closure_val: Some(callable),
                 module: closure_module,
@@ -208,13 +226,8 @@ impl<'a> Interpreter<'a> {
         if from_metadata.is_some() {
             return from_metadata;
         }
-        if let Some(name) = self
-            .layout_field_names_for_object(obj)
+        self.layout_field_names_for_object(obj)
             .and_then(|names| names.get(field_offset).cloned())
-        {
-            return Some(name);
-        }
-        Self::legacy_field_name_for_layout(field_offset, obj.field_count())
     }
 
     fn field_index_for_value(&self, obj_val: Value, field_name: &str) -> Option<usize> {
@@ -228,13 +241,8 @@ impl<'a> Interpreter<'a> {
         if from_metadata.is_some() {
             return from_metadata;
         }
-        if let Some(index) = self
-            .layout_field_names_for_object(obj)
+        self.layout_field_names_for_object(obj)
             .and_then(|names| names.iter().position(|name| name == field_name))
-        {
-            return Some(index);
-        }
-        Self::legacy_field_index_for_layout(field_name, obj.field_count())
     }
 
     pub(in crate::vm::interpreter) fn build_shape_slot_map_for_object(
@@ -408,7 +416,8 @@ impl<'a> Interpreter<'a> {
         let Some(descriptor) =
             metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
         else {
-            return true;
+            drop(metadata);
+            return !self.is_callable_virtual_property(obj_val, field_name);
         };
         let Some(writable) = self.get_value_field_by_name(descriptor, "writable") else {
             return true;
@@ -439,6 +448,14 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    pub(crate) fn descriptor_data_value(&self, obj_val: Value, field_name: &str) -> Option<Value> {
+        let descriptor = {
+            let metadata = self.metadata.lock();
+            metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
+        }?;
+        self.get_value_field_by_name(descriptor, "value")
+    }
+
     pub(crate) fn descriptor_accessor(
         &self,
         obj_val: Value,
@@ -448,12 +465,15 @@ impl<'a> Interpreter<'a> {
         let descriptor = {
             let metadata = self.metadata.lock();
             metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
-        }?;
-        let accessor = self.get_value_field_by_name(descriptor, accessor_name)?;
-        if accessor.is_null() {
-            return None;
+        };
+        if let Some(descriptor) = descriptor {
+            let accessor = self.get_value_field_by_name(descriptor, accessor_name)?;
+            if accessor.is_null() || accessor.is_undefined() {
+                return None;
+            }
+            return Some(accessor);
         }
-        Some(accessor)
+        self.callable_virtual_accessor_value(obj_val, field_name, accessor_name)
     }
 
     pub(in crate::vm::interpreter) fn ensure_object_receiver(
@@ -587,6 +607,7 @@ impl<'a> Interpreter<'a> {
                             getter,
                             stack,
                             &[],
+                            Some(actual_obj),
                             ReturnAction::PushReturnValue,
                         ) {
                             Ok(Some(frame)) => return frame,
@@ -698,6 +719,7 @@ impl<'a> Interpreter<'a> {
                             getter,
                             stack,
                             &[],
+                            Some(actual_obj),
                             ReturnAction::PushReturnValue,
                         ) {
                             Ok(Some(frame)) => return frame,
@@ -769,6 +791,7 @@ impl<'a> Interpreter<'a> {
                             setter,
                             stack,
                             &[value],
+                            Some(actual_obj),
                             ReturnAction::Discard,
                         ) {
                             Ok(Some(frame)) => return frame,
@@ -861,6 +884,7 @@ impl<'a> Interpreter<'a> {
                             setter,
                             stack,
                             &[value],
+                            Some(actual_obj),
                             ReturnAction::Discard,
                         ) {
                             Ok(Some(frame)) => return frame,

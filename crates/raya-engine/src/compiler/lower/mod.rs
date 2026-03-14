@@ -295,6 +295,8 @@ struct ClassInfo {
     static_methods: Vec<StaticMethodInfo>,
     /// Parent class (for inheritance)
     parent_class: Option<NominalTypeId>,
+    /// Runtime parent class name for ambient/imported parents not declared locally.
+    parent_runtime_name: Option<String>,
     /// Type arg substitutions for generic parent (param_name → concrete TypeId)
     extends_type_subs: Option<std::collections::HashMap<String, TypeId>>,
     /// Number of vtable method slots (including inherited)
@@ -628,6 +630,8 @@ pub struct Lowerer<'a> {
     specialized_function_cache: FxHashMap<String, FunctionId>,
     /// JS-compatible method extraction mode (`obj.method` is unbound).
     js_this_binding_compat: bool,
+    /// Current inherited JS strictness context.
+    js_strict_context: bool,
     /// Whether unresolved member/call paths may lower to runtime late-bound dispatch.
     allow_unresolved_runtime_fallback: bool,
     /// Inner type for RefCell-wrapped variables (for preserving type info through loads)
@@ -638,7 +642,7 @@ pub struct Lowerer<'a> {
 
 /// Recursively extract all bound identifier names from a pattern.
 /// Handles Identifier, Array destructuring, Object destructuring, and Rest patterns.
-fn collect_pattern_names(pattern: &ast::Pattern, names: &mut FxHashSet<Symbol>) {
+pub(super) fn collect_pattern_names(pattern: &ast::Pattern, names: &mut FxHashSet<Symbol>) {
     match pattern {
         Pattern::Identifier(id) => {
             names.insert(id.name);
@@ -667,7 +671,7 @@ fn collect_pattern_names(pattern: &ast::Pattern, names: &mut FxHashSet<Symbol>) 
 
 /// Recursively collect all local variable names from statements, including nested scopes.
 /// Handles all pattern types and binding forms (destructuring, catch params, function names, etc.).
-fn collect_block_local_names(stmts: &[ast::Statement], locals: &mut FxHashSet<Symbol>) {
+pub(super) fn collect_block_local_names(stmts: &[ast::Statement], locals: &mut FxHashSet<Symbol>) {
     for stmt in stmts {
         match stmt {
             Statement::VariableDecl(var) => {
@@ -741,6 +745,98 @@ fn collect_block_local_names(stmts: &[ast::Statement], locals: &mut FxHashSet<Sy
     }
 }
 
+pub(super) fn collect_function_scoped_var_names(
+    stmts: &[ast::Statement],
+    names: &mut FxHashSet<Symbol>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Statement::VariableDecl(var) => {
+                if var.kind == ast::VariableKind::Var {
+                    collect_pattern_names(&var.pattern, names);
+                }
+            }
+            Statement::For(for_stmt) => {
+                if let Some(ast::ForInit::VariableDecl(var)) = &for_stmt.init {
+                    if var.kind == ast::VariableKind::Var {
+                        collect_pattern_names(&var.pattern, names);
+                    }
+                }
+                recurse_into_function_scoped_var_body(&for_stmt.body, names);
+            }
+            Statement::ForOf(for_of) => {
+                if let ast::ForOfLeft::VariableDecl(var) = &for_of.left {
+                    if var.kind == ast::VariableKind::Var {
+                        collect_pattern_names(&var.pattern, names);
+                    }
+                }
+                recurse_into_function_scoped_var_body(&for_of.body, names);
+            }
+            Statement::ForIn(for_in) => {
+                if let ast::ForOfLeft::VariableDecl(var) = &for_in.left {
+                    if var.kind == ast::VariableKind::Var {
+                        collect_pattern_names(&var.pattern, names);
+                    }
+                }
+                recurse_into_function_scoped_var_body(&for_in.body, names);
+            }
+            Statement::While(while_stmt) => {
+                recurse_into_function_scoped_var_body(&while_stmt.body, names);
+            }
+            Statement::DoWhile(do_while) => {
+                recurse_into_function_scoped_var_body(&do_while.body, names);
+            }
+            Statement::If(if_stmt) => {
+                recurse_into_function_scoped_var_body(&if_stmt.then_branch, names);
+                if let Some(else_branch) = &if_stmt.else_branch {
+                    recurse_into_function_scoped_var_body(else_branch, names);
+                }
+            }
+            Statement::Block(block) => {
+                collect_function_scoped_var_names(&block.statements, names);
+            }
+            Statement::Try(try_stmt) => {
+                collect_function_scoped_var_names(&try_stmt.body.statements, names);
+                if let Some(catch_clause) = &try_stmt.catch_clause {
+                    collect_function_scoped_var_names(&catch_clause.body.statements, names);
+                }
+                if let Some(finally_clause) = &try_stmt.finally_clause {
+                    collect_function_scoped_var_names(&finally_clause.statements, names);
+                }
+            }
+            Statement::Switch(switch_stmt) => {
+                for case in &switch_stmt.cases {
+                    collect_function_scoped_var_names(&case.consequent, names);
+                }
+            }
+            Statement::Labeled(labeled) => {
+                recurse_into_function_scoped_var_body(&labeled.body, names);
+            }
+            Statement::FunctionDecl(_)
+            | Statement::ClassDecl(_)
+            | Statement::Return(_)
+            | Statement::Yield(_)
+            | Statement::Expression(_)
+            | Statement::Break(_)
+            | Statement::Continue(_)
+            | Statement::Throw(_)
+            | Statement::ImportDecl(_)
+            | Statement::ExportDecl(_)
+            | Statement::TypeAliasDecl(_)
+            | Statement::Debugger(_)
+            | Statement::Empty(_) => {}
+        }
+    }
+}
+
+fn recurse_into_function_scoped_var_body(body: &ast::Statement, names: &mut FxHashSet<Symbol>) {
+    if let Statement::Block(block) = body {
+        collect_function_scoped_var_names(&block.statements, names);
+    } else {
+        collect_function_scoped_var_names(std::slice::from_ref(body), names);
+    }
+}
+
 fn recurse_into_body(body: &ast::Statement, locals: &mut FxHashSet<Symbol>) {
     if let Statement::Block(block) = body {
         collect_block_local_names(&block.statements, locals);
@@ -790,32 +886,38 @@ impl<'a> ArrowCaptureFinder<'a> {
 
 impl Visitor for ArrowCaptureFinder<'_> {
     fn visit_expression(&mut self, expr: &Expression) {
-        if let Expression::Arrow(arrow) = expr {
-            // Arrow function — analyze body for captures
-            match &arrow.body {
-                ast::ArrowBody::Expression(body_expr) => {
-                    let mut closure_locals = FxHashSet::default();
-                    for param in &arrow.params {
-                        collect_pattern_names(&param.pattern, &mut closure_locals);
-                    }
-                    let mut analyzer = CapturedRefAnalyzer {
-                        outer_locals: self.outer_locals,
-                        arrow_locals: &closure_locals,
-                        refcell_vars: self.refcell_vars,
-                        loop_captured_vars: self.loop_captured_vars,
-                    };
-                    analyzer.visit_expression(body_expr);
-                    for param in &arrow.params {
-                        if let Some(default_expr) = &param.default_value {
-                            analyzer.visit_expression(default_expr);
+        match expr {
+            Expression::Arrow(arrow) => {
+                match &arrow.body {
+                    ast::ArrowBody::Expression(body_expr) => {
+                        let mut closure_locals = FxHashSet::default();
+                        for param in &arrow.params {
+                            collect_pattern_names(&param.pattern, &mut closure_locals);
+                        }
+                        let mut analyzer = CapturedRefAnalyzer {
+                            outer_locals: self.outer_locals,
+                            arrow_locals: &closure_locals,
+                            refcell_vars: self.refcell_vars,
+                            loop_captured_vars: self.loop_captured_vars,
+                        };
+                        analyzer.visit_expression(body_expr);
+                        for param in &arrow.params {
+                            if let Some(default_expr) = &param.default_value {
+                                analyzer.visit_expression(default_expr);
+                            }
                         }
                     }
+                    ast::ArrowBody::Block(block) => {
+                        self.analyze_closure_body(&arrow.params, block);
+                    }
                 }
-                ast::ArrowBody::Block(block) => {
-                    self.analyze_closure_body(&arrow.params, block);
-                }
+                return;
             }
-            return; // Don't walk into arrow body — it's a separate scope
+            Expression::Function(func) => {
+                self.analyze_closure_body(&func.params, &func.body);
+                return;
+            }
+            _ => {}
         }
         walk_expression(self, expr);
     }
@@ -862,7 +964,7 @@ impl Visitor for CapturedRefAnalyzer<'_> {
             }
         }
         // Nested arrow = new scope boundary — delegate back to ArrowCaptureFinder
-        if let Expression::Arrow(_) = expr {
+        if matches!(expr, Expression::Arrow(_) | Expression::Function(_)) {
             let mut finder = ArrowCaptureFinder {
                 outer_locals: self.outer_locals,
                 refcell_vars: self.refcell_vars,
@@ -902,7 +1004,7 @@ impl Visitor for ScopeAssignmentCollector<'_> {
                 self.assigned.insert(ident.name);
             }
         }
-        if matches!(expr, Expression::Arrow(_)) {
+        if matches!(expr, Expression::Arrow(_) | Expression::Function(_)) {
             return; // Don't enter separate scopes
         }
         walk_expression(self, expr);
@@ -1147,6 +1249,7 @@ impl<'a> Lowerer<'a> {
             type_param_substitutions: FxHashMap::default(),
             specialized_function_cache: FxHashMap::default(),
             js_this_binding_compat: false,
+            js_strict_context: false,
             allow_unresolved_runtime_fallback: true,
         }
     }
@@ -1328,6 +1431,29 @@ impl<'a> Lowerer<'a> {
     pub fn lower_module(&mut self, module: &ast::Module) -> IrModule {
         let mut ir_module = IrModule::new("main");
         self.build_expr_type_span_index(module);
+        let saved_js_strict_context = self.js_strict_context;
+        self.js_strict_context = module
+            .statements
+            .iter()
+            .map(Self::unwrap_export)
+            .take_while(|stmt| {
+                matches!(
+                    stmt,
+                    Statement::Expression(ast::ExpressionStatement {
+                        expression: Expression::StringLiteral(_),
+                        ..
+                    })
+                )
+            })
+            .any(|stmt| {
+                matches!(
+                    stmt,
+                    Statement::Expression(ast::ExpressionStatement {
+                        expression: Expression::StringLiteral(lit),
+                        ..
+                    }) if self.interner.resolve(lit.value) == "use strict"
+                )
+            });
 
         // Pre-pass: collect module-level const declarations (for constant folding)
         // These need to be processed before classes/functions so they're available
@@ -1499,6 +1625,18 @@ impl<'a> Lowerer<'a> {
                             global_index
                         });
                     }
+                }
+            }
+
+            if self.js_this_binding_compat {
+                let mut js_function_scoped_vars = FxHashSet::default();
+                collect_function_scoped_var_names(&module.statements, &mut js_function_scoped_vars);
+                for name in js_function_scoped_vars {
+                    self.module_var_globals.entry(name).or_insert_with(|| {
+                        let global_index = self.next_global_index;
+                        self.next_global_index += 1;
+                        global_index
+                    });
                 }
             }
         }
@@ -2062,6 +2200,7 @@ impl<'a> Lowerer<'a> {
         ir_module.structural_shapes = self.module_structural_shapes.clone();
         ir_module.structural_layouts = self.module_structural_layouts.clone();
 
+        self.js_strict_context = saved_js_strict_context;
         ir_module
     }
 
@@ -2229,7 +2368,7 @@ impl<'a> Lowerer<'a> {
 
         // Resolve parent class if extends clause is present
         let mut extends_type_args: Option<Vec<TypeId>> = None;
-        let parent_class = if let Some(ref extends) = class.extends {
+        let (parent_class, parent_runtime_name) = if let Some(ref extends) = class.extends {
             if let ast::Type::Reference(type_ref) = &extends.ty {
                 // Extract type arguments from extends clause (e.g., Base<string>)
                 if let Some(ref type_args) = type_ref.type_args {
@@ -2239,12 +2378,21 @@ impl<'a> Lowerer<'a> {
                         .collect();
                     extends_type_args = Some(resolved);
                 }
-                self.class_map.get(&type_ref.name.name).copied()
+                let parent_name = self.interner.resolve(type_ref.name.name).to_string();
+                let parent_class = self
+                    .class_map
+                    .get(&type_ref.name.name)
+                    .copied()
+                    .or_else(|| self.nominal_type_id_from_type_name(&parent_name));
+                let runtime_name = parent_class
+                    .is_none()
+                    .then_some(parent_name);
+                (parent_class, runtime_name)
             } else {
-                None
+                (None, None)
             }
         } else {
-            None
+            (None, None)
         };
 
         // Collect instance and static field information
@@ -2495,9 +2643,12 @@ impl<'a> Lowerer<'a> {
             self.method_slot_map
                 .insert((nominal_type_id, method_info.name), slot);
             // Symbol.iterator keyed protocol bridge:
-            // until parser-level computed members land, map `iterator` method
-            // to the `Symbol.iterator` key internally.
-            if self.interner.resolve(method_info.name) == "iterator" {
+            // until parser-level computed members land, map iterator protocol
+            // helpers onto the `Symbol.iterator` key internally. Prefer
+            // `__iteratorObject` when present because it returns a real iterator
+            // object; plain `iterator` is only a collection-level fallback.
+            let method_name = self.interner.resolve(method_info.name);
+            if method_name == "iterator" || method_name == "__iteratorObject" {
                 if let Some(symbol_iterator) = self.interner.lookup("Symbol.iterator") {
                     self.method_slot_map
                         .insert((nominal_type_id, symbol_iterator), slot);
@@ -2654,6 +2805,7 @@ impl<'a> Lowerer<'a> {
                 static_blocks,
                 static_methods: static_methods_vec,
                 parent_class,
+                parent_runtime_name,
                 extends_type_subs,
                 method_slot_count,
                 class_decorators,
@@ -2670,6 +2822,7 @@ impl<'a> Lowerer<'a> {
     fn lower_function(&mut self, func: &ast::FunctionDecl) -> IrFunction {
         // Track that we're inside a function (prevents var decls from hijacking module globals)
         self.function_depth += 1;
+        let has_js_this_slot = self.js_this_binding_compat;
 
         // Check if any parameters use destructuring
         let has_destructuring_params = func
@@ -2691,10 +2844,11 @@ impl<'a> Lowerer<'a> {
         // IMPORTANT: If there are destructuring parameters, start local allocation AFTER parameter slots
         // to avoid destructured variables overwriting parameter values
         if has_destructuring_params {
-            let fixed_param_count = func.params.iter().filter(|p| !p.is_rest).count();
+            let fixed_param_count =
+                func.params.iter().filter(|p| !p.is_rest).count() + usize::from(has_js_this_slot);
             self.next_local = fixed_param_count as u16;
         } else {
-            self.next_local = 0;
+            self.next_local = u16::from(has_js_this_slot);
         }
         self.refcell_vars.clear();
         self.refcell_registers.clear();
@@ -2737,11 +2891,19 @@ impl<'a> Lowerer<'a> {
         // Create parameter registers (excluding rest parameters)
         let mut params = Vec::new();
         let mut rest_param_info = None;
-        let mut fixed_param_count = 0;
+        let mut fixed_param_count = usize::from(has_js_this_slot);
         // Track parameters with destructuring patterns for later binding
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
         let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
         let function_type_params = func.type_params.as_deref();
+
+        if has_js_this_slot {
+            let this_reg = self.alloc_register(UNRESOLVED);
+            self.this_register = Some(this_reg.clone());
+            params.push(this_reg);
+        } else {
+            self.this_register = None;
+        }
 
         for (decl_param_idx, param) in func.params.iter().enumerate() {
             // Skip rest parameters - they're handled separately
@@ -2836,9 +2998,40 @@ impl<'a> Lowerer<'a> {
             .as_ref()
             .map(|t| self.resolve_type_annotation(t))
             .unwrap_or(UNRESOLVED);
+        let visible_length = func
+            .params
+            .iter()
+            .take_while(|param| !param.is_rest && param.default_value.is_none() && !param.optional)
+            .count();
+        let is_strict_js = self.js_strict_context || func
+            .body
+            .statements
+            .iter()
+            .take_while(|stmt| {
+                matches!(
+                    stmt,
+                    Statement::Expression(ast::ExpressionStatement {
+                        expression: Expression::StringLiteral(_),
+                        ..
+                    })
+                )
+            })
+            .any(|stmt| {
+                matches!(
+                    stmt,
+                    Statement::Expression(ast::ExpressionStatement {
+                        expression: Expression::StringLiteral(lit),
+                        ..
+                    }) if self.interner.resolve(lit.value) == "use strict"
+                )
+            });
 
         // Create function with fixed parameter count only
         let mut ir_func = IrFunction::new(name, params, return_ty);
+        ir_func.uses_js_this_slot = has_js_this_slot;
+        ir_func.is_constructible = true;
+        ir_func.visible_length = visible_length;
+        ir_func.is_strict_js = is_strict_js;
         if let Some(type_params) = &func.type_params {
             ir_func.type_param_ids = type_params
                 .iter()
@@ -2852,6 +3045,8 @@ impl<'a> Lowerer<'a> {
             ir_func.source_span = func.span;
         }
         self.current_function = Some(ir_func);
+        let saved_js_strict_context = self.js_strict_context;
+        self.js_strict_context = is_strict_js;
 
         // Create entry block
         let entry_block = self.alloc_block();
@@ -2901,6 +3096,7 @@ impl<'a> Lowerer<'a> {
 
         // Emit null-check + default-value for parameters with defaults
         self.emit_default_params(&func.params);
+        self.emit_js_function_var_hoists(&func.body.statements);
 
         // Lower function body
         for stmt in &func.body.statements {
@@ -2916,7 +3112,9 @@ impl<'a> Lowerer<'a> {
         self.function_depth -= 1;
 
         // Take the function out
-        self.current_function.take().unwrap()
+        let lowered = self.current_function.take().unwrap();
+        self.js_strict_context = saved_js_strict_context;
+        lowered
     }
 
     /// Lower top-level statements into a main function
@@ -2936,7 +3134,13 @@ impl<'a> Lowerer<'a> {
         self.ancestor_variables = None;
         self.captures.clear();
         self.next_capture_slot = 0;
+        self.current_class = None;
+        self.this_register = None;
+        self.this_ancestor_info = None;
         self.this_captured_idx = None;
+        self.pending_constructor_prologue = None;
+        self.current_method_env_globals = None;
+        self.pending_class_method_env_globals = None;
 
         // Pre-scan to identify captured variables
         let stmts_owned: Vec<ast::Statement> = stmts.iter().map(|s| (*s).clone()).collect();
@@ -2957,6 +3161,7 @@ impl<'a> Lowerer<'a> {
 
         // Initialize static fields from all classes
         self.emit_static_field_initializations();
+        self.emit_js_top_level_var_hoists(stmts);
 
         // Lower statements first (so variable declarations like `let x = 0` are processed)
         for stmt in stmts {
@@ -2973,6 +3178,56 @@ impl<'a> Lowerer<'a> {
         }
 
         self.current_function.take().unwrap()
+    }
+
+    pub(super) fn emit_js_function_var_hoists(&mut self, statements: &[ast::Statement]) {
+        if !self.js_this_binding_compat {
+            return;
+        }
+
+        let mut var_names = FxHashSet::default();
+        collect_function_scoped_var_names(statements, &mut var_names);
+        for name in var_names {
+            if self.local_map.contains_key(&name) {
+                continue;
+            }
+            let local_idx = self.allocate_local(name);
+            let undefined = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Assign {
+                dest: undefined.clone(),
+                value: IrValue::Constant(IrConstant::Undefined),
+            });
+            self.local_registers.insert(local_idx, undefined.clone());
+            self.emit(IrInstr::StoreLocal {
+                index: local_idx,
+                value: undefined,
+            });
+        }
+    }
+
+    fn emit_js_top_level_var_hoists(&mut self, stmts: &[&Statement]) {
+        if !self.js_this_binding_compat {
+            return;
+        }
+
+        let stmts_owned: Vec<ast::Statement> = stmts.iter().map(|stmt| (*stmt).clone()).collect();
+        let mut var_names = FxHashSet::default();
+        collect_function_scoped_var_names(&stmts_owned, &mut var_names);
+        for name in var_names {
+            let Some(&global_idx) = self.module_var_globals.get(&name) else {
+                continue;
+            };
+            let undefined = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Assign {
+                dest: undefined.clone(),
+                value: IrValue::Constant(IrConstant::Undefined),
+            });
+            self.global_type_map.insert(global_idx, undefined.ty);
+            self.emit(IrInstr::StoreGlobal {
+                index: global_idx,
+                value: undefined,
+            });
+        }
     }
 
     /// Lower a class declaration
@@ -2992,6 +3247,7 @@ impl<'a> Lowerer<'a> {
         // Set parent class if this class extends another
         if let Some(ref info) = class_info {
             ir_class.parent = info.parent_class;
+            ir_class.parent_name = info.parent_runtime_name.clone();
         }
 
         // Add parent fields first (with their original indices)
@@ -3089,7 +3345,8 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Lower methods (instance methods have 'this' as first parameter, static methods don't)
+        // Lower methods. In JS mode, both instance and static methods carry an
+        // implicit `this` slot so member dispatch does not shift user arguments.
         let class_method_env_globals = self.pending_class_method_env_globals.take();
         for member in &class.members {
             if let ast::ClassMember::Method(method) = member {
@@ -3131,17 +3388,27 @@ impl<'a> Lowerer<'a> {
                     let mut rest_param_info = None;
                     let mut fixed_param_count = 0;
 
+                    let method_has_js_this_slot = self.js_this_binding_compat;
                     if method.is_static {
-                        // Static method - no 'this' parameter
-                        self.current_class = None;
-                        self.this_register = None;
+                        self.current_class = Some(nominal_type_id);
+                        if method_has_js_this_slot {
+                            let this_reg = self.alloc_register(UNRESOLVED);
+                            params.push(this_reg.clone());
+                            self.this_register = Some(this_reg);
+                            fixed_param_count = 1;
+                        } else {
+                            self.this_register = None;
+                        }
                         // Check if there are destructuring parameters
                         let has_destructuring = method.params.iter().any(|p| {
                             !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
                         });
                         if has_destructuring {
-                            let param_count = method.params.iter().filter(|p| !p.is_rest).count();
+                            let param_count = usize::from(method_has_js_this_slot)
+                                + method.params.iter().filter(|p| !p.is_rest).count();
                             self.next_local = param_count as u16;
+                        } else if method_has_js_this_slot {
+                            self.next_local = 1;
                         }
                     } else {
                         // Instance method - 'this' is the first parameter
@@ -3293,9 +3560,20 @@ impl<'a> Lowerer<'a> {
                         .as_ref()
                         .map(|t| self.resolve_type_annotation(t))
                         .unwrap_or(UNRESOLVED);
+                    let visible_length = method
+                        .params
+                        .iter()
+                        .take_while(|param| {
+                            !param.is_rest && param.default_value.is_none() && !param.optional
+                        })
+                        .count();
 
                     // Create function with mangled name
                     let mut ir_func = IrFunction::new(&full_name, params, return_ty);
+                    ir_func.uses_js_this_slot = method_has_js_this_slot;
+                    ir_func.is_constructible = false;
+                    ir_func.visible_length = visible_length;
+                    ir_func.is_strict_js = true;
                     let mut type_param_ids = Vec::new();
                     if let Some(class_type_params) = &class.type_params {
                         for tp in class_type_params {
@@ -3320,6 +3598,8 @@ impl<'a> Lowerer<'a> {
                         ir_func.source_span = method.span;
                     }
                     self.current_function = Some(ir_func);
+                    let saved_js_strict_context = self.js_strict_context;
+                    self.js_strict_context = true;
 
                     // Create entry block
                     let entry_block = self.alloc_block();
@@ -3385,6 +3665,7 @@ impl<'a> Lowerer<'a> {
 
                     // Emit null-check + default-value for parameters with defaults
                     self.emit_default_params(&method.params);
+                    self.emit_js_function_var_hoists(&body.statements);
 
                     // Lower method body
                     for stmt in &body.statements {
@@ -3420,6 +3701,7 @@ impl<'a> Lowerer<'a> {
                     let ir_func = self.current_function.take().unwrap();
                     self.pending_arrow_functions
                         .push((func_id.as_u32(), ir_func));
+                    self.js_strict_context = saved_js_strict_context;
 
                     // Add instance methods to the IR class vtable with slot index
                     if !method.is_static {
@@ -3586,9 +3868,19 @@ impl<'a> Lowerer<'a> {
 
                 // Constructors implicitly return void
                 let return_ty = TypeId::new(0);
+                let visible_length = ctor
+                    .params
+                    .iter()
+                    .take_while(|param| {
+                        !param.is_rest && param.default_value.is_none() && !param.optional
+                    })
+                    .count();
 
                 // Create function with mangled name
                 let mut ir_func = IrFunction::new(&full_name, params, return_ty);
+                ir_func.is_constructible = true;
+                ir_func.visible_length = visible_length;
+                ir_func.is_strict_js = true;
                 if let Some(class_type_params) = &class.type_params {
                     ir_func.type_param_ids = class_type_params
                         .iter()
@@ -3602,6 +3894,8 @@ impl<'a> Lowerer<'a> {
                     ir_func.source_span = ctor.span;
                 }
                 self.current_function = Some(ir_func);
+                let saved_js_strict_context = self.js_strict_context;
+                self.js_strict_context = true;
 
                 // Create entry block
                 let entry_block = self.alloc_block();
@@ -3655,6 +3949,7 @@ impl<'a> Lowerer<'a> {
 
                 // Emit null-check + default-value for constructor parameters with defaults
                 self.emit_default_params(&ctor.params);
+                self.emit_js_function_var_hoists(&ctor.body.statements);
 
                 let this_reg = self.this_register.clone().unwrap();
                 let mut param_property_fields: Vec<(u16, Register)> = Vec::new();
@@ -3707,6 +4002,7 @@ impl<'a> Lowerer<'a> {
                             .push((ctor_func_id.as_u32(), ir_func));
                     }
                 }
+                self.js_strict_context = saved_js_strict_context;
 
                 // Clear method context
                 self.current_class = None;
@@ -3772,10 +4068,15 @@ impl<'a> Lowerer<'a> {
             let params = vec![this_reg];
             let mut ir_func =
                 IrFunction::new(&format!("{}::constructor", name), params, TypeId::new(0));
+            ir_func.is_constructible = true;
+            ir_func.visible_length = 0;
+            ir_func.is_strict_js = true;
             if self.emit_sourcemap {
                 ir_func.source_span = class.span;
             }
             self.current_function = Some(ir_func);
+            let saved_js_strict_context = self.js_strict_context;
+            self.js_strict_context = true;
 
             let entry_block = self.alloc_block();
             self.current_block = entry_block;
@@ -3802,6 +4103,7 @@ impl<'a> Lowerer<'a> {
             let ir_func = self.current_function.take().unwrap();
             self.pending_arrow_functions
                 .push((ctor_func_id.as_u32(), ir_func));
+            self.js_strict_context = saved_js_strict_context;
 
             self.current_class = None;
             self.this_register = None;
@@ -4004,14 +4306,35 @@ impl<'a> Lowerer<'a> {
                             index: local_idx,
                         });
 
-                        // Branch on null
                         let default_block = self.alloc_block();
                         let continue_block = self.alloc_block();
-                        self.set_terminator(Terminator::BranchIfNull {
-                            value: param_reg,
-                            null_block: default_block,
-                            not_null_block: continue_block,
-                        });
+
+                        if self.js_this_binding_compat {
+                            let undefined_reg = self.alloc_register(UNRESOLVED);
+                            self.emit(IrInstr::Assign {
+                                dest: undefined_reg.clone(),
+                                value: IrValue::Constant(IrConstant::Undefined),
+                            });
+                            let is_undefined = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+                            self.emit(IrInstr::BinaryOp {
+                                dest: is_undefined.clone(),
+                                op: BinaryOp::StrictEqual,
+                                left: param_reg,
+                                right: undefined_reg,
+                            });
+                            self.set_terminator(Terminator::Branch {
+                                cond: is_undefined,
+                                then_block: default_block,
+                                else_block: continue_block,
+                            });
+                        } else {
+                            // Raya/TS legacy lowering still treats null as "missing" here.
+                            self.set_terminator(Terminator::BranchIfNull {
+                                value: param_reg,
+                                null_block: default_block,
+                                not_null_block: continue_block,
+                            });
+                        }
 
                         // Default block: evaluate default expression and store
                         self.current_function_mut()

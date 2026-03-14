@@ -6,7 +6,9 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id;
-use crate::vm::object::{Array, BoundMethod, BoundNativeMethod, Closure, Object, RayaString};
+use crate::vm::object::{
+    Array, BoundFunction, BoundMethod, BoundNativeMethod, Closure, Object, RayaString,
+};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;
@@ -15,7 +17,7 @@ use crate::vm::VmError;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
-    fn exec_bound_native_method_call(
+    pub(in crate::vm::interpreter) fn exec_bound_native_method_call(
         &mut self,
         stack: &mut Stack,
         receiver: Value,
@@ -25,7 +27,9 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
     ) -> OpcodeResult {
         let mut native_args = Vec::with_capacity(args.len() + 1);
-        native_args.push(receiver);
+        if self.native_callable_uses_receiver(native_id) {
+            native_args.push(receiver);
+        }
         native_args.append(&mut args);
         for arg in &native_args {
             if let Err(error) = stack.push(*arg) {
@@ -173,7 +177,9 @@ impl<'a> Interpreter<'a> {
                         let bm =
                             unsafe { &*closure_val.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
                         let mut native_args = Vec::with_capacity(arg_count + 1);
-                        native_args.push(bm.receiver);
+                        if self.native_callable_uses_receiver(bm.native_id) {
+                            native_args.push(bm.receiver);
+                        }
                         native_args.extend(args_tmp.into_iter().rev());
 
                         // Reuse the native opcode execution path directly (no per-method hardcoding).
@@ -204,22 +210,132 @@ impl<'a> Interpreter<'a> {
                             task,
                             Opcode::NativeCall,
                         )
+                    } else if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
+                        let bound =
+                            unsafe { &*closure_val.as_ptr::<BoundFunction>().unwrap().as_ptr() };
+                        let mut combined_args = bound.bound_args.clone();
+                        combined_args.extend(args_tmp.into_iter().rev());
+
+                        if bound.rebind_call_helper {
+                            let target_callable = bound.this_arg;
+                            let this_arg =
+                                combined_args.first().copied().unwrap_or(Value::undefined());
+                            let rest_args = if combined_args.len() > 1 {
+                                combined_args[1..].to_vec()
+                            } else {
+                                Vec::new()
+                            };
+                            return self.dispatch_call_with_explicit_this(
+                                stack,
+                                target_callable,
+                                this_arg,
+                                rest_args,
+                                module,
+                                task,
+                                "Bound call target is not callable",
+                            );
+                        }
+
+                        if !bound.target.is_ptr() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Bound function target is not callable".to_string(),
+                            ));
+                        }
+                        let target_header = unsafe {
+                            &*header_ptr_from_value_ptr(bound.target.as_ptr::<u8>().unwrap().as_ptr())
+                        };
+                        if target_header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+                            let method =
+                                unsafe { &*bound.target.as_ptr::<BoundMethod>().unwrap().as_ptr() };
+                            if let Err(e) = stack.push(bound.this_arg) {
+                                return OpcodeResult::Error(e);
+                            }
+                            for arg in &combined_args {
+                                if let Err(e) = stack.push(*arg) {
+                                    return OpcodeResult::Error(e);
+                                }
+                            }
+                            OpcodeResult::PushFrame {
+                                func_id: method.func_id,
+                                arg_count: combined_args.len() + 1,
+                                is_closure: false,
+                                closure_val: None,
+                                module: method.module.clone(),
+                                return_action: ReturnAction::PushReturnValue,
+                            }
+                        } else if target_header.type_id()
+                            == std::any::TypeId::of::<BoundNativeMethod>()
+                        {
+                            let method = unsafe {
+                                &*bound.target.as_ptr::<BoundNativeMethod>().unwrap().as_ptr()
+                            };
+                            self.exec_bound_native_method_call(
+                                stack,
+                                bound.this_arg,
+                                method.native_id,
+                                combined_args,
+                                module,
+                                task,
+                            )
+                        } else if target_header.type_id() == std::any::TypeId::of::<Closure>() {
+                            let closure =
+                                unsafe { &*bound.target.as_ptr::<Closure>().unwrap().as_ptr() };
+                            if let Err(e) = stack.push(bound.this_arg) {
+                                return OpcodeResult::Error(e);
+                            }
+                            for arg in &combined_args {
+                                if let Err(e) = stack.push(*arg) {
+                                    return OpcodeResult::Error(e);
+                                }
+                            }
+                            OpcodeResult::PushFrame {
+                                func_id: closure.func_id(),
+                                arg_count: combined_args.len() + 1,
+                                is_closure: true,
+                                closure_val: Some(bound.target),
+                                module: closure.module(),
+                                return_action: ReturnAction::PushReturnValue,
+                            }
+                        } else {
+                            OpcodeResult::Error(VmError::TypeError(
+                                "Bound function target is not callable".to_string(),
+                            ))
+                        }
                     } else {
-                        // Closure call - push args back (they become the callee's locals)
+                        let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
+                        let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
+                        let closure_func_id = closure.func_id();
+                        let closure_module = closure.module();
+                        let uses_js_this_slot = closure_module
+                            .as_ref()
+                            .and_then(|module| module.functions.get(closure_func_id))
+                            .map(|function| function.uses_js_this_slot)
+                            .unwrap_or(false);
+
+                        // Closure call - push implicit `this` first when JS function metadata requires it.
+                        if uses_js_this_slot {
+                            let implicit_this = if closure_module
+                                .as_ref()
+                                .and_then(|module| module.functions.get(closure_func_id))
+                                .is_some_and(|function| function.is_strict_js)
+                            {
+                                Value::undefined()
+                            } else {
+                                self.builtin_global_value("globalThis").unwrap_or(Value::undefined())
+                            };
+                            if let Err(e) = stack.push(implicit_this) {
+                                return OpcodeResult::Error(e);
+                            }
+                        }
                         for arg in args_tmp.into_iter().rev() {
                             if let Err(e) = stack.push(arg) {
                                 return OpcodeResult::Error(e);
                             }
                         }
 
-                        let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
-                        let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                        let closure_func_id = closure.func_id();
-                        let closure_module = closure.module();
-
                         OpcodeResult::PushFrame {
                             func_id: closure_func_id,
-                            arg_count,
+                            arg_count: arg_count + usize::from(uses_js_this_slot),
                             is_closure: true,
                             closure_val: Some(closure_val),
                             module: closure_module,
@@ -227,6 +343,37 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                 } else {
+                    let uses_js_this_slot = module
+                        .functions
+                        .get(func_index)
+                        .map(|function| function.uses_js_this_slot)
+                        .unwrap_or(false);
+                    if uses_js_this_slot {
+                        let mut args_tmp = Vec::with_capacity(arg_count);
+                        for _ in 0..arg_count {
+                            match stack.pop() {
+                                Ok(v) => args_tmp.push(v),
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+                        let implicit_this = if module
+                            .functions
+                            .get(func_index)
+                            .is_some_and(|function| function.is_strict_js)
+                        {
+                            Value::undefined()
+                        } else {
+                            self.builtin_global_value("globalThis").unwrap_or(Value::undefined())
+                        };
+                        if let Err(e) = stack.push(implicit_this) {
+                            return OpcodeResult::Error(e);
+                        }
+                        for arg in args_tmp.into_iter().rev() {
+                            if let Err(e) = stack.push(arg) {
+                                return OpcodeResult::Error(e);
+                            }
+                        }
+                    }
                     if std::env::var("RAYA_DEBUG_VM_CALLS").is_ok() {
                         let name = module
                             .functions
@@ -241,7 +388,7 @@ impl<'a> Interpreter<'a> {
                     // Regular function call - args are already on the stack
                     OpcodeResult::PushFrame {
                         func_id: func_index,
-                        arg_count,
+                        arg_count: arg_count + usize::from(uses_js_this_slot),
                         is_closure: false,
                         closure_val: None,
                         module: None,
@@ -261,9 +408,41 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
+                let uses_js_this_slot = module
+                    .functions
+                    .get(func_index)
+                    .map(|function| function.uses_js_this_slot)
+                    .unwrap_or(false);
+                if uses_js_this_slot {
+                    let mut args_tmp = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        match stack.pop() {
+                            Ok(v) => args_tmp.push(v),
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                    }
+                    let implicit_this = if module
+                        .functions
+                        .get(func_index)
+                        .is_some_and(|function| function.is_strict_js)
+                    {
+                        Value::undefined()
+                    } else {
+                        self.builtin_global_value("globalThis").unwrap_or(Value::undefined())
+                    };
+                    if let Err(e) = stack.push(implicit_this) {
+                        return OpcodeResult::Error(e);
+                    }
+                    for arg in args_tmp.into_iter().rev() {
+                        if let Err(e) = stack.push(arg) {
+                            return OpcodeResult::Error(e);
+                        }
+                    }
+                }
+
                 OpcodeResult::PushFrame {
                     func_id: func_index,
-                    arg_count,
+                    arg_count: arg_count + usize::from(uses_js_this_slot),
                     is_closure: false,
                     closure_val: None,
                     module: None,
@@ -599,6 +778,7 @@ impl<'a> Interpreter<'a> {
                             callable,
                             stack,
                             &args.into_iter().rev().collect::<Vec<_>>(),
+                            Some(actual_receiver),
                             ReturnAction::PushReturnValue,
                         ) {
                             Ok(Some(frame)) => frame,
@@ -632,6 +812,7 @@ impl<'a> Interpreter<'a> {
                             callable,
                             stack,
                             &args.into_iter().rev().collect::<Vec<_>>(),
+                            Some(actual_receiver),
                             ReturnAction::PushReturnValue,
                         ) {
                             Ok(Some(frame)) => frame,

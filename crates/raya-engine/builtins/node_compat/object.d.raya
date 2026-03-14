@@ -4,18 +4,14 @@
  * Every class implicitly extends Object.
  */
 export class Object {
-    /** Descriptor-compatible fields (node-compat mode only) */
-    value: any;
-    writable: boolean;
-    configurable: boolean;
-    enumerable: boolean;
-    get: any;
-    set: any;
-
     constructor();
 
     /** Get string representation of the object */
     toString(): string;
+
+    valueOf(): Object;
+
+    isPrototypeOf(value: unknown): boolean;
 
     /** Get hash code for this object (based on object identity) */
     hashCode(): number;
@@ -31,6 +27,8 @@ export class Object {
 
     /** Get own property descriptor for a key */
     static getOwnPropertyDescriptor<T>(obj: T, key: string): Object | null;
+
+    static getPrototypeOf<T>(obj: T): Object | null;
 
     /** Define many properties on an object */
     static defineProperties<T, D>(obj: T, descriptors: D): T;

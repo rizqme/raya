@@ -1,9 +1,25 @@
 // Node-compat function/generator constructor families.
 // Pragmatic subset: compile-visible surface with unimplemented runtime behavior.
 
+const FUNCTION_CALL_HELPER: number = 0x000E;
+const FUNCTION_APPLY_HELPER: number = 0x000F;
+const FUNCTION_BIND_HELPER: number = 0x0010;
+
 class Function {
     constructor(_body: string) {
         throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Function constructor is not implemented in node-compat runtime yet");
+    }
+
+    call(thisArg: any, ...args: any[]): any {
+        return __NATIVE_CALL<any>(FUNCTION_CALL_HELPER, this, thisArg, args);
+    }
+
+    apply(thisArg: any, args: any = undefined): any {
+        return __NATIVE_CALL<any>(FUNCTION_APPLY_HELPER, this, thisArg, args);
+    }
+
+    bind(thisArg: any, ...args: any[]): any {
+        return __NATIVE_CALL<any>(FUNCTION_BIND_HELPER, this, thisArg, args);
     }
 }
 

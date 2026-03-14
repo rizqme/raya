@@ -620,6 +620,10 @@ impl TypeSubstitution {
         }
 
         new_func.entry_block = func.entry_block;
+        new_func.uses_js_this_slot = func.uses_js_this_slot;
+        new_func.is_constructible = func.is_constructible;
+        new_func.visible_length = func.visible_length;
+        new_func.is_strict_js = func.is_strict_js;
 
         new_func
     }

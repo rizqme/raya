@@ -310,7 +310,10 @@ impl<'a> Parser<'a> {
             self.pos += 1;
             let arr = Array {
                 type_id: 0,
+                length: 0,
                 elements,
+                present: vec![true; 0],
+                sparse_elements: rustc_hash::FxHashMap::default(),
             };
             let arr_ptr = self.gc.allocate(arr);
             return Ok(unsafe {
@@ -334,9 +337,13 @@ impl<'a> Parser<'a> {
                 }
                 b']' => {
                     self.pos += 1;
+                    let len = elements.len();
                     let arr = Array {
                         type_id: 0,
+                        length: len,
                         elements,
+                        present: vec![true; len],
+                        sparse_elements: rustc_hash::FxHashMap::default(),
                     };
                     let arr_ptr = self.gc.allocate(arr);
                     return Ok(unsafe {

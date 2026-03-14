@@ -22,6 +22,13 @@ impl<'a> Interpreter<'a> {
                 OpcodeResult::Continue
             }
 
+            Opcode::ConstUndefined => {
+                if let Err(e) = stack.push(Value::undefined()) {
+                    return OpcodeResult::Error(e);
+                }
+                OpcodeResult::Continue
+            }
+
             Opcode::ConstTrue => {
                 if let Err(e) = stack.push(Value::bool(true)) {
                     return OpcodeResult::Error(e);

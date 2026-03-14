@@ -1,0 +1,22 @@
+[package]
+name = "raya-es262-conformance"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ES262 conformance runner for Raya"
+
+[[bin]]
+name = "raya-es262-conformance"
+path = "src/main.rs"
+
+[lib]
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+regex.workspace = true
+raya-runtime.workspace = true

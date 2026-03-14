@@ -196,6 +196,8 @@ pub struct IrClass {
     pub constructor: Option<FunctionId>,
     /// Parent class ID (if any)
     pub parent: Option<NominalTypeId>,
+    /// Runtime parent class name for ambient/imported parents.
+    pub parent_name: Option<String>,
 }
 
 impl IrClass {
@@ -208,6 +210,7 @@ impl IrClass {
             method_slots: Vec::new(),
             constructor: None,
             parent: None,
+            parent_name: None,
         }
     }
 

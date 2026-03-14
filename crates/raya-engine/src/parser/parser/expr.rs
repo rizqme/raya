@@ -6,6 +6,15 @@ use crate::parser::ast::*;
 use crate::parser::interner::Symbol;
 use crate::parser::token::{Span, Token};
 
+fn contextual_identifier_symbol(parser: &mut Parser) -> Option<Symbol> {
+    match parser.current() {
+        Token::Identifier(name) => Some(*name),
+        Token::Async => Some(parser.intern("async")),
+        Token::From => Some(parser.intern("from")),
+        _ => None,
+    }
+}
+
 /// Check if a token is a keyword that can be used as a property/method name.
 /// Returns the keyword string for keywords.
 pub(super) fn keyword_as_property_name(token: &Token) -> Option<&'static str> {
@@ -51,6 +60,7 @@ pub(super) fn keyword_as_property_name(token: &Token) -> Option<&'static str> {
         Token::Finally => Some("finally"),
         Token::Throw => Some("throw"),
         Token::Const => Some("const"),
+        Token::Var => Some("var"),
         Token::Let => Some("let"),
         Token::Type => Some("type"),
         Token::Async => Some("async"),
@@ -1383,15 +1393,8 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
             Ok(Expression::Object(ObjectExpression { properties, span }))
         }
 
-        // Function expression (TODO: not in AST yet)
-        Token::Function => Err(ParseError {
-            kind: ParseErrorKind::InvalidSyntax {
-                reason: "Function expressions not yet implemented".to_string(),
-            },
-            span: start_span,
-            message: "Function expressions not supported yet".to_string(),
-            suggestion: Some("Use arrow functions instead".to_string()),
-        }),
+        // Function expression: function foo() {}, function() {}
+        Token::Function => parse_function_expression(parser, start_span, false),
 
         // JSX element or fragment: <div>...</div> or <>...</>
         Token::Less if super::jsx::looks_like_jsx(parser) => super::jsx::parse_jsx(parser),
@@ -1431,6 +1434,9 @@ fn parse_arguments(parser: &mut Parser) -> Result<Vec<Expression>, ParseError> {
 
         if !parser.check(&Token::RightParen) {
             parser.expect(Token::Comma)?;
+            if parser.check(&Token::RightParen) {
+                break;
+            }
         }
     }
 
@@ -1438,11 +1444,55 @@ fn parse_arguments(parser: &mut Parser) -> Result<Vec<Expression>, ParseError> {
     Ok(arguments)
 }
 
-/// Parse an object property (simplified).
+fn parse_object_property_key(
+    parser: &mut Parser,
+    start_span: Span,
+) -> Result<PropertyKey, ParseError> {
+    if let Token::Identifier(name) = parser.current() {
+        let name = *name;
+        parser.advance();
+        Ok(PropertyKey::Identifier(Identifier {
+            name,
+            span: start_span,
+        }))
+    } else if let Some(kw_name) = keyword_as_property_name(parser.current()) {
+        let name = parser.intern(kw_name);
+        parser.advance();
+        Ok(PropertyKey::Identifier(Identifier {
+            name,
+            span: start_span,
+        }))
+    } else if let Token::StringLiteral(s) = parser.current() {
+        let s = *s;
+        parser.advance();
+        Ok(PropertyKey::StringLiteral(StringLiteral {
+            value: s,
+            span: start_span,
+        }))
+    } else if let Token::IntLiteral(n) = parser.current() {
+        let n = *n;
+        parser.advance();
+        Ok(PropertyKey::IntLiteral(IntLiteral {
+            value: n,
+            span: start_span,
+        }))
+    } else if parser.check(&Token::LeftBracket) {
+        parser.advance();
+        let expr = parse_expression(parser)?;
+        parser.expect(Token::RightBracket)?;
+        Ok(PropertyKey::Computed(expr))
+    } else {
+        Err(parser.unexpected_token(&[
+            Token::Identifier(Symbol::dummy()),
+            Token::StringLiteral(Symbol::dummy()),
+        ]))
+    }
+}
+
+/// Parse an object property.
 fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseError> {
     let start_span = parser.current_span();
 
-    // Spread property: { ...obj }
     if parser.check(&Token::DotDotDot) {
         parser.advance();
         let argument = parse_expression(parser)?;
@@ -1450,51 +1500,116 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
         return Ok(ObjectProperty::Spread(SpreadProperty { argument, span }));
     }
 
-    // Property key (identifiers and contextual keywords like `type`, `class`, etc.)
-    let key = if let Token::Identifier(name) = parser.current() {
-        let name = *name;
-        parser.advance();
-        PropertyKey::Identifier(Identifier {
-            name,
-            span: start_span,
-        })
-    } else if let Some(kw_name) = keyword_as_property_name(parser.current()) {
-        let name = parser.intern(kw_name);
-        parser.advance();
-        PropertyKey::Identifier(Identifier {
-            name,
-            span: start_span,
-        })
-    } else if let Token::StringLiteral(s) = parser.current() {
-        let s = *s;
-        parser.advance();
-        PropertyKey::StringLiteral(StringLiteral {
-            value: s,
-            span: start_span,
-        })
-    } else if let Token::IntLiteral(n) = parser.current() {
-        let n = *n;
-        parser.advance();
-        PropertyKey::IntLiteral(IntLiteral {
-            value: n,
-            span: start_span,
-        })
-    } else if parser.check(&Token::LeftBracket) {
-        // Computed property: [expr]: value
-        parser.advance();
-        let expr = parse_expression(parser)?;
-        parser.expect(Token::RightBracket)?;
-        PropertyKey::Computed(expr)
+    if let Some(name) = get_property_name_symbol(parser) {
+        if matches!(parser.peek(), Some(Token::LeftParen)) {
+            parser.advance();
+            let key = PropertyKey::Identifier(Identifier {
+                name,
+                span: start_span,
+            });
+            parser.expect(Token::LeftParen)?;
+            let params = super::stmt::parse_function_parameters(parser)?;
+            parser.expect(Token::RightParen)?;
+            parser.expect(Token::LeftBrace)?;
+            let body = super::stmt::parse_block_statement(parser)?;
+            let span = parser.combine_spans(&start_span, &body.span);
+            let value = Expression::Function(FunctionExpression {
+                name: None,
+                type_params: None,
+                params,
+                return_type: None,
+                body,
+                is_method: true,
+                is_async: false,
+                is_generator: false,
+                span,
+            });
+            return Ok(ObjectProperty::Property(Property {
+                key,
+                value,
+                kind: PropertyKind::Init,
+                span,
+            }));
+        }
+    }
+
+    let is_accessor_keyword = if let Token::Identifier(name) = parser.current() {
+        let ident = parser.interner.resolve(*name);
+        (ident == "get" || ident == "set")
+            && !matches!(
+                parser.peek(),
+                Some(Token::Colon | Token::Comma | Token::RightBrace | Token::LeftParen)
+            )
     } else {
-        return Err(parser.unexpected_token(&[
-            Token::Identifier(Symbol::dummy()),
-            Token::StringLiteral(Symbol::dummy()),
-        ]));
+        false
     };
 
-    // Check for shorthand property: { x } instead of { x: x }
+    if is_accessor_keyword {
+        let kind = if let Token::Identifier(name) = parser.current() {
+            if parser.interner.resolve(*name) == "get" {
+                PropertyKind::Get
+            } else {
+                PropertyKind::Set
+            }
+        } else {
+            unreachable!()
+        };
+        parser.advance();
+        let key = parse_object_property_key(parser, parser.current_span())?;
+        parser.expect(Token::LeftParen)?;
+        let params = super::stmt::parse_function_parameters(parser)?;
+        parser.expect(Token::RightParen)?;
+        parser.expect(Token::LeftBrace)?;
+        let body = super::stmt::parse_block_statement(parser)?;
+        let span = parser.combine_spans(&start_span, &body.span);
+        let value = Expression::Function(FunctionExpression {
+            name: None,
+            type_params: None,
+            params,
+            return_type: None,
+            body,
+            is_method: true,
+            is_async: false,
+            is_generator: false,
+            span,
+        });
+        return Ok(ObjectProperty::Property(Property {
+            key,
+            value,
+            kind,
+            span,
+        }));
+    }
+
+    let key = parse_object_property_key(parser, start_span)?;
+
+    if parser.check(&Token::LeftParen) {
+        parser.advance();
+        let params = super::stmt::parse_function_parameters(parser)?;
+        parser.expect(Token::RightParen)?;
+        parser.expect(Token::LeftBrace)?;
+        let body = super::stmt::parse_block_statement(parser)?;
+        let span = parser.combine_spans(&start_span, &body.span);
+        let value = Expression::Function(FunctionExpression {
+            name: None,
+            type_params: None,
+            params,
+            return_type: None,
+            body,
+            is_method: true,
+            is_async: false,
+            is_generator: false,
+            span,
+        });
+        return Ok(ObjectProperty::Property(Property {
+            key,
+            value,
+            kind: PropertyKind::Init,
+            span,
+        }));
+    }
+
     if parser.check(&Token::Comma) || parser.check(&Token::RightBrace) {
-        // Shorthand is only valid for identifiers
         let value = if let PropertyKey::Identifier(ref ident) = key {
             Expression::Identifier(ident.clone())
         } else {
@@ -1509,14 +1624,24 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
         };
 
         let span = parser.combine_spans(&start_span, value.span());
-        return Ok(ObjectProperty::Property(Property { key, value, span }));
+        return Ok(ObjectProperty::Property(Property {
+            key,
+            value,
+            kind: PropertyKind::Init,
+            span,
+        }));
     }
 
     parser.expect(Token::Colon)?;
     let value = parse_assignment_expression(parser)?;
     let span = parser.combine_spans(&start_span, value.span());
 
-    Ok(ObjectProperty::Property(Property { key, value, span }))
+    Ok(ObjectProperty::Property(Property {
+        key,
+        value,
+        kind: PropertyKind::Init,
+        span,
+    }))
 }
 
 /// Convert token template parts to AST template parts.
@@ -1606,12 +1731,10 @@ fn looks_like_arrow_params(parser: &Parser) -> bool {
     if parser.check(&Token::DotDotDot) {
         match parser.peek() {
             // ...ident(:|,|))
-            Some(Token::Identifier(_)) => {
-                matches!(
-                    parser.peek2(),
-                    Some(Token::Colon) | Some(Token::Comma) | Some(Token::RightParen)
-                )
-            }
+            Some(Token::Identifier(_)) => matches!(
+                parser.peek2(),
+                Some(Token::Colon) | Some(Token::Comma) | Some(Token::RightParen)
+            ),
             // ...{...} or ...[...]
             Some(Token::LeftBrace) | Some(Token::LeftBracket) => true,
             _ => false,
@@ -1634,6 +1757,65 @@ fn looks_like_arrow_params(parser: &Parser) -> bool {
     } else {
         false
     }
+}
+
+fn parse_function_expression(
+    parser: &mut Parser,
+    start_span: Span,
+    is_async: bool,
+) -> Result<Expression, ParseError> {
+    parser.expect(Token::Function)?;
+    let is_generator = if parser.check(&Token::Star) {
+        parser.advance();
+        true
+    } else {
+        false
+    };
+
+    let name = if let Some(name) = contextual_identifier_symbol(parser) {
+        let name_span = parser.current_span();
+        parser.advance();
+        Some(Identifier {
+            name,
+            span: name_span,
+        })
+    } else {
+        None
+    };
+
+    let type_params = if parser.check(&Token::Less) {
+        parser.advance();
+        Some(super::stmt::parse_type_parameters(parser)?)
+    } else {
+        None
+    };
+
+    parser.expect(Token::LeftParen)?;
+    let params = super::stmt::parse_function_parameters(parser)?;
+    parser.expect(Token::RightParen)?;
+
+    let return_type = if parser.check(&Token::Colon) {
+        parser.advance();
+        Some(super::types::parse_type_annotation(parser)?)
+    } else {
+        None
+    };
+
+    parser.expect(Token::LeftBrace)?;
+    let body = super::stmt::parse_block_statement(parser)?;
+    let span = parser.combine_spans(&start_span, &body.span);
+
+    Ok(Expression::Function(FunctionExpression {
+        name,
+        type_params,
+        params,
+        return_type,
+        body,
+        is_method: false,
+        is_async,
+        is_generator,
+        span,
+    }))
 }
 
 /// Try to parse arrow function parameters.

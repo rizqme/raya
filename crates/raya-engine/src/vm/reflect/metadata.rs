@@ -235,6 +235,18 @@ impl MetadataStore {
     pub fn target_count(&self) -> usize {
         self.targets.len()
     }
+
+    /// Collect all stored metadata values so callers can keep them rooted.
+    pub fn rooted_values(&self) -> Vec<Value> {
+        let mut roots = Vec::new();
+        for target in self.targets.values() {
+            roots.extend(target.direct.values().copied());
+            for property in target.properties.values() {
+                roots.extend(property.values().copied());
+            }
+        }
+        roots
+    }
 }
 
 #[cfg(test)]

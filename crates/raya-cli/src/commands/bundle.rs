@@ -219,6 +219,7 @@ mod aot_impl {
             | Opcode::Dup
             | Opcode::Swap
             | Opcode::ConstNull
+            | Opcode::ConstUndefined
             | Opcode::ConstTrue
             | Opcode::ConstFalse
             | Opcode::LoadLocal0

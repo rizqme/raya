@@ -7,24 +7,37 @@ use crate::compiler::native_id::{
     CHANNEL_CAPACITY, CHANNEL_CLOSE, CHANNEL_IS_CLOSED, CHANNEL_LENGTH, CHANNEL_NEW,
     CHANNEL_RECEIVE, CHANNEL_SEND, CHANNEL_TRY_RECEIVE, CHANNEL_TRY_SEND,
 };
-use crate::compiler::{Module, Opcode};
+use crate::compiler::{Compiler, Module, Opcode};
+use crate::parser::checker::{Binder, CheckerPolicy, ScopeId, TypeChecker, TypeSystemMode};
+use crate::parser::{Parser, TypeContext};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set, url};
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    Array, BoundMethod, BoundNativeMethod, Buffer, ChannelObject, Class, Closure, DateObject,
-    LayoutId, MapObject, Object, RayaString, RegExpObject, SetObject, TypeHandle,
+    layout_id_from_ordered_names, Array, BoundFunction, BoundMethod, BoundNativeMethod, Buffer,
+    ChannelObject, Class, Closure, DateObject, LayoutId, MapObject, Object, RayaString,
+    RegExpObject, SetObject, TypeHandle,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use rustc_hash::FxHashSet;
+use std::any::TypeId;
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
+const NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY: &str = "__dynamic_value_property";
+const CALLABLE_VIRTUAL_DELETE_METADATA_KEY: &str = "__callable_virtual_deleted";
+const CALLABLE_VIRTUAL_VALUE_METADATA_KEY: &str = "__callable_virtual_value";
+const FIXED_PROPERTY_DELETE_METADATA_KEY: &str = "__fixed_property_deleted";
+const OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY: &str = "__object_prototype_override__";
 const IMPORTED_CLASS_TYPE_HANDLE_KEY: &str = "__raya_type_handle__";
+static DYNAMIC_JS_FUNCTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn value_as_string(arg: Value) -> Result<String, VmError> {
     if !arg.is_ptr() {
@@ -34,6 +47,112 @@ fn value_as_string(arg: Value) -> Result<String, VmError> {
         return Err(VmError::TypeError("Expected string".to_string()));
     };
     Ok(unsafe { &*s.as_ptr() }.data.clone())
+}
+
+fn primitive_to_js_string(value: Value) -> Option<String> {
+    if value.is_undefined() {
+        return Some("undefined".to_string());
+    }
+    if value.is_null() {
+        return Some("null".to_string());
+    }
+    if let Some(value) = value.as_bool() {
+        return Some(if value { "true" } else { "false" }.to_string());
+    }
+    if let Some(value) = value.as_i32() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.as_f64() {
+        return Some(value.to_string());
+    }
+    let string_ptr = unsafe { value.as_ptr::<RayaString>() }?;
+    Some(unsafe { &*string_ptr.as_ptr() }.data.clone())
+}
+
+fn boxed_primitive_helper_class_name(class_name: &str) -> Option<&'static str> {
+    match class_name {
+        "Boolean" => Some("__BooleanPrototype"),
+        "Number" => Some("__NumberPrototype"),
+        "String" => Some("__StringPrototype"),
+        _ => None,
+    }
+}
+
+pub(in crate::vm::interpreter) fn checked_object_ptr(value: Value) -> Option<NonNull<Object>> {
+    if !value.is_ptr() || value.is_null() {
+        return None;
+    }
+    let raw_ptr = unsafe { value.as_ptr::<u8>() }?;
+    let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+    if header.type_id() != TypeId::of::<Object>() {
+        return None;
+    }
+    unsafe { value.as_ptr::<Object>() }
+}
+
+pub(in crate::vm::interpreter) fn checked_array_ptr(value: Value) -> Option<NonNull<Array>> {
+    if !value.is_ptr() || value.is_null() {
+        return None;
+    }
+    let raw_ptr = unsafe { value.as_ptr::<u8>() }?;
+    let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+    if header.type_id() != TypeId::of::<Array>() {
+        return None;
+    }
+    unsafe { value.as_ptr::<Array>() }
+}
+
+pub(in crate::vm::interpreter) fn checked_string_ptr(value: Value) -> Option<NonNull<RayaString>> {
+    if !value.is_ptr() || value.is_null() {
+        return None;
+    }
+    let raw_ptr = unsafe { value.as_ptr::<u8>() }?;
+    let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+    if header.type_id() != TypeId::of::<RayaString>() {
+        return None;
+    }
+    unsafe { value.as_ptr::<RayaString>() }
+}
+
+pub(in crate::vm::interpreter) fn checked_closure_ptr(value: Value) -> Option<NonNull<Closure>> {
+    if !value.is_ptr() || value.is_null() {
+        return None;
+    }
+    let raw_ptr = unsafe { value.as_ptr::<u8>() }?;
+    let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+    if header.type_id() != TypeId::of::<Closure>() {
+        return None;
+    }
+    unsafe { value.as_ptr::<Closure>() }
+}
+
+fn value_same_value(a: Value, b: Value) -> bool {
+    if a.is_ptr() && b.is_ptr() {
+        let a_str = unsafe { a.as_ptr::<RayaString>() };
+        let b_str = unsafe { b.as_ptr::<RayaString>() };
+        if let (Some(a_ptr), Some(b_ptr)) = (a_str, b_str) {
+            let a_ref = unsafe { &*a_ptr.as_ptr() };
+            let b_ref = unsafe { &*b_ptr.as_ptr() };
+            return a_ref.data == b_ref.data;
+        }
+        return a.raw() == b.raw();
+    }
+
+    let a_num = a.as_f64().or_else(|| a.as_i32().map(|v| v as f64));
+    let b_num = b.as_f64().or_else(|| b.as_i32().map(|v| v as f64));
+    if let (Some(a_num), Some(b_num)) = (a_num, b_num) {
+        if a_num.is_nan() && b_num.is_nan() {
+            return true;
+        }
+        if a_num == 0.0 && b_num == 0.0 {
+            let a_bits = a.as_f64().map(f64::to_bits).unwrap_or(0.0f64.to_bits());
+            let b_bits = b.as_f64().map(f64::to_bits).unwrap_or(0.0f64.to_bits());
+            return a_bits == b_bits;
+        }
+        return a_num == b_num;
+    }
+
+    a.raw() == b.raw()
 }
 
 fn is_uri_unreserved(byte: u8) -> bool {
@@ -76,7 +195,152 @@ fn percent_decode_uri_component(input: &str) -> Result<String, VmError> {
     String::from_utf8(out).map_err(|_| VmError::RuntimeError("Invalid UTF-8".to_string()))
 }
 
+fn object_to_string_tag_from_class_name(class_name: &str) -> &'static str {
+    match class_name {
+        "Array" => "Array",
+        "Function" | "AsyncFunction" | "GeneratorFunction" | "AsyncGeneratorFunction" => {
+            "Function"
+        }
+        "String" => "String",
+        "Number" => "Number",
+        "Boolean" => "Boolean",
+        "Symbol" => "Symbol",
+        "Date" => "Date",
+        "RegExp" => "RegExp",
+        "Error"
+        | "TypeError"
+        | "RangeError"
+        | "ReferenceError"
+        | "SyntaxError"
+        | "URIError"
+        | "EvalError"
+        | "InternalError"
+        | "AggregateError"
+        | "SuppressedError"
+        | "ChannelClosedError"
+        | "AssertionError" => "Error",
+        "Map" => "Map",
+        "Set" => "Set",
+        "WeakMap" => "WeakMap",
+        "WeakSet" => "WeakSet",
+        "WeakRef" => "WeakRef",
+        "FinalizationRegistry" => "FinalizationRegistry",
+        "ArrayBuffer" | "SharedArrayBuffer" => "ArrayBuffer",
+        "DataView" => "DataView",
+        _ => "Object",
+    }
+}
+
 impl<'a> Interpreter<'a> {
+    fn alloc_string_value(&self, value: impl Into<String>) -> Value {
+        let gc_ptr = self.gc.lock().allocate(RayaString::new(value.into()));
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).expect("string ptr")) }
+    }
+
+    pub(in crate::vm::interpreter) fn alloc_builtin_error_value(
+        &self,
+        class_name: &str,
+        message: &str,
+    ) -> Value {
+        let member_names = vec!["message".to_string(), "name".to_string()];
+        let layout_id = layout_id_from_ordered_names(&member_names);
+        let object_ptr = self
+            .gc
+            .lock()
+            .allocate(Object::new_dynamic(layout_id, member_names.len()));
+        let object_value = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(object_ptr.as_ptr()).expect("error object ptr"))
+        };
+        if let Some(constructor) = self.builtin_global_value(class_name) {
+            self.set_constructed_object_prototype_from_constructor(object_value, constructor);
+        }
+        let _ = self.define_data_property_on_target(
+            object_value,
+            "name",
+            self.alloc_string_value(class_name),
+            true,
+            false,
+            true,
+        );
+        let _ = self.define_data_property_on_target(
+            object_value,
+            "message",
+            self.alloc_string_value(message),
+            true,
+            false,
+            true,
+        );
+        object_value
+    }
+
+    fn object_to_string_tag(&self, value: Value) -> &'static str {
+        if value.is_undefined() {
+            return "Undefined";
+        }
+        if value.is_null() {
+            return "Null";
+        }
+        if value.as_bool().is_some() {
+            return "Boolean";
+        }
+        if value.as_i32().is_some() || value.as_f64().is_some() {
+            return "Number";
+        }
+        if checked_string_ptr(value).is_some() {
+            return "String";
+        }
+        if checked_array_ptr(value).is_some() {
+            return "Array";
+        }
+        if self.callable_function_info(value).is_some() {
+            return "Function";
+        }
+        if let Some(class_name) = self.nominal_class_name_for_value(value) {
+            return object_to_string_tag_from_class_name(&class_name);
+        }
+        "Object"
+    }
+
+    fn seed_builtin_error_prototype_properties(
+        &self,
+        prototype_val: Value,
+        class_name: &str,
+    ) -> Option<()> {
+        let name = match class_name {
+            "Error"
+            | "AggregateError"
+            | "EvalError"
+            | "RangeError"
+            | "ReferenceError"
+            | "SyntaxError"
+            | "TypeError"
+            | "URIError" => class_name,
+            _ => return Some(()),
+        };
+
+        self.define_data_property_on_target(
+            prototype_val,
+            "name",
+            self.alloc_string_value(name),
+            true,
+            false,
+            true,
+        )
+        .ok()?;
+
+        self.define_data_property_on_target(
+            prototype_val,
+            "message",
+            self.alloc_string_value(String::new()),
+            true,
+            false,
+            true,
+        )
+        .ok()?;
+
+        Some(())
+    }
+
     fn normalize_dynamic_value(&self, value: Value) -> Value {
         use crate::vm::json::view::{js_classify, JSView};
 
@@ -192,7 +456,7 @@ impl<'a> Interpreter<'a> {
         (idx < field_count).then_some(idx)
     }
 
-    fn is_callable_value(value: Value) -> bool {
+    pub(in crate::vm::interpreter) fn is_callable_value(value: Value) -> bool {
         if !value.is_ptr() {
             return false;
         }
@@ -202,6 +466,57 @@ impl<'a> Interpreter<'a> {
         header.type_id() == std::any::TypeId::of::<Closure>()
             || header.type_id() == std::any::TypeId::of::<BoundMethod>()
             || header.type_id() == std::any::TypeId::of::<BoundNativeMethod>()
+            || header.type_id() == std::any::TypeId::of::<BoundFunction>()
+    }
+
+    pub(in crate::vm::interpreter) fn proxy_wrapper_proxy_value(
+        &self,
+        value: Value,
+    ) -> Option<Value> {
+        let object_ptr = checked_object_ptr(value)?;
+        let object = unsafe { &*object_ptr.as_ptr() };
+        let proxy_value = self.get_object_named_field_value(object, "_proxy")?;
+        crate::vm::reflect::try_unwrap_proxy(proxy_value)?;
+        Some(proxy_value)
+    }
+
+    pub(in crate::vm::interpreter) fn unwrapped_proxy_like(
+        &self,
+        value: Value,
+    ) -> Option<crate::vm::reflect::UnwrappedProxy> {
+        crate::vm::reflect::try_unwrap_proxy(value).or_else(|| {
+            let proxy_value = self.proxy_wrapper_proxy_value(value)?;
+            crate::vm::reflect::try_unwrap_proxy(proxy_value)
+        })
+    }
+
+    pub(in crate::vm::interpreter) fn explicit_object_prototype(
+        &self,
+        value: Value,
+    ) -> Option<Value> {
+        self.metadata
+            .lock()
+            .get_metadata(OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY, value)
+    }
+
+    pub(in crate::vm::interpreter) fn set_explicit_object_prototype(
+        &self,
+        value: Value,
+        prototype: Value,
+    ) {
+        self.metadata.lock().define_metadata(
+            OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY.to_string(),
+            prototype,
+            value,
+        );
+    }
+
+    pub(in crate::vm::interpreter) fn is_js_object_value(&self, value: Value) -> bool {
+        checked_object_ptr(value).is_some()
+            && self
+                .nominal_class_name_for_value(value)
+                .as_deref()
+                != Some("Symbol")
     }
 
     fn raw_type_handle_id(value: Value) -> Option<crate::vm::object::TypeHandleId> {
@@ -226,11 +541,1590 @@ impl<'a> Interpreter<'a> {
             .map(|entry| entry.nominal_type_id)
     }
 
+    pub(in crate::vm::interpreter) fn constructor_nominal_type_id(
+        &self,
+        value: Value,
+    ) -> Option<usize> {
+        let value = self
+            .unwrapped_proxy_like(value)
+            .map(|proxy| proxy.target)
+            .unwrap_or(value);
+
+        let debug_ctor_resolve = std::env::var("RAYA_DEBUG_CTOR_RESOLVE").is_ok();
+
+        if let Some(global_name) = self.builtin_global_name_for_value(value) {
+            let classes = self.classes.read();
+            if let Some(class) = classes.get_class_by_name(&global_name) {
+                if debug_ctor_resolve {
+                    eprintln!(
+                        "[ctor-resolve] value={:#x} builtin_global='{}' -> nominal_type_id={} class='{}'",
+                        value.raw(),
+                        global_name,
+                        class.id,
+                        class.name
+                    );
+                }
+                return Some(class.id);
+            }
+        }
+
+        if let Some(nominal_id) = self.type_handle_nominal_id(value) {
+            if debug_ctor_resolve {
+                eprintln!(
+                    "[ctor-resolve] value={:#x} type_handle_nominal_id={}",
+                    value.raw(),
+                    nominal_id
+                );
+            }
+            return Some(nominal_id as usize);
+        }
+
+        let object_ptr = checked_object_ptr(value)?;
+        let object = unsafe { &*object_ptr.as_ptr() };
+        let handle_key = self.intern_prop_key(IMPORTED_CLASS_TYPE_HANDLE_KEY);
+        let handle_val = object
+            .dyn_map()
+            .and_then(|dyn_map| dyn_map.get(&handle_key).copied())?;
+        let resolved = self.type_handle_nominal_id(handle_val).map(|id| id as usize);
+        if debug_ctor_resolve {
+            eprintln!(
+                "[ctor-resolve] value={:#x} dyn_handle={:#x} -> {:?}",
+                value.raw(),
+                handle_val.raw(),
+                resolved
+            );
+        }
+        resolved
+    }
+
+    pub(in crate::vm::interpreter) fn callable_virtual_property_deleted(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> bool {
+        self.metadata
+            .lock()
+            .get_metadata_property(CALLABLE_VIRTUAL_DELETE_METADATA_KEY, target, key)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }
+
+    fn cached_callable_virtual_property_value(&self, target: Value, key: &str) -> Option<Value> {
+        self.metadata
+            .lock()
+            .get_metadata_property(CALLABLE_VIRTUAL_VALUE_METADATA_KEY, target, key)
+    }
+
+    fn set_cached_callable_virtual_property_value(&self, target: Value, key: &str, value: Value) {
+        self.metadata.lock().define_metadata_property(
+            CALLABLE_VIRTUAL_VALUE_METADATA_KEY.to_string(),
+            value,
+            target,
+            key.to_string(),
+        );
+    }
+
+    pub(in crate::vm::interpreter) fn is_callable_virtual_property(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> bool {
+        self.callable_virtual_property_value(target, key).is_some()
+            || self.callable_virtual_accessor_value(target, key, "get").is_some()
+            || self.callable_virtual_accessor_value(target, key, "set").is_some()
+    }
+
+    pub(in crate::vm::interpreter) fn set_callable_virtual_property_deleted(
+        &self,
+        target: Value,
+        key: &str,
+        deleted: bool,
+    ) {
+        let mut metadata = self.metadata.lock();
+        if deleted {
+            metadata.define_metadata_property(
+                CALLABLE_VIRTUAL_DELETE_METADATA_KEY.to_string(),
+                Value::bool(true),
+                target,
+                key.to_string(),
+            );
+        } else {
+            let _ =
+                metadata.delete_metadata_property(CALLABLE_VIRTUAL_DELETE_METADATA_KEY, target, key);
+        }
+    }
+
+    pub(in crate::vm::interpreter) fn fixed_property_deleted(&self, target: Value, key: &str) -> bool {
+        self.metadata
+            .lock()
+            .get_metadata_property(FIXED_PROPERTY_DELETE_METADATA_KEY, target, key)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }
+
+    fn set_fixed_property_deleted(&self, target: Value, key: &str, deleted: bool) {
+        let mut metadata = self.metadata.lock();
+        if deleted {
+            metadata.define_metadata_property(
+                FIXED_PROPERTY_DELETE_METADATA_KEY.to_string(),
+                Value::bool(true),
+                target,
+                key.to_string(),
+            );
+        } else {
+            let _ =
+                metadata.delete_metadata_property(FIXED_PROPERTY_DELETE_METADATA_KEY, target, key);
+        }
+    }
+
+    pub(in crate::vm::interpreter) fn is_runtime_global_object(&self, target: Value) -> bool {
+        self.builtin_global_value("globalThis")
+            .is_some_and(|global_obj| global_obj.raw() == target.raw())
+    }
+
+    pub(in crate::vm::interpreter) fn builtin_global_property_value(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<Value> {
+        if !self.is_runtime_global_object(target) || self.fixed_property_deleted(target, key) {
+            return None;
+        }
+        self.builtin_global_value(key)
+    }
+
+    pub(in crate::vm::interpreter) fn set_builtin_global_property(
+        &self,
+        target: Value,
+        key: &str,
+        value: Value,
+    ) -> bool {
+        if !self.is_runtime_global_object(target) {
+            return false;
+        }
+        if !self.builtin_global_slots.read().contains_key(key) {
+            return false;
+        }
+        let slot = match self.builtin_global_slots.read().get(key).copied() {
+            Some(slot) => slot,
+            None => return false,
+        };
+        let mut globals = self.globals_by_index.write();
+        if slot >= globals.len() {
+            globals.resize(slot + 1, Value::undefined());
+        }
+        globals[slot] = value;
+        self.set_fixed_property_deleted(target, key, false);
+        true
+    }
+
+    fn visible_function_name(raw_name: &str) -> String {
+        let visible = raw_name.rsplit("::").next().unwrap_or(raw_name);
+        match visible {
+            "__speciesGetter" => "get [Symbol.species]".to_string(),
+            _ => visible.to_string(),
+        }
+    }
+
+    fn function_native_alias_id(raw_name: &str) -> Option<u16> {
+        if raw_name.ends_with("Function::call") {
+            Some(crate::compiler::native_id::FUNCTION_CALL_HELPER)
+        } else if raw_name.ends_with("Function::apply") {
+            Some(crate::compiler::native_id::FUNCTION_APPLY_HELPER)
+        } else if raw_name.ends_with("Function::bind") {
+            Some(crate::compiler::native_id::FUNCTION_BIND_HELPER)
+        } else {
+            None
+        }
+    }
+
+    pub(in crate::vm::interpreter) fn native_callable_uses_receiver(&self, native_id: u16) -> bool {
+        !matches!(
+            native_id,
+            crate::compiler::native_id::OBJECT_DEFINE_PROPERTY
+                | crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR
+                | crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES
+                | crate::compiler::native_id::OBJECT_DELETE_PROPERTY
+                | crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF
+                | crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL
+        )
+    }
+
+    pub(in crate::vm::interpreter) fn callable_function_info(
+        &self,
+        target: Value,
+    ) -> Option<(String, usize)> {
+        let target = self
+            .unwrapped_proxy_like(target)
+            .map(|proxy| proxy.target)
+            .unwrap_or(target);
+
+        let raw_ptr = unsafe { target.as_ptr::<u8>() }?;
+        let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+
+        if header.type_id() == std::any::TypeId::of::<Closure>() {
+            let closure = unsafe { &*target.as_ptr::<Closure>()?.as_ptr() };
+            let module = closure.module()?;
+            let function = module.functions.get(closure.func_id)?;
+            return Some((
+                Self::visible_function_name(&function.name),
+                function.visible_length,
+            ));
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+            let method = unsafe { &*target.as_ptr::<BoundMethod>()?.as_ptr() };
+            let module = method.module.clone()?;
+            let function = module.functions.get(method.func_id)?;
+            return Some((Self::visible_function_name(&function.name), function.visible_length));
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
+            let method = unsafe { &*target.as_ptr::<BoundNativeMethod>()?.as_ptr() };
+            let raw_name = crate::compiler::native_id::native_name(method.native_id);
+            let visible_name = raw_name.rsplit('.').next().unwrap_or(raw_name).to_string();
+            let arity = match method.native_id {
+                crate::compiler::native_id::FUNCTION_CALL_HELPER => 1,
+                crate::compiler::native_id::FUNCTION_APPLY_HELPER => 2,
+                crate::compiler::native_id::FUNCTION_BIND_HELPER => 1,
+                _ => 0,
+            };
+            return Some((visible_name, arity));
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
+            let bound = unsafe { &*target.as_ptr::<BoundFunction>()?.as_ptr() };
+            let (name, length) = self.callable_function_info(bound.target)?;
+            return Some((
+                format!("bound {}", name),
+                length.saturating_sub(bound.bound_args.len()),
+            ));
+        }
+
+        if let Some(global_name) = self.builtin_global_name_for_value(target) {
+            let arity = crate::vm::builtins::get_all_signatures()
+                .iter()
+                .flat_map(|sig| sig.classes.iter())
+                .find(|sig| sig.name == global_name)
+                .and_then(|sig| sig.constructor.map(|ctor| ctor.len()))
+                .unwrap_or(0);
+            return Some((global_name, arity));
+        }
+
+        if let Some(nominal_type_id) = self.constructor_nominal_type_id(target) {
+            let classes = self.classes.read();
+            let class = classes.get_class(nominal_type_id)?;
+            let visible_name = class.name.clone();
+            let builtin_arity = crate::vm::builtins::get_all_signatures()
+                .iter()
+                .flat_map(|sig| sig.classes.iter())
+                .find(|sig| sig.name == visible_name)
+                .and_then(|sig| sig.constructor.map(|ctor| ctor.len()));
+            let runtime_arity = class
+                .get_constructor()
+                .and_then(|constructor_id| {
+                    class
+                        .module
+                        .as_ref()
+                        .and_then(|module| module.functions.get(constructor_id))
+                        .map(|function| function.visible_length)
+                })
+                .unwrap_or(0);
+            let arity = builtin_arity.unwrap_or(runtime_arity);
+            return Some((visible_name, arity));
+        }
+
+        None
+    }
+
+    pub(in crate::vm::interpreter) fn callable_is_constructible(&self, target: Value) -> bool {
+        let target = self
+            .unwrapped_proxy_like(target)
+            .map(|proxy| proxy.target)
+            .unwrap_or(target);
+
+        let Some(raw_ptr) = (unsafe { target.as_ptr::<u8>() }) else {
+            return false;
+        };
+        let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+
+        if header.type_id() == std::any::TypeId::of::<Closure>() {
+            let Some(closure_ptr) = (unsafe { target.as_ptr::<Closure>() }) else {
+                return false;
+            };
+            let closure = unsafe { &*closure_ptr.as_ptr() };
+            let Some(module) = closure.module() else {
+                return false;
+            };
+            return module
+                .functions
+                .get(closure.func_id)
+                .is_some_and(|function| function.is_constructible);
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
+            let Some(bound_ptr) = (unsafe { target.as_ptr::<BoundFunction>() }) else {
+                return false;
+            };
+            return self.callable_is_constructible(unsafe { &*bound_ptr.as_ptr() }.target);
+        }
+
+        self.constructor_nominal_type_id(target).is_some()
+            || self.builtin_global_name_for_value(target).is_some()
+    }
+
+    pub(in crate::vm::interpreter) fn callable_is_strict_js(&self, target: Value) -> bool {
+        let target = self
+            .unwrapped_proxy_like(target)
+            .map(|proxy| proxy.target)
+            .unwrap_or(target);
+
+        let Some(raw_ptr) = (unsafe { target.as_ptr::<u8>() }) else {
+            return false;
+        };
+        let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+
+        if header.type_id() == std::any::TypeId::of::<Closure>() {
+            let Some(closure_ptr) = (unsafe { target.as_ptr::<Closure>() }) else {
+                return false;
+            };
+            let closure = unsafe { &*closure_ptr.as_ptr() };
+            let Some(module) = closure.module() else {
+                return false;
+            };
+            return module
+                .functions
+                .get(closure.func_id)
+                .is_some_and(|function| function.is_strict_js);
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
+            let Some(bound_ptr) = (unsafe { target.as_ptr::<BoundFunction>() }) else {
+                return false;
+            };
+            return self.callable_is_strict_js(unsafe { &*bound_ptr.as_ptr() }.target);
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+            return true;
+        }
+
+        false
+    }
+
+    pub(in crate::vm::interpreter) fn js_this_value_for_callable(
+        &self,
+        callable: Value,
+        explicit_this: Option<Value>,
+    ) -> Value {
+        let this_value = explicit_this.unwrap_or(Value::undefined());
+        if self.callable_is_strict_js(callable) {
+            return this_value;
+        }
+        if this_value.is_null() || this_value.is_undefined() {
+            return self.builtin_global_value("globalThis").unwrap_or(Value::undefined());
+        }
+        this_value
+    }
+
+    fn callable_native_alias_id(&self, callable: Value) -> Option<u16> {
+        let raw_ptr = unsafe { callable.as_ptr::<u8>() }?;
+        let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+
+        if header.type_id() == std::any::TypeId::of::<Closure>() {
+            let closure = unsafe { &*callable.as_ptr::<Closure>()?.as_ptr() };
+            let module = closure.module()?;
+            let function = module.functions.get(closure.func_id())?;
+            return Self::function_native_alias_id(&function.name);
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+            let method = unsafe { &*callable.as_ptr::<BoundMethod>()?.as_ptr() };
+            let module = method.module.clone()?;
+            let function = module.functions.get(method.func_id)?;
+            return Self::function_native_alias_id(&function.name);
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
+            let method = unsafe { &*callable.as_ptr::<BoundNativeMethod>()?.as_ptr() };
+            return Some(method.native_id);
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
+            let bound = unsafe { &*callable.as_ptr::<BoundFunction>()?.as_ptr() };
+            return self.callable_native_alias_id(bound.target);
+        }
+
+        None
+    }
+
+    pub(in crate::vm::interpreter) fn callable_uses_js_this_slot(&self, callable: Value) -> bool {
+        let Some(raw_ptr) = (unsafe { callable.as_ptr::<u8>() }) else {
+            return false;
+        };
+        let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+        if header.type_id() == std::any::TypeId::of::<Closure>() {
+            let closure = unsafe { &*callable.as_ptr::<Closure>().unwrap().as_ptr() };
+            if let Some(module) = closure.module() {
+                return module
+                    .functions
+                    .get(closure.func_id())
+                    .map(|function| function.uses_js_this_slot)
+                    .unwrap_or(false);
+            }
+            return false;
+        }
+        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+            return true;
+        }
+        if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
+            let method = unsafe { &*callable.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
+            return self.native_callable_uses_receiver(method.native_id);
+        }
+        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
+            let bound = unsafe { &*callable.as_ptr::<BoundFunction>().unwrap().as_ptr() };
+            return self.callable_uses_js_this_slot(bound.target);
+        }
+        false
+    }
+
+    fn alloc_bound_function(
+        &self,
+        target: Value,
+        this_arg: Value,
+        bound_args: Vec<Value>,
+    ) -> Result<Value, VmError> {
+        let rebind_call_helper =
+            self.callable_native_alias_id(target) == Some(crate::compiler::native_id::FUNCTION_CALL_HELPER);
+        let bound = BoundFunction {
+            target,
+            this_arg,
+            bound_args,
+            rebind_call_helper,
+        };
+        let bound_ptr = self.gc.lock().allocate(bound);
+        Ok(unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(bound_ptr.as_ptr()).expect("bound function ptr"))
+        })
+    }
+
+    pub(in crate::vm::interpreter) fn dispatch_call_with_explicit_this(
+        &mut self,
+        stack: &mut Stack,
+        target_callable: Value,
+        this_arg: Value,
+        rest_args: Vec<Value>,
+        module: &Module,
+        task: &Arc<Task>,
+        non_callable_message: &'static str,
+    ) -> OpcodeResult {
+        if self.callable_native_alias_id(target_callable)
+            == Some(crate::compiler::native_id::FUNCTION_CALL_HELPER)
+        {
+            let rebound_target = this_arg;
+            let rebound_this = rest_args.first().copied().unwrap_or(Value::undefined());
+            let rebound_rest = if rest_args.len() > 1 {
+                rest_args[1..].to_vec()
+            } else {
+                Vec::new()
+            };
+            return self.dispatch_call_with_explicit_this(
+                stack,
+                rebound_target,
+                rebound_this,
+                rebound_rest,
+                module,
+                task,
+                non_callable_message,
+            );
+        }
+
+        if let Some(target_ptr) = unsafe { target_callable.as_ptr::<u8>() } {
+            let header = unsafe { &*header_ptr_from_value_ptr(target_ptr.as_ptr()) };
+            if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
+                let method = unsafe {
+                    &*target_callable
+                        .as_ptr::<BoundNativeMethod>()
+                        .expect("bound native target")
+                        .as_ptr()
+                };
+                return self.exec_bound_native_method_call(
+                    stack,
+                    this_arg,
+                    method.native_id,
+                    rest_args,
+                    module,
+                    task,
+                );
+            } else if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+                let method = unsafe {
+                    &*target_callable
+                        .as_ptr::<BoundMethod>()
+                        .expect("bound method target")
+                        .as_ptr()
+                };
+                if let Err(e) = stack.push(this_arg) {
+                    return OpcodeResult::Error(e);
+                }
+                for arg in &rest_args {
+                    if let Err(e) = stack.push(*arg) {
+                        return OpcodeResult::Error(e);
+                    }
+                }
+                return OpcodeResult::PushFrame {
+                    func_id: method.func_id,
+                    arg_count: rest_args.len() + 1,
+                    is_closure: false,
+                    closure_val: None,
+                    module: method.module.clone(),
+                    return_action: ReturnAction::PushReturnValue,
+                };
+            }
+        }
+
+        match self.callable_frame_for_value(
+            target_callable,
+            stack,
+            &rest_args,
+            Some(this_arg),
+            ReturnAction::PushReturnValue,
+        ) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => OpcodeResult::Error(VmError::TypeError(non_callable_message.to_string())),
+            Err(error) => OpcodeResult::Error(error),
+        }
+    }
+
+    fn delete_property_from_target(
+        &mut self,
+        target: Value,
+        key: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<bool, VmError> {
+        let (key_str, _) =
+            self.property_key_parts_with_context(key, "Object.deleteProperty", task, module)?;
+        let Some(key_name) = key_str else {
+            return Ok(true);
+        };
+
+        if !target.is_ptr() {
+            return Ok(true);
+        }
+
+        if let Some(existing) = self.get_descriptor_metadata(target, &key_name) {
+            if !self.descriptor_flag(existing, "configurable", true) {
+                return Ok(false);
+            }
+        } else if let Some((_, configurable, _)) =
+            self.callable_virtual_property_descriptor(target, &key_name)
+        {
+            if !configurable {
+                return Ok(false);
+            }
+        }
+
+        let mut removed = false;
+        if let Some(obj_ptr) = checked_object_ptr(target) {
+            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+            if let Some(dyn_map) = obj.dyn_map_mut() {
+                removed = dyn_map.remove(&self.intern_prop_key(&key_name)).is_some();
+            }
+        }
+
+        let (metadata_removed, dynamic_value_removed) = {
+            let mut metadata = self.metadata.lock();
+            (
+                metadata.delete_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, target, &key_name),
+                metadata.delete_metadata_property(
+                    NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY,
+                    target,
+                    &key_name,
+                ),
+            )
+        };
+
+        if removed || metadata_removed || dynamic_value_removed {
+            self.set_callable_virtual_property_deleted(target, &key_name, false);
+            self.set_fixed_property_deleted(target, &key_name, false);
+            return Ok(true);
+        }
+
+        if self.is_runtime_global_object(target)
+            && self.builtin_global_slots.read().contains_key(&key_name)
+        {
+            self.set_fixed_property_deleted(target, &key_name, true);
+            return Ok(true);
+        }
+
+        if self.is_callable_virtual_property(target, &key_name) {
+            self.set_callable_virtual_property_deleted(target, &key_name, true);
+            return Ok(true);
+        }
+
+        if let Some(index) = self.get_field_index_for_value(target, &key_name) {
+            if let Some(obj_ptr) = checked_object_ptr(target) {
+                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                let _ = obj.set_field(index, Value::undefined());
+            }
+            self.set_fixed_property_deleted(target, &key_name, true);
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    pub(in crate::vm::interpreter) fn builtin_global_value(&self, name: &str) -> Option<Value> {
+        let slot = self.builtin_global_slots.read().get(name).copied()?;
+        self.globals_by_index.read().get(slot).copied()
+    }
+
+    pub(in crate::vm::interpreter) fn builtin_global_name_for_value(&self, value: Value) -> Option<String> {
+        let globals = self.globals_by_index.read();
+        self.builtin_global_slots
+            .read()
+            .iter()
+            .find_map(|(name, &slot)| {
+                globals
+                    .get(slot)
+                    .copied()
+                    .filter(|candidate| candidate.raw() == value.raw())
+                    .map(|_| name.clone())
+            })
+    }
+
+    fn prototype_object_for_nominal_type(
+        &self,
+        nominal_type_id: usize,
+        constructor_value: Value,
+    ) -> Option<Value> {
+        if let Some(existing) =
+            self.cached_callable_virtual_property_value(constructor_value, "prototype")
+        {
+            return Some(existing);
+        }
+        let (class_name, class_module, method_ids, mut method_names) = {
+            let classes = self.classes.read();
+            let class = classes.get_class(nominal_type_id)?;
+            let class_name = class.name.clone();
+            let class_module = class.module.clone();
+            let method_ids = class.vtable.methods.clone();
+            drop(classes);
+
+            let method_names = self
+                .class_metadata
+                .read()
+                .get(nominal_type_id)
+                .map(|meta| meta.method_names.clone())
+                .unwrap_or_default();
+
+            (class_name, class_module, method_ids, method_names)
+        };
+        if let Some(module) = class_module.as_ref() {
+            if method_names.len() < method_ids.len() {
+                method_names.resize(method_ids.len(), String::new());
+            }
+            for (slot, func_id) in method_ids.iter().copied().enumerate() {
+                if func_id == usize::MAX || !method_names.get(slot).is_some_and(|name| name.is_empty()) {
+                    continue;
+                }
+                if let Some(function) = module.functions.get(func_id) {
+                    if let Some(name) = function.name.rsplit("::").next() {
+                        method_names[slot] = name.to_string();
+                    }
+                }
+            }
+        }
+
+        let mut member_names = method_names
+            .iter()
+            .filter(|name| !name.is_empty())
+            .cloned()
+            .collect::<Vec<_>>();
+        member_names.push("constructor".to_string());
+        member_names.sort_unstable();
+        member_names.dedup();
+
+        let layout_id = layout_id_from_ordered_names(&member_names);
+        let prototype_ptr = self
+            .gc
+            .lock()
+            .allocate(Object::new_dynamic(layout_id, member_names.len()));
+        let prototype_val = unsafe {
+            Value::from_ptr(
+                std::ptr::NonNull::new(prototype_ptr.as_ptr()).expect("prototype object ptr"),
+            )
+        };
+        self.set_cached_callable_virtual_property_value(
+            constructor_value,
+            "prototype",
+            prototype_val,
+        );
+
+        self.define_data_property_on_target(
+            prototype_val,
+            "constructor",
+            constructor_value,
+            true,
+            false,
+            true,
+        )
+        .ok()?;
+
+        self.seed_builtin_error_prototype_properties(prototype_val, &class_name)?;
+
+        for (slot, method_name) in method_names.iter().enumerate() {
+            if method_name.is_empty() {
+                continue;
+            }
+            let Some(&func_id) = method_ids.get(slot) else {
+                continue;
+            };
+            let closure = if let Some(module) = class_module.clone() {
+                Closure::with_module(func_id, Vec::new(), module)
+            } else {
+                Closure::new(func_id, Vec::new())
+            };
+            let closure_ptr = self.gc.lock().allocate(closure);
+            let closure_val = unsafe {
+                Value::from_ptr(
+                    std::ptr::NonNull::new(closure_ptr.as_ptr()).expect("prototype method ptr"),
+                )
+            };
+            self.define_data_property_on_target(
+                prototype_val,
+                method_name,
+                closure_val,
+                true,
+                false,
+                true,
+            )
+            .ok()?;
+        }
+
+        Some(prototype_val)
+    }
+
+    pub(in crate::vm::interpreter) fn nominal_instance_prototype_value(
+        &self,
+        value: Value,
+    ) -> Option<Value> {
+        let debug_proto_resolve = std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok();
+        let object_ptr = checked_object_ptr(value)?;
+        let object = unsafe { &*object_ptr.as_ptr() };
+        let nominal_type_id = object.nominal_type_id_usize()?;
+        let class_name = {
+            let classes = self.classes.read();
+            classes.get_class(nominal_type_id)?.name.clone()
+        };
+        let constructor_value = self.builtin_global_value(&class_name)?;
+        if debug_proto_resolve {
+            eprintln!(
+                "[proto-resolve] instance={:#x} nominal_type_id={} class='{}' ctor={:#x}",
+                value.raw(),
+                nominal_type_id,
+                class_name,
+                constructor_value.raw()
+            );
+        }
+        self.prototype_object_for_nominal_type(nominal_type_id, constructor_value)
+    }
+
+    fn ordinary_object_prototype_value(&self) -> Option<Value> {
+        let constructor_value = self.builtin_global_value("Object")?;
+        self.object_constructor_prototype_value(constructor_value)
+    }
+
+    pub(in crate::vm::interpreter) fn prototype_of_value(&self, value: Value) -> Option<Value> {
+        let debug_proto_resolve = std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok();
+        if let Some(prototype) = self.explicit_object_prototype(value) {
+            if debug_proto_resolve {
+                eprintln!(
+                    "[proto-of] value={:#x} explicit={:#x}",
+                    value.raw(),
+                    prototype.raw()
+                );
+            }
+            return Some(prototype);
+        }
+
+        if self.callable_function_info(value).is_some() {
+            let prototype = self
+                .builtin_global_value("Function")
+                .and_then(|ctor| self.function_constructor_prototype_value(ctor));
+            if debug_proto_resolve {
+                eprintln!(
+                    "[proto-of] value={:#x} callable -> {:?}",
+                    value.raw(),
+                    prototype.map(|v| format!("{:#x}", v.raw()))
+                );
+            }
+            return prototype;
+        }
+
+        if checked_object_ptr(value).is_some() {
+            if let Some(prototype) = self.nominal_instance_prototype_value(value) {
+                if debug_proto_resolve {
+                    eprintln!(
+                        "[proto-of] value={:#x} nominal -> {:#x}",
+                        value.raw(),
+                        prototype.raw()
+                    );
+                }
+                return Some(prototype);
+            }
+            if debug_proto_resolve {
+                eprintln!("[proto-of] value={:#x} ordinary-object", value.raw());
+            }
+            return self.ordinary_object_prototype_value();
+        }
+
+        if unsafe { value.as_ptr::<Array>() }.is_some() {
+            return self
+                .builtin_global_value("Array")
+                .and_then(|ctor| self.array_constructor_prototype_value(ctor));
+        }
+
+        if unsafe { value.as_ptr::<RayaString>() }.is_some() {
+            return self
+                .builtin_global_value("String")
+                .and_then(|ctor| self.string_constructor_prototype_value(ctor));
+        }
+
+        None
+    }
+
+    pub(in crate::vm::interpreter) fn constructor_prototype_value(
+        &self,
+        constructor: Value,
+    ) -> Option<Value> {
+        if let Some(existing) = self.cached_callable_virtual_property_value(constructor, "prototype")
+        {
+            if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
+                eprintln!(
+                    "[ctor-proto] ctor={:#x} cached={:#x}",
+                    constructor.raw(),
+                    existing.raw()
+                );
+            }
+            return Some(existing);
+        }
+        if let Some(obj_ptr) = checked_object_ptr(constructor) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            if let Some(existing) = obj
+                .dyn_map()
+                .and_then(|dyn_map| dyn_map.get(&self.intern_prop_key("prototype")).copied())
+            {
+                return Some(existing);
+            }
+        }
+
+        if let Some(nominal_type_id) = self.constructor_nominal_type_id(constructor) {
+            let prototype = self.prototype_object_for_nominal_type(nominal_type_id, constructor);
+            if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
+                eprintln!(
+                    "[ctor-proto] ctor={:#x} nominal_type_id={} -> {:?}",
+                    constructor.raw(),
+                    nominal_type_id,
+                    prototype.map(|value| format!("{:#x}", value.raw()))
+                );
+            }
+            return prototype;
+        }
+
+        let (visible_name, _) = self.callable_function_info(constructor)?;
+        let prototype = self
+            .prototype_object_for_class_name(&visible_name, constructor)
+            .or_else(|| self.generic_function_prototype_value(constructor));
+        if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
+            eprintln!(
+                "[ctor-proto] ctor={:#x} class='{}' -> {:?}",
+                constructor.raw(),
+                visible_name,
+                prototype.map(|value| format!("{:#x}", value.raw()))
+            );
+        }
+        prototype
+    }
+
+    pub(in crate::vm::interpreter) fn set_constructed_object_prototype_from_value(
+        &self,
+        object: Value,
+        prototype: Value,
+    ) {
+        if checked_object_ptr(object).is_none() {
+            return;
+        }
+        if !self.is_js_object_value(prototype) {
+            return;
+        }
+        self.set_explicit_object_prototype(object, prototype);
+    }
+
+    pub(in crate::vm::interpreter) fn set_constructed_object_prototype_from_constructor(
+        &self,
+        object: Value,
+        constructor: Value,
+    ) {
+        if let Some(prototype) = self.constructor_prototype_value(constructor) {
+            if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
+                eprintln!(
+                    "[set-ctor-proto] object={:#x} ctor={:#x} proto={:#x}",
+                    object.raw(),
+                    constructor.raw(),
+                    prototype.raw()
+                );
+            }
+            self.set_constructed_object_prototype_from_value(object, prototype);
+        }
+    }
+
+    pub(in crate::vm::interpreter) fn set_array_length_value(
+        &self,
+        target: Value,
+        length_value: Value,
+    ) -> Result<(), VmError> {
+        let Some(array_ptr) = (unsafe { target.as_ptr::<Array>() }) else {
+            return Err(VmError::TypeError(
+                "Array length target must be an array".to_string(),
+            ));
+        };
+        let new_len = self.js_array_length_from_value(length_value)?;
+        let array = unsafe { &mut *array_ptr.as_ptr() };
+        array.resize_holey(new_len);
+        Ok(())
+    }
+
+    pub(in crate::vm::interpreter) fn try_proxy_like_get_property(
+        &mut self,
+        value: Value,
+        key: &str,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(proxy) = self.unwrapped_proxy_like(value) else {
+            return Ok(None);
+        };
+
+        if let Some(getter) = self.get_field_value_by_name(proxy.handler, "get") {
+            let key_ptr = self.gc.lock().allocate(RayaString::new(key.to_string()));
+            let key_value = unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).expect("proxy key ptr"))
+            };
+            self.ephemeral_gc_roots.write().push(key_value);
+            let trap_args = [proxy.target, key_value];
+            let result = self.invoke_callable_sync_with_this(
+                getter,
+                Some(proxy.handler),
+                &trap_args,
+                caller_task,
+                caller_module,
+            );
+            let mut ephemeral = self.ephemeral_gc_roots.write();
+            if let Some(index) = ephemeral.iter().rposition(|candidate| *candidate == key_value) {
+                ephemeral.swap_remove(index);
+            }
+            let result = result?;
+            return Ok(Some(result));
+        }
+
+        if let Some(getter) = self.descriptor_accessor(proxy.target, key, "get") {
+            let result =
+                self.invoke_callable_sync(getter, &[], caller_task, caller_module)?;
+            return Ok(Some(result));
+        }
+
+        if let Some(value) = self.descriptor_data_value(proxy.target, key) {
+            return Ok(Some(value));
+        }
+
+        if let Some(value) = self.get_field_value_by_name(proxy.target, key) {
+            return Ok(Some(value));
+        }
+
+        if key == "prototype" {
+            if let Some(value) = self.constructor_prototype_value(proxy.target) {
+                return Ok(Some(value));
+            }
+        }
+
+        if let Some(value) = self.callable_property_value(proxy.target, key) {
+            return Ok(Some(value));
+        }
+
+        Ok(Some(Value::null()))
+    }
+
+    fn prototype_object_for_class_name(&self, class_name: &str, class_value: Value) -> Option<Value> {
+        if let Some(existing) = self.cached_callable_virtual_property_value(class_value, "prototype")
+        {
+            return Some(existing);
+        }
+        if let Some(class_obj_ptr) = unsafe { class_value.as_ptr::<Object>() } {
+            let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
+            if let Some(existing) = class_obj
+                .dyn_map()
+                .and_then(|dyn_map| dyn_map.get(&self.intern_prop_key("prototype")).copied())
+            {
+                return Some(existing);
+            }
+        }
+
+        let lookup_class_name = {
+            let classes = self.classes.read();
+            if classes.get_class_by_name(class_name).is_some() {
+                class_name.to_string()
+            } else {
+                boxed_primitive_helper_class_name(class_name)?.to_string()
+            }
+        };
+
+        let (class_module, method_ids, mut method_names) = {
+            let classes = self.classes.read();
+            let class = classes.get_class_by_name(&lookup_class_name)?;
+            let class_module = class.module.clone();
+            let method_ids = class.vtable.methods.clone();
+            drop(classes);
+            let nominal_type_id = self
+                .classes
+                .read()
+                .get_class_by_name(&lookup_class_name)
+                .map(|class| class.id)?;
+            let method_names = self
+                .class_metadata
+                .read()
+                .get(nominal_type_id)
+                .map(|meta| meta.method_names.clone())
+                .unwrap_or_default();
+            (class_module, method_ids, method_names)
+        };
+        if let Some(module) = class_module.as_ref() {
+            if method_names.len() < method_ids.len() {
+                method_names.resize(method_ids.len(), String::new());
+            }
+            for (slot, func_id) in method_ids.iter().copied().enumerate() {
+                if func_id == usize::MAX || !method_names.get(slot).is_some_and(|name| name.is_empty()) {
+                    continue;
+                }
+                if let Some(function) = module.functions.get(func_id) {
+                    if let Some(name) = function.name.rsplit("::").next() {
+                        method_names[slot] = name.to_string();
+                    }
+                }
+            }
+        }
+
+        let mut member_names = method_names
+            .iter()
+            .filter(|name| !name.is_empty())
+            .cloned()
+            .collect::<Vec<_>>();
+        member_names.push("constructor".to_string());
+        member_names.sort_unstable();
+        member_names.dedup();
+
+        let layout_id = layout_id_from_ordered_names(&member_names);
+        let prototype_ptr = self
+            .gc
+            .lock()
+            .allocate(Object::new_dynamic(layout_id, member_names.len()));
+        let prototype_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(prototype_ptr.as_ptr()).expect("prototype object ptr"))
+        };
+        self.set_cached_callable_virtual_property_value(class_value, "prototype", prototype_val);
+
+        self.define_data_property_on_target(
+            prototype_val,
+            "constructor",
+            class_value,
+            true,
+            false,
+            true,
+        )
+        .ok()?;
+
+        self.seed_builtin_error_prototype_properties(prototype_val, class_name)?;
+
+        for (slot, method_name) in method_names.iter().enumerate() {
+            if method_name.is_empty() {
+                continue;
+            }
+            let Some(&func_id) = method_ids.get(slot) else {
+                continue;
+            };
+            let closure = if let Some(module) = class_module.clone() {
+                Closure::with_module(func_id, Vec::new(), module)
+            } else {
+                Closure::new(func_id, Vec::new())
+            };
+            let closure_ptr = self.gc.lock().allocate(closure);
+            let closure_val = unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(closure_ptr.as_ptr()).expect("prototype method ptr"))
+            };
+            self.define_data_property_on_target(
+                prototype_val,
+                method_name,
+                closure_val,
+                true,
+                false,
+                true,
+            )
+            .ok()?;
+        }
+
+        if let Some(class_obj_ptr) = unsafe { class_value.as_ptr::<Object>() } {
+            let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
+            class_obj
+                .ensure_dyn_map()
+                .insert(self.intern_prop_key("prototype"), prototype_val);
+        }
+        Some(prototype_val)
+    }
+
+    fn generic_function_prototype_value(&self, class_value: Value) -> Option<Value> {
+        if let Some(existing) = self.cached_callable_virtual_property_value(class_value, "prototype")
+        {
+            return Some(existing);
+        }
+        if !self.callable_is_constructible(class_value) {
+            return None;
+        }
+
+        let layout_id = layout_id_from_ordered_names(&["constructor".to_string()]);
+        let prototype_ptr = self
+            .gc
+            .lock()
+            .allocate(Object::new_dynamic(layout_id, 1));
+        let prototype_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(prototype_ptr.as_ptr()).expect("prototype object ptr"))
+        };
+        self.set_cached_callable_virtual_property_value(class_value, "prototype", prototype_val);
+
+        self.define_data_property_on_target(
+            prototype_val,
+            "constructor",
+            class_value,
+            true,
+            false,
+            true,
+        )
+        .ok()?;
+
+        if let Some(object_ctor) = self.builtin_global_value("Object") {
+            if let Some(object_proto) = self.object_constructor_prototype_value(object_ctor) {
+                self.set_constructed_object_prototype_from_value(prototype_val, object_proto);
+            }
+        }
+
+        if let Some(class_obj_ptr) = unsafe { class_value.as_ptr::<Object>() } {
+            let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
+            class_obj
+                .ensure_dyn_map()
+                .insert(self.intern_prop_key("prototype"), prototype_val);
+        }
+        Some(prototype_val)
+    }
+
+    pub(in crate::vm::interpreter) fn boxed_primitive_internal_value(
+        &self,
+        value: Value,
+        kind: &str,
+    ) -> Option<Value> {
+        let kind_value = self.get_own_field_value_by_name(value, "__boxedPrimitiveKind")?;
+        let actual_kind = primitive_to_js_string(kind_value)?;
+        if actual_kind != kind {
+            return None;
+        }
+        self.get_own_field_value_by_name(value, "__primitiveValue")
+    }
+
+    fn alloc_boxed_primitive_object(
+        &mut self,
+        constructor: Value,
+        kind: &str,
+        primitive_value: Value,
+    ) -> Result<Value, VmError> {
+        let member_names = vec![
+            "__boxedPrimitiveKind".to_string(),
+            "__primitiveValue".to_string(),
+        ];
+        let layout_id = layout_id_from_ordered_names(&member_names);
+        let object_ptr = self
+            .gc
+            .lock()
+            .allocate(Object::new_dynamic(layout_id, member_names.len()));
+        let object_value = unsafe {
+            Value::from_ptr(
+                std::ptr::NonNull::new(object_ptr.as_ptr()).expect("boxed primitive object ptr"),
+            )
+        };
+        self.set_constructed_object_prototype_from_constructor(object_value, constructor);
+        let kind_ptr = self.gc.lock().allocate(RayaString::new(kind.to_string()));
+        let kind_value = unsafe {
+            Value::from_ptr(
+                std::ptr::NonNull::new(kind_ptr.as_ptr()).expect("boxed primitive kind ptr"),
+            )
+        };
+        self.define_data_property_on_target(
+            object_value,
+            "__boxedPrimitiveKind",
+            kind_value,
+            true,
+            false,
+            false,
+        )?;
+        self.define_data_property_on_target(
+            object_value,
+            "__primitiveValue",
+            primitive_value,
+            true,
+            false,
+            false,
+        )?;
+        Ok(object_value)
+    }
+
+    pub(in crate::vm::interpreter) fn try_construct_boxed_primitive(
+        &mut self,
+        constructor: Value,
+        args: &[Value],
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(global_name) = self.builtin_global_name_for_value(constructor) else {
+            return Ok(None);
+        };
+        if !matches!(global_name.as_str(), "Boolean" | "Number" | "String") {
+            return Ok(None);
+        }
+        let primitive_value = self.invoke_callable_sync(constructor, args, task, module)?;
+        self.alloc_boxed_primitive_object(constructor, &global_name, primitive_value)
+            .map(Some)
+    }
+
+    fn js_array_length_from_value(&self, value: Value) -> Result<usize, VmError> {
+        let numeric = value
+            .as_i32()
+            .map(|v| v as f64)
+            .or_else(|| value.as_f64())
+            .or_else(|| self.boxed_primitive_internal_value(value, "Number").and_then(|boxed| {
+                boxed.as_i32().map(|v| v as f64).or_else(|| boxed.as_f64())
+            }))
+            .ok_or_else(|| VmError::RangeError("Invalid array length".to_string()))?;
+
+        if !numeric.is_finite()
+            || numeric < 0.0
+            || numeric > u32::MAX as f64
+            || numeric.fract() != 0.0
+        {
+            return Err(VmError::RangeError("Invalid array length".to_string()));
+        }
+
+        Ok(numeric as usize)
+    }
+
+    pub(in crate::vm::interpreter) fn object_constructor_prototype_value(&self, class_value: Value) -> Option<Value> {
+        self.prototype_object_for_class_name("Object", class_value)
+    }
+
+    pub(in crate::vm::interpreter) fn array_constructor_prototype_value(&self, class_value: Value) -> Option<Value> {
+        self.prototype_object_for_class_name("Array", class_value)
+    }
+
+    pub(in crate::vm::interpreter) fn string_constructor_prototype_value(&self, class_value: Value) -> Option<Value> {
+        self.prototype_object_for_class_name("String", class_value)
+    }
+
+    pub(in crate::vm::interpreter) fn function_constructor_prototype_value(&self, class_value: Value) -> Option<Value> {
+        self.prototype_object_for_class_name("Function", class_value)
+    }
+
+    fn species_accessor_getter_for_constructor(&self, class_value: Value) -> Option<Value> {
+        let builtin = self.builtin_global_value("Array")?;
+        if builtin.raw() != class_value.raw() {
+            return None;
+        }
+        self.get_own_field_value_by_name(class_value, "__speciesGetter")
+    }
+
+    pub(in crate::vm::interpreter) fn callable_virtual_accessor_value(
+        &self,
+        target: Value,
+        key: &str,
+        accessor_name: &str,
+    ) -> Option<Value> {
+        if self.callable_virtual_property_deleted(target, key) {
+            return None;
+        }
+        match (key, accessor_name) {
+            ("Symbol.species", "get") => self.species_accessor_getter_for_constructor(target),
+            _ => None,
+        }
+    }
+
+    pub(in crate::vm::interpreter) fn callable_virtual_property_value(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<Value> {
+        if self.callable_virtual_property_deleted(target, key) {
+            return None;
+        }
+        match key {
+            "prototype" => self.constructor_prototype_value(target),
+            "name" | "length" => self.callable_property_value(target, key),
+            _ => None,
+        }
+    }
+
+    pub(in crate::vm::interpreter) fn callable_virtual_property_descriptor(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<(bool, bool, bool)> {
+        match key {
+            "prototype" if self.constructor_prototype_value(target).is_some() => {
+                Some((false, false, false))
+            }
+            "name" | "length" if self.callable_property_value(target, key).is_some() => {
+                Some((false, true, false))
+            }
+            "Symbol.species" if self.species_accessor_getter_for_constructor(target).is_some() => {
+                Some((false, true, false))
+            }
+            _ => None,
+        }
+    }
+
+    pub(in crate::vm::interpreter) fn callable_property_value(&self, target: Value, key: &str) -> Option<Value> {
+        if self.callable_virtual_property_deleted(target, key) {
+            return None;
+        }
+        let (name, length) = self.callable_function_info(target)?;
+        match key {
+            "name" => {
+                let ptr = self.gc.lock().allocate(RayaString::new(name));
+                Some(unsafe { Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()) })
+            }
+            "length" => Some(Value::i32(length as i32)),
+            _ => None,
+        }
+    }
+
+    fn nominal_class_name_for_value(&self, value: Value) -> Option<String> {
+        let obj_ptr = checked_object_ptr(value)?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let nominal_type_id = obj.nominal_type_id_usize()?;
+        let classes = self.classes.read();
+        classes.get_class(nominal_type_id).map(|class| class.name.clone())
+    }
+
+    fn js_function_argument_to_string(
+        &mut self,
+        value: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<String, VmError> {
+        if let Some(text) = primitive_to_js_string(value) {
+            return Ok(text);
+        }
+
+        if self
+            .nominal_class_name_for_value(value)
+            .as_deref()
+            .is_some_and(|name| name == "Symbol")
+        {
+            return Err(VmError::TypeError(
+                "Cannot convert a Symbol value to a string".to_string(),
+            ));
+        }
+
+        if let Ok(Some(exotic)) =
+            self.well_known_symbol_property_value(value, "Symbol.toPrimitive", task, module)
+        {
+            if !Self::is_callable_value(exotic) {
+                return Err(VmError::TypeError(
+                    "Cannot convert object to primitive value".to_string(),
+                ));
+            }
+            let hint_ptr = self.gc.lock().allocate(RayaString::new("string".to_string()));
+            let hint_value = unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(hint_ptr.as_ptr()).expect("string hint ptr"))
+            };
+            self.ephemeral_gc_roots.write().push(hint_value);
+            let result = self.invoke_callable_sync_with_this(
+                exotic,
+                Some(value),
+                &[hint_value],
+                task,
+                module,
+            );
+            let mut ephemeral = self.ephemeral_gc_roots.write();
+            if let Some(index) = ephemeral.iter().rposition(|candidate| *candidate == hint_value) {
+                ephemeral.swap_remove(index);
+            }
+            let primitive = result?;
+            if let Some(text) = primitive_to_js_string(primitive) {
+                return Ok(text);
+            }
+            return Err(VmError::TypeError(
+                "Cannot convert object to primitive value".to_string(),
+            ));
+        }
+
+        for method_name in ["toString", "valueOf"] {
+            if let Some(method) = self.get_field_value_by_name(value, method_name) {
+                if !Self::is_callable_value(method) {
+                    continue;
+                }
+                let primitive =
+                    self.invoke_callable_sync_with_this(method, Some(value), &[], task, module)?;
+                if let Some(text) = primitive_to_js_string(primitive) {
+                    return Ok(text);
+                }
+            }
+        }
+
+        Err(VmError::TypeError(
+            "Cannot convert object to primitive value".to_string(),
+        ))
+    }
+
+    fn compile_dynamic_js_function_module(
+        &self,
+        params_source: &str,
+        body_source: &str,
+    ) -> Result<Arc<Module>, VmError> {
+        let source = format!(
+            "function __dynamic_fn__({params_source}) {{\n{body_source}\n}}\n"
+        );
+        let parser = Parser::new(&source)
+            .map_err(|error| VmError::RuntimeError(format!("Dynamic Function lexer error: {:?}", error)))?;
+        let (ast, interner) = parser
+            .parse()
+            .map_err(|error| VmError::RuntimeError(format!("Dynamic Function parse error: {:?}", error)))?;
+
+        let mut type_ctx = TypeContext::new();
+        let policy = CheckerPolicy::for_mode(TypeSystemMode::Js);
+        let mut binder = Binder::new(&mut type_ctx, &interner)
+            .with_mode(TypeSystemMode::Js)
+            .with_policy(policy);
+        let builtin_sigs = crate::builtins::to_checker_signatures();
+        binder.register_builtins(&builtin_sigs);
+
+        let mut symbols = binder
+            .bind_module(&ast)
+            .map_err(|error| VmError::RuntimeError(format!("Dynamic Function bind error: {:?}", error)))?;
+
+        let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
+            .with_mode(TypeSystemMode::Js)
+            .with_policy(policy);
+        let check_result = checker
+            .check_module(&ast)
+            .map_err(|error| VmError::RuntimeError(format!("Dynamic Function type error: {:?}", error)))?;
+
+        for ((scope_id, name), ty) in check_result.inferred_types {
+            symbols.update_type(ScopeId(scope_id), &name, ty);
+        }
+
+        let ambient_builtin_globals: FxHashSet<String> = self
+            .builtin_global_slots
+            .read()
+            .keys()
+            .cloned()
+            .collect();
+        let module_identity = format!(
+            "__dynamic_function__/{}",
+            DYNAMIC_JS_FUNCTION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+
+        let compiler = Compiler::new(type_ctx, &interner)
+            .with_expr_types(check_result.expr_types)
+            .with_type_annotation_types(check_result.type_annotation_types)
+            .with_module_identity(module_identity)
+            .with_js_this_binding_compat(true)
+            .with_allow_unresolved_runtime_fallback(true)
+            .with_ambient_builtin_globals(ambient_builtin_globals)
+            .with_source_text(source);
+        let module = compiler
+            .compile_via_ir(&ast)
+            .map_err(|error| VmError::RuntimeError(format!("Dynamic Function compile error: {}", error)))?;
+        Ok(Arc::new(module))
+    }
+
+    fn alloc_dynamic_js_function(
+        &mut self,
+        args: &[Value],
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        let mut parts = Vec::with_capacity(args.len());
+        for arg in args {
+            parts.push(self.js_function_argument_to_string(*arg, task, module)?);
+        }
+        let body_source = parts.pop().unwrap_or_default();
+        let params_source = parts.join(",");
+        let function_module = self.compile_dynamic_js_function_module(&params_source, &body_source)?;
+        let func_id = function_module
+            .functions
+            .iter()
+            .position(|function| function.name == "__dynamic_fn__")
+            .ok_or_else(|| {
+                VmError::RuntimeError("Dynamic Function compile did not produce __dynamic_fn__".to_string())
+            })?;
+        let closure = Closure::with_module(func_id, Vec::new(), function_module);
+        let closure_ptr = self.gc.lock().allocate(closure);
+        Ok(unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(closure_ptr.as_ptr()).expect("dynamic function ptr"))
+        })
+    }
+
+    pub(in crate::vm::interpreter) fn collect_apply_arguments(
+        &self,
+        arg_list: Value,
+    ) -> Result<Vec<Value>, VmError> {
+        use crate::vm::json::view::{js_classify, JSView};
+
+        if arg_list.is_null() {
+            return Ok(Vec::new());
+        }
+
+        match js_classify(arg_list) {
+            JSView::Arr(ptr) => Ok(unsafe { &*ptr }.elements.clone()),
+            JSView::Struct { .. } => {
+                let length_value = self
+                    .get_field_value_by_name(arg_list, "length")
+                    .unwrap_or(Value::null());
+                let length = crate::vm::interpreter::core::value_to_f64(length_value)?
+                    .max(0.0)
+                    .floor() as usize;
+                let mut values = Vec::with_capacity(length);
+                for index in 0..length {
+                    values.push(
+                        self.get_field_value_by_name(arg_list, &index.to_string())
+                            .unwrap_or(Value::null()),
+                    );
+                }
+                Ok(values)
+            }
+            _ => Err(VmError::TypeError(
+                "Function.prototype.apply expects an array-like argument list".to_string(),
+            )),
+        }
+    }
+
     fn nominal_type_id_from_imported_class_value(
         &self,
         module: &Module,
         value: Value,
     ) -> Option<usize> {
+        if let Some(global_name) = self.builtin_global_name_for_value(value) {
+            let classes = self.classes.read();
+            if let Some(class) = classes.get_class_by_name(&global_name) {
+                return Some(class.id);
+            }
+        }
+
         if let Some(nominal_id) = self.type_handle_nominal_id(value) {
             return Some(nominal_id as usize);
         }
@@ -251,7 +2145,7 @@ impl<'a> Interpreter<'a> {
                 .ok();
         }
 
-        if let Some(object_ptr) = unsafe { value.as_ptr::<Object>() } {
+        if let Some(object_ptr) = checked_object_ptr(value) {
             let object = unsafe { &*object_ptr.as_ptr() };
             let handle_key = self.intern_prop_key(IMPORTED_CLASS_TYPE_HANDLE_KEY);
             if let Some(handle_val) = object
@@ -285,22 +2179,67 @@ impl<'a> Interpreter<'a> {
             .layout_field_names_for_object(obj)
             .and_then(|names| names.iter().position(|name| name == field_name))
         {
-            return Some(index);
+            if index < obj.field_count() {
+                return Some(index);
+            }
         }
-        // Backstop for builtin values still emitted as generic object literals.
-        Self::legacy_object_literal_field_index(field_name, obj.field_count())
+        if nominal_type_id.is_some() {
+            return None;
+        }
+        None
     }
 
-    fn get_field_value_by_name(&self, obj_val: Value, field_name: &str) -> Option<Value> {
+    fn get_own_field_value_by_name(&self, obj_val: Value, field_name: &str) -> Option<Value> {
+        if self.fixed_property_deleted(obj_val, field_name) {
+            return None;
+        }
         let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
         if let Some(index) = self.get_field_index_for_value(obj_val, field_name) {
             if let Some(value) = obj.get_field(index) {
-                return Some(value);
+                if !value.is_null()
+                    || self
+                        .callable_virtual_property_value(obj_val, field_name)
+                        .is_none()
+                {
+                    return Some(value);
+                }
             }
         }
         let key = self.intern_prop_key(field_name);
-        obj.dyn_map().and_then(|map| map.get(&key).copied())
+        obj.dyn_map()
+            .and_then(|map| map.get(&key).copied())
+            .or_else(|| self.callable_virtual_property_value(obj_val, field_name))
+    }
+
+    pub(in crate::vm::interpreter) fn get_field_value_by_name(
+        &self,
+        obj_val: Value,
+        field_name: &str,
+    ) -> Option<Value> {
+        if let Some(value) = self.get_own_field_value_by_name(obj_val, field_name) {
+            return Some(value);
+        }
+
+        if let Some(obj_ptr) = checked_object_ptr(obj_val) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
+                if let Some(method_slot) = self.nominal_method_slot_by_name(nominal_type_id, field_name)
+                {
+                    if let Ok(bound) = self.bound_method_value_for_slot(obj_val, method_slot) {
+                        return Some(bound);
+                    }
+                }
+            }
+        }
+
+        if let Some(prototype) = self.prototype_of_value(obj_val) {
+            if prototype != obj_val {
+                return self.get_field_value_by_name(prototype, field_name);
+            }
+        }
+
+        None
     }
 
     fn descriptor_flag(&self, descriptor: Value, field_name: &str, default: bool) -> bool {
@@ -326,9 +2265,117 @@ impl<'a> Interpreter<'a> {
         );
     }
 
+    pub(in crate::vm::interpreter) fn define_data_property_on_target(
+        &self,
+        target: Value,
+        key: &str,
+        value: Value,
+        writable: bool,
+        enumerable: bool,
+        configurable: bool,
+    ) -> Result<(), VmError> {
+        let debug_array_prop = std::env::var("RAYA_DEBUG_ARRAY_PROP").is_ok();
+        if debug_array_prop {
+            eprintln!(
+                "[defineData] target={:#x} is_object={} key={} value={:#x} attrs=({}, {}, {})",
+                target.raw(),
+                checked_object_ptr(target).is_some(),
+                key,
+                value.raw(),
+                writable,
+                enumerable,
+                configurable
+            );
+        }
+        let descriptor = self.alloc_object_descriptor()?;
+        let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() }) else {
+            return Err(VmError::RuntimeError(
+                "Failed to allocate property descriptor object".to_string(),
+            ));
+        };
+        let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
+        for (field_name, field_value) in [
+            ("value", value),
+            ("writable", Value::bool(writable)),
+            ("enumerable", Value::bool(enumerable)),
+            ("configurable", Value::bool(configurable)),
+        ] {
+            if let Some(field_index) = self.get_field_index_for_value(descriptor, field_name) {
+                descriptor_obj
+                    .set_field(field_index, field_value)
+                    .map_err(VmError::RuntimeError)?;
+            }
+        }
+
+        if let Some(obj_ptr) = checked_object_ptr(target) {
+            if debug_array_prop {
+                eprintln!("[defineData] object storage path");
+            }
+            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+            if let Some(field_index) = self.get_field_index_for_value(target, key) {
+                obj.set_field(field_index, value)
+                    .map_err(VmError::RuntimeError)?;
+            } else {
+                let prop_key = self.intern_prop_key(key);
+                obj.ensure_dyn_map().insert(prop_key, value);
+            }
+        } else {
+            if debug_array_prop {
+                eprintln!("[defineData] metadata storage path");
+            }
+            self.metadata.lock().define_metadata_property(
+                NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
+                value,
+                target,
+                key.to_string(),
+            );
+        }
+
+        if debug_array_prop {
+            eprintln!("[defineData] descriptor metadata");
+        }
+        self.set_descriptor_metadata(target, key, descriptor);
+        self.set_callable_virtual_property_deleted(target, key, false);
+        self.set_fixed_property_deleted(target, key, false);
+        if debug_array_prop {
+            eprintln!("[defineData] done");
+        }
+        Ok(())
+    }
+
     fn get_descriptor_metadata(&self, target: Value, key: &str) -> Option<Value> {
+        if self.fixed_property_deleted(target, key) {
+            return None;
+        }
         let metadata = self.metadata.lock();
         metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, target, key)
+    }
+
+    pub(in crate::vm::interpreter) fn metadata_data_property_value(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<Value> {
+        if self.fixed_property_deleted(target, key) {
+            return None;
+        }
+        let metadata = self.metadata.lock();
+        metadata.get_metadata_property(NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY, target, key)
+    }
+
+    pub(in crate::vm::interpreter) fn is_property_enumerable(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> bool {
+        if let Some(descriptor) = self.get_descriptor_metadata(target, key) {
+            return self.descriptor_flag(descriptor, "enumerable", false);
+        }
+
+        match self.synthesize_data_property_descriptor(target, key) {
+            Ok(Some(descriptor)) => self.descriptor_flag(descriptor, "enumerable", false),
+            _ => false,
+        }
     }
 
     fn apply_descriptor_to_target(
@@ -385,19 +2432,34 @@ impl<'a> Interpreter<'a> {
 
         // Apply data descriptor value directly to the target field if provided.
         if let Some(value) = value_field.filter(|v| !v.is_null()) {
-            let obj_ptr = unsafe { target.as_ptr::<Object>() }
-                .ok_or_else(|| VmError::TypeError("Expected object".to_string()))?;
-            let obj = unsafe { &mut *obj_ptr.as_ptr() };
-            if let Some(field_index) = self.get_field_index_for_value(target, key) {
-                obj.set_field(field_index, value)
-                    .map_err(VmError::RuntimeError)?;
+            if self.set_builtin_global_property(target, key, value) {
+                self.set_descriptor_metadata(target, key, descriptor);
+                self.set_callable_virtual_property_deleted(target, key, false);
+                self.set_fixed_property_deleted(target, key, false);
+                return Ok(());
+            }
+            if let Some(obj_ptr) = checked_object_ptr(target) {
+                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                if let Some(field_index) = self.get_field_index_for_value(target, key) {
+                    obj.set_field(field_index, value)
+                        .map_err(VmError::RuntimeError)?;
+                } else {
+                    let prop_key = self.intern_prop_key(key);
+                    obj.ensure_dyn_map().insert(prop_key, value);
+                }
             } else {
-                let prop_key = self.intern_prop_key(key);
-                obj.ensure_dyn_map().insert(prop_key, value);
+                self.metadata.lock().define_metadata_property(
+                    NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
+                    value,
+                    target,
+                    key.to_string(),
+                );
             }
         }
 
         self.set_descriptor_metadata(target, key, descriptor);
+        self.set_callable_virtual_property_deleted(target, key, false);
+        self.set_fixed_property_deleted(target, key, false);
         Ok(())
     }
 
@@ -580,6 +2642,36 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn ensure_symbol_class_layout(&self) -> (usize, usize, LayoutId) {
+        let mut classes = self.classes.write();
+        if let Some(id) = classes.get_class_by_name("Symbol").map(|class| class.id) {
+            let (_, mut field_count) = self
+                .nominal_allocation(id)
+                .expect("registered Symbol allocation");
+            if field_count < 1 {
+                drop(classes);
+                self.set_nominal_field_count(id, 1);
+                field_count = 1;
+                classes = self.classes.write();
+            }
+            let (layout_id, field_count) = self
+                .nominal_allocation(id)
+                .expect("registered Symbol allocation");
+            (id, field_count.max(1), layout_id)
+        } else {
+            drop(classes);
+            const SYMBOL_LAYOUT_FIELDS: &[&str] = &["key"];
+            let id = self.register_runtime_class_with_layout_names(
+                Class::new(0, "Symbol".to_string(), 1),
+                Some(SYMBOL_LAYOUT_FIELDS),
+            );
+            let (layout_id, field_count) = self
+                .nominal_allocation(id)
+                .expect("registered Symbol allocation");
+            (id, field_count.max(1), layout_id)
+        }
+    }
+
     fn alloc_buffer_object(&self, handle: u64, len: usize) -> Result<Value, VmError> {
         let (buffer_nominal_type_id, buffer_field_count, buffer_layout_id) =
             self.ensure_buffer_class_layout();
@@ -600,14 +2692,14 @@ impl<'a> Interpreter<'a> {
     }
 
     fn alloc_object_descriptor(&self) -> Result<Value, VmError> {
-        let (object_nominal_type_id, object_field_count, object_layout_id) =
-            self.ensure_object_class_layout();
-        let mut obj =
-            Object::new_nominal(
-                object_layout_id,
-                object_nominal_type_id as u32,
-                object_field_count,
-            );
+        let field_names = crate::vm::object::OBJECT_DESCRIPTOR_LAYOUT_FIELDS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        let object_layout_id = layout_id_from_ordered_names(&field_names);
+        self.register_structural_layout_shape(object_layout_id, &field_names);
+        let object_field_count = field_names.len();
+        let mut obj = Object::new_structural(object_layout_id, object_field_count);
         if object_field_count > 0 {
             obj.set_field(0, Value::null())
                 .map_err(VmError::RuntimeError)?;
@@ -636,23 +2728,57 @@ impl<'a> Interpreter<'a> {
         Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
     }
 
+    fn alloc_symbol_object(&self, key: &str) -> Result<Value, VmError> {
+        let (symbol_nominal_type_id, symbol_field_count, symbol_layout_id) =
+            self.ensure_symbol_class_layout();
+        let mut obj =
+            Object::new_nominal(
+                symbol_layout_id,
+                symbol_nominal_type_id as u32,
+                symbol_field_count,
+            );
+        let key_ptr = self.gc.lock().allocate(RayaString::new(key.to_string()));
+        let key_value =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).unwrap()) };
+        obj.set_field(0, key_value).map_err(VmError::RuntimeError)?;
+        let obj_ptr = self.gc.lock().allocate(obj);
+        Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
+    }
+
     fn synthesize_data_property_descriptor(
         &self,
         target: Value,
         key: &str,
     ) -> Result<Option<Value>, VmError> {
-        let Some(obj_ptr) = (unsafe { target.as_ptr::<Object>() }) else {
+        if self.fixed_property_deleted(target, key) {
             return Ok(None);
-        };
-        let obj = unsafe { &*obj_ptr.as_ptr() };
-
-        let fixed_value = self
-            .get_field_index_for_value(target, key)
-            .and_then(|index| obj.get_field(index));
-        let dynamic_value = obj
-            .dyn_map()
-            .and_then(|dyn_map| dyn_map.get(&self.intern_prop_key(key)).copied());
-        let Some(value) = fixed_value.or(dynamic_value) else {
+        }
+        let callable_value = self.callable_virtual_property_value(target, key);
+        let builtin_global_value = self.builtin_global_property_value(target, key);
+        let object_value = checked_object_ptr(target).map(|obj_ptr| {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            let fixed_value = self
+                .get_field_index_for_value(target, key)
+                .and_then(|index| obj.get_field(index));
+            let fixed_value = if fixed_value.is_some_and(|value| value.is_null())
+                && callable_value.is_some()
+            {
+                None
+            } else {
+                fixed_value
+            };
+            let dynamic_value = obj
+                .dyn_map()
+                .and_then(|dyn_map| dyn_map.get(&self.intern_prop_key(key)).copied());
+            fixed_value.or(dynamic_value)
+        });
+        let metadata_value = self.metadata_data_property_value(target, key);
+        let Some(value) = object_value
+            .flatten()
+            .or(metadata_value)
+            .or(builtin_global_value)
+            .or(callable_value)
+        else {
             return Ok(None);
         };
 
@@ -662,6 +2788,36 @@ impl<'a> Interpreter<'a> {
         };
         let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
 
+        let legacy_error_descriptor = self.legacy_error_field_descriptor(target, key);
+        let callable_virtual_descriptor = self.callable_virtual_property_descriptor(target, key);
+        let writable_flag = callable_virtual_descriptor
+            .or(legacy_error_descriptor)
+            .map(|(writable, _, _)| writable)
+            .unwrap_or(
+                matches!(object_value.flatten(), Some(_))
+                    || metadata_value.is_some()
+                    || builtin_global_value.is_some(),
+            );
+        let configurable_flag = callable_virtual_descriptor
+            .or(legacy_error_descriptor)
+            .map(|(_, configurable, _)| configurable)
+            .unwrap_or(true);
+        let callable_data_property =
+            callable_virtual_descriptor.is_none()
+                && object_value.flatten().is_some()
+                && self.callable_function_info(value).is_some()
+                && self.callable_function_info(target).is_some();
+        let enumerable_flag = callable_virtual_descriptor
+            .or(legacy_error_descriptor)
+            .map(|(_, _, enumerable)| enumerable)
+            .unwrap_or_else(|| {
+                if callable_data_property {
+                    false
+                } else {
+                    matches!(object_value.flatten(), Some(_)) || metadata_value.is_some()
+                }
+            });
+
         if let Some(value_index) = self.get_field_index_for_value(descriptor, "value") {
             descriptor_obj
                 .set_field(value_index, value)
@@ -669,7 +2825,49 @@ impl<'a> Interpreter<'a> {
         }
         if let Some(writable_index) = self.get_field_index_for_value(descriptor, "writable") {
             descriptor_obj
-                .set_field(writable_index, Value::bool(true))
+                .set_field(writable_index, Value::bool(writable_flag))
+                .map_err(VmError::RuntimeError)?;
+        }
+        if let Some(configurable_index) = self.get_field_index_for_value(descriptor, "configurable")
+        {
+            descriptor_obj
+                .set_field(configurable_index, Value::bool(configurable_flag))
+                .map_err(VmError::RuntimeError)?;
+        }
+        if let Some(enumerable_index) = self.get_field_index_for_value(descriptor, "enumerable") {
+            descriptor_obj
+                .set_field(enumerable_index, Value::bool(enumerable_flag))
+                .map_err(VmError::RuntimeError)?;
+        }
+
+        Ok(Some(descriptor))
+    }
+
+    fn synthesize_accessor_property_descriptor(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Result<Option<Value>, VmError> {
+        let getter = self.callable_virtual_accessor_value(target, key, "get");
+        let setter = self.callable_virtual_accessor_value(target, key, "set");
+        if getter.is_none() && setter.is_none() {
+            return Ok(None);
+        }
+
+        let descriptor = self.alloc_object_descriptor()?;
+        let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() }) else {
+            return Ok(None);
+        };
+        let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
+
+        if let Some(value_index) = self.get_field_index_for_value(descriptor, "value") {
+            descriptor_obj
+                .set_field(value_index, Value::undefined())
+                .map_err(VmError::RuntimeError)?;
+        }
+        if let Some(writable_index) = self.get_field_index_for_value(descriptor, "writable") {
+            descriptor_obj
+                .set_field(writable_index, Value::undefined())
                 .map_err(VmError::RuntimeError)?;
         }
         if let Some(configurable_index) = self.get_field_index_for_value(descriptor, "configurable")
@@ -680,11 +2878,74 @@ impl<'a> Interpreter<'a> {
         }
         if let Some(enumerable_index) = self.get_field_index_for_value(descriptor, "enumerable") {
             descriptor_obj
-                .set_field(enumerable_index, Value::bool(true))
+                .set_field(enumerable_index, Value::bool(false))
+                .map_err(VmError::RuntimeError)?;
+        }
+        if let Some(get_index) = self.get_field_index_for_value(descriptor, "get") {
+            descriptor_obj
+                .set_field(get_index, getter.unwrap_or(Value::undefined()))
+                .map_err(VmError::RuntimeError)?;
+        }
+        if let Some(set_index) = self.get_field_index_for_value(descriptor, "set") {
+            descriptor_obj
+                .set_field(set_index, setter.unwrap_or(Value::undefined()))
                 .map_err(VmError::RuntimeError)?;
         }
 
         Ok(Some(descriptor))
+    }
+
+    fn legacy_error_field_descriptor(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<(bool, bool, bool)> {
+        let obj_ptr = checked_object_ptr(target)?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let nominal_class_name = obj.nominal_type_id_usize().and_then(|nominal_type_id| {
+            let classes = self.classes.read();
+            classes
+                .get_class(nominal_type_id)
+                .map(|class| class.name.clone())
+        });
+        let field_names = self.layout_field_names_for_object(obj).unwrap_or_default();
+        let is_error_like = nominal_class_name
+            .as_deref()
+            .is_some_and(|name| {
+                matches!(
+                    name,
+                    "Error"
+                        | "TypeError"
+                        | "RangeError"
+                        | "ReferenceError"
+                        | "SyntaxError"
+                        | "URIError"
+                        | "EvalError"
+                        | "InternalError"
+                        | "AggregateError"
+                        | "SuppressedError"
+                        | "ChannelClosedError"
+                        | "AssertionError"
+                )
+            })
+            || (field_names.iter().any(|name| name == "message")
+                && field_names.iter().any(|name| name == "name"));
+        if !is_error_like {
+            return None;
+        }
+
+        match key {
+            "message" | "name" | "stack" | "cause" | "code" | "errno" | "syscall" | "path" => {
+                Some((true, true, false))
+            }
+            "errors"
+                if nominal_class_name.as_deref() == Some("AggregateError")
+                    || field_names.iter().any(|name| name == "errors") =>
+            {
+                Some((true, true, false))
+            }
+            _ => None,
+        }
     }
 
     pub(in crate::vm::interpreter) fn exec_native_ops(
@@ -816,6 +3077,28 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_WELL_KNOWN_SYMBOL => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.wellKnownSymbol requires 1 argument".to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.wellKnownSymbol expects a string key".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() }.data.clone();
+                        let value = match self.alloc_symbol_object(&name) {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL => {
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -852,6 +3135,216 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_CALL_CONSTRUCTOR_BY_NAME => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "parent constructor helper expects `this`, class name, and optional args"
+                                    .to_string(),
+                            ));
+                        }
+                        let this_arg = args[0];
+                        let Some(name_ptr) = (unsafe { args[1].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "parent constructor helper expects a string class name"
+                                    .to_string(),
+                            ));
+                        };
+                        let class_name = unsafe { &*name_ptr.as_ptr() }.data.clone();
+                        let (constructor_id, constructor_module) = {
+                            let classes = self.classes.read();
+                            let Some(class) = classes.get_class_by_name(&class_name) else {
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Parent class '{}' not found",
+                                    class_name
+                                )));
+                            };
+                            (class.get_constructor(), class.module.clone())
+                        };
+                        if let Some(constructor_id) = constructor_id {
+                            let closure = if let Some(module) = constructor_module {
+                                Closure::with_module(constructor_id, Vec::new(), module)
+                            } else {
+                                Closure::new(constructor_id, Vec::new())
+                            };
+                            let closure_ptr = self.gc.lock().allocate(closure);
+                            let closure_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(closure_ptr.as_ptr())
+                                        .expect("parent constructor closure ptr"),
+                                )
+                            };
+                            self.ephemeral_gc_roots.write().push(closure_val);
+                            let invoke_args = args[2..].to_vec();
+                            let invoke_result = self.invoke_callable_sync_with_this(
+                                closure_val,
+                                Some(this_arg),
+                                &invoke_args,
+                                task,
+                                module,
+                            );
+                            {
+                                let mut ephemeral = self.ephemeral_gc_roots.write();
+                                if let Some(index) =
+                                    ephemeral.iter().rposition(|candidate| *candidate == closure_val)
+                                {
+                                    ephemeral.swap_remove(index);
+                                }
+                            }
+                            if let Err(error) = invoke_result {
+                                return OpcodeResult::Error(error);
+                            }
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::FUNCTION_CONSTRUCTOR_HELPER => {
+                        let value = match self.alloc_dynamic_js_function(&args, task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::FUNCTION_CALL_HELPER => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Function.prototype.call requires a target function and thisArg"
+                                    .to_string(),
+                            ));
+                        }
+                        let target_callable = args[0];
+                        let this_arg = args[1];
+                        let rest_args = if args.len() >= 3 {
+                            match self.collect_apply_arguments(args[2]) {
+                                Ok(values) => values,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        } else {
+                            Vec::new()
+                        };
+                        self.dispatch_call_with_explicit_this(
+                            stack,
+                            target_callable,
+                            this_arg,
+                            rest_args,
+                            module,
+                            task,
+                            "Function.prototype.call target is not callable",
+                        )
+                    }
+
+                    id if id == crate::compiler::native_id::FUNCTION_APPLY_HELPER => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Function.prototype.apply requires a target function and thisArg"
+                                    .to_string(),
+                            ));
+                        }
+                        let target_callable = args[0];
+                        let this_arg = args[1];
+                        let apply_args = if args.len() >= 3 {
+                            match self.collect_apply_arguments(args[2]) {
+                                Ok(values) => values,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        } else {
+                            Vec::new()
+                        };
+
+                        if let Some(target_ptr) = unsafe { target_callable.as_ptr::<u8>() } {
+                            let header = unsafe { &*header_ptr_from_value_ptr(target_ptr.as_ptr()) };
+                            if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
+                                let method = unsafe {
+                                    &*target_callable
+                                        .as_ptr::<BoundNativeMethod>()
+                                        .expect("bound native target")
+                                        .as_ptr()
+                                };
+                                return self.exec_bound_native_method_call(
+                                    stack,
+                                    this_arg,
+                                    method.native_id,
+                                    apply_args,
+                                    module,
+                                    task,
+                                );
+                            } else if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+                                let method = unsafe {
+                                    &*target_callable
+                                        .as_ptr::<BoundMethod>()
+                                        .expect("bound method target")
+                                        .as_ptr()
+                                };
+                                if let Err(e) = stack.push(this_arg) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                for arg in &apply_args {
+                                    if let Err(e) = stack.push(*arg) {
+                                        return OpcodeResult::Error(e);
+                                    }
+                                }
+                                return OpcodeResult::PushFrame {
+                                    func_id: method.func_id,
+                                    arg_count: apply_args.len() + 1,
+                                    is_closure: false,
+                                    closure_val: None,
+                                    module: method.module.clone(),
+                                    return_action: ReturnAction::PushReturnValue,
+                                };
+                            }
+                        }
+
+                        match self.callable_frame_for_value(
+                            target_callable,
+                            stack,
+                            &apply_args,
+                            Some(this_arg),
+                            ReturnAction::PushReturnValue,
+                        ) {
+                            Ok(Some(frame)) => frame,
+                            Ok(None) => OpcodeResult::Error(VmError::TypeError(
+                                "Function.prototype.apply target is not callable".to_string(),
+                            )),
+                            Err(error) => OpcodeResult::Error(error),
+                        }
+                    }
+
+                    id if id == crate::compiler::native_id::FUNCTION_BIND_HELPER => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Function.prototype.bind requires a target function and thisArg"
+                                    .to_string(),
+                            ));
+                        }
+                        let target_callable = args[0];
+                        if !Self::is_callable_value(target_callable) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Function.prototype.bind target is not callable".to_string(),
+                            ));
+                        }
+                        let this_arg = args[1];
+                        let bound_args = if args.len() > 2 {
+                            args[2..].to_vec()
+                        } else {
+                            Vec::new()
+                        };
+                        let bound = match self.alloc_bound_function(
+                            target_callable,
+                            this_arg,
+                            bound_args,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(bound) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS => {
                         if args.is_empty() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -860,8 +3353,40 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
 
-                        let Some(nominal_type_id) =
-                            self.nominal_type_id_from_imported_class_value(module, args[0])
+                        if self.callable_native_alias_id(args[0])
+                            == Some(crate::compiler::native_id::FUNCTION_CONSTRUCTOR_HELPER)
+                        {
+                            let value = match self.alloc_dynamic_js_function(&args[1..], task, module)
+                            {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                            if let Err(error) = stack.push(value) {
+                                return OpcodeResult::Error(error);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+
+                        if let Some(value) = match self.try_construct_boxed_primitive(
+                            args[0],
+                            &args[1..],
+                            task,
+                            module,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        } {
+                            if let Err(error) = stack.push(value) {
+                                return OpcodeResult::Error(error);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+
+                        let Some(nominal_type_id) = self
+                            .constructor_nominal_type_id(args[0])
+                            .or_else(|| {
+                                self.nominal_type_id_from_imported_class_value(module, args[0])
+                            })
                         else {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "dynamic class construction expects imported class value with type handle"
@@ -879,6 +3404,26 @@ impl<'a> Interpreter<'a> {
                                 )))
                             }
                         };
+                        if std::env::var("RAYA_DEBUG_CTOR_RESOLVE").is_ok() {
+                            eprintln!(
+                                "[construct-dynamic] ctor_value={:#x} nominal_type_id={} class='{}'",
+                                args[0].raw(),
+                                nominal_type_id,
+                                class.name
+                            );
+                        }
+                        if class.name == "Function" {
+                            drop(classes);
+                            let value =
+                                match self.alloc_dynamic_js_function(&args[1..], task, module) {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                            if let Err(error) = stack.push(value) {
+                                return OpcodeResult::Error(error);
+                            }
+                            return OpcodeResult::Continue;
+                        }
                         let constructor_id = class.get_constructor();
                         let constructor_module = class.module.clone();
                         let (layout_id, field_count) = match self.nominal_allocation(nominal_type_id)
@@ -899,6 +3444,7 @@ impl<'a> Interpreter<'a> {
                         let obj_val = unsafe {
                             Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
                         };
+                        self.set_constructed_object_prototype_from_constructor(obj_val, args[0]);
 
                         if let Some(constructor_id) = constructor_id {
                             if let Err(error) = stack.push(obj_val) {
@@ -932,18 +3478,49 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
 
-                        let Some(nominal_type_id) =
-                            self.nominal_type_id_from_imported_class_value(module, args[1])
-                        else {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "dynamic instanceof expects imported or ambient class value"
-                                    .to_string(),
-                            ));
-                        };
+                        let mut result = false;
 
-                        let classes = self.classes.read();
-                        let result =
-                            crate::vm::reflect::is_instance_of(&classes, args[0], nominal_type_id);
+                        if let Some(constructor_prototype) = self.constructor_prototype_value(args[1]) {
+                            let mut current = self.prototype_of_value(args[0]);
+                            while let Some(prototype) = current {
+                                if prototype == constructor_prototype {
+                                    result = true;
+                                    break;
+                                }
+                                let next = self.prototype_of_value(prototype);
+                                if next == current {
+                                    break;
+                                }
+                                current = next;
+                            }
+                        }
+
+                        if !result {
+                            let Some(nominal_type_id) =
+                                self.nominal_type_id_from_imported_class_value(module, args[1])
+                            else {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "dynamic instanceof expects imported or ambient class value"
+                                        .to_string(),
+                                ));
+                            };
+
+                            let classes = self.classes.read();
+                            result = crate::vm::reflect::is_instance_of(
+                                &classes,
+                                args[0],
+                                nominal_type_id,
+                            );
+                            if std::env::var("RAYA_DEBUG_INSTANCEOF").is_ok() {
+                                eprintln!(
+                                    "[instanceof-dynamic] object={:#x} class_value={:#x} nominal_type_id={} result={}",
+                                    args[0].raw(),
+                                    args[1].raw(),
+                                    nominal_type_id,
+                                    result
+                                );
+                            }
+                        }
                         if let Err(error) = stack.push(Value::bool(result)) {
                             return OpcodeResult::Error(error);
                         }
@@ -2142,12 +4719,9 @@ impl<'a> Interpreter<'a> {
                     }
                     // Object native calls
                     0x0001u16 => {
-                        // OBJECT_TO_STRING: return "[object Object]"
-                        let s = RayaString::new("[object Object]".to_string());
-                        let gc_ptr = self.gc.lock().allocate(s);
-                        let value = unsafe {
-                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-                        };
+                        let target = args.first().copied().unwrap_or(Value::undefined());
+                        let value =
+                            self.alloc_string_value(format!("[object {}]", self.object_to_string_tag(target)));
                         if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
                         }
@@ -2179,6 +4753,17 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    0x0008u16 => {
+                        let same = if args.len() >= 2 {
+                            value_same_value(args[0], args[1])
+                        } else {
+                            false
+                        };
+                        if let Err(e) = stack.push(Value::bool(same)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
                     0x0004u16 => {
                         // OBJECT_DEFINE_PROPERTY(target, key, descriptor) -> target
                         if args.len() < 3 {
@@ -2195,11 +4780,19 @@ impl<'a> Interpreter<'a> {
                                 "Object.defineProperty target must be an object".to_string(),
                             ));
                         }
-                        let key = if let Some(ptr) = unsafe { key_val.as_ptr::<RayaString>() } {
-                            unsafe { &*ptr.as_ptr() }.data.clone()
-                        } else {
+                        let (Some(key), _) =
+                            (match self.property_key_parts_with_context(
+                                key_val,
+                                "Object.defineProperty",
+                                task,
+                                module,
+                            ) {
+                                Ok(parts) => parts,
+                                Err(error) => return OpcodeResult::Error(error),
+                            })
+                        else {
                             return OpcodeResult::Error(VmError::TypeError(
-                                "Object.defineProperty key must be a string".to_string(),
+                                "Object.defineProperty key must be a string or symbol".to_string(),
                             ));
                         };
 
@@ -2212,7 +4805,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     0x0005u16 => {
-                        // OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(target, key) -> descriptor | null
+                        // OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(target, key) -> descriptor | undefined
                         if args.len() < 2 {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Object.getOwnPropertyDescriptor requires 2 arguments".to_string(),
@@ -2221,27 +4814,70 @@ impl<'a> Interpreter<'a> {
                         let target = args[0];
                         let key_val = args[1];
                         if !target.is_ptr() {
-                            if let Err(e) = stack.push(Value::null()) {
+                            if let Err(e) = stack.push(Value::undefined()) {
                                 return OpcodeResult::Error(e);
                             }
                             return OpcodeResult::Continue;
                         }
-                        let key = if let Some(ptr) = unsafe { key_val.as_ptr::<RayaString>() } {
-                            unsafe { &*ptr.as_ptr() }.data.clone()
-                        } else {
+                        let (Some(key), _) =
+                            (match self.property_key_parts_with_context(
+                                key_val,
+                                "Object.getOwnPropertyDescriptor",
+                                task,
+                                module,
+                            ) {
+                                Ok(parts) => parts,
+                                Err(error) => return OpcodeResult::Error(error),
+                            })
+                        else {
                             return OpcodeResult::Error(VmError::TypeError(
-                                "Object.getOwnPropertyDescriptor key must be a string".to_string(),
+                                "Object.getOwnPropertyDescriptor key must be a string or symbol"
+                                    .to_string(),
                             ));
                         };
                         let value = match self.get_descriptor_metadata(target, &key) {
                             Some(descriptor) => descriptor,
-                            None => match self.synthesize_data_property_descriptor(target, &key) {
+                            None => match self.synthesize_accessor_property_descriptor(target, &key) {
                                 Ok(Some(descriptor)) => descriptor,
-                                Ok(None) => Value::null(),
+                                Ok(None) => match self.synthesize_data_property_descriptor(target, &key) {
+                                    Ok(Some(descriptor)) => descriptor,
+                                    Ok(None) => Value::undefined(),
+                                    Err(error) => return OpcodeResult::Error(error),
+                                },
                                 Err(error) => return OpcodeResult::Error(error),
                             },
                         };
                         if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0011u16 => {
+                        // OBJECT_GET_PROTOTYPE_OF(target) -> prototype | null
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.getPrototypeOf requires 1 argument".to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
+                            eprintln!(
+                                "[get-proto-native] target={:#x} is_object={} callable={} explicit={}",
+                                target.raw(),
+                                checked_object_ptr(target).is_some(),
+                                self.callable_function_info(target).is_some(),
+                                self.explicit_object_prototype(target)
+                                    .map(|value| format!("{:#x}", value.raw()))
+                                    .unwrap_or_else(|| "None".to_string())
+                            );
+                        }
+                        if target.is_null() || target.is_undefined() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Cannot convert undefined or null to object".to_string(),
+                            ));
+                        }
+                        let prototype = self.prototype_of_value(target).unwrap_or(Value::null());
+                        if let Err(e) = stack.push(prototype) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
@@ -2294,6 +4930,24 @@ impl<'a> Interpreter<'a> {
                         }
                         if let Err(e) = stack.push(target) {
                             return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x000Cu16 => {
+                        // OBJECT_DELETE_PROPERTY(target, key) -> bool
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.deleteProperty requires 2 arguments".to_string(),
+                            ));
+                        }
+                        let deleted =
+                            match self.delete_property_from_target(args[0], args[1], task, module)
+                        {
+                            Ok(result) => result,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(Value::bool(deleted)) {
+                            return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
                     }

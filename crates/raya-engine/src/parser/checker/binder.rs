@@ -94,6 +94,11 @@ impl<'a> Binder<'a> {
     }
 
     #[inline]
+    fn is_js_mode(&self) -> bool {
+        self.mode != TypeSystemMode::Raya
+    }
+
+    #[inline]
     fn inference_fallback_type(&mut self) -> TypeId {
         if self.uses_js_dynamic_fallback() {
             self.type_ctx.jsobject_type()
@@ -105,6 +110,30 @@ impl<'a> Binder<'a> {
     #[inline]
     fn fallback_type(&mut self, _reason: BinderFallbackReason) -> TypeId {
         self.inference_fallback_type()
+    }
+
+    fn binding_scope_for_variable_kind(&self, kind: VariableKind) -> ScopeId {
+        if self.is_js_mode() && matches!(kind, VariableKind::Var) {
+            return self.nearest_var_scope_id();
+        }
+        self.symbols.current_scope_id()
+    }
+
+    fn nearest_var_scope_id(&self) -> ScopeId {
+        let mut scope_id = self.symbols.current_scope_id();
+        loop {
+            let scope = self.symbols.get_scope(scope_id);
+            if matches!(
+                scope.kind,
+                ScopeKind::Function | ScopeKind::Module | ScopeKind::Global
+            ) {
+                return scope_id;
+            }
+            match scope.parent {
+                Some(parent) => scope_id = parent,
+                None => return scope_id,
+            }
+        }
     }
 
     /// Allow duplicate top-level class/function declarations for synthetic/helper builds.
@@ -2159,16 +2188,35 @@ impl<'a> Binder<'a> {
         is_const: bool,
         is_imported: bool,
     ) -> Result<(), BindError> {
+        let scope_id = self.symbols.current_scope_id();
+        self.bind_pattern_names_in_scope(pattern, ty, is_const, is_imported, scope_id, false)
+    }
+
+    fn bind_pattern_names_in_scope(
+        &mut self,
+        pattern: &Pattern,
+        ty: TypeId,
+        is_const: bool,
+        is_imported: bool,
+        scope_id: ScopeId,
+        allow_duplicate_var: bool,
+    ) -> Result<(), BindError> {
         match pattern {
             Pattern::Identifier(ident) => {
                 let name = self.resolve(ident.name);
-                let current_scope = self.symbols.current_scope_id();
-                if let Some(existing) = self.symbols.resolve_from_scope(&name, current_scope) {
-                    if existing.scope_id == current_scope && existing.kind == SymbolKind::TypeAlias
+                if let Some(existing) = self.symbols.resolve_from_scope(&name, scope_id) {
+                    if existing.scope_id == scope_id && existing.kind == SymbolKind::TypeAlias
                     {
                         // Allow value binding to coexist with a same-name type alias in this scope.
                         // The checker resolves identifiers by TypeId, so the type alias symbol
                         // can service both type and value references for helper-generated shims.
+                        return Ok(());
+                    }
+                    if allow_duplicate_var
+                        && existing.scope_id == scope_id
+                        && existing.kind == SymbolKind::Variable
+                        && !existing.flags.is_const
+                    {
                         return Ok(());
                     }
                 }
@@ -2183,12 +2231,12 @@ impl<'a> Binder<'a> {
                         is_readonly: false,
                         is_imported,
                     },
-                    scope_id: current_scope,
+                    scope_id,
                     span: ident.span,
                     referenced: false,
                 };
                 self.symbols
-                    .define(symbol)
+                    .define_in_scope(scope_id, symbol)
                     .map_err(|err| BindError::DuplicateSymbol {
                         name: err.name,
                         original: err.original,
@@ -2199,10 +2247,24 @@ impl<'a> Binder<'a> {
                 // Extract element type from array type annotation
                 let elem_ty = self.array_element_type_for_pattern(ty);
                 for elem in array_pat.elements.iter().flatten() {
-                    self.bind_pattern_names(&elem.pattern, elem_ty, is_const, is_imported)?;
+                    self.bind_pattern_names_in_scope(
+                        &elem.pattern,
+                        elem_ty,
+                        is_const,
+                        is_imported,
+                        scope_id,
+                        allow_duplicate_var,
+                    )?;
                 }
                 if let Some(rest) = &array_pat.rest {
-                    self.bind_pattern_names(rest, ty, is_const, is_imported)?;
+                    self.bind_pattern_names_in_scope(
+                        rest,
+                        ty,
+                        is_const,
+                        is_imported,
+                        scope_id,
+                        allow_duplicate_var,
+                    )?;
                 }
             }
             Pattern::Object(obj_pat) => {
@@ -2210,10 +2272,27 @@ impl<'a> Binder<'a> {
                 for prop in &obj_pat.properties {
                     let prop_name = self.resolve(prop.key.name);
                     let prop_ty = self.object_property_type_for_pattern(ty, &prop_name);
-                    self.bind_pattern_names(&prop.value, prop_ty, is_const, is_imported)?;
+                    self.bind_pattern_names_in_scope(
+                        &prop.value,
+                        prop_ty,
+                        is_const,
+                        is_imported,
+                        scope_id,
+                        allow_duplicate_var,
+                    )?;
                 }
                 if let Some(rest_ident) = &obj_pat.rest {
                     let name = self.resolve(rest_ident.name);
+                    if allow_duplicate_var {
+                        if let Some(existing) = self.symbols.resolve_from_scope(&name, scope_id) {
+                            if existing.scope_id == scope_id
+                                && existing.kind == SymbolKind::Variable
+                                && !existing.flags.is_const
+                            {
+                                return Ok(());
+                            }
+                        }
+                    }
                     let symbol = Symbol {
                         name,
                         kind: SymbolKind::Variable,
@@ -2225,12 +2304,12 @@ impl<'a> Binder<'a> {
                             is_readonly: false,
                             is_imported,
                         },
-                        scope_id: self.symbols.current_scope_id(),
+                        scope_id,
                         span: rest_ident.span,
                         referenced: false,
                     };
                     self.symbols
-                        .define(symbol)
+                        .define_in_scope(scope_id, symbol)
                         .map_err(|err| BindError::DuplicateSymbol {
                             name: err.name,
                             original: err.original,
@@ -2239,7 +2318,14 @@ impl<'a> Binder<'a> {
                 }
             }
             Pattern::Rest(rest_pat) => {
-                self.bind_pattern_names(&rest_pat.argument, ty, is_const, is_imported)?;
+                self.bind_pattern_names_in_scope(
+                    &rest_pat.argument,
+                    ty,
+                    is_const,
+                    is_imported,
+                    scope_id,
+                    allow_duplicate_var,
+                )?;
             }
         }
         Ok(())
@@ -2312,6 +2398,7 @@ impl<'a> Binder<'a> {
                 }
                 crate::parser::ast::ArrowBody::Block(_) => false,
             },
+            Expression::Function(_) => false,
             Expression::Await(await_expr) => {
                 self.expression_uses_linker_dep_binding(&await_expr.argument)
             }
@@ -2369,7 +2456,16 @@ impl<'a> Binder<'a> {
             .initializer
             .as_ref()
             .is_some_and(|init| self.expression_uses_linker_dep_binding(init));
-        self.bind_pattern_names(&decl.pattern, ty, is_const, is_imported)
+        let scope_id = self.binding_scope_for_variable_kind(decl.kind);
+        let allow_duplicate_var = self.is_js_mode() && matches!(decl.kind, VariableKind::Var);
+        self.bind_pattern_names_in_scope(
+            &decl.pattern,
+            ty,
+            is_const,
+            is_imported,
+            scope_id,
+            allow_duplicate_var,
+        )
     }
 
     /// Bind function declaration
@@ -2482,7 +2578,13 @@ impl<'a> Binder<'a> {
 
         let declared_return_ty = match &func.return_type {
             Some(ty_annot) => self.resolve_type_annotation(ty_annot)?,
-            None => self.type_ctx.void_type(),
+            None => {
+                if self.mode == TypeSystemMode::Js {
+                    self.type_ctx.unknown_type()
+                } else {
+                    self.type_ctx.void_type()
+                }
+            }
         };
         // Async functions are represented as `is_async = true` with inner return type `T`.
         // If user annotates `Promise<T>`, unwrap it here to avoid `Promise<Promise<T>>` function types.
@@ -2511,12 +2613,16 @@ impl<'a> Binder<'a> {
 
         // Count required params (those without default values and not optional)
         // Exclude rest parameter from count
-        let min_params = func
-            .params
-            .iter()
-            .filter(|p| !p.is_rest)
-            .filter(|p| p.default_value.is_none() && !p.optional)
-            .count();
+        let min_params = if self.mode == TypeSystemMode::Js {
+            0
+        } else {
+            func
+                .params
+                .iter()
+                .filter(|p| !p.is_rest)
+                .filter(|p| p.default_value.is_none() && !p.optional)
+                .count()
+        };
 
         // Create function type with rest parameter
         let func_ty = self.type_ctx.function_type_with_rest(
@@ -2927,7 +3033,11 @@ impl<'a> Binder<'a> {
                     let declared_return_ty = if let Some(ref ann) = method.return_type {
                         self.resolve_type_annotation(ann)?
                     } else {
-                        self.type_ctx.void_type()
+                        if self.mode == TypeSystemMode::Js {
+                            self.type_ctx.unknown_type()
+                        } else {
+                            self.type_ctx.void_type()
+                        }
                     };
                     // Async methods are represented as `is_async = true` with inner return type `T`.
                     // If user annotates `Promise<T>`, unwrap it here to avoid `Promise<Promise<T>>`.
@@ -2960,12 +3070,16 @@ impl<'a> Binder<'a> {
                     }
 
                     // Count required params (excluding rest parameter)
-                    let min_params = method
-                        .params
-                        .iter()
-                        .filter(|p| !p.is_rest)
-                        .filter(|p| p.default_value.is_none() && !p.optional)
-                        .count();
+                    let min_params = if self.mode == TypeSystemMode::Js {
+                        0
+                    } else {
+                        method
+                            .params
+                            .iter()
+                            .filter(|p| !p.is_rest)
+                            .filter(|p| p.default_value.is_none() && !p.optional)
+                            .count()
+                    };
 
                     if method.is_static {
                         static_methods.push((

@@ -470,78 +470,196 @@ impl Default for VTable {
 pub struct Array {
     /// Element type ID (for type checking)
     pub type_id: usize,
+    /// Logical JS array length, including holes beyond materialized storage.
+    pub length: usize,
     /// Array elements
     pub elements: Vec<Value>,
+    /// Whether the slot is an actual own element and not a hole.
+    pub present: Vec<bool>,
+    /// Sparse indexed elements for very large or highly sparse arrays.
+    pub sparse_elements: FxHashMap<u32, Value>,
 }
 
 impl Array {
+    const MAX_DENSE_LENGTH: usize = 1 << 20;
+    const MAX_DENSE_GAP: usize = 1024;
+
     /// Create a new array with given length
     pub fn new(type_id: usize, length: usize) -> Self {
         Self {
             type_id,
-            elements: vec![Value::null(); length],
+            length,
+            elements: Vec::new(),
+            present: Vec::new(),
+            sparse_elements: FxHashMap::default(),
         }
+    }
+
+    #[inline]
+    fn should_store_sparse(&self, index: usize) -> bool {
+        index >= Self::MAX_DENSE_LENGTH
+            || index > self.elements.len().saturating_add(Self::MAX_DENSE_GAP)
     }
 
     /// Get array length
     pub fn len(&self) -> usize {
-        self.elements.len()
+        self.length
     }
 
     /// Check if array is empty
     pub fn is_empty(&self) -> bool {
-        self.elements.is_empty()
+        self.length == 0
     }
 
     /// Get element at index
     pub fn get(&self, index: usize) -> Option<Value> {
-        self.elements.get(index).copied()
+        if index < self.length && index < self.elements.len() && self.present.get(index).copied().unwrap_or(false) {
+            return self.elements.get(index).copied();
+        }
+        if index < self.length {
+            if let Ok(sparse_index) = u32::try_from(index) {
+                return self.sparse_elements.get(&sparse_index).copied();
+            }
+            None
+        } else {
+            None
+        }
     }
 
     /// Set element at index
     pub fn set(&mut self, index: usize, value: Value) -> Result<(), String> {
-        if index < self.elements.len() {
-            self.elements[index] = value;
-            Ok(())
-        } else {
-            Err(format!(
-                "Array index {} out of bounds (length: {})",
-                index,
-                self.elements.len()
-            ))
+        if index >= self.length {
+            self.length = index + 1;
         }
+        if self.should_store_sparse(index) {
+            let sparse_index = u32::try_from(index)
+                .map_err(|_| "Array index exceeds supported sparse range".to_string())?;
+            self.sparse_elements.insert(sparse_index, value);
+            return Ok(());
+        }
+        if index >= self.elements.len() {
+            self.elements.resize(index + 1, Value::undefined());
+            self.present.resize(index + 1, false);
+        }
+        self.elements[index] = value;
+        self.present[index] = true;
+        if let Ok(sparse_index) = u32::try_from(index) {
+            self.sparse_elements.remove(&sparse_index);
+        }
+        Ok(())
     }
 
     /// Push element to end of array, returns new length
     pub fn push(&mut self, value: Value) -> usize {
-        self.elements.push(value);
-        self.elements.len()
+        let index = self.length;
+        let _ = self.set(index, value);
+        self.length
     }
 
     /// Pop element from end of array
     pub fn pop(&mut self) -> Option<Value> {
-        self.elements.pop()
+        if self.length == 0 {
+            return None;
+        }
+        let index = self.length - 1;
+        self.length -= 1;
+        let value = if let Ok(sparse_index) = u32::try_from(index) {
+            if let Some(value) = self.sparse_elements.remove(&sparse_index) {
+                value
+            } else if index < self.elements.len() {
+                if self.present.get(index).copied().unwrap_or(false) {
+                    self.elements[index]
+                } else {
+                    Value::undefined()
+                }
+            } else {
+                Value::undefined()
+            }
+        } else if index < self.elements.len() {
+            if self.present.get(index).copied().unwrap_or(false) {
+                self.elements[index]
+            } else {
+                Value::undefined()
+            }
+        } else {
+            Value::undefined()
+        };
+        if self.elements.len() > self.length {
+            self.elements.truncate(self.length);
+            self.present.truncate(self.length);
+        }
+        Some(value)
     }
 
     /// Shift element from beginning of array
     pub fn shift(&mut self) -> Option<Value> {
-        if self.elements.is_empty() {
+        if self.length == 0 {
             None
         } else {
-            Some(self.elements.remove(0))
+            let shifted_sparse = self.sparse_elements.remove(&0);
+            if !self.sparse_elements.is_empty() {
+                let mut shifted = FxHashMap::default();
+                for (index, value) in self.sparse_elements.drain() {
+                    if index > 0 {
+                        shifted.insert(index - 1, value);
+                    }
+                }
+                self.sparse_elements = shifted;
+            }
+            self.length -= 1;
+            let present = if !self.present.is_empty() {
+                self.present.remove(0)
+            } else {
+                false
+            };
+            let value = if !self.elements.is_empty() {
+                self.elements.remove(0)
+            } else {
+                Value::undefined()
+            };
+            Some(if let Some(value) = shifted_sparse {
+                value
+            } else if present {
+                value
+            } else {
+                Value::undefined()
+            })
         }
     }
 
     /// Unshift element to beginning of array, returns new length
     pub fn unshift(&mut self, value: Value) -> usize {
+        if !self.sparse_elements.is_empty() {
+            let mut shifted = FxHashMap::default();
+            for (index, entry) in self.sparse_elements.drain() {
+                shifted.insert(index.saturating_add(1), entry);
+            }
+            self.sparse_elements = shifted;
+        }
         self.elements.insert(0, value);
-        self.elements.len()
+        self.present.insert(0, true);
+        self.length += 1;
+        self.length
+    }
+
+    pub fn resize_holey(&mut self, new_len: usize) {
+        self.length = new_len;
+        if new_len < self.elements.len() {
+            self.elements.truncate(new_len);
+            self.present.truncate(new_len);
+        }
+        self.sparse_elements
+            .retain(|index, _| (*index as usize) < new_len);
     }
 
     /// Find index of value, returns -1 if not found
     /// For string elements, uses value equality instead of pointer equality
     pub fn index_of(&self, value: Value) -> i32 {
-        for (i, elem) in self.elements.iter().enumerate() {
+        for i in 0..self.length {
+            if i >= self.elements.len() || !self.present.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            let elem = &self.elements[i];
             // Check equality - for strings, compare string data instead of pointers
             let equal = if *elem == value {
                 true
@@ -670,6 +788,19 @@ pub struct BoundNativeMethod {
     pub receiver: Value,
     /// VM native method ID.
     pub native_id: u16,
+}
+
+/// A JS-style bound function created by `Function.prototype.bind`.
+#[derive(Debug, Clone)]
+pub struct BoundFunction {
+    /// Original callable target.
+    pub target: Value,
+    /// Bound `this` argument.
+    pub this_arg: Value,
+    /// Prefix arguments captured at bind time.
+    pub bound_args: Vec<Value>,
+    /// Bound wrapper came from `Function.prototype.call.bind(...)`.
+    pub rebind_call_helper: bool,
 }
 
 /// RefCell - A heap-allocated mutable cell for capture-by-reference semantics

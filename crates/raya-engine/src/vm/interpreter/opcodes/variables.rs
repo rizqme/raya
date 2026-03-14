@@ -15,7 +15,7 @@ impl<'a> Interpreter<'a> {
         module: &Module,
         locals_base: usize,
         opcode: Opcode,
-        arg_count: usize, // Current function's arg count (for rest parameters)
+        current_args: &[Value], // Current function's runtime arguments
     ) -> OpcodeResult {
         match opcode {
             Opcode::LoadLocal => {
@@ -94,7 +94,7 @@ impl<'a> Interpreter<'a> {
 
             Opcode::GetArgCount => {
                 // Push the current function's arg_count onto the stack
-                if let Err(e) = stack.push(Value::i32(arg_count as i32)) {
+                if let Err(e) = stack.push(Value::i32(current_args.len() as i32)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -114,11 +114,7 @@ impl<'a> Interpreter<'a> {
                         ))
                     }
                 };
-                // Load the local at that index
-                let value = match stack.peek_at(locals_base + index) {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
+                let value = current_args.get(index).copied().unwrap_or(Value::undefined());
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }

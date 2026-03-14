@@ -3,10 +3,100 @@
 
 const Infinity: number = 1.0 / 0.0;
 const NaN: number = 0.0 / 0.0;
-const undefined = null;
 const __GLOBAL_NUM_DIGITS: string = "0123456789";
 
-type PrimitiveCoercible = Object | string | number | boolean | null;
+type PrimitiveCoercible = any;
+
+function __isPrimitiveValue(value: any): boolean {
+    if (value == null) {
+        return true;
+    }
+    if (value instanceof Symbol) {
+        return true;
+    }
+    let t = typeof value;
+    return (
+        t == "boolean" ||
+        t == "number" ||
+        t == "int" ||
+        t == "string" ||
+        t == "undefined"
+    );
+}
+
+function __toPrimitive(value: any, preferredType: string): any {
+    if (__isPrimitiveValue(value)) {
+        return value;
+    }
+
+    let exoticToPrimitive = value[Symbol.toPrimitive];
+    if (typeof exoticToPrimitive == "function") {
+        let result = exoticToPrimitive.call(value, preferredType);
+        if (__isPrimitiveValue(result)) {
+            return result;
+        }
+        throw new TypeError("Cannot convert object to primitive value");
+    }
+
+    if (preferredType == "string") {
+        let toStringFn = value["toString"];
+        if (typeof toStringFn == "function") {
+            let result = value.toString();
+            if (__isPrimitiveValue(result)) {
+                return result;
+            }
+        }
+
+        let valueOfFn = value["valueOf"];
+        if (typeof valueOfFn == "function") {
+            let result = value.valueOf();
+            if (__isPrimitiveValue(result)) {
+                return result;
+            }
+        }
+    } else {
+        let valueOfFn = value["valueOf"];
+        if (typeof valueOfFn == "function") {
+            let result = value.valueOf();
+            if (__isPrimitiveValue(result)) {
+                return result;
+            }
+        }
+
+        let toStringFn = value["toString"];
+        if (typeof toStringFn == "function") {
+            let result = value.toString();
+            if (__isPrimitiveValue(result)) {
+                return result;
+            }
+        }
+    }
+
+    throw new TypeError("Cannot convert object to primitive value");
+}
+
+function __primitiveToString(value: any): string {
+    if (value === undefined) {
+        return "undefined";
+    }
+    if (value === null) {
+        return "null";
+    }
+    if (value instanceof Symbol) {
+        return value.toString();
+    }
+    let t = typeof value;
+    if (t == "string") {
+        return value as string;
+    }
+    if (t == "boolean") {
+        return (value as boolean) ? "true" : "false";
+    }
+    if (t == "number" || t == "int") {
+        return "" + (value as number);
+    }
+    return "[object Object]";
+}
 
 function Boolean(value: PrimitiveCoercible): boolean {
     if (value == null) {
@@ -27,8 +117,14 @@ function Boolean(value: PrimitiveCoercible): boolean {
 }
 
 function Number(value: PrimitiveCoercible): number {
-    if (value == null) {
+    if (value === undefined) {
+        return NaN;
+    }
+    if (value === null) {
         return 0.0;
+    }
+    if (value instanceof Symbol) {
+        throw new TypeError("Cannot convert a Symbol value to a number");
     }
     let t = typeof value;
     if (t == "number" || t == "int") {
@@ -38,7 +134,28 @@ function Number(value: PrimitiveCoercible): number {
         return (value as boolean) ? 1.0 : 0.0;
     }
     if (t != "string") {
-        return NaN;
+        let primitive = __toPrimitive(value, "number");
+        if (primitive === undefined) {
+            return NaN;
+        }
+        if (primitive === null) {
+            return 0.0;
+        }
+        if (primitive instanceof Symbol) {
+            throw new TypeError("Cannot convert a Symbol value to a number");
+        }
+        let primitiveType = typeof primitive;
+        if (primitiveType == "number" || primitiveType == "int") {
+            return primitive as number;
+        }
+        if (primitiveType == "boolean") {
+            return (primitive as boolean) ? 1.0 : 0.0;
+        }
+        if (primitiveType != "string") {
+            return NaN;
+        }
+        value = primitive;
+        t = primitiveType;
     }
 
     let s = (value as string).trim();
@@ -94,8 +211,14 @@ function Number(value: PrimitiveCoercible): number {
 }
 
 function String(value: PrimitiveCoercible): string {
-    if (value == null) {
+    if (value === undefined) {
+        return "undefined";
+    }
+    if (value === null) {
         return "null";
+    }
+    if (value instanceof Symbol) {
+        return value.toString();
     }
     let t = typeof value;
     if (t == "string") {
@@ -108,7 +231,62 @@ function String(value: PrimitiveCoercible): string {
         // Avoid primitive method dispatch on numeric values.
         return "" + (value as number);
     }
-    return (value as Object).toString();
+    let primitive = __toPrimitive(value, "string");
+    if (primitive instanceof Symbol) {
+        return primitive.toString();
+    }
+    return __primitiveToString(primitive);
+}
+
+class __BooleanPrototype {
+    valueOf(): boolean {
+        if (this == null || this["__boxedPrimitiveKind"] != "Boolean") {
+            throw new TypeError("Boolean.prototype.valueOf requires that 'this' be a Boolean object");
+        }
+        return this["__primitiveValue"] as boolean;
+    }
+
+    toString(): string {
+        return this.valueOf() ? "true" : "false";
+    }
+}
+
+class __NumberPrototype {
+    valueOf(): number {
+        if (this == null || this["__boxedPrimitiveKind"] != "Number") {
+            throw new TypeError("Number.prototype.valueOf requires that 'this' be a Number object");
+        }
+        return this["__primitiveValue"] as number;
+    }
+
+    toString(radix?: number): string {
+        return this.valueOf().toString(radix);
+    }
+
+    toFixed(digits?: number): string {
+        return this.valueOf().toFixed(digits);
+    }
+
+    toPrecision(precision?: number): string {
+        return this.valueOf().toPrecision(precision);
+    }
+}
+
+class __StringPrototype {
+    valueOf(): string {
+        if (this == null || this["__boxedPrimitiveKind"] != "String") {
+            throw new TypeError("String.prototype.valueOf requires that 'this' be a String object");
+        }
+        return this["__primitiveValue"] as string;
+    }
+
+    toString(): string {
+        return this.valueOf();
+    }
+}
+
+function __argumentsObjectToString(): string {
+    return "[object Arguments]";
 }
 
 function encodeURI(input: string): string {

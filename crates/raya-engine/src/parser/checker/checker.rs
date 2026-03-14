@@ -218,6 +218,25 @@ enum FallbackReason {
 }
 
 impl<'a> TypeChecker<'a> {
+    fn js_builtin_call_uses_construct(name: &str) -> bool {
+        matches!(
+            name,
+            "Array"
+                | "Symbol"
+                | "Function"
+                | "Error"
+                | "AggregateError"
+                | "EvalError"
+                | "RangeError"
+                | "ReferenceError"
+                | "SyntaxError"
+                | "TypeError"
+                | "URIError"
+                | "InternalError"
+                | "SuppressedError"
+        )
+    }
+
     /// Create a new type checker
     pub fn new(
         type_ctx: &'a mut TypeContext,
@@ -293,6 +312,11 @@ impl<'a> TypeChecker<'a> {
     }
 
     #[inline]
+    fn enforce_call_arity(&self) -> bool {
+        !self.is_js_mode()
+    }
+
+    #[inline]
     fn type_is_unknown(&mut self, ty: TypeId) -> bool {
         matches!(
             self.type_ctx.get(ty),
@@ -350,7 +374,11 @@ impl<'a> TypeChecker<'a> {
 
     #[inline]
     fn inference_fallback_type(&mut self) -> TypeId {
-        self.type_ctx.unknown_type()
+        if self.is_js_mode() {
+            self.type_ctx.any_type()
+        } else {
+            self.type_ctx.unknown_type()
+        }
     }
 
     fn fallback_type(&mut self, span: Span, reason: FallbackReason, detail: &str) -> TypeId {
@@ -682,6 +710,13 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn inferred_var_scope_id(&self, name: &str) -> u32 {
+        self.symbols
+            .resolve_from_scope(name, self.current_scope)
+            .map(|symbol| symbol.scope_id.0)
+            .unwrap_or(self.current_scope.0)
+    }
+
     fn is_constructible_var(&self, name: &str) -> bool {
         if let Some(symbol) = self.symbols.resolve_from_scope(name, self.current_scope) {
             return self
@@ -731,6 +766,18 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         self.scope_stack.push(self.current_scope);
+        let mut candidate = self.next_scope_id as usize;
+        while candidate < self.symbols.scope_count() {
+            let scope_id = super::symbols::ScopeId(candidate as u32);
+            let scope = self.symbols.get_scope(scope_id);
+            if scope.parent == Some(self.current_scope) {
+                self.current_scope = scope_id;
+                self.next_scope_id = scope_id.0 + 1;
+                return;
+            }
+            candidate += 1;
+        }
+
         let scope_id = super::symbols::ScopeId(self.next_scope_id);
         self.next_scope_id += 1;
         self.current_scope = scope_id;
@@ -1004,6 +1051,7 @@ impl<'a> TypeChecker<'a> {
             match &decl.pattern {
                 Pattern::Identifier(ident) => {
                     let name = self.resolve(ident.name);
+                    let inferred_scope_id = self.inferred_var_scope_id(&name);
 
                     // Determine the variable's type
                     let var_ty = if decl.type_annotation.is_some() {
@@ -1014,13 +1062,13 @@ impl<'a> TypeChecker<'a> {
                             self.resolve_type_annotation(decl.type_annotation.as_ref().unwrap());
                         self.check_assignable(init_ty, resolved_ty, *init.span());
                         self.inferred_var_types
-                            .insert((self.current_scope.0, name.clone()), resolved_ty);
+                            .insert((inferred_scope_id, name.clone()), resolved_ty);
                         resolved_ty
                     } else {
                         // No type annotation - infer type from initializer
                         // Store the inferred type for later lookups
                         self.inferred_var_types
-                            .insert((self.current_scope.0, name.clone()), init_ty);
+                            .insert((inferred_scope_id, name.clone()), init_ty);
                         init_ty
                     };
 
@@ -1044,8 +1092,9 @@ impl<'a> TypeChecker<'a> {
         match pattern {
             Pattern::Identifier(ident) => {
                 let name = self.resolve(ident.name);
+                let inferred_scope_id = self.inferred_var_scope_id(&name);
                 self.inferred_var_types
-                    .insert((self.current_scope.0, name.clone()), value_ty);
+                    .insert((inferred_scope_id, name.clone()), value_ty);
                 self.type_env.set(name, value_ty);
             }
             Pattern::Array(array_pat) => {
@@ -1114,8 +1163,9 @@ impl<'a> TypeChecker<'a> {
                 if let Some(rest_ident) = &obj_pat.rest {
                     let unknown = self.inference_fallback_type();
                     let name = self.resolve(rest_ident.name);
+                    let inferred_scope_id = self.inferred_var_scope_id(&name);
                     self.inferred_var_types
-                        .insert((self.current_scope.0, name.clone()), unknown);
+                        .insert((inferred_scope_id, name.clone()), unknown);
                     self.type_env.set(name, unknown);
                 }
             }
@@ -1356,12 +1406,15 @@ impl<'a> TypeChecker<'a> {
                     func_ty.rest_param,
                 )
             } else {
-                let min_params = func
-                    .params
-                    .iter()
-                    .filter(|p| !p.is_rest)
-                    .filter(|p| p.default_value.is_none() && !p.optional)
-                    .count();
+                let min_params = if self.is_js_mode() {
+                    0
+                } else {
+                    func.params
+                        .iter()
+                        .filter(|p| !p.is_rest)
+                        .filter(|p| p.default_value.is_none() && !p.optional)
+                        .count()
+                };
                 self.type_ctx.function_type_with_rest(
                     param_types,
                     inferred_return_ty,
@@ -1615,28 +1668,37 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
 
-                        // Set return type for return statement checking
+                        // Set return type for return statement checking.
+                        // In JS mode, unannotated methods infer from explicit returns
+                        // instead of defaulting to `void`.
                         let prev_return_ty = self.current_function_return_type;
-                        let mut return_ty = method
-                            .return_type
-                            .as_ref()
-                            .map(|t| self.resolve_type_annotation(t))
-                            .unwrap_or_else(|| self.type_ctx.void_type());
-
-                        // For async methods, return statements are checked against Promise<T>'s inner T
-                        if method.is_async {
-                            if let Some(crate::parser::types::Type::Task(task_ty)) =
-                                self.type_ctx.get(return_ty)
-                            {
-                                return_ty = task_ty.result;
-                            }
+                        let declared_return_ty =
+                            method.return_type.as_ref().map(|t| self.resolve_type_annotation(t));
+                        let effective_return_ty = if method.is_async {
+                            declared_return_ty.map(|ty| {
+                                if let Some(crate::parser::types::Type::Task(task_ty)) =
+                                    self.type_ctx.get(ty)
+                                {
+                                    task_ty.result
+                                } else {
+                                    ty
+                                }
+                            })
+                        } else {
+                            declared_return_ty
+                        };
+                        self.current_function_return_type = effective_return_ty;
+                        if effective_return_ty.is_none() {
+                            self.return_type_collector.push(Vec::new());
                         }
-                        self.current_function_return_type = Some(return_ty);
 
                         for stmt in &body.statements {
                             self.check_stmt(stmt);
                         }
 
+                        if effective_return_ty.is_none() {
+                            let _ = self.return_type_collector.pop().unwrap_or_default();
+                        }
                         self.current_function_return_type = prev_return_ty;
                         self.method_type_params.clear();
                         self.exit_scope();
@@ -2356,49 +2418,59 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn for_of_element_type(&mut self, iterable_ty: TypeId, span: Span) -> TypeId {
+        if let Some(elem_ty) = self.try_for_of_element_type(iterable_ty) {
+            return elem_ty;
+        }
+
+        self.errors.push(CheckError::TypeMismatch {
+            expected: "iterable (Array, Set, Map, or class with iterator())".to_string(),
+            actual: self.format_type(iterable_ty),
+            span,
+            note: Some(
+                "for-of loops require an iterable with iterator() returning an array".to_string(),
+            ),
+        });
+        self.type_ctx.unknown_type()
+    }
+
+    fn try_for_of_element_type(&mut self, iterable_ty: TypeId) -> Option<TypeId> {
         use crate::parser::types::Type;
 
         let Some(ty) = self.type_ctx.get(iterable_ty).cloned() else {
-            return self.type_ctx.unknown_type();
+            return None;
         };
 
         match ty {
-            Type::Array(arr) => arr.element,
-            Type::Primitive(crate::parser::types::PrimitiveType::String) => {
-                self.type_ctx.string_type()
+            Type::Array(arr) => Some(arr.element),
+            Type::Tuple(tuple_ty) => {
+                if tuple_ty.elements.is_empty() {
+                    Some(self.inference_fallback_type())
+                } else {
+                    Some(self.type_ctx.union_type(tuple_ty.elements))
+                }
             }
-            Type::StringLiteral(_) => self.type_ctx.string_type(),
-            Type::Set(set_ty) => set_ty.element,
-            Type::Map(map_ty) => self.type_ctx.tuple_type(vec![map_ty.key, map_ty.value]),
+            Type::Primitive(crate::parser::types::PrimitiveType::String) => {
+                Some(self.type_ctx.string_type())
+            }
+            Type::StringLiteral(_) => Some(self.type_ctx.string_type()),
+            Type::Set(set_ty) => Some(set_ty.element),
+            Type::Map(map_ty) => Some(self.type_ctx.tuple_type(vec![map_ty.key, map_ty.value])),
             Type::Reference(reference) => match reference.name.as_str() {
-                "Array" | "Set" => reference
+                "Array" | "Set" => Some(
+                    reference
                     .type_args
                     .and_then(|args| args.first().copied())
                     .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                ),
                 "Map" => {
                     if let Some(args) = reference.type_args {
                         if args.len() >= 2 {
-                            return self.type_ctx.tuple_type(vec![args[0], args[1]]);
+                            return Some(self.type_ctx.tuple_type(vec![args[0], args[1]]));
                         }
                     }
-                    self.type_ctx.unknown_type()
+                    Some(self.type_ctx.unknown_type())
                 }
-                _ => {
-                    if let Some(elem_ty) = self.for_of_element_from_reference(
-                        &reference.name,
-                        reference.type_args.as_deref(),
-                    ) {
-                        elem_ty
-                    } else {
-                        self.errors.push(CheckError::TypeMismatch {
-                            expected: "iterable (Array, Set, Map, or class with iterator())".to_string(),
-                            actual: self.format_type(iterable_ty),
-                            span,
-                            note: Some("for-of loops require an iterable with iterator() returning an array".to_string()),
-                        });
-                        self.type_ctx.unknown_type()
-                    }
-                }
+                _ => self.for_of_element_from_reference(&reference.name, reference.type_args.as_deref()),
             },
             Type::Generic(generic) => {
                 let base_name = self.type_ctx.get(generic.base).and_then(|base| match base {
@@ -2407,83 +2479,47 @@ impl<'a> TypeChecker<'a> {
                     _ => None,
                 });
                 match base_name.as_deref() {
-                    Some("Array") | Some("Set") => generic
+                    Some("Array") | Some("Set") => Some(
+                        generic
                         .type_args
                         .first()
                         .copied()
                         .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                    ),
                     Some("Map") => {
                         if generic.type_args.len() >= 2 {
-                            self.type_ctx
-                                .tuple_type(vec![generic.type_args[0], generic.type_args[1]])
+                            Some(
+                                self.type_ctx
+                                    .tuple_type(vec![generic.type_args[0], generic.type_args[1]]),
+                            )
                         } else {
-                            self.type_ctx.unknown_type()
+                            Some(self.type_ctx.unknown_type())
                         }
                     }
-                    Some(name) => {
-                        if let Some(elem_ty) =
-                            self.for_of_element_from_reference(name, Some(&generic.type_args))
-                        {
-                            elem_ty
-                        } else {
-                            self.errors.push(CheckError::TypeMismatch {
-                                expected:
-                                    "iterable (Array, Set, Map, or class with iterator())"
-                                        .to_string(),
-                                actual: self.format_type(iterable_ty),
-                                span,
-                                note: Some(
-                                    "for-of loops require an iterable with iterator() returning an array"
-                                        .to_string(),
-                                ),
-                            });
-                            self.type_ctx.unknown_type()
-                        }
-                    }
-                    _ => {
-                        self.errors.push(CheckError::TypeMismatch {
-                            expected: "iterable (Array, Set, Map, or class with iterator())"
-                                .to_string(),
-                            actual: self.format_type(iterable_ty),
-                            span,
-                            note: Some(
-                                "for-of loops require an iterable with iterator() returning an array"
-                                    .to_string(),
-                            ),
-                        });
-                        self.type_ctx.unknown_type()
-                    }
+                    Some(name) => self.for_of_element_from_reference(name, Some(&generic.type_args)),
+                    _ => None,
                 }
             }
             Type::Class(class_ty) => {
-                if let Some(elem_ty) = self.for_of_element_from_class(&class_ty, None) {
-                    elem_ty
+                self.for_of_element_from_class(&class_ty, None)
+            }
+            Type::Union(union) => {
+                let mut elem_types = Vec::new();
+                for member in union.members {
+                    let Some(elem_ty) = self.try_for_of_element_type(member) else {
+                        return None;
+                    };
+                    elem_types.push(elem_ty);
+                }
+                if elem_types.is_empty() {
+                    None
+                } else if elem_types.len() == 1 {
+                    Some(elem_types[0])
                 } else {
-                    self.errors.push(CheckError::TypeMismatch {
-                        expected: "iterable (Array, Set, Map, or class with iterator())"
-                            .to_string(),
-                        actual: self.format_type(iterable_ty),
-                        span,
-                        note: Some(
-                            "for-of loops require an iterable with iterator() returning an array"
-                                .to_string(),
-                        ),
-                    });
-                    self.type_ctx.unknown_type()
+                    Some(self.type_ctx.union_type(elem_types))
                 }
             }
-            _ => {
-                self.errors.push(CheckError::TypeMismatch {
-                    expected: "iterable (Array, Set, Map, or class with iterator())".to_string(),
-                    actual: self.format_type(iterable_ty),
-                    span,
-                    note: Some(
-                        "for-of loops require an iterable with iterator() returning an array"
-                            .to_string(),
-                    ),
-                });
-                self.type_ctx.unknown_type()
-            }
+            _ => None,
         }
     }
 
@@ -2714,6 +2750,7 @@ impl<'a> TypeChecker<'a> {
             }
             Expression::Parenthesized(paren) => self.check_expr(&paren.expression),
             Expression::Arrow(arrow) => self.check_arrow(arrow),
+            Expression::Function(func) => self.check_function_expression(func),
             Expression::Index(index) => self.check_index(index),
             Expression::New(new_expr) => self.check_new(new_expr),
             Expression::This(span) => self.check_this(*span),
@@ -2744,6 +2781,20 @@ impl<'a> TypeChecker<'a> {
         self.expr_types.insert(expr_id, ty);
 
         ty
+    }
+
+    fn check_function_expression(
+        &mut self,
+        func: &crate::parser::ast::FunctionExpression,
+    ) -> TypeId {
+        let arrow = crate::parser::ast::ArrowFunction {
+            params: func.params.clone(),
+            return_type: func.return_type.clone(),
+            body: crate::parser::ast::ArrowBody::Block(func.body.clone()),
+            is_async: func.is_async,
+            span: func.span,
+        };
+        self.check_arrow(&arrow)
     }
 
     fn check_tagged_template(
@@ -2823,6 +2874,11 @@ impl<'a> TypeChecker<'a> {
             // Return a callable type - the actual return type is handled in try_check_intrinsic
             let any_ty = self.type_ctx.unknown_type();
             return self.type_ctx.function_type(vec![], any_ty, false);
+        }
+
+        if self.is_js_mode() && name == "arguments" {
+            let any_ty = self.type_ctx.any_type();
+            return self.type_ctx.array_type(any_ty);
         }
 
         // First check for narrowed type in type environment
@@ -2996,11 +3052,15 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     self.check_expr(&log.right)
                 };
-                // Logical AND/OR require boolean operands
-                let bool_ty = self.type_ctx.boolean_type();
-                self.check_assignable(left_ty, bool_ty, *log.left.span());
-                self.check_assignable(right_ty, bool_ty, *log.right.span());
-                bool_ty
+                if self.is_js_mode() {
+                    self.type_ctx.union_type(vec![left_ty, right_ty])
+                } else {
+                    // Logical AND/OR require boolean operands
+                    let bool_ty = self.type_ctx.boolean_type();
+                    self.check_assignable(left_ty, bool_ty, *log.left.span());
+                    self.check_assignable(right_ty, bool_ty, *log.right.span());
+                    bool_ty
+                }
             }
         }
     }
@@ -3118,6 +3178,15 @@ impl<'a> TypeChecker<'a> {
                 }
                 return intrinsic_ty;
             }
+            if self.is_js_mode() && Self::js_builtin_call_uses_construct(&name) {
+                let synthetic_new = crate::parser::ast::NewExpression {
+                    callee: call.callee.clone(),
+                    type_args: call.type_args.clone(),
+                    arguments: call.arguments.clone(),
+                    span: call.span,
+                };
+                return self.check_new(&synthetic_new);
+            }
         }
 
         if let Expression::Identifier(ident) = call.callee.as_ref() {
@@ -3199,7 +3268,9 @@ impl<'a> TypeChecker<'a> {
                     func.min_params
                 };
 
-                if arg_types.len() > max_params || arg_types.len() < min_params {
+                if self.enforce_call_arity()
+                    && (arg_types.len() > max_params || arg_types.len() < min_params)
+                {
                     self.errors.push(CheckError::ArgumentCountMismatch {
                         expected: func.params.len(),
                         min_expected: min_params,
@@ -3510,7 +3581,7 @@ impl<'a> TypeChecker<'a> {
         skip: usize,
         span: crate::parser::Span,
     ) -> usize {
-        if helper_args.len() < skip {
+        if self.enforce_call_arity() && helper_args.len() < skip {
             self.errors.push(CheckError::ArgumentCountMismatch {
                 expected: skip,
                 min_expected: skip,
@@ -3522,7 +3593,8 @@ impl<'a> TypeChecker<'a> {
 
         let invocation_count = helper_args.len() - skip;
         let (min_args, max_args) = self.compute_fn_arity_bounds(func);
-        if invocation_count < min_args || invocation_count > max_args {
+        if self.enforce_call_arity() && (invocation_count < min_args || invocation_count > max_args)
+        {
             self.errors.push(CheckError::ArgumentCountMismatch {
                 expected: max_args,
                 min_expected: min_args,
@@ -3546,7 +3618,7 @@ impl<'a> TypeChecker<'a> {
         helper_args: &[(TypeId, crate::parser::Span)],
         span: crate::parser::Span,
     ) {
-        if helper_args.is_empty() || helper_args.len() > 2 {
+        if self.enforce_call_arity() && (helper_args.is_empty() || helper_args.len() > 2) {
             self.errors.push(CheckError::ArgumentCountMismatch {
                 expected: 2,
                 min_expected: 1,
@@ -3559,7 +3631,7 @@ impl<'a> TypeChecker<'a> {
         // fn.apply(thisArg) is valid and equivalent to empty arg list.
         if helper_args.len() == 1 {
             let (min_args, _max_args) = self.compute_fn_arity_bounds(func);
-            if min_args > 0 {
+            if self.enforce_call_arity() && min_args > 0 {
                 self.errors.push(CheckError::ArgumentCountMismatch {
                     expected: func.params.len(),
                     min_expected: min_args,
@@ -3614,7 +3686,7 @@ impl<'a> TypeChecker<'a> {
         helper_args: &[(TypeId, crate::parser::Span)],
         span: crate::parser::Span,
     ) -> usize {
-        if helper_args.is_empty() {
+        if self.enforce_call_arity() && helper_args.is_empty() {
             self.errors.push(CheckError::ArgumentCountMismatch {
                 expected: 1,
                 min_expected: 1,
@@ -3626,7 +3698,7 @@ impl<'a> TypeChecker<'a> {
 
         let bound_count = helper_args.len() - 1;
         let (_min_args, max_args) = self.compute_fn_arity_bounds(func);
-        if bound_count > max_args {
+        if self.enforce_call_arity() && bound_count > max_args {
             self.errors.push(CheckError::ArgumentCountMismatch {
                 expected: max_args,
                 min_expected: 0,
@@ -4024,7 +4096,7 @@ impl<'a> TypeChecker<'a> {
                 .type_annotation
                 .as_ref()
                 .map(|t| self.resolve_type_annotation(t))
-                .unwrap_or_else(|| self.type_ctx.unknown_type());
+                .unwrap_or_else(|| self.inference_fallback_type());
 
             // Add parameter to type environment so it can be resolved in body
             // (rest parameters are included in the type environment for the body)
@@ -4187,12 +4259,14 @@ impl<'a> TypeChecker<'a> {
                 .type_annotation
                 .as_ref()
                 .map(|t| self.resolve_type_annotation(t))
-                .unwrap_or_else(|| self.type_ctx.unknown_type())
+                .unwrap_or_else(|| self.inference_fallback_type())
         });
 
         // Create function type with min_params for optional/default params
         // If there's a rest parameter, min_params is the count of non-rest params
-        let min_params = if rest_param.is_some() {
+        let min_params = if self.is_js_mode() {
+            0
+        } else if rest_param.is_some() {
             arrow
                 .params
                 .iter()
@@ -4274,6 +4348,66 @@ impl<'a> TypeChecker<'a> {
         )
     }
 
+    fn expr_is_es_array_index_key(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::IntLiteral(lit) => lit.value >= 0 && lit.value < u32::MAX as i64,
+            Expression::FloatLiteral(lit) => {
+                lit.value.is_finite()
+                    && lit.value.fract() == 0.0
+                    && lit.value >= 0.0
+                    && lit.value < u32::MAX as f64
+            }
+            Expression::StringLiteral(lit) => {
+                let key = self.resolve(lit.value);
+                if key.is_empty() {
+                    return false;
+                }
+                if key != "0" && key.starts_with('0') {
+                    return false;
+                }
+                let Ok(index) = key.parse::<u32>() else {
+                    return false;
+                };
+                index != u32::MAX && index.to_string() == key
+            }
+            _ => false,
+        }
+    }
+
+    fn js_dynamic_index_value_type(&mut self) -> Option<TypeId> {
+        if self.is_js_mode() {
+            Some(if self.allows_dynamic_any() {
+                self.type_ctx.any_type()
+            } else {
+                self.inference_fallback_type()
+            })
+        } else {
+            None
+        }
+    }
+
+    fn type_uses_dynamic_js_member_fallback(&self, ty: TypeId) -> bool {
+        use crate::parser::types::{PrimitiveType, Type};
+
+        if let Some(inner) = self.type_ctx.jsobject_inner(ty) {
+            return self.type_uses_dynamic_js_member_fallback(inner);
+        }
+
+        match self.type_ctx.get(ty) {
+            Some(Type::Function(_))
+            | Some(Type::Array(_))
+            | Some(Type::Tuple(_))
+            | Some(Type::Primitive(PrimitiveType::String))
+            | Some(Type::StringLiteral(_)) => true,
+            Some(Type::Reference(reference)) => matches!(reference.name.as_str(), "Array" | "String"),
+            Some(Type::Generic(generic)) => self.type_ctx.get(generic.base).is_some_and(|base| {
+                matches!(base, Type::Reference(reference) if matches!(reference.name.as_str(), "Array" | "String"))
+                    || matches!(base, Type::Class(class_ty) if matches!(class_ty.name.as_str(), "Array" | "String"))
+            }),
+            _ => false,
+        }
+    }
+
     fn index_access_from_type(
         &mut self,
         object_ty: TypeId,
@@ -4285,8 +4419,31 @@ impl<'a> TypeChecker<'a> {
         let obj_data = self.type_ctx.get(object_ty).cloned()?;
         match obj_data {
             Type::Json => Some(self.type_ctx.json_type()),
-            Type::Array(arr) => Some(arr.element),
+            Type::Array(arr) => {
+                if !self.expr_is_es_array_index_key(index_expr) {
+                    if let Some(key) = self.string_key_from_index_expr(index_expr) {
+                        if let Some(prop_ty) = self.get_array_method_type(&key, arr.element) {
+                            return Some(prop_ty);
+                        }
+                    }
+                    return self.js_dynamic_index_value_type();
+                }
+                Some(arr.element)
+            }
             Type::Tuple(tuple_ty) => {
+                if !self.expr_is_es_array_index_key(index_expr) {
+                    if let Some(key) = self.string_key_from_index_expr(index_expr) {
+                        let elem_ty = if tuple_ty.elements.is_empty() {
+                            self.type_ctx.unknown_type()
+                        } else {
+                            self.type_ctx.union_type(tuple_ty.elements.clone())
+                        };
+                        if let Some(prop_ty) = self.get_array_method_type(&key, elem_ty) {
+                            return Some(prop_ty);
+                        }
+                    }
+                    return self.js_dynamic_index_value_type();
+                }
                 if let Expression::IntLiteral(int_lit) = index_expr {
                     if let Ok(idx) = usize::try_from(int_lit.value) {
                         return tuple_ty.elements.get(idx).copied();
@@ -4301,6 +4458,25 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         Some(self.type_ctx.union_type(tuple_ty.elements))
                     }
+                } else {
+                    None
+                }
+            }
+            Type::Primitive(PrimitiveType::String) | Type::StringLiteral(_) => {
+                if !self.expr_is_es_array_index_key(index_expr) {
+                    if let Some(key) = self.string_key_from_index_expr(index_expr) {
+                        if let Some(prop_ty) = self.get_string_method_type(&key) {
+                            return Some(prop_ty);
+                        }
+                    }
+                    return self.js_dynamic_index_value_type();
+                }
+                if matches!(
+                    self.type_ctx.get(index_ty),
+                    Some(Type::Primitive(PrimitiveType::Number | PrimitiveType::Int))
+                        | Some(Type::NumberLiteral(_))
+                ) {
+                    Some(self.type_ctx.string_type())
                 } else {
                     None
                 }
@@ -4515,6 +4691,14 @@ impl<'a> TypeChecker<'a> {
         if let Expression::Identifier(ident) = &*new_expr.callee {
             let name = self.resolve(ident.name);
 
+            if self.is_js_mode() && name == "Function" {
+                for arg in &new_expr.arguments {
+                    self.check_expr(arg);
+                }
+                let any_ty = self.type_ctx.any_type();
+                return self.type_ctx.function_type(vec![], any_ty, false);
+            }
+
             // Resolve type arguments if present
             let resolved_type_args: Vec<TypeId> = new_expr
                 .type_args
@@ -4714,7 +4898,9 @@ impl<'a> TypeChecker<'a> {
                 .map(|arg| (self.check_expr(arg), *arg.span()))
                 .collect();
             let (min_params, max_params) = self.compute_fn_arity_bounds(&func);
-            if arg_types.len() < min_params || arg_types.len() > max_params {
+            if self.enforce_call_arity()
+                && (arg_types.len() < min_params || arg_types.len() > max_params)
+            {
                 self.errors.push(CheckError::ArgumentCountMismatch {
                     expected: func.params.len(),
                     min_expected: min_params,
@@ -5138,7 +5324,9 @@ impl<'a> TypeChecker<'a> {
         } else {
             let non_null_object_ty = self.get_non_null_type(object_ty);
             if non_null_object_ty != object_ty {
-                if !self.in_assignment_lhs {
+                if self.is_js_mode() {
+                    non_null_object_ty
+                } else if !self.in_assignment_lhs {
                     self.errors.push(CheckError::TypeMismatch {
                         expected: "non-null object".to_string(),
                         actual: self.format_type(object_ty),
@@ -5149,8 +5337,9 @@ impl<'a> TypeChecker<'a> {
                         ),
                     });
                     return self.type_ctx.unknown_type();
+                } else {
+                    non_null_object_ty
                 }
-                non_null_object_ty
             } else {
                 object_ty
             }
@@ -5173,32 +5362,128 @@ impl<'a> TypeChecker<'a> {
         // This happens when the object is an identifier that resolves to a class symbol
         if let Expression::Identifier(ident) = &*member.object {
             let class_name = self.resolve(ident.name);
-            if let Some(symbol) = self
+            if self.is_js_mode() && class_name == "Object" {
+                match property_name.as_str() {
+                    "getOwnPropertyNames" => {
+                        let any_ty = self.type_ctx.any_type();
+                        let string_ty = self.type_ctx.string_type();
+                        let string_array = self.type_ctx.array_type(string_ty);
+                        return self.type_ctx.function_type(vec![any_ty], string_array, false);
+                    }
+                    "getOwnPropertyDescriptor" => {
+                        let any_ty = self.type_ctx.any_type();
+                        return self.type_ctx.function_type(vec![any_ty, any_ty], any_ty, false);
+                    }
+                    "defineProperty" => {
+                        let any_ty = self.type_ctx.any_type();
+                        return self
+                            .type_ctx
+                            .function_type(vec![any_ty, any_ty, any_ty], any_ty, false);
+                    }
+                    "defineProperties" => {
+                        let any_ty = self.type_ctx.any_type();
+                        return self.type_ctx.function_type(vec![any_ty, any_ty], any_ty, false);
+                    }
+                    _ => {}
+                }
+            }
+            if self.is_js_mode() && class_name == "Reflect" {
+                match property_name.as_str() {
+                    "has" => {
+                        let any_ty = self.type_ctx.any_type();
+                        let bool_ty = self.type_ctx.boolean_type();
+                        return self.type_ctx.function_type(vec![any_ty, any_ty], bool_ty, false);
+                    }
+                    _ => {}
+                }
+            }
+            let static_class_symbol_ty = self
                 .symbols
                 .resolve_from_scope(&class_name, self.current_scope)
-            {
-                if symbol.kind == SymbolKind::Class {
-                    // This is static member access (e.g., Date.now())
-                    if let Some(class) = self.resolve_class_type(symbol.ty) {
-                        // Check static properties
-                        for prop in &class.static_properties {
-                            if prop.name == property_name {
-                                return prop.ty;
-                            }
-                        }
-                        // Check static methods
-                        for method in &class.static_methods {
-                            if method.name == property_name {
-                                return method.ty;
-                            }
-                        }
-                        // Static member not found
-                        self.errors.push(CheckError::UndefinedMember {
-                            member: property_name.clone(),
-                            span: member.span,
-                        });
-                        return self.type_ctx.unknown_type();
+                .filter(|symbol| symbol.kind == SymbolKind::Class)
+                .map(|symbol| symbol.ty)
+                .or_else(|| {
+                    if self.is_js_mode() {
+                        self.type_ctx.lookup_named_type(&class_name)
+                    } else {
+                        None
                     }
+                });
+            if let Some(static_ty) = static_class_symbol_ty {
+                if let Some(class) = self.resolve_class_type(static_ty) {
+                    if self.is_js_mode() && class.name == "Object" {
+                        match property_name.as_str() {
+                            "getOwnPropertyNames" => {
+                                let any_ty = self.type_ctx.any_type();
+                                let string_ty = self.type_ctx.string_type();
+                                let string_array = self.type_ctx.array_type(string_ty);
+                                return self.type_ctx.function_type(vec![any_ty], string_array, false);
+                            }
+                            "getOwnPropertyDescriptor" => {
+                                let any_ty = self.type_ctx.any_type();
+                                return self.type_ctx.function_type(vec![any_ty, any_ty], any_ty, false);
+                            }
+                            "defineProperty" => {
+                                let any_ty = self.type_ctx.any_type();
+                                return self.type_ctx.function_type(vec![any_ty, any_ty, any_ty], any_ty, false);
+                            }
+                            "defineProperties" => {
+                                let any_ty = self.type_ctx.any_type();
+                                return self.type_ctx.function_type(vec![any_ty, any_ty], any_ty, false);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if self.is_js_mode() && class.name == "Reflect" {
+                        match property_name.as_str() {
+                            "has" => {
+                                let any_ty = self.type_ctx.any_type();
+                                let bool_ty = self.type_ctx.boolean_type();
+                                return self
+                                    .type_ctx
+                                    .function_type(vec![any_ty, any_ty], bool_ty, false);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if property_name == "prototype" {
+                        if self.is_js_mode() {
+                            return if self.allows_dynamic_any() {
+                                self.type_ctx.any_type()
+                            } else {
+                                self.inference_fallback_type()
+                            };
+                        }
+                        return static_ty;
+                    }
+                    if property_name == "name" {
+                        return self.type_ctx.string_type();
+                    }
+                    if property_name == "length" {
+                        return self.type_ctx.number_type();
+                    }
+                    for prop in &class.static_properties {
+                        if prop.name == property_name {
+                            return prop.ty;
+                        }
+                    }
+                    for method in &class.static_methods {
+                        if method.name == property_name {
+                            return method.ty;
+                        }
+                    }
+                    if self.is_js_mode() {
+                        return if self.allows_dynamic_any() {
+                            self.type_ctx.any_type()
+                        } else {
+                            self.inference_fallback_type()
+                        };
+                    }
+                    self.errors.push(CheckError::UndefinedMember {
+                        member: property_name.clone(),
+                        span: member.span,
+                    });
+                    return self.type_ctx.unknown_type();
                 }
             }
         }
@@ -5268,6 +5553,24 @@ impl<'a> TypeChecker<'a> {
             if let Some(method_type) = self.get_number_method_type(&property_name) {
                 return method_type;
             }
+        }
+
+        if self.is_js_mode()
+            && matches!(&obj_type, Some(crate::parser::types::Type::Function(_)))
+        {
+            return match property_name.as_str() {
+                "name" => self.type_ctx.string_type(),
+                "length" => self.type_ctx.number_type(),
+                _ => self.type_ctx.any_type(),
+            };
+        }
+
+        if self.is_js_mode() && self.type_uses_dynamic_js_member_fallback(lookup_object_ty) {
+            return if self.allows_dynamic_any() {
+                self.type_ctx.any_type()
+            } else {
+                self.inference_fallback_type()
+            };
         }
 
         // Note: Mutex methods are now resolved via normal class method lookup from mutex.raya
@@ -5357,6 +5660,14 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        if self.is_js_mode() {
+            return if self.allows_dynamic_any() {
+                self.type_ctx.any_type()
+            } else {
+                self.inference_fallback_type()
+            };
+        }
+
         // Check for class properties and methods (including inherited ones)
         if let Some(crate::parser::types::Type::Class(class)) = &obj_type {
             // If this is a placeholder class type (empty methods), look up the symbol to get the full type
@@ -5413,6 +5724,10 @@ impl<'a> TypeChecker<'a> {
             // If we have a class type and the member was not found, emit an error
             // (unless the class has no properties/methods, which means it's a placeholder)
             if !class_to_use.properties.is_empty() || !class_to_use.methods.is_empty() {
+                if self.is_js_mode() && self.in_assignment_lhs {
+                    self.maybe_escalate_identifier_to_jsobject(&member.object, None);
+                    return self.type_ctx.any_type();
+                }
                 if !self.is_strict_mode() {
                     let object_is_anyish = self.type_is_dynamic_anyish(object_ty);
                     let explicit_any_cast = self.is_explicit_any_cast_expr(&member.object);
@@ -6064,6 +6379,19 @@ impl<'a> TypeChecker<'a> {
         let void_ty = self.type_ctx.void_type();
         let string_ty = self.type_ctx.string_type();
         let array_ty = self.type_ctx.array_type(elem_ty);
+        let any_ty = self.type_ctx.any_type();
+        let mut callback_context_params = |return_ty: TypeId| {
+            if self.is_js_mode() {
+                self.type_ctx.function_type_with_min_params(
+                    vec![any_ty, any_ty, any_ty],
+                    return_ty,
+                    false,
+                    1,
+                )
+            } else {
+                self.type_ctx.function_type(vec![elem_ty], return_ty, false)
+            }
+        };
 
         match method_name {
             // push(value: T) -> number
@@ -6102,65 +6430,67 @@ impl<'a> TypeChecker<'a> {
             ),
             // reverse() -> Array<T>
             "reverse" => Some(self.type_ctx.function_type(vec![], array_ty, false)),
-            // forEach(fn: (elem: T) => void) -> void
+            // forEach(fn: (elem: T, index?: number, array?: T[]) => void, thisArg?) -> void
             "forEach" => {
-                let callback_ty = self.type_ctx.function_type(vec![elem_ty], void_ty, false);
-                Some(
-                    self.type_ctx
-                        .function_type(vec![callback_ty], void_ty, false),
-                )
+                let callback_ty = callback_context_params(void_ty);
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![callback_ty, any_ty],
+                    void_ty,
+                    false,
+                    1,
+                ))
             }
-            // filter(predicate: (elem: T) => boolean) -> Array<T>
+            // filter(predicate: (elem: T, index?: number, array?: T[]) => boolean, thisArg?) -> Array<T>
             "filter" => {
-                let predicate_ty = self
-                    .type_ctx
-                    .function_type(vec![elem_ty], boolean_ty, false);
-                Some(
-                    self.type_ctx
-                        .function_type(vec![predicate_ty], array_ty, false),
-                )
+                let predicate_ty = callback_context_params(boolean_ty);
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![predicate_ty, any_ty],
+                    array_ty,
+                    false,
+                    1,
+                ))
             }
-            // find(predicate: (elem: T) => boolean) -> T | null
+            // find(predicate: (elem: T, index?: number, array?: T[]) => boolean, thisArg?) -> T | null
             "find" => {
-                let predicate_ty = self
-                    .type_ctx
-                    .function_type(vec![elem_ty], boolean_ty, false);
+                let predicate_ty = callback_context_params(boolean_ty);
                 let null_ty = self.type_ctx.null_type();
                 let nullable_elem = self.type_ctx.union_type(vec![elem_ty, null_ty]);
-                Some(
-                    self.type_ctx
-                        .function_type(vec![predicate_ty], nullable_elem, false),
-                )
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![predicate_ty, any_ty],
+                    nullable_elem,
+                    false,
+                    1,
+                ))
             }
-            // findIndex(predicate: (elem: T) => boolean) -> number
+            // findIndex(predicate: (elem: T, index?: number, array?: T[]) => boolean, thisArg?) -> number
             "findIndex" => {
-                let predicate_ty = self
-                    .type_ctx
-                    .function_type(vec![elem_ty], boolean_ty, false);
-                Some(
-                    self.type_ctx
-                        .function_type(vec![predicate_ty], number_ty, false),
-                )
+                let predicate_ty = callback_context_params(boolean_ty);
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![predicate_ty, any_ty],
+                    number_ty,
+                    false,
+                    1,
+                ))
             }
-            // every(predicate: (elem: T) => boolean) -> boolean
+            // every(predicate: (elem: T, index?: number, array?: T[]) => boolean, thisArg?) -> boolean
             "every" => {
-                let predicate_ty = self
-                    .type_ctx
-                    .function_type(vec![elem_ty], boolean_ty, false);
-                Some(
-                    self.type_ctx
-                        .function_type(vec![predicate_ty], boolean_ty, false),
-                )
+                let predicate_ty = callback_context_params(boolean_ty);
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![predicate_ty, any_ty],
+                    boolean_ty,
+                    false,
+                    1,
+                ))
             }
-            // some(predicate: (elem: T) => boolean) -> boolean
+            // some(predicate: (elem: T, index?: number, array?: T[]) => boolean, thisArg?) -> boolean
             "some" => {
-                let predicate_ty = self
-                    .type_ctx
-                    .function_type(vec![elem_ty], boolean_ty, false);
-                Some(
-                    self.type_ctx
-                        .function_type(vec![predicate_ty], boolean_ty, false),
-                )
+                let predicate_ty = callback_context_params(boolean_ty);
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![predicate_ty, any_ty],
+                    boolean_ty,
+                    false,
+                    1,
+                ))
             }
             // length -> number (property, not method)
             "length" => Some(number_ty),
@@ -6187,21 +6517,39 @@ impl<'a> TypeChecker<'a> {
             // map<U>(fn: (elem: T) => U) -> Array<U>
             "map" => {
                 let map_result_ty = self.type_ctx.type_variable("__array_map_u");
-                let callback_ty = self
-                    .type_ctx
-                    .function_type(vec![elem_ty], map_result_ty, false);
-                let mapped_array_ty = self.type_ctx.array_type(map_result_ty);
-                Some(
+                let callback_ty = if self.is_js_mode() {
+                    self.type_ctx.function_type_with_min_params(
+                        vec![any_ty, any_ty, any_ty],
+                        map_result_ty,
+                        false,
+                        1,
+                    )
+                } else {
                     self.type_ctx
-                        .function_type(vec![callback_ty], mapped_array_ty, false),
-                )
+                        .function_type(vec![elem_ty], map_result_ty, false)
+                };
+                let mapped_array_ty = self.type_ctx.array_type(map_result_ty);
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![callback_ty, any_ty],
+                    mapped_array_ty,
+                    false,
+                    1,
+                ))
             }
             // reduce<U>(fn: (acc: U, elem: T) => U, initial: U) -> U
             "reduce" => {
                 let acc_ty = self.type_ctx.type_variable("__array_reduce_u");
-                let callback_ty = self
-                    .type_ctx
-                    .function_type(vec![acc_ty, elem_ty], acc_ty, false);
+                let callback_ty = if self.is_js_mode() {
+                    self.type_ctx.function_type_with_min_params(
+                        vec![any_ty, any_ty, any_ty, any_ty],
+                        acc_ty,
+                        false,
+                        2,
+                    )
+                } else {
+                    self.type_ctx
+                        .function_type(vec![acc_ty, elem_ty], acc_ty, false)
+                };
                 Some(
                     self.type_ctx
                         .function_type(vec![callback_ty, acc_ty], acc_ty, false),
@@ -6796,6 +7144,10 @@ impl<'a> TypeChecker<'a> {
     /// Check array literal
     fn check_array(&mut self, arr: &ArrayExpression) -> TypeId {
         if arr.elements.is_empty() {
+            if self.is_js_mode() {
+                let any_ty = self.type_ctx.any_type();
+                return self.type_ctx.array_type(any_ty);
+            }
             // Empty array - infer as never[]
             // never is the bottom type, so never[] <: T[] for any T
             // This allows empty arrays to be assigned to any typed array
@@ -6960,8 +7312,10 @@ impl<'a> TypeChecker<'a> {
     fn check_conditional(&mut self, cond: &ConditionalExpression) -> TypeId {
         // Check test is boolean
         let test_ty = self.check_expr(&cond.test);
-        let bool_ty = self.type_ctx.boolean_type();
-        self.check_assignable(test_ty, bool_ty, *cond.test.span());
+        if !self.is_js_mode() {
+            let bool_ty = self.type_ctx.boolean_type();
+            self.check_assignable(test_ty, bool_ty, *cond.test.span());
+        }
 
         // Check both branches
         let then_ty = self.check_expr(&cond.consequent);

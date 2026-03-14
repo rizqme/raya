@@ -122,6 +122,10 @@ pub trait Visitor: Sized {
         walk_arrow_function(self, func);
     }
 
+    fn visit_function_expression(&mut self, func: &FunctionExpression) {
+        walk_function_expression(self, func);
+    }
+
     // JSX
     fn visit_jsx_element(&mut self, elem: &JsxElement) {
         walk_jsx_element(self, elem);
@@ -463,6 +467,7 @@ pub fn walk_expression<V: Visitor>(visitor: &mut V, expr: &Expression) {
             }
         }
         Expression::Arrow(arrow) => visitor.visit_arrow_function(arrow),
+        Expression::Function(func) => visitor.visit_function_expression(func),
         Expression::Await(await_expr) => visitor.visit_expression(&await_expr.argument),
         Expression::Typeof(typeof_expr) => visitor.visit_expression(&typeof_expr.argument),
         Expression::Parenthesized(paren) => visitor.visit_expression(&paren.expression),
@@ -557,6 +562,33 @@ pub fn walk_arrow_function<V: Visitor>(visitor: &mut V, func: &ArrowFunction) {
         ArrowBody::Expression(expr) => visitor.visit_expression(expr),
         ArrowBody::Block(block) => visitor.visit_block_statement(block),
     }
+}
+
+pub fn walk_function_expression<V: Visitor>(visitor: &mut V, func: &FunctionExpression) {
+    if let Some(name) = &func.name {
+        visitor.visit_identifier(name);
+    }
+    if let Some(type_params) = &func.type_params {
+        for param in type_params {
+            visitor.visit_identifier(&param.name);
+            if let Some(constraint) = &param.constraint {
+                visitor.visit_type_annotation(constraint);
+            }
+        }
+    }
+    for param in &func.params {
+        visitor.visit_pattern(&param.pattern);
+        if let Some(type_ann) = &param.type_annotation {
+            visitor.visit_type_annotation(type_ann);
+        }
+        if let Some(default_value) = &param.default_value {
+            visitor.visit_expression(default_value);
+        }
+    }
+    if let Some(return_type) = &func.return_type {
+        visitor.visit_type_annotation(return_type);
+    }
+    visitor.visit_block_statement(&func.body);
 }
 
 pub fn walk_jsx_element<V: Visitor>(visitor: &mut V, elem: &JsxElement) {

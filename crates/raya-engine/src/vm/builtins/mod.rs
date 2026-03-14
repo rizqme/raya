@@ -513,7 +513,18 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
         classes: &[ClassSig {
             name: "Symbol",
             type_params: &[],
-            properties: &[],
+            properties: &[
+                PropertySig {
+                    name: "iterator",
+                    ty: "Symbol",
+                    is_static: true,
+                },
+                PropertySig {
+                    name: "toStringTag",
+                    ty: "Symbol",
+                    is_static: true,
+                },
+            ],
             methods: &[
                 MethodSig {
                     name: "toString",
@@ -541,20 +552,6 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     params: &[("sym", "Symbol")],
                     min_params: 1,
                     return_type: "string",
-                    is_static: true,
-                },
-                MethodSig {
-                    name: "iterator",
-                    params: &[],
-                    min_params: 0,
-                    return_type: "Symbol",
-                    is_static: true,
-                },
-                MethodSig {
-                    name: "toStringTag",
-                    params: &[],
-                    min_params: 0,
-                    return_type: "Symbol",
                     is_static: true,
                 },
             ],
@@ -1469,7 +1466,18 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
         classes: &[ClassSig {
             name: "Symbol",
             type_params: &[],
-            properties: &[],
+            properties: &[
+                PropertySig {
+                    name: "iterator",
+                    ty: "Symbol",
+                    is_static: true,
+                },
+                PropertySig {
+                    name: "toStringTag",
+                    ty: "Symbol",
+                    is_static: true,
+                },
+            ],
             methods: &[
                 MethodSig {
                     name: "toString",
@@ -1499,20 +1507,6 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     return_type: "string",
                     is_static: true,
                 },
-                MethodSig {
-                    name: "iterator",
-                    params: &[],
-                    min_params: 0,
-                    return_type: "Symbol",
-                    is_static: true,
-                },
-                MethodSig {
-                    name: "toStringTag",
-                    params: &[],
-                    min_params: 0,
-                    return_type: "Symbol",
-                    is_static: true,
-                },
             ],
             constructor: None,
         }],
@@ -1534,11 +1528,6 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     PropertySig {
                         name: "name",
                         ty: "string",
-                        is_static: false,
-                    },
-                    PropertySig {
-                        name: "cause",
-                        ty: "Error | null",
                         is_static: false,
                     },
                     PropertySig {
@@ -1727,11 +1716,6 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     PropertySig {
                         name: "name",
                         ty: "string",
-                        is_static: false,
-                    },
-                    PropertySig {
-                        name: "errors",
-                        ty: "Array<Error>",
                         is_static: false,
                     },
                 ],

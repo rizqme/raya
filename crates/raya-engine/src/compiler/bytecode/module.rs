@@ -8,7 +8,7 @@ use thiserror::Error;
 pub const MAGIC: [u8; 4] = *b"RAYA";
 
 /// Current bytecode version
-pub const VERSION: u32 = 8;
+pub const VERSION: u32 = 9;
 
 /// Stable module ID derived from canonical module identity.
 pub type ModuleId = u64;
@@ -638,6 +638,14 @@ pub struct Function {
     pub name: String,
     /// Number of parameters
     pub param_count: usize,
+    /// Whether the first runtime parameter slot is the implicit JS `this`.
+    pub uses_js_this_slot: bool,
+    /// Whether the function is constructible and should expose a default `prototype`.
+    pub is_constructible: bool,
+    /// JS-visible `length` property value.
+    pub visible_length: usize,
+    /// Whether JS `this` should use strict semantics.
+    pub is_strict_js: bool,
     /// Number of local variables
     pub local_count: usize,
     /// Bytecode instructions
@@ -653,6 +661,10 @@ impl Function {
 
         // Write counts
         writer.emit_u32(self.param_count as u32);
+        writer.emit_u8(u8::from(self.uses_js_this_slot));
+        writer.emit_u8(u8::from(self.is_constructible));
+        writer.emit_u32(self.visible_length as u32);
+        writer.emit_u8(u8::from(self.is_strict_js));
         writer.emit_u32(self.local_count as u32);
 
         // Write code length and code
@@ -667,6 +679,10 @@ impl Function {
 
         // Read counts
         let param_count = reader.read_u32()? as usize;
+        let uses_js_this_slot = reader.read_u8()? != 0;
+        let is_constructible = reader.read_u8()? != 0;
+        let visible_length = reader.read_u32()? as usize;
+        let is_strict_js = reader.read_u8()? != 0;
         let local_count = reader.read_u32()? as usize;
 
         // Read code
@@ -676,6 +692,10 @@ impl Function {
         Ok(Self {
             name,
             param_count,
+            uses_js_this_slot,
+            is_constructible,
+            visible_length,
+            is_strict_js,
             local_count,
             code,
         })
@@ -691,6 +711,8 @@ pub struct ClassDef {
     pub field_count: usize,
     /// Parent class ID (None for root classes)
     pub parent_id: Option<u32>,
+    /// Runtime parent class name for ambient/imported parents.
+    pub parent_name: Option<String>,
     /// Method definitions
     pub methods: Vec<Method>,
 }
@@ -709,6 +731,15 @@ impl ClassDef {
         match self.parent_id {
             Some(id) => writer.emit_u32(id),
             None => writer.emit_u32(0xFFFFFFFF),
+        }
+
+        match &self.parent_name {
+            Some(name) => {
+                writer.emit_u8(1);
+                writer.emit_u32(name.len() as u32);
+                writer.buffer.extend_from_slice(name.as_bytes());
+            }
+            None => writer.emit_u8(0),
         }
 
         // Write methods
@@ -734,6 +765,12 @@ impl ClassDef {
             Some(parent_raw)
         };
 
+        let parent_name = if reader.read_u8()? != 0 {
+            Some(reader.read_string()?)
+        } else {
+            None
+        };
+
         // Read methods
         let method_count = reader.read_u32()? as usize;
         let mut methods = Vec::with_capacity(method_count);
@@ -745,6 +782,7 @@ impl ClassDef {
             name,
             field_count,
             parent_id,
+            parent_name,
             methods,
         })
     }
@@ -1763,6 +1801,10 @@ mod tests {
         module.functions.push(Function {
             name: "main".to_string(),
             param_count: 0,
+            uses_js_this_slot: false,
+            is_constructible: false,
+            visible_length: 0,
+            is_strict_js: false,
             local_count: 1,
             code: writer.into_bytes(),
         });
@@ -1805,6 +1847,7 @@ mod tests {
             name: "MyClass".to_string(),
             field_count: 3,
             parent_id: None,
+            parent_name: None,
             methods: vec![
                 Method {
                     name: "constructor".to_string(),
@@ -1908,6 +1951,10 @@ mod tests {
         module.functions.push(Function {
             name: "add42".to_string(),
             param_count: 1,
+            uses_js_this_slot: false,
+            is_constructible: false,
+            visible_length: 1,
+            is_strict_js: false,
             local_count: 2,
             code: writer.into_bytes(),
         });
@@ -1917,6 +1964,7 @@ mod tests {
             name: "Calculator".to_string(),
             field_count: 2,
             parent_id: None,
+            parent_name: None,
             methods: vec![Method {
                 name: "add42".to_string(),
                 function_id: 0,
@@ -1976,6 +2024,7 @@ mod tests {
             name: "Person".to_string(),
             field_count: 2,
             parent_id: None,
+            parent_name: None,
             methods: vec![],
         });
 

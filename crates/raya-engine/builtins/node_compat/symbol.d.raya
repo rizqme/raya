@@ -3,11 +3,11 @@
  */
 export class Symbol {
     toString(): string;
-    valueOf(): string;
+    valueOf(): Symbol;
 
     static for(key: string): Symbol;
     static keyFor(sym: Symbol): string;
 
-    static iterator(): Symbol;
-    static toStringTag(): Symbol;
+    static iterator: Symbol;
+    static toStringTag: Symbol;
 }

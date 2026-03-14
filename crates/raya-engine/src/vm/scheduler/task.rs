@@ -1186,6 +1186,7 @@ impl Task {
                 is_closure: false,
                 return_action: super::super::interpreter::execution::ReturnAction::PushReturnValue,
                 arg_count: 0, // Not available in serialized format (only needed for rest params)
+                args: Vec::new(),
             })
             .collect();
 
@@ -1660,6 +1661,7 @@ mod tests {
                 is_closure: false,
                 return_action: ReturnAction::PushReturnValue,
                 arg_count: 0,
+                args: Vec::new(),
             },
             ExecutionFrame {
                 module: module.clone(),
@@ -1669,6 +1671,7 @@ mod tests {
                 is_closure: true,
                 return_action: ReturnAction::Discard,
                 arg_count: 0,
+                args: Vec::new(),
             },
         ];
         task.save_execution_frames(frames);
@@ -1774,6 +1777,7 @@ mod tests {
             is_closure: false,
             return_action: ReturnAction::PushReturnValue,
             arg_count: 0,
+            args: Vec::new(),
         }]);
 
         // Serialize

@@ -16,6 +16,26 @@ const FILL: number = 0x0114;
 const FLAT: number = 0x0115;
 const SPLICE: number = 0x0117;
 const ARRAY_IS_ARRAY: number = 0x0D54;
+const ARRAY_FROM: number = 0x0118;
+
+class __ArrayIterator<T> {
+    public target: T[];
+    public index: number;
+
+    constructor(target: T[]) {
+        this.target = target;
+        this.index = 0;
+    }
+
+    next(): any {
+        if (this.index < this.target.length) {
+            let value = this.target[this.index];
+            this.index = this.index + 1;
+            return { value, done: false };
+        }
+        return { value: undefined, done: true };
+    }
+}
 
 class Array<T> {
     //@@opcode ArrayLen
@@ -29,12 +49,12 @@ class Array<T> {
         return __NATIVE_CALL<boolean>(ARRAY_IS_ARRAY, value);
     }
 
-    static from<U>(values: U[]): U[] {
-        let out: U[] = [];
-        for (let i = 0; i < values.length; i++) {
-            out.push(values[i]);
-        }
-        return out;
+    static from(values: any, mapfn?: any, thisArg?: any): any[] {
+        return __NATIVE_CALL<any[]>(ARRAY_FROM, this, values, mapfn, thisArg);
+    }
+
+    static __speciesGetter(): any {
+        return this;
     }
 
     // ── Atomic native operations ──────────────────────────────────────
@@ -98,6 +118,10 @@ class Array<T> {
     // Iterator protocol hook (for-of lowering target)
     iterator(): T[] {
         return this;
+    }
+
+    __iteratorObject(): any {
+        return new __ArrayIterator<T>(this);
     }
 
     // ── Callback methods — pure Raya loops, preemption-safe, JIT prewarm candidates ──

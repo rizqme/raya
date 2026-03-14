@@ -4,12 +4,36 @@
 // Native call IDs (must match raya-core/src/builtin.rs)
 const OBJECT_HASH_CODE: number = 0x0002;
 const OBJECT_EQUALS: number = 0x0003;
+const OBJECT_TO_STRING: number = 0x0001;
+const OBJECT_SAME_VALUE: number = 0x0008;
+const OBJECT_GET_PROTOTYPE_OF: number = 0x0011;
 
 class Object {
     // Get string representation of the object
-    // Default: "[object Object]" - subclasses can override
     toString(): string {
-        return "[object Object]";
+        return __NATIVE_CALL<string>(OBJECT_TO_STRING, this);
+    }
+
+    valueOf(): Object {
+        return this;
+    }
+
+    isPrototypeOf(value: any): boolean {
+        if (value == null) {
+            return false;
+        }
+        let valueType = typeof value;
+        if (valueType != "object" && valueType != "function") {
+            return false;
+        }
+        let proto = Object.getPrototypeOf(value);
+        while (proto != null) {
+            if (Object.is(proto, this)) {
+                return true;
+            }
+            proto = Object.getPrototypeOf(proto);
+        }
+        return false;
     }
 
     // Get hash code for this object (based on object identity)
@@ -25,8 +49,11 @@ class Object {
     }
 
     static is(a: unknown, b: unknown): boolean {
-        // Pragmatic baseline: strict equality. (NaN/-0 edge cases can be refined later.)
-        return a === b;
+        return __NATIVE_CALL<boolean>(OBJECT_SAME_VALUE, a, b);
+    }
+
+    static getPrototypeOf<T>(obj: T): Object | null {
+        return __NATIVE_CALL<Object | null>(OBJECT_GET_PROTOTYPE_OF, obj);
     }
 
 }

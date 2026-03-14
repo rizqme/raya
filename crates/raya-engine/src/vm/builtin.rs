@@ -144,6 +144,8 @@ pub mod array {
     pub const NEW: u16 = 0x0116;
     /// `arr.splice(start, deleteCount, ...items)` - Remove/add elements
     pub const SPLICE: u16 = 0x0117;
+    /// `Array.from(items, mapfn?, thisArg?)` - Create array from iterable or array-like
+    pub const FROM: u16 = 0x0118;
 }
 
 /// Built-in method IDs for strings

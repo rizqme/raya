@@ -3,17 +3,23 @@
 
 class Symbol {
     private key: string;
+    static iterator: Symbol = new Symbol("Symbol.iterator");
+    static toStringTag: Symbol = new Symbol("Symbol.toStringTag");
 
-    private constructor(key: string) {
-        this.key = key;
+    private constructor(description: any = "") {
+        if (description == null) {
+            this.key = "";
+            return;
+        }
+        this.key = String(description);
     }
 
     toString(): string {
         return "Symbol(" + this.key + ")";
     }
 
-    valueOf(): string {
-        return this.key;
+    valueOf(): Symbol {
+        return this;
     }
 
     static for(key: string): Symbol {
@@ -22,13 +28,5 @@ class Symbol {
 
     static keyFor(sym: Symbol): string {
         return sym.key;
-    }
-
-    static iterator(): Symbol {
-        return new Symbol("Symbol.iterator");
-    }
-
-    static toStringTag(): Symbol {
-        return new Symbol("Symbol.toStringTag");
     }
 }

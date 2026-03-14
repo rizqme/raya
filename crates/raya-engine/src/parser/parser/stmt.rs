@@ -31,7 +31,7 @@ pub fn parse_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
 /// Inner statement parsing logic - allows use of `?` operator
 fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
     match parser.current() {
-        Token::Let | Token::Const => parse_variable_declaration(parser),
+        Token::Let | Token::Const | Token::Var => parse_variable_declaration(parser),
         Token::Function => parse_function_declaration(parser),
 
         // Distinguish between async function declaration and async call expression
@@ -146,63 +146,81 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
 fn parse_variable_declaration(parser: &mut Parser) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
 
-    // Parse let or const
+    // Parse let, const, or var
     let kind = match parser.current() {
         Token::Let => VariableKind::Let,
         Token::Const => VariableKind::Const,
+        Token::Var => VariableKind::Var,
         _ => unreachable!(),
     };
     parser.advance();
 
-    // Parse pattern (for now, just identifier - destructuring later)
-    let pattern = super::pattern::parse_pattern(parser)?;
+    let mut decls = Vec::new();
+    loop {
+        let pattern = super::pattern::parse_pattern(parser)?;
 
-    // Optional type annotation
-    let type_annotation = if parser.check(&Token::Colon) {
-        parser.advance();
-        Some(super::types::parse_type_annotation(parser)?)
-    } else {
-        None
-    };
+        let type_annotation = if parser.check(&Token::Colon) {
+            parser.advance();
+            Some(super::types::parse_type_annotation(parser)?)
+        } else {
+            None
+        };
 
-    // Initializer (required for const, optional for let)
-    let initializer = if parser.check(&Token::Equal) {
-        parser.advance();
-        Some(super::expr::parse_assignment_expression(parser)?)
-    } else {
-        if kind == VariableKind::Const {
-            use super::ParseErrorKind;
-            return Err(ParseError {
-                kind: ParseErrorKind::InvalidSyntax {
-                    reason: "const declarations must have an initializer".to_string(),
-                },
-                span: start_span,
-                message: "Missing initializer for const declaration".to_string(),
-                suggestion: Some("Add an initializer: const x = value;".to_string()),
-            });
+        let initializer = if parser.check(&Token::Equal) {
+            parser.advance();
+            Some(super::expr::parse_assignment_expression(parser)?)
+        } else {
+            if kind == VariableKind::Const {
+                use super::ParseErrorKind;
+                return Err(ParseError {
+                    kind: ParseErrorKind::InvalidSyntax {
+                        reason: "const declarations must have an initializer".to_string(),
+                    },
+                    span: start_span,
+                    message: "Missing initializer for const declaration".to_string(),
+                    suggestion: Some("Add an initializer: const x = value;".to_string()),
+                });
+            }
+            None
+        };
+
+        let span = if let Some(ref init) = initializer {
+            parser.combine_spans(&start_span, init.span())
+        } else if let Some(ref type_ann) = type_annotation {
+            parser.combine_spans(&start_span, &type_ann.span)
+        } else {
+            parser.combine_spans(&start_span, pattern.span())
+        };
+
+        decls.push(VariableDecl {
+            kind,
+            pattern,
+            type_annotation,
+            initializer,
+            span,
+        });
+
+        if !parser.check(&Token::Comma) {
+            break;
         }
-        None
-    };
+        parser.advance();
+    }
 
-    // Optional semicolon
     if parser.check(&Token::Semicolon) {
         parser.advance();
     }
 
-    let span = if let Some(ref init) = initializer {
-        parser.combine_spans(&start_span, init.span())
-    } else if let Some(ref type_ann) = type_annotation {
-        parser.combine_spans(&start_span, &type_ann.span)
-    } else {
-        parser.combine_spans(&start_span, pattern.span())
-    };
+    if decls.len() == 1 {
+        return Ok(Statement::VariableDecl(decls.pop().expect("single decl")));
+    }
 
-    Ok(Statement::VariableDecl(VariableDecl {
-        kind,
-        pattern,
-        type_annotation,
-        initializer,
-        span,
+    let end_span = decls
+        .last()
+        .map(|decl| decl.span)
+        .unwrap_or(start_span);
+    Ok(Statement::Block(BlockStatement {
+        statements: decls.into_iter().map(Statement::VariableDecl).collect(),
+        span: parser.combine_spans(&start_span, &end_span),
     }))
 }
 
@@ -284,7 +302,7 @@ fn parse_function_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
 }
 
 /// Parse function parameters
-fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, ParseError> {
+pub(super) fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, ParseError> {
     let mut params = Vec::new();
     let mut guard = super::guards::LoopGuard::new("function_parameters");
 
@@ -389,7 +407,7 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
 }
 
 /// Parse type parameters (generics)
-fn parse_type_parameters(parser: &mut Parser) -> Result<Vec<TypeParameter>, ParseError> {
+pub(super) fn parse_type_parameters(parser: &mut Parser) -> Result<Vec<TypeParameter>, ParseError> {
     let mut type_params = Vec::new();
     let mut guard = super::guards::LoopGuard::new("type_parameters");
 
@@ -449,7 +467,7 @@ fn parse_type_parameters(parser: &mut Parser) -> Result<Vec<TypeParameter>, Pars
 }
 
 /// Parse block statement (sequence of statements in { })
-fn parse_block_statement(parser: &mut Parser) -> Result<BlockStatement, ParseError> {
+pub(super) fn parse_block_statement(parser: &mut Parser) -> Result<BlockStatement, ParseError> {
     let start_span = parser.current_span();
     let mut statements = Vec::new();
     let mut guard = super::guards::LoopGuard::new("block_statements");
@@ -489,6 +507,7 @@ fn parse_block_or_object_literal(parser: &mut Parser) -> Result<Statement, Parse
             Token::RightBrace       // Empty block: {}
             | Token::Let            // Block starts with let
             | Token::Const          // Block starts with const
+            | Token::Var            // Block starts with var
             | Token::Return         // Block starts with return
             | Token::If             // Block starts with if
             | Token::While          // Block starts with while
@@ -660,11 +679,12 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
         return parse_traditional_for(parser, start_span, None);
     }
 
-    if parser.check(&Token::Let) || parser.check(&Token::Const) {
+    if parser.check(&Token::Let) || parser.check(&Token::Const) || parser.check(&Token::Var) {
         // Could be for-of or traditional for with variable declaration
         let kind = match parser.current() {
             Token::Let => VariableKind::Let,
             Token::Const => VariableKind::Const,
+            Token::Var => VariableKind::Var,
             _ => unreachable!(),
         };
         parser.advance();
@@ -2085,7 +2105,7 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
     } else {
         // export const/let/function/class declaration
         let declaration = match parser.current() {
-            Token::Let | Token::Const => parse_variable_declaration(parser)?,
+                Token::Let | Token::Const | Token::Var => parse_variable_declaration(parser)?,
             Token::Function | Token::Async => parse_function_declaration(parser)?,
             Token::Class | Token::Abstract => parse_class_declaration(parser)?,
             Token::Type => parse_type_alias_declaration(parser, Vec::new())?,

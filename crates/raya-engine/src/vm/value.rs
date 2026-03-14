@@ -16,7 +16,8 @@
 //!   - u32:       0xFFF8003000000000 | (u32 as u64)              [tag=011]
 //!   - f32:       0xFFF8004000000000 | (f32.to_bits() as u64)    [tag=100]
 //!   - i64:       0xFFF8005000000000 | (i64 as u64 & 0xFFFFFFFF) [tag=101]
-//!   - null:      0xFFF8006000000000                             [tag=110]
+//!   - null:      0xFFF8006000000000                             [tag=110, payload=0]
+//!   - undefined: 0xFFF8006000000001                             [tag=110, payload=1]
 //!   - u64:       0xFFF8007000000000 | (u64 & 0xFFFFFFFFFFFF)    [tag=111]
 //! ```
 //!
@@ -67,6 +68,7 @@ impl Value {
 
     // Special values (NaN-boxed)
     const NULL: u64 = Self::NAN_BOX_BASE | Self::TAG_NULL;
+    const UNDEFINED: u64 = Self::NAN_BOX_BASE | Self::TAG_NULL | 1;
     const TRUE: u64 = Self::NAN_BOX_BASE | Self::TAG_BOOL | 1;
     const FALSE: u64 = Self::NAN_BOX_BASE | Self::TAG_BOOL;
 
@@ -87,6 +89,12 @@ impl Value {
     #[inline]
     pub const fn null() -> Self {
         Value(Self::NULL)
+    }
+
+    /// Create an undefined value
+    #[inline]
+    pub const fn undefined() -> Self {
+        Value(Self::UNDEFINED)
     }
 
     /// Create a boolean value
@@ -188,6 +196,18 @@ impl Value {
     #[inline]
     pub const fn is_null(&self) -> bool {
         self.0 == Self::NULL
+    }
+
+    /// Check if this value is undefined
+    #[inline]
+    pub const fn is_undefined(&self) -> bool {
+        self.0 == Self::UNDEFINED
+    }
+
+    /// Check if this value is null or undefined
+    #[inline]
+    pub const fn is_nullish(&self) -> bool {
+        self.is_null() || self.is_undefined()
     }
 
     /// Check if this value is a boolean
@@ -367,7 +387,7 @@ impl Value {
     pub fn is_truthy(&self) -> bool {
         if let Some(b) = self.as_bool() {
             b
-        } else if self.is_null() {
+        } else if self.is_nullish() {
             false
         } else if let Some(i) = self.as_i32() {
             i != 0
@@ -399,7 +419,7 @@ impl Value {
                 3 => "u32",
                 4 => "f32",
                 5 => "i64",
-                6 => "null",
+                6 => "nullish",
                 7 => "u64",
                 _ => "unknown",
             }
@@ -448,6 +468,8 @@ impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_null() {
             write!(f, "null")
+        } else if self.is_undefined() {
+            write!(f, "undefined")
         } else if self.is_bool() {
             write!(f, "bool({})", self.as_bool().unwrap())
         } else if self.is_i32() {
@@ -474,6 +496,8 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_null() {
             write!(f, "null")
+        } else if self.is_undefined() {
+            write!(f, "undefined")
         } else if self.is_bool() {
             write!(f, "{}", self.as_bool().unwrap())
         } else if self.is_i32() {

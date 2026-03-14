@@ -51,7 +51,10 @@ enum LogosToken {
     #[token("const")]
     Const,
 
-    // Note: 'interface', 'enum', and 'var' are BANNED in Raya
+    #[token("var")]
+    Var,
+
+    // Note: 'interface' and 'enum' are BANNED in Raya
     #[token("if")]
     If,
 
@@ -890,6 +893,7 @@ impl<'a> Lexer<'a> {
             LogosToken::Interface => Token::Interface,
             LogosToken::Let => Token::Let,
             LogosToken::Const => Token::Const,
+            LogosToken::Var => Token::Var,
             LogosToken::If => Token::If,
             LogosToken::Else => Token::Else,
             LogosToken::Switch => Token::Switch,

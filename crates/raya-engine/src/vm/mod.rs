@@ -65,7 +65,7 @@ pub use interpreter::{
 };
 pub use json::{validate_cast, JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry};
 pub use native_registry::{NativeFn, NativeFunctionRegistry, ResolvedNatives};
-pub use object::{Array, BoundMethod, Class, Object, RayaString, VTable};
+pub use object::{Array, BoundFunction, BoundMethod, Class, Object, RayaString, VTable};
 pub use scheduler::Scheduler;
 pub use snapshot::{SnapshotReader, SnapshotWriter};
 pub use stack::{CallFrame, Stack, StackStats};
@@ -98,6 +98,10 @@ pub enum VmError {
     /// Type error
     #[error("Type error: {0}")]
     TypeError(String),
+
+    /// Range error
+    #[error("Range error: {0}")]
+    RangeError(String),
 
     /// Runtime error
     #[error("Runtime error: {0}")]

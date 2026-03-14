@@ -4,33 +4,55 @@
 // Native call IDs (must match raya-core/src/builtin.rs)
 const OBJECT_HASH_CODE: number = 0x0002;
 const OBJECT_EQUALS: number = 0x0003;
+const OBJECT_TO_STRING: number = 0x0001;
 const OBJECT_DEFINE_PROPERTY: number = 0x0004;
 const OBJECT_GET_OWN_PROPERTY_DESCRIPTOR: number = 0x0005;
 const OBJECT_DEFINE_PROPERTIES: number = 0x0006;
+const OBJECT_GET_PROTOTYPE_OF: number = 0x0011;
+const NC_REFLECT_GET_FIELD_NAMES: number = 0x0D23;
+const OBJECT_SAME_VALUE: number = 0x0008;
 
 class Object {
-    // Descriptor-shape fields for node-compat property APIs.
-    // These are inert in strict mode because this class variant is node-compat only.
-    value: any;
-    writable: boolean;
-    configurable: boolean;
-    enumerable: boolean;
-    get: any;
-    set: any;
-
     constructor() {
-        this.value = null;
-        this.writable = true;
-        this.configurable = true;
-        this.enumerable = true;
-        this.get = null;
-        this.set = null;
     }
 
     // Get string representation of the object
-    // Default: "[object Object]" - subclasses can override
     toString(): string {
-        return "[object Object]";
+        return __NATIVE_CALL<string>(OBJECT_TO_STRING, this);
+    }
+
+    valueOf(): Object {
+        return this;
+    }
+
+    hasOwnProperty(key: any): boolean {
+        return Object.getOwnPropertyDescriptor(this, key) != null;
+    }
+
+    propertyIsEnumerable(key: any): boolean {
+        let desc = Object.getOwnPropertyDescriptor(this, key);
+        if (desc == null) {
+            return false;
+        }
+        return desc["enumerable"] == true;
+    }
+
+    isPrototypeOf(value: any): boolean {
+        if (value == null) {
+            return false;
+        }
+        let valueType = typeof value;
+        if (valueType != "object" && valueType != "function") {
+            return false;
+        }
+        let proto = Object.getPrototypeOf(value);
+        while (proto != null) {
+            if (Object.is(proto, this)) {
+                return true;
+            }
+            proto = Object.getPrototypeOf(proto);
+        }
+        return false;
     }
 
     // Get hash code for this object (based on object identity)
@@ -46,17 +68,24 @@ class Object {
     }
 
     static is(a: unknown, b: unknown): boolean {
-        // Pragmatic baseline: strict equality. (NaN/-0 edge cases can be refined later.)
-        return a === b;
+        return __NATIVE_CALL<boolean>(OBJECT_SAME_VALUE, a, b);
     }
 
     // Node compatibility APIs for descriptor-style property control.
-    static defineProperty<T, D>(obj: T, key: string, descriptor: D): T {
+    static defineProperty<T, D>(obj: T, key: any, descriptor: D): T {
         return __NATIVE_CALL<T>(OBJECT_DEFINE_PROPERTY, obj, key, descriptor);
     }
 
-    static getOwnPropertyDescriptor<T>(obj: T, key: string): Object | null {
-        return __NATIVE_CALL<Object | null>(OBJECT_GET_OWN_PROPERTY_DESCRIPTOR, obj, key);
+    static getOwnPropertyDescriptor<T>(obj: T, key: any): any {
+        return __NATIVE_CALL<any>(OBJECT_GET_OWN_PROPERTY_DESCRIPTOR, obj, key);
+    }
+
+    static getOwnPropertyNames<T>(obj: T): string[] {
+        return __NATIVE_CALL<string[]>(NC_REFLECT_GET_FIELD_NAMES, obj);
+    }
+
+    static getPrototypeOf<T>(obj: T): Object | null {
+        return __NATIVE_CALL<Object | null>(OBJECT_GET_PROTOTYPE_OF, obj);
     }
 
     static defineProperties<T, D>(obj: T, descriptors: D): T {

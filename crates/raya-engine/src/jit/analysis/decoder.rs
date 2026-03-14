@@ -123,6 +123,7 @@ fn decode_operands(
         | Opcode::Dup
         | Opcode::Swap
         | Opcode::ConstNull
+        | Opcode::ConstUndefined
         | Opcode::ConstTrue
         | Opcode::ConstFalse
         | Opcode::LoadLocal0

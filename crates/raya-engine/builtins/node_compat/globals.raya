@@ -11,9 +11,11 @@ const NC_REFLECT_GET_FIELD_NAMES: number = 0x0D23;
 const NC_REFLECT_GET_FIELD_INFO: number = 0x0D24;
 const NC_REFLECT_GET_FIELDS: number = 0x0D25;
 const NC_REFLECT_HAS_METHOD: number = 0x0D35;
+const NC_REFLECT_CONSTRUCT: number = 0x0D40;
 const NC_REFLECT_CREATE_PROXY: number = 0x0DB0;
 const NC_REFLECT_IS_PROXY: number = 0x0DB1;
 const NC_REFLECT_GET_PROXY_TARGET: number = 0x0DB2;
+const NC_OBJECT_CONSTRUCT_DYNAMIC_CLASS: number = 0x0007;
 
 function __is_space(ch: string): boolean {
     return ch == " " || ch == "\t" || ch == "\n" || ch == "\r";
@@ -221,6 +223,10 @@ class __NodeCompatReflect {
         return target[key] != null;
     }
 
+    construct(target: any, args: any = null, newTarget: any = null): Object {
+        return __NATIVE_CALL<Object>(NC_REFLECT_CONSTRUCT, target, args, newTarget);
+    }
+
     getFieldNames(target: Proxy<Object> | Object): string[] {
         return __NATIVE_CALL<string[]>(NC_REFLECT_GET_FIELD_NAMES, target);
     }
@@ -253,6 +259,14 @@ class __NodeCompatReflect {
 }
 
 const Reflect: __NodeCompatReflect = new __NodeCompatReflect();
+
+class __NodeCompatMath {
+    pow(base: number, exponent: number): number {
+        return base ** exponent;
+    }
+}
+
+const Math: __NodeCompatMath = new __NodeCompatMath();
 
 class Proxy<T extends Object> {
     private _proxy: Object;

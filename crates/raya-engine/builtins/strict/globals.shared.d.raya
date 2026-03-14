@@ -2,9 +2,9 @@
 
 export const Infinity: number;
 export const NaN: number;
-export const undefined: null;
+export const undefined: any;
 
-export type PrimitiveCoercible = Object | string | number | boolean | null;
+export type PrimitiveCoercible = any;
 
 export function Boolean(value: PrimitiveCoercible): boolean;
 export function Number(value: PrimitiveCoercible): number;

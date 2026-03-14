@@ -10,6 +10,7 @@
 
 use crate::parser::types::ty::{Type, TypeId};
 use crate::parser::TypeContext;
+use crate::vm::builtin::array;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Sentinel TypeId for when the lowerer cannot determine the type.
@@ -85,6 +86,21 @@ pub struct TypeRegistry {
 }
 
 impl TypeRegistry {
+    fn array_callback_native_id(method_name: &str) -> Option<u16> {
+        Some(match method_name {
+            "forEach" => array::FOR_EACH,
+            "filter" => array::FILTER,
+            "find" => array::FIND,
+            "findIndex" => array::FIND_INDEX,
+            "every" => array::EVERY,
+            "some" => array::SOME,
+            "sort" => array::SORT,
+            "map" => array::MAP,
+            "reduce" => array::REDUCE,
+            _ => return None,
+        })
+    }
+
     /// Build the registry from embedded `.raya` sources and the TypeContext.
     pub fn new(type_ctx: &TypeContext) -> Self {
         let mut registry = Self {
@@ -415,10 +431,16 @@ impl TypeRegistry {
             }
             // Register class methods (callback methods like map, filter, etc.)
             for cm_name in &class_methods {
-                self.array_methods.insert(
-                    cm_name.clone(),
-                    DispatchAction::ClassMethod(type_name.to_string(), cm_name.clone()),
-                );
+                let action = if type_name == "Array" {
+                    Self::array_callback_native_id(cm_name)
+                        .map(DispatchAction::NativeCall)
+                        .unwrap_or_else(|| {
+                            DispatchAction::ClassMethod(type_name.to_string(), cm_name.clone())
+                        })
+                } else {
+                    DispatchAction::ClassMethod(type_name.to_string(), cm_name.clone())
+                };
+                self.array_methods.insert(cm_name.clone(), action);
             }
         } else {
             let type_ids = dispatch_type_ids_for_name(type_name, type_ctx);
@@ -449,10 +471,19 @@ impl TypeRegistry {
                 if !class_methods.is_empty() {
                     let meths = self.method_dispatch.entry(tid).or_default();
                     for cm_name in &class_methods {
-                        meths.insert(
-                            cm_name.clone(),
-                            DispatchAction::ClassMethod(type_name.to_string(), cm_name.clone()),
-                        );
+                        let action = if type_name == "Array" {
+                            Self::array_callback_native_id(cm_name)
+                                .map(DispatchAction::NativeCall)
+                                .unwrap_or_else(|| {
+                                    DispatchAction::ClassMethod(
+                                        type_name.to_string(),
+                                        cm_name.clone(),
+                                    )
+                                })
+                        } else {
+                            DispatchAction::ClassMethod(type_name.to_string(), cm_name.clone())
+                        };
+                        meths.insert(cm_name.clone(), action);
                     }
                 }
             }
@@ -895,32 +926,31 @@ fn extract_methods(
                 continue;
             }
 
-            // Find the opening brace of the method body
-            if let Some(open_brace) = find_char_after(&chars, open_paren, '{') {
-                // Extract return type from between `)` and `{`
-                let return_type_str =
-                    find_matching_paren(&chars, open_paren).and_then(|close_paren| {
-                        let between: String = chars[close_paren + 1..open_brace].iter().collect();
-                        between
-                            .find(':')
-                            .map(|colon_idx| between[colon_idx + 1..].trim().to_string())
-                    });
+            if let Some(close_paren) = find_matching_paren(&chars, open_paren) {
+                // Find the opening brace of the method body after the parameter list.
+                if let Some(open_brace) = find_char_after(&chars, close_paren, '{') {
+                    // Extract return type from between `)` and `{`
+                    let between: String = chars[close_paren + 1..open_brace].iter().collect();
+                    let return_type_str = between
+                        .find(':')
+                        .map(|colon_idx| between[colon_idx + 1..].trim().to_string());
 
-                // Find the matching closing brace
-                if let Some(close_brace) = find_matching_brace(&chars, open_brace) {
-                    let body = &chars[open_brace + 1..close_brace];
-                    let body_str: String = body.iter().collect();
+                    // Find the matching closing brace
+                    if let Some(close_brace) = find_matching_brace(&chars, open_brace) {
+                        let body = &chars[open_brace + 1..close_brace];
+                        let body_str: String = body.iter().collect();
 
-                    // Check if this is an atomic method (single __NATIVE_CALL return)
-                    if let Some(native_id) = extract_native_call_id(&body_str, constants) {
-                        // Only register if the body doesn't contain loops
-                        if !body_str.contains("for ") && !body_str.contains("while ") {
-                            result.push((method_name, native_id, return_type_str));
+                        // Check if this is an atomic method (single __NATIVE_CALL return)
+                        if let Some(native_id) = extract_native_call_id(&body_str, constants) {
+                            // Only register if the body doesn't contain loops
+                            if !body_str.contains("for ") && !body_str.contains("while ") {
+                                result.push((method_name, native_id, return_type_str));
+                            }
                         }
-                    }
 
-                    pos = close_brace + 1;
-                    continue;
+                        pos = close_brace + 1;
+                        continue;
+                    }
                 }
             }
         }

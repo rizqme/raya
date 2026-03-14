@@ -1,0 +1,1033 @@
+use anyhow::{Context, Result};
+use clap::Parser;
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, TypeMode};
+use regex::Regex;
+use std::collections::BTreeSet;
+use std::fmt;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::Instant;
+
+const HARNESS_PRELUDE: &str = r#"
+class Test262Error extends Error {
+    constructor(message) {
+        super(message);
+    }
+}
+
+function $ERROR(message) {
+    if (message == null) {
+        throw new Test262Error("");
+    }
+    throw new Test262Error(String(message));
+}
+
+function $DONOTEVALUATE() {
+    throw new Test262Error("This statement should not be evaluated.");
+}
+
+function __describeValue(value) {
+    if (value === undefined) {
+        return "undefined";
+    }
+    if (value === null) {
+        return "null";
+    }
+
+    let kind = typeof value;
+    if (kind === "string") {
+        return "\"" + value + "\"";
+    }
+    if (kind === "number") {
+        if (value !== value) {
+            return "NaN";
+        }
+        if (value === 0 && (1 / value) < 0) {
+            return "-0";
+        }
+        return String(value);
+    }
+    if (kind === "boolean" || kind === "bigint" || kind === "symbol") {
+        return String(value);
+    }
+    if (kind === "function") {
+        let name = value.name;
+        if (name == null || name === "") {
+            return "[function <anonymous>]";
+        }
+        return "[function " + String(name) + "]";
+    }
+
+    try {
+        let ctorName = "";
+        if (value.constructor != null) {
+            ctorName = value.constructor.name;
+        }
+        let rendered = String(value);
+        if (ctorName != null && ctorName !== "") {
+            return "[" + String(ctorName) + " " + rendered + "]";
+        }
+        return rendered;
+    } catch (_err) {
+        return "[unprintable object]";
+    }
+}
+
+function __describeConstructor(value) {
+    if (value == null) {
+        return __describeValue(value);
+    }
+    let name = value.name;
+    if (name == null || name === "") {
+        return __describeValue(value);
+    }
+    return String(name);
+}
+
+function __failWithContext(defaultMessage, message) {
+    if (message == null) {
+        $ERROR(defaultMessage);
+        return;
+    }
+    $ERROR(String(message) + " (" + defaultMessage + ")");
+}
+
+function __assert(mustBeTrue, message) {
+    if (mustBeTrue === true) {
+        return;
+    }
+    __failWithContext(
+        "Expected assertion to be truthy, got " + __describeValue(mustBeTrue),
+        message
+    );
+}
+
+function __isSameValue(a, b) {
+    if (a === b) {
+        if (a === 0) {
+            return (1 / a) === (1 / b);
+        }
+        return true;
+    }
+    return a !== a && b !== b;
+}
+
+function __assert_sameValue(actual, expected, message) {
+    if (__isSameValue(actual, expected)) {
+        return;
+    }
+    __failWithContext(
+        "Expected SameValue, got actual=" +
+            __describeValue(actual) +
+            " expected=" +
+            __describeValue(expected),
+        message
+    );
+}
+
+function __assert_notSameValue(actual, expected, message) {
+    if (!__isSameValue(actual, expected)) {
+        return;
+    }
+    __failWithContext(
+        "Expected different values, both were " + __describeValue(actual),
+        message
+    );
+}
+
+function __compareArray(actual, expected) {
+    if (actual == null || expected == null) {
+        return false;
+    }
+    if (actual.length !== expected.length) {
+        return false;
+    }
+    for (let i = 0; i < actual.length; i = i + 1) {
+        if (!__isSameValue(actual[i], expected[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function __assert_compareArray(actual, expected, message) {
+    if (__compareArray(actual, expected)) {
+        return;
+    }
+    let detail = "Expected arrays to compare equal";
+    if (actual == null || expected == null) {
+        detail =
+            detail +
+            ", got actual=" +
+            __describeValue(actual) +
+            " expected=" +
+            __describeValue(expected);
+    } else if (actual.length !== expected.length) {
+        detail =
+            detail +
+            ", got lengths actual=" +
+            String(actual.length) +
+            " expected=" +
+            String(expected.length);
+    } else {
+        for (let i = 0; i < actual.length; i = i + 1) {
+            if (!__isSameValue(actual[i], expected[i])) {
+                detail =
+                    detail +
+                    ", first mismatch at index " +
+                    String(i) +
+                    ": actual=" +
+                    __describeValue(actual[i]) +
+                    " expected=" +
+                    __describeValue(expected[i]);
+                break;
+            }
+        }
+    }
+    __failWithContext(detail, message);
+}
+
+function __assert_throws(expectedErrorConstructor, func, message) {
+    try {
+        func();
+    } catch (thrown) {
+        if (expectedErrorConstructor != null) {
+            let actualConstructor = thrown;
+            if (thrown != null) {
+                actualConstructor = thrown.constructor;
+            }
+            if (actualConstructor !== expectedErrorConstructor) {
+                __failWithContext(
+                    "Expected throw " +
+                        __describeConstructor(expectedErrorConstructor) +
+                        ", got " +
+                        __describeConstructor(actualConstructor) +
+                        " with value " +
+                        __describeValue(thrown),
+                    message
+                );
+            }
+        }
+        return;
+    }
+    __failWithContext(
+        "Expected function to throw " + __describeConstructor(expectedErrorConstructor),
+        message
+    );
+}
+"#;
+
+const HOST_262_PRELUDE: &str = r#"
+const __262_main_Reflect = Reflect;
+const __262_indirect_eval = eval;
+
+function __262_makeRealmRegExp() {
+    class RealmRegExp {
+        constructor(pattern, flags) {
+            this.__inner = new RegExp(pattern, flags);
+            this.__sync();
+        }
+
+        __sync() {
+            this.source = this.__inner.source;
+            this.flags = this.__inner.flags;
+            this.global = this.flags.includes("g");
+            this.ignoreCase = this.flags.includes("i");
+            this.multiline = this.flags.includes("m");
+            this.dotAll = this.flags.includes("s");
+            this.unicode = this.flags.includes("u");
+            this.lastIndex = this.__inner.lastIndex;
+        }
+
+        compile(pattern, flags) {
+            if (!(this instanceof RealmRegExp)) {
+                throw new TypeError("RegExp.prototype.compile called on incompatible receiver");
+            }
+            this.__inner.compile(pattern, flags);
+            this.__sync();
+            return this;
+        }
+
+        test(str) {
+            return this.__inner.test(str);
+        }
+
+        toString() {
+            return this.__inner.toString();
+        }
+    }
+
+    return RealmRegExp;
+}
+
+function __262_createRealm() {
+    const RealmRegExp = __262_makeRealmRegExp();
+    return {
+        global: {
+            Object: Object,
+            Array: Array,
+            Function: Function,
+            Error: Error,
+            AggregateError: AggregateError,
+            EvalError: EvalError,
+            RangeError: RangeError,
+            ReferenceError: ReferenceError,
+            RegExp: RealmRegExp,
+            SyntaxError: SyntaxError,
+            URIError: URIError,
+            Symbol: Symbol,
+            TypeError: TypeError,
+            Reflect: __262_main_Reflect,
+        }
+    };
+}
+
+function __262_evalScript(source) {
+    return __262_indirect_eval(source);
+}
+
+const $262 = {
+    createRealm: __262_createRealm,
+    evalScript: __262_evalScript,
+};
+"#;
+
+const IS_CONSTRUCTOR_SHIM: &str = r#"
+class __Test262ConstructorProbe {}
+
+function isConstructor(f) {
+    if (typeof f !== "function") {
+        throw new Test262Error("isConstructor invoked with a non-function value");
+    }
+
+    try {
+        Reflect.construct(__Test262ConstructorProbe, [], f);
+    } catch (_e) {
+        return false;
+    }
+    return true;
+}
+"#;
+
+const FN_GLOBAL_OBJECT_SHIM: &str = r#"
+var __globalObject = Function("return this;")();
+function fnGlobalObject() {
+    return __globalObject;
+}
+"#;
+
+const DEFAULT_EXCLUDED_SEGMENTS: &[&str] = &[
+    "annexB",
+    "intl402",
+    "Atomics",
+    "SharedArrayBuffer",
+    "Temporal",
+    "ShadowRealm",
+];
+
+#[derive(Debug, Parser)]
+#[command(name = "raya-es262-conformance")]
+#[command(about = "Run a best-effort ES262 subset of Test262 through Raya")]
+pub struct Args {
+    #[arg(long, value_name = "PATH")]
+    pub root: Option<PathBuf>,
+
+    #[arg(long)]
+    pub filter: Option<String>,
+
+    #[arg(long, value_name = "N")]
+    pub from: Option<usize>,
+
+    #[arg(long, value_name = "N")]
+    pub to: Option<usize>,
+
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    #[arg(long)]
+    pub fail_fast: bool,
+
+    #[arg(long)]
+    pub verbose: bool,
+
+    #[arg(long)]
+    pub show_skips: bool,
+
+    #[arg(long)]
+    pub list: bool,
+
+    #[arg(long = "exclude-prefix", value_name = "PATH")]
+    pub exclude_prefixes: Vec<String>,
+
+    #[arg(long = "exclude-segment", value_name = "NAME")]
+    pub exclude_segments: Vec<String>,
+
+    #[arg(value_name = "PATH")]
+    pub selectors: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Frontmatter {
+    pub description: Option<String>,
+    pub includes: Vec<String>,
+    pub flags: Vec<String>,
+    pub features: Vec<String>,
+    pub negative: Option<Negative>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Negative {
+    pub phase: Option<String>,
+    pub error_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestCase {
+    pub absolute_path: PathBuf,
+    pub relative_path: PathBuf,
+    pub metadata: Frontmatter,
+    pub source: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum TestOutcome {
+    Passed,
+    Failed(String),
+    Skipped(String),
+}
+
+#[derive(Debug, Default)]
+pub struct RunSummary {
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+}
+
+impl RunSummary {
+    fn record(&mut self, outcome: &TestOutcome) {
+        self.total += 1;
+        match outcome {
+            TestOutcome::Passed => self.passed += 1,
+            TestOutcome::Failed(_) => self.failed += 1,
+            TestOutcome::Skipped(_) => self.skipped += 1,
+        }
+    }
+}
+
+pub fn main_entry() -> Result<i32> {
+    run(Args::parse())
+}
+
+pub fn run(args: Args) -> Result<i32> {
+    let root = args
+        .root
+        .unwrap_or_else(default_test262_root)
+        .canonicalize()
+        .with_context(|| "failed to resolve Test262 root")?;
+    let test_root = root.join("test");
+    if !test_root.is_dir() {
+        anyhow::bail!(
+            "expected Test262 tests under {}, but that directory does not exist",
+            test_root.display()
+        );
+    }
+
+    let mut exclude_segments = DEFAULT_EXCLUDED_SEGMENTS
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<BTreeSet<_>>();
+    exclude_segments.extend(args.exclude_segments);
+
+    let mut cases = discover_cases(&root, &args.selectors)?;
+    cases.retain(|case| !is_excluded_case(case, &args.exclude_prefixes, &exclude_segments));
+    if let Some(filter) = &args.filter {
+        cases.retain(|case| case.relative_path.to_string_lossy().contains(filter));
+    }
+    if args.from == Some(0) {
+        anyhow::bail!("--from is 1-based and must be >= 1");
+    }
+    if args.to == Some(0) {
+        anyhow::bail!("--to is 1-based and must be >= 1");
+    }
+    if let (Some(from), Some(to)) = (args.from, args.to) {
+        if from > to {
+            anyhow::bail!("--from ({from}) must be <= --to ({to})");
+        }
+    }
+    if args.from.is_some() || args.to.is_some() {
+        let from = args.from.unwrap_or(1);
+        let start = from.saturating_sub(1);
+        let end = args.to.unwrap_or(cases.len()).min(cases.len());
+        if start >= cases.len() || start >= end {
+            cases.clear();
+        } else {
+            cases = cases.into_iter().skip(start).take(end - start).collect();
+        }
+    }
+    if let Some(limit) = args.limit {
+        cases.truncate(limit);
+    }
+
+    if args.list {
+        for case in &cases {
+            println!("{}", case.relative_path.display());
+        }
+        return Ok(0);
+    }
+
+    let started = Instant::now();
+    let mut summary = RunSummary::default();
+
+    for case in &cases {
+        let runtime = build_case_runtime();
+        let outcome = run_case(&runtime, &root, case);
+        summary.record(&outcome);
+
+        match &outcome {
+            TestOutcome::Passed if args.verbose => {
+                println!("PASS {}", case.relative_path.display());
+            }
+            TestOutcome::Failed(message) => {
+                eprintln!("FAIL {}: {}", case.relative_path.display(), message);
+                if args.fail_fast {
+                    break;
+                }
+            }
+            TestOutcome::Skipped(reason) if args.show_skips => {
+                println!("SKIP {}: {}", case.relative_path.display(), reason);
+            }
+            _ => {}
+        }
+    }
+
+    println!(
+        "es262: total={} passed={} failed={} skipped={} elapsed={:.2?}",
+        summary.total,
+        summary.passed,
+        summary.failed,
+        summary.skipped,
+        started.elapsed()
+    );
+
+    Ok(if summary.failed == 0 { 0 } else { 1 })
+}
+
+pub fn default_test262_root() -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir.join("../../vendor/test262")
+}
+
+fn build_case_runtime() -> Runtime {
+    Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        type_mode: Some(TypeMode::Js),
+        threads: 1,
+        no_jit: true,
+        ..Default::default()
+    })
+}
+
+fn discover_cases(root: &Path, selectors: &[PathBuf]) -> Result<Vec<TestCase>> {
+    let mut candidates = Vec::new();
+    if selectors.is_empty() {
+        collect_js_files(&root.join("test"), &mut candidates)?;
+    } else {
+        for selector in selectors {
+            let path = resolve_selector_path(root, selector);
+            if path.is_dir() {
+                collect_js_files(&path, &mut candidates)?;
+            } else if path.is_file() {
+                candidates.push(path);
+            } else {
+                anyhow::bail!("selector does not exist under test262 root: {}", selector.display());
+            }
+        }
+    }
+
+    candidates.sort();
+    let mut cases = Vec::with_capacity(candidates.len());
+    for absolute_path in candidates {
+        let source = fs::read_to_string(&absolute_path)
+            .with_context(|| format!("failed to read {}", absolute_path.display()))?;
+        let (metadata, source) = parse_frontmatter_and_body(&source);
+        let relative_path = absolute_path
+            .strip_prefix(root)
+            .unwrap_or(&absolute_path)
+            .to_path_buf();
+        cases.push(TestCase {
+            absolute_path,
+            relative_path,
+            metadata,
+            source,
+        });
+    }
+
+    Ok(cases)
+}
+
+fn resolve_selector_path(root: &Path, selector: &Path) -> PathBuf {
+    let direct = root.join(selector);
+    if direct.exists() {
+        return direct;
+    }
+
+    let selector_text = selector.to_string_lossy();
+    if let Some(rest) = selector_text.strip_prefix("test/expressions") {
+        let alias = root.join(format!("test/language/expressions{rest}"));
+        if alias.exists() {
+            return alias;
+        }
+    }
+    if let Some(rest) = selector_text.strip_prefix("test/statements") {
+        let alias = root.join(format!("test/language/statements{rest}"));
+        if alias.exists() {
+            return alias;
+        }
+    }
+
+    direct
+}
+
+fn collect_js_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir)
+        .with_context(|| format!("failed to read directory {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_js_files(&path, out)?;
+            continue;
+        }
+        let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+            continue;
+        };
+        if ext == "js" || ext == "mjs" {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn is_excluded_case(
+    case: &TestCase,
+    exclude_prefixes: &[String],
+    exclude_segments: &BTreeSet<String>,
+) -> bool {
+    let relative = case.relative_path.to_string_lossy();
+    if exclude_prefixes.iter().any(|prefix| relative.starts_with(prefix)) {
+        return true;
+    }
+
+    case.relative_path.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        exclude_segments.contains(&name.to_string_lossy().to_string())
+    })
+}
+
+fn parse_frontmatter_and_body(source: &str) -> (Frontmatter, String) {
+    let Some(start) = source.find("/*---") else {
+        return (Frontmatter::default(), source.to_string());
+    };
+    let after_start = start + "/*---".len();
+    let Some(end_rel) = source[after_start..].find("---*/") else {
+        return (Frontmatter::default(), source.to_string());
+    };
+    let end = after_start + end_rel;
+    let frontmatter = &source[after_start..end];
+    let body = format!("{}{}", &source[..start], &source[end + "---*/".len()..]);
+    (parse_frontmatter(frontmatter), body)
+}
+
+fn parse_frontmatter(frontmatter: &str) -> Frontmatter {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Section {
+        None,
+        Includes,
+        Flags,
+        Features,
+        Negative,
+    }
+
+    let mut metadata = Frontmatter::default();
+    let mut section = Section::None;
+
+    for raw_line in frontmatter.lines() {
+        let line = raw_line.trim_end();
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("description:") {
+            metadata.description = Some(value.trim().trim_matches('"').to_string());
+            section = Section::None;
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("includes:") {
+            metadata.includes.extend(parse_inline_list(value));
+            section = if value.trim().starts_with('[') {
+                Section::None
+            } else {
+                Section::Includes
+            };
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("flags:") {
+            metadata.flags.extend(parse_inline_list(value));
+            section = if value.trim().starts_with('[') {
+                Section::None
+            } else {
+                Section::Flags
+            };
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("features:") {
+            metadata.features.extend(parse_inline_list(value));
+            section = if value.trim().starts_with('[') {
+                Section::None
+            } else {
+                Section::Features
+            };
+            continue;
+        }
+        if trimmed.starts_with("negative:") {
+            metadata.negative.get_or_insert_with(Negative::default);
+            section = Section::Negative;
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix('-') {
+            let item = value.trim().trim_matches('"').to_string();
+            match section {
+                Section::Includes => metadata.includes.push(item),
+                Section::Flags => metadata.flags.push(item),
+                Section::Features => metadata.features.push(item),
+                Section::None | Section::Negative => {}
+            }
+            continue;
+        }
+
+        if section == Section::Negative {
+            if let Some(value) = trimmed.strip_prefix("phase:") {
+                metadata
+                    .negative
+                    .get_or_insert_with(Negative::default)
+                    .phase = Some(value.trim().to_string());
+                continue;
+            }
+            if let Some(value) = trimmed.strip_prefix("type:") {
+                metadata
+                    .negative
+                    .get_or_insert_with(Negative::default)
+                    .error_type = Some(value.trim().to_string());
+                continue;
+            }
+        }
+    }
+
+    metadata
+}
+
+fn parse_inline_list(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        return Vec::new();
+    }
+    trimmed[1..trimmed.len() - 1]
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| item.trim_matches('"').to_string())
+        .collect()
+}
+
+fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> TestOutcome {
+    let transformed = match prepare_case_source(root, case) {
+        Ok(source) => source,
+        Err(reason) => return TestOutcome::Skipped(reason),
+    };
+
+    let negative_phase = case
+        .metadata
+        .negative
+        .as_ref()
+        .and_then(|negative| negative.phase.as_deref());
+    let expected_error = case
+        .metadata
+        .negative
+        .as_ref()
+        .and_then(|negative| negative.error_type.as_deref());
+
+    let temp_path = std::env::temp_dir().join(format!(
+        "raya-es262-{}-{}.js",
+        std::process::id(),
+        sanitized_case_stem(&case.relative_path),
+    ));
+    if let Err(error) = fs::write(&temp_path, &transformed) {
+        return TestOutcome::Failed(format!(
+            "failed to materialize transformed case at {}: {}",
+            temp_path.display(),
+            error
+        ));
+    }
+
+    let outcome = match negative_phase {
+        Some("parse") | Some("resolution") => match runtime.compile_program_file(&temp_path) {
+            Ok(_) => TestOutcome::Failed("expected compilation to fail".to_string()),
+            Err(error) => {
+                if matches_expected_error(&error.to_string(), expected_error) {
+                    TestOutcome::Passed
+                } else {
+                    TestOutcome::Failed(format!("unexpected compilation error: {}", error))
+                }
+            }
+        },
+        Some("runtime") => match execute_case_program(runtime, &temp_path) {
+            Ok(()) => TestOutcome::Failed("expected runtime failure".to_string()),
+            Err(error) => {
+                if matches_expected_error(&error, expected_error) {
+                    TestOutcome::Passed
+                } else {
+                    TestOutcome::Failed(format!("unexpected runtime error: {}", error))
+                }
+            }
+        },
+        _ => match execute_case_program(runtime, &temp_path) {
+            Ok(()) => TestOutcome::Passed,
+            Err(error) => TestOutcome::Failed(error),
+        },
+    };
+
+    let _ = fs::remove_file(&temp_path);
+    outcome
+}
+
+fn matches_expected_error(actual: &str, expected: Option<&str>) -> bool {
+    match expected {
+        Some(expected_name) => actual.contains(expected_name),
+        None => true,
+    }
+}
+
+fn execute_case_program(runtime: &Runtime, path: &Path) -> std::result::Result<(), String> {
+    let program = runtime
+        .compile_program_file(path)
+        .map_err(|error| format!("compilation failed: {}", error))?;
+    runtime
+        .execute_program(&program)
+        .map(|_| ())
+        .map_err(|error| format!("runtime failed: {}", error))
+}
+
+fn prepare_case_source(root: &Path, case: &TestCase) -> std::result::Result<String, String> {
+    let is_raw = case.metadata.flags.iter().any(|flag| flag == "raw");
+    for flag in &case.metadata.flags {
+        match flag.as_str() {
+            "async" | "module" | "CanBlockIsFalse" => {
+                return Err(format!("unsupported test flag: {}", flag));
+            }
+            "generated" | "onlyStrict" | "noStrict" | "raw" => {}
+            _ => {}
+        }
+    }
+
+    if case.source.contains("$DONE") {
+        return Err("uses async completion callback".to_string());
+    }
+    if import_export_regex().is_match(&case.source) {
+        return Err("uses module syntax".to_string());
+    }
+
+    let supported_host_hooks = supported_262_hooks(&case.source);
+    if supported_host_hooks.is_none() && case.source.contains("$262") {
+        return Err("uses unsupported $262 host hooks".to_string());
+    }
+
+    let mut include_sources = String::new();
+    for include in &case.metadata.includes {
+        match include.as_str() {
+            "assert.js" | "sta.js" | "compareArray.js" => {}
+            "isConstructor.js" => {
+                include_sources.push_str(IS_CONSTRUCTOR_SHIM);
+                include_sources.push('\n');
+            }
+            "fnGlobalObject.js" => {
+                include_sources.push_str(FN_GLOBAL_OBJECT_SHIM);
+                include_sources.push('\n');
+            }
+            _ => {
+                let include_path = root.join("harness").join(include);
+                let raw = fs::read_to_string(&include_path)
+                    .map_err(|_| format!("failed to load harness include: {}", include))?;
+                include_sources.push_str(&transform_source(&raw)?);
+                include_sources.push('\n');
+            }
+        }
+    }
+
+    let transformed = transform_source(&case.source)?;
+    let strict_prefix = if case.metadata.flags.iter().any(|flag| flag == "onlyStrict") {
+        "\"use strict\";\n"
+    } else {
+        ""
+    };
+
+    let mut final_source = String::new();
+    if is_raw {
+        if !case.metadata.includes.is_empty() || supported_host_hooks.is_some() || !strict_prefix.is_empty() {
+            return Err("raw test requires unsupported harness/strict injection".to_string());
+        }
+        final_source.push_str(&transformed);
+        final_source.push('\n');
+        final_source.push_str(HARNESS_PRELUDE);
+    } else {
+        final_source.push_str(strict_prefix);
+        final_source.push_str(HARNESS_PRELUDE);
+        final_source.push('\n');
+        if matches!(supported_host_hooks, Some(true)) {
+            final_source.push_str(HOST_262_PRELUDE);
+            final_source.push('\n');
+        }
+        final_source.push_str(&include_sources);
+        final_source.push_str(&transformed);
+    }
+    Ok(final_source)
+}
+
+fn supported_262_hooks(source: &str) -> Option<bool> {
+    if !source.contains("$262") {
+        return Some(false);
+    }
+
+    for captures in host_hook_regex().captures_iter(source) {
+        let Some(name) = captures.get(1).map(|m| m.as_str()) else {
+            return None;
+        };
+        if !matches!(name, "createRealm" | "evalScript") {
+            return None;
+        }
+    }
+
+    Some(true)
+}
+
+fn transform_source(source: &str) -> std::result::Result<String, String> {
+    let mut transformed = source.to_string();
+    transformed = transformed.replace("assert.sameValue(", "__assert_sameValue(");
+    transformed = transformed.replace("assert.notSameValue(", "__assert_notSameValue(");
+    transformed = transformed.replace("assert.throws(", "__assert_throws(");
+    transformed = transformed.replace("assert.compareArray(", "__assert_compareArray(");
+    transformed = bare_assert_regex()
+        .replace_all(&transformed, "${prefix}__assert(")
+        .into_owned();
+    transformed = compare_array_regex()
+        .replace_all(&transformed, "${prefix}__compareArray(")
+        .into_owned();
+
+    if unsupported_assert_regex().is_match(&transformed) {
+        return Err("uses unsupported assert helper".to_string());
+    }
+
+    Ok(transformed)
+}
+
+fn sanitized_case_stem(path: &Path) -> String {
+    let mut out = String::with_capacity(path.as_os_str().len());
+    for ch in path.to_string_lossy().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.len() > 96 {
+        out.truncate(96);
+    }
+    out
+}
+
+fn bare_assert_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"(?P<prefix>^|[^.\w$])assert\s*\(").expect("assert regex should compile")
+    })
+}
+
+fn compare_array_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"(?P<prefix>^|[^.\w$])compareArray\s*\(")
+            .expect("compareArray regex should compile")
+    })
+}
+
+fn unsupported_assert_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"assert\.[A-Za-z_$][A-Za-z0-9_$]*")
+            .expect("unsupported assert regex should compile")
+    })
+}
+
+fn host_hook_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"\$262\.([A-Za-z_$][A-Za-z0-9_$]*)")
+            .expect("$262 host hook regex should compile")
+    })
+}
+
+fn import_export_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"(?m)^\s*(import|export)\b").expect("module regex should compile")
+    })
+}
+
+impl fmt::Display for TestOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TestOutcome::Passed => write!(f, "PASS"),
+            TestOutcome::Failed(message) => write!(f, "FAIL: {}", message),
+            TestOutcome::Skipped(reason) => write!(f, "SKIP: {}", reason),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_frontmatter_lists_and_negative_block() {
+        let meta = parse_frontmatter(
+            r#"
+description: sample
+includes: [assert.js, sta.js]
+flags:
+  - onlyStrict
+negative:
+  phase: runtime
+  type: TypeError
+"#,
+        );
+
+        assert_eq!(meta.description.as_deref(), Some("sample"));
+        assert_eq!(meta.includes, vec!["assert.js", "sta.js"]);
+        assert_eq!(meta.flags, vec!["onlyStrict"]);
+        assert_eq!(
+            meta.negative.as_ref().and_then(|negative| negative.phase.as_deref()),
+            Some("runtime")
+        );
+        assert_eq!(
+            meta.negative
+                .as_ref()
+                .and_then(|negative| negative.error_type.as_deref()),
+            Some("TypeError")
+        );
+    }
+}

@@ -31,11 +31,20 @@ pub struct IrFunction {
     /// Empty for non-generic functions. Used by monomorphization to identify
     /// which TypeIds need substitution when specializing.
     pub type_param_ids: Vec<TypeId>,
+    /// Whether the first runtime parameter slot is the implicit JS `this`.
+    pub uses_js_this_slot: bool,
+    /// Whether the function is constructible and should expose a default `prototype`.
+    pub is_constructible: bool,
+    /// JS-visible `length` property value.
+    pub visible_length: usize,
+    /// Whether JS `this` should use strict semantics.
+    pub is_strict_js: bool,
 }
 
 impl IrFunction {
     /// Create a new function
     pub fn new(name: impl Into<String>, params: Vec<Register>, return_ty: TypeId) -> Self {
+        let visible_length = params.len();
         Self {
             name: name.into(),
             params,
@@ -46,6 +55,10 @@ impl IrFunction {
             block_map: FxHashMap::default(),
             source_span: Span::default(),
             type_param_ids: Vec::new(),
+            uses_js_this_slot: false,
+            is_constructible: false,
+            visible_length,
+            is_strict_js: false,
         }
     }
 

@@ -361,6 +361,9 @@ impl GarbageCollector {
                     for &elem_value in &arr.elements {
                         self.mark_value(elem_value);
                     }
+                    for &elem_value in arr.sparse_elements.values() {
+                        self.mark_value(elem_value);
+                    }
                     return;
                 }
                 "RayaString" => {

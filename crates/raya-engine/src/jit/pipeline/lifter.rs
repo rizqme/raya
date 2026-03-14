@@ -438,6 +438,13 @@ fn lift_instruction(
                 .push(JitInstr::ConstNull { dest });
             stack.push(dest);
         }
+        Opcode::ConstUndefined => {
+            let dest = func.alloc_reg(JitType::Value);
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::ConstNull { dest });
+            stack.push(dest);
+        }
         Opcode::ConstTrue => {
             let dest = func.alloc_reg(JitType::Bool);
             func.block_mut(block)

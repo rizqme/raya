@@ -733,6 +733,9 @@ fn jit_execute_sync_frame(
     }
 
     let mut locals_base = stack.depth().saturating_sub(initial_arg_count);
+    let mut current_args: Vec<Value> = (0..initial_arg_count)
+        .filter_map(|i| stack.peek_at(locals_base + i).ok())
+        .collect();
     let local_count = module
         .functions
         .get(current_func_id)
@@ -773,7 +776,8 @@ fn jit_execute_sync_frame(
                 locals_base = frame.locals_base;
                 current_is_closure = frame.is_closure;
                 current_return_action = frame.return_action;
-                current_arg_count = frame.arg_count;
+                current_args = frame.args;
+                current_arg_count = current_args.len();
                 continue;
             }
             finish_nested_call!(
@@ -805,7 +809,7 @@ fn jit_execute_sync_frame(
             opcode,
             locals_base,
             frame_depth,
-            current_arg_count,
+            &current_args,
             ) {
             crate::vm::interpreter::OpcodeResult::Continue => {}
             crate::vm::interpreter::OpcodeResult::Return(return_value) => {
@@ -828,7 +832,8 @@ fn jit_execute_sync_frame(
                     locals_base = frame.locals_base;
                     current_is_closure = frame.is_closure;
                     current_return_action = frame.return_action;
-                    current_arg_count = frame.arg_count;
+                    current_args = frame.args;
+                    current_arg_count = current_args.len();
                 } else {
                     finish_nested_call!(
                         match current_return_action {
@@ -868,6 +873,7 @@ fn jit_execute_sync_frame(
                     is_closure: current_is_closure,
                     return_action: current_return_action,
                     arg_count: current_arg_count,
+                    args: current_args.clone(),
                 });
                 task.push_call_frame(func_id);
                 if let Some(cv) = closure_val {
@@ -890,6 +896,9 @@ fn jit_execute_sync_frame(
                 module = callee_module;
                 current_func_id = func_id;
                 ip = 0;
+                current_args = (0..arg_count)
+                    .filter_map(|i| stack.peek_at(locals_base + i).ok())
+                    .collect();
                 current_arg_count = arg_count;
                 current_is_closure = is_closure;
                 current_return_action = return_action;
@@ -946,7 +955,8 @@ fn jit_execute_sync_frame(
                         locals_base = frame.locals_base;
                         current_is_closure = frame.is_closure;
                         current_return_action = frame.return_action;
-                        current_arg_count = frame.arg_count;
+                        current_args = frame.args;
+                        current_arg_count = current_args.len();
                     } else {
                         break;
                     }
@@ -1734,6 +1744,7 @@ mod tests {
             name: "Seed".to_string(),
             field_count: 1,
             parent_id: None,
+            parent_name: None,
             methods: Vec::new(),
         });
         let seed_module = Arc::new(
@@ -1748,6 +1759,7 @@ mod tests {
             name: "Target".to_string(),
             field_count: 2,
             parent_id: None,
+            parent_name: None,
             methods: Vec::new(),
         });
         let target_module = Arc::new(

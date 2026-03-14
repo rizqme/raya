@@ -738,7 +738,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_for_in(&mut self, for_in: &ast::ForInStatement) {
         // For-in loops are desugared to:
-        //   let _keys = Reflect.getFieldNames(obj);
+        //   let _keys = Reflect.getEnumerableKeys(obj);
         //   let _idx = 0;
         //   let _len = _keys.length;
         //   while (_idx < _len) {
@@ -753,11 +753,11 @@ impl<'a> Lowerer<'a> {
         // Evaluate the object expression
         let obj_reg = self.lower_expr(&for_in.right);
 
-        // Call Reflect.getFieldNames(obj) to get keys array
+        // Call Reflect.getEnumerableKeys(obj) to get keys array
         let keys_reg = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::NativeCall {
             dest: Some(keys_reg.clone()),
-            native_id: crate::vm::builtin::reflect::GET_FIELD_NAMES,
+            native_id: crate::vm::builtin::reflect::GET_ENUMERABLE_KEYS,
             args: vec![obj_reg],
         });
 
@@ -1966,7 +1966,10 @@ impl<'a> Lowerer<'a> {
         // functions can access them via LoadGlobal/StoreGlobal.
         // Only at module scope (depth 0) — inside function bodies, `let x` creates a local
         // even if a module-level `x` exists (shadowing).
-        if self.function_depth == 0 && self.block_depth == 0 {
+        let uses_hoisted_script_global = self.js_this_binding_compat
+            && decl.kind == crate::parser::ast::VariableKind::Var
+            && self.function_depth == 0;
+        if self.function_depth == 0 && (self.block_depth == 0 || uses_hoisted_script_global) {
             if let Some(&global_idx) = self.module_var_globals.get(&name) {
                 if let Some(init) = &decl.initializer {
                     let explicit_dynamic_any_annotation = decl.type_annotation.as_ref().is_some_and(|type_ann| {
@@ -2200,7 +2203,16 @@ impl<'a> Lowerer<'a> {
         }
 
         // Allocate local slot (only for non-constant or non-literal variables)
-        let local_idx = self.allocate_local(name);
+        let reuses_hoisted_local = self.js_this_binding_compat
+            && decl.kind == crate::parser::ast::VariableKind::Var
+            && self.function_depth > 0
+            && self.local_map.contains_key(&name);
+        let local_idx = if reuses_hoisted_local {
+            self.lookup_local(name)
+                .expect("existing hoisted JS var local must be present")
+        } else {
+            self.allocate_local(name)
+        };
 
         // Check if this variable needs RefCell wrapping (captured by closure)
         let needs_refcell = self.refcell_vars.contains(&name);
@@ -2516,8 +2528,23 @@ impl<'a> Lowerer<'a> {
                 .as_ref()
                 .map(|t| self.resolve_type_annotation(t))
                 .unwrap_or(UNRESOLVED);
-            // Store null for uninitialized variables
-            let null_reg = self.lower_null_literal();
+            if reuses_hoisted_local
+                && self.js_this_binding_compat
+                && decl.kind == crate::parser::ast::VariableKind::Var
+            {
+                return;
+            }
+
+            let uninitialized_reg = if self.js_this_binding_compat {
+                let undefined = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::Assign {
+                    dest: undefined.clone(),
+                    value: IrValue::Constant(IrConstant::Undefined),
+                });
+                undefined
+            } else {
+                self.lower_null_literal()
+            };
 
             if needs_refcell {
                 // Wrap null in a RefCell
@@ -2525,7 +2552,7 @@ impl<'a> Lowerer<'a> {
                 let refcell_reg = self.alloc_register(refcell_ty);
                 self.emit(IrInstr::NewRefCell {
                     dest: refcell_reg.clone(),
-                    initial_value: null_reg,
+                    initial_value: uninitialized_reg.clone(),
                 });
                 // Create a typed register for the local
                 let typed_reg = Register {
@@ -2543,13 +2570,13 @@ impl<'a> Lowerer<'a> {
             } else {
                 // Create a typed register for the local
                 let typed_reg = Register {
-                    id: null_reg.id,
+                    id: uninitialized_reg.id,
                     ty,
                 };
                 self.local_registers.insert(local_idx, typed_reg.clone());
                 self.emit(IrInstr::StoreLocal {
                     index: local_idx,
-                    value: null_reg,
+                    value: uninitialized_reg,
                 });
             }
         }

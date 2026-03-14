@@ -17,8 +17,8 @@ pub enum Token {
     Interface,
     Let,
     Const,
+    Var,
     // Note: 'interface' and 'enum' are BANNED in Raya (LANG.md §10, §19.2)
-    // Note: 'var' is BANNED in Raya (LANG.md §19.1)
 
     // Control flow
     If,
@@ -230,6 +230,7 @@ impl fmt::Display for Token {
             Token::Interface => write!(f, "interface"),
             Token::Let => write!(f, "let"),
             Token::Const => write!(f, "const"),
+            Token::Var => write!(f, "var"),
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
             Token::Switch => write!(f, "switch"),
@@ -357,6 +358,7 @@ impl Token {
                 | Token::Interface
                 | Token::Let
                 | Token::Const
+                | Token::Var
                 | Token::If
                 | Token::Else
                 | Token::Switch

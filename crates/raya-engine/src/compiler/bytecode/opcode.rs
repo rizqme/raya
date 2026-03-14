@@ -53,6 +53,8 @@ pub enum Opcode {
     ConstStr = 0x09,
     /// Load constant from constant pool (operand: u32 index)
     LoadConst = 0x0A,
+    /// Push undefined constant
+    ConstUndefined = 0x0B,
 
     // ===== Local Variables (0x10-0x1F) =====
     /// Load local variable onto stack (operand: u16 index)
@@ -423,6 +425,7 @@ impl Opcode {
             0x08 => Some(Self::ConstF64),
             0x09 => Some(Self::ConstStr),
             0x0A => Some(Self::LoadConst),
+            0x0B => Some(Self::ConstUndefined),
 
             // Local variables
             0x10 => Some(Self::LoadLocal),
@@ -627,6 +630,7 @@ impl Opcode {
             Self::ConstF64 => "CONST_F64",
             Self::ConstStr => "CONST_STR",
             Self::LoadConst => "LOAD_CONST",
+            Self::ConstUndefined => "CONST_UNDEFINED",
             Self::LoadLocal => "LOAD_LOCAL",
             Self::StoreLocal => "STORE_LOCAL",
             Self::LoadLocal0 => "LOAD_LOCAL_0",

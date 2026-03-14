@@ -7,7 +7,7 @@ export class Array<T> {
     constructor();
 
     static isArray(value: unknown): boolean;
-    static from<U>(values: U[]): U[];
+    static from(values: any, mapfn?: any, thisArg?: any): any[];
 
     push(element: T): number;
     pop(): T;
