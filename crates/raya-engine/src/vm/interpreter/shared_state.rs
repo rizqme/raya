@@ -421,6 +421,10 @@ pub struct SharedVmState {
     /// Runtime-owned constructor/type handles used for imported/exported nominal types.
     pub type_handles: RwLock<RuntimeTypeHandleRegistry>,
 
+    /// Canonical runtime constructor values rooted through `globals_by_index`.
+    /// Maps absolute nominal type id -> absolute global slot index.
+    pub class_value_slots: RwLock<FxHashMap<usize, usize>>,
+
     /// Runtime-local property key interner for dynamic object lanes.
     pub prop_keys: RwLock<PropertyKeyRegistry>,
 
@@ -577,6 +581,7 @@ impl SharedVmState {
             structural_shape_names: RwLock::new(FxHashMap::default()),
             structural_layout_shapes: RwLock::new(FxHashMap::default()),
             type_handles: RwLock::new(RuntimeTypeHandleRegistry::new()),
+            class_value_slots: RwLock::new(FxHashMap::default()),
             prop_keys: RwLock::new(PropertyKeyRegistry::new()),
             debug_state: Mutex::new(None),
             max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,

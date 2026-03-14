@@ -543,6 +543,9 @@ pub struct Lowerer<'a> {
     /// Map from module-global variable index to function ID for closures stored in globals.
     /// Used to track async closures for SpawnClosure emission from global variables.
     closure_globals: FxHashMap<u16, FunctionId>,
+    /// Stable global slots for top-level JS function declarations.
+    /// Stored in source order so later declarations overwrite earlier ones.
+    js_top_level_function_globals: Vec<(u16, FunctionId)>,
     /// Expression types from type checker (maps expr ptr to TypeId)
     expr_types: FxHashMap<usize, TypeId>,
     /// Type annotation types from checker (maps annotation ptr to TypeId)
@@ -1215,6 +1218,7 @@ impl<'a> Lowerer<'a> {
             async_closures: FxHashSet::default(),
             closure_locals: FxHashMap::default(),
             closure_globals: FxHashMap::default(),
+            js_top_level_function_globals: Vec::new(),
             expr_types,
             type_annotation_types: FxHashMap::default(),
             expr_types_by_span: FxHashMap::default(),
@@ -1647,7 +1651,20 @@ impl<'a> Lowerer<'a> {
             self.set_span(stmt.span());
             match stmt {
                 Statement::FunctionDecl(func) => {
-                    self.register_function_decl(func);
+                    let func_id = self.register_function_decl(func);
+                    if self.js_this_binding_compat {
+                        let global_index =
+                            *self.module_var_globals.entry(func.name.name).or_insert_with(|| {
+                                let global_index = self.next_global_index;
+                                self.next_global_index += 1;
+                                global_index
+                            });
+                        self.js_top_level_function_globals
+                            .push((global_index, func_id));
+                        if func.is_async {
+                            self.closure_globals.insert(global_index, func_id);
+                        }
+                    }
                     let wrapper_tag = module_wrapper_alias_tag(self.interner.resolve(func.name.name));
                     self.register_nested_classes_in_block(&func.body.statements, wrapper_tag);
                 }
@@ -3162,6 +3179,7 @@ impl<'a> Lowerer<'a> {
         // Initialize static fields from all classes
         self.emit_static_field_initializations();
         self.emit_js_top_level_var_hoists(stmts);
+        self.emit_js_top_level_function_hoists();
 
         // Lower statements first (so variable declarations like `let x = 0` are processed)
         for stmt in stmts {
@@ -3228,6 +3246,54 @@ impl<'a> Lowerer<'a> {
                 value: undefined,
             });
         }
+    }
+
+    fn emit_js_top_level_function_hoists(&mut self) {
+        if !self.js_this_binding_compat {
+            return;
+        }
+
+        let hoists = self.js_top_level_function_globals.clone();
+        for (global_idx, func_id) in hoists {
+            let closure = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+            self.emit(IrInstr::MakeClosure {
+                dest: closure.clone(),
+                func: func_id,
+                captures: vec![],
+            });
+            self.global_type_map.insert(global_idx, closure.ty);
+            self.emit(IrInstr::StoreGlobal {
+                index: global_idx,
+                value: closure,
+            });
+        }
+    }
+
+    fn emit_js_global_this_binding(&mut self, name: Symbol, value: Register) {
+        if !self.js_this_binding_compat {
+            return;
+        }
+
+        let global_this_ty = self
+            .type_ctx
+            .lookup_named_type("globalThis")
+            .unwrap_or(UNRESOLVED);
+        let global_this = self.alloc_register(global_this_ty);
+        let global_name = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: global_name.clone(),
+            value: IrValue::Constant(IrConstant::String("globalThis".to_string())),
+        });
+        self.emit(IrInstr::NativeCall {
+            dest: Some(global_this.clone()),
+            native_id: crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL,
+            args: vec![global_name],
+        });
+        self.emit(IrInstr::DynSetProp {
+            object: global_this,
+            property: self.interner.resolve(name).to_string(),
+            value,
+        });
     }
 
     /// Lower a class declaration

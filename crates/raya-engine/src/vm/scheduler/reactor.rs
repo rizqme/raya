@@ -365,6 +365,7 @@ impl Reactor {
                 &state.structural_shape_names,
                 &state.structural_layout_shapes,
                 &state.type_handles,
+                &state.class_value_slots,
                 &state.prop_keys,
                 &state.aot_profile,
                 Some(&io_submit_tx),

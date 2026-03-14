@@ -569,6 +569,9 @@ impl IrInstr {
                 | IrInstr::NativeCall { .. }
                 | IrInstr::ModuleNativeCall { .. }
                 | IrInstr::CallClosure { .. }
+                | IrInstr::DynGetProp { .. }
+                | IrInstr::DynGetKeyed { .. }
+                | IrInstr::LateBoundMember { .. }
                 | IrInstr::StoreLocal { .. }
                 | IrInstr::PopToLocal { .. }
                 | IrInstr::StoreGlobal { .. }

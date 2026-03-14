@@ -113,9 +113,6 @@ impl<'a> Interpreter<'a> {
                     return OpcodeResult::Error(VmError::TypeError("Expected array".to_string()));
                 };
                 let arr = unsafe { &mut *arr_ptr.as_ptr() };
-                if index >= arr.elements.len() {
-                    arr.resize_holey(index + 1);
-                }
                 let _ = arr.set(index, value);
                 OpcodeResult::Continue
             }

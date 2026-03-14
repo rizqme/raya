@@ -558,6 +558,46 @@ impl<'a> Interpreter<'a> {
             .map(|entry| entry.nominal_type_id)
     }
 
+    fn constructor_value_for_nominal_type(&self, nominal_type_id: usize) -> Option<Value> {
+        let class_name = {
+            let classes = self.classes.read();
+            classes.get_class(nominal_type_id)?.name.clone()
+        };
+        if let Some(global) = self.builtin_global_value(&class_name) {
+            return Some(global);
+        }
+
+        if let Some(&slot) = self.class_value_slots.read().get(&nominal_type_id) {
+            if let Some(value) = self.globals_by_index.read().get(slot).copied() {
+                return Some(value);
+            }
+        }
+
+        let (layout_id, _) = self.nominal_allocation(nominal_type_id)?;
+        let mut class_value_slots = self.class_value_slots.write();
+        if let Some(&slot) = class_value_slots.get(&nominal_type_id) {
+            if let Some(value) = self.globals_by_index.read().get(slot).copied() {
+                return Some(value);
+            }
+        }
+
+        let handle_id = self
+            .type_handles
+            .write()
+            .register(nominal_type_id as u32, layout_id, None);
+        let gc_ptr = self.gc.lock().allocate(TypeHandle {
+            handle_id,
+            shape_id: None,
+        });
+        let value =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).expect("type handle ptr")) };
+        let mut globals = self.globals_by_index.write();
+        let slot = globals.len();
+        globals.push(value);
+        class_value_slots.insert(nominal_type_id, slot);
+        Some(value)
+    }
+
     pub(in crate::vm::interpreter) fn constructor_nominal_type_id(
         &self,
         value: Value,
@@ -1226,17 +1266,16 @@ impl<'a> Interpreter<'a> {
         nominal_type_id: usize,
         constructor_value: Value,
     ) -> Option<Value> {
-        if let Some(existing) =
-            self.cached_callable_virtual_property_value(constructor_value, "prototype")
-        {
+        if let Some(existing) = self.cached_callable_virtual_property_value(constructor_value, "prototype") {
             return Some(existing);
         }
-        let (class_name, class_module, method_ids, mut method_names) = {
+        let (class_name, class_module, method_ids, mut method_names, parent_id) = {
             let classes = self.classes.read();
             let class = classes.get_class(nominal_type_id)?;
             let class_name = class.name.clone();
             let class_module = class.module.clone();
             let method_ids = class.vtable.methods.clone();
+            let parent_id = class.parent_id;
             drop(classes);
 
             let method_names = self
@@ -1246,7 +1285,7 @@ impl<'a> Interpreter<'a> {
                 .map(|meta| meta.method_names.clone())
                 .unwrap_or_default();
 
-            (class_name, class_module, method_ids, method_names)
+            (class_name, class_module, method_ids, method_names, parent_id)
         };
         if let Some(module) = class_module.as_ref() {
             if method_names.len() < method_ids.len() {
@@ -1299,6 +1338,18 @@ impl<'a> Interpreter<'a> {
         )
         .ok()?;
 
+        if let Some(parent_id) = parent_id {
+            if let Some(parent_ctor) = self.constructor_value_for_nominal_type(parent_id) {
+                if let Some(parent_proto) = self.constructor_prototype_value(parent_ctor) {
+                    self.set_constructed_object_prototype_from_value(prototype_val, parent_proto);
+                }
+            }
+        } else if let Some(object_ctor) = self.builtin_global_value("Object") {
+            if let Some(object_proto) = self.object_constructor_prototype_value(object_ctor) {
+                self.set_constructed_object_prototype_from_value(prototype_val, object_proto);
+            }
+        }
+
         self.seed_builtin_error_prototype_properties(prototype_val, &class_name)?;
 
         for (slot, method_name) in method_names.iter().enumerate() {
@@ -1345,7 +1396,7 @@ impl<'a> Interpreter<'a> {
             let classes = self.classes.read();
             classes.get_class(nominal_type_id)?.name.clone()
         };
-        let constructor_value = self.builtin_global_value(&class_name)?;
+        let constructor_value = self.constructor_value_for_nominal_type(nominal_type_id)?;
         if debug_proto_resolve {
             eprintln!(
                 "[proto-resolve] instance={:#x} nominal_type_id={} class='{}' ctor={:#x}",
@@ -1374,6 +1425,25 @@ impl<'a> Interpreter<'a> {
                 );
             }
             return Some(prototype);
+        }
+
+        if let Some(nominal_type_id) = self.constructor_nominal_type_id(value) {
+            let parent_id = {
+                let classes = self.classes.read();
+                classes.get_class(nominal_type_id).and_then(|class| class.parent_id)
+            };
+            if let Some(parent_id) = parent_id {
+                let prototype = self.constructor_value_for_nominal_type(parent_id);
+                if debug_proto_resolve {
+                    eprintln!(
+                        "[proto-of] value={:#x} class-parent={} -> {:?}",
+                        value.raw(),
+                        parent_id,
+                        prototype.map(|v| format!("{:#x}", v.raw()))
+                    );
+                }
+                return prototype;
+            }
         }
 
         if self.callable_function_info(value).is_some() {
@@ -5034,6 +5104,37 @@ impl<'a> Interpreter<'a> {
                         }
                         let prototype = self.prototype_of_value(target).unwrap_or(Value::null());
                         if let Err(e) = stack.push(prototype) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_GET_CLASS_VALUE => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.getClassValue requires 1 argument".to_string(),
+                            ));
+                        }
+                        let Some(local_nominal_type_id) =
+                            args[0].as_i32().filter(|id| *id >= 0).map(|id| id as usize)
+                        else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.getClassValue expects a non-negative nominal type id"
+                                    .to_string(),
+                            ));
+                        };
+                        let nominal_type_id =
+                            match self.resolve_nominal_type_id(module, local_nominal_type_id) {
+                                Ok(id) => id,
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                        let Some(value) = self.constructor_value_for_nominal_type(nominal_type_id)
+                        else {
+                            return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                "Object.getClassValue could not resolve nominal type {}",
+                                nominal_type_id
+                            )));
+                        };
+                        if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

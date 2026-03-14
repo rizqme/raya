@@ -1512,9 +1512,6 @@ impl<'a> Interpreter<'a> {
                     JSView::Arr(ptr) => {
                         if let Some(index) = array_index {
                             let arr = unsafe { &mut *(ptr as *mut Array) };
-                            if index >= arr.elements.len() {
-                                arr.resize_holey(index + 1);
-                            }
                             let _ = arr.set(index, value);
                         } else {
                             let Some(key_str) = key_str.as_deref() else {

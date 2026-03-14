@@ -1066,14 +1066,22 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        // Class identifiers may legitimately appear in value position
-        // (e.g., class aliasing/import scaffolding). Class values are resolved
-        // through class maps at use sites (new/static/member), not as plain locals.
+        // JS class identifiers are first-class constructor values. Materialize a
+        // canonical runtime class handle instead of leaking the compiler's local
+        // nominal type id into JS value position.
         if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
-            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+            let dest = self.alloc_register(
+                self.effective_identifier_value_type(ident, self.default_js_function_type()),
+            );
+            let nominal_id_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
             self.emit(IrInstr::Assign {
-                dest: dest.clone(),
+                dest: nominal_id_reg.clone(),
                 value: IrValue::Constant(IrConstant::I32(nominal_type_id.as_u32() as i32)),
+            });
+            self.emit(IrInstr::NativeCall {
+                dest: Some(dest.clone()),
+                native_id: crate::compiler::native_id::OBJECT_GET_CLASS_VALUE,
+                args: vec![nominal_id_reg],
             });
             return dest;
         }
@@ -1389,6 +1397,101 @@ impl<'a> Lowerer<'a> {
             unary.operator,
             ast::UnaryOperator::PrefixIncrement | ast::UnaryOperator::PrefixDecrement
         );
+
+        if self.js_this_binding_compat {
+            match &*unary.operand {
+                Expression::Member(member) => {
+                    let object = self.lower_expr(&member.object);
+                    let prop_name = self.interner.resolve(member.property.name).to_string();
+                    let old_value = self.alloc_register(self.get_expr_type(&unary.operand));
+                    self.emit_dyn_get_named(old_value.clone(), object.clone(), &prop_name);
+
+                    let one = if old_value.ty == TypeId::new(INT_TYPE_ID) {
+                        let r = self.alloc_register(TypeId::new(INT_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: r.clone(),
+                            value: IrValue::Constant(IrConstant::I32(1)),
+                        });
+                        r
+                    } else {
+                        let r = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: r.clone(),
+                            value: IrValue::Constant(IrConstant::F64(1.0)),
+                        });
+                        r
+                    };
+
+                    let new_value = self.alloc_register(old_value.ty);
+                    self.emit(IrInstr::BinaryOp {
+                        dest: new_value.clone(),
+                        op: if is_increment {
+                            BinaryOp::Add
+                        } else {
+                            BinaryOp::Sub
+                        },
+                        left: old_value.clone(),
+                        right: one,
+                    });
+
+                    let prop_reg = self.emit_named_key_register(&prop_name);
+                    self.emit(IrInstr::NativeCall {
+                        dest: None,
+                        native_id: crate::compiler::native_id::REFLECT_SET,
+                        args: vec![object, prop_reg, new_value.clone()],
+                    });
+
+                    return if is_prefix { new_value } else { old_value };
+                }
+                Expression::Index(index) => {
+                    let object = self.lower_expr(&index.object);
+                    let key = self.lower_expr(&index.index);
+                    let old_value = self.alloc_register(self.get_expr_type(&unary.operand));
+                    self.emit(IrInstr::DynGetKeyed {
+                        dest: old_value.clone(),
+                        object: object.clone(),
+                        key: key.clone(),
+                    });
+
+                    let one = if old_value.ty == TypeId::new(INT_TYPE_ID) {
+                        let r = self.alloc_register(TypeId::new(INT_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: r.clone(),
+                            value: IrValue::Constant(IrConstant::I32(1)),
+                        });
+                        r
+                    } else {
+                        let r = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: r.clone(),
+                            value: IrValue::Constant(IrConstant::F64(1.0)),
+                        });
+                        r
+                    };
+
+                    let new_value = self.alloc_register(old_value.ty);
+                    self.emit(IrInstr::BinaryOp {
+                        dest: new_value.clone(),
+                        op: if is_increment {
+                            BinaryOp::Add
+                        } else {
+                            BinaryOp::Sub
+                        },
+                        left: old_value.clone(),
+                        right: one,
+                    });
+
+                    self.emit(IrInstr::NativeCall {
+                        dest: None,
+                        native_id: crate::compiler::native_id::REFLECT_SET,
+                        args: vec![object, key, new_value.clone()],
+                    });
+
+                    return if is_prefix { new_value } else { old_value };
+                }
+                _ => {}
+            }
+        }
 
         // Lower operand to get current value
         let old_value = self.lower_expr(&unary.operand);
@@ -4690,6 +4793,62 @@ impl<'a> Lowerer<'a> {
             }
             dest
         } else {
+            if array.elements.iter().any(|elem| elem.is_none()) {
+                let len = self.emit_i32_const(array.elements.len() as i32);
+                let dest = self.alloc_register(array_ty);
+                self.emit(IrInstr::NewArray {
+                    dest: dest.clone(),
+                    len,
+                    elem_ty: TypeId::new(NUMBER_TYPE_ID),
+                });
+
+                let mut present_elements = Vec::new();
+                for (index, elem) in array.elements.iter().enumerate() {
+                    let Some(ast::ArrayElement::Expression(expr)) = elem else {
+                        continue;
+                    };
+                    let value = self.lower_expr(expr);
+                    let index_reg = self.emit_i32_const(index as i32);
+                    self.emit(IrInstr::StoreElement {
+                        array: dest.clone(),
+                        index: index_reg,
+                        value: value.clone(),
+                    });
+                    present_elements.push(value);
+                }
+
+                let element_layout = if present_elements.is_empty() {
+                    None
+                } else {
+                    let mut expected: Option<Vec<(String, usize)>> = None;
+                    let mut consistent = true;
+                    for reg in &present_elements {
+                        let Some(layout) = self.register_object_fields.get(&reg.id).cloned() else {
+                            consistent = false;
+                            break;
+                        };
+                        match &expected {
+                            None => expected = Some(layout),
+                            Some(existing) if *existing == layout => {}
+                            Some(_) => {
+                                consistent = false;
+                                break;
+                            }
+                        }
+                    }
+                    if consistent {
+                        expected
+                    } else {
+                        None
+                    }
+                };
+                if let Some(layout) = element_layout {
+                    self.register_array_element_object_fields
+                        .insert(dest.id, layout);
+                }
+                return dest;
+            }
+
             // No spread: use efficient ArrayLiteral path
             let mut elements = Vec::new();
             for elem in array.elements.iter().flatten() {

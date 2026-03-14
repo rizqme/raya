@@ -164,9 +164,6 @@ impl<'a> Interpreter<'a> {
             }
             if let Some(index) = Self::reflect_array_index(property_key) {
                 let array = unsafe { &mut *array_ptr.as_ptr() };
-                if index >= array.elements.len() {
-                    array.resize_holey(index + 1);
-                }
                 let _ = array.set(index, value);
                 return Ok(true);
             }

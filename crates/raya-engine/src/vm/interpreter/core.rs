@@ -301,6 +301,8 @@ pub struct Interpreter<'a> {
     /// Runtime-owned constructor/type handle registry for imported nominal types.
     pub(in crate::vm::interpreter) type_handles:
         &'a RwLock<crate::vm::interpreter::shared_state::RuntimeTypeHandleRegistry>,
+    /// Canonical runtime constructor values rooted through `globals_by_index`.
+    pub(in crate::vm::interpreter) class_value_slots: &'a RwLock<FxHashMap<usize, usize>>,
     /// Runtime-local property-key interner for dynamic object lanes.
     pub(in crate::vm::interpreter) prop_keys:
         &'a RwLock<crate::vm::interpreter::shared_state::PropertyKeyRegistry>,
@@ -580,7 +582,14 @@ impl<'a> Interpreter<'a> {
                 }
             }
             OpcodeResult::Return(value) => Ok(value),
-            OpcodeResult::Error(error) => Err(error),
+            OpcodeResult::Error(error) => {
+                if !caller_task.has_exception() {
+                    if let Some(exception) = scratch_task.current_exception() {
+                        caller_task.set_exception(exception);
+                    }
+                }
+                Err(error)
+            }
             OpcodeResult::Suspend(_) => Err(VmError::RuntimeError(
                 "Synchronous callable invocation suspended unexpectedly".to_string(),
             )),
@@ -624,6 +633,11 @@ impl<'a> Interpreter<'a> {
                     }
                     ExecutionResult::Failed(error) => {
                         callee_task.fail();
+                        if !caller_task.has_exception() {
+                            if let Some(exception) = callee_task.current_exception() {
+                                caller_task.set_exception(exception);
+                            }
+                        }
                         Err(error)
                     }
                 }
@@ -899,6 +913,7 @@ impl<'a> Interpreter<'a> {
         structural_shape_names: &'a RwLock<FxHashMap<crate::vm::object::ShapeId, Vec<String>>>,
         structural_object_shapes: &'a RwLock<FxHashMap<crate::vm::object::LayoutId, Vec<String>>>,
         type_handles: &'a RwLock<crate::vm::interpreter::shared_state::RuntimeTypeHandleRegistry>,
+        class_value_slots: &'a RwLock<FxHashMap<usize, usize>>,
         prop_keys: &'a RwLock<crate::vm::interpreter::shared_state::PropertyKeyRegistry>,
         aot_profile: &'a RwLock<crate::aot_profile::AotProfileCollector>,
         io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
@@ -927,6 +942,7 @@ impl<'a> Interpreter<'a> {
             structural_shape_names,
             structural_object_shapes,
             type_handles,
+            class_value_slots,
             prop_keys,
             aot_profile,
             io_submit_tx,
@@ -1574,6 +1590,7 @@ impl<'a> Interpreter<'a> {
                                         self.structural_shape_adapters,
                                         self.aot_profile,
                                         self.type_handles,
+                                        self.class_value_slots,
                                         self.prop_keys,
                                         self.stack_pool,
                                         self.max_preemptions,

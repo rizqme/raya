@@ -85,6 +85,7 @@ pub struct JitRuntimeBridgeContext {
     pub aot_profile: *const parking_lot::RwLock<crate::aot_profile::AotProfileCollector>,
     pub type_handles:
         *const parking_lot::RwLock<crate::vm::interpreter::RuntimeTypeHandleRegistry>,
+    pub class_value_slots: *const parking_lot::RwLock<FxHashMap<usize, usize>>,
     pub prop_keys: *const parking_lot::RwLock<crate::vm::interpreter::PropertyKeyRegistry>,
     pub stack_pool: *const crate::vm::scheduler::StackPool,
     pub io_submit_tx: *const crossbeam::channel::Sender<IoSubmission>,
@@ -121,6 +122,7 @@ pub fn build_runtime_bridge_context(
     >,
     aot_profile: &parking_lot::RwLock<crate::aot_profile::AotProfileCollector>,
     type_handles: &parking_lot::RwLock<crate::vm::interpreter::RuntimeTypeHandleRegistry>,
+    class_value_slots: &parking_lot::RwLock<FxHashMap<usize, usize>>,
     prop_keys: &parking_lot::RwLock<crate::vm::interpreter::PropertyKeyRegistry>,
     stack_pool: &crate::vm::scheduler::StackPool,
     max_preemptions: u32,
@@ -153,6 +155,7 @@ pub fn build_runtime_bridge_context(
         structural_shape_adapters: structural_shape_adapters as *const _,
         aot_profile: aot_profile as *const _,
         type_handles: type_handles as *const _,
+        class_value_slots: class_value_slots as *const _,
         prop_keys: prop_keys as *const _,
         stack_pool: stack_pool as *const _,
         io_submit_tx: io_submit_tx.map_or(std::ptr::null(), |tx| tx as *const _),
@@ -460,6 +463,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         || bridge.structural_shape_names.is_null()
         || bridge.structural_layout_shapes.is_null()
         || bridge.type_handles.is_null()
+        || bridge.class_value_slots.is_null()
         || bridge.prop_keys.is_null()
         || bridge.aot_profile.is_null()
         || bridge.stack_pool.is_null()
@@ -489,6 +493,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         unsafe { &*bridge.structural_shape_names },
         unsafe { &*bridge.structural_layout_shapes },
         unsafe { &*bridge.type_handles },
+        unsafe { &*bridge.class_value_slots },
         unsafe { &*bridge.prop_keys },
         unsafe { &*bridge.aot_profile },
         if bridge.io_submit_tx.is_null() {
@@ -1637,6 +1642,7 @@ mod tests {
             &shared.structural_shape_adapters,
             &shared.aot_profile,
             &shared.type_handles,
+            &shared.class_value_slots,
             &shared.prop_keys,
             &shared.stack_pool,
             shared.max_preemptions,
@@ -1704,6 +1710,7 @@ mod tests {
             &shared.structural_shape_adapters,
             &shared.aot_profile,
             &shared.type_handles,
+            &shared.class_value_slots,
             &shared.prop_keys,
             &shared.stack_pool,
             shared.max_preemptions,
@@ -1799,6 +1806,7 @@ mod tests {
             &shared.structural_shape_adapters,
             &shared.aot_profile,
             &shared.type_handles,
+            &shared.class_value_slots,
             &shared.prop_keys,
             &shared.stack_pool,
             shared.max_preemptions,

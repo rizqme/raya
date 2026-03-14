@@ -2173,8 +2173,11 @@ impl<'a> Lowerer<'a> {
 
                     self.emit(IrInstr::StoreGlobal {
                         index: global_idx,
-                        value,
+                        value: value.clone(),
                     });
+                    if decl.kind == crate::parser::ast::VariableKind::Var {
+                        self.emit_js_global_this_binding(name, value);
+                    }
 
                     // Track async global closures so call lowering can emit SpawnClosure
                     if is_async_arrow {

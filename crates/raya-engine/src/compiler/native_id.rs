@@ -41,6 +41,8 @@ pub const OBJECT_GET_PROTOTYPE_OF: u16 = 0x0011;
 pub const FUNCTION_CONSTRUCTOR_HELPER: u16 = 0x0012;
 /// Call a parent constructor by runtime class name with an explicit `this`.
 pub const OBJECT_CALL_CONSTRUCTOR_BY_NAME: u16 = 0x0013;
+/// Materialize a runtime constructor value for a module-local nominal type id.
+pub const OBJECT_GET_CLASS_VALUE: u16 = 0x0014;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -540,6 +542,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_GET_PROTOTYPE_OF => "Object.getPrototypeOf",
         FUNCTION_CONSTRUCTOR_HELPER => "Function.constructor",
         OBJECT_CALL_CONSTRUCTOR_BY_NAME => "Object.callConstructorByName",
+        OBJECT_GET_CLASS_VALUE => "Object.getClassValue",
 
         // Array
         ARRAY_PUSH => "Array.push",
