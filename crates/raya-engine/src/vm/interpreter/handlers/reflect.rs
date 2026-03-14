@@ -47,6 +47,9 @@ impl<'a> Interpreter<'a> {
     }
 
     fn reflect_object_field_names(&self, obj: &Object) -> Vec<String> {
+        let obj_value = unsafe {
+            Value::from_ptr(NonNull::new(obj as *const Object as *mut Object).expect("object ptr"))
+        };
         let mut field_names = if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
             let class_metadata = self.class_metadata.read();
             class_metadata
@@ -55,12 +58,11 @@ impl<'a> Interpreter<'a> {
                     meta.field_names
                         .iter()
                         .enumerate()
+                        .filter(|(_, name)| !name.is_empty())
+                        .filter(|(_, name)| !self.fixed_property_deleted(obj_value, name))
                         .map(|(index, name)| {
-                            if name.is_empty() {
-                                format!("field_{}", index)
-                            } else {
-                                name.clone()
-                            }
+                            let _ = index;
+                            name.clone()
                         })
                         .collect::<Vec<_>>()
                 })
@@ -92,11 +94,6 @@ impl<'a> Interpreter<'a> {
         }
 
         if let Some(global_obj) = self.builtin_global_value("globalThis") {
-            let obj_value = unsafe {
-                Value::from_ptr(
-                    NonNull::new(obj as *const Object as *mut Object).expect("global object ptr"),
-                )
-            };
             if global_obj.raw() == obj_value.raw() {
                 for name in self.builtin_global_slots.read().keys() {
                     if self.fixed_property_deleted(obj_value, name) {

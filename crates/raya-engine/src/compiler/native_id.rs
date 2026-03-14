@@ -19,7 +19,7 @@ pub const OBJECT_DEFINE_PROPERTIES: u16 = 0x0006;
 pub const OBJECT_CONSTRUCT_DYNAMIC_CLASS: u16 = 0x0007;
 /// ES SameValue comparison used by Object.is
 pub const OBJECT_SAME_VALUE: u16 = 0x0008;
-/// construct plain Object descriptor instance with node-compat fields
+/// construct plain Object instance
 pub const OBJECT_NEW: u16 = 0x0009;
 /// load ambient builtin global value by name (e.g., ArrayBuffer, Reflect, Intl)
 pub const OBJECT_GET_AMBIENT_GLOBAL: u16 = 0x000A;
@@ -49,6 +49,8 @@ pub const OBJECT_IS_EXTENSIBLE: u16 = 0x0015;
 pub const OBJECT_PREVENT_EXTENSIONS: u16 = 0x0016;
 /// Create/update a script-style global var binding on globalThis.
 pub const OBJECT_BIND_SCRIPT_GLOBAL: u16 = 0x0017;
+/// construct an internal property-descriptor record object
+pub const OBJECT_DESCRIPTOR_NEW: u16 = 0x0018;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -552,6 +554,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_IS_EXTENSIBLE => "Object.isExtensible",
         OBJECT_PREVENT_EXTENSIONS => "Object.preventExtensions",
         OBJECT_BIND_SCRIPT_GLOBAL => "Object.bindScriptGlobal",
+        OBJECT_DESCRIPTOR_NEW => "Object.descriptorNew",
 
         // Array
         ARRAY_PUSH => "Array.push",

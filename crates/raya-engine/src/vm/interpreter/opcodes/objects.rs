@@ -544,22 +544,10 @@ impl<'a> Interpreter<'a> {
                     Err(error) => return OpcodeResult::Error(error),
                 };
 
-                let classes = self.classes.read();
-                let (layout_id, field_count) = match self.nominal_allocation(nominal_type_id) {
-                    Some(allocation) => allocation,
-                    None => {
-                        return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid nominal type id: {}",
-                            nominal_type_id
-                        )));
-                    }
+                let value = match self.alloc_nominal_instance_value(nominal_type_id) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
                 };
-                drop(classes);
-
-                let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
-                let gc_ptr = self.gc.lock().allocate(obj);
-                let value =
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }

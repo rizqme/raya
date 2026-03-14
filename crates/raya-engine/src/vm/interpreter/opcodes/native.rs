@@ -441,15 +441,7 @@ impl<'a> Interpreter<'a> {
             .constructor_nominal_type_id(constructor)
             .or_else(|| self.nominal_type_id_from_imported_class_value(module, constructor))
         {
-            let (layout_id, field_count) =
-                self.nominal_allocation(nominal_type_id).ok_or_else(|| {
-                    VmError::RuntimeError(format!("Class {} not found", nominal_type_id))
-                })?;
-
-            let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
-            let gc_ptr = self.gc.lock().allocate(obj);
-            let obj_val =
-                unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+            let obj_val = self.alloc_nominal_instance_value(nominal_type_id)?;
             self.ephemeral_gc_roots.write().push(obj_val);
 
             let prototype =
@@ -1145,7 +1137,12 @@ impl<'a> Interpreter<'a> {
             .unwrap_or(false)
     }
 
-    fn set_fixed_property_deleted(&self, target: Value, key: &str, deleted: bool) {
+    pub(in crate::vm::interpreter) fn set_fixed_property_deleted(
+        &self,
+        target: Value,
+        key: &str,
+        deleted: bool,
+    ) {
         let mut metadata = self.metadata.lock();
         if deleted {
             metadata.define_metadata_property(
@@ -4709,6 +4706,32 @@ impl<'a> Interpreter<'a> {
         Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
     }
 
+    pub(in crate::vm::interpreter) fn alloc_nominal_instance_value(
+        &self,
+        nominal_type_id: usize,
+    ) -> Result<Value, VmError> {
+        let (layout_id, field_count) = self.nominal_allocation(nominal_type_id).ok_or_else(|| {
+            VmError::RuntimeError(format!("Class {} not found", nominal_type_id))
+        })?;
+
+        let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
+        let gc_ptr = self.gc.lock().allocate(obj);
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        let field_names = {
+            let class_metadata = self.class_metadata.read();
+            class_metadata
+                .get(nominal_type_id)
+                .map(|meta| meta.field_names.clone())
+                .unwrap_or_default()
+        };
+        for field_name in field_names {
+            if !field_name.is_empty() {
+                self.set_fixed_property_deleted(value, &field_name, true);
+            }
+        }
+        Ok(value)
+    }
+
     fn alloc_object_descriptor(&self) -> Result<Value, VmError> {
         let field_names = crate::vm::object::OBJECT_DESCRIPTOR_LAYOUT_FIELDS
             .iter()
@@ -4751,6 +4774,19 @@ impl<'a> Interpreter<'a> {
             descriptor,
         );
         Ok(descriptor)
+    }
+
+    fn alloc_plain_object(&self) -> Result<Value, VmError> {
+        let field_names: Vec<String> = Vec::new();
+        let layout_id = layout_id_from_ordered_names(&field_names);
+        self.register_structural_layout_shape(layout_id, &field_names);
+        let obj = Object::new_dynamic(layout_id, 0);
+        let obj_ptr = self.gc.lock().allocate(obj);
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) };
+        if let Some(prototype) = self.ordinary_object_prototype_value() {
+            self.set_constructed_object_prototype_from_value(value, prototype);
+        }
+        Ok(value)
     }
 
     fn alloc_symbol_object(&self, key: &str) -> Result<Value, VmError> {
@@ -5093,6 +5129,17 @@ impl<'a> Interpreter<'a> {
                 // Execute native call - handle channel operations specially for suspension
                 match native_id {
                     id if id == crate::compiler::native_id::OBJECT_NEW => {
+                        let value = match self.alloc_plain_object() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_DESCRIPTOR_NEW => {
                         let value = match self.alloc_object_descriptor() {
                             Ok(v) => v,
                             Err(e) => return OpcodeResult::Error(e),
@@ -5376,8 +5423,11 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
                         let this_arg = args[1];
-                        let bound_args = if args.len() > 2 {
-                            args[2..].to_vec()
+                        let bound_args = if args.len() >= 3 {
+                            match self.collect_apply_arguments(args[2]) {
+                                Ok(values) => values,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
                         } else {
                             Vec::new()
                         };

@@ -1215,22 +1215,13 @@ impl<'a> Interpreter<'a> {
                 };
                 let constructor_id = class.get_constructor();
                 let constructor_module = class.module.clone();
-                let (layout_id, field_count) = match self.nominal_allocation(nominal_type_id) {
-                    Some(allocation) => allocation,
-                    None => {
-                        return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid nominal type allocation metadata: {}",
-                            nominal_type_id
-                        )));
-                    }
-                };
                 drop(classes);
 
                 // Create the object
-                let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
-                let gc_ptr = self.gc.lock().allocate(obj);
-                let obj_val =
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let obj_val = match self.alloc_nominal_instance_value(nominal_type_id) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
 
                 // If no constructor, just push the object
                 let constructor_id = match constructor_id {
