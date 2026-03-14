@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::compiler::bytecode::{Module as BytecodeModule, SymbolType as BytecodeSymbolType};
 use crate::compiler::{
     module_id_from_name, symbol_id_from_name, ModuleId, SymbolId, SymbolScope, SymbolType,
     TypeSignatureHash,
@@ -178,6 +179,50 @@ impl ModuleExports {
     pub fn add_reexport(&mut self, path: PathBuf) {
         self.reexports.push(path);
     }
+}
+
+pub fn module_exports_from_bytecode(path: &std::path::Path, module: &BytecodeModule) -> ModuleExports {
+    let module_name = module.metadata.name.clone();
+    let module_id = module_id_from_name(&module_name);
+    let mut exports = ModuleExports::new(path.to_path_buf(), module_name.clone());
+
+    for export in &module.exports {
+        let kind = match export.symbol_type {
+            BytecodeSymbolType::Function => SymbolKind::Function,
+            BytecodeSymbolType::Class => SymbolKind::Class,
+            BytecodeSymbolType::Constant => SymbolKind::Variable,
+        };
+        let type_signature = export
+            .type_signature
+            .clone()
+            .unwrap_or_else(|| "any".to_string());
+        let signature_hash = if export.signature_hash == 0 {
+            crate::parser::types::signature_hash(&type_signature)
+        } else {
+            export.signature_hash
+        };
+
+        exports.add_symbol(ExportedSymbol {
+            name: export.name.clone(),
+            local_name: export.name.clone(),
+            kind,
+            ty: TypeId::new(TypeContext::UNKNOWN_TYPE_ID),
+            is_const: !matches!(kind, SymbolKind::Function),
+            is_async: false,
+            module_name: module_name.clone(),
+            module_id,
+            symbol_id: if export.symbol_id == 0 {
+                symbol_id_from_name(&module_name, export.scope, &export.name)
+            } else {
+                export.symbol_id
+            },
+            signature_hash,
+            type_signature,
+            scope: export.scope,
+        });
+    }
+
+    exports
 }
 
 fn scope_kind_to_symbol_scope(kind: ScopeKind) -> SymbolScope {

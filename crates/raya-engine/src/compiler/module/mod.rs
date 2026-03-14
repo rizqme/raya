@@ -10,6 +10,7 @@
 //! - Type definition parsing (`.d.raya` files)
 
 mod cache;
+mod builtin_contract;
 mod compiler;
 mod declaration;
 mod exports;
@@ -34,7 +35,7 @@ pub use declaration::{
 };
 pub use exports::{
     extract_module_exports, has_top_level_declaration_before_offset, inject_ambient_exports,
-    ExportRegistry, ExportedSymbol, ModuleExports,
+    module_exports_from_bytecode, ExportRegistry, ExportedSymbol, ModuleExports,
 };
 pub use graph::{ModuleGraph, ModuleNode};
 pub use resolver::{

@@ -1246,6 +1246,41 @@ impl Runtime {
                 }
             }
 
+            for (name, symbol_type) in &provisional_symbols {
+                if ambient_contract.has(name) {
+                    continue;
+                }
+                let kind = match symbol_type {
+                    SymbolType::Function => SymbolKind::Function,
+                    SymbolType::Class => SymbolKind::Class,
+                    SymbolType::Constant => SymbolKind::Variable,
+                };
+                let type_signature = match symbol_type {
+                    SymbolType::Class => name.clone(),
+                    SymbolType::Function | SymbolType::Constant => "any".to_string(),
+                };
+                ambient_contract.add_symbol(ExportedSymbol {
+                    name: name.clone(),
+                    local_name: name.clone(),
+                    kind,
+                    ty: raya_engine::parser::types::TypeId::new(
+                        raya_engine::TypeContext::UNKNOWN_TYPE_ID,
+                    ),
+                    is_const: !matches!(kind, SymbolKind::Function),
+                    is_async: false,
+                    module_name: ambient_contract.module_name.clone(),
+                    module_id: module_id_from_name(&ambient_contract.module_name),
+                    symbol_id: symbol_id_from_name(
+                        &ambient_contract.module_name,
+                        SymbolScope::Global,
+                        name,
+                    ),
+                    signature_hash: raya_engine::parser::types::signature_hash(&type_signature),
+                    type_signature,
+                    scope: SymbolScope::Global,
+                });
+            }
+
             // Phase 2d: compile each builtin through the normal module compiler so
             // runtime export/global-slot metadata comes from the same path as user modules.
             let builtins_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

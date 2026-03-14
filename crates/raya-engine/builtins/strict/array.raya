@@ -50,6 +50,10 @@ function arrayOfTarget(receiver: any, length: number): any {
     return [];
 }
 
+function arrayHasOwnIndex(target: any, index: number): boolean {
+    return Object.prototype.hasOwnProperty.call(target, "" + index);
+}
+
 class __ArrayIterator<T> {
     public target: T[];
     public index: number;
@@ -286,26 +290,39 @@ class Array<T> {
     // ── Callback methods — pure Raya loops, preemption-safe, JIT prewarm candidates ──
 
     //@@class_method
-    forEach(fn: (element: T) => void): void {
-        for (let i = 0; i < this.length; i++) {
-            fn(this[i]);
+    forEach(fn: (element: T, index: number, array: T[]) => void, thisArg?: any): void {
+        let length = this.length;
+        for (let i = 0; i < length; i++) {
+            if (!arrayHasOwnIndex(this, i)) {
+                continue;
+            }
+            fn.call(thisArg, this[i], i, this);
         }
     }
 
     //@@class_method
-    map<U>(fn: (element: T) => U): U[] {
+    map<U>(fn: (element: T, index: number, array: T[]) => U, thisArg?: any): U[] {
+        let length = this.length;
         let result: U[] = [];
-        for (let i = 0; i < this.length; i++) {
-            result.push(fn(this[i]));
+        result.length = length;
+        for (let i = 0; i < length; i++) {
+            if (!arrayHasOwnIndex(this, i)) {
+                continue;
+            }
+            result[i] = fn.call(thisArg, this[i], i, this);
         }
         return result;
     }
 
     //@@class_method
-    filter(predicate: (element: T) => boolean): T[] {
+    filter(predicate: (element: T, index: number, array: T[]) => boolean, thisArg?: any): T[] {
         let result: T[] = [];
-        for (let i = 0; i < this.length; i++) {
-            if (predicate(this[i])) {
+        let length = this.length;
+        for (let i = 0; i < length; i++) {
+            if (!arrayHasOwnIndex(this, i)) {
+                continue;
+            }
+            if (predicate.call(thisArg, this[i], i, this)) {
                 result.push(this[i]);
             }
         }
@@ -313,19 +330,22 @@ class Array<T> {
     }
 
     //@@class_method
-    find(predicate: (element: T) => boolean): T | null {
-        for (let i = 0; i < this.length; i++) {
-            if (predicate(this[i])) {
-                return this[i];
+    find(predicate: (element: T, index: number, array: T[]) => boolean, thisArg?: any): T | null {
+        let length = this.length;
+        for (let i = 0; i < length; i++) {
+            let value = this[i];
+            if (predicate.call(thisArg, value, i, this)) {
+                return value;
             }
         }
         return null;
     }
 
     //@@class_method
-    findIndex(predicate: (element: T) => boolean): number {
-        for (let i = 0; i < this.length; i++) {
-            if (predicate(this[i])) {
+    findIndex(predicate: (element: T, index: number, array: T[]) => boolean, thisArg?: any): number {
+        let length = this.length;
+        for (let i = 0; i < length; i++) {
+            if (predicate.call(thisArg, this[i], i, this)) {
                 return i;
             }
         }
@@ -333,9 +353,13 @@ class Array<T> {
     }
 
     //@@class_method
-    every(predicate: (element: T) => boolean): boolean {
-        for (let i = 0; i < this.length; i++) {
-            if (!predicate(this[i])) {
+    every(predicate: (element: T, index: number, array: T[]) => boolean, thisArg?: any): boolean {
+        let length = this.length;
+        for (let i = 0; i < length; i++) {
+            if (!arrayHasOwnIndex(this, i)) {
+                continue;
+            }
+            if (!predicate.call(thisArg, this[i], i, this)) {
                 return false;
             }
         }
@@ -343,9 +367,13 @@ class Array<T> {
     }
 
     //@@class_method
-    some(predicate: (element: T) => boolean): boolean {
-        for (let i = 0; i < this.length; i++) {
-            if (predicate(this[i])) {
+    some(predicate: (element: T, index: number, array: T[]) => boolean, thisArg?: any): boolean {
+        let length = this.length;
+        for (let i = 0; i < length; i++) {
+            if (!arrayHasOwnIndex(this, i)) {
+                continue;
+            }
+            if (predicate.call(thisArg, this[i], i, this)) {
                 return true;
             }
         }
@@ -353,10 +381,14 @@ class Array<T> {
     }
 
     //@@class_method
-    reduce<U>(fn: (accumulator: U, element: T) => U, initial: U): U {
+    reduce<U>(fn: (accumulator: U, element: T, index: number, array: T[]) => U, initial: U): U {
         let acc: U = initial;
-        for (let i = 0; i < this.length; i++) {
-            acc = fn(acc, this[i]);
+        let length = this.length;
+        for (let i = 0; i < length; i++) {
+            if (!arrayHasOwnIndex(this, i)) {
+                continue;
+            }
+            acc = fn(acc, this[i], i, this);
         }
         return acc;
     }

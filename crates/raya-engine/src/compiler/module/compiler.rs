@@ -32,7 +32,7 @@ use super::declaration::{
 };
 use super::exports::{
     extract_module_exports, has_top_level_declaration_before_offset, inject_ambient_exports,
-    ExportRegistry, ExportedSymbol, ModuleExports,
+    module_exports_from_bytecode, ExportRegistry, ExportedSymbol, ModuleExports,
 };
 use super::graph::{GraphError, ModuleGraph};
 use super::resolver::{ModuleResolver, ResolveError};
@@ -310,7 +310,56 @@ impl ModuleCompiler {
         self.declaration_modules
             .get(path)
             .map(|decl| decl.module_identity.clone())
+            .or_else(|| self.exports.get(&path.to_path_buf()).map(|exports| exports.module_name.clone()))
             .unwrap_or_else(|| path.to_string_lossy().to_string())
+    }
+
+    fn is_binary_module(path: &Path) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext == "ryb")
+            .unwrap_or(false)
+    }
+
+    fn load_binary_module(&self, path: &Path) -> ModuleCompileResult<BytecodeModule> {
+        let bytes = fs::read(path).map_err(|error| ModuleCompileError::IoError {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })?;
+        BytecodeModule::decode(&bytes).map_err(|error| ModuleCompileError::TypeError {
+            path: path.to_path_buf(),
+            message: format!("Failed to decode bytecode module: {error}"),
+        })
+    }
+
+    fn extract_binary_imports(bytecode: &BytecodeModule) -> Vec<String> {
+        let mut imports = Vec::new();
+        let mut seen = HashSet::new();
+        for import in &bytecode.imports {
+            if seen.insert(import.module_specifier.clone()) {
+                imports.push(import.module_specifier.clone());
+            }
+        }
+        imports
+    }
+
+    fn populate_binary_reexports(
+        &mut self,
+        current_path: &Path,
+        bytecode: &BytecodeModule,
+        module_exports: &mut ModuleExports,
+    ) -> ModuleCompileResult<()> {
+        for import in &bytecode.imports {
+            if import.symbol != "*" || import.alias.is_some() {
+                continue;
+            }
+            if let Some(reexport_path) =
+                self.resolve_import_path(&import.module_specifier, current_path)?
+            {
+                module_exports.add_reexport(reexport_path);
+            }
+        }
+        Ok(())
     }
 
     fn ensure_declaration_virtual_module(
@@ -401,36 +450,6 @@ impl ModuleCompiler {
         Ok(None)
     }
 
-    fn resolve_binary_declaration_module(
-        &mut self,
-        binary_path: &Path,
-    ) -> ModuleCompileResult<Option<PathBuf>> {
-        let Some(parent) = binary_path.parent() else {
-            return Ok(None);
-        };
-        let candidates = [parent.join("module.d.raya"), parent.join("module.d.ts")];
-        for candidate in candidates {
-            if !candidate.is_file() {
-                continue;
-            }
-            let canonical_decl =
-                candidate
-                    .canonicalize()
-                    .map_err(|e| ModuleCompileError::IoError {
-                        path: candidate.clone(),
-                        message: e.to_string(),
-                    })?;
-            let runtime_identity = binary_path
-                .with_extension("raya")
-                .to_string_lossy()
-                .to_string();
-            let virtual_path =
-                self.ensure_declaration_virtual_module(&canonical_decl, runtime_identity)?;
-            return Ok(Some(virtual_path));
-        }
-        Ok(None)
-    }
-
     fn map_declaration_error(&self, error: DeclarationError) -> ModuleCompileError {
         match error {
             DeclarationError::IoError { path, message } => {
@@ -507,26 +526,8 @@ impl ModuleCompiler {
 
         match self.resolver.resolve(specifier, from_path) {
             Ok(resolved) => {
-                if resolved
-                    .path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| ext == "ryb")
-                    .unwrap_or(false)
-                {
-                    if let Some(virtual_path) =
-                        self.resolve_binary_declaration_module(&resolved.path)?
-                    {
-                        return Ok(Some(virtual_path));
-                    }
-                    return Err(ModuleCompileError::TypeError {
-                        path: from_path.to_path_buf(),
-                        message: format!(
-                            "Import '{}' resolved to bytecode '{}' without declaration file (.d.raya/.d.ts)",
-                            specifier,
-                            resolved.path.display()
-                        ),
-                    });
+                if Self::is_binary_module(&resolved.path) {
+                    return Ok(Some(resolved.path));
                 }
                 Ok(Some(resolved.path))
             }
@@ -606,15 +607,39 @@ impl ModuleCompiler {
             // Check cache first
             if !self.is_virtual_module(&path) {
                 if let Some(cached) = self.cache.get(&path) {
+                    let cached_bytecode = cached.bytecode.clone();
+                    let mut module_exports = module_exports_from_bytecode(&path, &cached_bytecode);
+                    self.populate_binary_reexports(&path, &cached_bytecode, &mut module_exports)?;
+                    self.exports.register(module_exports);
                     let node = self.graph.get(&path).unwrap();
                     compiled.push(CompiledModule {
                         path: path.clone(),
-                        bytecode: cached.bytecode.clone(),
+                        bytecode: cached_bytecode,
                         imports: node.imports.clone(),
                         declaration_only: false,
                     });
                     continue;
                 }
+            }
+
+            if Self::is_binary_module(&path) {
+                let bytecode = self.load_binary_module(&path)?;
+                let mut module_exports = module_exports_from_bytecode(&path, &bytecode);
+                self.populate_binary_reexports(&path, &bytecode, &mut module_exports)?;
+                self.exports.register(module_exports);
+
+                if !self.is_virtual_module(&path) {
+                    self.cache.insert(path.clone(), bytecode.clone());
+                }
+
+                let node = self.graph.get(&path).unwrap();
+                compiled.push(CompiledModule {
+                    path: path.clone(),
+                    bytecode,
+                    imports: node.imports.clone(),
+                    declaration_only: false,
+                });
+                continue;
             }
 
             // Compile the module with cross-module symbol resolution
@@ -667,9 +692,13 @@ impl ModuleCompiler {
             self.graph.add_module(path.clone());
 
             // Parse the module to find imports
-            let source = self.read_module_source(&path)?;
-
-            let imports = self.extract_imports(&source, &path)?;
+            let imports = if Self::is_binary_module(&path) {
+                let bytecode = self.load_binary_module(&path)?;
+                Self::extract_binary_imports(&bytecode)
+            } else {
+                let source = self.read_module_source(&path)?;
+                self.extract_imports(&source, &path)?
+            };
 
             // Resolve and add each import
             for import_specifier in imports {

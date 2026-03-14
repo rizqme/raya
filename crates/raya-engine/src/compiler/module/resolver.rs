@@ -73,12 +73,11 @@ pub struct ResolvedModule {
 }
 
 impl ResolvedModule {
-    /// Get the path to the type definition file (.d.raya)
-    /// Returns None for local modules (they have source), Some for cached packages
+    /// Get the path to the legacy type definition file (.d.raya), if present.
     pub fn typedef_path(&self) -> Option<PathBuf> {
         self.package_info.as_ref()?;
 
-        // For cached packages, look for module.d.raya alongside module.ryb
+        // Cached packages may still ship a legacy declaration sidecar for older tooling.
         let parent = self.path.parent()?;
         let typedef_path = parent.join("module.d.raya");
 
@@ -89,7 +88,7 @@ impl ResolvedModule {
         }
     }
 
-    /// Check if this module has type definitions available
+    /// Check whether a legacy declaration sidecar is available.
     pub fn has_typedef(&self) -> bool {
         self.typedef_path().is_some()
     }
@@ -525,15 +524,6 @@ impl ModuleResolver {
             });
         }
 
-        // Check for required type definitions
-        let typedef_path = cache_package_dir.join("module.d.raya");
-        if !typedef_path.exists() {
-            return Err(ResolveError::IoError(format!(
-                "Package '{}@{}' is missing type definitions (module.d.raya)",
-                pkg.name, version
-            )));
-        }
-
         // Check for required manifest
         let manifest_path = cache_package_dir.join("raya.toml");
         if !manifest_path.exists() {
@@ -608,8 +598,10 @@ impl ModuleResolver {
         // Build the base path
         let base_path = from_dir.join(specifier);
 
+        let explicit_extension = base_path.extension().and_then(|ext| ext.to_str());
+
         // Try 1: specifier.raya (if no extension)
-        if !specifier.ends_with(".raya") {
+        if explicit_extension.is_none() {
             let with_ext = base_path.with_extension("raya");
             tried.push(with_ext.clone());
             if with_ext.exists() {
@@ -633,7 +625,7 @@ impl ModuleResolver {
                 });
             }
         } else {
-            // Explicit .raya extension
+            // Explicit file extension (.raya, .ryb, ...)
             tried.push(base_path.clone());
             if base_path.exists() {
                 return Ok(ResolvedModule {
