@@ -490,6 +490,46 @@ impl Runtime {
         Ok(result)
     }
 
+    /// Execute a compiled program graph and explicitly drain/terminate the VM.
+    ///
+    /// Use this when the caller only needs success/failure and does not need to
+    /// retain the raw `Value`, because pointer-backed values become invalid once
+    /// the VM is torn down.
+    pub fn execute_program_and_teardown(
+        &self,
+        program: &CompiledProgram,
+    ) -> Result<(), RuntimeError> {
+        let mut vm = vm_setup::create_vm(&self.options);
+        let debug_teardown = std::env::var("RAYA_DEBUG_VM_TEARDOWN").is_ok();
+        if debug_teardown {
+            eprintln!("[runtime-teardown] execute:start");
+        }
+        let result = self.execute_program_with_vm(program, &mut vm);
+        if debug_teardown {
+            eprintln!("[runtime-teardown] execute:done result_ok={}", result.is_ok());
+        }
+        self.maybe_write_profile(&vm, &program.entry.module);
+        self.maybe_emit_jit_telemetry(&vm);
+        if debug_teardown {
+            eprintln!("[runtime-teardown] wait_quiescent:start");
+        }
+        let _ = vm.wait_quiescent(std::time::Duration::from_millis(250));
+        if debug_teardown {
+            eprintln!("[runtime-teardown] wait_quiescent:done");
+            eprintln!("[runtime-teardown] wait_all:start");
+        }
+        let _ = vm.wait_all(std::time::Duration::from_millis(250));
+        if debug_teardown {
+            eprintln!("[runtime-teardown] wait_all:done");
+            eprintln!("[runtime-teardown] terminate:start");
+        }
+        vm.terminate();
+        if debug_teardown {
+            eprintln!("[runtime-teardown] terminate:done");
+        }
+        result.map(|_| ())
+    }
+
     /// Execute a compiled program graph using a caller-provided VM.
     ///
     /// Useful when callers need VM lifetime control (for example, tests that

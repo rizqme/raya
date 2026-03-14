@@ -1214,6 +1214,15 @@ impl<'a> Interpreter<'a> {
         macro_rules! handle_frame_return {
             ($return_value:expr) => {{
                 let return_value = $return_value;
+                // A normal return can bypass bytecode `EndTry` cleanup.
+                // Drop any handlers registered by the frame we're leaving so
+                // later throws cannot jump into a dead catch/finally block.
+                while task
+                    .peek_exception_handler()
+                    .is_some_and(|handler| handler.frame_count == frames.len())
+                {
+                    task.pop_exception_handler();
+                }
                 // Clean up current frame's locals and operand stack
                 while stack_guard.depth() > locals_base {
                     let _ = stack_guard.pop();

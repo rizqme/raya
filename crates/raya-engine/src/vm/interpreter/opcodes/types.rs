@@ -1623,6 +1623,14 @@ impl<'a> Interpreter<'a> {
                                 "DynSetKeyed target must be an object".to_string(),
                             ));
                         };
+                        if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
+                            eprintln!(
+                                "[dyn-set] target={:#x} key={} callable={}",
+                                obj_val.raw(),
+                                key_str,
+                                Self::is_callable_value(obj_val)
+                            );
+                        }
                         if !Self::is_callable_value(obj_val) {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "DynSetKeyed target must be an object".to_string(),
@@ -1631,6 +1639,14 @@ impl<'a> Interpreter<'a> {
                         if let Some((writable, _, _)) =
                             self.callable_virtual_property_descriptor(obj_val, key_str)
                         {
+                            if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
+                                eprintln!(
+                                    "[dyn-set] target={:#x} key={} virtual-desc writable={}",
+                                    obj_val.raw(),
+                                    key_str,
+                                    writable
+                                );
+                            }
                             if !writable {
                                 if let Err(e) = stack.push(value) {
                                     return OpcodeResult::Error(e);
@@ -1679,6 +1695,13 @@ impl<'a> Interpreter<'a> {
                             true,
                         ) {
                             return OpcodeResult::Error(error);
+                        }
+                        if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
+                            eprintln!(
+                                "[dyn-set] target={:#x} key={} define-data:done",
+                                obj_val.raw(),
+                                key_str
+                            );
                         }
                     }
                 }

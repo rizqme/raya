@@ -247,12 +247,19 @@ impl Reactor {
         if !self.started {
             return;
         }
+        let debug_teardown = std::env::var("RAYA_DEBUG_VM_TEARDOWN").is_ok();
+        if debug_teardown {
+            eprintln!("[reactor-shutdown] start");
+        }
 
         self.shutdown.store(true, AtomicOrdering::Release);
 
         // Cancel all tasks so interpreters exit quickly
         {
             let tasks = self.shared_state.tasks.read();
+            if debug_teardown {
+                eprintln!("[reactor-shutdown] cancel_tasks count={}", tasks.len());
+            }
             for task in tasks.values() {
                 task.cancel();
             }
@@ -269,23 +276,44 @@ impl Reactor {
         // that the caller is about to drop, which can surface later as
         // allocator corruption in unrelated tests.
         for handle in self.vm_worker_handles.drain(..) {
+            if debug_teardown {
+                eprintln!("[reactor-shutdown] join_vm_worker:start");
+            }
             let _ = handle.join();
+            if debug_teardown {
+                eprintln!("[reactor-shutdown] join_vm_worker:done");
+            }
         }
 
         if let Some(handle) = self.reactor_handle.take() {
+            if debug_teardown {
+                eprintln!("[reactor-shutdown] join_reactor:start");
+            }
             let _ = handle.join();
+            if debug_teardown {
+                eprintln!("[reactor-shutdown] join_reactor:done");
+            }
         }
 
         // It is now safe to drop IO submission/runtime state; no VM worker or
         // reactor thread should still touch it after the joins above.
         self.io_submit_tx.take();
         if let Some(runtime) = self.tokio_runtime.take() {
+            if debug_teardown {
+                eprintln!("[reactor-shutdown] tokio_shutdown:start");
+            }
             runtime.shutdown_timeout(Duration::from_secs(5));
+            if debug_teardown {
+                eprintln!("[reactor-shutdown] tokio_shutdown:done");
+            }
         }
         *self.shared_state.io_submit_tx.lock() = None;
 
         self.started = false;
         self.shared_state.tasks.write().clear();
+        if debug_teardown {
+            eprintln!("[reactor-shutdown] done");
+        }
     }
 
     // ========================================================================
@@ -299,6 +327,7 @@ impl Reactor {
         state: Arc<SharedVmState>,
         shutdown: Arc<AtomicBool>,
     ) {
+        let debug_teardown = std::env::var("RAYA_DEBUG_VM_TEARDOWN").is_ok();
         while !shutdown.load(AtomicOrdering::Acquire) {
             let work = match work_rx.recv_timeout(VM_WORKER_RECV_TIMEOUT) {
                 Ok(w) => w,
@@ -387,6 +416,9 @@ impl Reactor {
             task.clear_start_time();
 
             let _ = result_tx.send(VmResult { task, result });
+        }
+        if debug_teardown {
+            eprintln!("[vm-worker] exit");
         }
     }
 

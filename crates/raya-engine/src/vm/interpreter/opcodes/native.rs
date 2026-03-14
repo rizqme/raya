@@ -78,6 +78,23 @@ fn boxed_primitive_helper_class_name(class_name: &str) -> Option<&'static str> {
     }
 }
 
+fn builtin_error_superclass_name(class_name: &str) -> Option<&'static str> {
+    match class_name {
+        "AggregateError"
+        | "EvalError"
+        | "RangeError"
+        | "ReferenceError"
+        | "SyntaxError"
+        | "TypeError"
+        | "URIError"
+        | "InternalError"
+        | "SuppressedError"
+        | "ChannelClosedError"
+        | "AssertionError" => Some("Error"),
+        _ => None,
+    }
+}
+
 pub(in crate::vm::interpreter) fn checked_object_ptr(value: Value) -> Option<NonNull<Object>> {
     if !value.is_ptr() || value.is_null() {
         return None;
@@ -765,7 +782,18 @@ impl<'a> Interpreter<'a> {
         if header.type_id() == std::any::TypeId::of::<Closure>() {
             let closure = unsafe { &*target.as_ptr::<Closure>()?.as_ptr() };
             let module = closure.module()?;
+            if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
+                eprintln!(
+                    "[callable-info] closure target={:#x} func_id={} module={}",
+                    target.raw(),
+                    closure.func_id,
+                    module.metadata.name
+                );
+            }
             let function = module.functions.get(closure.func_id)?;
+            if module.metadata.name.starts_with("__dynamic_function__/") {
+                return Some(("anonymous".to_string(), function.visible_length));
+            }
             return Some((
                 Self::visible_function_name(&function.name),
                 function.visible_length,
@@ -1349,6 +1377,22 @@ impl<'a> Interpreter<'a> {
         }
 
         if self.callable_function_info(value).is_some() {
+            if let Some(parent_name) = self
+                .builtin_global_name_for_value(value)
+                .as_deref()
+                .and_then(builtin_error_superclass_name)
+            {
+                let prototype = self.builtin_global_value(parent_name);
+                if debug_proto_resolve {
+                    eprintln!(
+                        "[proto-of] value={:#x} builtin-error-super='{}' -> {:?}",
+                        value.raw(),
+                        parent_name,
+                        prototype.map(|v| format!("{:#x}", v.raw()))
+                    );
+                }
+                return prototype;
+            }
             let prototype = self
                 .builtin_global_value("Function")
                 .and_then(|ctor| self.function_constructor_prototype_value(ctor));
@@ -1560,7 +1604,7 @@ impl<'a> Interpreter<'a> {
         {
             return Some(existing);
         }
-        if let Some(class_obj_ptr) = unsafe { class_value.as_ptr::<Object>() } {
+        if let Some(class_obj_ptr) = checked_object_ptr(class_value) {
             let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
             if let Some(existing) = class_obj
                 .dyn_map()
@@ -1643,6 +1687,14 @@ impl<'a> Interpreter<'a> {
         )
         .ok()?;
 
+        if let Some(parent_name) = builtin_error_superclass_name(class_name) {
+            if let Some(parent_ctor) = self.builtin_global_value(parent_name) {
+                if let Some(parent_proto) = self.constructor_prototype_value(parent_ctor) {
+                    self.set_constructed_object_prototype_from_value(prototype_val, parent_proto);
+                }
+            }
+        }
+
         self.seed_builtin_error_prototype_properties(prototype_val, class_name)?;
 
         for (slot, method_name) in method_names.iter().enumerate() {
@@ -1672,7 +1724,7 @@ impl<'a> Interpreter<'a> {
             .ok()?;
         }
 
-        if let Some(class_obj_ptr) = unsafe { class_value.as_ptr::<Object>() } {
+        if let Some(class_obj_ptr) = checked_object_ptr(class_value) {
             let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
             class_obj
                 .ensure_dyn_map()
@@ -1682,12 +1734,29 @@ impl<'a> Interpreter<'a> {
     }
 
     fn generic_function_prototype_value(&self, class_value: Value) -> Option<Value> {
+        let debug_dynamic_function = std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok();
         if let Some(existing) = self.cached_callable_virtual_property_value(class_value, "prototype")
         {
+            if debug_dynamic_function {
+                eprintln!(
+                    "[generic-fn-proto] target={:#x} cached={:#x}",
+                    class_value.raw(),
+                    existing.raw()
+                );
+            }
             return Some(existing);
         }
         if !self.callable_is_constructible(class_value) {
+            if debug_dynamic_function {
+                eprintln!(
+                    "[generic-fn-proto] target={:#x} not-constructible",
+                    class_value.raw()
+                );
+            }
             return None;
+        }
+        if debug_dynamic_function {
+            eprintln!("[generic-fn-proto] target={:#x} alloc:start", class_value.raw());
         }
 
         let layout_id = layout_id_from_ordered_names(&["constructor".to_string()]);
@@ -1698,7 +1767,17 @@ impl<'a> Interpreter<'a> {
         let prototype_val = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(prototype_ptr.as_ptr()).expect("prototype object ptr"))
         };
+        if debug_dynamic_function {
+            eprintln!(
+                "[generic-fn-proto] target={:#x} alloc:prototype={:#x}",
+                class_value.raw(),
+                prototype_val.raw()
+            );
+        }
         self.set_cached_callable_virtual_property_value(class_value, "prototype", prototype_val);
+        if debug_dynamic_function {
+            eprintln!("[generic-fn-proto] target={:#x} cache:set", class_value.raw());
+        }
 
         self.define_data_property_on_target(
             prototype_val,
@@ -1709,18 +1788,33 @@ impl<'a> Interpreter<'a> {
             true,
         )
         .ok()?;
+        if debug_dynamic_function {
+            eprintln!(
+                "[generic-fn-proto] target={:#x} constructor:set",
+                class_value.raw()
+            );
+        }
 
         if let Some(object_ctor) = self.builtin_global_value("Object") {
             if let Some(object_proto) = self.object_constructor_prototype_value(object_ctor) {
                 self.set_constructed_object_prototype_from_value(prototype_val, object_proto);
+                if debug_dynamic_function {
+                    eprintln!(
+                        "[generic-fn-proto] target={:#x} object-proto:set",
+                        class_value.raw()
+                    );
+                }
             }
         }
 
-        if let Some(class_obj_ptr) = unsafe { class_value.as_ptr::<Object>() } {
+        if let Some(class_obj_ptr) = checked_object_ptr(class_value) {
             let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
             class_obj
                 .ensure_dyn_map()
                 .insert(self.intern_prop_key("prototype"), prototype_val);
+        }
+        if debug_dynamic_function {
+            eprintln!("[generic-fn-proto] target={:#x} done", class_value.raw());
         }
         Some(prototype_val)
     }
@@ -1901,9 +1995,21 @@ impl<'a> Interpreter<'a> {
             return None;
         }
         let (name, length) = self.callable_function_info(target)?;
+        if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
+            eprintln!(
+                "[callable-prop] target={:#x} key={} name={} length={}",
+                target.raw(),
+                key,
+                name,
+                length
+            );
+        }
         match key {
             "name" => {
                 let ptr = self.gc.lock().allocate(RayaString::new(name));
+                if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
+                    eprintln!("[callable-prop] name:allocated");
+                }
                 Some(unsafe { Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()) })
             }
             "length" => Some(Value::i32(length as i32)),
@@ -1995,14 +2101,27 @@ impl<'a> Interpreter<'a> {
         params_source: &str,
         body_source: &str,
     ) -> Result<Arc<Module>, VmError> {
+        let debug_dynamic_function = std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok();
+        if debug_dynamic_function {
+            eprintln!(
+                "[dynamic-fn] compile:start params={:?} body={:?}",
+                params_source, body_source
+            );
+        }
         let source = format!(
             "function __dynamic_fn__({params_source}) {{\n{body_source}\n}}\n"
         );
         let parser = Parser::new(&source)
             .map_err(|error| VmError::RuntimeError(format!("Dynamic Function lexer error: {:?}", error)))?;
+        if debug_dynamic_function {
+            eprintln!("[dynamic-fn] compile:parsed-lexer");
+        }
         let (ast, interner) = parser
             .parse()
             .map_err(|error| VmError::RuntimeError(format!("Dynamic Function parse error: {:?}", error)))?;
+        if debug_dynamic_function {
+            eprintln!("[dynamic-fn] compile:parsed-ast");
+        }
 
         let mut type_ctx = TypeContext::new();
         let policy = CheckerPolicy::for_mode(TypeSystemMode::Js);
@@ -2011,10 +2130,16 @@ impl<'a> Interpreter<'a> {
             .with_policy(policy);
         let builtin_sigs = crate::builtins::to_checker_signatures();
         binder.register_builtins(&builtin_sigs);
+        if debug_dynamic_function {
+            eprintln!("[dynamic-fn] compile:builtin-sigs");
+        }
 
         let mut symbols = binder
             .bind_module(&ast)
             .map_err(|error| VmError::RuntimeError(format!("Dynamic Function bind error: {:?}", error)))?;
+        if debug_dynamic_function {
+            eprintln!("[dynamic-fn] compile:bound");
+        }
 
         let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
             .with_mode(TypeSystemMode::Js)
@@ -2022,6 +2147,9 @@ impl<'a> Interpreter<'a> {
         let check_result = checker
             .check_module(&ast)
             .map_err(|error| VmError::RuntimeError(format!("Dynamic Function type error: {:?}", error)))?;
+        if debug_dynamic_function {
+            eprintln!("[dynamic-fn] compile:checked");
+        }
 
         for ((scope_id, name), ty) in check_result.inferred_types {
             symbols.update_type(ScopeId(scope_id), &name, ty);
@@ -2049,6 +2177,9 @@ impl<'a> Interpreter<'a> {
         let module = compiler
             .compile_via_ir(&ast)
             .map_err(|error| VmError::RuntimeError(format!("Dynamic Function compile error: {}", error)))?;
+        if debug_dynamic_function {
+            eprintln!("[dynamic-fn] compile:done");
+        }
         Ok(Arc::new(module))
     }
 
@@ -2058,13 +2189,32 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Value, VmError> {
+        let debug_dynamic_function = std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok();
+        if debug_dynamic_function {
+            eprintln!("[dynamic-fn] alloc:start argc={}", args.len());
+        }
         let mut parts = Vec::with_capacity(args.len());
         for arg in args {
+            if debug_dynamic_function {
+                eprintln!("[dynamic-fn] alloc:arg-to-string:start value={:#x}", arg.raw());
+            }
             parts.push(self.js_function_argument_to_string(*arg, task, module)?);
+            if debug_dynamic_function {
+                eprintln!("[dynamic-fn] alloc:arg-to-string:done");
+            }
         }
         let body_source = parts.pop().unwrap_or_default();
         let params_source = parts.join(",");
+        if debug_dynamic_function {
+            eprintln!(
+                "[dynamic-fn] alloc:sources params={:?} body={:?}",
+                params_source, body_source
+            );
+        }
         let function_module = self.compile_dynamic_js_function_module(&params_source, &body_source)?;
+        if debug_dynamic_function {
+            eprintln!("[dynamic-fn] alloc:compiled-module");
+        }
         let func_id = function_module
             .functions
             .iter()
@@ -2072,8 +2222,14 @@ impl<'a> Interpreter<'a> {
             .ok_or_else(|| {
                 VmError::RuntimeError("Dynamic Function compile did not produce __dynamic_fn__".to_string())
             })?;
+        if debug_dynamic_function {
+            eprintln!("[dynamic-fn] alloc:func-id={}", func_id);
+        }
         let closure = Closure::with_module(func_id, Vec::new(), function_module);
         let closure_ptr = self.gc.lock().allocate(closure);
+        if debug_dynamic_function {
+            eprintln!("[dynamic-fn] alloc:done");
+        }
         Ok(unsafe {
             Value::from_ptr(std::ptr::NonNull::new(closure_ptr.as_ptr()).expect("dynamic function ptr"))
         })

@@ -5,6 +5,7 @@ use regex::Regex;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -480,7 +481,17 @@ pub fn run(args: Args) -> Result<i32> {
     let started = Instant::now();
     let mut summary = RunSummary::default();
 
-    for case in &cases {
+    for (index, case) in cases.iter().enumerate() {
+        if args.verbose || args.fail_fast {
+            eprintln!(
+                "RUN {}/{} {}",
+                index + 1,
+                cases.len(),
+                case.relative_path.display()
+            );
+            let _ = std::io::stderr().flush();
+        }
+
         let runtime = build_case_runtime();
         let outcome = run_case(&runtime, &root, case);
         summary.record(&outcome);
@@ -490,7 +501,10 @@ pub fn run(args: Args) -> Result<i32> {
                 println!("PASS {}", case.relative_path.display());
             }
             TestOutcome::Failed(message) => {
-                eprintln!("FAIL {}: {}", case.relative_path.display(), message);
+                eprintln!(
+                    "{}",
+                    format_failure_report(index + 1, cases.len(), case, message)
+                );
                 if args.fail_fast {
                     break;
                 }
@@ -762,11 +776,7 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> TestOutcome {
         .as_ref()
         .and_then(|negative| negative.error_type.as_deref());
 
-    let temp_path = std::env::temp_dir().join(format!(
-        "raya-es262-{}-{}.js",
-        std::process::id(),
-        sanitized_case_stem(&case.relative_path),
-    ));
+    let temp_path = case_artifact_path(case);
     if let Err(error) = fs::write(&temp_path, &transformed) {
         return TestOutcome::Failed(format!(
             "failed to materialize transformed case at {}: {}",
@@ -802,8 +812,80 @@ fn run_case(runtime: &Runtime, root: &Path, case: &TestCase) -> TestOutcome {
         },
     };
 
-    let _ = fs::remove_file(&temp_path);
+    if matches!(outcome, TestOutcome::Passed) {
+        let _ = fs::remove_file(&temp_path);
+    }
     outcome
+}
+
+fn case_artifact_path(case: &TestCase) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "raya-es262-{}-{}.js",
+        std::process::id(),
+        sanitized_case_stem(&case.relative_path),
+    ))
+}
+
+fn format_failure_report(
+    index: usize,
+    total: usize,
+    case: &TestCase,
+    message: &str,
+) -> String {
+    let mut report = format!(
+        "FAIL {}/{} {}: {}",
+        index,
+        total,
+        case.relative_path.display(),
+        message
+    );
+    report.push_str(&format!(
+        "\n  source: {}",
+        case.absolute_path.display()
+    ));
+
+    if let Some(description) = case.metadata.description.as_deref() {
+        report.push_str(&format!("\n  description: {}", description));
+    }
+    if !case.metadata.flags.is_empty() {
+        report.push_str(&format!(
+            "\n  flags: {}",
+            case.metadata.flags.join(", ")
+        ));
+    }
+    if !case.metadata.includes.is_empty() {
+        report.push_str(&format!(
+            "\n  includes: {}",
+            case.metadata.includes.join(", ")
+        ));
+    }
+    if !case.metadata.features.is_empty() {
+        report.push_str(&format!(
+            "\n  features: {}",
+            case.metadata.features.join(", ")
+        ));
+    }
+    if let Some(negative) = case.metadata.negative.as_ref() {
+        let phase = negative.phase.as_deref().unwrap_or("?");
+        let error_type = negative.error_type.as_deref().unwrap_or("?");
+        report.push_str(&format!(
+            "\n  negative: phase={} type={}",
+            phase, error_type
+        ));
+    }
+
+    let artifact_path = case_artifact_path(case);
+    if artifact_path.exists() {
+        report.push_str(&format!(
+            "\n  transformed: {}",
+            artifact_path.display()
+        ));
+    }
+    report.push_str(&format!(
+        "\n  rerun: cargo run -p raya-es262-conformance -- --fail-fast {}",
+        case.relative_path.display()
+    ));
+    report
 }
 
 fn matches_expected_error(actual: &str, expected: Option<&str>) -> bool {
@@ -818,8 +900,7 @@ fn execute_case_program(runtime: &Runtime, path: &Path) -> std::result::Result<(
         .compile_program_file(path)
         .map_err(|error| format!("compilation failed: {}", error))?;
     runtime
-        .execute_program(&program)
-        .map(|_| ())
+        .execute_program_and_teardown(&program)
         .map_err(|error| format!("runtime failed: {}", error))
 }
 
@@ -1029,5 +1110,37 @@ negative:
                 .and_then(|negative| negative.error_type.as_deref()),
             Some("TypeError")
         );
+    }
+
+    #[test]
+    fn failure_report_includes_case_context() {
+        let case = TestCase {
+            absolute_path: PathBuf::from("/tmp/test262/test/language/example.js"),
+            relative_path: PathBuf::from("test/language/example.js"),
+            metadata: Frontmatter {
+                description: Some("sample failure".to_string()),
+                includes: vec!["assert.js".to_string()],
+                flags: vec!["onlyStrict".to_string()],
+                features: vec!["tail-call-optimization".to_string()],
+                negative: Some(Negative {
+                    phase: Some("runtime".to_string()),
+                    error_type: Some("TypeError".to_string()),
+                }),
+            },
+            source: String::new(),
+        };
+
+        let report = format_failure_report(7, 42, &case, "runtime failed: boom");
+
+        assert!(report.contains("FAIL 7/42 test/language/example.js: runtime failed: boom"));
+        assert!(report.contains("source: /tmp/test262/test/language/example.js"));
+        assert!(report.contains("description: sample failure"));
+        assert!(report.contains("flags: onlyStrict"));
+        assert!(report.contains("includes: assert.js"));
+        assert!(report.contains("features: tail-call-optimization"));
+        assert!(report.contains("negative: phase=runtime type=TypeError"));
+        assert!(report.contains(
+            "rerun: cargo run -p raya-es262-conformance -- --fail-fast test/language/example.js"
+        ));
     }
 }
