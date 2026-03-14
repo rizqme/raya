@@ -103,8 +103,8 @@ pub enum OpcodeResult {
 pub enum ReturnAction {
     /// Push the callee's return value onto the caller's stack (normal calls)
     PushReturnValue,
-    /// Push a specific object value (constructor calls - push the constructed object)
-    PushObject(Value),
+    /// Apply JS constructor return semantics using the provided receiver.
+    PushConstructResult(Value),
     /// Discard the return value (super() calls)
     Discard,
 }

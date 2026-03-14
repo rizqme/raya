@@ -351,10 +351,18 @@ impl<'a> Interpreter<'a> {
             task,
             module,
         )?;
-        if self.is_js_object_value(returned) || self.callable_function_info(returned).is_some() {
-            Ok(returned)
+        Ok(self.constructor_result_or_receiver(returned, object_value))
+    }
+
+    pub(crate) fn constructor_result_or_receiver(
+        &self,
+        returned: Value,
+        receiver: Value,
+    ) -> Value {
+        if self.is_js_object_value(returned) {
+            returned
         } else {
-            Ok(object_value)
+            receiver
         }
     }
 
@@ -395,9 +403,6 @@ impl<'a> Interpreter<'a> {
         }
 
         for (index, value) in args.iter().copied().enumerate() {
-            if index >= array.elements.len() {
-                array.resize_holey(index + 1);
-            }
             array.set(index, value).map_err(VmError::RuntimeError)?;
         }
 
@@ -490,7 +495,17 @@ impl<'a> Interpreter<'a> {
                         ephemeral.swap_remove(index);
                     }
                 }
-                invoke_result?;
+                let returned = invoke_result?;
+                {
+                    let mut ephemeral = self.ephemeral_gc_roots.write();
+                    if let Some(index) = ephemeral
+                        .iter()
+                        .rposition(|candidate| *candidate == obj_val)
+                    {
+                        ephemeral.swap_remove(index);
+                    }
+                }
+                return Ok(self.constructor_result_or_receiver(returned, obj_val));
             }
 
             {
@@ -1196,6 +1211,15 @@ impl<'a> Interpreter<'a> {
         globals[slot] = value;
         self.set_fixed_property_deleted(target, key, false);
         true
+    }
+
+    fn ambient_builtin_global_property_flags(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<(bool, bool, bool)> {
+        (self.is_runtime_global_object(target) && self.builtin_global_slots.read().contains_key(key))
+            .then_some((true, true, false))
     }
 
     fn bind_script_global_property(
@@ -2217,13 +2241,10 @@ impl<'a> Interpreter<'a> {
                     caller_module,
                 );
             }
-            if let Ok(index) = key.parse::<usize>() {
+            if let Some(index) = parse_js_array_index_name(key) {
                 let array = unsafe { &mut *array_ptr.as_ptr() };
                 if !self.is_js_value_extensible(receiver) && array.get(index).is_none() {
                     return Ok(false);
-                }
-                if index >= array.elements.len() {
-                    array.resize_holey(index + 1);
                 }
                 array.set(index, value).map_err(VmError::RuntimeError)?;
                 return Ok(true);
@@ -2310,11 +2331,8 @@ impl<'a> Interpreter<'a> {
                         caller_module,
                     );
                 }
-                if let Ok(index) = key.parse::<usize>() {
+                if let Some(index) = parse_js_array_index_name(key) {
                     let array = unsafe { &mut *array_ptr.as_ptr() };
-                    if index >= array.elements.len() {
-                        array.resize_holey(index + 1);
-                    }
                     array.set(index, value).map_err(VmError::RuntimeError)?;
                     return Ok(true);
                 }
@@ -3249,7 +3267,9 @@ impl<'a> Interpreter<'a> {
         }
         match key {
             "prototype" if self.constructor_prototype_value(target).is_some() => {
-                Some((true, false, false))
+                let writable = self.builtin_global_name_for_value(target).is_none()
+                    && self.nominal_class_name_for_value(target).is_none();
+                Some((writable, false, false))
             }
             "name" | "length" if self.callable_property_value(target, key).is_some() => {
                 Some((false, true, false))
@@ -3697,6 +3717,9 @@ impl<'a> Interpreter<'a> {
     }
 
     fn own_js_property_flags(&self, target: Value, key: &str) -> Option<(bool, bool, bool)> {
+        if let Some(flags) = self.ambient_builtin_global_property_flags(target, key) {
+            return Some(flags);
+        }
         if checked_array_ptr(target).is_some() {
             if key == "length" {
                 return Some((true, false, false));
@@ -4268,16 +4291,13 @@ impl<'a> Interpreter<'a> {
             if let Some(array_ptr) = checked_array_ptr(target) {
                 if key == "length" {
                     self.set_array_length_value(target, value)?;
-                } else if let Ok(index) = key.parse::<usize>() {
+                } else if let Some(index) = parse_js_array_index_name(key) {
                     let array = unsafe { &mut *array_ptr.as_ptr() };
                     if !self.is_js_value_extensible(target) && array.get(index).is_none() {
                         return Err(VmError::TypeError(format!(
                             "Cannot define property '{}': object is not extensible",
                             key
                         )));
-                    }
-                    if index >= array.elements.len() {
-                        array.resize_holey(index + 1);
                     }
                     array.set(index, value).map_err(VmError::RuntimeError)?;
                 } else {
@@ -4428,16 +4448,13 @@ impl<'a> Interpreter<'a> {
                         caller_task,
                         caller_module,
                     )?;
-                } else if let Ok(index) = key.parse::<usize>() {
+                } else if let Some(index) = parse_js_array_index_name(key) {
                     let array = unsafe { &mut *array_ptr.as_ptr() };
                     if !self.is_js_value_extensible(target) && array.get(index).is_none() {
                         return Err(VmError::TypeError(format!(
                             "Cannot define property '{}': object is not extensible",
                             key
                         )));
-                    }
-                    if index >= array.elements.len() {
-                        array.resize_holey(index + 1);
                     }
                     array.set(index, value).map_err(VmError::RuntimeError)?;
                 } else {

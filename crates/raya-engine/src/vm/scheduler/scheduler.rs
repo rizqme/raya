@@ -280,6 +280,8 @@ impl Scheduler {
     pub fn wait_quiescent(&self, timeout: std::time::Duration) -> bool {
         let start = std::time::Instant::now();
         let settle = std::time::Duration::from_millis(25);
+        let debug_teardown = std::env::var("RAYA_DEBUG_VM_TEARDOWN").is_ok();
+        let mut last_report = std::time::Instant::now();
         loop {
             let all_done = {
                 let tasks = self.shared_state.tasks.read();
@@ -323,6 +325,40 @@ impl Scheduler {
                 {
                     return true;
                 }
+            }
+            if debug_teardown && last_report.elapsed() >= std::time::Duration::from_millis(100) {
+                last_report = std::time::Instant::now();
+                let tasks = self.shared_state.tasks.read();
+                let pending: Vec<String> = tasks
+                    .values()
+                    .filter_map(|task| {
+                        let state = task.state();
+                        if state == TaskState::Completed || state == TaskState::Failed {
+                            return None;
+                        }
+                        let suspend = task
+                            .suspend_reason()
+                            .map(|reason| format!("{:?}", reason))
+                            .unwrap_or_else(|| "None".to_string());
+                        Some(format!(
+                            "id={} state={:?} func={} module={} suspend={} frames={} closures={}",
+                            task.id().as_u64(),
+                            state,
+                            task.function_id(),
+                            task.current_module().metadata.name,
+                            suspend,
+                            task.call_frame_count(),
+                            task.closure_count(),
+                        ))
+                    })
+                    .collect();
+                eprintln!(
+                    "[runtime-teardown] wait_quiescent:pending all_done={} microtasks_empty={} reactor_quiescent={} pending=[{}]",
+                    all_done,
+                    microtasks_empty,
+                    reactor_quiescent,
+                    pending.join("; "),
+                );
             }
             if start.elapsed() > timeout {
                 return false;

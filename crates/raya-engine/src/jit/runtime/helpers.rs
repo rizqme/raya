@@ -687,6 +687,7 @@ enum JitNestedCallResult {
 }
 
 fn jit_apply_return_action(
+    interpreter: &Interpreter<'_>,
     stack: &mut Stack,
     return_value: Value,
     return_action: ReturnAction,
@@ -696,8 +697,8 @@ fn jit_apply_return_action(
             stack.push(return_value)?;
             Ok(None)
         }
-        ReturnAction::PushObject(obj) => {
-            stack.push(obj)?;
+        ReturnAction::PushConstructResult(receiver) => {
+            stack.push(interpreter.constructor_result_or_receiver(return_value, receiver))?;
             Ok(None)
         }
         ReturnAction::Discard => Ok(None),
@@ -773,9 +774,12 @@ fn jit_execute_sync_frame(
                 task.pop_closure();
             }
             if let Some(frame) = frames.pop() {
-                if let Err(error) =
-                    jit_apply_return_action(stack, return_value, current_return_action)
-                {
+                if let Err(error) = jit_apply_return_action(
+                    interpreter,
+                    stack,
+                    return_value,
+                    current_return_action,
+                ) {
                     jit_raise_vm_error(bridge, error);
                     finish_nested_call!(JitNestedCallResult::Exception, true);
                 }
@@ -792,7 +796,9 @@ fn jit_execute_sync_frame(
             finish_nested_call!(
                 match current_return_action {
                     ReturnAction::PushReturnValue => JitNestedCallResult::Value(return_value),
-                    ReturnAction::PushObject(obj) => JitNestedCallResult::Value(obj),
+                    ReturnAction::PushConstructResult(receiver) => JitNestedCallResult::Value(
+                        interpreter.constructor_result_or_receiver(return_value, receiver),
+                    ),
                     ReturnAction::Discard => JitNestedCallResult::Value(Value::null()),
                 },
                 false
@@ -830,9 +836,12 @@ fn jit_execute_sync_frame(
                     task.pop_closure();
                 }
                 if let Some(frame) = frames.pop() {
-                    if let Err(error) =
-                        jit_apply_return_action(stack, return_value, current_return_action)
-                    {
+                    if let Err(error) = jit_apply_return_action(
+                        interpreter,
+                        stack,
+                        return_value,
+                        current_return_action,
+                    ) {
                         jit_raise_vm_error(bridge, error);
                         finish_nested_call!(JitNestedCallResult::Exception, true);
                     }
@@ -849,7 +858,12 @@ fn jit_execute_sync_frame(
                         match current_return_action {
                             ReturnAction::PushReturnValue =>
                                 JitNestedCallResult::Value(return_value),
-                            ReturnAction::PushObject(obj) => JitNestedCallResult::Value(obj),
+                            ReturnAction::PushConstructResult(receiver) => {
+                                JitNestedCallResult::Value(
+                                    interpreter
+                                        .constructor_result_or_receiver(return_value, receiver),
+                                )
+                            }
                             ReturnAction::Discard => JitNestedCallResult::Value(Value::null()),
                         },
                         false

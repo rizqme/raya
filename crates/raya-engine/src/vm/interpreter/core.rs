@@ -1265,7 +1265,9 @@ impl<'a> Interpreter<'a> {
                     if !matches!(frame.return_action, ReturnAction::Discard) {
                         let push_val = match frame.return_action {
                             ReturnAction::PushReturnValue => return_value,
-                            ReturnAction::PushObject(obj) => obj,
+                            ReturnAction::PushConstructResult(receiver) => {
+                                self.constructor_result_or_receiver(return_value, receiver)
+                            }
                             ReturnAction::Discard => unreachable!(),
                         };
                         match stack_guard.push(push_val) {
@@ -1722,8 +1724,10 @@ impl<'a> Interpreter<'a> {
                                                 return ExecutionResult::Failed(e);
                                             }
                                         }
-                                        ReturnAction::PushObject(obj) => {
-                                            if let Err(e) = stack_guard.push(obj) {
+                                        ReturnAction::PushConstructResult(receiver) => {
+                                            let construct_value = self
+                                                .constructor_result_or_receiver(return_val, receiver);
+                                            if let Err(e) = stack_guard.push(construct_value) {
                                                 return ExecutionResult::Failed(e);
                                             }
                                         }

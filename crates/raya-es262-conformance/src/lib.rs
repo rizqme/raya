@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
 
-const HARNESS_PRELUDE: &str = r#"
+const HARNESS_CORE_PRELUDE: &str = r#"
 class Test262Error extends Error {
     constructor(message) {
         super(message);
@@ -27,82 +27,22 @@ function $ERROR(message) {
 function $DONOTEVALUATE() {
     throw new Test262Error("This statement should not be evaluated.");
 }
+"#;
 
-function __describeValue(value) {
-    if (value === undefined) {
-        return "undefined";
-    }
-    if (value === null) {
-        return "null";
-    }
-
-    let kind = typeof value;
-    if (kind === "string") {
-        return "\"" + value + "\"";
-    }
-    if (kind === "number") {
-        if (value !== value) {
-            return "NaN";
-        }
-        if (value === 0 && (1 / value) < 0) {
-            return "-0";
-        }
-        return String(value);
-    }
-    if (kind === "boolean" || kind === "bigint" || kind === "symbol") {
-        return String(value);
-    }
-    if (kind === "function") {
-        let name = value.name;
-        if (name == null || name === "") {
-            return "[function <anonymous>]";
-        }
-        return "[function " + String(name) + "]";
-    }
-
-    try {
-        let ctorName = "";
-        if (value.constructor != null) {
-            ctorName = value.constructor.name;
-        }
-        let rendered = String(value);
-        if (ctorName != null && ctorName !== "") {
-            return "[" + String(ctorName) + " " + rendered + "]";
-        }
-        return rendered;
-    } catch (_err) {
-        return "[unprintable object]";
-    }
-}
-
-function __describeConstructor(value) {
-    if (value == null) {
-        return __describeValue(value);
-    }
-    let name = value.name;
-    if (name == null || name === "") {
-        return __describeValue(value);
-    }
-    return String(name);
-}
-
-function __failWithContext(defaultMessage, message) {
-    if (message == null) {
-        $ERROR(defaultMessage);
-        return;
-    }
-    $ERROR(String(message) + " (" + defaultMessage + ")");
-}
+const ASSERT_HELPER_PRELUDE: &str = r#"
 
 function __assert(mustBeTrue, message) {
     if (mustBeTrue === true) {
         return;
     }
-    __failWithContext(
-        "Expected assertion to be truthy, got " + __describeValue(mustBeTrue),
-        message
-    );
+    if (message == null) {
+        $ERROR("Expected assertion to be truthy");
+    }
+    $ERROR(String(message));
 }
+"#;
+
+const SAME_VALUE_HELPER_PRELUDE: &str = r#"
 
 function __isSameValue(a, b) {
     if (a === b) {
@@ -118,24 +58,24 @@ function __assert_sameValue(actual, expected, message) {
     if (__isSameValue(actual, expected)) {
         return;
     }
-    __failWithContext(
-        "Expected SameValue, got actual=" +
-            __describeValue(actual) +
-            " expected=" +
-            __describeValue(expected),
-        message
-    );
+    if (message == null) {
+        $ERROR("Expected SameValue");
+    }
+    $ERROR(String(message));
 }
 
 function __assert_notSameValue(actual, expected, message) {
     if (!__isSameValue(actual, expected)) {
         return;
     }
-    __failWithContext(
-        "Expected different values, both were " + __describeValue(actual),
-        message
-    );
+    if (message == null) {
+        $ERROR("Expected different values");
+    }
+    $ERROR(String(message));
 }
+"#;
+
+const COMPARE_ARRAY_HELPER_PRELUDE: &str = r#"
 
 function __compareArray(actual, expected) {
     if (actual == null || expected == null) {
@@ -156,66 +96,34 @@ function __assert_compareArray(actual, expected, message) {
     if (__compareArray(actual, expected)) {
         return;
     }
-    let detail = "Expected arrays to compare equal";
-    if (actual == null || expected == null) {
-        detail =
-            detail +
-            ", got actual=" +
-            __describeValue(actual) +
-            " expected=" +
-            __describeValue(expected);
-    } else if (actual.length !== expected.length) {
-        detail =
-            detail +
-            ", got lengths actual=" +
-            String(actual.length) +
-            " expected=" +
-            String(expected.length);
-    } else {
-        for (let i = 0; i < actual.length; i = i + 1) {
-            if (!__isSameValue(actual[i], expected[i])) {
-                detail =
-                    detail +
-                    ", first mismatch at index " +
-                    String(i) +
-                    ": actual=" +
-                    __describeValue(actual[i]) +
-                    " expected=" +
-                    __describeValue(expected[i]);
-                break;
-            }
-        }
+    if (message == null) {
+        $ERROR("Expected arrays to compare equal");
     }
-    __failWithContext(detail, message);
+    $ERROR(String(message));
 }
+"#;
+
+const ASSERT_THROWS_HELPER_PRELUDE: &str = r#"
 
 function __assert_throws(expectedErrorConstructor, func, message) {
     try {
         func();
     } catch (thrown) {
         if (expectedErrorConstructor != null) {
-            let actualConstructor = thrown;
-            if (thrown != null) {
-                actualConstructor = thrown.constructor;
-            }
+            let actualConstructor = thrown == null ? thrown : thrown.constructor;
             if (actualConstructor !== expectedErrorConstructor) {
-                __failWithContext(
-                    "Expected throw " +
-                        __describeConstructor(expectedErrorConstructor) +
-                        ", got " +
-                        __describeConstructor(actualConstructor) +
-                        " with value " +
-                        __describeValue(thrown),
-                    message
-                );
+                if (message == null) {
+                    $ERROR("Expected function to throw the requested constructor");
+                }
+                $ERROR(String(message));
             }
         }
         return;
     }
-    __failWithContext(
-        "Expected function to throw " + __describeConstructor(expectedErrorConstructor),
-        message
-    );
+    if (message == null) {
+        $ERROR("Expected function to throw");
+    }
+    $ERROR(String(message));
 }
 "#;
 
@@ -888,12 +796,30 @@ fn matches_expected_error(actual: &str, expected: Option<&str>) -> bool {
 }
 
 fn execute_case_program(runtime: &Runtime, path: &Path) -> std::result::Result<(), String> {
+    let debug_case = std::env::var("RAYA_DEBUG_ES262_CASE").is_ok();
+    let source = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read transformed source {}: {}", path.display(), error))?;
+    if debug_case {
+        eprintln!("[es262-case] compile:start path={}", path.display());
+    }
     let program = runtime
-        .compile_program_file(path)
+        .compile_program_source(&source)
         .map_err(|error| format!("compilation failed: {}", error))?;
-    runtime
+    if debug_case {
+        eprintln!("[es262-case] compile:done path={}", path.display());
+        eprintln!("[es262-case] execute:start path={}", path.display());
+    }
+    let result = runtime
         .execute_program_and_teardown(&program)
-        .map_err(|error| format!("runtime failed: {}", error))
+        .map_err(|error| format!("runtime failed: {}", error));
+    if debug_case {
+        eprintln!(
+            "[es262-case] execute:done path={} ok={}",
+            path.display(),
+            result.is_ok()
+        );
+    }
+    result
 }
 
 fn prepare_case_source(root: &Path, case: &TestCase) -> std::result::Result<String, String> {
@@ -959,11 +885,10 @@ fn prepare_case_source(root: &Path, case: &TestCase) -> std::result::Result<Stri
         }
         final_source.push_str(&transformed);
         final_source.push('\n');
-        final_source.push_str(HARNESS_PRELUDE);
+        final_source.push_str(&required_harness_prelude(&transformed, &include_sources));
     } else {
         final_source.push_str(strict_prefix);
-        final_source.push_str(HARNESS_PRELUDE);
-        final_source.push('\n');
+        final_source.push_str(&required_harness_prelude(&transformed, &include_sources));
         if matches!(supported_host_hooks, Some(true)) {
             final_source.push_str(HOST_262_PRELUDE);
             final_source.push('\n');
@@ -972,6 +897,38 @@ fn prepare_case_source(root: &Path, case: &TestCase) -> std::result::Result<Stri
         final_source.push_str(&transformed);
     }
     Ok(final_source)
+}
+
+fn required_harness_prelude(transformed_source: &str, include_sources: &str) -> String {
+    let combined_source = format!("{include_sources}\n{transformed_source}");
+    let needs_assert = combined_source.contains("__assert(");
+    let needs_same_value = combined_source.contains("__assert_sameValue(")
+        || combined_source.contains("__assert_notSameValue(");
+    let needs_compare_array = combined_source.contains("__compareArray(")
+        || combined_source.contains("__assert_compareArray(");
+    let needs_assert_throws = combined_source.contains("__assert_throws(");
+    let needs_same_value_core = needs_same_value || needs_compare_array;
+
+    let mut prelude = String::new();
+    prelude.push_str(HARNESS_CORE_PRELUDE);
+    prelude.push('\n');
+    if needs_assert {
+        prelude.push_str(ASSERT_HELPER_PRELUDE);
+        prelude.push('\n');
+    }
+    if needs_same_value_core {
+        prelude.push_str(SAME_VALUE_HELPER_PRELUDE);
+        prelude.push('\n');
+    }
+    if needs_compare_array {
+        prelude.push_str(COMPARE_ARRAY_HELPER_PRELUDE);
+        prelude.push('\n');
+    }
+    if needs_assert_throws {
+        prelude.push_str(ASSERT_THROWS_HELPER_PRELUDE);
+        prelude.push('\n');
+    }
+    prelude
 }
 
 fn supported_262_hooks(source: &str) -> Option<bool> {

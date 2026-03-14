@@ -897,9 +897,13 @@ impl ModuleCompiler {
         &mut self,
         path: &PathBuf,
     ) -> ModuleCompileResult<(BytecodeModule, ModuleExports)> {
+        let debug_stages = std::env::var("RAYA_DEBUG_MODULE_COMPILE_STAGES").is_ok();
         // Read source
         let source = self.read_module_source(path)?;
 
+        if debug_stages {
+            eprintln!("[module-compile] parse:start path={}", path.display());
+        }
         // Parse
         let parser = Parser::new(&source).map_err(|e| ModuleCompileError::LexError {
             path: path.clone(),
@@ -910,6 +914,10 @@ impl ModuleCompiler {
             path: path.clone(),
             message: format!("{:?}", e),
         })?;
+        if debug_stages {
+            eprintln!("[module-compile] parse:done path={}", path.display());
+            eprintln!("[module-compile] bind:start path={}", path.display());
+        }
 
         // Bind
         let mut type_ctx = TypeContext::new();
@@ -937,6 +945,10 @@ impl ModuleCompiler {
                         .join("; ")
                 ),
             })?;
+        if debug_stages {
+            eprintln!("[module-compile] bind:done path={}", path.display());
+            eprintln!("[module-compile] check:start path={}", path.display());
+        }
 
         if std::env::var("RAYA_DEBUG_IMPORT_TYPES").is_ok() {
             for scope in [ScopeId(0), ScopeId(1)] {
@@ -967,6 +979,10 @@ impl ModuleCompiler {
                         .collect::<Vec<_>>()
                         .join("; "),
                 })?;
+        if debug_stages {
+            eprintln!("[module-compile] check:done path={}", path.display());
+            eprintln!("[module-compile] lower+codegen:start path={}", path.display());
+        }
 
         // Apply inferred types
         for ((scope_id, name), ty) in check_result.inferred_types {
@@ -1027,6 +1043,9 @@ impl ModuleCompiler {
                 path: path.clone(),
                 source: e,
             })?;
+        if debug_stages {
+            eprintln!("[module-compile] lower+codegen:done path={}", path.display());
+        }
         bytecode.metadata.name = module_name;
         self.populate_link_tables(
             &mut bytecode,

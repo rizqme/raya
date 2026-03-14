@@ -291,6 +291,17 @@ class AssertionError extends Error {
 }
 
 export {
+    ERR_INVALID_ARG_TYPE,
+    ERR_INVALID_ARG_VALUE,
+    ERR_OUT_OF_RANGE,
+    ERR_BUFFER_OUT_OF_BOUNDS,
+    ERR_MISSING_ARGS,
+    ERR_INVALID_THIS,
+    ERR_NOT_IMPLEMENTED,
+    E_UNIMPLEMENTED_BUILTIN_BEHAVIOR,
+    createError,
+    createTypeError,
+    createRangeError,
     Error,
     TypeError,
     RangeError,

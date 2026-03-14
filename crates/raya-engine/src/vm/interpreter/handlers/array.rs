@@ -200,9 +200,6 @@ impl<'a> Interpreter<'a> {
         if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target)
         {
             let array = unsafe { &mut *array_ptr.as_ptr() };
-            if index >= array.elements.len() {
-                array.resize_holey(index + 1);
-            }
             array.set(index, value).map_err(VmError::RuntimeError)?;
             return Ok(());
         }

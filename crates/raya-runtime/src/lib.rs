@@ -910,6 +910,84 @@ impl Runtime {
         Ok(names)
     }
 
+    fn seed_builtin_internal_literal_globals(
+        mode: BuiltinMode,
+        vm: &mut raya_engine::vm::Vm,
+    ) -> Result<(), RuntimeError> {
+        fn literal_value(
+            vm: &mut raya_engine::vm::Vm,
+            interner: &Interner,
+            expr: &raya_engine::parser::ast::Expression,
+        ) -> Option<Value> {
+            use raya_engine::parser::ast::Expression;
+
+            match expr {
+                Expression::IntLiteral(lit) => i32::try_from(lit.value)
+                    .ok()
+                    .map(Value::i32)
+                    .or_else(|| Some(Value::f64(lit.value as f64))),
+                Expression::FloatLiteral(lit) => Some(Value::f64(lit.value)),
+                Expression::StringLiteral(lit) => {
+                    let string = RayaString::new(interner.resolve(lit.value).to_string());
+                    let gc_ptr = vm.shared_state().gc.lock().allocate(string);
+                    Some(unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    })
+                }
+                Expression::BooleanLiteral(lit) => Some(Value::bool(lit.value)),
+                Expression::NullLiteral(_) => Some(Value::null()),
+                _ => None,
+            }
+        }
+
+        for (logical_path, module_source) in builtins::builtin_source_modules_for_mode(mode) {
+            let parser = Parser::new(module_source).map_err(|errors| {
+                RuntimeError::Dependency(format!(
+                    "Failed to parse builtin source '{}': {}",
+                    logical_path,
+                    errors
+                        .iter()
+                        .map(|error| error.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ))
+            })?;
+            let (ast, interner) = parser.parse().map_err(|errors| {
+                RuntimeError::Dependency(format!(
+                    "Failed to parse builtin source '{}': {}",
+                    logical_path,
+                    errors
+                        .iter()
+                        .map(|error| error.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ))
+            })?;
+
+            for statement in &ast.statements {
+                let Statement::VariableDecl(decl) = statement else {
+                    continue;
+                };
+                if decl.kind != raya_engine::parser::ast::VariableKind::Const {
+                    continue;
+                }
+                let Pattern::Identifier(ident) = &decl.pattern else {
+                    continue;
+                };
+                let Some(initializer) = &decl.initializer else {
+                    continue;
+                };
+                let Some(value) = literal_value(vm, &interner, initializer) else {
+                    continue;
+                };
+                vm.shared_state()
+                    .set_builtin_global(interner.resolve(ident.name).to_string(), value);
+            }
+        }
+
+        Ok(())
+    }
+
     fn top_level_runtime_names(source: &str) -> Result<Vec<String>, RuntimeError> {
         let parser = Parser::new(source).map_err(|errors| {
             RuntimeError::Parse(
@@ -1383,6 +1461,8 @@ impl Runtime {
                 .register_module(builtin_module.clone())
                 .map_err(RuntimeError::Dependency)?;
         }
+
+        Self::seed_builtin_internal_literal_globals(self.options.builtin_mode, vm)?;
 
         for builtin_module in &builtin_modules {
             if !vm.shared_state().is_module_initialized(&builtin_module) {

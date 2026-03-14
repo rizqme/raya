@@ -976,7 +976,7 @@ impl Task {
                 }
             }
             for frame in &calls.execution_frames {
-                if let ReturnAction::PushObject(value) = frame.return_action {
+                if let ReturnAction::PushConstructResult(value) = frame.return_action {
                     if value.is_heap_allocated() {
                         roots.push(value);
                     }

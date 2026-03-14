@@ -1251,7 +1251,7 @@ impl<'a> Interpreter<'a> {
                     is_closure: false,
                     closure_val: None,
                     module: constructor_module,
-                    return_action: ReturnAction::PushObject(obj_val),
+                    return_action: ReturnAction::PushConstructResult(obj_val),
                 }
             }
 
@@ -1343,7 +1343,7 @@ impl<'a> Interpreter<'a> {
                     is_closure: false,
                     closure_val: None,
                     module: constructor_module,
-                    return_action: ReturnAction::PushObject(obj_val),
+                    return_action: ReturnAction::PushConstructResult(obj_val),
                 }
             }
 

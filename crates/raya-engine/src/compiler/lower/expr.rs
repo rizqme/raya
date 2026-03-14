@@ -130,6 +130,52 @@ impl<'a> Lowerer<'a> {
         )
     }
 
+    fn type_requires_js_runtime_member_semantics(&self, ty_id: TypeId) -> bool {
+        self.type_ctx.jsobject_inner(ty_id).is_some()
+            || self.type_is_runtime_dynamic_dispatch(ty_id)
+            || match self.type_ctx.get(ty_id) {
+                Some(Type::Function(_))
+                | Some(Type::Array(_))
+                | Some(Type::Tuple(_))
+                | Some(Type::Object(_))
+                | Some(Type::Interface(_))
+                | Some(Type::JSObject)
+                | Some(Type::Any)
+                | Some(Type::Unknown)
+                | Some(Type::Primitive(PrimitiveType::String)) => true,
+                Some(Type::Union(union)) => union
+                    .members
+                    .iter()
+                    .copied()
+                    .any(|member| self.type_requires_js_runtime_member_semantics(member)),
+                Some(Type::TypeVar(tv)) => tv
+                    .constraint
+                    .is_some_and(|constraint| self.type_requires_js_runtime_member_semantics(constraint)),
+                _ => false,
+            }
+    }
+
+    fn js_mode_uses_runtime_member_semantics(
+        &self,
+        object_expr: &Expression,
+        object_reg_ty: TypeId,
+        nominal_type_id: Option<NominalTypeId>,
+    ) -> bool {
+        if !self.js_this_binding_compat {
+            return false;
+        }
+
+        let expr_ty = self.get_expr_type(object_expr);
+        nominal_type_id.is_some()
+            || self.prefers_structural_member_projection(object_expr)
+            || self.is_structural_object_type(expr_ty)
+            || self.is_structural_object_type(object_reg_ty)
+            || self.member_read_uses_dynamic_property_path(object_expr, object_reg_ty)
+            || self.member_write_uses_dynamic_property_path(object_expr, object_reg_ty)
+            || self.type_requires_js_runtime_member_semantics(expr_ty)
+            || self.type_requires_js_runtime_member_semantics(object_reg_ty)
+    }
+
     pub(super) fn js_receiver_rebinding_call_expr(&self, expr: &Expression) -> bool {
         let Expression::Call(call) = expr else {
             return false;
@@ -2929,7 +2975,8 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            if self.prefers_structural_member_projection(&member.object)
+            if !self.js_this_binding_compat
+                && self.prefers_structural_member_projection(&member.object)
                 && self
                     .structural_shape_slot_from_expr(&member.object, method_name)
                     .is_some()
@@ -2985,7 +3032,8 @@ impl<'a> Lowerer<'a> {
                     matches!(ty, crate::parser::types::ty::Type::TypeVar(tv) if tv.constraint.is_some())
                 });
 
-            if constrained_typevar_shape_call
+            if !self.js_this_binding_compat
+                && constrained_typevar_shape_call
                 && self
                     .structural_shape_slot_from_expr(&member.object, method_name)
                     .is_some()
@@ -3035,6 +3083,12 @@ impl<'a> Lowerer<'a> {
                 }
             }
             let inferred_nominal_type_id = nominal_type_id;
+            let use_js_runtime_member_semantics =
+                self.js_mode_uses_runtime_member_semantics(
+                    &member.object,
+                    self.get_expr_type(&member.object),
+                    nominal_type_id,
+                );
 
             // Skip class dispatch for builtin primitive types — their methods
             // are dispatched via the type registry (native calls / class methods)
@@ -3045,6 +3099,23 @@ impl<'a> Lowerer<'a> {
                 if is_builtin {
                     nominal_type_id = None;
                 }
+            }
+
+            if use_js_runtime_member_semantics {
+                let closure = self.alloc_register(UNRESOLVED);
+                let receiver = self.lower_expr(&member.object);
+                self.emit_dyn_get_named(closure.clone(), receiver.clone(), method_name);
+                if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
+                    self.emit(IrInstr::SpawnClosure {
+                        dest: dest.clone(),
+                        closure,
+                        args,
+                    });
+                } else {
+                    self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
+                    self.propagate_type_projection_to_register(call_ty, &dest);
+                }
+                return dest;
             }
 
             // Check if this is a user-defined class method (including inherited methods)
@@ -3999,6 +4070,8 @@ impl<'a> Lowerer<'a> {
         };
 
         let object = self.lower_expr(&member.object);
+        let use_js_runtime_member_semantics =
+            self.js_mode_uses_runtime_member_semantics(&member.object, object.ty, nominal_type_id);
 
         // Resolve dispatch type: prefer register type (set by lowerer with canonical IDs),
         // normalize checker type as fallback (may have dynamic union/generic IDs).
@@ -4061,6 +4134,21 @@ impl<'a> Lowerer<'a> {
                 || (self.js_this_binding_compat && receiver_has_structural_named_view));
 
         if receiver_prefers_runtime_named_lookup {
+            let member_ty = {
+                let member_expr = Expression::Member(member.clone());
+                let inferred = self.get_expr_type(&member_expr);
+                if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                    UNRESOLVED
+                } else {
+                    inferred
+                }
+            };
+            let dest = self.alloc_register(member_ty);
+            self.emit_dyn_get_named(dest.clone(), object, prop_name);
+            return dest;
+        }
+
+        if use_js_runtime_member_semantics {
             let member_ty = {
                 let member_expr = Expression::Member(member.clone());
                 let inferred = self.get_expr_type(&member_expr);
@@ -4717,18 +4805,15 @@ impl<'a> Lowerer<'a> {
         object_ty: TypeId,
         index_expr: &Expression,
     ) -> bool {
-        use crate::parser::types::{PrimitiveType, Type};
-
         if self.js_this_binding_compat {
-            match self.type_ctx.get(object_ty) {
-                Some(Type::Array(_)) | Some(Type::Tuple(_)) => return true,
-                _ => {}
-            }
+            return true;
         }
 
         if self.index_uses_dynamic_keyed_access(object_ty) {
             return true;
         }
+
+        use crate::parser::types::{PrimitiveType, Type};
 
         match self.type_ctx.get(object_ty) {
             Some(Type::Array(_))
@@ -6247,6 +6332,12 @@ impl<'a> Lowerer<'a> {
                         || self.type_is_dynamic_any_like(checker_obj_ty)
                         || self.type_is_dynamic_any_like(object.ty)
                         || self.js_this_binding_compat;
+                    let use_js_runtime_member_semantics = self
+                        .js_mode_uses_runtime_member_semantics(
+                            &member.object,
+                            object.ty,
+                            nominal_type_id,
+                        );
                     let use_dynamic_property_path =
                         self.member_write_uses_dynamic_property_path(&member.object, object.ty);
                     let obj_ty_id = {
@@ -6264,7 +6355,9 @@ impl<'a> Lowerer<'a> {
                             UNRESOLVED_TYPE_ID
                         }
                     };
-                    if let Some(nominal_type_id) = nominal_type_id {
+                    if use_js_runtime_member_semantics {
+                        self.emit_dyn_set_named(object, prop_name, rhs);
+                    } else if let Some(nominal_type_id) = nominal_type_id {
                         if let Some(field) = self
                             .get_all_fields(nominal_type_id)
                             .iter()
@@ -6710,6 +6803,11 @@ impl<'a> Lowerer<'a> {
                     || self.type_is_dynamic_any_like(checker_obj_ty)
                     || self.type_is_dynamic_any_like(object.ty)
                     || self.js_this_binding_compat;
+                let use_js_runtime_member_semantics = self.js_mode_uses_runtime_member_semantics(
+                    &member.object,
+                    object.ty,
+                    nominal_type_id,
+                );
                 let use_dynamic_property_path =
                     self.member_write_uses_dynamic_property_path(&member.object, object.ty);
                 let obj_ty_id = {
@@ -6728,7 +6826,9 @@ impl<'a> Lowerer<'a> {
                     }
                 };
 
-                if let Some(nominal_type_id) = nominal_type_id {
+                if use_js_runtime_member_semantics {
+                    self.emit_dyn_set_named(object, &prop_name, value.clone());
+                } else if let Some(nominal_type_id) = nominal_type_id {
                     if let Some(field) = self
                         .get_all_fields(nominal_type_id)
                         .iter()
