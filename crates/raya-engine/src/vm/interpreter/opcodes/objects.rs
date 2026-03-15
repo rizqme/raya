@@ -9,7 +9,9 @@ use crate::vm::interpreter::shared_state::{
     ShapeAdapter, StructuralAdapterKey, StructuralSlotBinding,
 };
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, BoundMethod, Closure, Object, RayaString};
+use crate::vm::object::{
+    Array, BoundFunction, BoundMethod, BoundNativeMethod, Closure, Object, RayaString,
+};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -151,6 +153,8 @@ impl<'a> Interpreter<'a> {
         args: &[Value],
         explicit_this: Option<Value>,
         return_action: ReturnAction,
+        module: &Module,
+        task: &Arc<Task>,
     ) -> Result<Option<OpcodeResult>, VmError> {
         if !callable.is_ptr() {
             return Ok(None);
@@ -159,10 +163,11 @@ impl<'a> Interpreter<'a> {
             unsafe { &*header_ptr_from_value_ptr(callable.as_ptr::<u8>().unwrap().as_ptr()) };
         if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
             let bm = unsafe { &*callable.as_ptr::<BoundMethod>().unwrap().as_ptr() };
+            let receiver_value = explicit_this.unwrap_or(bm.receiver);
             let receiver = if self.callable_uses_js_this_slot(callable) {
-                self.js_this_value_for_callable(callable, Some(bm.receiver))?
+                self.js_this_value_for_callable(callable, Some(receiver_value))?
             } else {
-                bm.receiver
+                receiver_value
             };
             stack.push(receiver)?;
             for arg in args {
@@ -176,6 +181,55 @@ impl<'a> Interpreter<'a> {
                 module: bm.module.clone(),
                 return_action,
             }));
+        }
+        if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
+            let method = unsafe { &*callable.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
+            let receiver = explicit_this.unwrap_or(method.receiver);
+            return Ok(Some(self.exec_bound_native_method_call(
+                stack,
+                receiver,
+                method.native_id,
+                args.to_vec(),
+                module,
+                task,
+            )));
+        }
+        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
+            let bound = unsafe { &*callable.as_ptr::<BoundFunction>().unwrap().as_ptr() };
+            let mut combined_args = bound.bound_args.clone();
+            combined_args.extend_from_slice(args);
+
+            if bound.rebind_call_helper {
+                let target_callable = bound.this_arg;
+                let this_arg = combined_args
+                    .first()
+                    .copied()
+                    .unwrap_or(Value::undefined());
+                let rest_args = if combined_args.len() > 1 {
+                    combined_args[1..].to_vec()
+                } else {
+                    Vec::new()
+                };
+                return self.callable_frame_for_value(
+                    target_callable,
+                    stack,
+                    &rest_args,
+                    Some(this_arg),
+                    return_action,
+                    module,
+                    task,
+                );
+            }
+
+            return self.callable_frame_for_value(
+                bound.target,
+                stack,
+                &combined_args,
+                Some(bound.this_arg),
+                return_action,
+                module,
+                task,
+            );
         }
         if header.type_id() == std::any::TypeId::of::<Closure>() {
             let closure_module =
@@ -199,6 +253,11 @@ impl<'a> Interpreter<'a> {
                 module: closure_module,
                 return_action,
             }));
+        }
+        if let Some(result) = self.call_builtin_constructor_as_function(callable, args, task, module)?
+        {
+            stack.push(result)?;
+            return Ok(Some(OpcodeResult::Continue));
         }
         Ok(None)
     }
@@ -641,6 +700,8 @@ impl<'a> Interpreter<'a> {
                             &[],
                             Some(actual_obj),
                             ReturnAction::PushReturnValue,
+                            module,
+                            task,
                         ) {
                             Ok(Some(frame)) => return frame,
                             Ok(None) => {
@@ -768,6 +829,8 @@ impl<'a> Interpreter<'a> {
                             &[],
                             Some(actual_obj),
                             ReturnAction::PushReturnValue,
+                            module,
+                            task,
                         ) {
                             Ok(Some(frame)) => return frame,
                             Ok(None) => {

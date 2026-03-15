@@ -4450,7 +4450,7 @@ impl<'a> Lowerer<'a> {
             dest: arg_count_reg.clone(),
         });
 
-        // Calculate rest count: rest_count = arg_count - fixed_count
+        // Clamp rest count at zero so omitted fixed params don't underflow into a huge rest array.
         let fixed_count_val = IrValue::Constant(IrConstant::I32(fixed_param_count as i32));
         let fixed_count_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
         self.emit(IrInstr::Assign {
@@ -4458,12 +4458,43 @@ impl<'a> Lowerer<'a> {
             value: fixed_count_val,
         });
         let rest_count_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: rest_count_reg.clone(),
+            value: IrValue::Constant(IrConstant::I32(0)),
+        });
+        let has_rest_reg = self.alloc_register(TypeId::new(BOOL_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: has_rest_reg.clone(),
+            op: BinaryOp::Greater,
+            left: arg_count_reg.clone(),
+            right: fixed_count_reg.clone(),
+        });
+        let rest_count_compute_block = self.alloc_block();
+        let rest_count_ready_block = self.alloc_block();
+        self.set_terminator(Terminator::Branch {
+            cond: has_rest_reg,
+            then_block: rest_count_compute_block,
+            else_block: rest_count_ready_block,
+        });
+
+        self.current_function_mut().add_block(BasicBlock::with_label(
+            rest_count_compute_block,
+            "rest.count.compute",
+        ));
+        self.current_block = rest_count_compute_block;
         self.emit(IrInstr::BinaryOp {
             dest: rest_count_reg.clone(),
             op: BinaryOp::Sub,
             left: arg_count_reg,
             right: fixed_count_reg.clone(),
         });
+        self.set_terminator(Terminator::Jump(rest_count_ready_block));
+
+        self.current_function_mut().add_block(BasicBlock::with_label(
+            rest_count_ready_block,
+            "rest.count.ready",
+        ));
+        self.current_block = rest_count_ready_block;
 
         // Create array with rest_count size
         let array_reg = self.alloc_register(rest_array_ty);

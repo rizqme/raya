@@ -3814,7 +3814,7 @@ impl<'a> TypeChecker<'a> {
             return 0;
         }
 
-        let invocation_count = helper_args.len() - skip;
+        let invocation_count = helper_args.len().saturating_sub(skip);
         let (min_args, max_args) = self.compute_fn_arity_bounds(func);
         if self.enforce_call_arity() && (invocation_count < min_args || invocation_count > max_args)
         {
@@ -3851,8 +3851,8 @@ impl<'a> TypeChecker<'a> {
             return;
         }
 
-        // fn.apply(thisArg) is valid and equivalent to empty arg list.
-        if helper_args.len() == 1 {
+        // fn.apply() and fn.apply(thisArg) are both valid and equivalent to an empty arg list.
+        if helper_args.len() <= 1 {
             let (min_args, _max_args) = self.compute_fn_arity_bounds(func);
             if self.enforce_call_arity() && min_args > 0 {
                 self.errors.push(CheckError::ArgumentCountMismatch {
@@ -3888,6 +3888,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            _ if self.is_js_mode() && self.apply_helper_accepts_runtime_array_like(args_ty) => {}
             _ => {
                 self.errors.push(CheckError::TypeMismatch {
                     expected: "tuple or array".to_string(),
@@ -3898,6 +3899,34 @@ impl<'a> TypeChecker<'a> {
                     ),
                 });
             }
+        }
+    }
+
+    fn apply_helper_accepts_runtime_array_like(&self, ty: TypeId) -> bool {
+        match self.type_ctx.get(ty) {
+            Some(crate::parser::types::Type::Any)
+            | Some(crate::parser::types::Type::Unknown)
+            | Some(crate::parser::types::Type::JSObject)
+            | Some(crate::parser::types::Type::Object(_))
+            | Some(crate::parser::types::Type::Interface(_))
+            | Some(crate::parser::types::Type::Class(_))
+            | Some(crate::parser::types::Type::Function(_)) => true,
+            Some(crate::parser::types::Type::Reference(reference)) => self
+                .type_ctx
+                .lookup_named_type(&reference.name)
+                .is_some_and(|resolved| self.apply_helper_accepts_runtime_array_like(resolved)),
+            Some(crate::parser::types::Type::Generic(generic)) => {
+                self.apply_helper_accepts_runtime_array_like(generic.base)
+            }
+            Some(crate::parser::types::Type::TypeVar(type_var)) => type_var
+                .constraint
+                .is_some_and(|constraint| self.apply_helper_accepts_runtime_array_like(constraint)),
+            Some(crate::parser::types::Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.apply_helper_accepts_runtime_array_like(member)),
+            _ => false,
         }
     }
 
@@ -3919,7 +3948,7 @@ impl<'a> TypeChecker<'a> {
             return 0;
         }
 
-        let bound_count = helper_args.len() - 1;
+        let bound_count = helper_args.len().saturating_sub(1);
         let (_min_args, max_args) = self.compute_fn_arity_bounds(func);
         if self.enforce_call_arity() && bound_count > max_args {
             self.errors.push(CheckError::ArgumentCountMismatch {
@@ -4641,6 +4670,12 @@ impl<'a> TypeChecker<'a> {
             return inferred;
         }
 
+        if self.is_js_mode() && self.type_uses_dynamic_js_member_fallback(object_ty) {
+            return self
+                .js_dynamic_index_value_type()
+                .unwrap_or_else(|| self.inference_fallback_type());
+        }
+
         if let Some(key) = self.string_key_from_index_expr(&index.index) {
             if self.emit_missing_index_property_diagnostic(object_ty, &key, index.span) {
                 // Unavoidable fallback allowlist:
@@ -4709,13 +4744,30 @@ impl<'a> TypeChecker<'a> {
             Some(Type::Function(_))
             | Some(Type::Array(_))
             | Some(Type::Tuple(_))
+            | Some(Type::Object(_))
+            | Some(Type::Class(_))
+            | Some(Type::Interface(_))
             | Some(Type::Primitive(PrimitiveType::String))
             | Some(Type::StringLiteral(_)) => true,
-            Some(Type::Reference(reference)) => matches!(reference.name.as_str(), "Array" | "String"),
+            Some(Type::Reference(_)) => true,
             Some(Type::Generic(generic)) => self.type_ctx.get(generic.base).is_some_and(|base| {
-                matches!(base, Type::Reference(reference) if matches!(reference.name.as_str(), "Array" | "String"))
-                    || matches!(base, Type::Class(class_ty) if matches!(class_ty.name.as_str(), "Array" | "String"))
+                matches!(
+                    base,
+                    Type::Reference(_)
+                        | Type::Class(_)
+                        | Type::Object(_)
+                        | Type::Interface(_)
+                        | Type::Array(_)
+                )
             }),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .is_some_and(|constraint| self.type_uses_dynamic_js_member_fallback(constraint)),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_uses_dynamic_js_member_fallback(member)),
             _ => false,
         }
     }
@@ -6741,6 +6793,7 @@ impl<'a> TypeChecker<'a> {
         let string_ty = self.type_ctx.string_type();
         let array_ty = self.type_ctx.array_type(elem_ty);
         let any_ty = self.type_ctx.any_type();
+        let search_elem_ty = if self.is_js_mode() { any_ty } else { elem_ty };
         let mut callback_context_params = |return_ty: TypeId| {
             if self.is_js_mode() {
                 self.type_ctx.function_type_with_min_params(
@@ -6765,7 +6818,7 @@ impl<'a> TypeChecker<'a> {
             "unshift" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
             // indexOf(value: T, fromIndex?: number) -> number
             "indexOf" => Some(self.type_ctx.function_type_with_min_params(
-                vec![elem_ty, number_ty],
+                vec![search_elem_ty, number_ty],
                 number_ty,
                 false,
                 1,
@@ -6773,7 +6826,7 @@ impl<'a> TypeChecker<'a> {
             // includes(value: T) -> boolean
             "includes" => Some(
                 self.type_ctx
-                    .function_type(vec![elem_ty], boolean_ty, false),
+                    .function_type(vec![search_elem_ty], boolean_ty, false),
             ),
             // slice(start: number, end?: number) -> Array<T>
             "slice" => Some(self.type_ctx.function_type_with_min_params(
@@ -6857,7 +6910,7 @@ impl<'a> TypeChecker<'a> {
             "length" => Some(number_ty),
             // lastIndexOf(value: T, fromIndex?: number) -> number
             "lastIndexOf" => Some(self.type_ctx.function_type_with_min_params(
-                vec![elem_ty, number_ty],
+                vec![search_elem_ty, number_ty],
                 number_ty,
                 false,
                 1,

@@ -836,6 +836,10 @@ pub struct BoundFunction {
     pub this_arg: Value,
     /// Prefix arguments captured at bind time.
     pub bound_args: Vec<Value>,
+    /// Bound function visible `name` property value.
+    pub visible_name: String,
+    /// Bound function visible `length` property value.
+    pub visible_length: Value,
     /// Bound wrapper came from `Function.prototype.call.bind(...)`.
     pub rebind_call_helper: bool,
 }

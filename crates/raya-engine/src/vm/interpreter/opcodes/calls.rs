@@ -158,204 +158,21 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
 
-                    // Check GcHeader to distinguish BoundMethod/BoundNativeMethod/Closure
-                    let header = unsafe {
-                        &*header_ptr_from_value_ptr(closure_val.as_ptr::<u8>().unwrap().as_ptr())
-                    };
-
-                    if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-                        // BoundMethod call — prepend receiver as `this` (locals[0])
-                        let bm = unsafe { &*closure_val.as_ptr::<BoundMethod>().unwrap().as_ptr() };
-                        // Push receiver first (becomes this = locals[0])
-                        if let Err(e) = stack.push(bm.receiver) {
-                            return OpcodeResult::Error(e);
-                        }
-                        // Push args on top of receiver
-                        for arg in args_tmp.into_iter().rev() {
-                            if let Err(e) = stack.push(arg) {
-                                return OpcodeResult::Error(e);
-                            }
-                        }
-                        OpcodeResult::PushFrame {
-                            func_id: bm.func_id,
-                            arg_count: arg_count + 1, // +1 for receiver
-                            is_closure: false,
-                            closure_val: None,
-                            module: bm.module.clone(),
-                            return_action: ReturnAction::PushReturnValue,
-                        }
-                    } else if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
-                        let bm = unsafe {
-                            &*closure_val.as_ptr::<BoundNativeMethod>().unwrap().as_ptr()
-                        };
-                        let mut native_args = Vec::with_capacity(arg_count + 1);
-                        if self.native_callable_uses_receiver(bm.native_id) {
-                            native_args.push(bm.receiver);
-                        }
-                        native_args.extend(args_tmp.into_iter().rev());
-
-                        // Reuse the native opcode execution path directly (no per-method hardcoding).
-                        for arg in &native_args {
-                            if let Err(error) = stack.push(*arg) {
-                                return OpcodeResult::Error(error);
-                            }
-                        }
-                        let arg_count_u8 = match u8::try_from(native_args.len()) {
-                            Ok(v) => v,
-                            Err(_) => {
-                                return OpcodeResult::Error(VmError::RuntimeError(
-                                    "Too many arguments for bound native method call".to_string(),
-                                ))
-                            }
-                        };
-                        let code = [
-                            (bm.native_id & 0x00FF) as u8,
-                            ((bm.native_id >> 8) & 0x00FF) as u8,
-                            arg_count_u8,
-                        ];
-                        let mut native_ip = 0usize;
-                        self.exec_native_ops(
-                            stack,
-                            &mut native_ip,
-                            &code,
-                            module,
-                            task,
-                            Opcode::NativeCall,
-                        )
-                    } else if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
-                        let bound =
-                            unsafe { &*closure_val.as_ptr::<BoundFunction>().unwrap().as_ptr() };
-                        let mut combined_args = bound.bound_args.clone();
-                        combined_args.extend(args_tmp.into_iter().rev());
-
-                        if bound.rebind_call_helper {
-                            let target_callable = bound.this_arg;
-                            let this_arg =
-                                combined_args.first().copied().unwrap_or(Value::undefined());
-                            let rest_args = if combined_args.len() > 1 {
-                                combined_args[1..].to_vec()
-                            } else {
-                                Vec::new()
-                            };
-                            return self.dispatch_call_with_explicit_this(
-                                stack,
-                                target_callable,
-                                this_arg,
-                                rest_args,
-                                module,
-                                task,
-                                "Bound call target is not callable",
-                            );
-                        }
-
-                        if !bound.target.is_ptr() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Bound function target is not callable".to_string(),
-                            ));
-                        }
-                        let target_header = unsafe {
-                            &*header_ptr_from_value_ptr(
-                                bound.target.as_ptr::<u8>().unwrap().as_ptr(),
-                            )
-                        };
-                        if target_header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-                            let method =
-                                unsafe { &*bound.target.as_ptr::<BoundMethod>().unwrap().as_ptr() };
-                            if let Err(e) = stack.push(bound.this_arg) {
-                                return OpcodeResult::Error(e);
-                            }
-                            for arg in &combined_args {
-                                if let Err(e) = stack.push(*arg) {
-                                    return OpcodeResult::Error(e);
-                                }
-                            }
-                            OpcodeResult::PushFrame {
-                                func_id: method.func_id,
-                                arg_count: combined_args.len() + 1,
-                                is_closure: false,
-                                closure_val: None,
-                                module: method.module.clone(),
-                                return_action: ReturnAction::PushReturnValue,
-                            }
-                        } else if target_header.type_id()
-                            == std::any::TypeId::of::<BoundNativeMethod>()
-                        {
-                            let method = unsafe {
-                                &*bound.target.as_ptr::<BoundNativeMethod>().unwrap().as_ptr()
-                            };
-                            self.exec_bound_native_method_call(
-                                stack,
-                                bound.this_arg,
-                                method.native_id,
-                                combined_args,
-                                module,
-                                task,
-                            )
-                        } else if target_header.type_id() == std::any::TypeId::of::<Closure>() {
-                            let closure =
-                                unsafe { &*bound.target.as_ptr::<Closure>().unwrap().as_ptr() };
-                            if let Err(e) = stack.push(bound.this_arg) {
-                                return OpcodeResult::Error(e);
-                            }
-                            for arg in &combined_args {
-                                if let Err(e) = stack.push(*arg) {
-                                    return OpcodeResult::Error(e);
-                                }
-                            }
-                            OpcodeResult::PushFrame {
-                                func_id: closure.func_id(),
-                                arg_count: combined_args.len() + 1,
-                                is_closure: true,
-                                closure_val: Some(bound.target),
-                                module: closure.module(),
-                                return_action: ReturnAction::PushReturnValue,
-                            }
-                        } else {
-                            OpcodeResult::Error(VmError::TypeError(
-                                "Bound function target is not callable".to_string(),
-                            ))
-                        }
-                    } else {
-                        let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
-                        let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                        let closure_func_id = closure.func_id();
-                        let closure_module = closure.module();
-                        let uses_js_this_slot = closure_module
-                            .as_ref()
-                            .and_then(|module| module.functions.get(closure_func_id))
-                            .map(|function| function.uses_js_this_slot)
-                            .unwrap_or(false);
-
-                        // Closure call - push implicit `this` first when JS function metadata requires it.
-                        if uses_js_this_slot {
-                            let implicit_this = if closure_module
-                                .as_ref()
-                                .and_then(|module| module.functions.get(closure_func_id))
-                                .is_some_and(|function| function.is_strict_js)
-                            {
-                                Value::undefined()
-                            } else {
-                                self.builtin_global_value("globalThis")
-                                    .unwrap_or(Value::undefined())
-                            };
-                            if let Err(e) = stack.push(implicit_this) {
-                                return OpcodeResult::Error(e);
-                            }
-                        }
-                        for arg in args_tmp.into_iter().rev() {
-                            if let Err(e) = stack.push(arg) {
-                                return OpcodeResult::Error(e);
-                            }
-                        }
-
-                        OpcodeResult::PushFrame {
-                            func_id: closure_func_id,
-                            arg_count: arg_count + usize::from(uses_js_this_slot),
-                            is_closure: true,
-                            closure_val: Some(closure_val),
-                            module: closure_module,
-                            return_action: ReturnAction::PushReturnValue,
-                        }
+                    let call_args = args_tmp.into_iter().rev().collect::<Vec<_>>();
+                    match self.callable_frame_for_value(
+                        closure_val,
+                        stack,
+                        &call_args,
+                        None,
+                        ReturnAction::PushReturnValue,
+                        module,
+                        task,
+                    ) {
+                        Ok(Some(frame)) => frame,
+                        Ok(None) => OpcodeResult::Error(VmError::TypeError(
+                            "Value is not callable".to_string(),
+                        )),
+                        Err(error) => OpcodeResult::Error(error),
                     }
                 } else {
                     let uses_js_this_slot = module
@@ -793,6 +610,8 @@ impl<'a> Interpreter<'a> {
                             &args.into_iter().rev().collect::<Vec<_>>(),
                             Some(actual_receiver),
                             ReturnAction::PushReturnValue,
+                            module,
+                            task,
                         ) {
                             Ok(Some(frame)) => frame,
                             Ok(None) => {
@@ -827,6 +646,8 @@ impl<'a> Interpreter<'a> {
                             &args.into_iter().rev().collect::<Vec<_>>(),
                             Some(actual_receiver),
                             ReturnAction::PushReturnValue,
+                            module,
+                            task,
                         ) {
                             Ok(Some(frame)) => frame,
                             Ok(None) => {

@@ -84,6 +84,134 @@ impl<'a> Interpreter<'a> {
         String::new()
     }
 
+    fn array_search_values_strict_equal(&self, left: Value, right: Value) -> bool {
+        if left == right {
+            return true;
+        }
+        let left_string = crate::vm::interpreter::opcodes::native::checked_string_ptr(left);
+        let right_string = crate::vm::interpreter::opcodes::native::checked_string_ptr(right);
+        if let (Some(left_ptr), Some(right_ptr)) = (left_string, right_string) {
+            let left_string = unsafe { &*left_ptr.as_ptr() };
+            let right_string = unsafe { &*right_ptr.as_ptr() };
+            return left_string.data == right_string.data;
+        }
+        false
+    }
+
+    fn array_search_values_same_value_zero(&self, left: Value, right: Value) -> bool {
+        if self.array_search_values_strict_equal(left, right) {
+            return true;
+        }
+        let left_number = value_to_f64(left).ok();
+        let right_number = value_to_f64(right).ok();
+        matches!((left_number, right_number), (Some(a), Some(b)) if a.is_nan() && b.is_nan())
+    }
+
+    fn array_like_string_primitive(&self, value: Value) -> Option<Value> {
+        if crate::vm::interpreter::opcodes::native::checked_string_ptr(value).is_some() {
+            return Some(value);
+        }
+        self.boxed_primitive_internal_value(value, "String")
+    }
+
+    fn array_like_length_with_context(
+        &mut self,
+        value: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<usize, VmError> {
+        if value.is_null() || value.is_undefined() {
+            return Err(VmError::TypeError(
+                "Array method called on null or undefined".to_string(),
+            ));
+        }
+        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(value) {
+            let array = unsafe { &*array_ptr.as_ptr() };
+            return Ok(array.len());
+        }
+        if let Some(string_value) = self.array_like_string_primitive(value) {
+            let string_ptr =
+                crate::vm::interpreter::opcodes::native::checked_string_ptr(string_value)
+                    .expect("string primitive");
+            let string = unsafe { &*string_ptr.as_ptr() };
+            return Ok(string.data.chars().count());
+        }
+
+        let length_value = self
+            .get_property_value_via_js_semantics_with_context(value, "length", task, module)?
+            .unwrap_or(Value::undefined());
+        if length_value.is_undefined() || length_value.is_null() {
+            return Ok(0);
+        }
+        let numeric = self.js_to_number_with_context(length_value, task, module)?;
+        if !numeric.is_finite() || numeric <= 0.0 {
+            return Ok(0);
+        }
+        Ok(numeric.floor().min(u32::MAX as f64) as usize)
+    }
+
+    fn array_like_has_index_with_context(
+        &self,
+        value: Value,
+        index: usize,
+    ) -> bool {
+        let key = index.to_string();
+        if self.has_property_via_js_semantics(value, &key) {
+            return true;
+        }
+        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(value) {
+            let array = unsafe { &*array_ptr.as_ptr() };
+            return array.get(index).is_some();
+        }
+        if let Some(string_value) = self.array_like_string_primitive(value) {
+            let string_ptr =
+                crate::vm::interpreter::opcodes::native::checked_string_ptr(string_value)
+                    .expect("string primitive");
+            let string = unsafe { &*string_ptr.as_ptr() };
+            return string.data.chars().nth(index).is_some();
+        }
+        false
+    }
+
+    fn array_like_index_value_with_context(
+        &mut self,
+        value: Value,
+        index: usize,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        if let Some(property_value) =
+            self.get_property_value_via_js_semantics_with_context(
+                value,
+                &index.to_string(),
+                task,
+                module,
+            )?
+        {
+            return Ok(property_value);
+        }
+        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(value) {
+            let array = unsafe { &*array_ptr.as_ptr() };
+            return Ok(array.get(index).unwrap_or(Value::undefined()));
+        }
+        if let Some(string_value) = self.array_like_string_primitive(value) {
+            let string_ptr =
+                crate::vm::interpreter::opcodes::native::checked_string_ptr(string_value)
+                    .expect("string primitive");
+            let string = unsafe { &*string_ptr.as_ptr() };
+            if let Some(ch) = string.data.chars().nth(index) {
+                let ptr = self.gc.lock().allocate(RayaString::new(ch.to_string()));
+                return Ok(unsafe {
+                    Value::from_ptr(NonNull::new(ptr.as_ptr()).expect("string char ptr"))
+                });
+            }
+            return Ok(Value::undefined());
+        }
+        Ok(self
+            .get_property_value_via_js_semantics_with_context(value, &index.to_string(), task, module)?
+            .unwrap_or(Value::undefined()))
+    }
+
     fn array_from_constructor_target(
         &mut self,
         constructor: Value,
@@ -697,44 +825,31 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 let from_index = if arg_count == 2 {
-                    let v = stack.pop()?;
-                    v.as_i32().unwrap_or(0).max(0) as usize
+                    Some(self.array_integer_argument(stack.pop()?)?)
                 } else {
-                    0
+                    None
                 };
                 let value = stack.pop()?;
                 let array_val = stack.pop()?;
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                }
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let mut result: i32 = -1;
-
-                // Helper function to compare two values for equality
-                // For strings, uses value equality instead of pointer equality
-                let values_equal = |a: &Value, b: &Value| -> bool {
-                    if a == b {
-                        true
-                    } else if a.is_ptr() && b.is_ptr() {
-                        // Both are pointers - check if they're strings and compare data
-                        let a_str_ptr = unsafe { a.as_ptr::<RayaString>() };
-                        let b_str_ptr = unsafe { b.as_ptr::<RayaString>() };
-                        if let (Some(a_ptr), Some(b_ptr)) = (a_str_ptr, b_str_ptr) {
-                            let a_str = unsafe { &*a_ptr.as_ptr() };
-                            let b_str = unsafe { &*b_ptr.as_ptr() };
-                            a_str.data == b_str.data
-                        } else {
-                            false
-                        }
+                let len = self.array_like_length_with_context(array_val, task, module)?;
+                let start = if let Some(from_index) = from_index {
+                    if from_index >= 0 {
+                        (from_index as usize).min(len)
                     } else {
-                        false
+                        len.saturating_sub(from_index.unsigned_abs() as usize)
                     }
+                } else {
+                    0
                 };
-
-                for (i, elem) in arr.elements.iter().enumerate().skip(from_index) {
-                    if values_equal(elem, &value) {
-                        result = i as i32;
+                let mut result: i32 = -1;
+                for index in start..len {
+                    if !self.array_like_has_index_with_context(array_val, index) {
+                        continue;
+                    }
+                    let candidate =
+                        self.array_like_index_value_with_context(array_val, index, task, module)?;
+                    if self.array_search_values_strict_equal(candidate, value) {
+                        result = index as i32;
                         break;
                     }
                 }
@@ -750,12 +865,19 @@ impl<'a> Interpreter<'a> {
                 }
                 let value = stack.pop()?;
                 let array_val = stack.pop()?;
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
+                let len = self.array_like_length_with_context(array_val, task, module)?;
+                let mut result = false;
+                for index in 0..len {
+                    if !self.array_like_has_index_with_context(array_val, index) {
+                        continue;
+                    }
+                    let candidate =
+                        self.array_like_index_value_with_context(array_val, index, task, module)?;
+                    if self.array_search_values_same_value_zero(candidate, value) {
+                        result = true;
+                        break;
+                    }
                 }
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let result = arr.includes(value);
                 stack.push(Value::bool(result))?;
                 Ok(())
             }
@@ -996,49 +1118,40 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 let from_index = if arg_count == 2 {
-                    let v = stack.pop()?;
-                    Some(v.as_i32().unwrap_or(0).max(0) as usize)
+                    Some(self.array_integer_argument(stack.pop()?)?)
                 } else {
                     None
                 };
                 let search_val = stack.pop()?;
                 let array_val = stack.pop()?;
-
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                }
-
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-
-                let end = from_index.unwrap_or(arr.elements.len().saturating_sub(1));
-                let mut found_index: i32 = -1;
-
-                // Helper function to compare two values for equality
-                // For strings, uses value equality instead of pointer equality
-                let values_equal = |a: &Value, b: &Value| -> bool {
-                    if a == b {
-                        true
-                    } else if a.is_ptr() && b.is_ptr() {
-                        // Both are pointers - check if they're strings and compare data
-                        let a_str_ptr = unsafe { a.as_ptr::<RayaString>() };
-                        let b_str_ptr = unsafe { b.as_ptr::<RayaString>() };
-                        if let (Some(a_ptr), Some(b_ptr)) = (a_str_ptr, b_str_ptr) {
-                            let a_str = unsafe { &*a_ptr.as_ptr() };
-                            let b_str = unsafe { &*b_ptr.as_ptr() };
-                            a_str.data == b_str.data
-                        } else {
-                            false
-                        }
+                let len = self.array_like_length_with_context(array_val, task, module)?;
+                let end = if len == 0 {
+                    None
+                } else if let Some(from_index) = from_index {
+                    if from_index >= 0 {
+                        Some((from_index as usize).min(len - 1))
                     } else {
-                        false
+                        Some(len.saturating_sub(from_index.unsigned_abs() as usize))
                     }
+                } else {
+                    Some(len - 1)
                 };
-
-                for i in (0..=end.min(arr.elements.len().saturating_sub(1))).rev() {
-                    if values_equal(&arr.elements[i], &search_val) {
-                        found_index = i as i32;
-                        break;
+                let mut found_index: i32 = -1;
+                if let Some(end) = end {
+                    for index in (0..=end).rev() {
+                        if !self.array_like_has_index_with_context(array_val, index) {
+                            continue;
+                        }
+                        let candidate = self.array_like_index_value_with_context(
+                            array_val,
+                            index,
+                            task,
+                            module,
+                        )?;
+                        if self.array_search_values_strict_equal(candidate, search_val) {
+                            found_index = index as i32;
+                            break;
+                        }
                     }
                 }
 

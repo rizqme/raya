@@ -24,6 +24,32 @@ class Function {
     }
 }
 
+function __throwTypeErrorAccessor(): any {
+    throw new TypeError("Restricted function property access");
+}
+
+Object.defineProperty(
+    (Function as any).prototype,
+    "caller",
+    {
+        get: __throwTypeErrorAccessor,
+        set: __throwTypeErrorAccessor,
+        enumerable: false,
+        configurable: true,
+    },
+);
+
+Object.defineProperty(
+    (Function as any).prototype,
+    "arguments",
+    {
+        get: __throwTypeErrorAccessor,
+        set: __throwTypeErrorAccessor,
+        enumerable: false,
+        configurable: true,
+    },
+);
+
 export {
     Function,
     AsyncFunction,

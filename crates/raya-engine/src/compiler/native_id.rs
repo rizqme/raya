@@ -55,6 +55,10 @@ pub const OBJECT_DESCRIPTOR_NEW: u16 = 0x0018;
 pub const OBJECT_SUPER_CONSTRUCT: u16 = 0x0019;
 /// ECMAScript `+` with runtime ToPrimitive / ToNumber / string-concat semantics.
 pub const OBJECT_JS_ADD: u16 = 0x001A;
+/// Object.setPrototypeOf / Reflect.setPrototypeOf helper.
+pub const OBJECT_SET_PROTOTYPE_OF: u16 = 0x001B;
+/// JS `eval(source)` helper executed inside the current VM.
+pub const FUNCTION_EVAL_HELPER: u16 = 0x001C;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -561,6 +565,8 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_DESCRIPTOR_NEW => "Object.descriptorNew",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
+        OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",
+        FUNCTION_EVAL_HELPER => "Function.eval",
 
         // Array
         ARRAY_PUSH => "Array.push",

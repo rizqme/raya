@@ -4,9 +4,13 @@ use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::RayaString;
+use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
+use crate::compiler::Module;
+use crate::vm::VmError;
 use std::any::TypeId;
+use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
     #[inline]
@@ -46,9 +50,70 @@ impl<'a> Interpreter<'a> {
         header.type_id() == TypeId::of::<RayaString>()
     }
 
+    fn js_abstract_equality_objectish(&self, value: Value) -> bool {
+        self.is_js_object_value(value)
+            || Self::is_callable_value(value)
+            || self.js_callable_builtin_constructor_name(value).is_some()
+    }
+
+    fn js_abstract_equality(
+        &mut self,
+        a: Value,
+        b: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<bool, VmError> {
+        if a.is_nullish() && b.is_nullish() {
+            return Ok(true);
+        }
+        if a.is_nullish() || b.is_nullish() {
+            return Ok(false);
+        }
+        if Self::values_equal(a, b) {
+            return Ok(true);
+        }
+
+        if Self::numeric_value(a).is_some() && Self::ptr_is_raya_string(b) {
+            let b_primitive = self.js_to_primitive_number_hint(b, task, module)?;
+            let b_number = self.js_to_number_from_primitive(b_primitive)?;
+            return Ok(Self::numeric_value(a).unwrap() == b_number);
+        }
+        if Self::ptr_is_raya_string(a) && Self::numeric_value(b).is_some() {
+            let a_primitive = self.js_to_primitive_number_hint(a, task, module)?;
+            let a_number = self.js_to_number_from_primitive(a_primitive)?;
+            return Ok(a_number == Self::numeric_value(b).unwrap());
+        }
+
+        if a.as_bool().is_some() {
+            let coerced = Value::f64(self.js_to_number_from_primitive(a)?);
+            return self.js_abstract_equality(coerced, b, task, module);
+        }
+        if b.as_bool().is_some() {
+            let coerced = Value::f64(self.js_to_number_from_primitive(b)?);
+            return self.js_abstract_equality(a, coerced, task, module);
+        }
+
+        if self.js_abstract_equality_objectish(a)
+            && (Self::numeric_value(b).is_some() || Self::ptr_is_raya_string(b) || b.as_bool().is_some())
+        {
+            let primitive = self.js_to_primitive_with_hint(a, "default", task, module)?;
+            return self.js_abstract_equality(primitive, b, task, module);
+        }
+        if self.js_abstract_equality_objectish(b)
+            && (Self::numeric_value(a).is_some() || Self::ptr_is_raya_string(a) || a.as_bool().is_some())
+        {
+            let primitive = self.js_to_primitive_with_hint(b, "default", task, module)?;
+            return self.js_abstract_equality(a, primitive, task, module);
+        }
+
+        Ok(false)
+    }
+
     pub(in crate::vm::interpreter) fn exec_comparison_ops(
         &mut self,
         stack: &mut Stack,
+        module: &Module,
+        task: &Arc<Task>,
         opcode: Opcode,
     ) -> OpcodeResult {
         match opcode {
@@ -64,7 +129,10 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let result = Self::values_equal(a, b);
+                let result = match self.js_abstract_equality(a, b, task, module) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
                 if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
@@ -80,7 +148,10 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let result = !Self::values_equal(a, b);
+                let result = match self.js_abstract_equality(a, b, task, module) {
+                    Ok(value) => !value,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
                 if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
@@ -352,6 +423,11 @@ impl<'a> Interpreter<'a> {
                     true
                 } else if opcode == Opcode::StrictEq && a.is_nullish() != b.is_nullish() {
                     false
+                } else if opcode == Opcode::Eq {
+                    match self.js_abstract_equality(a, b, task, module) {
+                        Ok(value) => value,
+                        Err(error) => return OpcodeResult::Error(error),
+                    }
                 } else {
                     Self::values_equal(a, b)
                 };
@@ -374,6 +450,11 @@ impl<'a> Interpreter<'a> {
                     false
                 } else if opcode == Opcode::StrictNe && a.is_nullish() != b.is_nullish() {
                     true
+                } else if opcode == Opcode::Ne {
+                    match self.js_abstract_equality(a, b, task, module) {
+                        Ok(value) => !value,
+                        Err(error) => return OpcodeResult::Error(error),
+                    }
                 } else {
                     !Self::values_equal(a, b)
                 };

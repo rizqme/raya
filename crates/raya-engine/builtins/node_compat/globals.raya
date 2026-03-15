@@ -23,6 +23,8 @@ const NC_REFLECT_REVOKE_PROXY: number = 0x0DB4;
 const NC_OBJECT_CONSTRUCT_DYNAMIC_CLASS: number = 0x0007;
 const OBJECT_IS_EXTENSIBLE: number = 0x0015;
 const OBJECT_PREVENT_EXTENSIONS: number = 0x0016;
+const OBJECT_SET_PROTOTYPE_OF: number = 0x001B;
+const NC_COMPILER_EVAL: number = 0x001C;
 
 function __is_space(ch: string): boolean {
     return ch == " " || ch == "\t" || ch == "\n" || ch == "\r";
@@ -172,8 +174,8 @@ function unescape(input: string): string {
     return input.split("%20").join(" ");
 }
 
-function eval(_source: string): Object {
-    throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "eval is not implemented in node-compat runtime yet");
+function eval(source: string): any {
+    return __NATIVE_CALL<any>(NC_COMPILER_EVAL, source);
 }
 
 class __NodeCompatReflect {
@@ -198,6 +200,23 @@ class __NodeCompatReflect {
         }
         __NATIVE_CALL<Object>(OBJECT_PREVENT_EXTENSIONS, target);
         return true;
+    }
+
+    setPrototypeOf(target: Proxy<Object> | Object, proto: Object | null): boolean {
+        if (target == null) {
+            throw new TypeError("Reflect.setPrototypeOf target must be an object");
+        }
+        let targetType = typeof target;
+        if (targetType != "object" && targetType != "function") {
+            throw new TypeError("Reflect.setPrototypeOf target must be an object");
+        }
+        if (proto != null) {
+            let protoType = typeof proto;
+            if (protoType != "object" && protoType != "function") {
+                throw new TypeError("Reflect.setPrototypeOf proto must be an object or null");
+            }
+        }
+        return __NATIVE_CALL<boolean>(OBJECT_SET_PROTOTYPE_OF, target, proto);
     }
 
     get(target: Proxy<Object> | Object, key: string): Object | string | number | boolean | null {

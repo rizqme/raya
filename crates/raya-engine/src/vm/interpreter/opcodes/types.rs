@@ -1431,6 +1431,8 @@ impl<'a> Interpreter<'a> {
                                 &[value],
                                 Some(actual_obj),
                                 ReturnAction::Discard,
+                                module,
+                                task,
                             ) {
                                 Ok(Some(frame)) => return frame,
                                 Ok(None) => {
@@ -1515,6 +1517,8 @@ impl<'a> Interpreter<'a> {
                                 &[value],
                                 Some(obj_val),
                                 ReturnAction::Discard,
+                                module,
+                                task,
                             ) {
                                 Ok(Some(frame)) => return frame,
                                 Ok(None) => {

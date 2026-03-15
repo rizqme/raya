@@ -857,6 +857,8 @@ impl<'a> Interpreter<'a> {
                     args,
                     explicit_this,
                     ReturnAction::PushReturnValue,
+                    caller_module,
+                    &scratch_task,
                 )? {
                     Some(result) => result,
                     None => return Err(VmError::TypeError("Value is not callable".to_string())),
@@ -2413,7 +2415,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::Eq
             | Opcode::Ne
             | Opcode::StrictEq
-            | Opcode::StrictNe => self.exec_comparison_ops(stack, opcode),
+            | Opcode::StrictNe => self.exec_comparison_ops(stack, module, task, opcode),
 
             // =========================================================
             // Control Flow

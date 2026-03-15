@@ -1158,7 +1158,7 @@ impl<'a> Interpreter<'a> {
                             "Reflect.construct newTarget must be a constructor".to_string(),
                         ));
                     }
-                    let ctor_args = self.collect_apply_arguments(arg_list)?;
+                    let ctor_args = self.collect_apply_arguments(arg_list, task, module)?;
                     self.construct_value_with_new_target(
                         target, new_target, &ctor_args, task, module,
                     )?

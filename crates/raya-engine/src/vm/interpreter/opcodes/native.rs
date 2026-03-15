@@ -468,6 +468,27 @@ impl<'a> Interpreter<'a> {
             return Err(VmError::TypeError("Value is not a constructor".to_string()));
         }
 
+        if let Some(raw_ptr) = unsafe { constructor.as_ptr::<u8>() } {
+            let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+            if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
+                let bound = unsafe { &*constructor.as_ptr::<BoundFunction>().unwrap().as_ptr() };
+                let mut combined_args = bound.bound_args.clone();
+                combined_args.extend_from_slice(args);
+                let adjusted_new_target = if constructor.raw() == new_target.raw() {
+                    bound.target
+                } else {
+                    new_target
+                };
+                return self.construct_value_with_new_target(
+                    bound.target,
+                    adjusted_new_target,
+                    &combined_args,
+                    task,
+                    module,
+                );
+            }
+        }
+
         if let Some(value) = self.try_construct_boxed_primitive(constructor, args, task, module)? {
             return Ok(value);
         }
@@ -588,6 +609,62 @@ impl<'a> Interpreter<'a> {
         Err(VmError::TypeError(
             "Value is not a supported constructor".to_string(),
         ))
+    }
+
+    pub(in crate::vm::interpreter) fn call_builtin_constructor_as_function(
+        &mut self,
+        callable: Value,
+        args: &[Value],
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(name) = self.js_callable_builtin_constructor_name(callable) else {
+            return Ok(None);
+        };
+
+        match name {
+            "Object" => {
+                let first = args.first().copied().unwrap_or(Value::undefined());
+                if first.is_null() || first.is_undefined() {
+                    return self.construct_builtin_object(callable, task, module).map(Some);
+                }
+                if self.is_js_object_value(first) || Self::is_callable_value(first) {
+                    return Ok(Some(first));
+                }
+                if let Some(boxed) = self.box_js_this_primitive(first)? {
+                    return Ok(Some(boxed));
+                }
+                self.construct_builtin_object(callable, task, module).map(Some)
+            }
+            "Array" => self
+                .construct_builtin_array(callable, args, task, module)
+                .map(Some),
+            "Date" => {
+                let date_value =
+                    self.construct_value_with_new_target(callable, callable, args, task, module)?;
+                let to_string = self
+                    .get_property_value_via_js_semantics_with_context(
+                        date_value,
+                        "toString",
+                        task,
+                        module,
+                    )?
+                    .ok_or_else(|| {
+                        VmError::TypeError(
+                            "Date ordinary call requires a callable toString method".to_string(),
+                        )
+                    })?;
+                self.invoke_callable_sync_with_this(
+                    to_string,
+                    Some(date_value),
+                    &[],
+                    task,
+                    module,
+                )
+                .map(Some)
+            }
+            _ => Ok(None),
+        }
     }
 
     fn object_to_string_tag(&self, value: Value) -> &'static str {
@@ -776,6 +853,29 @@ impl<'a> Interpreter<'a> {
             || header.type_id() == std::any::TypeId::of::<BoundMethod>()
             || header.type_id() == std::any::TypeId::of::<BoundNativeMethod>()
             || header.type_id() == std::any::TypeId::of::<BoundFunction>()
+    }
+
+    pub(in crate::vm::interpreter) fn js_callable_builtin_constructor_name(
+        &self,
+        value: Value,
+    ) -> Option<&'static str> {
+        let value = self
+            .unwrapped_proxy_like(value)
+            .map(|proxy| proxy.target)
+            .unwrap_or(value);
+        for name in ["Object", "Array", "Date"] {
+            if self
+                .builtin_global_value(name)
+                .is_some_and(|builtin| builtin.raw() == value.raw())
+            {
+                return Some(name);
+            }
+        }
+        None
+    }
+
+    pub(in crate::vm::interpreter) fn js_call_target_supported(&self, value: Value) -> bool {
+        Self::is_callable_value(value) || self.js_callable_builtin_constructor_name(value).is_some()
     }
 
     pub(in crate::vm::interpreter) fn proxy_wrapper_proxy_value(
@@ -1467,7 +1567,7 @@ impl<'a> Interpreter<'a> {
         Ok(receiver)
     }
 
-    pub(in crate::vm::interpreter) fn callable_function_info(
+    fn intrinsic_callable_function_info(
         &self,
         target: Value,
     ) -> Option<(String, usize)> {
@@ -1525,11 +1625,20 @@ impl<'a> Interpreter<'a> {
 
         if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
             let bound = unsafe { &*target.as_ptr::<BoundFunction>()?.as_ptr() };
-            let (name, length) = self.callable_function_info(bound.target)?;
-            return Some((
-                format!("bound {}", name),
-                length.saturating_sub(bound.bound_args.len()),
-            ));
+            let length = if let Some(v) = bound.visible_length.as_i32() {
+                v.max(0) as usize
+            } else if let Some(v) = bound.visible_length.as_i64() {
+                v.max(0) as usize
+            } else if let Some(v) = bound.visible_length.as_f64() {
+                if !v.is_finite() {
+                    usize::MAX
+                } else {
+                    v.max(0.0).floor().min(usize::MAX as f64) as usize
+                }
+            } else {
+                0
+            };
+            return Some((bound.visible_name.clone(), length));
         }
 
         if let Some(nominal_type_id) = self.constructor_nominal_type_id(target) {
@@ -1561,6 +1670,79 @@ impl<'a> Interpreter<'a> {
         }
 
         None
+    }
+
+    pub(in crate::vm::interpreter) fn callable_function_info(
+        &self,
+        target: Value,
+    ) -> Option<(String, usize)> {
+        self.intrinsic_callable_function_info(target)
+    }
+
+    fn callable_observable_name_with_context(
+        &mut self,
+        target: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<String, VmError> {
+        let observed = self.get_property_value_via_js_semantics_with_context(
+            target,
+            "name",
+            caller_task,
+            caller_module,
+        )?;
+        let Some(value) = observed else {
+            return Ok(String::new());
+        };
+        if let Some(ptr) = checked_string_ptr(value) {
+            return Ok(unsafe { &*ptr.as_ptr() }.data.clone());
+        }
+        Ok(String::new())
+    }
+
+    fn callable_observable_length_with_context(
+        &mut self,
+        target: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+        bound_arg_count: usize,
+    ) -> Result<Value, VmError> {
+        if !self.has_own_property_via_js_semantics(target, "length") {
+            return Ok(Value::i32(0));
+        }
+        let observed = self.get_own_property_value_via_js_semantics_with_context(
+            target,
+            "length",
+            caller_task,
+            caller_module,
+        )?;
+        let Some(value) = observed else {
+            return Ok(Value::i32(0));
+        };
+        let number = if let Some(v) = value.as_i32() {
+            v as f64
+        } else if let Some(v) = value.as_i64() {
+            v as f64
+        } else if let Some(v) = value.as_f64() {
+            v
+        } else {
+            return Ok(Value::i32(0));
+        };
+        if number.is_nan() || number == 0.0 {
+            return Ok(Value::i32(0));
+        }
+        if number == f64::INFINITY {
+            return Ok(Value::f64(f64::INFINITY));
+        }
+        if number == f64::NEG_INFINITY {
+            return Ok(Value::i32(0));
+        }
+        let length = (number.floor() - bound_arg_count as f64).max(0.0);
+        if length <= i32::MAX as f64 {
+            Ok(Value::i32(length as i32))
+        } else {
+            Ok(Value::f64(length))
+        }
     }
 
     pub(in crate::vm::interpreter) fn callable_is_constructible(&self, target: Value) -> bool {
@@ -1755,7 +1937,7 @@ impl<'a> Interpreter<'a> {
                     .map(Some);
             }
         }
-        if let Some(string_ptr) = unsafe { this_value.as_ptr::<RayaString>() } {
+        if let Some(string_ptr) = checked_string_ptr(this_value) {
             if let Some(constructor) = self.builtin_global_value("String") {
                 let string_value = unsafe { Value::from_ptr(string_ptr) };
                 return self
@@ -1862,17 +2044,33 @@ impl<'a> Interpreter<'a> {
     }
 
     fn alloc_bound_function(
-        &self,
+        &mut self,
         target: Value,
         this_arg: Value,
         bound_args: Vec<Value>,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
     ) -> Result<Value, VmError> {
         let rebind_call_helper = self.callable_native_alias_id(target)
             == Some(crate::compiler::native_id::FUNCTION_CALL_HELPER);
+        let target_name = self.callable_observable_name_with_context(
+            target,
+            caller_task,
+            caller_module,
+        )?;
+        let visible_name = format!("bound {}", target_name);
+        let visible_length = self.callable_observable_length_with_context(
+            target,
+            caller_task,
+            caller_module,
+            bound_args.len(),
+        )?;
         let bound = BoundFunction {
             target,
             this_arg,
+            visible_length,
             bound_args,
+            visible_name,
             rebind_call_helper,
         };
         let bound_ptr = self.gc.lock().allocate(bound);
@@ -1912,63 +2110,14 @@ impl<'a> Interpreter<'a> {
             );
         }
 
-        if let Some(target_ptr) = unsafe { target_callable.as_ptr::<u8>() } {
-            let header = unsafe { &*header_ptr_from_value_ptr(target_ptr.as_ptr()) };
-            if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
-                let method = unsafe {
-                    &*target_callable
-                        .as_ptr::<BoundNativeMethod>()
-                        .expect("bound native target")
-                        .as_ptr()
-                };
-                return self.exec_bound_native_method_call(
-                    stack,
-                    this_arg,
-                    method.native_id,
-                    rest_args,
-                    module,
-                    task,
-                );
-            } else if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-                let method = unsafe {
-                    &*target_callable
-                        .as_ptr::<BoundMethod>()
-                        .expect("bound method target")
-                        .as_ptr()
-                };
-                let receiver = if self.callable_uses_js_this_slot(target_callable) {
-                    match self.js_this_value_for_callable(target_callable, Some(this_arg)) {
-                        Ok(value) => value,
-                        Err(error) => return OpcodeResult::Error(error),
-                    }
-                } else {
-                    this_arg
-                };
-                if let Err(e) = stack.push(receiver) {
-                    return OpcodeResult::Error(e);
-                }
-                for arg in &rest_args {
-                    if let Err(e) = stack.push(*arg) {
-                        return OpcodeResult::Error(e);
-                    }
-                }
-                return OpcodeResult::PushFrame {
-                    func_id: method.func_id,
-                    arg_count: rest_args.len() + 1,
-                    is_closure: false,
-                    closure_val: None,
-                    module: method.module.clone(),
-                    return_action: ReturnAction::PushReturnValue,
-                };
-            }
-        }
-
         match self.callable_frame_for_value(
             target_callable,
             stack,
             &rest_args,
             Some(this_arg),
             ReturnAction::PushReturnValue,
+            module,
+            task,
         ) {
             Ok(Some(frame)) => frame,
             Ok(None) => OpcodeResult::Error(VmError::TypeError(non_callable_message.to_string())),
@@ -2780,12 +2929,12 @@ impl<'a> Interpreter<'a> {
             return Ok(Some(result));
         }
 
-        if let Some(getter) = self.descriptor_accessor(proxy.target, key, "get") {
-            let result = self.invoke_callable_sync(getter, &[], caller_task, caller_module)?;
-            return Ok(Some(result));
-        }
-
-        if let Some(value) = self.descriptor_data_value(proxy.target, key) {
+        if let Some(value) = self.descriptor_property_value_with_context(
+            proxy.target,
+            key,
+            caller_task,
+            caller_module,
+        )? {
             return Ok(Some(value));
         }
 
@@ -3205,7 +3354,7 @@ impl<'a> Interpreter<'a> {
             || checked_string_ptr(value).is_some()
     }
 
-    fn js_to_primitive_with_hint(
+    pub(in crate::vm::interpreter) fn js_to_primitive_with_hint(
         &mut self,
         value: Value,
         hint: &str,
@@ -3281,7 +3430,7 @@ impl<'a> Interpreter<'a> {
         ))
     }
 
-    fn js_to_primitive_number_hint(
+    pub(in crate::vm::interpreter) fn js_to_primitive_number_hint(
         &mut self,
         value: Value,
         caller_task: &Arc<Task>,
@@ -3290,7 +3439,10 @@ impl<'a> Interpreter<'a> {
         self.js_to_primitive_with_hint(value, "number", caller_task, caller_module)
     }
 
-    fn js_to_number_from_primitive(&self, value: Value) -> Result<f64, VmError> {
+    pub(in crate::vm::interpreter) fn js_to_number_from_primitive(
+        &self,
+        value: Value,
+    ) -> Result<f64, VmError> {
         if value.is_undefined() {
             return Ok(f64::NAN);
         }
@@ -3339,7 +3491,7 @@ impl<'a> Interpreter<'a> {
         ))
     }
 
-    fn js_to_number_with_context(
+    pub(in crate::vm::interpreter) fn js_to_number_with_context(
         &mut self,
         value: Value,
         caller_task: &Arc<Task>,
@@ -3782,6 +3934,23 @@ impl<'a> Interpreter<'a> {
         if self.callable_virtual_property_deleted(target, key) {
             return None;
         }
+        if let Some(bound_ptr) = unsafe { target.as_ptr::<BoundFunction>() } {
+            let raw_ptr = unsafe { target.as_ptr::<u8>() }?;
+            let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+            if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
+                let bound = unsafe { &*bound_ptr.as_ptr() };
+                return match key {
+                    "name" => {
+                        let ptr = self.gc.lock().allocate(RayaString::new(bound.visible_name.clone()));
+                        Some(unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap())
+                        })
+                    }
+                    "length" => Some(bound.visible_length),
+                    _ => None,
+                };
+            }
+        }
         let (name, length) = self.callable_function_info(target)?;
         if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
             eprintln!(
@@ -3841,27 +4010,28 @@ impl<'a> Interpreter<'a> {
         })
     }
 
-    fn compile_dynamic_js_function_module(
+    fn dynamic_js_ambient_builtin_globals(&self) -> FxHashSet<String> {
+        self.builtin_global_slots.read().keys().cloned().collect()
+    }
+
+    fn compile_dynamic_js_module_source(
         &self,
-        params_source: &str,
-        body_source: &str,
+        source: &str,
+        module_identity_prefix: &str,
+        error_context: &str,
     ) -> Result<Arc<Module>, VmError> {
         let debug_dynamic_function = std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok();
         if debug_dynamic_function {
-            eprintln!(
-                "[dynamic-fn] compile:start params={:?} body={:?}",
-                params_source, body_source
-            );
+            eprintln!("[dynamic-fn] compile:start source={:?}", source);
         }
-        let source = format!("function __dynamic_fn__({params_source}) {{\n{body_source}\n}}\n");
         let parser = Parser::new(&source).map_err(|error| {
-            VmError::RuntimeError(format!("Dynamic Function lexer error: {:?}", error))
+            VmError::RuntimeError(format!("{} lexer error: {:?}", error_context, error))
         })?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:parsed-lexer");
         }
         let (ast, interner) = parser.parse().map_err(|error| {
-            VmError::RuntimeError(format!("Dynamic Function parse error: {:?}", error))
+            VmError::RuntimeError(format!("{} parse error: {:?}", error_context, error))
         })?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:parsed-ast");
@@ -3879,7 +4049,7 @@ impl<'a> Interpreter<'a> {
         }
 
         let mut symbols = binder.bind_module(&ast).map_err(|error| {
-            VmError::RuntimeError(format!("Dynamic Function bind error: {:?}", error))
+            VmError::RuntimeError(format!("{} bind error: {:?}", error_context, error))
         })?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:bound");
@@ -3889,7 +4059,7 @@ impl<'a> Interpreter<'a> {
             .with_mode(TypeSystemMode::Js)
             .with_policy(policy);
         let check_result = checker.check_module(&ast).map_err(|error| {
-            VmError::RuntimeError(format!("Dynamic Function type error: {:?}", error))
+            VmError::RuntimeError(format!("{} type error: {:?}", error_context, error))
         })?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:checked");
@@ -3899,10 +4069,10 @@ impl<'a> Interpreter<'a> {
             symbols.update_type(ScopeId(scope_id), &name, ty);
         }
 
-        let ambient_builtin_globals: FxHashSet<String> =
-            self.builtin_global_slots.read().keys().cloned().collect();
+        let ambient_builtin_globals = self.dynamic_js_ambient_builtin_globals();
         let module_identity = format!(
-            "__dynamic_function__/{}",
+            "{}/{}",
+            module_identity_prefix,
             DYNAMIC_JS_FUNCTION_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
 
@@ -3913,14 +4083,50 @@ impl<'a> Interpreter<'a> {
             .with_js_this_binding_compat(true)
             .with_allow_unresolved_runtime_fallback(true)
             .with_ambient_builtin_globals(ambient_builtin_globals)
-            .with_source_text(source);
+            .with_source_text(source.to_string());
         let module = compiler.compile_via_ir(&ast).map_err(|error| {
-            VmError::RuntimeError(format!("Dynamic Function compile error: {}", error))
+            VmError::RuntimeError(format!("{} compile error: {}", error_context, error))
         })?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:done");
         }
         Ok(Arc::new(module))
+    }
+
+    fn compile_dynamic_js_function_module(
+        &self,
+        params_source: &str,
+        body_source: &str,
+    ) -> Result<Arc<Module>, VmError> {
+        let source = format!("function __dynamic_fn__({params_source}) {{\n{body_source}\n}}\n");
+        self.compile_dynamic_js_module_source(
+            &source,
+            "__dynamic_function__",
+            "Dynamic Function",
+        )
+    }
+
+    fn alloc_dynamic_js_closure(
+        &mut self,
+        function_module: Arc<Module>,
+        function_name: &str,
+        registration_context: &str,
+        missing_symbol_context: &str,
+    ) -> Result<Value, VmError> {
+        self.register_dynamic_module(function_module.clone())
+            .map_err(|message| VmError::RuntimeError(format!("{registration_context}: {message}")))?;
+        let func_id = function_module
+            .functions
+            .iter()
+            .position(|function| function.name == function_name)
+            .ok_or_else(|| VmError::RuntimeError(missing_symbol_context.to_string()))?;
+        let closure = Closure::with_module(func_id, Vec::new(), function_module);
+        let closure_ptr = self.gc.lock().allocate(closure);
+        Ok(unsafe {
+            Value::from_ptr(
+                std::ptr::NonNull::new(closure_ptr.as_ptr()).expect("dynamic function ptr"),
+            )
+        })
     }
 
     fn alloc_dynamic_js_function(
@@ -3959,72 +4165,104 @@ impl<'a> Interpreter<'a> {
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] alloc:compiled-module");
         }
-        self.register_dynamic_module(function_module.clone())
-            .map_err(|message| {
-            VmError::RuntimeError(format!(
-                "Dynamic Function module registration error: {}",
-                message
-            ))
-        })?;
+        let closure_val = self.alloc_dynamic_js_closure(
+            function_module,
+            "__dynamic_fn__",
+            "Dynamic Function module registration error",
+            "Dynamic Function compile did not produce __dynamic_fn__",
+        )?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] alloc:registered-module");
         }
-        let func_id = function_module
-            .functions
-            .iter()
-            .position(|function| function.name == "__dynamic_fn__")
-            .ok_or_else(|| {
-                VmError::RuntimeError(
-                    "Dynamic Function compile did not produce __dynamic_fn__".to_string(),
-                )
-            })?;
-        if debug_dynamic_function {
-            eprintln!("[dynamic-fn] alloc:func-id={}", func_id);
-        }
-        let closure = Closure::with_module(func_id, Vec::new(), function_module);
-        let closure_ptr = self.gc.lock().allocate(closure);
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] alloc:done");
         }
-        Ok(unsafe {
-            Value::from_ptr(
-                std::ptr::NonNull::new(closure_ptr.as_ptr()).expect("dynamic function ptr"),
-            )
-        })
+        Ok(closure_val)
+    }
+
+    fn eval_dynamic_js_source(
+        &mut self,
+        source: &str,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        let wrapped = format!("function __eval__() {{\n{source}\n}}\n");
+        let function_module =
+            self.compile_dynamic_js_module_source(&wrapped, "__eval__", "Dynamic eval")?;
+        let closure_val = self.alloc_dynamic_js_closure(
+            function_module,
+            "__eval__",
+            "Dynamic eval module registration error",
+            "Dynamic eval compile did not produce __eval__",
+        )?;
+        let global_this = self
+            .builtin_global_value("globalThis")
+            .unwrap_or(Value::undefined());
+        self.invoke_callable_sync_with_this(closure_val, Some(global_this), &[], task, module)
     }
 
     pub(in crate::vm::interpreter) fn collect_apply_arguments(
-        &self,
+        &mut self,
         arg_list: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
     ) -> Result<Vec<Value>, VmError> {
-        use crate::vm::json::view::{js_classify, JSView};
+        fn alloc_argument_list(capacity: usize) -> Result<Vec<Value>, VmError> {
+            let mut values = Vec::new();
+            values
+                .try_reserve(capacity)
+                .map_err(|_| VmError::RangeError("Argument list too large".to_string()))?;
+            Ok(values)
+        }
 
-        if arg_list.is_null() {
+        if arg_list.is_null() || arg_list.is_undefined() {
             return Ok(Vec::new());
         }
 
-        match js_classify(arg_list) {
-            JSView::Arr(ptr) => Ok(unsafe { &*ptr }.elements.clone()),
-            JSView::Struct { .. } => {
-                let length_value = self
-                    .get_field_value_by_name(arg_list, "length")
-                    .unwrap_or(Value::null());
-                let length = crate::vm::interpreter::core::value_to_f64(length_value)?
-                    .max(0.0)
-                    .floor() as usize;
-                let mut values = Vec::with_capacity(length);
-                for index in 0..length {
-                    values.push(
-                        self.get_field_value_by_name(arg_list, &index.to_string())
-                            .unwrap_or(Value::null()),
-                    );
-                }
-                Ok(values)
+        if let Some(array_ptr) = checked_array_ptr(arg_list) {
+            let array = unsafe { &*array_ptr.as_ptr() };
+            let mut values = alloc_argument_list(array.len())?;
+            for index in 0..array.len() {
+                values.push(array.get(index).unwrap_or(Value::undefined()));
             }
-            _ => Err(VmError::TypeError(
-                "Function.prototype.apply expects an array-like argument list".to_string(),
-            )),
+            return Ok(values);
         }
+
+        if !self.js_value_supports_extensibility(arg_list) {
+            return Err(VmError::TypeError(
+                "Function.prototype.apply expects an array-like argument list".to_string(),
+            ));
+        }
+
+        let length_value = self
+            .get_property_value_via_js_semantics_with_context(
+                arg_list,
+                "length",
+                caller_task,
+                caller_module,
+            )?
+            .unwrap_or(Value::undefined());
+        let length_number = self.js_to_number_with_context(length_value, caller_task, caller_module)?;
+        let length = if length_number.is_nan() || length_number <= 0.0 {
+            0
+        } else if length_number.is_infinite() {
+            usize::MAX
+        } else {
+            length_number.floor().min(usize::MAX as f64) as usize
+        };
+        let mut values = alloc_argument_list(length)?;
+        for index in 0..length {
+            values.push(
+                self.get_property_value_via_js_semantics_with_context(
+                    arg_list,
+                    &index.to_string(),
+                    caller_task,
+                    caller_module,
+                )?
+                .unwrap_or(Value::undefined()),
+            );
+        }
+        Ok(values)
     }
 
     fn nominal_type_id_from_imported_class_value(
@@ -4777,7 +5015,11 @@ impl<'a> Interpreter<'a> {
                 .is_some()
     }
 
-    fn has_property_via_js_semantics(&self, target: Value, key: &str) -> bool {
+    pub(in crate::vm::interpreter) fn has_property_via_js_semantics(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> bool {
         let mut current = Some(target);
         let mut seen = vec![target.raw()];
 
@@ -4799,6 +5041,43 @@ impl<'a> Interpreter<'a> {
         false
     }
 
+    fn descriptor_property_value_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(descriptor) = self.get_descriptor_metadata(target, key) else {
+            return Ok(None);
+        };
+
+        let has_getter = self.descriptor_field_present(descriptor, "get");
+        let has_setter = self.descriptor_field_present(descriptor, "set");
+        if has_getter || has_setter {
+            if let Some(getter) = self.descriptor_accessor(target, key, "get") {
+                let value = self.invoke_callable_sync_with_this(
+                    getter,
+                    Some(target),
+                    &[],
+                    caller_task,
+                    caller_module,
+                )?;
+                return Ok(Some(value));
+            }
+            return Ok(Some(Value::undefined()));
+        }
+
+        if self.descriptor_field_present(descriptor, "value") {
+            return Ok(Some(
+                self.get_field_value_by_name(descriptor, "value")
+                    .unwrap_or(Value::undefined()),
+            ));
+        }
+
+        Ok(None)
+    }
+
     fn get_own_property_value_via_js_semantics_with_context(
         &mut self,
         target: Value,
@@ -4806,18 +5085,12 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
-        if let Some(getter) = self.descriptor_accessor(target, key, "get") {
-            let value = self.invoke_callable_sync_with_this(
-                getter,
-                Some(target),
-                &[],
-                caller_task,
-                caller_module,
-            )?;
-            return Ok(Some(value));
-        }
-
-        if let Some(value) = self.descriptor_data_value(target, key) {
+        if let Some(value) = self.descriptor_property_value_with_context(
+            target,
+            key,
+            caller_task,
+            caller_module,
+        )? {
             return Ok(Some(value));
         }
 
@@ -4925,6 +5198,39 @@ impl<'a> Interpreter<'a> {
         }
         self.set_descriptor_field_present(descriptor, field_name, true);
         Ok(())
+    }
+
+    fn set_prototype_of_value(&self, target: Value, prototype: Value) -> bool {
+        if !self.js_value_supports_extensibility(target) {
+            return false;
+        }
+        if !prototype.is_null() && !self.is_js_object_value(prototype) {
+            return false;
+        }
+        let current = self.prototype_of_value(target).unwrap_or(Value::null());
+        if current.raw() == prototype.raw() {
+            return true;
+        }
+        if !self.is_js_value_extensible(target) {
+            return false;
+        }
+
+        let mut cursor = if prototype.is_null() {
+            None
+        } else {
+            Some(prototype)
+        };
+        let mut seen = vec![target.raw()];
+        while let Some(candidate) = cursor {
+            if candidate.raw() == target.raw() || seen.contains(&candidate.raw()) {
+                return false;
+            }
+            seen.push(candidate.raw());
+            cursor = self.prototype_of_value(candidate).filter(|value| !value.is_null());
+        }
+
+        self.set_explicit_object_prototype(target, prototype);
+        true
     }
 
     fn normalize_property_descriptor_with_context(
@@ -5306,6 +5612,17 @@ impl<'a> Interpreter<'a> {
             )));
         }
 
+        // Accessor definitions on array index properties still participate in
+        // the array's logical length, even when no concrete element value is stored.
+        if let Some(index) = parse_js_array_index_name(key) {
+            if let Some(array_ptr) = checked_array_ptr(target) {
+                let array = unsafe { &mut *array_ptr.as_ptr() };
+                if index >= array.length {
+                    array.length = index + 1;
+                }
+            }
+        }
+
         // Apply data descriptor value directly to the target field if provided.
         if let Some(value) = value_field {
             if self.set_builtin_global_property(target, key, value) {
@@ -5534,6 +5851,17 @@ impl<'a> Interpreter<'a> {
                 "Invalid property descriptor for '{}': cannot mix accessors and value",
                 key
             )));
+        }
+
+        // Accessor definitions on array index properties still participate in
+        // the array's logical length, even when no concrete element value is stored.
+        if let Some(index) = parse_js_array_index_name(key) {
+            if let Some(array_ptr) = checked_array_ptr(target) {
+                let array = unsafe { &mut *array_ptr.as_ptr() };
+                if index >= array.length {
+                    array.length = index + 1;
+                }
+            }
         }
 
         if let Some(value) = value_field {
@@ -6486,17 +6814,40 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::FUNCTION_EVAL_HELPER => {
+                        let source = if let Some(source) = args.first().copied() {
+                            match self.js_function_argument_to_string(source, task, module) {
+                                Ok(source) => source,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        } else {
+                            String::new()
+                        };
+                        let value = match self.eval_dynamic_js_source(&source, task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::FUNCTION_CALL_HELPER => {
-                        if args.len() < 2 {
+                        if args.is_empty() {
                             return OpcodeResult::Error(VmError::TypeError(
-                                "Function.prototype.call requires a target function and thisArg"
-                                    .to_string(),
+                                "Function.prototype.call requires a target function".to_string(),
                             ));
                         }
                         let target_callable = args[0];
-                        let this_arg = args[1];
+                        if !self.js_call_target_supported(target_callable) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Function.prototype.call target is not callable".to_string(),
+                            ));
+                        }
+                        let this_arg = args.get(1).copied().unwrap_or(Value::undefined());
                         let rest_args = if args.len() >= 3 {
-                            match self.collect_apply_arguments(args[2]) {
+                            match self.collect_apply_arguments(args[2], task, module) {
                                 Ok(values) => values,
                                 Err(error) => return OpcodeResult::Error(error),
                             }
@@ -6515,16 +6866,20 @@ impl<'a> Interpreter<'a> {
                     }
 
                     id if id == crate::compiler::native_id::FUNCTION_APPLY_HELPER => {
-                        if args.len() < 2 {
+                        if args.is_empty() {
                             return OpcodeResult::Error(VmError::TypeError(
-                                "Function.prototype.apply requires a target function and thisArg"
-                                    .to_string(),
+                                "Function.prototype.apply requires a target function".to_string(),
                             ));
                         }
                         let target_callable = args[0];
-                        let this_arg = args[1];
+                        if !self.js_call_target_supported(target_callable) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Function.prototype.apply target is not callable".to_string(),
+                            ));
+                        }
+                        let this_arg = args.get(1).copied().unwrap_or(Value::undefined());
                         let apply_args = if args.len() >= 3 {
-                            match self.collect_apply_arguments(args[2]) {
+                            match self.collect_apply_arguments(args[2], task, module) {
                                 Ok(values) => values,
                                 Err(error) => return OpcodeResult::Error(error),
                             }
@@ -6593,6 +6948,8 @@ impl<'a> Interpreter<'a> {
                             &apply_args,
                             Some(this_arg),
                             ReturnAction::PushReturnValue,
+                            module,
+                            task,
                         ) {
                             Ok(Some(frame)) => frame,
                             Ok(None) => OpcodeResult::Error(VmError::TypeError(
@@ -6603,21 +6960,20 @@ impl<'a> Interpreter<'a> {
                     }
 
                     id if id == crate::compiler::native_id::FUNCTION_BIND_HELPER => {
-                        if args.len() < 2 {
+                        if args.is_empty() {
                             return OpcodeResult::Error(VmError::TypeError(
-                                "Function.prototype.bind requires a target function and thisArg"
-                                    .to_string(),
+                                "Function.prototype.bind requires a target function".to_string(),
                             ));
                         }
                         let target_callable = args[0];
-                        if !target_callable.is_ptr() {
+                        if !self.js_call_target_supported(target_callable) {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Function.prototype.bind target is not callable".to_string(),
                             ));
                         }
-                        let this_arg = args[1];
+                        let this_arg = args.get(1).copied().unwrap_or(Value::undefined());
                         let bound_args = if args.len() >= 3 {
-                            match self.collect_apply_arguments(args[2]) {
+                            match self.collect_apply_arguments(args[2], task, module) {
                                 Ok(values) => values,
                                 Err(error) => return OpcodeResult::Error(error),
                             }
@@ -6628,6 +6984,8 @@ impl<'a> Interpreter<'a> {
                             target_callable,
                             this_arg,
                             bound_args,
+                            task,
+                            module,
                         ) {
                             Ok(value) => value,
                             Err(error) => return OpcodeResult::Error(error),
@@ -6684,6 +7042,12 @@ impl<'a> Interpreter<'a> {
                         }
 
                         let mut result = false;
+                        if !self.is_js_object_value(args[0]) {
+                            if let Err(error) = stack.push(Value::bool(false)) {
+                                return OpcodeResult::Error(error);
+                            }
+                            return OpcodeResult::Continue;
+                        }
 
                         if let Some(constructor_prototype) =
                             self.constructor_prototype_value(args[1])
@@ -8225,6 +8589,38 @@ impl<'a> Interpreter<'a> {
                         let target = args[0];
                         self.set_js_value_extensible(target, false);
                         if let Err(e) = stack.push(target) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.setPrototypeOf requires target and prototype"
+                                    .to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        let prototype = args[1];
+                        if target.is_null() || target.is_undefined() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Cannot convert undefined or null to object".to_string(),
+                            ));
+                        }
+                        if !self.js_value_supports_extensibility(target) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.setPrototypeOf target must be an object".to_string(),
+                            ));
+                        }
+                        if !prototype.is_null() && !self.is_js_object_value(prototype) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.setPrototypeOf prototype must be an object or null"
+                                    .to_string(),
+                            ));
+                        }
+                        if let Err(e) =
+                            stack.push(Value::bool(self.set_prototype_of_value(target, prototype)))
+                        {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
