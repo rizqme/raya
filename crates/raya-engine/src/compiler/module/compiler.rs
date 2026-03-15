@@ -755,6 +755,7 @@ impl ModuleCompiler {
                 is_generator: false,
                 visible_length: 0,
                 is_strict_js: false,
+                uses_builtin_this_coercion: false,
                 local_count: 0,
                 code: vec![Opcode::ConstNull.to_u8(), Opcode::Return.to_u8()],
             });

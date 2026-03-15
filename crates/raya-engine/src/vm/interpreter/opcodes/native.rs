@@ -39,7 +39,6 @@ const OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY: &str = "__object_prototype_overrid
 const OBJECT_DESCRIPTOR_MARKER_METADATA_KEY: &str = "__object_descriptor_marker__";
 const OBJECT_DESCRIPTOR_PRESENT_METADATA_KEY: &str = "__object_descriptor_present__";
 const OBJECT_EXTENSIBLE_METADATA_KEY: &str = "__object_extensible__";
-const IMPORTED_CLASS_TYPE_HANDLE_KEY: &str = "__raya_type_handle__";
 static DYNAMIC_JS_FUNCTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy)]
@@ -373,7 +372,12 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Option<Value>, VmError> {
-        match self.try_proxy_like_get_property(constructor, "prototype", task, module)? {
+        match self.get_property_value_via_js_semantics_with_context(
+            constructor,
+            "prototype",
+            task,
+            module,
+        )? {
             Some(prototype) if self.is_js_object_value(prototype) => Ok(Some(prototype)),
             _ => Ok(intrinsic_default_prototype.filter(|value| self.is_js_object_value(*value))),
         }
@@ -482,26 +486,37 @@ impl<'a> Interpreter<'a> {
             return self.construct_builtin_object(new_target, task, module);
         }
 
-        if let Some(nominal_type_id) = self
+        let constructor_nominal_type_id = self
             .constructor_nominal_type_id(constructor)
-            .or_else(|| self.nominal_type_id_from_imported_class_value(module, constructor))
-        {
-            let obj_val = self.alloc_nominal_instance_value(nominal_type_id)?;
+            .or_else(|| self.nominal_type_id_from_imported_class_value(module, constructor));
+        if let Some(constructor_nominal_type_id) = constructor_nominal_type_id {
+            let allocation_nominal_type_id = self
+                .constructor_nominal_type_id(new_target)
+                .or_else(|| self.nominal_type_id_from_imported_class_value(module, new_target))
+                .unwrap_or(constructor_nominal_type_id);
+            let obj_val = self.alloc_nominal_instance_value(allocation_nominal_type_id)?;
             self.ephemeral_gc_roots.write().push(obj_val);
 
-            let prototype =
-                match self.try_proxy_like_get_property(new_target, "prototype", task, module)? {
-                    Some(prototype) if self.is_js_object_value(prototype) => Some(prototype),
-                    _ => self.constructor_prototype_value(constructor),
-                };
+            let prototype = match self.get_property_value_via_js_semantics_with_context(
+                new_target,
+                "prototype",
+                task,
+                module,
+            )? {
+                Some(prototype) if self.is_js_object_value(prototype) => Some(prototype),
+                _ => self.constructor_prototype_value(constructor),
+            };
             if let Some(prototype) = prototype {
                 self.set_constructed_object_prototype_from_value(obj_val, prototype);
             }
 
             let (constructor_id, constructor_module) = {
                 let classes = self.classes.read();
-                let class = classes.get_class(nominal_type_id).ok_or_else(|| {
-                    VmError::RuntimeError(format!("Class {} not found", nominal_type_id))
+                let class = classes.get_class(constructor_nominal_type_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!(
+                        "Class {} not found",
+                        constructor_nominal_type_id
+                    ))
                 })?;
                 (class.get_constructor(), class.module.clone())
             };
@@ -967,24 +982,7 @@ impl<'a> Interpreter<'a> {
             return Some(nominal_id as usize);
         }
 
-        let object_ptr = checked_object_ptr(value)?;
-        let object = unsafe { &*object_ptr.as_ptr() };
-        let handle_key = self.intern_prop_key(IMPORTED_CLASS_TYPE_HANDLE_KEY);
-        let handle_val = object
-            .dyn_map()
-            .and_then(|dyn_map| dyn_map.get(&handle_key).copied())?;
-        let resolved = self
-            .type_handle_nominal_id(handle_val)
-            .map(|id| id as usize);
-        if debug_ctor_resolve {
-            eprintln!(
-                "[ctor-resolve] value={:#x} dyn_handle={:#x} -> {:?}",
-                value.raw(),
-                handle_val.raw(),
-                resolved
-            );
-        }
-        resolved
+        None
     }
 
     pub(in crate::vm::interpreter) fn materialize_constructor_static_method(
@@ -1446,6 +1444,29 @@ impl<'a> Interpreter<'a> {
         )
     }
 
+    pub(in crate::vm::interpreter) fn native_callable_uses_builtin_this_coercion(
+        &self,
+        native_id: u16,
+    ) -> bool {
+        crate::vm::builtin::is_array_method(native_id)
+            || crate::vm::builtin::is_string_method(native_id)
+            || crate::vm::builtin::is_number_method(native_id)
+    }
+
+    pub(in crate::vm::interpreter) fn builtin_native_this_value(
+        &mut self,
+        receiver: Value,
+        native_id: u16,
+    ) -> Result<Value, VmError> {
+        if !self.native_callable_uses_builtin_this_coercion(native_id) {
+            return Ok(receiver);
+        }
+        if let Some(boxed) = self.box_js_this_primitive(receiver)? {
+            return Ok(boxed);
+        }
+        Ok(receiver)
+    }
+
     pub(in crate::vm::interpreter) fn callable_function_info(
         &self,
         target: Value,
@@ -1647,27 +1668,128 @@ impl<'a> Interpreter<'a> {
         }
 
         if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-            return true;
+            let Some(method_ptr) = (unsafe { target.as_ptr::<BoundMethod>() }) else {
+                return false;
+            };
+            let method = unsafe { &*method_ptr.as_ptr() };
+            let Some(module) = method.module.as_ref() else {
+                return false;
+            };
+            return module
+                .functions
+                .get(method.func_id)
+                .is_some_and(|function| function.is_strict_js);
         }
 
         false
     }
 
-    pub(in crate::vm::interpreter) fn js_this_value_for_callable(
+    pub(in crate::vm::interpreter) fn callable_uses_builtin_this_coercion(
         &self,
+        target: Value,
+    ) -> bool {
+        let target = self
+            .unwrapped_proxy_like(target)
+            .map(|proxy| proxy.target)
+            .unwrap_or(target);
+
+        let Some(raw_ptr) = (unsafe { target.as_ptr::<u8>() }) else {
+            return false;
+        };
+        let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+
+        if header.type_id() == std::any::TypeId::of::<Closure>() {
+            let Some(closure_ptr) = (unsafe { target.as_ptr::<Closure>() }) else {
+                return false;
+            };
+            let closure = unsafe { &*closure_ptr.as_ptr() };
+            let Some(module) = closure.module() else {
+                return false;
+            };
+            return module
+                .functions
+                .get(closure.func_id)
+                .is_some_and(|function| function.uses_builtin_this_coercion);
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
+            let Some(bound_ptr) = (unsafe { target.as_ptr::<BoundFunction>() }) else {
+                return false;
+            };
+            return self
+                .callable_uses_builtin_this_coercion(unsafe { &*bound_ptr.as_ptr() }.target);
+        }
+
+        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+            let Some(method_ptr) = (unsafe { target.as_ptr::<BoundMethod>() }) else {
+                return false;
+            };
+            let method = unsafe { &*method_ptr.as_ptr() };
+            let Some(module) = method.module.as_ref() else {
+                return false;
+            };
+            return module
+                .functions
+                .get(method.func_id)
+                .is_some_and(|function| function.uses_builtin_this_coercion);
+        }
+
+        false
+    }
+
+    fn box_js_this_primitive(&mut self, this_value: Value) -> Result<Option<Value>, VmError> {
+        if let Some(constructor) = self.builtin_global_value("Number") {
+            if this_value.as_i32().is_some()
+                || this_value.as_i64().is_some()
+                || this_value.as_f64().is_some()
+            {
+                return self
+                    .alloc_boxed_primitive_object(constructor, "Number", this_value)
+                    .map(Some);
+            }
+        }
+        if let Some(boolean) = this_value.as_bool() {
+            if let Some(constructor) = self.builtin_global_value("Boolean") {
+                return self
+                    .alloc_boxed_primitive_object(constructor, "Boolean", Value::bool(boolean))
+                    .map(Some);
+            }
+        }
+        if let Some(string_ptr) = unsafe { this_value.as_ptr::<RayaString>() } {
+            if let Some(constructor) = self.builtin_global_value("String") {
+                let string_value = unsafe { Value::from_ptr(string_ptr) };
+                return self
+                    .alloc_boxed_primitive_object(constructor, "String", string_value)
+                    .map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    pub(in crate::vm::interpreter) fn js_this_value_for_callable(
+        &mut self,
         callable: Value,
         explicit_this: Option<Value>,
-    ) -> Value {
+    ) -> Result<Value, VmError> {
         let this_value = explicit_this.unwrap_or(Value::undefined());
+        if self.callable_uses_builtin_this_coercion(callable) {
+            if let Some(boxed) = self.box_js_this_primitive(this_value)? {
+                return Ok(boxed);
+            }
+            return Ok(this_value);
+        }
         if self.callable_is_strict_js(callable) {
-            return this_value;
+            return Ok(this_value);
         }
         if this_value.is_null() || this_value.is_undefined() {
-            return self
+            return Ok(self
                 .builtin_global_value("globalThis")
-                .unwrap_or(Value::undefined());
+                .unwrap_or(Value::undefined()));
         }
-        this_value
+        if let Some(boxed) = self.box_js_this_primitive(this_value)? {
+            return Ok(boxed);
+        }
+        Ok(this_value)
     }
 
     fn callable_native_alias_id(&self, callable: Value) -> Option<u16> {
@@ -1718,7 +1840,15 @@ impl<'a> Interpreter<'a> {
             return false;
         }
         if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-            return true;
+            let method = unsafe { &*callable.as_ptr::<BoundMethod>().unwrap().as_ptr() };
+            let Some(module) = method.module.as_ref() else {
+                return false;
+            };
+            return module
+                .functions
+                .get(method.func_id)
+                .map(|function| function.uses_js_this_slot)
+                .unwrap_or(false);
         }
         if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
             let method = unsafe { &*callable.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
@@ -1806,7 +1936,15 @@ impl<'a> Interpreter<'a> {
                         .expect("bound method target")
                         .as_ptr()
                 };
-                if let Err(e) = stack.push(this_arg) {
+                let receiver = if self.callable_uses_js_this_slot(target_callable) {
+                    match self.js_this_value_for_callable(target_callable, Some(this_arg)) {
+                        Ok(value) => value,
+                        Err(error) => return OpcodeResult::Error(error),
+                    }
+                } else {
+                    this_arg
+                };
+                if let Err(e) = stack.push(receiver) {
                     return OpcodeResult::Error(e);
                 }
                 for arg in &rest_args {
@@ -1853,6 +1991,24 @@ impl<'a> Interpreter<'a> {
 
         if !target.is_ptr() {
             return Ok(true);
+        }
+
+        if let Some(array_ptr) = checked_array_ptr(target) {
+            if key_name == "length" {
+                return Ok(false);
+            }
+            if let Some(index) = parse_js_array_index_name(&key_name) {
+                let array = unsafe { &mut *array_ptr.as_ptr() };
+                let _ = array.delete_index(index);
+                let mut metadata = self.metadata.lock();
+                let _ = metadata.delete_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, target, &key_name);
+                let _ = metadata.delete_metadata_property(
+                    NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY,
+                    target,
+                    &key_name,
+                );
+                return Ok(true);
+            }
         }
 
         let has_runtime_global_source = self.is_runtime_global_object(target)
@@ -1992,9 +2148,14 @@ impl<'a> Interpreter<'a> {
                 method_names.resize(method_ids.len(), String::new());
             }
             for (slot, func_id) in method_ids.iter().copied().enumerate() {
-                if func_id == usize::MAX
-                    || !method_names.get(slot).is_some_and(|name| name.is_empty())
-                {
+                if func_id == usize::MAX {
+                    continue;
+                }
+                if module.functions.get(func_id).is_none() {
+                    method_names[slot].clear();
+                    continue;
+                }
+                if !method_names.get(slot).is_some_and(|name| name.is_empty()) {
                     continue;
                 }
                 if let Some(function) = module.functions.get(func_id) {
@@ -2412,6 +2573,18 @@ impl<'a> Interpreter<'a> {
             }
         }
 
+        if let Some(index) = parse_js_array_index_name(key) {
+            if let Some(updated) = self.typed_array_set_index_value_with_context(
+                receiver,
+                index,
+                value,
+                caller_task,
+                caller_module,
+            )? {
+                return Ok(updated);
+            }
+        }
+
         if self.set_builtin_global_property(receiver, key, value) {
             self.sync_descriptor_value(receiver, key, value);
             return Ok(true);
@@ -2688,9 +2861,14 @@ impl<'a> Interpreter<'a> {
                 method_names.resize(method_ids.len(), String::new());
             }
             for (slot, func_id) in method_ids.iter().copied().enumerate() {
-                if func_id == usize::MAX
-                    || !method_names.get(slot).is_some_and(|name| name.is_empty())
-                {
+                if func_id == usize::MAX {
+                    continue;
+                }
+                if module.functions.get(func_id).is_none() {
+                    method_names[slot].clear();
+                    continue;
+                }
+                if !method_names.get(slot).is_some_and(|name| name.is_empty()) {
                     continue;
                 }
                 if let Some(function) = module.functions.get(func_id) {
@@ -3169,6 +3347,31 @@ impl<'a> Interpreter<'a> {
     ) -> Result<f64, VmError> {
         let primitive = self.js_to_primitive_number_hint(value, caller_task, caller_module)?;
         self.js_to_number_from_primitive(primitive)
+    }
+
+    fn js_add_with_context(
+        &mut self,
+        left: Value,
+        right: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Value, VmError> {
+        let left_primitive = self.js_to_primitive_with_hint(left, "default", caller_task, caller_module)?;
+        let right_primitive =
+            self.js_to_primitive_with_hint(right, "default", caller_task, caller_module)?;
+
+        if checked_string_ptr(left_primitive).is_some() || checked_string_ptr(right_primitive).is_some()
+        {
+            let left_text =
+                self.js_function_argument_to_string(left_primitive, caller_task, caller_module)?;
+            let right_text =
+                self.js_function_argument_to_string(right_primitive, caller_task, caller_module)?;
+            return Ok(self.alloc_string_value(format!("{left_text}{right_text}")));
+        }
+
+        let left_number = self.js_to_number_from_primitive(left_primitive)?;
+        let right_number = self.js_to_number_from_primitive(right_primitive)?;
+        Ok(Value::f64(left_number + right_number))
     }
 
     fn js_math_number_arg(
@@ -3756,6 +3959,16 @@ impl<'a> Interpreter<'a> {
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] alloc:compiled-module");
         }
+        self.register_dynamic_module(function_module.clone())
+            .map_err(|message| {
+            VmError::RuntimeError(format!(
+                "Dynamic Function module registration error: {}",
+                message
+            ))
+        })?;
+        if debug_dynamic_function {
+            eprintln!("[dynamic-fn] alloc:registered-module");
+        }
         let func_id = function_module
             .functions
             .iter()
@@ -3846,18 +4059,6 @@ impl<'a> Interpreter<'a> {
                 .ok();
         }
 
-        if let Some(object_ptr) = checked_object_ptr(value) {
-            let object = unsafe { &*object_ptr.as_ptr() };
-            let handle_key = self.intern_prop_key(IMPORTED_CLASS_TYPE_HANDLE_KEY);
-            if let Some(handle_val) = object
-                .dyn_map()
-                .and_then(|dyn_map| dyn_map.get(&handle_key).copied())
-            {
-                return self
-                    .type_handle_nominal_id(handle_val)
-                    .map(|id| id as usize);
-            }
-        }
         None
     }
 
@@ -3896,6 +4097,23 @@ impl<'a> Interpreter<'a> {
         }
         if let Some(value) = self.callable_virtual_property_value(obj_val, field_name) {
             return Some(value);
+        }
+        if self.is_typed_array_like_value(obj_val) {
+            if field_name == "length" {
+                let len = self.typed_array_live_length_direct(obj_val)?;
+                return Some(if len <= i32::MAX as usize {
+                    Value::i32(len as i32)
+                } else {
+                    Value::f64(len as f64)
+                });
+            }
+            if let Some(index) = parse_js_array_index_name(field_name) {
+                let len = self.typed_array_live_length_direct(obj_val)?;
+                if index >= len {
+                    return None;
+                }
+                return self.typed_array_index_value_direct(obj_val, index);
+            }
         }
         let obj_ptr = checked_object_ptr(obj_val)?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
@@ -3943,13 +4161,543 @@ impl<'a> Interpreter<'a> {
             if let Some(index) = parse_js_array_index_name(key) {
                 return array.get(index);
             }
+            if let Some(value) = self.metadata_data_property_value(target, key) {
+                return Some(value);
+            }
+            if let Some(value) = self.get_own_field_value_by_name(target, key) {
+                return Some(value);
+            }
+        }
+
+        if self.is_typed_array_like_value(target) {
+            if key == "length" {
+                let len = self.typed_array_live_length_direct(target)?;
+                return Some(if len <= i32::MAX as usize {
+                    Value::i32(len as i32)
+                } else {
+                    Value::f64(len as f64)
+                });
+            }
+            if let Some(index) = parse_js_array_index_name(key) {
+                let len = self.typed_array_live_length_direct(target)?;
+                if index >= len {
+                    return None;
+                }
+                return self.typed_array_index_value_direct(target, index);
+            }
         }
 
         self.get_own_field_value_by_name(target, key)
     }
 
+    fn is_typed_array_like_value(&self, target: Value) -> bool {
+        let debug_typed_array = std::env::var("RAYA_DEBUG_TYPED_ARRAY_PROP").is_ok();
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return false;
+        };
+        let Some(mut nominal_type_id) = (unsafe { &*obj_ptr.as_ptr() }).nominal_type_id_usize()
+        else {
+            return false;
+        };
+
+        let classes = self.classes.read();
+        loop {
+            let Some(class) = classes.get_class(nominal_type_id) else {
+                return false;
+            };
+            if debug_typed_array {
+                eprintln!(
+                    "[typed-array.kind] target={:#x} nominal={} class={}",
+                    target.raw(),
+                    nominal_type_id,
+                    class.name
+                );
+            }
+            match class.name.as_str() {
+                "Uint8Array"
+                | "Int8Array"
+                | "Uint16Array"
+                | "Int16Array"
+                | "Uint32Array"
+                | "Int32Array"
+                | "Float16Array"
+                | "Float32Array"
+                | "Float64Array"
+                | "Uint8ClampedArray"
+                | "BigInt64Array"
+                | "BigUint64Array"
+                | "TypedArray" => return true,
+                _ => {
+                    let Some(parent_id) = class.parent_id else {
+                        return false;
+                    };
+                    nominal_type_id = parent_id;
+                }
+            }
+        }
+    }
+
+    fn typed_array_runtime_class_name(&self, target: Value) -> Option<String> {
+        let obj_ptr = checked_object_ptr(target)?;
+        let mut nominal_type_id = unsafe { &*obj_ptr.as_ptr() }.nominal_type_id_usize()?;
+        let classes = self.classes.read();
+        loop {
+            let class = classes.get_class(nominal_type_id)?;
+            match class.name.as_str() {
+                "Uint8Array"
+                | "Int8Array"
+                | "Uint16Array"
+                | "Int16Array"
+                | "Uint32Array"
+                | "Int32Array"
+                | "Float16Array"
+                | "Float32Array"
+                | "Float64Array"
+                | "Uint8ClampedArray"
+                | "BigInt64Array"
+                | "BigUint64Array"
+                | "TypedArray" => return Some(class.name.clone()),
+                _ => {
+                    nominal_type_id = class.parent_id?;
+                }
+            }
+        }
+    }
+
+    fn typed_array_bytes_per_element(&self, class_name: &str) -> isize {
+        match class_name {
+            "Uint8Array" | "Int8Array" | "Uint8ClampedArray" | "TypedArray" => 1,
+            "Uint16Array" | "Int16Array" | "Float16Array" => 2,
+            "Uint32Array" | "Int32Array" | "Float32Array" => 4,
+            "Float64Array" | "BigInt64Array" | "BigUint64Array" => 8,
+            _ => 1,
+        }
+    }
+
+    fn own_exotic_state_value(&self, target: Value, key: &str) -> Option<Value> {
+        self.get_own_js_property_value_by_name(target, key)
+    }
+
+    fn typed_array_live_length_direct(&self, target: Value) -> Option<usize> {
+        if !self.is_typed_array_like_value(target) {
+            return None;
+        }
+        let class_name = self.typed_array_runtime_class_name(target)?;
+        let buffer = self.own_exotic_state_value(target, "buffer")?;
+        let byte_length = self.own_exotic_state_value(buffer, "byteLength")?.as_i32()? as isize;
+        let byte_offset = self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as isize;
+        let fixed_length = self.own_exotic_state_value(target, "_fixedLength")?.as_i32()? as isize;
+        let length_tracking = self
+            .own_exotic_state_value(target, "_lengthTracking")?
+            .as_bool()
+            .unwrap_or(false);
+        let bytes_per_element = self.typed_array_bytes_per_element(&class_name);
+
+        let available = byte_length - byte_offset;
+        if available < 0 {
+            return Some(0);
+        }
+        if length_tracking {
+            return Some((available / bytes_per_element).max(0) as usize);
+        }
+        if fixed_length * bytes_per_element > available {
+            return Some(0);
+        }
+        Some(fixed_length.max(0) as usize)
+    }
+
+    fn typed_array_live_length_with_context(
+        &mut self,
+        target: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<usize>, VmError> {
+        if !self.is_typed_array_like_value(target) {
+            return Ok(None);
+        }
+        if let Some(method) = self.get_field_value_on_target_by_name(target, "__currentLength") {
+            if Self::is_callable_value(method) {
+                let length = self.invoke_callable_sync_with_this(
+                    method,
+                    Some(target),
+                    &[],
+                    caller_task,
+                    caller_module,
+                )?;
+                let normalized = length
+                    .as_i32()
+                    .map(|value| value as i64)
+                    .or_else(|| length.as_f64().map(|value| value as i64))
+                    .unwrap_or(0)
+                    .max(0) as usize;
+                return Ok(Some(normalized));
+            }
+        }
+        Ok(self.typed_array_live_length_direct(target))
+    }
+
+    fn array_buffer_byte_at(&self, buffer: Value, offset: usize) -> Option<u8> {
+        let bytes = self.own_exotic_state_value(buffer, "_bytes")?;
+        let array_ptr = checked_array_ptr(bytes)?;
+        let array = unsafe { &*array_ptr.as_ptr() };
+        let value = array.get(offset)?;
+        if let Some(i) = value.as_i32() {
+            return Some(i as u8);
+        }
+        value.as_f64().map(|f| f as u8)
+    }
+
+    fn typed_array_index_value_direct(&self, target: Value, index: usize) -> Option<Value> {
+        let debug_typed_array = std::env::var("RAYA_DEBUG_TYPED_ARRAY_PROP").is_ok();
+        let len = self.typed_array_live_length_direct(target)?;
+        if debug_typed_array {
+            eprintln!(
+                "[typed-array.direct] target={:#x} index={} len={}",
+                target.raw(),
+                index,
+                len
+            );
+        }
+        if index >= len {
+            return Some(Value::undefined());
+        }
+
+        let class_name = self.typed_array_runtime_class_name(target)?;
+        if debug_typed_array {
+            eprintln!(
+                "[typed-array.direct] target={:#x} index={} class={}",
+                target.raw(),
+                index,
+                class_name
+            );
+        }
+        match class_name.as_str() {
+            "Uint8Array" => {
+                let buffer = self.own_exotic_state_value(target, "buffer")?;
+                let byte_offset =
+                    self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as usize;
+                if debug_typed_array {
+                    eprintln!(
+                        "[typed-array.direct] target={:#x} index={} byteOffset={}",
+                        target.raw(),
+                        index,
+                        byte_offset
+                    );
+                }
+                self.array_buffer_byte_at(buffer, byte_offset + index)
+                    .map(|byte| Value::i32(byte as i32))
+            }
+            "Int8Array" => {
+                let inner = self.own_exotic_state_value(target, "_u8")?;
+                let value = self.typed_array_index_value_direct(inner, index)?;
+                let raw = value.as_i32()?;
+                Some(Value::i32(if raw > 127 { raw - 256 } else { raw }))
+            }
+            "Uint8ClampedArray" => {
+                let inner = self.own_exotic_state_value(target, "_u8")?;
+                self.typed_array_index_value_direct(inner, index)
+            }
+            "Uint16Array" => {
+                let buffer = self.own_exotic_state_value(target, "buffer")?;
+                let byte_offset =
+                    self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as usize;
+                let base = byte_offset + (index << 1);
+                let b0 = self.array_buffer_byte_at(buffer, base)? as i32;
+                let b1 = self.array_buffer_byte_at(buffer, base + 1)? as i32;
+                Some(Value::i32(b0 | (b1 << 8)))
+            }
+            "Int16Array" => {
+                let inner = self.own_exotic_state_value(target, "_u16")?;
+                let value = self.typed_array_index_value_direct(inner, index)?;
+                let raw = value.as_i32()?;
+                Some(Value::i32(if raw > 32767 { raw - 65536 } else { raw }))
+            }
+            "Int32Array" => {
+                let buffer = self.own_exotic_state_value(target, "buffer")?;
+                let byte_offset =
+                    self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as usize;
+                let base = byte_offset + (index << 2);
+                let bytes = [
+                    self.array_buffer_byte_at(buffer, base)?,
+                    self.array_buffer_byte_at(buffer, base + 1)?,
+                    self.array_buffer_byte_at(buffer, base + 2)?,
+                    self.array_buffer_byte_at(buffer, base + 3)?,
+                ];
+                Some(Value::i32(i32::from_le_bytes(bytes)))
+            }
+            "Uint32Array" => {
+                let inner = self.own_exotic_state_value(target, "_i32")?;
+                let value = self.typed_array_index_value_direct(inner, index)?;
+                let raw = value.as_i32()?;
+                if raw < 0 {
+                    Some(Value::f64(raw as f64 + 4294967296.0))
+                } else {
+                    Some(Value::i32(raw))
+                }
+            }
+            "Float32Array" => {
+                let inner = self.own_exotic_state_value(target, "_i32")?;
+                let value = self.typed_array_index_value_direct(inner, index)?;
+                value
+                    .as_i32()
+                    .map(|raw| Value::f64(raw as f64))
+                    .or(Some(value))
+            }
+            "Float16Array" => {
+                let inner = self.own_exotic_state_value(target, "_u16")?;
+                let value = self.typed_array_index_value_direct(inner, index)?;
+                value
+                    .as_i32()
+                    .map(|raw| Value::f64(raw as f64))
+                    .or(Some(value))
+            }
+            "Float64Array" => {
+                let buffer = self.own_exotic_state_value(target, "buffer")?;
+                let byte_offset =
+                    self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as usize;
+                let base = byte_offset + (index << 3);
+                let bytes = [
+                    self.array_buffer_byte_at(buffer, base)?,
+                    self.array_buffer_byte_at(buffer, base + 1)?,
+                    self.array_buffer_byte_at(buffer, base + 2)?,
+                    self.array_buffer_byte_at(buffer, base + 3)?,
+                    self.array_buffer_byte_at(buffer, base + 4)?,
+                    self.array_buffer_byte_at(buffer, base + 5)?,
+                    self.array_buffer_byte_at(buffer, base + 6)?,
+                    self.array_buffer_byte_at(buffer, base + 7)?,
+                ];
+                Some(Value::f64(f64::from_le_bytes(bytes)))
+            }
+            "BigInt64Array" | "BigUint64Array" => {
+                let inner = self.own_exotic_state_value(target, "_f64")?;
+                self.typed_array_index_value_direct(inner, index)
+            }
+            "TypedArray" => {
+                let buffer = self.own_exotic_state_value(target, "buffer")?;
+                let byte_offset =
+                    self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as usize;
+                self.array_buffer_byte_at(buffer, byte_offset + index)
+                    .map(|byte| Value::i32(byte as i32))
+            }
+            _ => None,
+        }
+    }
+
+    fn typed_array_index_property_flags(&self, target: Value, key: &str) -> Option<(bool, bool, bool)> {
+        if !self.is_typed_array_like_value(target) {
+            return None;
+        }
+        let index = parse_js_array_index_name(key)?;
+        let len = self.typed_array_live_length_direct(target)?;
+        (index < len).then_some((true, true, true))
+    }
+
+    fn typed_array_index_value_with_context(
+        &mut self,
+        target: Value,
+        index: usize,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        let debug_typed_array = std::env::var("RAYA_DEBUG_TYPED_ARRAY_PROP").is_ok();
+        let Some(len) =
+            self.typed_array_live_length_with_context(target, caller_task, caller_module)?
+        else {
+            if debug_typed_array {
+                eprintln!(
+                    "[typed-array.get] target={:#x} index={} len=<none>",
+                    target.raw(),
+                    index
+                );
+            }
+            return Ok(None);
+        };
+        if debug_typed_array {
+            eprintln!(
+                "[typed-array.get] target={:#x} index={} len={}",
+                target.raw(),
+                index,
+                len
+            );
+        }
+        if index >= len {
+            return Ok(Some(Value::undefined()));
+        }
+        if let Some(method) = self.get_field_value_on_target_by_name(target, "get") {
+            if Self::is_callable_value(method) {
+                let index_value = if index <= i32::MAX as usize {
+                    Value::i32(index as i32)
+                } else {
+                    Value::f64(index as f64)
+                };
+                let value = self.invoke_callable_sync_with_this(
+                    method,
+                    Some(target),
+                    &[index_value],
+                    caller_task,
+                    caller_module,
+                )?;
+                if debug_typed_array {
+                    eprintln!(
+                        "[typed-array.get] target={:#x} index={} via-method={:#x}",
+                        target.raw(),
+                        index,
+                        value.raw()
+                    );
+                }
+                return Ok(Some(value));
+            }
+        }
+        let value = self.typed_array_index_value_direct(target, index);
+        if debug_typed_array {
+            eprintln!(
+                "[typed-array.get] target={:#x} index={} via-direct={:?}",
+                target.raw(),
+                index,
+                value.map(|entry| entry.raw())
+            );
+        }
+        Ok(value)
+    }
+
+    fn typed_array_set_index_value_with_context(
+        &mut self,
+        target: Value,
+        index: usize,
+        value: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<bool>, VmError> {
+        let Some(len) =
+            self.typed_array_live_length_with_context(target, caller_task, caller_module)?
+        else {
+            return Ok(None);
+        };
+        if index >= len {
+            return Ok(Some(true));
+        }
+        if let Some(method) = self.get_field_value_on_target_by_name(target, "set") {
+            if Self::is_callable_value(method) {
+                let index_value = if index <= i32::MAX as usize {
+                    Value::i32(index as i32)
+                } else {
+                    Value::f64(index as f64)
+                };
+                let _ = self.invoke_callable_sync_with_this(
+                    method,
+                    Some(target),
+                    &[index_value, value],
+                    caller_task,
+                    caller_module,
+                )?;
+                return Ok(Some(true));
+            }
+        }
+        Ok(Some(false))
+    }
+
+    fn typed_array_define_indexed_property(
+        &mut self,
+        target: Value,
+        key: &str,
+        descriptor: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<()>, VmError> {
+        if !self.is_typed_array_like_value(target) {
+            return Ok(None);
+        }
+        let Some(index) = parse_js_array_index_name(key) else {
+            return Ok(None);
+        };
+        let Some(len) =
+            self.typed_array_live_length_with_context(target, caller_task, caller_module)?
+        else {
+            return Ok(None);
+        };
+        if index >= len
+            || self.descriptor_field_present(descriptor, "get")
+            || self.descriptor_field_present(descriptor, "set")
+            || (self.descriptor_field_present(descriptor, "configurable")
+                && !self.descriptor_flag(descriptor, "configurable", true))
+            || (self.descriptor_field_present(descriptor, "enumerable")
+                && !self.descriptor_flag(descriptor, "enumerable", true))
+            || (self.descriptor_field_present(descriptor, "writable")
+                && !self.descriptor_flag(descriptor, "writable", true))
+        {
+            return Err(VmError::TypeError(format!(
+                "Cannot redefine typed array index property '{}'",
+                key
+            )));
+        }
+        if let Some(value) = self.get_field_value_by_name(descriptor, "value") {
+            match self.typed_array_set_index_value_with_context(
+                target,
+                index,
+                value,
+                caller_task,
+                caller_module,
+            )? {
+                Some(true) => {}
+                Some(false) => {
+                    return Err(VmError::TypeError(format!(
+                        "Cannot redefine typed array index property '{}'",
+                        key
+                    )));
+                }
+                None => {}
+            }
+        }
+        Ok(Some(()))
+    }
+
+    fn typed_array_own_property_value_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        let debug_typed_array = std::env::var("RAYA_DEBUG_TYPED_ARRAY_PROP").is_ok();
+        if key != "length" && parse_js_array_index_name(key).is_none() {
+            return Ok(None);
+        }
+
+        let Some(len) = self.typed_array_live_length_with_context(target, caller_task, caller_module)?
+        else {
+            return Ok(None);
+        };
+
+        if key == "length" {
+            return Ok(Some(if len <= i32::MAX as usize {
+                Value::i32(len as i32)
+            } else {
+                Value::f64(len as f64)
+            }));
+        }
+
+        let Some(index) = parse_js_array_index_name(key) else {
+            return Ok(None);
+        };
+        let value = self
+            .typed_array_index_value_with_context(target, index, caller_task, caller_module)?
+            .unwrap_or(Value::undefined());
+        if debug_typed_array {
+            eprintln!(
+                "[typed-array.prop] target={:#x} key={} value={:#x}",
+                target.raw(),
+                key,
+                value.raw()
+            );
+        }
+        Ok(Some(value))
+    }
+
     fn own_js_property_flags(&self, target: Value, key: &str) -> Option<(bool, bool, bool)> {
         if let Some(flags) = self.ambient_builtin_global_property_flags(target, key) {
+            return Some(flags);
+        }
+        if let Some(flags) = self.typed_array_index_property_flags(target, key) {
             return Some(flags);
         }
         if checked_array_ptr(target).is_some() {
@@ -4017,6 +4765,7 @@ impl<'a> Interpreter<'a> {
     fn has_own_property_via_js_semantics(&self, target: Value, key: &str) -> bool {
         self.get_descriptor_metadata(target, key).is_some()
             || self.builtin_global_property_value(target, key).is_some()
+            || self.typed_array_index_property_flags(target, key).is_some()
             || self
                 .get_own_js_property_value_by_name(target, key)
                 .is_some()
@@ -4073,6 +4822,17 @@ impl<'a> Interpreter<'a> {
         }
 
         if let Some(value) = self.builtin_global_property_value(target, key) {
+            return Ok(Some(value));
+        }
+
+        if let Some(value) =
+            self.typed_array_own_property_value_with_context(
+                target,
+                key,
+                caller_task,
+                caller_module,
+            )?
+        {
             return Ok(Some(value));
         }
 
@@ -4695,6 +5455,19 @@ impl<'a> Interpreter<'a> {
             caller_module,
         )?;
 
+        if self
+            .typed_array_define_indexed_property(
+                target,
+                key,
+                descriptor,
+                caller_task,
+                caller_module,
+            )?
+            .is_some()
+        {
+            return Ok(());
+        }
+
         if checked_array_ptr(target).is_some() && key == "length" {
             return self.apply_array_length_descriptor_with_context(
                 target,
@@ -5166,7 +5939,9 @@ impl<'a> Interpreter<'a> {
         if self.fixed_property_deleted(target, key) {
             return Ok(None);
         }
-        let exotic_value = self.get_own_js_property_value_by_name(target, key);
+        let typed_array_value = parse_js_array_index_name(key)
+            .and_then(|index| self.typed_array_index_value_direct(target, index));
+        let exotic_value = typed_array_value.or_else(|| self.get_own_js_property_value_by_name(target, key));
         let callable_value = self
             .callable_virtual_property_value(target, key)
             .or_else(|| self.materialize_constructor_static_method(target, key));
@@ -5598,6 +6373,21 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let class_name = unsafe { &*name_ptr.as_ptr() }.data.clone();
+                        if std::env::var("RAYA_DEBUG_SUPER_BY_NAME").is_ok() {
+                            let preview = args[2..]
+                                .iter()
+                                .take(4)
+                                .map(|value| format!("{:#x}", value.raw()))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            eprintln!(
+                                "[super.by-name] class={} argc={} this={:#x} args=[{}]",
+                                class_name,
+                                args.len().saturating_sub(2),
+                                this_arg.raw(),
+                                preview
+                            );
+                        }
                         let (constructor_id, constructor_module) = {
                             let classes = self.classes.read();
                             let Some(class) = classes.get_class_by_name(&class_name) else {
@@ -5642,6 +6432,45 @@ impl<'a> Interpreter<'a> {
                             if let Err(error) = invoke_result {
                                 return OpcodeResult::Error(error);
                             }
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_SUPER_CONSTRUCT => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "super construct expects parent constructor, newTarget, and optional args"
+                                    .to_string(),
+                            ));
+                        }
+                        let value = match self.construct_value_with_new_target(
+                            args[0],
+                            args[1],
+                            &args[2..],
+                            task,
+                            module,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_JS_ADD => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Object.jsAdd expects exactly two arguments".to_string(),
+                            ));
+                        }
+                        let value = match self.js_add_with_context(args[0], args[1], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
                     }
@@ -5728,7 +6557,18 @@ impl<'a> Interpreter<'a> {
                                         .expect("bound method target")
                                         .as_ptr()
                                 };
-                                if let Err(e) = stack.push(this_arg) {
+                                let receiver = if self.callable_uses_js_this_slot(target_callable) {
+                                    match self.js_this_value_for_callable(
+                                        target_callable,
+                                        Some(this_arg),
+                                    ) {
+                                        Ok(value) => value,
+                                        Err(error) => return OpcodeResult::Error(error),
+                                    }
+                                } else {
+                                    this_arg
+                                };
+                                if let Err(e) = stack.push(receiver) {
                                     return OpcodeResult::Error(e);
                                 }
                                 for arg in &apply_args {
@@ -5770,7 +6610,7 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
                         let target_callable = args[0];
-                        if !Self::is_callable_value(target_callable) {
+                        if !target_callable.is_ptr() {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Function.prototype.bind target is not callable".to_string(),
                             ));

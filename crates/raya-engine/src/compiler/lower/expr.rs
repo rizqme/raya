@@ -1168,6 +1168,32 @@ impl<'a> Lowerer<'a> {
         self.lower_unresolved_poison()
     }
 
+    pub(super) fn load_class_value_for_nominal_type(
+        &mut self,
+        nominal_type_id: NominalTypeId,
+    ) -> Register {
+        let dest = self.alloc_register(self.default_js_function_type());
+        let nominal_id_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: nominal_id_reg.clone(),
+            value: IrValue::Constant(IrConstant::I32(nominal_type_id.as_u32() as i32)),
+        });
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_GET_CLASS_VALUE,
+            args: vec![nominal_id_reg],
+        });
+        dest
+    }
+
+    pub(super) fn lower_runtime_constructor_symbol(&mut self, symbol: Symbol) -> Register {
+        let ident = ast::Identifier {
+            name: symbol,
+            span: self.current_span,
+        };
+        self.lower_identifier(&ident)
+    }
+
     fn lower_binary(&mut self, binary: &ast::BinaryExpression) -> Register {
         if let Some(lowered) = self.try_lower_typeof_number_compare(binary) {
             return lowered;
@@ -1177,6 +1203,9 @@ impl<'a> Lowerer<'a> {
         let right = self.lower_expr(&binary.right);
 
         let mut op = self.convert_binary_op(&binary.operator);
+        if matches!(op, BinaryOp::Add) && self.should_lower_js_add_via_runtime(left.ty, right.ty) {
+            return self.lower_runtime_js_add(left, right);
+        }
         if matches!(op, BinaryOp::Add)
             && (self.is_string_like_type(left.ty) || self.is_string_like_type(right.ty))
         {
@@ -1654,49 +1683,30 @@ impl<'a> Lowerer<'a> {
         // Handle super() constructor call
         if let Expression::Super(_) = &*call.callee {
             if let Some(current_nominal_type_id) = self.current_class {
-                if let Some(parent_runtime_name) = self
+                let parent_info = self
                     .class_info_map
                     .get(&current_nominal_type_id)
-                    .and_then(|info| info.parent_runtime_name.clone())
-                {
+                    .map(|info| (info.parent_class, info.parent_constructor_symbol));
+                let parent_constructor = parent_info.and_then(|(parent_class, parent_symbol)| {
+                    parent_class
+                        .map(|parent_id| self.load_class_value_for_nominal_type(parent_id))
+                        .or_else(|| {
+                            parent_symbol
+                                .map(|symbol| self.lower_runtime_constructor_symbol(symbol))
+                        })
+                });
+                if let Some(parent_constructor) = parent_constructor {
                     let this_reg = self.lower_this();
-                    let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                    self.emit(IrInstr::Assign {
-                        dest: name_reg.clone(),
-                        value: IrValue::Constant(IrConstant::String(parent_runtime_name)),
-                    });
-                    let mut native_args = vec![this_reg, name_reg];
+                    let new_target = self.load_class_value_for_nominal_type(current_nominal_type_id);
+                    let mut native_args = vec![parent_constructor, new_target];
                     native_args.extend(args);
                     self.emit(IrInstr::NativeCall {
-                        dest: None,
-                        native_id: crate::compiler::native_id::OBJECT_CALL_CONSTRUCTOR_BY_NAME,
+                        dest: Some(this_reg.clone()),
+                        native_id: crate::compiler::native_id::OBJECT_SUPER_CONSTRUCT,
                         args: native_args,
                     });
                     self.emit_pending_constructor_prologue_if_needed();
-                    return dest;
-                }
-                // Get parent class
-                if let Some(parent_id) = self
-                    .class_info_map
-                    .get(&current_nominal_type_id)
-                    .and_then(|info| info.parent_class)
-                {
-                    // Get parent's constructor
-                    if let Some(parent_ctor) = self
-                        .class_info_map
-                        .get(&parent_id)
-                        .and_then(|info| info.constructor)
-                    {
-                        // Call parent constructor with 'this' as first argument
-                        let mut ctor_args = vec![self.lower_this()];
-                        ctor_args.extend(args);
-                        self.emit(IrInstr::Call {
-                            dest: None, // Constructor doesn't return
-                            func: parent_ctor,
-                            args: ctor_args,
-                        });
-                        self.emit_pending_constructor_prologue_if_needed();
-                    }
+                    return this_reg;
                 }
             }
             return dest;
@@ -3571,7 +3581,12 @@ impl<'a> Lowerer<'a> {
             }
 
             // Look up method in type registry for native dispatch
-            let method_id = if obj_type_id != UNRESOLVED_TYPE_ID {
+            let prefer_js_surface_method_dispatch =
+                self.js_this_binding_compat && obj_type_id == ARRAY_TYPE_ID;
+
+            let method_id = if obj_type_id != UNRESOLVED_TYPE_ID
+                && !prefer_js_surface_method_dispatch
+            {
                 if let Some(action) = self.type_registry.lookup_method(obj_type_id, method_name) {
                     match action {
                         crate::compiler::type_registry::DispatchAction::NativeCall(mut id) => {
@@ -6523,7 +6538,13 @@ impl<'a> Lowerer<'a> {
         let value = if let Some(op) = binary_op {
             // Compound assignment: load current value, apply operation
             let current = self.lower_expr(&assign.left);
-            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+            if matches!(op, BinaryOp::Add)
+                && self.should_lower_js_add_via_runtime(current.ty, rhs.ty)
+            {
+                self.lower_runtime_js_add(current, rhs)
+            } else {
+            let dest_ty = self.infer_binary_result_type(&op, &current, &rhs);
+            let dest = self.alloc_register(dest_ty);
             self.emit(IrInstr::BinaryOp {
                 dest: dest.clone(),
                 op,
@@ -6531,6 +6552,7 @@ impl<'a> Lowerer<'a> {
                 right: rhs,
             });
             dest
+            }
         } else {
             rhs
         };
@@ -7241,6 +7263,7 @@ impl<'a> Lowerer<'a> {
             super::collect_pattern_names(&param.pattern, &mut closure_locals);
         }
         closure_locals.extend(self.collect_local_names(&func.body.statements));
+        self.prepare_executable_body_declarations(&func.body.statements, None);
         self.scan_for_captured_vars(&func.body.statements, &func.params, &closure_locals);
 
         let mut ir_func = crate::ir::IrFunction::new(&function_name, params, return_ty);
@@ -7748,6 +7771,7 @@ impl<'a> Lowerer<'a> {
                 super::collect_pattern_names(&param.pattern, &mut closure_locals);
             }
             closure_locals.extend(self.collect_local_names(&block.statements));
+            self.prepare_executable_body_declarations(&block.statements, None);
             self.scan_for_captured_vars(&block.statements, &arrow.params, &closure_locals);
         }
 
@@ -10553,6 +10577,59 @@ impl<'a> Lowerer<'a> {
             Some(Type::Class(class_ty)) => class_ty.name == "string",
             _ => false,
         }
+    }
+
+    fn is_definitely_numeric_add_type(&self, ty: TypeId) -> bool {
+        matches!(
+            self.type_ctx.get(ty),
+            Some(Type::Primitive(PrimitiveType::Int | PrimitiveType::Number))
+        )
+    }
+
+    fn is_definitely_primitive_concat_safe_type(&self, ty: TypeId) -> bool {
+        self.is_string_like_type(ty)
+            || matches!(
+                self.type_ctx.get(ty),
+                Some(Type::Primitive(
+                    PrimitiveType::Int
+                        | PrimitiveType::Number
+                        | PrimitiveType::Boolean
+                        | PrimitiveType::Null
+                        | PrimitiveType::Void
+                ))
+            )
+    }
+
+    fn should_lower_js_add_via_runtime(&self, left_ty: TypeId, right_ty: TypeId) -> bool {
+        if !self.js_this_binding_compat {
+            return false;
+        }
+        if self.is_definitely_numeric_add_type(left_ty)
+            && self.is_definitely_numeric_add_type(right_ty)
+        {
+            return false;
+        }
+        if self.is_string_like_type(left_ty)
+            && self.is_definitely_primitive_concat_safe_type(right_ty)
+        {
+            return false;
+        }
+        if self.is_string_like_type(right_ty)
+            && self.is_definitely_primitive_concat_safe_type(left_ty)
+        {
+            return false;
+        }
+        true
+    }
+
+    fn lower_runtime_js_add(&mut self, left: Register, right: Register) -> Register {
+        let dest = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_JS_ADD,
+            args: vec![left, right],
+        });
+        dest
     }
 
     // ============================================================================

@@ -75,6 +75,7 @@ pub struct FunctionBuilder {
     is_generator: bool,
     visible_length: u8,
     is_strict_js: bool,
+    uses_builtin_this_coercion: bool,
     code: Vec<u8>,
     local_count: u16,
     locals: FxHashMap<String, u16>,
@@ -96,6 +97,7 @@ impl FunctionBuilder {
             is_generator: false,
             visible_length: param_count,
             is_strict_js: false,
+            uses_builtin_this_coercion: false,
             code: Vec::new(),
             local_count: param_count as u16,
             locals,
@@ -188,6 +190,10 @@ impl FunctionBuilder {
         self.is_strict_js = is_strict_js;
     }
 
+    pub fn set_uses_builtin_this_coercion(&mut self, uses_builtin_this_coercion: bool) {
+        self.uses_builtin_this_coercion = uses_builtin_this_coercion;
+    }
+
     /// Patch a jump offset at a given position
     pub fn patch_jump(&mut self, position: usize, offset: i32) {
         self.code[position..position + 4].copy_from_slice(&offset.to_le_bytes());
@@ -203,6 +209,7 @@ impl FunctionBuilder {
             is_generator: self.is_generator,
             visible_length: self.visible_length as usize,
             is_strict_js: self.is_strict_js,
+            uses_builtin_this_coercion: self.uses_builtin_this_coercion,
             local_count: self.local_count as usize,
             code: self.code,
         }

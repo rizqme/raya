@@ -302,6 +302,8 @@ struct ClassInfo {
     parent_class: Option<NominalTypeId>,
     /// Runtime parent class name for ambient/imported parents not declared locally.
     parent_runtime_name: Option<String>,
+    /// Source-level symbol for the parent constructor reference.
+    parent_constructor_symbol: Option<Symbol>,
     /// Type arg substitutions for generic parent (param_name → concrete TypeId)
     extends_type_subs: Option<std::collections::HashMap<String, TypeId>>,
     /// Number of vtable method slots (including inherited)
@@ -486,6 +488,8 @@ pub struct Lowerer<'a> {
     /// Deferred instance initialization for derived constructors until after
     /// the parent constructor has been invoked via `super()`.
     pending_constructor_prologue: Option<PendingConstructorPrologue>,
+    /// Active constructor receiver for implicit and bare returns.
+    constructor_return_this: Option<Register>,
     /// Info about `this` from ancestor scope (for arrow functions inside methods)
     this_ancestor_info: Option<AncestorThisInfo>,
     /// Capture index of `this` if it was captured (for LoadCaptured)
@@ -640,6 +644,8 @@ pub struct Lowerer<'a> {
     js_this_binding_compat: bool,
     /// Current inherited JS strictness context.
     js_strict_context: bool,
+    /// Whether this module is a compiled builtin surface using ECMAScript builtin receiver rules.
+    builtin_this_coercion_compat: bool,
     /// Whether unresolved member/call paths may lower to runtime late-bound dispatch.
     allow_unresolved_runtime_fallback: bool,
     /// Inner type for RefCell-wrapped variables (for preserving type info through loads)
@@ -1042,6 +1048,33 @@ fn module_wrapper_alias_tag(name: &str) -> Option<String> {
     None
 }
 
+fn bind_wrapper_alias_to_class(
+    lowerer: &mut Lowerer<'_>,
+    wrapper_tag: &str,
+    class_name_symbol: Symbol,
+    nominal_type_id: NominalTypeId,
+) {
+    let class_name = lowerer.interner.resolve(class_name_symbol);
+    let alias = format!("__t_{}_{}", wrapper_tag, class_name);
+    if let Some(prev) = lowerer
+        .type_alias_class_map
+        .insert(alias.clone(), nominal_type_id)
+    {
+        if prev != nominal_type_id {
+            lowerer
+                .errors
+                .push(super::error::CompileError::InternalError {
+                    message: format!(
+                        "conflicting wrapper alias mapping for '{}': {} vs {}",
+                        alias,
+                        prev.as_u32(),
+                        nominal_type_id.as_u32()
+                    ),
+                });
+        }
+    }
+}
+
 /// Visitor that pre-registers class declarations inside nested statement trees.
 /// Carries wrapper context (`__std_module_<tag>`, `__raya_mod_init_<id>`) to build exact alias mappings.
 struct NestedClassRegistrar<'l, 'a> {
@@ -1200,6 +1233,7 @@ impl<'a> Lowerer<'a> {
             current_class: None,
             this_register: None,
             pending_constructor_prologue: None,
+            constructor_return_this: None,
             this_ancestor_info: None,
             this_captured_idx: None,
             method_map: FxHashMap::default(),
@@ -1262,6 +1296,7 @@ impl<'a> Lowerer<'a> {
             specialized_function_cache: FxHashMap::default(),
             js_this_binding_compat: false,
             js_strict_context: false,
+            builtin_this_coercion_compat: false,
             allow_unresolved_runtime_fallback: true,
             generator_yield_array_local: None,
         }
@@ -1297,6 +1332,12 @@ impl<'a> Lowerer<'a> {
     /// Enable JS-compatible method extraction (`obj.method` is unbound).
     pub fn with_js_this_binding_compat(mut self, enable: bool) -> Self {
         self.js_this_binding_compat = enable;
+        self
+    }
+
+    /// Enable builtin JS receiver coercion semantics for compiled builtin surfaces.
+    pub fn with_builtin_this_coercion_compat(mut self, enable: bool) -> Self {
+        self.builtin_this_coercion_compat = enable;
         self
     }
 
@@ -1726,7 +1767,7 @@ impl<'a> Lowerer<'a> {
                     }
                     let wrapper_tag =
                         module_wrapper_alias_tag(self.interner.resolve(func.name.name));
-                    self.register_nested_classes_in_block(&func.body.statements, wrapper_tag);
+                    self.prepare_executable_body_declarations(&func.body.statements, wrapper_tag);
                 }
                 Statement::ClassDecl(class) => {
                     let mut visitor = NestedClassRegistrar {
@@ -2303,6 +2344,15 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn prepare_executable_body_declarations(
+        &mut self,
+        statements: &[Statement],
+        wrapper_tag: Option<String>,
+    ) {
+        self.register_nested_functions_in_block(statements);
+        self.register_nested_classes_in_block(statements, wrapper_tag);
+    }
+
     /// Register nested function declarations reachable in a statement subtree.
     /// Used for module-wrapper functions so forward sibling helper calls resolve by ID.
     fn register_nested_functions_in_block(&mut self, statements: &[Statement]) {
@@ -2408,6 +2458,23 @@ impl<'a> Lowerer<'a> {
         let saved_span = self.current_span;
         self.current_span = class.span;
 
+        if let Some(&nominal_type_id) = self.class_decl_ids.get(&class.span.start) {
+            self.class_map.insert(class.name.name, nominal_type_id);
+            if let Some(tag) = wrapper_tag {
+                bind_wrapper_alias_to_class(self, tag, class.name.name, nominal_type_id);
+            }
+            if std::env::var("RAYA_DEBUG_LOWER_TRACE").is_ok() {
+                eprintln!(
+                    "[lower] reuse_class name={} nominal_type_id={} span={}",
+                    self.interner.resolve(class.name.name),
+                    nominal_type_id.as_u32(),
+                    class.span.start
+                );
+            }
+            self.current_span = saved_span;
+            return;
+        }
+
         let nominal_type_id = NominalTypeId::new(self.next_nominal_type_id);
         self.next_nominal_type_id += 1;
 
@@ -2423,23 +2490,7 @@ impl<'a> Lowerer<'a> {
         self.class_map.insert(class.name.name, nominal_type_id);
 
         if let Some(tag) = wrapper_tag {
-            let class_name = self.interner.resolve(class.name.name);
-            let alias = format!("__t_{}_{}", tag, class_name);
-            if let Some(prev) = self
-                .type_alias_class_map
-                .insert(alias.clone(), nominal_type_id)
-            {
-                if prev != nominal_type_id {
-                    self.errors.push(super::error::CompileError::InternalError {
-                        message: format!(
-                            "conflicting wrapper alias mapping for '{}': {} vs {}",
-                            alias,
-                            prev.as_u32(),
-                            nominal_type_id.as_u32()
-                        ),
-                    });
-                }
-            }
+            bind_wrapper_alias_to_class(self, tag, class.name.name, nominal_type_id);
         }
 
         // Store type parameter names for generic classes
@@ -2455,7 +2506,8 @@ impl<'a> Lowerer<'a> {
 
         // Resolve parent class if extends clause is present
         let mut extends_type_args: Option<Vec<TypeId>> = None;
-        let (parent_class, parent_runtime_name) = if let Some(ref extends) = class.extends {
+        let (parent_class, parent_runtime_name, parent_constructor_symbol) =
+            if let Some(ref extends) = class.extends {
             if let ast::Type::Reference(type_ref) = &extends.ty {
                 // Extract type arguments from extends clause (e.g., Base<string>)
                 if let Some(ref type_args) = type_ref.type_args {
@@ -2466,18 +2518,24 @@ impl<'a> Lowerer<'a> {
                     extends_type_args = Some(resolved);
                 }
                 let parent_name = self.interner.resolve(type_ref.name.name).to_string();
-                let parent_class = self
-                    .class_map
+                let local_parent_class = self
+                    .class_decl_history
                     .get(&type_ref.name.name)
-                    .copied()
-                    .or_else(|| self.nominal_type_id_from_type_name(&parent_name));
-                let runtime_name = parent_class.is_none().then_some(parent_name);
-                (parent_class, runtime_name)
+                    .and_then(|_| self.class_map.get(&type_ref.name.name).copied());
+                let imported_parent_class = if local_parent_class.is_none() {
+                    self.nominal_type_id_from_type_name(&parent_name)
+                } else {
+                    None
+                };
+                let parent_class = local_parent_class.or(imported_parent_class);
+                let runtime_name =
+                    (imported_parent_class.is_some() || parent_class.is_none()).then_some(parent_name);
+                (parent_class, runtime_name, Some(type_ref.name.name))
             } else {
-                (None, None)
+                (None, None, None)
             }
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         // Collect instance and static field information
@@ -2895,6 +2953,7 @@ impl<'a> Lowerer<'a> {
                 static_methods: static_methods_vec,
                 parent_class,
                 parent_runtime_name,
+                parent_constructor_symbol,
                 extends_type_subs,
                 method_slot_count,
                 class_decorators,
@@ -2969,14 +3028,8 @@ impl<'a> Lowerer<'a> {
 
         // Get function name
         let name = self.interner.resolve(func.name.name);
-        let is_module_wrapper = is_module_wrapper_function_name(name);
-
-        // Module-wrapper helpers are frequently referenced before declaration
-        // (e.g. pmInstall -> installDependency). Pre-register nested function
-        // IDs/return mappings so forward sibling calls resolve deterministically.
-        if is_module_wrapper {
-            self.register_nested_functions_in_block(&func.body.statements);
-        }
+        let wrapper_tag = module_wrapper_alias_tag(name);
+        self.prepare_executable_body_declarations(&func.body.statements, wrapper_tag);
 
         // Create parameter registers (excluding rest parameters)
         let mut params = Vec::new();
@@ -3561,33 +3614,36 @@ impl<'a> Lowerer<'a> {
                             self.next_local = 1;
                         }
                     } else {
-                        // Instance method - 'this' is the first parameter
-                        // Use the class's actual TypeId for correct dispatch
-                        // (e.g., Array → ArrayLen for .length, string → StringLen)
                         let this_ty = self
                             .type_ctx
                             .lookup_named_type(name)
                             .unwrap_or(TypeId::new(0));
                         self.current_class = Some(nominal_type_id);
-                        let this_reg = self.alloc_register(this_ty);
-                        params.push(this_reg.clone());
-                        self.this_register = Some(this_reg);
+                        if method_has_js_this_slot {
+                            let this_reg = self.alloc_register(this_ty);
+                            params.push(this_reg.clone());
+                            self.this_register = Some(this_reg);
+                            fixed_param_count = 1;
+                        } else {
+                            // Legacy non-JS instance methods use an explicit receiver parameter.
+                            let this_reg = self.alloc_register(this_ty);
+                            params.push(this_reg.clone());
+                            self.this_register = Some(this_reg);
+                            fixed_param_count = 1;
+                        }
                         if let Some(this_sym) = self.interner.lookup("this") {
                             self.variable_class_map.insert(this_sym, nominal_type_id);
                         }
-                        // Check if there are destructuring parameters
                         let has_destructuring = method.params.iter().any(|p| {
                             !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
                         });
                         if has_destructuring {
-                            // Start locals after 'this' and all explicit parameters
                             let param_count =
                                 1 + method.params.iter().filter(|p| !p.is_rest).count();
                             self.next_local = param_count as u16;
                         } else {
-                            self.next_local = 1; // Explicit parameters start at slot 1
+                            self.next_local = 1;
                         }
-                        fixed_param_count = 1; // 'this' counts as a fixed parameter
                     }
 
                     // Add explicit parameters (excluding rest parameters)
@@ -3727,6 +3783,7 @@ impl<'a> Lowerer<'a> {
                     ir_func.is_constructible = false;
                     ir_func.visible_length = visible_length;
                     ir_func.is_strict_js = true;
+                    ir_func.uses_builtin_this_coercion = self.builtin_this_coercion_compat;
                     let mut type_param_ids = Vec::new();
                     if let Some(class_type_params) = &class.type_params {
                         for tp in class_type_params {
@@ -4117,6 +4174,8 @@ impl<'a> Lowerer<'a> {
                 self.emit_js_function_var_hoists(&ctor.body.statements);
 
                 let this_reg = self.this_register.clone().unwrap();
+                let saved_constructor_return_this = self.constructor_return_this.take();
+                self.constructor_return_this = Some(this_reg.clone());
                 let mut param_property_fields: Vec<(u16, Register)> = Vec::new();
                 for (param_name, param_reg) in &param_prop_regs {
                     let field_name_str = self.interner.resolve(*param_name);
@@ -4156,7 +4215,7 @@ impl<'a> Lowerer<'a> {
 
                 // Ensure the function ends with a return
                 if !self.current_block_is_terminated() {
-                    self.set_terminator(Terminator::Return(None));
+                    self.set_terminator(Terminator::Return(Some(this_reg.clone())));
                 }
 
                 // Get the constructor function ID from class_info and add to pending functions
@@ -4168,6 +4227,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 self.js_strict_context = saved_js_strict_context;
+                self.constructor_return_this = saved_constructor_return_this;
 
                 // Clear method context
                 self.current_class = None;
@@ -4220,7 +4280,28 @@ impl<'a> Lowerer<'a> {
 
             self.current_class = Some(nominal_type_id);
 
-            // Implicit ctor has only `this`.
+            let parent_constructor_params = self
+                .class_info_map
+                .get(&nominal_type_id)
+                .and_then(|info| info.parent_class)
+                .and_then(|parent_id| self.class_info_map.get(&parent_id))
+                .map(|info| info.constructor_params.clone())
+                .unwrap_or_default();
+            let has_parent_constructor = self
+                .class_info_map
+                .get(&nominal_type_id)
+                .is_some_and(|info| {
+                    info.parent_class.is_some() || info.parent_constructor_symbol.is_some()
+                });
+            let forwarded_param_count = if has_parent_constructor {
+                parent_constructor_params.len().max(8)
+            } else {
+                0
+            };
+
+            // Implicit derived constructors need forwarding slots even when the
+            // parent comes from imported/builtin metadata that does not expose
+            // parameter details. Reserve a small variadic prefix for `super(...)`.
             let this_ty = self
                 .type_ctx
                 .lookup_named_type(name)
@@ -4230,17 +4311,32 @@ impl<'a> Lowerer<'a> {
             if let Some(this_sym) = self.interner.lookup("this") {
                 self.variable_class_map.insert(this_sym, nominal_type_id);
             }
-            let params = vec![this_reg];
+            let mut params = vec![this_reg.clone()];
+            let mut forwarded_args = Vec::with_capacity(forwarded_param_count + 1);
+            forwarded_args.push(this_reg.clone());
+            for _ in 0..forwarded_param_count {
+                let arg_reg = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+                forwarded_args.push(arg_reg.clone());
+                params.push(arg_reg);
+            }
             let mut ir_func =
                 IrFunction::new(&format!("{}::constructor", name), params, TypeId::new(0));
             ir_func.is_constructible = true;
-            ir_func.visible_length = 0;
+            ir_func.visible_length = if parent_constructor_params.is_empty() {
+                0
+            } else {
+                parent_constructor_params
+                    .iter()
+                    .take_while(|param| param.default_value.is_none())
+                    .count()
+            };
             ir_func.is_strict_js = true;
             if self.emit_sourcemap {
                 ir_func.source_span = class.span;
             }
             self.current_function = Some(ir_func);
             let saved_js_strict_context = self.js_strict_context;
+            let saved_constructor_return_this = self.constructor_return_this.take();
             self.js_strict_context = true;
 
             let entry_block = self.alloc_block();
@@ -4249,26 +4345,39 @@ impl<'a> Lowerer<'a> {
                 .add_block(BasicBlock::with_label(entry_block, "entry"));
 
             let this_reg = self.this_register.clone().unwrap();
-            if let Some(parent_ctor) = self
+            self.constructor_return_this = Some(this_reg.clone());
+            let parent_info = self
                 .class_info_map
                 .get(&nominal_type_id)
-                .and_then(|info| info.parent_class)
-                .and_then(|parent_id| self.class_info_map.get(&parent_id))
-                .and_then(|info| info.constructor)
-            {
-                self.emit(IrInstr::Call {
-                    dest: None,
-                    func: parent_ctor,
-                    args: vec![this_reg.clone()],
+                .map(|info| (info.parent_class, info.parent_constructor_symbol));
+            let parent_constructor = parent_info.and_then(|(parent_class, parent_symbol)| {
+                parent_class
+                    .map(|parent_id| self.load_class_value_for_nominal_type(parent_id))
+                    .or_else(|| {
+                        parent_symbol
+                            .map(|symbol| self.lower_runtime_constructor_symbol(symbol))
+                    })
+            });
+            if let Some(parent_constructor) = parent_constructor {
+                let new_target = self.load_class_value_for_nominal_type(nominal_type_id);
+                let mut native_args = Vec::with_capacity(forwarded_args.len() + 1);
+                native_args.push(parent_constructor);
+                native_args.push(new_target);
+                native_args.extend(forwarded_args.into_iter().skip(1));
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(this_reg.clone()),
+                    native_id: crate::compiler::native_id::OBJECT_SUPER_CONSTRUCT,
+                    args: native_args,
                 });
             }
             self.emit_constructor_prologue(nominal_type_id, &this_reg, &[]);
-            self.set_terminator(Terminator::Return(None));
+            self.set_terminator(Terminator::Return(Some(this_reg.clone())));
 
             let ir_func = self.current_function.take().unwrap();
             self.pending_arrow_functions
                 .push((ctor_func_id.as_u32(), ir_func));
             self.js_strict_context = saved_js_strict_context;
+            self.constructor_return_this = saved_constructor_return_this;
 
             self.current_class = None;
             self.this_register = None;

@@ -647,8 +647,10 @@ mod tests {
             param_count: 0,
             uses_js_this_slot: false,
             is_constructible: false,
+            is_generator: false,
             visible_length: 0,
             is_strict_js: false,
+            uses_builtin_this_coercion: false,
             local_count: 1,
             code: writer.into_bytes(),
         });
@@ -665,8 +667,10 @@ mod tests {
             param_count: 0,
             uses_js_this_slot: false,
             is_constructible: false,
+            is_generator: false,
             visible_length: 0,
             is_strict_js: false,
+            uses_builtin_this_coercion: false,
             local_count: 0,
             code: vec![0xFF], // Invalid opcode (unassigned)
         });
@@ -688,8 +692,10 @@ mod tests {
             param_count: 0,
             uses_js_this_slot: false,
             is_constructible: false,
+            is_generator: false,
             visible_length: 0,
             is_strict_js: false,
+            uses_builtin_this_coercion: false,
             local_count: 0,
             code: writer.into_bytes(),
         });
@@ -711,8 +717,10 @@ mod tests {
             param_count: 0,
             uses_js_this_slot: false,
             is_constructible: false,
+            is_generator: false,
             visible_length: 0,
             is_strict_js: false,
+            uses_builtin_this_coercion: false,
             local_count: 2,
             code: writer.into_bytes(),
         });
@@ -736,8 +744,10 @@ mod tests {
             param_count: 2,
             uses_js_this_slot: false,
             is_constructible: false,
+            is_generator: false,
             visible_length: 2,
             is_strict_js: false,
+            uses_builtin_this_coercion: false,
             local_count: 3,
             code: writer.into_bytes(),
         });
@@ -758,8 +768,10 @@ mod tests {
             param_count: 0,
             uses_js_this_slot: false,
             is_constructible: false,
+            is_generator: false,
             visible_length: 0,
             is_strict_js: false,
+            uses_builtin_this_coercion: false,
             local_count: 0,
             code: writer.into_bytes(),
         });

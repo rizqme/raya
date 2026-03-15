@@ -558,6 +558,34 @@ impl Array {
         Ok(())
     }
 
+    /// Delete an element while preserving array length and creating a hole.
+    pub fn delete_index(&mut self, index: usize) -> bool {
+        if index >= self.length {
+            return false;
+        }
+        if self.should_store_sparse(index) {
+            let Ok(sparse_index) = u32::try_from(index) else {
+                return false;
+            };
+            return self.sparse_elements.remove(&sparse_index).is_some();
+        }
+
+        if index < self.elements.len() && self.present.get(index).copied().unwrap_or(false) {
+            self.present[index] = false;
+            self.elements[index] = Value::undefined();
+            if let Ok(sparse_index) = u32::try_from(index) {
+                self.sparse_elements.remove(&sparse_index);
+            }
+            return true;
+        }
+
+        if let Ok(sparse_index) = u32::try_from(index) {
+            return self.sparse_elements.remove(&sparse_index).is_some();
+        }
+
+        false
+    }
+
     /// Push element to end of array, returns new length
     pub fn push(&mut self, value: Value) -> usize {
         let index = self.length;

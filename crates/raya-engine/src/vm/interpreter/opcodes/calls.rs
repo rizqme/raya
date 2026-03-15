@@ -28,6 +28,10 @@ impl<'a> Interpreter<'a> {
     ) -> OpcodeResult {
         let mut native_args = Vec::with_capacity(args.len() + 1);
         if self.native_callable_uses_receiver(native_id) {
+            let receiver = match self.builtin_native_this_value(receiver, native_id) {
+                Ok(value) => value,
+                Err(error) => return OpcodeResult::Error(error),
+            };
             native_args.push(receiver);
         }
         native_args.append(&mut args);

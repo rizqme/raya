@@ -1493,7 +1493,7 @@ fn parse_class_declaration_with_annotations(
 }
 
 /// Parse class members (fields, methods, constructor)
-fn parse_class_members(parser: &mut Parser) -> Result<Vec<ClassMember>, ParseError> {
+pub(super) fn parse_class_members(parser: &mut Parser) -> Result<Vec<ClassMember>, ParseError> {
     let mut members = Vec::new();
     let mut guard = super::guards::LoopGuard::new("class_members");
 

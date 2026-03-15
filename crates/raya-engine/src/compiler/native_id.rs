@@ -23,7 +23,7 @@ pub const OBJECT_SAME_VALUE: u16 = 0x0008;
 pub const OBJECT_NEW: u16 = 0x0009;
 /// load ambient builtin global value by name (e.g., ArrayBuffer, Reflect, Intl)
 pub const OBJECT_GET_AMBIENT_GLOBAL: u16 = 0x000A;
-/// instanceof(obj, runtimeClassValue) using hidden type handles on imported/ambient classes
+/// instanceof(obj, runtimeClassValue) using canonical runtime constructor values
 pub const OBJECT_INSTANCE_OF_DYNAMIC_CLASS: u16 = 0x000B;
 /// delete target[key] using JS property semantics
 pub const OBJECT_DELETE_PROPERTY: u16 = 0x000C;
@@ -51,6 +51,10 @@ pub const OBJECT_PREVENT_EXTENSIONS: u16 = 0x0016;
 pub const OBJECT_BIND_SCRIPT_GLOBAL: u16 = 0x0017;
 /// construct an internal property-descriptor record object
 pub const OBJECT_DESCRIPTOR_NEW: u16 = 0x0018;
+/// Construct a superclass with an explicit newTarget, returning the receiver.
+pub const OBJECT_SUPER_CONSTRUCT: u16 = 0x0019;
+/// ECMAScript `+` with runtime ToPrimitive / ToNumber / string-concat semantics.
+pub const OBJECT_JS_ADD: u16 = 0x001A;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -555,6 +559,8 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_PREVENT_EXTENSIONS => "Object.preventExtensions",
         OBJECT_BIND_SCRIPT_GLOBAL => "Object.bindScriptGlobal",
         OBJECT_DESCRIPTOR_NEW => "Object.descriptorNew",
+        OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
+        OBJECT_JS_ADD => "Object.jsAdd",
 
         // Array
         ARRAY_PUSH => "Array.push",

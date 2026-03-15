@@ -77,14 +77,22 @@ impl<'a> Interpreter<'a> {
         method_name: &str,
     ) -> Option<usize> {
         let classes = self.classes.read();
-        let class = classes.get_class(nominal_type_id)?;
-        let module = class.module.as_ref()?;
-        for (slot, function_id) in class.vtable.methods.iter().copied().enumerate() {
-            let function = module.functions.get(function_id)?;
-            if function.name == method_name || function.name.ends_with(&format!("::{method_name}"))
-            {
-                return Some(slot);
+        let mut current_id = Some(nominal_type_id);
+        while let Some(class_id) = current_id {
+            let class = classes.get_class(class_id)?;
+            if let Some(module) = class.module.as_ref() {
+                for (slot, function_id) in class.vtable.methods.iter().copied().enumerate() {
+                    let Some(function) = module.functions.get(function_id) else {
+                        continue;
+                    };
+                    if function.name == method_name
+                        || function.name.ends_with(&format!("::{method_name}"))
+                    {
+                        return Some(slot);
+                    }
+                }
             }
+            current_id = class.parent_id;
         }
         None
     }
@@ -109,7 +117,22 @@ impl<'a> Interpreter<'a> {
                 method_slot, class.name
             ))
         })?;
-        let method_module = class.module.clone();
+        let mut owner_id = Some(nominal_type_id);
+        let mut method_module = class.module.clone();
+        while let Some(class_id) = owner_id {
+            let Some(owner_class) = classes.get_class(class_id) else {
+                break;
+            };
+            if owner_class
+                .module
+                .as_ref()
+                .is_some_and(|module| module.functions.get(func_id).is_some())
+            {
+                method_module = owner_class.module.clone();
+                break;
+            }
+            owner_id = owner_class.parent_id;
+        }
         drop(classes);
 
         let bm = BoundMethod {
@@ -122,7 +145,7 @@ impl<'a> Interpreter<'a> {
     }
 
     pub(in crate::vm::interpreter) fn callable_frame_for_value(
-        &self,
+        &mut self,
         callable: Value,
         stack: &mut Stack,
         args: &[Value],
@@ -136,7 +159,12 @@ impl<'a> Interpreter<'a> {
             unsafe { &*header_ptr_from_value_ptr(callable.as_ptr::<u8>().unwrap().as_ptr()) };
         if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
             let bm = unsafe { &*callable.as_ptr::<BoundMethod>().unwrap().as_ptr() };
-            stack.push(bm.receiver)?;
+            let receiver = if self.callable_uses_js_this_slot(callable) {
+                self.js_this_value_for_callable(callable, Some(bm.receiver))?
+            } else {
+                bm.receiver
+            };
+            stack.push(receiver)?;
             for arg in args {
                 stack.push(*arg)?;
             }
@@ -154,7 +182,7 @@ impl<'a> Interpreter<'a> {
                 unsafe { &*callable.as_ptr::<Closure>().unwrap().as_ptr() }.module();
             let mut arg_count = args.len();
             if self.callable_uses_js_this_slot(callable) {
-                stack.push(self.js_this_value_for_callable(callable, explicit_this))?;
+                stack.push(self.js_this_value_for_callable(callable, explicit_this)?)?;
                 arg_count += 1;
             } else if let Some(this_arg) = explicit_this {
                 stack.push(this_arg)?;
@@ -405,7 +433,11 @@ impl<'a> Interpreter<'a> {
         )
     }
 
-    fn get_value_field_by_name(&self, obj_val: Value, field_name: &str) -> Option<Value> {
+    pub(in crate::vm::interpreter) fn get_value_field_by_name(
+        &self,
+        obj_val: Value,
+        field_name: &str,
+    ) -> Option<Value> {
         let index = self.field_index_for_value(obj_val, field_name)?;
         let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
         let obj = unsafe { &*obj_ptr.as_ptr() };

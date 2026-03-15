@@ -175,6 +175,7 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
     let start_span = parser.current_span();
 
     match parser.current() {
+        Token::Class => parse_class_expression(parser),
         // Unary operators
         Token::Bang | Token::Minus | Token::Plus | Token::Tilde => {
             let op_token = parser.advance();
@@ -537,6 +538,100 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
         // Primary expressions
         _ => parse_primary(parser),
     }
+}
+
+fn parse_class_expression(parser: &mut Parser) -> Result<Expression, ParseError> {
+    let start_span = parser.current_span();
+    parser.expect(Token::Class)?;
+
+    let explicit_name = if let Token::Identifier(name) = parser.current() {
+        let name = *name;
+        let span = parser.current_span();
+        parser.advance();
+        Some(Identifier { name, span })
+    } else {
+        None
+    };
+
+    let type_params = if parser.check(&Token::Less) {
+        parser.advance();
+        Some(super::stmt::parse_type_parameters(parser)?)
+    } else {
+        None
+    };
+
+    let extends = if parser.check(&Token::Extends) {
+        parser.advance();
+        Some(super::types::parse_type_annotation(parser)?)
+    } else {
+        None
+    };
+
+    let mut implements = Vec::new();
+    if parser.check(&Token::Implements) {
+        parser.advance();
+        let mut guard = super::guards::LoopGuard::new("class_expression_implements_clause");
+        loop {
+            guard.check()?;
+            implements.push(super::types::parse_type_annotation(parser)?);
+            if parser.check(&Token::Comma) {
+                parser.advance();
+            } else {
+                break;
+            }
+        }
+    }
+
+    parser.expect(Token::LeftBrace)?;
+    let members = super::stmt::parse_class_members(parser)?;
+    let end_span = parser.current_span();
+    parser.expect(Token::RightBrace)?;
+
+    let class_span = parser.combine_spans(&start_span, &end_span);
+    let class_name = explicit_name.unwrap_or_else(|| Identifier {
+        name: parser.intern(&format!("__class_expr_{}", start_span.start)),
+        span: start_span,
+    });
+
+    let class_decl = Statement::ClassDecl(ClassDecl {
+        decorators: Vec::new(),
+        annotations: Vec::new(),
+        is_abstract: false,
+        name: class_name.clone(),
+        type_params,
+        extends,
+        implements,
+        members,
+        span: class_span,
+    });
+
+    let return_stmt = Statement::Return(ReturnStatement {
+        value: Some(Expression::Identifier(class_name.clone())),
+        span: class_span,
+    });
+    let body = BlockStatement {
+        statements: vec![class_decl, return_stmt],
+        span: class_span,
+    };
+    let function_expr = Expression::Function(FunctionExpression {
+        name: None,
+        type_params: None,
+        params: Vec::new(),
+        return_type: None,
+        body: body.clone(),
+        is_method: false,
+        is_async: false,
+        is_generator: false,
+        span: class_span,
+    });
+
+    Ok(Expression::Call(CallExpression {
+        callee: Box::new(function_expr),
+        type_args: None,
+        arguments: Vec::new(),
+        optional: false,
+        span: class_span,
+    }))
 }
 
 /// Parse an infix (binary) expression.

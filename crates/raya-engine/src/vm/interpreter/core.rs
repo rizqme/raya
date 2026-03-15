@@ -36,6 +36,21 @@ pub(in crate::vm::interpreter) fn value_to_f64(v: Value) -> Result<f64, VmError>
     }
 }
 
+fn reflect_type_name_to_id(type_name: &str) -> u32 {
+    match type_name {
+        "number" => 0,
+        "string" => 1,
+        "boolean" => 2,
+        "null" => 3,
+        "void" => 4,
+        "never" => 5,
+        "unknown" => 6,
+        "int" => 16,
+        s if s.starts_with("type#") => s[5..].parse().unwrap_or(0),
+        _ => 0,
+    }
+}
+
 #[cfg(all(test, feature = "jit"))]
 mod tests {
     use super::Interpreter;
@@ -422,6 +437,289 @@ impl<'a> Interpreter<'a> {
             .get(&module.checksum)
             .map(|layout| layout.resolved_natives.clone())
             .unwrap_or_else(crate::vm::native_registry::ResolvedNatives::empty)
+    }
+
+    pub(in crate::vm::interpreter) fn register_structural_shape_names(
+        &self,
+        shape_id: crate::vm::object::ShapeId,
+        member_names: &[String],
+    ) {
+        if member_names.is_empty() {
+            return;
+        }
+        self.structural_shape_names
+            .write()
+            .entry(shape_id)
+            .or_insert_with(|| member_names.to_vec());
+    }
+
+    pub(in crate::vm::interpreter) fn register_dynamic_module(
+        &self,
+        module: Arc<Module>,
+    ) -> Result<(), String> {
+        if self.module_layouts.read().contains_key(&module.checksum) {
+            return Ok(());
+        }
+
+        if !module.native_functions.is_empty() {
+            return Err(format!(
+                "dynamic module '{}' unexpectedly contains unresolved module natives",
+                module.metadata.name
+            ));
+        }
+
+        let global_len = Self::module_global_slot_count(&module);
+        let global_base = {
+            let mut globals = self.globals_by_index.write();
+            let base = globals.len();
+            if global_len > 0 {
+                globals.resize(base + global_len, Value::null());
+            }
+            base
+        };
+        let nominal_type_len = module.classes.len();
+        let nominal_type_base = self
+            .classes
+            .write()
+            .reserve_nominal_type_range(nominal_type_len);
+
+        self.module_layouts.write().insert(
+            module.checksum,
+            crate::vm::interpreter::shared_state::ModuleRuntimeLayout {
+                checksum: module.checksum,
+                global_base,
+                global_len,
+                nominal_type_base,
+                nominal_type_len,
+                resolved_natives: crate::vm::native_registry::ResolvedNatives::empty(),
+                initialized: false,
+            },
+        );
+
+        for shape in &module.metadata.structural_shapes {
+            if shape.member_names.is_empty() {
+                continue;
+            }
+            let names = &shape.member_names;
+            let shape_id = crate::vm::object::shape_id_from_member_names(names);
+            self.register_structural_shape_names(shape_id, names);
+            let layout_id = crate::vm::object::layout_id_from_ordered_names(names);
+            self.register_structural_layout_shape(layout_id, names);
+        }
+
+        self.register_dynamic_module_classes(&module, nominal_type_base);
+        Ok(())
+    }
+
+    fn register_dynamic_module_classes(&self, module: &Arc<Module>, nominal_type_base: usize) {
+        let mut classes = self.classes.write();
+        let mut class_metadata_registry = self.class_metadata.write();
+        for (i, class_def) in module.classes.iter().enumerate() {
+            let global_nominal_type_id = nominal_type_base + i;
+            let parent_global_id = class_def
+                .parent_id
+                .map(|parent_id| nominal_type_base + parent_id as usize)
+                .or_else(|| {
+                    class_def.parent_name.as_deref().and_then(|parent_name| {
+                        classes.get_class_by_name(parent_name).map(|class| class.id)
+                    })
+                });
+            let inherited_runtime_parent =
+                class_def.parent_id.is_none() && class_def.parent_name.is_some();
+            let inherited_field_count = parent_global_id
+                .and_then(|parent_id| classes.get_class(parent_id).map(|class| class.field_count))
+                .unwrap_or(0);
+            let missing_parent_fields =
+                inherited_field_count > 0 && class_def.field_count < inherited_field_count;
+            let total_field_count = if inherited_runtime_parent || missing_parent_fields {
+                inherited_field_count + class_def.field_count
+            } else {
+                class_def.field_count
+            };
+
+            let mut class = if let Some(parent_id) = parent_global_id {
+                let mut c = crate::vm::object::Class::with_parent(
+                    global_nominal_type_id,
+                    class_def.name.clone(),
+                    total_field_count,
+                    parent_id,
+                );
+                if let Some(parent) = classes.get_class(parent_id) {
+                    for &method_id in &parent.vtable.methods {
+                        c.add_method(method_id);
+                    }
+                }
+                c
+            } else {
+                crate::vm::object::Class::new(
+                    global_nominal_type_id,
+                    class_def.name.clone(),
+                    total_field_count,
+                )
+            };
+            class.module = Some(module.clone());
+
+            if let Some(max_slot) = class_def.methods.iter().map(|m| m.slot + 1).max() {
+                while class.vtable.methods.len() < max_slot {
+                    class.add_method(usize::MAX);
+                }
+            }
+
+            for method in &class_def.methods {
+                class.vtable.methods[method.slot] = method.function_id;
+            }
+
+            let exported_constructor_id = module.exports.iter().find_map(|export| {
+                (matches!(export.symbol_type, crate::compiler::SymbolType::Class)
+                    && export
+                        .nominal_type
+                        .is_some_and(|nominal| nominal.local_nominal_type_index as usize == i))
+                .then_some(
+                    export
+                        .nominal_type
+                        .and_then(|nominal| nominal.constructor_function_index),
+                )
+                .flatten()
+                .map(|idx| idx as usize)
+            });
+            if let Some(constructor_id) = exported_constructor_id.or_else(|| {
+                let constructor_name = format!("{}::constructor", class_def.name);
+                module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == constructor_name)
+            }) {
+                class.set_constructor(constructor_id);
+            }
+
+            let layout_id = self.allocate_nominal_layout_id();
+            classes.register_class(class);
+            self.register_nominal_layout(
+                global_nominal_type_id,
+                layout_id,
+                total_field_count,
+                Some(class_def.name.clone()),
+            );
+
+            let mut class_meta = if inherited_runtime_parent || missing_parent_fields {
+                parent_global_id
+                    .and_then(|parent_id| class_metadata_registry.get(parent_id).cloned())
+                    .unwrap_or_default()
+            } else {
+                crate::vm::reflect::ClassMetadata::new()
+            };
+
+            if let Some(class_reflection) =
+                module.reflection.as_ref().and_then(|r| r.classes.get(i))
+            {
+                let field_offset = if inherited_runtime_parent || missing_parent_fields {
+                    inherited_field_count
+                } else {
+                    0
+                };
+                for (field_index, field) in class_reflection.fields.iter().enumerate() {
+                    if field.is_static {
+                        class_meta.add_static_field(field.name.clone(), field_index);
+                    } else {
+                        let type_id = reflect_type_name_to_id(&field.type_name);
+                        class_meta.add_field_with_type(
+                            field.name.clone(),
+                            field_offset + field_index,
+                            type_id,
+                        );
+                    }
+                }
+
+                for (method_index, method_name) in class_reflection.method_names.iter().enumerate()
+                {
+                    class_meta.add_method(method_name.clone(), method_index);
+                }
+
+                for (static_index, static_name) in
+                    class_reflection.static_field_names.iter().enumerate()
+                {
+                    class_meta.add_static_field(static_name.clone(), static_index);
+                }
+            }
+
+            for method in &class_def.methods {
+                let plain_name = method
+                    .name
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(method.name.as_str())
+                    .to_string();
+                if !class_meta.has_method(&plain_name) {
+                    class_meta.add_method(plain_name.clone(), method.slot);
+                }
+                if plain_name != method.name && !class_meta.has_method(&method.name) {
+                    class_meta.add_method(method.name.clone(), method.slot);
+                }
+            }
+
+            if !class_meta.method_names.is_empty()
+                || !class_meta.field_names.is_empty()
+                || !class_meta.static_field_names.is_empty()
+            {
+                class_metadata_registry.register(global_nominal_type_id, class_meta);
+            }
+        }
+    }
+
+    fn module_global_slot_count(module: &Module) -> usize {
+        let function_slots = module
+            .functions
+            .iter()
+            .map(Self::function_global_slot_count)
+            .max()
+            .unwrap_or(0);
+        let exported_constant_slots = module
+            .exports
+            .iter()
+            .filter(|export| matches!(export.symbol_type, crate::compiler::SymbolType::Constant))
+            .map(|export| export.index + 1)
+            .max()
+            .unwrap_or(0);
+        let import_slots = module
+            .imports
+            .iter()
+            .filter_map(|import| import.runtime_global_slot.map(|slot| slot as usize + 1))
+            .max()
+            .unwrap_or(0);
+        function_slots
+            .max(import_slots)
+            .max(exported_constant_slots)
+    }
+
+    fn function_global_slot_count(function: &crate::compiler::Function) -> usize {
+        let code = &function.code;
+        let mut ip = 0usize;
+        let mut max_slot = 0usize;
+
+        while ip < code.len() {
+            let op = code[ip];
+            ip += 1;
+            let Some(opcode) = Opcode::from_u8(op) else {
+                continue;
+            };
+            match opcode {
+                Opcode::LoadGlobal | Opcode::StoreGlobal => {
+                    if ip + 4 <= code.len() {
+                        let slot = u32::from_le_bytes([
+                            code[ip],
+                            code[ip + 1],
+                            code[ip + 2],
+                            code[ip + 3],
+                        ]) as usize;
+                        max_slot = max_slot.max(slot + 1);
+                    }
+                }
+                _ => {}
+            }
+            ip += crate::compiler::bytecode::verify::operand_size(opcode);
+        }
+
+        max_slot
     }
 
     #[inline]

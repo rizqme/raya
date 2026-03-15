@@ -69,9 +69,7 @@ use raya_engine::parser::types::{
 use raya_engine::parser::Interner;
 use raya_engine::vm::json::JSView;
 use raya_engine::vm::module::{ModuleLinker, ResolvedSymbol};
-use raya_engine::vm::object::{
-    layout_id_from_ordered_names, Closure, Object, RayaString, TypeHandle,
-};
+use raya_engine::vm::object::{layout_id_from_ordered_names, Closure, Object, RayaString};
 #[cfg(feature = "aot")]
 use raya_engine::vm::scheduler::{Task, TaskState};
 #[cfg(feature = "aot")]
@@ -80,8 +78,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
-
-const IMPORTED_CLASS_TYPE_HANDLE_KEY: &str = "__raya_type_handle__";
 
 static STRICT_BUILTIN_RUNTIME_MODULES: OnceLock<Result<Vec<Module>, String>> = OnceLock::new();
 static NODE_BUILTIN_RUNTIME_MODULES: OnceLock<Result<Vec<Module>, String>> = OnceLock::new();
@@ -1316,86 +1312,14 @@ impl Runtime {
                 }
                 drop(classes);
 
-                if nominal_type_id > u32::MAX as usize {
-                    return Err(RuntimeError::Dependency(format!(
-                        "Imported class symbol '{}' from '{}' has nominal type ID {} outside u32 range",
-                        export.name, module.metadata.name, nominal_type_id
-                    )));
-                }
-                let shape_id = export.type_signature.as_deref().map(signature_hash);
-                let layout_id = vm
-                    .shared_state()
-                    .nominal_layout_id(nominal_type_id)
+                vm.shared_state()
+                    .ensure_constructor_value_for_nominal_type(nominal_type_id)
                     .ok_or_else(|| {
                         RuntimeError::Dependency(format!(
-                            "class '{}' missing runtime layout id",
-                            class_name
+                            "Imported class symbol '{}' from '{}' could not materialize runtime constructor for nominal type {}",
+                            export.name, module.metadata.name, nominal_type_id
                         ))
-                    })?;
-                let handle_id = vm.shared_state().register_type_handle(
-                    nominal_type_id as u32,
-                    layout_id,
-                    shape_id,
-                );
-                let handle = TypeHandle {
-                    handle_id,
-                    shape_id,
-                };
-                let handle_gc = vm.shared_state().gc.lock().allocate(handle);
-                let handle_value =
-                    unsafe { Value::from_ptr(std::ptr::NonNull::new(handle_gc.as_ptr()).unwrap()) };
-
-                // Class imports hydrate as class objects carrying:
-                // - hidden constructor handle for `new ImportedClass(...)`
-                // - static methods as callable closures
-                let static_prefix = format!("{}::static::", class_name);
-                let static_method_names: Vec<String> = module
-                    .functions
-                    .iter()
-                    .filter_map(|function| {
-                        function
-                            .name
-                            .strip_prefix(&static_prefix)
-                            .map(str::to_string)
-                            .filter(|name| !name.is_empty())
                     })
-                    .collect();
-                let class_layout_id = layout_id_from_ordered_names(&static_method_names);
-                let mut class_object =
-                    Object::new_dynamic(class_layout_id, static_method_names.len());
-                let handle_key = vm
-                    .shared_state()
-                    .intern_prop_key(IMPORTED_CLASS_TYPE_HANDLE_KEY);
-                class_object
-                    .ensure_dyn_map()
-                    .insert(handle_key, handle_value);
-
-                for (function_id, function) in module.functions.iter().enumerate() {
-                    let Some(method_name) = function.name.strip_prefix(&static_prefix) else {
-                        continue;
-                    };
-                    if method_name.is_empty() {
-                        continue;
-                    }
-                    let closure = Closure::with_module(function_id, Vec::new(), module.clone());
-                    let closure_gc = vm.shared_state().gc.lock().allocate(closure);
-                    let closure_value = unsafe {
-                        Value::from_ptr(std::ptr::NonNull::new(closure_gc.as_ptr()).unwrap())
-                    };
-                    let slot = static_method_names
-                        .iter()
-                        .position(|name| name == method_name)
-                        .expect("class static method slot");
-                    class_object
-                        .set_field(slot, closure_value)
-                        .map_err(raya_engine::vm::VmError::RuntimeError)
-                        .map_err(RuntimeError::Vm)?;
-                }
-                vm.shared_state()
-                    .register_structural_layout_shape(class_layout_id, &static_method_names);
-
-                let class_gc = vm.shared_state().gc.lock().allocate(class_object);
-                Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(class_gc.as_ptr()).unwrap()) })
             }
         }
     }

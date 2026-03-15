@@ -650,6 +650,8 @@ pub struct Function {
     pub visible_length: usize,
     /// Whether JS `this` should use strict semantics.
     pub is_strict_js: bool,
+    /// Whether JS `this` should box primitives but preserve nullish receivers.
+    pub uses_builtin_this_coercion: bool,
     /// Number of local variables
     pub local_count: usize,
     /// Bytecode instructions
@@ -670,6 +672,7 @@ impl Function {
         writer.emit_u8(u8::from(self.is_generator));
         writer.emit_u32(self.visible_length as u32);
         writer.emit_u8(u8::from(self.is_strict_js));
+        writer.emit_u8(u8::from(self.uses_builtin_this_coercion));
         writer.emit_u32(self.local_count as u32);
 
         // Write code length and code
@@ -689,6 +692,7 @@ impl Function {
         let is_generator = reader.read_u8()? != 0;
         let visible_length = reader.read_u32()? as usize;
         let is_strict_js = reader.read_u8()? != 0;
+        let uses_builtin_this_coercion = reader.read_u8()? != 0;
         let local_count = reader.read_u32()? as usize;
 
         // Read code
@@ -703,6 +707,7 @@ impl Function {
             is_generator,
             visible_length,
             is_strict_js,
+            uses_builtin_this_coercion,
             local_count,
             code,
         })
@@ -1823,8 +1828,10 @@ mod tests {
             param_count: 0,
             uses_js_this_slot: false,
             is_constructible: false,
+            is_generator: false,
             visible_length: 0,
             is_strict_js: false,
+            uses_builtin_this_coercion: false,
             local_count: 1,
             code: writer.into_bytes(),
         });
@@ -1973,8 +1980,10 @@ mod tests {
             param_count: 1,
             uses_js_this_slot: false,
             is_constructible: false,
+            is_generator: false,
             visible_length: 1,
             is_strict_js: false,
+            uses_builtin_this_coercion: false,
             local_count: 2,
             code: writer.into_bytes(),
         });

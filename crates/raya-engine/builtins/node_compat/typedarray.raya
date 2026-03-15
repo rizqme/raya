@@ -99,7 +99,6 @@ class ArrayBuffer {
         }
     }
 
-    // Compatibility helper for code expecting Buffer.
     rawBuffer(): Buffer {
         let out = new Buffer(this.byteLength);
         let i = 0;
@@ -175,6 +174,775 @@ class ArrayBuffer {
     }
 }
 
+function __coerceObjectToArrayBuffer(source: any): ArrayBuffer {
+    let dynSource = source as any;
+    if (dynSource.asArrayBuffer != null) {
+        return dynSource.asArrayBuffer() as ArrayBuffer;
+    }
+    return source as ArrayBuffer;
+}
+
+function __typedArrayLengthTracking(source: any, requestedLength: int): boolean {
+    let sourceType = typeof source;
+    if (sourceType == "int" || sourceType == "number") {
+        return false;
+    }
+    return requestedLength < 0;
+}
+
+function __typedArrayFixedLength(source: any, requestedLength: int): int {
+    let sourceType = typeof source;
+    if (sourceType == "int" || sourceType == "number") {
+        return source as int;
+    }
+    if (requestedLength < 0) {
+        return 0;
+    }
+    return requestedLength;
+}
+
+function __typedArrayInit(
+    target: any,
+    source: any,
+    byteOffset: any,
+    length: any,
+    bytesPerElement: int,
+    name: string
+): void {
+    let normalizedByteOffset = Number(byteOffset);
+    if (normalizedByteOffset != normalizedByteOffset) {
+        normalizedByteOffset = 0;
+    }
+    let normalizedByteOffsetInt = normalizedByteOffset as int;
+    let requestedLength = -1;
+    if (length != null) {
+        let normalizedLength = Number(length);
+        if (normalizedLength == normalizedLength) {
+            requestedLength = normalizedLength as int;
+        }
+    }
+    let sourceType = typeof source;
+    if (sourceType != "int" && sourceType != "number") {
+        let ab = __coerceObjectToArrayBuffer(source);
+        if (normalizedByteOffsetInt < 0 || normalizedByteOffsetInt > ab.byteLength || (normalizedByteOffsetInt % bytesPerElement) != 0) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
+        }
+        let availableBytes = ab.byteLength - normalizedByteOffsetInt;
+        if ((availableBytes % bytesPerElement) != 0 && requestedLength < 0) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "buffer size not aligned for " + name);
+        }
+
+        let outLen = requestedLength;
+        if (outLen < 0) {
+            outLen = availableBytes / bytesPerElement;
+        }
+        if (outLen < 0 || (normalizedByteOffsetInt + outLen * bytesPerElement) > ab.byteLength) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "length out of range");
+        }
+
+        target.buffer = ab;
+        target.byteOffset = normalizedByteOffsetInt;
+        target.length = outLen;
+        target.byteLength = outLen * bytesPerElement;
+        target._lengthTracking = __typedArrayLengthTracking(source, requestedLength);
+        target._fixedLength = __typedArrayFixedLength(source, requestedLength);
+        return;
+    }
+
+    let numericSize = Number(source) as int;
+    if (numericSize < 0) {
+        throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
+    }
+    target.buffer = new ArrayBuffer(numericSize * bytesPerElement);
+    target.byteOffset = 0;
+    target.length = numericSize;
+    target.byteLength = numericSize * bytesPerElement;
+    target._lengthTracking = false;
+    target._fixedLength = numericSize;
+}
+
+function __typedArrayRawLength(target: any, bytesPerElement: int): int {
+    let buffer = target.buffer as ArrayBuffer;
+    let byteOffset = target.byteOffset as int;
+    let available = buffer.byteLength - byteOffset;
+    if (available < 0) {
+        return -1;
+    }
+
+    if ((target._lengthTracking as boolean) == true) {
+        return available / bytesPerElement;
+    }
+
+    let fixedLength = target._fixedLength as int;
+    if ((fixedLength * bytesPerElement) > available) {
+        return -1;
+    }
+    return fixedLength;
+}
+
+function __typedArrayLiveLengthForProperty(target: any, bytesPerElement: int): int {
+    let len = __typedArrayRawLength(target, bytesPerElement);
+    if (len < 0) {
+        return 0;
+    }
+    return len;
+}
+
+function __typedArrayRequireLength(target: any, bytesPerElement: int): int {
+    let len = __typedArrayRawLength(target, bytesPerElement);
+    if (len < 0) {
+        throw new TypeError("TypedArray is out of bounds");
+    }
+    return len;
+}
+
+function __typedArrayCheckIndex(target: any, index: int, bytesPerElement: int): void {
+    let len = __typedArrayRequireLength(target, bytesPerElement);
+    if (index < 0 || index >= len) {
+        throw createRangeError(ERR_OUT_OF_RANGE, "Index out of range");
+    }
+}
+
+function __typedArrayElementOffset(target: any, index: int, bytesPerElement: int): int {
+    return (target.byteOffset as int) + (index * bytesPerElement);
+}
+
+function __typedArrayGetUint8(target: any, index: int): int {
+    __typedArrayCheckIndex(target, index, 1);
+    let buffer = target.buffer as ArrayBuffer;
+    return buffer.getByte(__typedArrayElementOffset(target, index, 1));
+}
+
+function __typedArraySetUint8(target: any, index: int, value: int): void {
+    __typedArrayCheckIndex(target, index, 1);
+    let buffer = target.buffer as ArrayBuffer;
+    let out = value % 256;
+    if (out < 0) {
+        out = out + 256;
+    }
+    buffer.setByte(__typedArrayElementOffset(target, index, 1), out);
+}
+
+function __typedArrayGetUint16(target: any, index: int): int {
+    __typedArrayCheckIndex(target, index, 2);
+    let buffer = target.buffer as ArrayBuffer;
+    let offset = __typedArrayElementOffset(target, index, 2);
+    let b0 = buffer.getByte(offset);
+    let b1 = buffer.getByte(offset + 1);
+    return b0 | (b1 << 8);
+}
+
+function __typedArraySetUint16(target: any, index: int, value: int): void {
+    __typedArrayCheckIndex(target, index, 2);
+    let buffer = target.buffer as ArrayBuffer;
+    let offset = __typedArrayElementOffset(target, index, 2);
+    let out = value % 65536;
+    if (out < 0) {
+        out = out + 65536;
+    }
+    buffer.setByte(offset, out & 255);
+    buffer.setByte(offset + 1, (out >> 8) & 255);
+}
+
+function __typedArrayGetInt32(target: any, index: int): int {
+    __typedArrayCheckIndex(target, index, 4);
+    let buffer = target.buffer as ArrayBuffer;
+    return buffer.getInt32(__typedArrayElementOffset(target, index, 4));
+}
+
+function __typedArraySetInt32(target: any, index: int, value: int): void {
+    __typedArrayCheckIndex(target, index, 4);
+    let buffer = target.buffer as ArrayBuffer;
+    buffer.setInt32(__typedArrayElementOffset(target, index, 4), value);
+}
+
+function __typedArrayGetFloat64(target: any, index: int): number {
+    __typedArrayCheckIndex(target, index, 8);
+    let buffer = target.buffer as ArrayBuffer;
+    return buffer.getInt32(__typedArrayElementOffset(target, index, 8)) as number;
+}
+
+function __typedArraySetFloat64(target: any, index: int, value: number): void {
+    __typedArrayCheckIndex(target, index, 8);
+    let buffer = target.buffer as ArrayBuffer;
+    let offset = __typedArrayElementOffset(target, index, 8);
+    buffer.setInt32(offset, value as int);
+    buffer.setInt32(offset + 4, 0);
+}
+
+function __typedArrayAt(target: any, index: any, bytesPerElement: int): any {
+    let relative = Number(index);
+    if (relative != relative) {
+        relative = 0;
+    }
+
+    let len = __typedArrayRequireLength(target, bytesPerElement);
+    let actual = relative as int;
+    if (actual < 0) {
+        actual = len + actual;
+    }
+    if (actual < 0 || actual >= len) {
+        return undefined;
+    }
+    return target[actual];
+}
+
+function __typedArrayIndexOf(
+    target: any,
+    searchElement: any,
+    fromIndex: any,
+    bytesPerElement: int
+): number {
+    let len = __typedArrayRequireLength(target, bytesPerElement);
+    let numericFromIndex = Number(fromIndex);
+    if (numericFromIndex != numericFromIndex) {
+        numericFromIndex = 0;
+    }
+    let i = numericFromIndex as int;
+    if (i < 0) {
+        i = len + i;
+    }
+    if (i < 0) {
+        i = 0;
+    }
+    while (i < len) {
+        if (target[i] === searchElement) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+function __typedArrayToLocaleString(target: any, bytesPerElement: int): string {
+    let len = __typedArrayRequireLength(target, bytesPerElement);
+    let out = "";
+    let i = 0;
+    while (i < len) {
+        if (i > 0) {
+            out = out + ",";
+        }
+        out = out + String(target[i]);
+        i = i + 1;
+    }
+    return out;
+}
+
+class Uint8Array {
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 1;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 1, "Uint8Array");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 1);
+    }
+
+    get(index: int): int {
+        return __typedArrayGetUint8(this as any, index);
+    }
+
+    set(index: int, value: int): void {
+        __typedArraySetUint8(this as any, index, value);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 1);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 1);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 1);
+    }
+
+    asArrayBuffer(): ArrayBuffer {
+        return this.buffer;
+    }
+}
+
+class Int8Array {
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 1;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 1, "Int8Array");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 1);
+    }
+
+    get(index: int): int {
+        let value = __typedArrayGetUint8(this as any, index);
+        if (value > 127) {
+            return value - 256;
+        }
+        return value;
+    }
+
+    set(index: int, value: int): void {
+        __typedArraySetUint8(this as any, index, value);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 1);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 1);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 1);
+    }
+}
+
+class Int32Array {
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 4;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 4, "Int32Array");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 4);
+    }
+
+    get(index: int): int {
+        return __typedArrayGetInt32(this as any, index);
+    }
+
+    set(index: int, value: int): void {
+        __typedArraySetInt32(this as any, index, value);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 4);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 4);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 4);
+    }
+}
+
+class Float64Array {
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 8;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 8, "Float64Array");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 8);
+    }
+
+    get(index: int): number {
+        return __typedArrayGetFloat64(this as any, index);
+    }
+
+    set(index: int, value: number): void {
+        __typedArraySetFloat64(this as any, index, value);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 8);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 8);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 8);
+    }
+}
+
+class Uint8ClampedArray {
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 1;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 1, "Uint8ClampedArray");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 1);
+    }
+
+    get(index: int): int {
+        return __typedArrayGetUint8(this as any, index);
+    }
+
+    set(index: int, value: int): void {
+        let out = value;
+        if (out < 0) {
+            out = 0;
+        }
+        if (out > 255) {
+            out = 255;
+        }
+        __typedArraySetUint8(this as any, index, out);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 1);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 1);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 1);
+    }
+}
+
+class Uint16Array {
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 2;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 2, "Uint16Array");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 2);
+    }
+
+    get(index: int): int {
+        return __typedArrayGetUint16(this as any, index);
+    }
+
+    set(index: int, value: int): void {
+        __typedArraySetUint16(this as any, index, value);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 2);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 2);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 2);
+    }
+}
+
+class Int16Array {
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 2;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 2, "Int16Array");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 2);
+    }
+
+    get(index: int): int {
+        let value = __typedArrayGetUint16(this as any, index);
+        if (value > 32767) {
+            return value - 65536;
+        }
+        return value;
+    }
+
+    set(index: int, value: int): void {
+        __typedArraySetUint16(this as any, index, value);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 2);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 2);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 2);
+    }
+}
+
+class Uint32Array {
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 4;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 4, "Uint32Array");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 4);
+    }
+
+    get(index: int): number {
+        let value = __typedArrayGetInt32(this as any, index);
+        if (value < 0) {
+            return value + 4294967296;
+        }
+        return value;
+    }
+
+    set(index: int, value: number): void {
+        __typedArraySetInt32(this as any, index, value as int);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 4);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 4);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 4);
+    }
+}
+
+class Float32Array {
+    // Pragmatic subset: values are represented as int-backed numbers, but
+    // byte width and live view semantics match Float32Array.
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 4;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 4, "Float32Array");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 4);
+    }
+
+    get(index: int): number {
+        return __typedArrayGetInt32(this as any, index) as number;
+    }
+
+    set(index: int, value: number): void {
+        __typedArraySetInt32(this as any, index, value as int);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 4);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 4);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 4);
+    }
+}
+
+class Float16Array {
+    // Pragmatic subset: values are represented as int-backed numbers, but
+    // byte width and live view semantics match Float16Array.
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 2;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 2, "Float16Array");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 2);
+    }
+
+    get(index: int): number {
+        return __typedArrayGetUint16(this as any, index) as number;
+    }
+
+    set(index: int, value: number): void {
+        __typedArraySetUint16(this as any, index, value as int);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 2);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 2);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 2);
+    }
+}
+
+class BigInt64Array {
+    // Pragmatic subset: values are represented as number.
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 8;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 8, "BigInt64Array");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 8);
+    }
+
+    get(index: int): number {
+        return __typedArrayGetFloat64(this as any, index);
+    }
+
+    set(index: int, value: number): void {
+        __typedArraySetFloat64(this as any, index, value);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 8);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 8);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 8);
+    }
+}
+
+class BigUint64Array {
+    // Pragmatic subset: values are represented as number.
+    _fixedLength: int;
+    _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 8;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 8, "BigUint64Array");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 8);
+    }
+
+    get(index: int): number {
+        return __typedArrayGetFloat64(this as any, index);
+    }
+
+    set(index: int, value: number): void {
+        __typedArraySetFloat64(this as any, index, value);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 8);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 8);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 8);
+    }
+}
+
+class TypedArray<T> {
+    private _fixedLength: int;
+    private _lengthTracking: boolean;
+    static BYTES_PER_ELEMENT: int = 1;
+    buffer: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: any = 0, byteOffset: any = 0, length: any = -1) {
+        __typedArrayInit(this as any, source, byteOffset, length, 1, "TypedArray");
+    }
+
+    __currentLength(): int {
+        return __typedArrayRawLength(this as any, 1);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index, 1);
+    }
+
+    indexOf(element: any, fromIndex: any = 0): number {
+        return __typedArrayIndexOf(this as any, element, fromIndex, 1);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any, 1);
+    }
+}
+
 export {
     ArrayBuffer,
     Uint8Array,
@@ -191,762 +959,6 @@ export {
     BigUint64Array,
     TypedArray,
 };
-
-function __coerceObjectToArrayBuffer(source: any): ArrayBuffer {
-    let dynSource = source as any;
-    if (dynSource.asArrayBuffer != null) {
-        return dynSource.asArrayBuffer() as ArrayBuffer;
-    }
-    return source as ArrayBuffer;
-}
-
-function __typedArrayAt(target: any, index: any): any {
-    let relative = Number(index);
-    if (relative != relative) {
-        relative = 0;
-    }
-
-    let actual = relative as int;
-    if (actual < 0) {
-        actual = target.length + actual;
-    }
-    if (actual < 0 || actual >= target.length) {
-        return undefined;
-    }
-    return target.get(actual);
-}
-
-function __typedArrayIndexOf(target: any, searchElement: any): number {
-    let i = 0;
-    while (i < target.length) {
-        if (target.get(i) === searchElement) {
-            return i;
-        }
-        i = i + 1;
-    }
-    return -1;
-}
-
-function __typedArrayToLocaleString(target: any): string {
-    let out = "";
-    let i = 0;
-    while (i < target.length) {
-        if (i > 0) {
-            out = out + ",";
-        }
-        out = out + String(target.get(i));
-        i = i + 1;
-    }
-    return out;
-}
-
-class Uint8Array {
-    private _ab: ArrayBuffer;
-    static BYTES_PER_ELEMENT: int = 1;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        let sourceType = typeof source;
-        if (sourceType != "int" && sourceType != "number") {
-            let ab = __coerceObjectToArrayBuffer(source);
-            if (byteOffset < 0 || byteOffset > ab.byteLength) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
-            }
-
-            let available = ab.byteLength - byteOffset;
-            let outLen = length;
-            if (outLen < 0) {
-                outLen = available;
-            }
-            if (outLen < 0 || outLen > available) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "length out of range");
-            }
-
-            this._ab = ab;
-            this.buffer = ab;
-            this.byteOffset = byteOffset;
-            this.length = outLen;
-            this.byteLength = outLen;
-            return;
-        }
-
-        let numericSize = source as int;
-        if (numericSize < 0) {
-            throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
-        }
-        this._ab = new ArrayBuffer(numericSize);
-        this.buffer = this._ab;
-        this.byteOffset = 0;
-        this.length = numericSize;
-        this.byteLength = numericSize;
-    }
-
-    private checkIndex(index: int): void {
-        if (index < 0 || index >= this.length) {
-            throw createRangeError(ERR_OUT_OF_RANGE, "Index out of range");
-        }
-    }
-
-    get(index: int): int {
-        this.checkIndex(index);
-        return this._ab.getByte(this.byteOffset + index);
-    }
-
-    set(index: int, value: int): void {
-        this.checkIndex(index);
-        this._ab.setByte(this.byteOffset + index, value);
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-
-    asArrayBuffer(): ArrayBuffer {
-        return this._ab;
-    }
-}
-
-class Int8Array {
-    private _u8: Uint8Array;
-    static BYTES_PER_ELEMENT: int = 1;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        this._u8 = new Uint8Array(source, byteOffset, length);
-        this.buffer = this._u8.buffer;
-        this.byteOffset = this._u8.byteOffset;
-        this.byteLength = this._u8.byteLength;
-        this.length = this._u8.length;
-    }
-
-    get(index: int): int {
-        let v = this._u8.get(index);
-        if (v > 127) {
-            return v - 256;
-        }
-        return v;
-    }
-
-    set(index: int, value: int): void {
-        let out = value;
-        if (out < 0) {
-            out = 256 + out;
-        }
-        this._u8.set(index, out);
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
-
-class Int32Array {
-    private _u8: Uint8Array;
-    static BYTES_PER_ELEMENT: int = 4;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        let sourceType = typeof source;
-        if (sourceType != "int" && sourceType != "number") {
-            let ab = __coerceObjectToArrayBuffer(source);
-            if (byteOffset < 0 || byteOffset > ab.byteLength || (byteOffset % 4) != 0) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
-            }
-            let availableBytes = ab.byteLength - byteOffset;
-            if ((availableBytes % 4) != 0 && length < 0) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "buffer size not aligned for Int32Array");
-            }
-
-            let outLen = length;
-            if (outLen < 0) {
-                outLen = availableBytes / 4;
-            }
-            if (outLen < 0 || (byteOffset + outLen * 4) > ab.byteLength) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "length out of range");
-            }
-
-            this._u8 = new Uint8Array(ab, byteOffset, outLen << 2);
-            this.buffer = ab;
-            this.byteOffset = byteOffset;
-            this.length = outLen;
-            this.byteLength = outLen << 2;
-            return;
-        }
-
-        let numericSize = source as int;
-        if (numericSize < 0) {
-            throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
-        }
-        this._u8 = new Uint8Array(numericSize << 2);
-        this.buffer = this._u8.buffer;
-        this.byteOffset = 0;
-        this.length = numericSize;
-        this.byteLength = numericSize << 2;
-    }
-
-    private checkIndex(index: int): void {
-        if (index < 0 || index >= this.length) {
-            throw createRangeError(ERR_OUT_OF_RANGE, "Index out of range");
-        }
-    }
-
-    get(index: int): int {
-        this.checkIndex(index);
-        let offset = index << 2;
-        let b0 = this._u8.get(offset);
-        let b1 = this._u8.get(offset + 1);
-        let b2 = this._u8.get(offset + 2);
-        let b3 = this._u8.get(offset + 3);
-        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-    }
-
-    set(index: int, value: int): void {
-        this.checkIndex(index);
-        let offset = index << 2;
-        this._u8.set(offset, value & 255);
-        this._u8.set(offset + 1, (value >> 8) & 255);
-        this._u8.set(offset + 2, (value >> 16) & 255);
-        this._u8.set(offset + 3, (value >> 24) & 255);
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
-
-class Float64Array {
-    private _u8: Uint8Array;
-    static BYTES_PER_ELEMENT: int = 8;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        let sourceType = typeof source;
-        if (sourceType != "int" && sourceType != "number") {
-            let ab = __coerceObjectToArrayBuffer(source);
-            if (byteOffset < 0 || byteOffset > ab.byteLength || (byteOffset % 8) != 0) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
-            }
-            let availableBytes = ab.byteLength - byteOffset;
-            if ((availableBytes % 8) != 0 && length < 0) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "buffer size not aligned for Float64Array");
-            }
-
-            let outLen = length;
-            if (outLen < 0) {
-                outLen = availableBytes / 8;
-            }
-            if (outLen < 0 || (byteOffset + outLen * 8) > ab.byteLength) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "length out of range");
-            }
-
-            this._u8 = new Uint8Array(ab, byteOffset, outLen << 3);
-            this.buffer = ab;
-            this.byteOffset = byteOffset;
-            this.length = outLen;
-            this.byteLength = outLen << 3;
-            return;
-        }
-
-        let numericSize = source as int;
-        if (numericSize < 0) {
-            throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
-        }
-        this._u8 = new Uint8Array(numericSize << 3);
-        this.buffer = this._u8.buffer;
-        this.byteOffset = 0;
-        this.length = numericSize;
-        this.byteLength = numericSize << 3;
-    }
-
-    private checkIndex(index: int): void {
-        if (index < 0 || index >= this.length) {
-            throw createRangeError(ERR_OUT_OF_RANGE, "Index out of range");
-        }
-    }
-
-    get(index: int): number {
-        this.checkIndex(index);
-        let offset = index << 3;
-        let tmp = new Buffer(8);
-        let i = 0;
-        while (i < 8) {
-            tmp.setByte(i, this._u8.get(offset + i));
-            i = i + 1;
-        }
-        return tmp.getFloat64(0);
-    }
-
-    set(index: int, value: number): void {
-        this.checkIndex(index);
-        let offset = index << 3;
-        let tmp = new Buffer(8);
-        tmp.setFloat64(0, value);
-        let i = 0;
-        while (i < 8) {
-            this._u8.set(offset + i, tmp.getByte(i));
-            i = i + 1;
-        }
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
-
-class Uint8ClampedArray {
-    private _u8: Uint8Array;
-    static BYTES_PER_ELEMENT: int = 1;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        this._u8 = new Uint8Array(source, byteOffset, length);
-        this.buffer = this._u8.buffer;
-        this.byteOffset = this._u8.byteOffset;
-        this.byteLength = this._u8.byteLength;
-        this.length = this._u8.length;
-    }
-
-    get(index: int): int {
-        return this._u8.get(index);
-    }
-
-    set(index: int, value: int): void {
-        let out = value;
-        if (out < 0) {
-            out = 0;
-        }
-        if (out > 255) {
-            out = 255;
-        }
-        this._u8.set(index, out);
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
-
-class Uint16Array {
-    private _u8: Uint8Array;
-    static BYTES_PER_ELEMENT: int = 2;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        let sourceType = typeof source;
-        if (sourceType != "int" && sourceType != "number") {
-            let ab = __coerceObjectToArrayBuffer(source);
-            if (byteOffset < 0 || byteOffset > ab.byteLength || (byteOffset % 2) != 0) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
-            }
-            let availableBytes = ab.byteLength - byteOffset;
-            if ((availableBytes % 2) != 0 && length < 0) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "buffer size not aligned for Uint16Array");
-            }
-            let outLen = length;
-            if (outLen < 0) {
-                outLen = availableBytes / 2;
-            }
-            if (outLen < 0 || (byteOffset + outLen * 2) > ab.byteLength) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "length out of range");
-            }
-            this._u8 = new Uint8Array(ab, byteOffset, outLen << 1);
-            this.buffer = ab;
-            this.byteOffset = byteOffset;
-            this.length = outLen;
-            this.byteLength = outLen << 1;
-            return;
-        }
-
-        let numericSize = source as int;
-        if (numericSize < 0) {
-            throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
-        }
-        this._u8 = new Uint8Array(numericSize << 1);
-        this.buffer = this._u8.buffer;
-        this.byteOffset = 0;
-        this.length = numericSize;
-        this.byteLength = numericSize << 1;
-    }
-
-    private checkIndex(index: int): void {
-        if (index < 0 || index >= this.length) {
-            throw createRangeError(ERR_OUT_OF_RANGE, "Index out of range");
-        }
-    }
-
-    get(index: int): int {
-        this.checkIndex(index);
-        let offset = index << 1;
-        let b0 = this._u8.get(offset);
-        let b1 = this._u8.get(offset + 1);
-        return b0 | (b1 << 8);
-    }
-
-    set(index: int, value: int): void {
-        this.checkIndex(index);
-        let out = value % 65536;
-        if (out < 0) {
-            out = out + 65536;
-        }
-        let offset = index << 1;
-        this._u8.set(offset, out & 255);
-        this._u8.set(offset + 1, (out >> 8) & 255);
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
-
-class Int16Array {
-    private _u16: Uint16Array;
-    static BYTES_PER_ELEMENT: int = 2;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        this._u16 = new Uint16Array(source, byteOffset, length);
-        this.buffer = this._u16.buffer;
-        this.byteOffset = this._u16.byteOffset;
-        this.byteLength = this._u16.byteLength;
-        this.length = this._u16.length;
-    }
-
-    get(index: int): int {
-        let v = this._u16.get(index);
-        if (v > 32767) {
-            return v - 65536;
-        }
-        return v;
-    }
-
-    set(index: int, value: int): void {
-        this._u16.set(index, value);
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
-
-class Uint32Array {
-    private _i32: Int32Array;
-    static BYTES_PER_ELEMENT: int = 4;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        this._i32 = new Int32Array(source, byteOffset, length);
-        this.buffer = this._i32.buffer;
-        this.byteOffset = this._i32.byteOffset;
-        this.byteLength = this._i32.byteLength;
-        this.length = this._i32.length;
-    }
-
-    get(index: int): number {
-        let v = this._i32.get(index);
-        if (v < 0) {
-            return v + 4294967296;
-        }
-        return v;
-    }
-
-    set(index: int, value: number): void {
-        let out = value;
-        while (out < 0) {
-            out = out + 4294967296;
-        }
-        while (out >= 4294967296) {
-            out = out - 4294967296;
-        }
-        if (out >= 2147483648) {
-            this._i32.set(index, (out - 4294967296) as int);
-        } else {
-            this._i32.set(index, out as int);
-        }
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
-
-class Float32Array {
-    // Pragmatic subset: 32-bit semantics are approximated via number storage.
-    private _f64: Float64Array;
-    static BYTES_PER_ELEMENT: int = 4;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        this._f64 = new Float64Array(source, byteOffset, length);
-        this.buffer = this._f64.buffer;
-        this.byteOffset = this._f64.byteOffset;
-        this.byteLength = this._f64.byteLength;
-        this.length = this._f64.length;
-    }
-
-    get(index: int): number {
-        return this._f64.get(index);
-    }
-
-    set(index: int, value: number): void {
-        this._f64.set(index, value);
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
-
-class Float16Array {
-    // Pragmatic subset: 16-bit semantics are approximated via number storage.
-    private _f64: Float64Array;
-    static BYTES_PER_ELEMENT: int = 2;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        this._f64 = new Float64Array(source, byteOffset, length);
-        this.buffer = this._f64.buffer;
-        this.byteOffset = this._f64.byteOffset;
-        this.byteLength = this._f64.byteLength;
-        this.length = this._f64.length;
-    }
-
-    get(index: int): number {
-        return this._f64.get(index);
-    }
-
-    set(index: int, value: number): void {
-        this._f64.set(index, value);
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
-
-class BigInt64Array {
-    // Pragmatic subset: values are represented as number.
-    private _f64: Float64Array;
-    static BYTES_PER_ELEMENT: int = 8;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        this._f64 = new Float64Array(source, byteOffset, length);
-        this.buffer = this._f64.buffer;
-        this.byteOffset = this._f64.byteOffset;
-        this.byteLength = this._f64.byteLength;
-        this.length = this._f64.length;
-    }
-
-    get(index: int): number {
-        return this._f64.get(index);
-    }
-
-    set(index: int, value: number): void {
-        this._f64.set(index, value);
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
-
-class BigUint64Array {
-    // Pragmatic subset: values are represented as number.
-    private _f64: Float64Array;
-    static BYTES_PER_ELEMENT: int = 8;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
-        this._f64 = new Float64Array(source, byteOffset, length);
-        this.buffer = this._f64.buffer;
-        this.byteOffset = this._f64.byteOffset;
-        this.byteLength = this._f64.byteLength;
-        this.length = this._f64.length;
-    }
-
-    get(index: int): number {
-        return this._f64.get(index);
-    }
-
-    set(index: int, value: number): void {
-        this._f64.set(index, value);
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
-
-class TypedArray<T> {
-    // Global TypedArray surface for compatibility checks.
-    static BYTES_PER_ELEMENT: int = 1;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
-
-    constructor(source: Object | number = 0, _byteOffset: int = 0, _length: int = -1) {
-        let sourceType = typeof source;
-        if (sourceType == "int" || sourceType == "number") {
-            let n = source as int;
-            if (n < 0) {
-                throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
-            }
-            this.length = n;
-            this.buffer = new ArrayBuffer(n);
-        } else {
-            let ab = source as ArrayBuffer;
-            this.length = ab.byteLength;
-            this.buffer = ab;
-        }
-        this.byteOffset = 0;
-        this.byteLength = this.length;
-    }
-
-    at(index: any): any {
-        return __typedArrayAt(this as any, index);
-    }
-
-    indexOf(element: any): number {
-        return __typedArrayIndexOf(this as any, element);
-    }
-
-    toLocaleString(): string {
-        return __typedArrayToLocaleString(this as any);
-    }
-}
 
 (Uint8Array as any)["BYTES_PER_ELEMENT"] = 1;
 (Int8Array as any)["BYTES_PER_ELEMENT"] = 1;

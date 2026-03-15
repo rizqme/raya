@@ -2740,7 +2740,11 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_return(&mut self, ret: &ast::ReturnStatement) {
-        let value = ret.value.as_ref().map(|e| self.lower_expr(e));
+        let value = ret
+            .value
+            .as_ref()
+            .map(|e| self.lower_expr(e))
+            .or_else(|| self.constructor_return_this.clone());
 
         // Inline finally blocks from innermost to outermost.
         // Drain the stack to prevent recursive re-inlining: if a finally block

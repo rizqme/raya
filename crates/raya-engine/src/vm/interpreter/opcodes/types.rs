@@ -1137,19 +1137,18 @@ impl<'a> Interpreter<'a> {
                                     )
                                 }
                             } else {
-                                Value::null()
+                                Value::undefined()
                             }
                         } else if key_str.as_deref() == Some("length") {
                             Value::i32(s.len() as i32)
                         } else if let Some(key_str) = key_str.as_deref() {
-                            if let Some(value) = self
-                                .string_constructor_prototype_value(
-                                    self.builtin_global_value("String").unwrap_or(Value::null()),
-                                )
-                                .and_then(|prototype| {
-                                    self.property_value_with_protocol_alias(prototype, key_str)
-                                })
-                            {
+                            if let Some(value) = match self
+                                .get_property_value_via_js_semantics_with_context(
+                                    obj_val, key_str, task, module,
+                                ) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            } {
                                 value
                             } else if let Some(native_id) =
                                 builtin_handle_native_method_id(obj_val, key_str).or_else(|| {
@@ -1175,10 +1174,10 @@ impl<'a> Interpreter<'a> {
                                     )
                                 }
                             } else {
-                                Value::null()
+                                Value::undefined()
                             }
                         } else {
-                            Value::null()
+                            Value::undefined()
                         }
                     }
                     JSView::Arr(ptr) => {
@@ -1202,12 +1201,13 @@ impl<'a> Interpreter<'a> {
                                 Value::f64(len as f64)
                             }
                         } else if let Some(key_str) = key_str.as_deref() {
-                            if let Some(value) = self.metadata_data_property_value(obj_val, key_str)
-                            {
-                                value
-                            } else if let Some(value) =
-                                self.get_field_value_by_name(obj_val, key_str)
-                            {
+                            if let Some(value) = match self
+                                .get_property_value_via_js_semantics_with_context(
+                                    obj_val, key_str, task, module,
+                                ) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            } {
                                 value
                             } else if let Some(native_id) =
                                 builtin_handle_native_method_id(obj_val, key_str).or_else(|| {
@@ -1232,17 +1232,11 @@ impl<'a> Interpreter<'a> {
                                             .expect("bound native method ptr"),
                                     )
                                 }
-                            } else if let Some(value) = self
-                                .prototype_chain_property_value_with_protocol_alias(
-                                    obj_val, key_str,
-                                )
-                            {
-                                value
                             } else {
-                                Value::null()
+                                Value::undefined()
                             }
                         } else {
-                            Value::null()
+                            Value::undefined()
                         }
                     }
                     JSView::Struct { ptr, .. } => {
@@ -1268,7 +1262,7 @@ impl<'a> Interpreter<'a> {
                             actual_obj, key_str, task, module,
                         ) {
                             Ok(Some(value)) => value,
-                            Ok(None) => Value::null(),
+                            Ok(None) => Value::undefined(),
                             Err(error) => return OpcodeResult::Error(error),
                         }
                     }
@@ -1302,14 +1296,14 @@ impl<'a> Interpreter<'a> {
                                                 )
                                             }
                                         } else {
-                                            Value::null()
+                                            Value::undefined()
                                         }
                                     }
                                     Err(error) => return OpcodeResult::Error(error),
                                 }
                             }
                         } else {
-                            Value::null()
+                            Value::undefined()
                         }
                     }
                 };

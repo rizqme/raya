@@ -509,19 +509,7 @@ impl SharedVmState {
                         .map(|nominal| nominal.local_nominal_type_index as usize)
                         .unwrap_or(export.index);
                     let global_nominal_type_id = layout.nominal_type_base + local_nominal_type_id;
-                    let Some((layout_id, _)) = self.nominal_allocation(global_nominal_type_id)
-                    else {
-                        continue;
-                    };
-                    let handle_id =
-                        self.register_type_handle(global_nominal_type_id as u32, layout_id, None);
-                    let gc_ptr = self.gc.lock().allocate(TypeHandle {
-                        handle_id,
-                        shape_id: None,
-                    });
-                    Some(unsafe {
-                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-                    })
+                    self.ensure_constructor_value_for_nominal_type(global_nominal_type_id)
                 }
                 crate::compiler::SymbolType::Constant => self
                     .globals_by_index
@@ -540,6 +528,42 @@ impl SharedVmState {
                 self.set_builtin_global(export.name.clone(), value);
             }
         }
+    }
+
+    pub fn ensure_constructor_value_for_nominal_type(
+        &self,
+        nominal_type_id: usize,
+    ) -> Option<Value> {
+        if let Some(&slot) = self.class_value_slots.read().get(&nominal_type_id) {
+            if let Some(value) = self.globals_by_index.read().get(slot).copied() {
+                return Some(value);
+            }
+        }
+
+        let (layout_id, _) = self.nominal_allocation(nominal_type_id)?;
+        let mut class_value_slots = self.class_value_slots.write();
+        if let Some(&slot) = class_value_slots.get(&nominal_type_id) {
+            if let Some(value) = self.globals_by_index.read().get(slot).copied() {
+                return Some(value);
+            }
+        }
+
+        let handle_id = self
+            .type_handles
+            .write()
+            .register(nominal_type_id as u32, layout_id, None);
+        let gc_ptr = self.gc.lock().allocate(TypeHandle {
+            handle_id,
+            shape_id: None,
+        });
+        let value = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).expect("type handle ptr"))
+        };
+        let mut globals = self.globals_by_index.write();
+        let slot = globals.len();
+        globals.push(value);
+        class_value_slots.insert(nominal_type_id, slot);
+        Some(value)
     }
 
     /// Create new shared VM state with default (no-op) native handler
@@ -1189,7 +1213,9 @@ impl SharedVmState {
             let inherited_field_count = parent_global_id
                 .and_then(|parent_id| classes.get_class(parent_id).map(|class| class.field_count))
                 .unwrap_or(0);
-            let total_field_count = if inherited_runtime_parent {
+            let missing_parent_fields =
+                inherited_field_count > 0 && class_def.field_count < inherited_field_count;
+            let total_field_count = if inherited_runtime_parent || missing_parent_fields {
                 inherited_field_count + class_def.field_count
             } else {
                 class_def.field_count
@@ -1268,7 +1294,7 @@ impl SharedVmState {
             // Populate runtime metadata for dynamic property lookups.
             // Prefer rich reflection data when present, and always seed method slot names
             // from class defs so imported-class dynamic member calls remain callable.
-            let mut class_meta = if inherited_runtime_parent {
+            let mut class_meta = if inherited_runtime_parent || missing_parent_fields {
                 parent_global_id
                     .and_then(|parent_id| class_metadata_registry.get(parent_id).cloned())
                     .unwrap_or_default()
@@ -1279,7 +1305,7 @@ impl SharedVmState {
             if let Some(class_reflection) =
                 module.reflection.as_ref().and_then(|r| r.classes.get(i))
             {
-                let field_offset = if inherited_runtime_parent {
+                let field_offset = if inherited_runtime_parent || missing_parent_fields {
                     inherited_field_count
                 } else {
                     0

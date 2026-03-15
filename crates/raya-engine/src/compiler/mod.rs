@@ -95,6 +95,16 @@ pub struct Compiler<'a> {
 }
 
 impl<'a> Compiler<'a> {
+    fn uses_builtin_this_coercion_compat(&self) -> bool {
+        self.module_identity
+            .as_deref()
+            .is_some_and(|module_identity| {
+                module_identity.starts_with("__raya_builtin__/")
+                    || module_identity.contains("/builtins/")
+                    || module_identity.contains("\\builtins\\")
+            })
+    }
+
     pub fn new(type_ctx: TypeContext, interner: &'a Interner) -> Self {
         Self {
             type_ctx,
@@ -205,6 +215,7 @@ impl<'a> Compiler<'a> {
                 .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(self.emit_sourcemap)
                 .with_js_this_binding_compat(self.js_this_binding_compat)
+                .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
                 .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
                 .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
         if let Some(ref jsx_opts) = self.jsx_options {
@@ -248,6 +259,7 @@ impl<'a> Compiler<'a> {
                 .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(need_sourcemap)
                 .with_js_this_binding_compat(self.js_this_binding_compat)
+                .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
                 .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
                 .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
         if let Some(ref jsx_opts) = self.jsx_options {
@@ -423,6 +435,7 @@ impl<'a> Compiler<'a> {
                 .with_type_annotation_types(self.type_annotation_types.clone())
                 .with_sourcemap(self.emit_sourcemap)
                 .with_js_this_binding_compat(self.js_this_binding_compat)
+                .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
                 .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
                 .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
         if let Some(ref jsx_opts) = self.jsx_options {

@@ -13,6 +13,7 @@ use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use rustc_hash::FxHashSet;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -107,6 +108,57 @@ impl<'a> Interpreter<'a> {
         }
 
         field_names
+    }
+
+    fn own_enumerable_property_names(&self, target: Value) -> Vec<String> {
+        let mut names = Vec::new();
+
+        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target)
+        {
+            let array = unsafe { &*array_ptr.as_ptr() };
+            for index in 0..array.len() {
+                if array.get(index).is_none() {
+                    continue;
+                }
+                let key = index.to_string();
+                if self.is_property_enumerable(target, &key) {
+                    names.push(key);
+                }
+            }
+            return names;
+        }
+
+        if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
+            let obj = unsafe { obj_ptr.as_ref() };
+            for name in self.reflect_object_field_names(obj) {
+                if self.is_property_enumerable(target, &name) {
+                    names.push(name);
+                }
+            }
+        }
+
+        names
+    }
+
+    fn enumerable_property_names_for_iteration(&self, target: Value) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut seen_names = FxHashSet::default();
+        let mut seen_targets = FxHashSet::default();
+        let mut current = Some(target);
+
+        while let Some(candidate) = current {
+            if !seen_targets.insert(candidate.raw()) {
+                break;
+            }
+            for name in self.own_enumerable_property_names(candidate) {
+                if seen_names.insert(name.clone()) {
+                    names.push(name);
+                }
+            }
+            current = self.prototype_of_value(candidate);
+        }
+
+        names
     }
 
     fn reflect_object_class_name(&self, obj: &Object) -> String {
@@ -675,56 +727,67 @@ impl<'a> Interpreter<'a> {
                 let target = args[0];
                 let property_key = get_property_key(args[1], "Reflect.set")?;
 
-                if !target.is_ptr() {
+                if !self.is_js_object_value(target) {
                     return Err(VmError::TypeError(
                         "get: target must be an object".to_string(),
                     ));
                 }
 
-                if let Some(value) = self.reflect_property_value(target, &property_key) {
+                if let Some(value) = self.get_property_value_via_js_semantics_with_context(
+                    target,
+                    &property_key,
+                    task,
+                    module,
+                )? {
                     value
                 } else {
-                    let obj_ptr = Self::reflect_object_ptr(target).ok_or_else(|| {
-                        VmError::TypeError("get: target must be an object".to_string())
-                    })?;
-                    let obj = unsafe { obj_ptr.as_ref() };
-                    if let Some(slot) = self.reflect_method_slot_for_object(obj, &property_key) {
-                        let Some(runtime_nominal_type_id) = obj.nominal_type_id_usize() else {
-                            return Err(VmError::RuntimeError(
-                                "Method fallback requires nominal runtime type".to_string(),
-                            ));
-                        };
-                        let classes = self.classes.read();
-                        let class = match classes.get_class(runtime_nominal_type_id) {
-                            Some(c) => c,
-                            None => {
-                                return Err(VmError::RuntimeError(format!(
-                                    "Invalid nominal type id: {}",
-                                    runtime_nominal_type_id
-                                )));
-                            }
-                        };
-                        let func_id = match class.vtable.get_method(slot) {
-                            Some(fid) => fid,
-                            None => {
-                                return Err(VmError::RuntimeError(format!(
-                                    "Invalid method slot: {} for class {}",
-                                    slot, class.name
-                                )));
-                            }
-                        };
-                        let method_module = class.module.clone();
-                        drop(classes);
+                    if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
+                        let obj = unsafe { obj_ptr.as_ref() };
+                        if let Some(slot) = self.reflect_method_slot_for_object(obj, &property_key)
+                        {
+                            let Some(runtime_nominal_type_id) = obj.nominal_type_id_usize() else {
+                                return Err(VmError::RuntimeError(
+                                    "Method fallback requires nominal runtime type".to_string(),
+                                ));
+                            };
+                            let classes = self.classes.read();
+                            let class = match classes.get_class(runtime_nominal_type_id) {
+                                Some(c) => c,
+                                None => {
+                                    return Err(VmError::RuntimeError(format!(
+                                        "Invalid nominal type id: {}",
+                                        runtime_nominal_type_id
+                                    )));
+                                }
+                            };
+                            let func_id = match class.vtable.get_method(slot) {
+                                Some(fid) => fid,
+                                None => {
+                                    return Err(VmError::RuntimeError(format!(
+                                        "Invalid method slot: {} for class {}",
+                                        slot, class.name
+                                    )));
+                                }
+                            };
+                            let method_module = class.module.clone();
+                            drop(classes);
 
-                        let bm = BoundMethod {
-                            receiver: target,
-                            func_id,
-                            module: method_module,
-                        };
-                        let gc_ptr = self.gc.lock().allocate(bm);
-                        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                            let bm = BoundMethod {
+                                receiver: target,
+                                func_id,
+                                module: method_module,
+                            };
+                            let gc_ptr = self.gc.lock().allocate(bm);
+                            unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
+                                )
+                            }
+                        } else {
+                            Value::undefined()
+                        }
                     } else {
-                        Value::null()
+                        Value::undefined()
                     }
                 }
             }
@@ -1979,20 +2042,14 @@ impl<'a> Interpreter<'a> {
                 }
                 let target = args[0];
 
+                let keys = self.enumerable_property_names_for_iteration(target);
                 let mut arr = Array::new(0, 0);
-
-                if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
-                    let obj = unsafe { obj_ptr.as_ref() };
-                    for name in self.reflect_object_field_names(obj) {
-                        if !self.is_property_enumerable(target, &name) {
-                            continue;
-                        }
-                        let s = RayaString::new(name);
-                        let s_ptr = self.gc.lock().allocate(s);
-                        arr.push(unsafe {
-                            Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap())
-                        });
-                    }
+                for name in keys {
+                    let s = RayaString::new(name);
+                    let s_ptr = self.gc.lock().allocate(s);
+                    arr.push(unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap())
+                    });
                 }
 
                 let arr_ptr = self.gc.lock().allocate(arr);

@@ -4436,6 +4436,8 @@ impl<'a> TypeChecker<'a> {
                     self.return_type_collector.push(Vec::new());
                 }
 
+                self.seed_expression_local_declarations(block);
+
                 // Check block statements
                 for stmt in &block.statements {
                     self.check_stmt(stmt);
@@ -4519,6 +4521,93 @@ impl<'a> TypeChecker<'a> {
             min_params,
             rest_param,
         )
+    }
+
+    fn seed_expression_local_declarations(
+        &mut self,
+        block: &crate::parser::ast::BlockStatement,
+    ) {
+        let placeholder_ty = self.type_ctx.any_type();
+        for stmt in &block.statements {
+            self.seed_expression_local_declarations_from_stmt(stmt, placeholder_ty);
+        }
+    }
+
+    fn seed_expression_local_declarations_from_stmt(
+        &mut self,
+        stmt: &crate::parser::ast::Statement,
+        placeholder_ty: TypeId,
+    ) {
+        match stmt {
+            crate::parser::ast::Statement::ClassDecl(class) => {
+                let name = self.resolve(class.name.name);
+                self.type_env.set(name, placeholder_ty);
+            }
+            crate::parser::ast::Statement::FunctionDecl(func) => {
+                let name = self.resolve(func.name.name);
+                self.type_env.set(name, placeholder_ty);
+            }
+            crate::parser::ast::Statement::Block(block) => {
+                for stmt in &block.statements {
+                    self.seed_expression_local_declarations_from_stmt(stmt, placeholder_ty);
+                }
+            }
+            crate::parser::ast::Statement::If(if_stmt) => {
+                self.seed_expression_local_declarations_from_stmt(
+                    &if_stmt.then_branch,
+                    placeholder_ty,
+                );
+                if let Some(else_branch) = &if_stmt.else_branch {
+                    self.seed_expression_local_declarations_from_stmt(else_branch, placeholder_ty);
+                }
+            }
+            crate::parser::ast::Statement::While(while_stmt) => {
+                self.seed_expression_local_declarations_from_stmt(&while_stmt.body, placeholder_ty);
+            }
+            crate::parser::ast::Statement::DoWhile(do_while) => {
+                self.seed_expression_local_declarations_from_stmt(&do_while.body, placeholder_ty);
+            }
+            crate::parser::ast::Statement::For(for_stmt) => {
+                self.seed_expression_local_declarations_from_stmt(&for_stmt.body, placeholder_ty);
+            }
+            crate::parser::ast::Statement::ForOf(for_of) => {
+                self.seed_expression_local_declarations_from_stmt(&for_of.body, placeholder_ty);
+            }
+            crate::parser::ast::Statement::ForIn(for_in) => {
+                self.seed_expression_local_declarations_from_stmt(&for_in.body, placeholder_ty);
+            }
+            crate::parser::ast::Statement::Labeled(labeled) => {
+                self.seed_expression_local_declarations_from_stmt(&labeled.body, placeholder_ty);
+            }
+            crate::parser::ast::Statement::Switch(switch_stmt) => {
+                for case in &switch_stmt.cases {
+                    for stmt in &case.consequent {
+                        self.seed_expression_local_declarations_from_stmt(stmt, placeholder_ty);
+                    }
+                }
+            }
+            crate::parser::ast::Statement::Try(try_stmt) => {
+                for stmt in &try_stmt.body.statements {
+                    self.seed_expression_local_declarations_from_stmt(stmt, placeholder_ty);
+                }
+                if let Some(catch) = &try_stmt.catch_clause {
+                    for stmt in &catch.body.statements {
+                        self.seed_expression_local_declarations_from_stmt(stmt, placeholder_ty);
+                    }
+                }
+                if let Some(finally) = &try_stmt.finally_clause {
+                    for stmt in &finally.statements {
+                        self.seed_expression_local_declarations_from_stmt(stmt, placeholder_ty);
+                    }
+                }
+            }
+            crate::parser::ast::Statement::ExportDecl(
+                crate::parser::ast::ExportDecl::Declaration(inner),
+            ) => {
+                self.seed_expression_local_declarations_from_stmt(inner, placeholder_ty);
+            }
+            _ => {}
+        }
     }
 
     /// Check index access

@@ -41,6 +41,8 @@ pub struct IrFunction {
     pub visible_length: usize,
     /// Whether JS `this` should use strict semantics.
     pub is_strict_js: bool,
+    /// Whether JS `this` should box primitives but preserve nullish receivers.
+    pub uses_builtin_this_coercion: bool,
 }
 
 impl IrFunction {
@@ -62,6 +64,7 @@ impl IrFunction {
             is_generator: false,
             visible_length,
             is_strict_js: false,
+            uses_builtin_this_coercion: false,
         }
     }
 
