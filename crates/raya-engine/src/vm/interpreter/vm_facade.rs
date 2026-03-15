@@ -971,10 +971,7 @@ impl Vm {
             }
         }
 
-        if let Some(index) = shared
-            .layout_field_names_for_object(object)
-            .and_then(|names| names.iter().position(|name| name == field_name))
-        {
+        if let Some(index) = shared.structural_field_slot_index_for_object(object, field_name) {
             if let Some(value) = object.get_field(index) {
                 return Some(value);
             }

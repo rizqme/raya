@@ -48,6 +48,7 @@ crossbeam-deque = { workspace = true }
 parking_lot = { workspace = true }
 dashmap = { workspace = true }
 num_cpus = { workspace = true }
+rand = { workspace = true }
 tokio = { workspace = true }
 
 # Regex (for VM)

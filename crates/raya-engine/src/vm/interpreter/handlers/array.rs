@@ -192,10 +192,12 @@ impl<'a> Interpreter<'a> {
     }
 
     fn array_from_define_index(
-        &self,
+        &mut self,
         target: Value,
         index: usize,
         value: Value,
+        task: &Arc<Task>,
+        module: &Module,
     ) -> Result<(), VmError> {
         if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target)
         {
@@ -203,7 +205,16 @@ impl<'a> Interpreter<'a> {
             array.set(index, value).map_err(VmError::RuntimeError)?;
             return Ok(());
         }
-        self.define_data_property_on_target(target, &index.to_string(), value, true, true, true)
+        self.define_data_property_on_target_with_context(
+            target,
+            &index.to_string(),
+            value,
+            true,
+            true,
+            true,
+            task,
+            module,
+        )
     }
 
     fn array_from_set_length(
@@ -499,7 +510,7 @@ impl<'a> Interpreter<'a> {
                             self.ephemeral_gc_roots.write().push(mapped_value);
                         }
                         if let Err(error) =
-                            self.array_from_define_index(target, index, mapped_value)
+                            self.array_from_define_index(target, index, mapped_value, task, module)
                         {
                             let _ = self.array_from_iterator_close(iterator, task, module);
                             self.array_release_ephemeral_root(mapped_value);
@@ -556,7 +567,9 @@ impl<'a> Interpreter<'a> {
                     if mapped_value.is_heap_allocated() {
                         self.ephemeral_gc_roots.write().push(mapped_value);
                     }
-                    if let Err(error) = self.array_from_define_index(target, index, mapped_value) {
+                    if let Err(error) =
+                        self.array_from_define_index(target, index, mapped_value, task, module)
+                    {
                         self.array_release_ephemeral_root(mapped_value);
                         self.array_release_ephemeral_root(target);
                         self.array_release_ephemeral_root(map_this);

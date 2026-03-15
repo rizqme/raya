@@ -73,6 +73,44 @@ class __ArrayIterator<T> {
     }
 }
 
+class __ArrayKeyIterator<T> {
+    public target: T[];
+    public index: number;
+
+    constructor(target: T[]) {
+        this.target = target;
+        this.index = 0;
+    }
+
+    next(): any {
+        if (this.index < this.target.length) {
+            let value = this.index;
+            this.index = this.index + 1;
+            return { value, done: false };
+        }
+        return { value: undefined, done: true };
+    }
+}
+
+class __ArrayEntryIterator<T> {
+    public target: T[];
+    public index: number;
+
+    constructor(target: T[]) {
+        this.target = target;
+        this.index = 0;
+    }
+
+    next(): any {
+        if (this.index < this.target.length) {
+            let value = [this.index, this.target[this.index]];
+            this.index = this.index + 1;
+            return { value, done: false };
+        }
+        return { value: undefined, done: true };
+    }
+}
+
 class Array<T> {
     //@@opcode ArrayLen
     length: number;
@@ -278,13 +316,25 @@ class Array<T> {
         return __NATIVE_CALL<T[]>(SPLICE, this, start, deleteCount);
     }
 
+    values(): any {
+        return new __ArrayIterator<T>(this);
+    }
+
+    keys(): any {
+        return new __ArrayKeyIterator<T>(this);
+    }
+
+    entries(): any {
+        return new __ArrayEntryIterator<T>(this);
+    }
+
     // Iterator protocol hook (for-of lowering target)
-    iterator(): T[] {
-        return this;
+    iterator(): any {
+        return this.values();
     }
 
     __iteratorObject(): any {
-        return new __ArrayIterator<T>(this);
+        return this.values();
     }
 
     // ── Callback methods — pure Raya loops, preemption-safe, JIT prewarm candidates ──

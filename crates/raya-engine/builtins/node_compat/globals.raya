@@ -261,8 +261,126 @@ class __NodeCompatReflect {
 const Reflect: __NodeCompatReflect = new __NodeCompatReflect();
 
 class __NodeCompatMath {
+    PI: number;
+    E: number;
+
+    constructor() {
+        this.PI = 3.141592653589793;
+        this.E = 2.718281828459045;
+    }
+
+    abs(x: number): number {
+        return __NATIVE_CALL<number>(0x2000, x);
+    }
+
+    sign(x: number): number {
+        return __NATIVE_CALL<number>(0x2001, x);
+    }
+
+    floor(x: number): number {
+        return __NATIVE_CALL<number>(0x2002, x);
+    }
+
+    ceil(x: number): number {
+        return __NATIVE_CALL<number>(0x2003, x);
+    }
+
+    round(x: number): number {
+        return __NATIVE_CALL<number>(0x2004, x);
+    }
+
+    trunc(x: number): number {
+        return __NATIVE_CALL<number>(0x2005, x);
+    }
+
+    min(value1: number, value2: number): number {
+        return __NATIVE_CALL<number>(0x2006, value1, value2);
+    }
+
+    max(value1: number, value2: number): number {
+        return __NATIVE_CALL<number>(0x2007, value1, value2);
+    }
+
     pow(base: number, exponent: number): number {
-        return base ** exponent;
+        return __NATIVE_CALL<number>(0x2008, base, exponent);
+    }
+
+    sqrt(x: number): number {
+        return __NATIVE_CALL<number>(0x2009, x);
+    }
+
+    sin(x: number): number {
+        return __NATIVE_CALL<number>(0x200A, x);
+    }
+
+    cos(x: number): number {
+        return __NATIVE_CALL<number>(0x200B, x);
+    }
+
+    tan(x: number): number {
+        return __NATIVE_CALL<number>(0x200C, x);
+    }
+
+    asin(x: number): number {
+        return __NATIVE_CALL<number>(0x200D, x);
+    }
+
+    acos(x: number): number {
+        return __NATIVE_CALL<number>(0x200E, x);
+    }
+
+    atan(x: number): number {
+        return __NATIVE_CALL<number>(0x200F, x);
+    }
+
+    atan2(y: number, x: number): number {
+        return __NATIVE_CALL<number>(0x2010, y, x);
+    }
+
+    exp(x: number): number {
+        return __NATIVE_CALL<number>(0x2011, x);
+    }
+
+    log(x: number): number {
+        return __NATIVE_CALL<number>(0x2012, x);
+    }
+
+    log10(x: number): number {
+        return __NATIVE_CALL<number>(0x2013, x);
+    }
+
+    random(): number {
+        return __NATIVE_CALL<number>(0x2014);
+    }
+
+    cbrt(x: number): number {
+        if (x == 0) {
+            return x;
+        }
+        if (x < 0) {
+            return -((-x) ** (1 / 3));
+        }
+        return x ** (1 / 3);
+    }
+
+    hypot(value1: number, value2: number): number {
+        return this.sqrt(value1 * value1 + value2 * value2);
+    }
+
+    sinh(x: number): number {
+        return (this.exp(x) - this.exp(-x)) / 2;
+    }
+
+    tanh(x: number): number {
+        let positive = this.exp(x);
+        let negative = this.exp(-x);
+        return (positive - negative) / (positive + negative);
+    }
+
+    imul(a: number, b: number): number {
+        let left = a | 0;
+        let right = b | 0;
+        return (left * right) | 0;
     }
 }
 

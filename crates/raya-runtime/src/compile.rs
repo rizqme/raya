@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::builtin_manifest;
-use crate::builtins;
 use crate::error::RuntimeError;
 use crate::BuiltinMode;
 use raya_engine::compiler::module::inject_ambient_exports;

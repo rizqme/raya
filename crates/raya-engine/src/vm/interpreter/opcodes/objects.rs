@@ -226,8 +226,7 @@ impl<'a> Interpreter<'a> {
         if from_metadata.is_some() {
             return from_metadata;
         }
-        self.layout_field_names_for_object(obj)
-            .and_then(|names| names.get(field_offset).cloned())
+        self.structural_field_name_for_object_offset(obj, field_offset)
     }
 
     fn field_index_for_value(&self, obj_val: Value, field_name: &str) -> Option<usize> {
@@ -241,8 +240,7 @@ impl<'a> Interpreter<'a> {
         if from_metadata.is_some() {
             return from_metadata;
         }
-        self.layout_field_names_for_object(obj)
-            .and_then(|names| names.iter().position(|name| name == field_name))
+        self.structural_field_slot_index_for_object(obj, field_name)
     }
 
     pub(in crate::vm::interpreter) fn build_shape_slot_map_for_object(
@@ -276,11 +274,7 @@ impl<'a> Interpreter<'a> {
                                     .then_some(StructuralSlotBinding::Field(index))
                             })
                             .or_else(|| {
-                                layout_names
-                                    .as_ref()
-                                    .and_then(|names| {
-                                        names.iter().position(|actual| actual == name)
-                                    })
+                                self.structural_field_slot_index_for_object(obj, name)
                                     .map(StructuralSlotBinding::Field)
                             })
                             .or_else(|| {
@@ -300,7 +294,14 @@ impl<'a> Interpreter<'a> {
             );
         }
 
-        let actual_names = layout_names;
+        let actual_names = if layout_names
+            .as_ref()
+            .is_some_and(|names| names.len() == obj.field_count())
+        {
+            layout_names
+        } else {
+            None
+        };
         Some(
             required_names
                 .iter()

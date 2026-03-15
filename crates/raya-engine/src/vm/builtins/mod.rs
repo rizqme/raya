@@ -167,6 +167,29 @@ pub fn get_all_signatures() -> &'static [BuiltinSignatures] {
     BUILTIN_SIGS
 }
 
+pub fn builtin_visible_constructor_length(name: &str) -> Option<usize> {
+    match name {
+        "Array" | "Object" | "Function" | "Boolean" | "Number" | "String" | "Promise" => {
+            Some(1)
+        }
+        "AggregateError" => Some(2),
+        "Symbol" | "Map" | "Set" | "WeakMap" | "WeakSet" => Some(0),
+        "Error"
+        | "EvalError"
+        | "RangeError"
+        | "ReferenceError"
+        | "SyntaxError"
+        | "TypeError"
+        | "URIError"
+        | "ChannelError"
+        | "AssertionError" => Some(1),
+        "RegExp" => Some(2),
+        "ArrayBuffer" => Some(1),
+        "DataView" => Some(3),
+        _ => None,
+    }
+}
+
 /// Get signatures for a specific builtin
 pub fn get_signatures(name: &str) -> Option<&'static BuiltinSignatures> {
     BUILTIN_SIGS.iter().find(|s| s.name == name)

@@ -25,7 +25,6 @@
 //! ```
 
 mod builtin_manifest;
-mod builtins;
 pub mod bundle;
 pub mod compile;
 pub mod deps;
@@ -57,19 +56,17 @@ use raya_engine::aot::{
     RegisteredAotClone, RegisteredAotFunctionEntry,
 };
 use raya_engine::compiler::module::{
-    BuiltinSurfaceMode, ExportedSymbol, LateLinkRequirement, LateLinkSymbolRequirement,
-    ModuleCompiler as BinaryModuleCompiler, ModuleExports,
+    ExportedSymbol, LateLinkRequirement, LateLinkSymbolRequirement, ModuleExports,
 };
 use raya_engine::compiler::{
     module_id_from_name, symbol_id_from_name, Export, Import, SymbolScope, SymbolType,
 };
-use raya_engine::parser::ast::{ExportDecl, Pattern, Statement};
-use raya_engine::parser::checker::{ScopeId, Symbol, SymbolFlags, SymbolKind};
+use raya_engine::parser::checker::SymbolKind;
 use raya_engine::parser::types::{
     signature_hash, structural_signature_is_assignable, try_hydrate_type_from_canonical_signature,
     Type, TypeContext,
 };
-use raya_engine::parser::{Interner, Parser};
+use raya_engine::parser::Interner;
 use raya_engine::vm::json::JSView;
 use raya_engine::vm::module::{ModuleLinker, ResolvedSymbol};
 use raya_engine::vm::object::{
@@ -88,6 +85,26 @@ const IMPORTED_CLASS_TYPE_HANDLE_KEY: &str = "__raya_type_handle__";
 
 static STRICT_BUILTIN_RUNTIME_MODULES: OnceLock<Result<Vec<Module>, String>> = OnceLock::new();
 static NODE_BUILTIN_RUNTIME_MODULES: OnceLock<Result<Vec<Module>, String>> = OnceLock::new();
+
+struct EmbeddedBuiltinModule {
+    logical_path: &'static str,
+    bytecode: &'static [u8],
+}
+
+struct EmbeddedLiteralGlobal {
+    name: &'static str,
+    value: EmbeddedLiteralValue,
+}
+
+enum EmbeddedLiteralValue {
+    I32(i32),
+    F64(f64),
+    String(&'static str),
+    Bool(bool),
+    Null,
+}
+
+include!(concat!(env!("OUT_DIR"), "/embedded_builtins.rs"));
 
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -802,17 +819,6 @@ impl Runtime {
         }
     }
 
-    fn builtin_runtime_export_names(mode: BuiltinMode) -> Result<Vec<String>, RuntimeError> {
-        let mut names = Vec::new();
-        for (_, source) in builtins::builtin_source_modules_for_mode(mode) {
-            names.extend(Self::explicit_runtime_export_names(source)?);
-        }
-        names.extend(Self::runtime_only_ambient_builtin_names(mode));
-        names.sort();
-        names.dedup();
-        Ok(names)
-    }
-
     fn ambient_builtin_export_names(mode: BuiltinMode) -> Result<Vec<String>, RuntimeError> {
         let mut names = Self::builtin_global_exports_for_mode(mode)?
             .symbols
@@ -824,291 +830,41 @@ impl Runtime {
         Ok(names)
     }
 
-    fn collect_pattern_names(pattern: &Pattern, interner: &Interner, out: &mut Vec<String>) {
-        match pattern {
-            Pattern::Identifier(id) => out.push(interner.resolve(id.name).to_string()),
-            Pattern::Array(arr) => {
-                for elem in arr.elements.iter().flatten() {
-                    Self::collect_pattern_names(&elem.pattern, interner, out);
-                }
-                if let Some(rest) = &arr.rest {
-                    Self::collect_pattern_names(rest, interner, out);
-                }
-            }
-            Pattern::Object(obj) => {
-                for prop in &obj.properties {
-                    Self::collect_pattern_names(&prop.value, interner, out);
-                }
-                if let Some(rest) = &obj.rest {
-                    out.push(interner.resolve(rest.name).to_string());
-                }
-            }
-            Pattern::Rest(rest) => Self::collect_pattern_names(&rest.argument, interner, out),
+    fn embedded_builtin_modules(mode: BuiltinMode) -> &'static [EmbeddedBuiltinModule] {
+        match mode {
+            BuiltinMode::RayaStrict => STRICT_EMBEDDED_BUILTIN_MODULES,
+            BuiltinMode::NodeCompat => NODE_EMBEDDED_BUILTIN_MODULES,
         }
     }
 
-    fn explicit_runtime_export_names(source: &str) -> Result<Vec<String>, RuntimeError> {
-        let parser = Parser::new(source).map_err(|errors| {
-            RuntimeError::Parse(
-                errors
-                    .iter()
-                    .map(|error| error.to_string())
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            )
-        })?;
-        let (ast, interner) = parser.parse().map_err(|errors| {
-            RuntimeError::Parse(
-                errors
-                    .iter()
-                    .map(|error| error.to_string())
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            )
-        })?;
-        let mut names = Vec::new();
-        for stmt in &ast.statements {
-            match stmt {
-                Statement::ExportDecl(ExportDecl::Declaration(inner)) => match inner.as_ref() {
-                    Statement::ClassDecl(class_decl) => {
-                        names.push(interner.resolve(class_decl.name.name).to_string());
-                    }
-                    Statement::FunctionDecl(func_decl) => {
-                        names.push(interner.resolve(func_decl.name.name).to_string());
-                    }
-                    Statement::VariableDecl(var_decl) => {
-                        Self::collect_pattern_names(&var_decl.pattern, &interner, &mut names);
-                    }
-                    _ => {}
-                },
-                Statement::ExportDecl(ExportDecl::Named {
-                    specifiers,
-                    source: None,
-                    ..
-                }) => {
-                    for specifier in specifiers {
-                        names.push(
-                            specifier
-                                .alias
-                                .as_ref()
-                                .map(|alias| interner.resolve(alias.name).to_string())
-                                .unwrap_or_else(|| {
-                                    interner.resolve(specifier.name.name).to_string()
-                                }),
-                        );
-                    }
-                }
-                Statement::ExportDecl(ExportDecl::Default { .. }) => {
-                    names.push("default".to_string());
-                }
-                _ => {}
-            }
+    fn embedded_builtin_literal_globals(mode: BuiltinMode) -> &'static [EmbeddedLiteralGlobal] {
+        match mode {
+            BuiltinMode::RayaStrict => STRICT_EMBEDDED_LITERAL_GLOBALS,
+            BuiltinMode::NodeCompat => NODE_EMBEDDED_LITERAL_GLOBALS,
         }
-        names.retain(|name| !name.is_empty());
-        names.sort();
-        names.dedup();
-        Ok(names)
     }
 
     fn seed_builtin_internal_literal_globals(
         mode: BuiltinMode,
         vm: &mut raya_engine::vm::Vm,
     ) -> Result<(), RuntimeError> {
-        fn literal_value(
-            vm: &mut raya_engine::vm::Vm,
-            interner: &Interner,
-            expr: &raya_engine::parser::ast::Expression,
-        ) -> Option<Value> {
-            use raya_engine::parser::ast::Expression;
-
-            match expr {
-                Expression::IntLiteral(lit) => i32::try_from(lit.value)
-                    .ok()
-                    .map(Value::i32)
-                    .or_else(|| Some(Value::f64(lit.value as f64))),
-                Expression::FloatLiteral(lit) => Some(Value::f64(lit.value)),
-                Expression::StringLiteral(lit) => {
-                    let string = RayaString::new(interner.resolve(lit.value).to_string());
+        for literal in Self::embedded_builtin_literal_globals(mode) {
+            let value = match literal.value {
+                EmbeddedLiteralValue::I32(value) => Value::i32(value),
+                EmbeddedLiteralValue::F64(value) => Value::f64(value),
+                EmbeddedLiteralValue::String(value) => {
+                    let string = RayaString::new(value.to_string());
                     let gc_ptr = vm.shared_state().gc.lock().allocate(string);
-                    Some(unsafe {
-                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-                    })
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
                 }
-                Expression::BooleanLiteral(lit) => Some(Value::bool(lit.value)),
-                Expression::NullLiteral(_) => Some(Value::null()),
-                _ => None,
-            }
-        }
-
-        for (logical_path, module_source) in builtins::builtin_source_modules_for_mode(mode) {
-            let parser = Parser::new(module_source).map_err(|errors| {
-                RuntimeError::Dependency(format!(
-                    "Failed to parse builtin source '{}': {}",
-                    logical_path,
-                    errors
-                        .iter()
-                        .map(|error| error.to_string())
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                ))
-            })?;
-            let (ast, interner) = parser.parse().map_err(|errors| {
-                RuntimeError::Dependency(format!(
-                    "Failed to parse builtin source '{}': {}",
-                    logical_path,
-                    errors
-                        .iter()
-                        .map(|error| error.to_string())
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                ))
-            })?;
-
-            for statement in &ast.statements {
-                let Statement::VariableDecl(decl) = statement else {
-                    continue;
-                };
-                if decl.kind != raya_engine::parser::ast::VariableKind::Const {
-                    continue;
-                }
-                let Pattern::Identifier(ident) = &decl.pattern else {
-                    continue;
-                };
-                let Some(initializer) = &decl.initializer else {
-                    continue;
-                };
-                let Some(value) = literal_value(vm, &interner, initializer) else {
-                    continue;
-                };
-                vm.shared_state()
-                    .set_builtin_global(interner.resolve(ident.name).to_string(), value);
-            }
+                EmbeddedLiteralValue::Bool(value) => Value::bool(value),
+                EmbeddedLiteralValue::Null => Value::null(),
+            };
+            vm.shared_state()
+                .set_builtin_global(literal.name.to_string(), value);
         }
 
         Ok(())
-    }
-
-    fn top_level_runtime_names(source: &str) -> Result<Vec<String>, RuntimeError> {
-        let parser = Parser::new(source).map_err(|errors| {
-            RuntimeError::Parse(
-                errors
-                    .iter()
-                    .map(|error| error.to_string())
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            )
-        })?;
-        let (ast, interner) = parser.parse().map_err(|errors| {
-            RuntimeError::Parse(
-                errors
-                    .iter()
-                    .map(|error| error.to_string())
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            )
-        })?;
-        let mut names = Vec::new();
-        for stmt in &ast.statements {
-            match stmt {
-                Statement::ClassDecl(class_decl) => {
-                    names.push(interner.resolve(class_decl.name.name).to_string());
-                }
-                Statement::FunctionDecl(func_decl) => {
-                    names.push(interner.resolve(func_decl.name.name).to_string());
-                }
-                Statement::VariableDecl(var_decl) => {
-                    Self::collect_pattern_names(&var_decl.pattern, &interner, &mut names);
-                }
-                _ => {}
-            }
-        }
-        names.retain(|name| !name.is_empty());
-        names.sort();
-        names.dedup();
-        Ok(names)
-    }
-
-    fn infer_runtime_export_symbol_type(
-        ast: &raya_engine::parser::ast::Module,
-        interner: &Interner,
-        export_name: &str,
-    ) -> Option<SymbolType> {
-        for stmt in &ast.statements {
-            match stmt {
-                Statement::ClassDecl(class_decl)
-                    if interner.resolve(class_decl.name.name) == export_name =>
-                {
-                    return Some(SymbolType::Class);
-                }
-                Statement::FunctionDecl(func_decl)
-                    if interner.resolve(func_decl.name.name) == export_name =>
-                {
-                    return Some(SymbolType::Function);
-                }
-                Statement::VariableDecl(var_decl) => {
-                    let mut names = Vec::new();
-                    Self::collect_pattern_names(&var_decl.pattern, interner, &mut names);
-                    if names.iter().any(|name| name == export_name) {
-                        return Some(SymbolType::Constant);
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    fn seed_provisional_builtin_contract_symbols(
-        binder: &mut raya_engine::parser::checker::Binder<'_>,
-        symbols: &HashMap<String, SymbolType>,
-    ) {
-        let any_ty = binder.any_type_id();
-
-        for (name, symbol_type) in symbols {
-            match symbol_type {
-                SymbolType::Class => binder.register_external_class(name),
-                SymbolType::Function | SymbolType::Constant => {
-                    let kind = match symbol_type {
-                        SymbolType::Function => SymbolKind::Function,
-                        SymbolType::Class => unreachable!(),
-                        SymbolType::Constant => SymbolKind::Variable,
-                    };
-                    let _ = binder.define_imported(Symbol {
-                        name: name.clone(),
-                        kind,
-                        ty: any_ty,
-                        flags: SymbolFlags {
-                            is_exported: false,
-                            is_const: true,
-                            is_async: false,
-                            is_readonly: true,
-                            is_imported: false,
-                        },
-                        scope_id: ScopeId(0),
-                        span: raya_engine::parser::Span::new(0, 0, 0, 0),
-                        referenced: false,
-                    });
-                }
-            }
-        }
-
-        for name in ["undefined"] {
-            let _ = binder.define_imported(Symbol {
-                name: name.to_string(),
-                kind: SymbolKind::Variable,
-                ty: any_ty,
-                flags: SymbolFlags {
-                    is_exported: false,
-                    is_const: true,
-                    is_async: false,
-                    is_readonly: true,
-                    is_imported: false,
-                },
-                scope_id: ScopeId(0),
-                span: raya_engine::parser::Span::new(0, 0, 0, 0),
-                referenced: false,
-            });
-        }
     }
 
     fn compiled_builtin_runtime_modules(mode: BuiltinMode) -> Result<Vec<Module>, RuntimeError> {
@@ -1118,308 +874,17 @@ impl Runtime {
         };
 
         let cached = cache.get_or_init(|| {
-            let ambient_names = match Self::builtin_runtime_export_names(mode) {
-                Ok(names) => names,
-                Err(error) => return Err(error.to_string()),
-            };
-            // Phase 1: declaration contract (declared ambient builtin symbols).
-            let declared_name_set = ambient_names.iter().cloned().collect::<HashSet<_>>();
-            struct ParsedBuiltinUnit {
-                logical_path: &'static str,
-                ast: raya_engine::parser::ast::Module,
-                interner: Interner,
-                local_names: Vec<String>,
-                export_names: Vec<String>,
-            }
-
-            let checker_mode = raya_engine::parser::checker::TypeSystemMode::Js;
-            let checker_policy =
-                raya_engine::parser::checker::CheckerPolicy::for_mode(checker_mode);
-
-            // Phase 2a: parse/materialize each builtin source module with explicit exports.
-            let mut parsed_units = Vec::new();
-            for (logical_path, module_source) in builtins::builtin_source_modules_for_mode(mode) {
-                let mut local_names = match Self::top_level_runtime_names(module_source) {
-                    Ok(names) => names,
-                    Err(error) => {
-                        return Err(format!(
-                            "Failed to collect local builtin names for '{}': {}",
-                            logical_path, error
-                        ))
-                    }
-                };
-                local_names.sort();
-                local_names.dedup();
-
-                let mut export_names = match Self::explicit_runtime_export_names(module_source) {
-                    Ok(names) => names,
-                    Err(error) => {
-                        return Err(format!(
-                            "Failed to collect top-level names for '{}': {}",
-                            logical_path, error
-                        ))
-                    }
-                };
-                export_names.retain(|name| declared_name_set.contains(name));
-                export_names.sort();
-                export_names.dedup();
-
-                let parser = match Parser::new(module_source) {
-                    Ok(parser) => parser,
-                    Err(errors) => {
-                        return Err(format!(
-                            "Failed to parse builtin source '{}': {}",
-                            logical_path,
-                            errors
-                                .iter()
-                                .map(|error| error.to_string())
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        ))
-                    }
-                };
-                let (ast, interner) = match parser.parse() {
-                    Ok(parsed) => parsed,
-                    Err(errors) => {
-                        return Err(format!(
-                            "Failed to parse builtin source '{}': {}",
-                            logical_path,
-                            errors
-                                .iter()
-                                .map(|error| error.to_string())
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        ))
-                    }
-                };
-
-                parsed_units.push(ParsedBuiltinUnit {
-                    logical_path,
-                    ast,
-                    interner,
-                    local_names,
-                    export_names,
-                });
-            }
-
-            let mut provisional_symbols = HashMap::new();
-            for unit in &parsed_units {
-                for local_name in &unit.local_names {
-                    if let Some(symbol_type) = Self::infer_runtime_export_symbol_type(
-                        &unit.ast,
-                        &unit.interner,
-                        local_name,
-                    ) {
-                        provisional_symbols
-                            .entry(local_name.clone())
-                            .or_insert(symbol_type);
-                    }
-                }
-            }
-            provisional_symbols.insert("EventEmitter".to_string(), SymbolType::Class);
-            for name in [
-                "Reflect",
-                "Object",
-                "Symbol",
-                "Boolean",
-                "Number",
-                "String",
-                "Array",
-                "Error",
-                "AggregateError",
-                "TypeError",
-                "Function",
-                "Promise",
-                "Math",
-                "JSON",
-            ] {
-                provisional_symbols
-                    .entry(name.to_string())
-                    .or_insert(SymbolType::Constant);
-            }
-            // Phase 2b: bind declarations for the whole builtin content graph first.
-            let mut shared_type_ctx = TypeContext::new();
-            for unit in &parsed_units {
-                let mut binder = raya_engine::parser::checker::binder::Binder::new(
-                    &mut shared_type_ctx,
-                    &unit.interner,
-                )
-                .with_mode(checker_mode)
-                .with_policy(checker_policy);
-                binder.register_builtins(&[]);
-                let mut ambient_symbols = provisional_symbols.clone();
-                for local_name in &unit.local_names {
-                    ambient_symbols.remove(local_name);
-                }
-                Self::seed_provisional_builtin_contract_symbols(&mut binder, &ambient_symbols);
-                if let Err(errors) = binder.bind_module(&unit.ast) {
-                    return Err(format!(
-                        "Failed to bind builtin source '{}': {}",
-                        unit.logical_path,
-                        errors
-                            .iter()
-                            .map(|error| error.to_string())
-                            .collect::<Vec<_>>()
-                            .join("; ")
-                    ));
-                }
-            }
-
-            // Phase 2c: build the internal ambient builtin contract used while compiling
-            // builtin modules against each other. This includes private helpers, but only
-            // the explicit source exports become runtime globals.
-            let ambient_module_name = match mode {
-                BuiltinMode::RayaStrict => "__raya_builtin__/strict",
-                BuiltinMode::NodeCompat => "__raya_builtin__/node_compat",
-            };
-            let mut ambient_contract = ModuleExports::new(
-                PathBuf::from(ambient_module_name),
-                ambient_module_name.to_string(),
-            );
-
-            for unit in &parsed_units {
-                let mut contract_type_ctx = shared_type_ctx.clone();
-                let mut binder = raya_engine::parser::checker::Binder::new(
-                    &mut contract_type_ctx,
-                    &unit.interner,
-                )
-                .with_mode(checker_mode)
-                .with_policy(checker_policy);
-                binder.register_builtins(&[]);
-                let mut ambient_symbols = provisional_symbols.clone();
-                for local_name in &unit.local_names {
-                    ambient_symbols.remove(local_name);
-                }
-                Self::seed_provisional_builtin_contract_symbols(&mut binder, &ambient_symbols);
-                let symbols = match binder.bind_module(&unit.ast) {
-                    Ok(symbols) => symbols,
-                    Err(errors) => {
-                        return Err(format!(
-                            "Failed to bind builtin export contracts for '{}': {}",
-                            unit.logical_path,
-                            errors
-                                .iter()
-                                .map(|error| error.to_string())
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        ))
-                    }
-                };
-
-                for local_name in &unit.local_names {
-                    let Some(symbol) = symbols.resolve(local_name) else {
-                        continue;
-                    };
-                    ambient_contract
-                        .symbols
-                        .entry(local_name.clone())
-                        .or_insert_with(|| {
-                            ExportedSymbol::from_symbol(
-                                symbol,
-                                &ambient_contract.module_name,
-                                SymbolScope::Global,
-                                &contract_type_ctx,
-                            )
-                        });
-                }
-            }
-
-            for (name, symbol_type) in &provisional_symbols {
-                if ambient_contract.has(name) {
-                    continue;
-                }
-                let kind = match symbol_type {
-                    SymbolType::Function => SymbolKind::Function,
-                    SymbolType::Class => SymbolKind::Class,
-                    SymbolType::Constant => SymbolKind::Variable,
-                };
-                let type_signature = match symbol_type {
-                    SymbolType::Class => name.clone(),
-                    SymbolType::Function | SymbolType::Constant => "any".to_string(),
-                };
-                ambient_contract.add_symbol(ExportedSymbol {
-                    name: name.clone(),
-                    local_name: name.clone(),
-                    kind,
-                    ty: raya_engine::parser::types::TypeId::new(
-                        raya_engine::TypeContext::UNKNOWN_TYPE_ID,
-                    ),
-                    is_const: !matches!(kind, SymbolKind::Function),
-                    is_async: false,
-                    module_name: ambient_contract.module_name.clone(),
-                    module_id: module_id_from_name(&ambient_contract.module_name),
-                    symbol_id: symbol_id_from_name(
-                        &ambient_contract.module_name,
-                        SymbolScope::Global,
-                        name,
-                    ),
-                    signature_hash: raya_engine::parser::types::signature_hash(&type_signature),
-                    type_signature,
-                    scope: SymbolScope::Global,
-                });
-            }
-
-            // Phase 2d: compile each builtin through the normal module compiler so
-            // runtime export/global-slot metadata comes from the same path as user modules.
-            let builtins_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("runtime crate parent directory")
-                .join("raya-engine")
-                .join("builtins");
-            let builtin_surface_mode = match mode {
-                BuiltinMode::RayaStrict => BuiltinSurfaceMode::RayaStrict,
-                BuiltinMode::NodeCompat => BuiltinSurfaceMode::NodeCompat,
-            };
-            let mut compiler = BinaryModuleCompiler::new(builtins_root.clone())
-                .with_checker_mode(checker_mode)
-                .with_checker_policy(checker_policy)
-                .with_builtin_surface_mode(builtin_surface_mode)
-                .with_builtin_globals_override(ambient_contract);
-
-            let mut modules = Vec::with_capacity(parsed_units.len());
-            for unit in parsed_units {
-                let source_path = builtins_root.join(unit.logical_path);
-                let canonical_path = match source_path.canonicalize() {
-                    Ok(path) => path,
-                    Err(error) => {
-                        return Err(format!(
-                            "Failed to resolve builtin source '{}': {}",
-                            unit.logical_path, error
-                        ))
-                    }
-                };
-                let compiled = match compiler.compile(&canonical_path) {
-                    Ok(modules) => modules,
-                    Err(error) => {
-                        return Err(format!(
-                            "Failed to compile builtin source '{}': {}",
-                            unit.logical_path, error
-                        ))
-                    }
-                };
-                let Some(module) = compiled
-                    .into_iter()
-                    .find(|module| module.path == canonical_path)
-                else {
-                    return Err(format!(
-                        "Compiled builtin source '{}' did not produce an entry module",
-                        unit.logical_path
-                    ));
-                };
-                let encoded = module.bytecode.encode();
-                let finalized = match Module::decode(&encoded) {
-                    Ok(module) => module,
-                    Err(error) => {
-                        return Err(format!(
-                            "Failed to finalize builtin source '{}': {}",
-                            unit.logical_path, error
-                        ))
-                    }
-                };
-                modules.push(finalized);
-            }
-
-            Ok(modules)
+            Self::embedded_builtin_modules(mode)
+                .iter()
+                .map(|module| {
+                    Module::decode(module.bytecode).map_err(|error| {
+                        format!(
+                            "Failed to decode embedded builtin '{}': {}",
+                            module.logical_path, error
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
         });
 
         cached

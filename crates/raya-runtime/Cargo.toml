@@ -33,3 +33,6 @@ libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.8"
+
+[build-dependencies]
+raya-engine = { path = "../raya-engine" }

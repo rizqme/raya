@@ -66,10 +66,7 @@ impl<'a> Interpreter<'a> {
                 return Some(index);
             }
         }
-        if let Some(index) = self
-            .layout_field_names_for_object(object)
-            .and_then(|names| names.iter().position(|name| name == field_name))
-        {
+        if let Some(index) = self.structural_field_slot_index_for_object(object, field_name) {
             return Some(index);
         }
         Self::legacy_error_field_index(field_name, object.field_count())

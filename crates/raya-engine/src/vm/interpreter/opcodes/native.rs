@@ -366,14 +366,42 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn construct_builtin_object(&mut self, new_target: Value) -> Value {
+    fn get_prototype_from_constructor_with_fallback(
+        &mut self,
+        constructor: Value,
+        intrinsic_default_prototype: Option<Value>,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        match self.try_proxy_like_get_property(constructor, "prototype", task, module)? {
+            Some(prototype) if self.is_js_object_value(prototype) => Ok(Some(prototype)),
+            _ => Ok(intrinsic_default_prototype.filter(|value| self.is_js_object_value(*value))),
+        }
+    }
+
+    fn construct_builtin_object(
+        &mut self,
+        new_target: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
         let member_names: Vec<String> = Vec::new();
         let layout_id = layout_id_from_ordered_names(&member_names);
         let object_ptr = self.gc.lock().allocate(Object::new_dynamic(layout_id, 0));
         let object_value =
             unsafe { Value::from_ptr(NonNull::new(object_ptr.as_ptr()).expect("object ptr")) };
-        self.set_constructed_object_prototype_from_constructor(object_value, new_target);
-        object_value
+        let intrinsic_default_prototype = self
+            .builtin_global_value("Object")
+            .and_then(|ctor| self.object_constructor_prototype_value(ctor));
+        if let Some(prototype) = self.get_prototype_from_constructor_with_fallback(
+            new_target,
+            intrinsic_default_prototype,
+            task,
+            module,
+        )? {
+            self.set_constructed_object_prototype_from_value(object_value, prototype);
+        }
+        Ok(object_value)
     }
 
     fn set_constructed_value_prototype_from_constructor(&self, value: Value, constructor: Value) {
@@ -386,11 +414,23 @@ impl<'a> Interpreter<'a> {
         &mut self,
         new_target: Value,
         args: &[Value],
+        task: &Arc<Task>,
+        module: &Module,
     ) -> Result<Value, VmError> {
         let array_ptr = self.gc.lock().allocate(Array::new(0, 0));
         let array_value =
             unsafe { Value::from_ptr(NonNull::new(array_ptr.as_ptr()).expect("array ptr")) };
-        self.set_constructed_value_prototype_from_constructor(array_value, new_target);
+        let intrinsic_default_prototype = self
+            .builtin_global_value("Array")
+            .and_then(|ctor| self.array_constructor_prototype_value(ctor));
+        if let Some(prototype) = self.get_prototype_from_constructor_with_fallback(
+            new_target,
+            intrinsic_default_prototype,
+            task,
+            module,
+        )? {
+            self.set_constructed_object_prototype_from_value(array_value, prototype);
+        }
 
         let array = unsafe { &mut *array_ptr.as_ptr() };
         if args.len() == 1 {
@@ -432,14 +472,14 @@ impl<'a> Interpreter<'a> {
             .builtin_global_value("Array")
             .is_some_and(|builtin| builtin.raw() == constructor.raw())
         {
-            return self.construct_builtin_array(new_target, args);
+            return self.construct_builtin_array(new_target, args, task, module);
         }
 
         if self
             .builtin_global_value("Object")
             .is_some_and(|builtin| builtin.raw() == constructor.raw())
         {
-            return Ok(self.construct_builtin_object(new_target));
+            return self.construct_builtin_object(new_target, task, module);
         }
 
         if let Some(nominal_type_id) = self
@@ -1269,8 +1309,67 @@ impl<'a> Interpreter<'a> {
         let visible = raw_name.rsplit("::").next().unwrap_or(raw_name);
         match visible {
             "__speciesGetter" => "get [Symbol.species]".to_string(),
+            "__symbolIterator" => "[Symbol.iterator]".to_string(),
             _ => visible.to_string(),
         }
+    }
+
+    fn prototype_symbol_alias_specs(class_name: &str) -> &'static [(&'static str, &'static str)] {
+        match class_name {
+            "Array" => &[("Symbol.iterator", "values")],
+            "Map" => &[("Symbol.iterator", "entries")],
+            "Set" => &[("Symbol.iterator", "values")],
+            "String" => &[("Symbol.iterator", "__symbolIterator")],
+            _ => &[],
+        }
+    }
+
+    fn should_skip_public_prototype_method_name(class_name: &str, method_name: &str) -> bool {
+        class_name == "String" && method_name == "__symbolIterator"
+    }
+
+    fn define_prototype_symbol_aliases(
+        &self,
+        class_name: &str,
+        prototype_val: Value,
+        methods: &[(String, Value)],
+    ) -> Option<()> {
+        for (property_name, method_name) in Self::prototype_symbol_alias_specs(class_name) {
+            let method_value = methods
+                .iter()
+                .find(|(candidate, _)| candidate == method_name)
+                .map(|(_, value)| *value)?;
+            if class_name == "String" && *property_name == "Symbol.iterator" {
+                self.define_data_property_on_target(
+                    method_value,
+                    "name",
+                    self.alloc_string_value("[Symbol.iterator]"),
+                    false,
+                    false,
+                    true,
+                )
+                .ok()?;
+                self.define_data_property_on_target(
+                    method_value,
+                    "length",
+                    Value::i32(0),
+                    false,
+                    false,
+                    true,
+                )
+                .ok()?;
+            }
+            self.define_data_property_on_target(
+                prototype_val,
+                property_name,
+                method_value,
+                true,
+                false,
+                true,
+            )
+            .ok()?;
+        }
+        Some(())
     }
 
     fn function_native_alias_id(raw_name: &str) -> Option<u16> {
@@ -1366,11 +1465,16 @@ impl<'a> Interpreter<'a> {
             let classes = self.classes.read();
             let class = classes.get_class(nominal_type_id)?;
             let visible_name = class.name.clone();
-            let builtin_arity = crate::vm::builtins::get_all_signatures()
+            let builtin_arity = crate::vm::builtins::builtin_visible_constructor_length(
+                &visible_name,
+            )
+            .or_else(|| {
+                crate::vm::builtins::get_all_signatures()
                 .iter()
                 .flat_map(|sig| sig.classes.iter())
                 .find(|sig| sig.name == visible_name)
-                .and_then(|sig| sig.constructor.map(|ctor| ctor.len()));
+                .and_then(|sig| sig.constructor.map(|ctor| ctor.len()))
+            });
             let runtime_arity = class
                 .get_constructor()
                 .and_then(|constructor_id| {
@@ -1921,6 +2025,7 @@ impl<'a> Interpreter<'a> {
 
         self.seed_builtin_error_prototype_properties(prototype_val, &class_name)?;
 
+        let mut method_values = Vec::new();
         for (slot, method_name) in method_names.iter().enumerate() {
             if method_name.is_empty() {
                 continue;
@@ -1939,6 +2044,10 @@ impl<'a> Interpreter<'a> {
                     std::ptr::NonNull::new(closure_ptr.as_ptr()).expect("prototype method ptr"),
                 )
             };
+            method_values.push((method_name.clone(), closure_val));
+            if Self::should_skip_public_prototype_method_name(&class_name, method_name) {
+                continue;
+            }
             self.define_data_property_on_target(
                 prototype_val,
                 method_name,
@@ -1949,6 +2058,7 @@ impl<'a> Interpreter<'a> {
             )
             .ok()?;
         }
+        self.define_prototype_symbol_aliases(&class_name, prototype_val, &method_values)?;
 
         Some(prototype_val)
     }
@@ -2413,7 +2523,11 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
-        let Some(proxy) = self.unwrapped_proxy_like(value) else {
+        // Ordinary property access should only invoke proxy semantics for an
+        // actual proxy exotic object. Wrapper classes like the JS-visible
+        // `Proxy` helper must behave as normal objects so their own/prototype
+        // methods stay reachable.
+        let Some(proxy) = crate::vm::reflect::try_unwrap_proxy(value) else {
             return Ok(None);
         };
 
@@ -2592,6 +2706,7 @@ impl<'a> Interpreter<'a> {
 
         self.seed_builtin_error_prototype_properties(prototype_val, class_name)?;
 
+        let mut method_values = Vec::new();
         for (slot, method_name) in method_names.iter().enumerate() {
             if method_name.is_empty() {
                 continue;
@@ -2610,6 +2725,10 @@ impl<'a> Interpreter<'a> {
                     std::ptr::NonNull::new(closure_ptr.as_ptr()).expect("prototype method ptr"),
                 )
             };
+            method_values.push((method_name.clone(), closure_val));
+            if Self::should_skip_public_prototype_method_name(class_name, method_name) {
+                continue;
+            }
             self.define_data_property_on_target(
                 prototype_val,
                 method_name,
@@ -2620,6 +2739,7 @@ impl<'a> Interpreter<'a> {
             )
             .ok()?;
         }
+        self.define_prototype_symbol_aliases(class_name, prototype_val, &method_values)?;
 
         if let Some(class_obj_ptr) = checked_object_ptr(class_value) {
             let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
@@ -2856,21 +2976,59 @@ impl<'a> Interpreter<'a> {
             || checked_string_ptr(value).is_some()
     }
 
-    fn js_to_primitive_number_hint(
+    fn js_to_primitive_with_hint(
         &mut self,
         value: Value,
+        hint: &str,
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Value, VmError> {
         if self.is_js_primitive_value(value) {
             return Ok(value);
         }
-        for kind in ["Boolean", "Number", "String"] {
-            if let Some(primitive) = self.boxed_primitive_internal_value(value, kind) {
+
+        if let Ok(Some(exotic)) =
+            self.well_known_symbol_property_value(value, "Symbol.toPrimitive", caller_task, caller_module)
+        {
+            if !Self::is_callable_value(exotic) {
+                return Err(VmError::TypeError(
+                    "Cannot convert object to primitive value".to_string(),
+                ));
+            }
+            let hint_ptr = self.gc.lock().allocate(RayaString::new(hint.to_string()));
+            let hint_value = unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(hint_ptr.as_ptr()).expect("hint ptr"))
+            };
+            self.ephemeral_gc_roots.write().push(hint_value);
+            let result = self.invoke_callable_sync_with_this(
+                exotic,
+                Some(value),
+                &[hint_value],
+                caller_task,
+                caller_module,
+            );
+            let mut ephemeral = self.ephemeral_gc_roots.write();
+            if let Some(index) = ephemeral
+                .iter()
+                .rposition(|candidate| *candidate == hint_value)
+            {
+                ephemeral.swap_remove(index);
+            }
+            let primitive = result?;
+            if self.is_js_primitive_value(primitive) {
                 return Ok(primitive);
             }
+            return Err(VmError::TypeError(
+                "Cannot convert object to primitive value".to_string(),
+            ));
         }
-        for method_name in ["valueOf", "toString"] {
+
+        let method_order = if hint == "string" {
+            ["toString", "valueOf"]
+        } else {
+            ["valueOf", "toString"]
+        };
+        for method_name in method_order {
             let Some(method) = self.get_field_value_by_name(value, method_name) else {
                 continue;
             };
@@ -2888,9 +3046,19 @@ impl<'a> Interpreter<'a> {
                 return Ok(primitive);
             }
         }
+
         Err(VmError::TypeError(
             "Cannot convert object to primitive value".to_string(),
         ))
+    }
+
+    fn js_to_primitive_number_hint(
+        &mut self,
+        value: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Value, VmError> {
+        self.js_to_primitive_with_hint(value, "number", caller_task, caller_module)
     }
 
     fn js_to_number_from_primitive(&self, value: Value) -> Result<f64, VmError> {
@@ -2950,6 +3118,73 @@ impl<'a> Interpreter<'a> {
     ) -> Result<f64, VmError> {
         let primitive = self.js_to_primitive_number_hint(value, caller_task, caller_module)?;
         self.js_to_number_from_primitive(primitive)
+    }
+
+    fn js_math_number_arg(
+        &mut self,
+        args: &[Value],
+        index: usize,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<f64, VmError> {
+        self.js_to_number_with_context(native_arg(args, index), caller_task, caller_module)
+    }
+
+    fn js_math_min_max(
+        &mut self,
+        args: &[Value],
+        want_min: bool,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<f64, VmError> {
+        if args.is_empty() {
+            return Ok(if want_min {
+                f64::INFINITY
+            } else {
+                f64::NEG_INFINITY
+            });
+        }
+
+        let mut result = self.js_math_number_arg(args, 0, caller_task, caller_module)?;
+        if result.is_nan() {
+            return Ok(f64::NAN);
+        }
+
+        for index in 1..args.len() {
+            let value = self.js_math_number_arg(args, index, caller_task, caller_module)?;
+            if value.is_nan() {
+                return Ok(f64::NAN);
+            }
+            if want_min {
+                if value < result
+                    || (value == 0.0
+                        && result == 0.0
+                        && value.is_sign_negative()
+                        && !result.is_sign_negative())
+                {
+                    result = value;
+                }
+            } else if value > result
+                || (value == 0.0
+                    && result == 0.0
+                    && !value.is_sign_negative()
+                    && result.is_sign_negative())
+            {
+                result = value;
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn js_math_round(number: f64) -> f64 {
+        if !number.is_finite() || number == 0.0 {
+            return number;
+        }
+        if number < 0.0 && number >= -0.5 {
+            return -0.0;
+        }
+        (number + 0.5).floor()
     }
 
     fn js_to_uint32(number: f64) -> u32 {
@@ -3346,61 +3581,10 @@ impl<'a> Interpreter<'a> {
             ));
         }
 
-        if let Ok(Some(exotic)) =
-            self.well_known_symbol_property_value(value, "Symbol.toPrimitive", task, module)
-        {
-            if !Self::is_callable_value(exotic) {
-                return Err(VmError::TypeError(
-                    "Cannot convert object to primitive value".to_string(),
-                ));
-            }
-            let hint_ptr = self
-                .gc
-                .lock()
-                .allocate(RayaString::new("string".to_string()));
-            let hint_value = unsafe {
-                Value::from_ptr(std::ptr::NonNull::new(hint_ptr.as_ptr()).expect("string hint ptr"))
-            };
-            self.ephemeral_gc_roots.write().push(hint_value);
-            let result = self.invoke_callable_sync_with_this(
-                exotic,
-                Some(value),
-                &[hint_value],
-                task,
-                module,
-            );
-            let mut ephemeral = self.ephemeral_gc_roots.write();
-            if let Some(index) = ephemeral
-                .iter()
-                .rposition(|candidate| *candidate == hint_value)
-            {
-                ephemeral.swap_remove(index);
-            }
-            let primitive = result?;
-            if let Some(text) = primitive_to_js_string(primitive) {
-                return Ok(text);
-            }
-            return Err(VmError::TypeError(
-                "Cannot convert object to primitive value".to_string(),
-            ));
-        }
-
-        for method_name in ["toString", "valueOf"] {
-            if let Some(method) = self.get_field_value_by_name(value, method_name) {
-                if !Self::is_callable_value(method) {
-                    continue;
-                }
-                let primitive =
-                    self.invoke_callable_sync_with_this(method, Some(value), &[], task, module)?;
-                if let Some(text) = primitive_to_js_string(primitive) {
-                    return Ok(text);
-                }
-            }
-        }
-
-        Err(VmError::TypeError(
-            "Cannot convert object to primitive value".to_string(),
-        ))
+        let primitive = self.js_to_primitive_with_hint(value, "string", task, module)?;
+        primitive_to_js_string(primitive).ok_or_else(|| {
+            VmError::TypeError("Cannot convert object to primitive value".to_string())
+        })
     }
 
     fn compile_dynamic_js_function_module(
@@ -3641,10 +3825,7 @@ impl<'a> Interpreter<'a> {
         if metadata_index.is_some() {
             return metadata_index;
         }
-        if let Some(index) = self
-            .layout_field_names_for_object(obj)
-            .and_then(|names| names.iter().position(|name| name == field_name))
-        {
+        if let Some(index) = self.structural_field_slot_index_for_object(obj, field_name) {
             if index < obj.field_count() {
                 return Some(index);
             }
@@ -4112,6 +4293,46 @@ impl<'a> Interpreter<'a> {
         result
     }
 
+    pub(in crate::vm::interpreter) fn define_data_property_on_target_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        value: Value,
+        writable: bool,
+        enumerable: bool,
+        configurable: bool,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<(), VmError> {
+        let descriptor = self.alloc_object_descriptor()?;
+        let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() }) else {
+            return Err(VmError::RuntimeError(
+                "Failed to allocate property descriptor object".to_string(),
+            ));
+        };
+        let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
+        for (field_name, field_value) in [
+            ("value", value),
+            ("writable", Value::bool(writable)),
+            ("enumerable", Value::bool(enumerable)),
+            ("configurable", Value::bool(configurable)),
+        ] {
+            if let Some(field_index) = self.get_field_index_for_value(descriptor, field_name) {
+                descriptor_obj
+                    .set_field(field_index, field_value)
+                    .map_err(VmError::RuntimeError)?;
+            }
+            self.set_descriptor_field_present(descriptor, field_name, true);
+        }
+        self.apply_descriptor_to_target_with_context(
+            target,
+            key,
+            descriptor,
+            caller_task,
+            caller_module,
+        )
+    }
+
     fn get_descriptor_metadata(&self, target: Value, key: &str) -> Option<Value> {
         if self.fixed_property_deleted(target, key) {
             return None;
@@ -4351,6 +4572,70 @@ impl<'a> Interpreter<'a> {
             return Err(VmError::TypeError(
                 "Object property descriptor must be an object".to_string(),
             ));
+        }
+
+        if let Some(proxy) = self.unwrapped_proxy_like(target) {
+            if proxy.handler.is_null() {
+                return Err(VmError::TypeError("Proxy has been revoked".to_string()));
+            }
+            if let Some(trap) = self.get_field_value_by_name(proxy.handler, "defineProperty") {
+                if !trap.is_undefined() && !trap.is_null() {
+                    if !Self::is_callable_value(trap) {
+                        return Err(VmError::TypeError(
+                            "Proxy defineProperty trap is not callable".to_string(),
+                        ));
+                    }
+                    let key_ptr = self.gc.lock().allocate(RayaString::new(key.to_string()));
+                    let key_value = unsafe {
+                        Value::from_ptr(
+                            std::ptr::NonNull::new(key_ptr.as_ptr()).expect("proxy key ptr"),
+                        )
+                    };
+                    {
+                        let mut roots = self.ephemeral_gc_roots.write();
+                        roots.push(key_value);
+                        if descriptor.is_heap_allocated() {
+                            roots.push(descriptor);
+                        }
+                    }
+                    let trap_args = [proxy.target, key_value, descriptor];
+                    let trap_result = self.invoke_callable_sync_with_this(
+                        trap,
+                        Some(proxy.handler),
+                        &trap_args,
+                        caller_task,
+                        caller_module,
+                    );
+                    {
+                        let mut roots = self.ephemeral_gc_roots.write();
+                        if let Some(index) =
+                            roots.iter().rposition(|candidate| *candidate == key_value)
+                        {
+                            roots.swap_remove(index);
+                        }
+                        if let Some(index) =
+                            roots.iter().rposition(|candidate| *candidate == descriptor)
+                        {
+                            roots.swap_remove(index);
+                        }
+                    }
+                    let trap_result = trap_result?;
+                    if !trap_result.is_truthy() {
+                        return Err(VmError::TypeError(format!(
+                            "Proxy defineProperty trap returned false for '{}'",
+                            key
+                        )));
+                    }
+                    return Ok(());
+                }
+            }
+            return self.apply_descriptor_to_target_with_context(
+                proxy.target,
+                key,
+                descriptor,
+                caller_task,
+                caller_module,
+            );
         }
 
         let descriptor = self.normalize_property_descriptor_with_context(
@@ -6749,6 +7034,80 @@ impl<'a> Interpreter<'a> {
                             false
                         };
                         if let Err(e) = stack.push(Value::bool(is_finite)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x2000u16..=0x2014u16 => {
+                        let result = (|| -> Result<f64, VmError> {
+                            Ok(match native_id {
+                                0x2000 => self.js_math_number_arg(&args, 0, task, module)?.abs(),
+                                0x2001 => {
+                                    let number =
+                                        self.js_math_number_arg(&args, 0, task, module)?;
+                                    if number.is_nan() {
+                                        f64::NAN
+                                    } else if number == 0.0 {
+                                        number
+                                    } else if number.is_sign_negative() {
+                                        -1.0
+                                    } else {
+                                        1.0
+                                    }
+                                }
+                                0x2002 => {
+                                    self.js_math_number_arg(&args, 0, task, module)?.floor()
+                                }
+                                0x2003 => self.js_math_number_arg(&args, 0, task, module)?.ceil(),
+                                0x2004 => {
+                                    let number =
+                                        self.js_math_number_arg(&args, 0, task, module)?;
+                                    Self::js_math_round(number)
+                                }
+                                0x2005 => {
+                                    self.js_math_number_arg(&args, 0, task, module)?.trunc()
+                                }
+                                0x2006 => self.js_math_min_max(&args, true, task, module)?,
+                                0x2007 => self.js_math_min_max(&args, false, task, module)?,
+                                0x2008 => {
+                                    let base =
+                                        self.js_math_number_arg(&args, 0, task, module)?;
+                                    let exponent =
+                                        self.js_math_number_arg(&args, 1, task, module)?;
+                                    base.powf(exponent)
+                                }
+                                0x2009 => self.js_math_number_arg(&args, 0, task, module)?.sqrt(),
+                                0x200A => self.js_math_number_arg(&args, 0, task, module)?.sin(),
+                                0x200B => self.js_math_number_arg(&args, 0, task, module)?.cos(),
+                                0x200C => self.js_math_number_arg(&args, 0, task, module)?.tan(),
+                                0x200D => {
+                                    self.js_math_number_arg(&args, 0, task, module)?.asin()
+                                }
+                                0x200E => {
+                                    self.js_math_number_arg(&args, 0, task, module)?.acos()
+                                }
+                                0x200F => {
+                                    self.js_math_number_arg(&args, 0, task, module)?.atan()
+                                }
+                                0x2010 => {
+                                    let y = self.js_math_number_arg(&args, 0, task, module)?;
+                                    let x = self.js_math_number_arg(&args, 1, task, module)?;
+                                    y.atan2(x)
+                                }
+                                0x2011 => self.js_math_number_arg(&args, 0, task, module)?.exp(),
+                                0x2012 => self.js_math_number_arg(&args, 0, task, module)?.ln(),
+                                0x2013 => {
+                                    self.js_math_number_arg(&args, 0, task, module)?.log10()
+                                }
+                                0x2014 => rand::random::<f64>(),
+                                _ => unreachable!("math native range already matched"),
+                            })
+                        })();
+                        let result = match result {
+                            Ok(result) => result,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        if let Err(e) = stack.push(Value::f64(result)) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

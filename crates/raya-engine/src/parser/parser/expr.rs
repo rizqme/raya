@@ -330,7 +330,7 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                         let span = block.span;
                         (crate::parser::ast::ArrowBody::Block(block), span)
                     } else {
-                        let expr = parse_expression(parser)?;
+                        let expr = parse_assignment_expression(parser)?;
                         let span = *expr.span();
                         (
                             crate::parser::ast::ArrowBody::Expression(Box::new(expr)),
@@ -401,7 +401,7 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                         let span = block.span;
                         (crate::parser::ast::ArrowBody::Block(block), span)
                     } else {
-                        let expr = parse_expression(parser)?;
+                        let expr = parse_assignment_expression(parser)?;
                         let span = *expr.span();
                         (
                             crate::parser::ast::ArrowBody::Expression(Box::new(expr)),
@@ -1676,8 +1676,9 @@ fn parse_arrow_function_body_with_type(
         parser.advance();
         ArrowBody::Block(parse_block_statement(parser)?)
     } else {
-        // Expression body
-        let expr = parse_expression(parser)?;
+        // Concise arrow bodies use AssignmentExpression, so commas terminate
+        // the surrounding argument list instead of being swallowed into the body.
+        let expr = parse_assignment_expression(parser)?;
         ArrowBody::Expression(Box::new(expr))
     };
 

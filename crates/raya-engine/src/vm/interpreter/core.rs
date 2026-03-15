@@ -654,6 +654,32 @@ impl<'a> Interpreter<'a> {
     }
 
     #[inline]
+    pub(in crate::vm::interpreter) fn structural_field_slot_index_for_object(
+        &self,
+        object: &crate::vm::object::Object,
+        field_name: &str,
+    ) -> Option<usize> {
+        let names = self.layout_field_names_for_object(object)?;
+        if names.len() != object.field_count() {
+            return None;
+        }
+        names.iter().position(|name| name == field_name)
+    }
+
+    #[inline]
+    pub(in crate::vm::interpreter) fn structural_field_name_for_object_offset(
+        &self,
+        object: &crate::vm::object::Object,
+        field_offset: usize,
+    ) -> Option<String> {
+        let names = self.layout_field_names_for_object(object)?;
+        if names.len() != object.field_count() {
+            return None;
+        }
+        names.get(field_offset).cloned()
+    }
+
+    #[inline]
     pub(in crate::vm::interpreter) fn nominal_allocation(
         &self,
         nominal_type_id: usize,

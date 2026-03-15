@@ -295,6 +295,35 @@ class __NumberPrototype {
     }
 }
 
+class __StringIterator {
+    target: string;
+    index: number;
+
+    constructor(target: string) {
+        this.target = target;
+        this.index = 0;
+    }
+
+    next(): any {
+        if (this.index >= this.target.length) {
+            return { value: undefined, done: true };
+        }
+
+        let first = this.target.charCodeAt(this.index);
+        let width = 1;
+        if (first >= 0xD800 && first <= 0xDBFF && this.index + 1 < this.target.length) {
+            let second = this.target.charCodeAt(this.index + 1);
+            if (second >= 0xDC00 && second <= 0xDFFF) {
+                width = 2;
+            }
+        }
+
+        let value = this.target.slice(this.index, this.index + width);
+        this.index = this.index + width;
+        return { value, done: false };
+    }
+}
+
 class __StringPrototype {
     valueOf(): string {
         if (this == null || this["__boxedPrimitiveKind"] != "String") {
@@ -305,6 +334,10 @@ class __StringPrototype {
 
     toString(): string {
         return this.valueOf();
+    }
+
+    __symbolIterator(): any {
+        return new __StringIterator(this.valueOf());
     }
 }
 
