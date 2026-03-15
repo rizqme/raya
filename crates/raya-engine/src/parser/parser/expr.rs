@@ -7,12 +7,7 @@ use crate::parser::interner::Symbol;
 use crate::parser::token::{Span, Token};
 
 fn contextual_identifier_symbol(parser: &mut Parser) -> Option<Symbol> {
-    match parser.current() {
-        Token::Identifier(name) => Some(*name),
-        Token::Async => Some(parser.intern("async")),
-        Token::From => Some(parser.intern("from")),
-        _ => None,
-    }
+    parser.current_identifier_like_symbol()
 }
 
 /// Check if a token is a keyword that can be used as a property/method name.
@@ -357,33 +352,26 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                         suggestion: Some("Use: async () => expression".to_string()),
                     })
                 }
-            } else if matches!(parser.current(), Token::Identifier(_)) {
+            } else if parser.check_identifier_like() {
                 // Could be: async x => ... or async foo()
                 // Look ahead to see if there's a => after the identifier
-                let ident_token = parser.current().clone();
-                let ident_span = parser.current_span();
+                let ident = parser.expect_identifier_like()?;
+                let ident_span = ident.span;
+                let ident_name = ident.name;
 
                 // Peek ahead: if next token is =>, it's an arrow function
                 // Otherwise, it's an async call
-                parser.advance(); // consume identifier
-
                 if parser.check(&Token::Arrow) {
                     // It's an async arrow function with single parameter
                     parser.advance(); // consume =>
 
                     // Create parameter from identifier
-                    let param_name = if let Token::Identifier(name) = ident_token {
-                        name
-                    } else {
-                        unreachable!()
-                    };
-
                     let param = crate::parser::ast::Parameter {
                         decorators: vec![],
                         visibility: None,
                         pattern: crate::parser::ast::Pattern::Identifier(
                             crate::parser::ast::Identifier {
-                                name: param_name,
+                                name: ident_name,
                                 span: ident_span,
                             },
                         ),
@@ -421,12 +409,6 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                     // Not an arrow - need to "put back" the identifier and parse as call
                     // Since we already advanced, we need to construct the identifier expr
                     // and continue parsing it as a call
-                    let ident_name = if let Token::Identifier(name) = ident_token {
-                        name
-                    } else {
-                        unreachable!()
-                    };
-
                     let ident_expr = Expression::Identifier(crate::parser::ast::Identifier {
                         name: ident_name,
                         span: ident_span,
@@ -1189,49 +1171,33 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
         }
 
         // Arrow function (simplified - single parameter without parens): x => ...
-        Token::Identifier(_) if matches!(parser.peek(), Some(Token::Arrow)) => {
-            let param_name = if let Token::Identifier(name) = parser.current() {
-                *name
-            } else {
-                unreachable!()
-            };
-            parser.advance();
+        _ if parser.check_identifier_like() && matches!(parser.peek(), Some(Token::Arrow)) => {
+            let param = parser.expect_identifier_like()?;
             parser.advance(); // consume =>
 
             let params = vec![Parameter {
                 decorators: vec![],
                 visibility: None,
                 pattern: Pattern::Identifier(Identifier {
-                    name: param_name,
-                    span: start_span,
+                    name: param.name,
+                    span: param.span,
                 }),
                 type_annotation: None,
                 optional: false,
                 default_value: None,
                 is_rest: false,
-                span: start_span,
+                span: param.span,
             }];
 
             parse_arrow_function_body(parser, params, start_span)
         }
 
         // Identifier
-        Token::Identifier(name) => {
-            let name = *name;
-            parser.advance();
+        _ if parser.check_identifier_like() => {
+            let ident = parser.expect_identifier_like()?;
             Ok(Expression::Identifier(Identifier {
-                name,
-                span: start_span,
-            }))
-        }
-
-        // Contextual keywords usable as identifiers in expressions
-        Token::From => {
-            let name = parser.intern("from");
-            parser.advance();
-            Ok(Expression::Identifier(Identifier {
-                name,
-                span: start_span,
+                name: ident.name,
+                span: ident.span,
             }))
         }
 

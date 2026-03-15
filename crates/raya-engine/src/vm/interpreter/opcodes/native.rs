@@ -1324,6 +1324,56 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn seed_array_unscopables_property(&self, prototype_val: Value) -> Option<()> {
+        let layout_id = layout_id_from_ordered_names(&[]);
+        let unscopables_ptr = self.gc.lock().allocate(Object::new_dynamic(layout_id, 0));
+        let unscopables_val = unsafe {
+            Value::from_ptr(
+                std::ptr::NonNull::new(unscopables_ptr.as_ptr()).expect("unscopables object ptr"),
+            )
+        };
+        self.set_explicit_object_prototype(unscopables_val, Value::null());
+
+        for key in [
+            "copyWithin",
+            "entries",
+            "fill",
+            "find",
+            "findIndex",
+            "flat",
+            "flatMap",
+            "includes",
+            "keys",
+            "values",
+            "findLast",
+            "findLastIndex",
+            "toReversed",
+            "toSorted",
+            "toSpliced",
+        ] {
+            self.define_data_property_on_target(
+                unscopables_val,
+                key,
+                Value::bool(true),
+                true,
+                true,
+                true,
+            )
+            .ok()?;
+        }
+
+        self.define_data_property_on_target(
+            prototype_val,
+            "Symbol.unscopables",
+            unscopables_val,
+            false,
+            false,
+            true,
+        )
+        .ok()?;
+        Some(())
+    }
+
     fn should_skip_public_prototype_method_name(class_name: &str, method_name: &str) -> bool {
         class_name == "String" && method_name == "__symbolIterator"
     }
@@ -2009,6 +2059,7 @@ impl<'a> Interpreter<'a> {
                 false,
             )
             .ok()?;
+            self.seed_array_unscopables_property(prototype_val)?;
         }
 
         if let Some(parent_id) = parent_id {

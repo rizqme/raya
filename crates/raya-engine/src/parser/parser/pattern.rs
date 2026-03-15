@@ -43,25 +43,10 @@ pub fn parse_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
         // Object destructuring: { x, y }, { x: newX, y = 0 }, { a, ...rest }
         Token::LeftBrace => parse_object_pattern(parser),
 
-        // Simple identifier: x
-        Token::Identifier(name) => {
-            let name = *name;
-            parser.advance();
-            Ok(Pattern::Identifier(Identifier {
-                name,
-                span: start_span,
-            }))
-        }
-
-        // Contextual keywords usable as identifiers in patterns
-        // (e.g. `from` is only a keyword in import statements)
-        Token::From => {
-            let name = parser.intern("from");
-            parser.advance();
-            Ok(Pattern::Identifier(Identifier {
-                name,
-                span: start_span,
-            }))
+        // Simple identifier or contextual JS identifier: x, from, type
+        _ if parser.check_identifier_like() => {
+            let ident = parser.expect_identifier_like()?;
+            Ok(Pattern::Identifier(ident))
         }
 
         _ => Err(parser.unexpected_token(&[
@@ -167,12 +152,8 @@ fn parse_object_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
         // Check for rest properties: ...rest
         if parser.check(&Token::DotDotDot) {
             parser.advance();
-            if let Token::Identifier(name) = parser.current() {
-                rest = Some(Identifier {
-                    name: *name,
-                    span: parser.current_span(),
-                });
-                parser.advance();
+            if parser.check_identifier_like() {
+                rest = Some(parser.expect_identifier_like()?);
 
                 // Rest must be last property
                 if parser.check(&Token::Comma) {
@@ -191,13 +172,8 @@ fn parse_object_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
         }
 
         // Parse key
-        let key = if let Token::Identifier(name) = parser.current() {
-            let id = Identifier {
-                name: *name,
-                span: parser.current_span(),
-            };
-            parser.advance();
-            id
+        let key = if parser.check_identifier_like() {
+            parser.expect_identifier_like()?
         } else {
             return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
         };

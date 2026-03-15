@@ -187,6 +187,8 @@ struct PendingConstructorPrologue {
 struct StaticFieldInfo {
     /// Field name (symbol)
     name: Symbol,
+    /// Owning class runtime identity
+    nominal_type_id: NominalTypeId,
     /// Global variable index for this static field
     global_index: u16,
     /// Initial value expression
@@ -2580,6 +2582,7 @@ impl<'a> Lowerer<'a> {
                     self.next_global_index += 1;
                     static_fields.push(StaticFieldInfo {
                         name: field.name.name,
+                        nominal_type_id,
                         global_index,
                         initializer: field.initializer.clone(),
                     });
@@ -4635,24 +4638,49 @@ impl<'a> Lowerer<'a> {
     /// Emit initialization code for all static fields
     fn emit_static_field_initializations(&mut self) {
         // Collect static fields with their initializers (clone to avoid borrow issues)
-        let static_fields: Vec<(u16, Expression)> = self
+        let static_fields: Vec<(NominalTypeId, Symbol, u16, Expression)> = self
             .class_info_map
             .values()
             .flat_map(|class_info| {
                 class_info.static_fields.iter().filter_map(|sf| {
                     sf.initializer
                         .as_ref()
-                        .map(|init| (sf.global_index, init.clone()))
+                        .map(|init| (sf.nominal_type_id, sf.name, sf.global_index, init.clone()))
                 })
             })
             .collect();
 
         // Emit initialization for each static field
-        for (global_index, initializer) in static_fields {
+        for (nominal_type_id, field_name, global_index, initializer) in static_fields {
             let value_reg = self.lower_expr(&initializer);
             self.emit(IrInstr::StoreGlobal {
                 index: global_index,
-                value: value_reg,
+                value: value_reg.clone(),
+            });
+
+            let class_value = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+            let nominal_id_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: nominal_id_reg.clone(),
+                value: IrValue::Constant(IrConstant::I32(nominal_type_id.as_u32() as i32)),
+            });
+            self.emit(IrInstr::NativeCall {
+                dest: Some(class_value.clone()),
+                native_id: crate::compiler::native_id::OBJECT_GET_CLASS_VALUE,
+                args: vec![nominal_id_reg],
+            });
+
+            let key_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: key_reg.clone(),
+                value: IrValue::Constant(IrConstant::String(
+                    self.interner.resolve(field_name).to_string(),
+                )),
+            });
+            self.emit(IrInstr::NativeCall {
+                dest: None,
+                native_id: crate::compiler::native_id::REFLECT_SET,
+                args: vec![class_value, key_reg, value_reg],
             });
         }
     }

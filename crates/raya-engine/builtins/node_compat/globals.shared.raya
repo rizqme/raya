@@ -9,6 +9,8 @@ const __JSON_PARSE: number = 0x0C01;
 
 type PrimitiveCoercible = any;
 
+export { BigInt };
+
 class __JSONGlobal {
     stringify(value: any): string {
         return __NATIVE_CALL<string>(__JSON_STRINGIFY, value);
@@ -232,6 +234,11 @@ function Number(value: PrimitiveCoercible): number {
 (Number as any)["MAX_SAFE_INTEGER"] = 9007199254740991;
 (Number as any)["MIN_SAFE_INTEGER"] = -9007199254740991;
 (Number as any)["EPSILON"] = 2.220446049250313e-16;
+
+// Pragmatic JS-compat subset until bigint is represented as a first-class runtime primitive.
+function BigInt(value: PrimitiveCoercible): int {
+    return Number(value) as int;
+}
 
 function String(value: PrimitiveCoercible): string {
     if (value === undefined) {

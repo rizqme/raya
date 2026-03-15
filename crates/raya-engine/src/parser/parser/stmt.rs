@@ -6,6 +6,29 @@ use crate::parser::ast::*;
 use crate::parser::interner::Symbol;
 use crate::parser::token::{Span, Token};
 
+fn looks_like_type_alias_declaration(parser: &mut Parser) -> bool {
+    if !parser.check(&Token::Type) {
+        return false;
+    }
+
+    let checkpoint = parser.checkpoint();
+    parser.advance();
+
+    let mut ok = parser.check(&Token::Identifier(Symbol::dummy()));
+    if ok {
+        parser.advance();
+        if parser.check(&Token::Less) {
+            parser.advance();
+            ok = parse_type_parameters(parser).is_ok() && parser.check(&Token::Equal);
+        } else {
+            ok = parser.check(&Token::Equal);
+        }
+    }
+
+    parser.restore(checkpoint);
+    ok
+}
+
 /// Parse a statement.
 pub fn parse_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     // Check depth before entering
@@ -30,6 +53,10 @@ pub fn parse_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
 
 /// Inner statement parsing logic - allows use of `?` operator
 fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
+    if looks_like_type_alias_declaration(parser) {
+        return parse_type_alias_declaration(parser, Vec::new());
+    }
+
     match parser.current() {
         Token::Let | Token::Const | Token::Var => parse_variable_declaration(parser),
         Token::Function => parse_function_declaration(parser),
@@ -60,16 +87,18 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
         }
 
         Token::Class | Token::Abstract | Token::At => parse_class_declaration(parser),
-        Token::Type => parse_type_alias_declaration(parser, Vec::new()),
         Token::Interface => parse_interface_declaration(parser, Vec::new()),
         Token::Annotation(_) => {
             // Annotations can appear before class or type declarations
             let annotations = parse_annotations(parser)?;
+            if looks_like_type_alias_declaration(parser) {
+                return parse_type_alias_declaration(parser, annotations);
+            }
+
             match parser.current() {
                 Token::Class | Token::Abstract | Token::At => {
                     parse_class_declaration_with_annotations(parser, annotations)
                 }
-                Token::Type => parse_type_alias_declaration(parser, annotations),
                 Token::Interface => parse_interface_declaration(parser, annotations),
                 // Allow annotations before other statements (e.g., //@@builtin_primitive before const)
                 // — annotations are discarded for non-class/type declarations
@@ -113,7 +142,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
         }
         _ => {
             // Check for labeled statement: identifier followed by colon at statement level
-            if matches!(parser.current(), Token::Identifier(_)) {
+            if parser.check_identifier_like() {
                 if let Some(Token::Colon) = parser.peek() {
                     return parse_labeled_statement(parser);
                 }
@@ -247,17 +276,7 @@ fn parse_function_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
     };
 
     // Parse function name
-    let name = if let Token::Identifier(name) = parser.current() {
-        let name_str = *name;
-        let name_span = parser.current_span();
-        parser.advance();
-        Identifier {
-            name: name_str,
-            span: name_span,
-        }
-    } else {
-        return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
-    };
+    let name = parser.expect_identifier_like()?;
 
     // Optional type parameters
     let type_params = if parser.check(&Token::Less) {
@@ -745,7 +764,7 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
 
     // For traditional for loop with expression init OR for-of with existing variable
     // First, check if it's a simple identifier that could be for-of
-    if let Token::Identifier(_) = parser.current() {
+    if parser.check_identifier_like() {
         // Parse pattern first to check for for-of
         let pattern = super::pattern::parse_pattern(parser)?;
 
@@ -966,14 +985,7 @@ fn parse_yield_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
 
 /// Parse an identifier token into an Identifier AST node
 fn expect_identifier(parser: &mut Parser) -> Result<Identifier, ParseError> {
-    if let Token::Identifier(name) = parser.current() {
-        let name = *name;
-        let span = parser.current_span();
-        parser.advance();
-        Ok(Identifier { name, span })
-    } else {
-        Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]))
-    }
+    parser.expect_identifier_like()
 }
 
 /// Parse break statement
@@ -982,7 +994,7 @@ fn parse_break_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     parser.expect(Token::Break)?;
 
     // Optional label: break myLabel;
-    let label = if let Token::Identifier(_) = parser.current() {
+    let label = if parser.check_identifier_like() {
         Some(expect_identifier(parser)?)
     } else {
         None
@@ -1005,7 +1017,7 @@ fn parse_continue_statement(parser: &mut Parser) -> Result<Statement, ParseError
     parser.expect(Token::Continue)?;
 
     // Optional label: continue myLabel;
-    let label = if let Token::Identifier(_) = parser.current() {
+    let label = if parser.check_identifier_like() {
         Some(expect_identifier(parser)?)
     } else {
         None

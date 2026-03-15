@@ -4,12 +4,26 @@
 class ArrayBuffer {
     private _bytes: int[];
     byteLength: int;
+    maxByteLength: int;
+    resizable: boolean;
 
-    constructor(byteLength: int = 0) {
+    constructor(byteLength: int = 0, options: any = null) {
         if (byteLength < 0) {
             throw createRangeError(ERR_OUT_OF_RANGE, "ArrayBuffer length must be >= 0");
         }
+        let maxByteLength = byteLength;
+        if (options != null) {
+            let dynOptions = options as any;
+            if (dynOptions["maxByteLength"] != null) {
+                maxByteLength = dynOptions["maxByteLength"] as int;
+            }
+        }
+        if (maxByteLength < byteLength) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "maxByteLength must be >= byteLength");
+        }
         this.byteLength = byteLength;
+        this.maxByteLength = maxByteLength;
+        this.resizable = maxByteLength != byteLength;
         this._bytes = [];
         let i = 0;
         while (i < byteLength) {
@@ -128,6 +142,37 @@ class ArrayBuffer {
         }
         return out;
     }
+
+    resize(newByteLength: int): void {
+        if (!this.resizable) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "ArrayBuffer is not resizable");
+        }
+        if (newByteLength < 0 || newByteLength > this.maxByteLength) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "new byteLength out of range");
+        }
+
+        if (newByteLength > this.byteLength) {
+            let i = this.byteLength;
+            while (i < newByteLength) {
+                this._bytes.push(0);
+                i = i + 1;
+            }
+        } else if (newByteLength < this.byteLength) {
+            let next: int[] = [];
+            let i = 0;
+            while (i < newByteLength) {
+                next.push(this._bytes[i]);
+                i = i + 1;
+            }
+            this._bytes = next;
+        }
+
+        this.byteLength = newByteLength;
+    }
+
+    asArrayBuffer(): ArrayBuffer {
+        return this;
+    }
 }
 
 export {
@@ -155,8 +200,50 @@ function __coerceObjectToArrayBuffer(source: any): ArrayBuffer {
     return source as ArrayBuffer;
 }
 
+function __typedArrayAt(target: any, index: any): any {
+    let relative = Number(index);
+    if (relative != relative) {
+        relative = 0;
+    }
+
+    let actual = relative as int;
+    if (actual < 0) {
+        actual = target.length + actual;
+    }
+    if (actual < 0 || actual >= target.length) {
+        return undefined;
+    }
+    return target.get(actual);
+}
+
+function __typedArrayIndexOf(target: any, searchElement: any): number {
+    let i = 0;
+    while (i < target.length) {
+        if (target.get(i) === searchElement) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+function __typedArrayToLocaleString(target: any): string {
+    let out = "";
+    let i = 0;
+    while (i < target.length) {
+        if (i > 0) {
+            out = out + ",";
+        }
+        out = out + String(target.get(i));
+        i = i + 1;
+    }
+    return out;
+}
+
 class Uint8Array {
     private _ab: ArrayBuffer;
+    static BYTES_PER_ELEMENT: int = 1;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
@@ -179,6 +266,7 @@ class Uint8Array {
             }
 
             this._ab = ab;
+            this.buffer = ab;
             this.byteOffset = byteOffset;
             this.length = outLen;
             this.byteLength = outLen;
@@ -190,6 +278,7 @@ class Uint8Array {
             throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
         }
         this._ab = new ArrayBuffer(numericSize);
+        this.buffer = this._ab;
         this.byteOffset = 0;
         this.length = numericSize;
         this.byteLength = numericSize;
@@ -210,16 +299,35 @@ class Uint8Array {
         this.checkIndex(index);
         this._ab.setByte(this.byteOffset + index, value);
     }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
+    }
+
+    asArrayBuffer(): ArrayBuffer {
+        return this._ab;
+    }
 }
 
 class Int8Array {
     private _u8: Uint8Array;
+    static BYTES_PER_ELEMENT: int = 1;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
 
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         this._u8 = new Uint8Array(source, byteOffset, length);
+        this.buffer = this._u8.buffer;
         this.byteOffset = this._u8.byteOffset;
         this.byteLength = this._u8.byteLength;
         this.length = this._u8.length;
@@ -240,10 +348,24 @@ class Int8Array {
         }
         this._u8.set(index, out);
     }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
+    }
 }
 
 class Int32Array {
     private _u8: Uint8Array;
+    static BYTES_PER_ELEMENT: int = 4;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
@@ -269,6 +391,7 @@ class Int32Array {
             }
 
             this._u8 = new Uint8Array(ab, byteOffset, outLen << 2);
+            this.buffer = ab;
             this.byteOffset = byteOffset;
             this.length = outLen;
             this.byteLength = outLen << 2;
@@ -280,6 +403,7 @@ class Int32Array {
             throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
         }
         this._u8 = new Uint8Array(numericSize << 2);
+        this.buffer = this._u8.buffer;
         this.byteOffset = 0;
         this.length = numericSize;
         this.byteLength = numericSize << 2;
@@ -309,10 +433,24 @@ class Int32Array {
         this._u8.set(offset + 2, (value >> 16) & 255);
         this._u8.set(offset + 3, (value >> 24) & 255);
     }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
+    }
 }
 
 class Float64Array {
     private _u8: Uint8Array;
+    static BYTES_PER_ELEMENT: int = 8;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
@@ -338,6 +476,7 @@ class Float64Array {
             }
 
             this._u8 = new Uint8Array(ab, byteOffset, outLen << 3);
+            this.buffer = ab;
             this.byteOffset = byteOffset;
             this.length = outLen;
             this.byteLength = outLen << 3;
@@ -349,6 +488,7 @@ class Float64Array {
             throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
         }
         this._u8 = new Uint8Array(numericSize << 3);
+        this.buffer = this._u8.buffer;
         this.byteOffset = 0;
         this.length = numericSize;
         this.byteLength = numericSize << 3;
@@ -383,16 +523,31 @@ class Float64Array {
             i = i + 1;
         }
     }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
+    }
 }
 
 class Uint8ClampedArray {
     private _u8: Uint8Array;
+    static BYTES_PER_ELEMENT: int = 1;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
 
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         this._u8 = new Uint8Array(source, byteOffset, length);
+        this.buffer = this._u8.buffer;
         this.byteOffset = this._u8.byteOffset;
         this.byteLength = this._u8.byteLength;
         this.length = this._u8.length;
@@ -412,10 +567,24 @@ class Uint8ClampedArray {
         }
         this._u8.set(index, out);
     }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
+    }
 }
 
 class Uint16Array {
     private _u8: Uint8Array;
+    static BYTES_PER_ELEMENT: int = 2;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
@@ -439,6 +608,7 @@ class Uint16Array {
                 throw createRangeError(ERR_OUT_OF_RANGE, "length out of range");
             }
             this._u8 = new Uint8Array(ab, byteOffset, outLen << 1);
+            this.buffer = ab;
             this.byteOffset = byteOffset;
             this.length = outLen;
             this.byteLength = outLen << 1;
@@ -450,6 +620,7 @@ class Uint16Array {
             throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
         }
         this._u8 = new Uint8Array(numericSize << 1);
+        this.buffer = this._u8.buffer;
         this.byteOffset = 0;
         this.length = numericSize;
         this.byteLength = numericSize << 1;
@@ -479,16 +650,31 @@ class Uint16Array {
         this._u8.set(offset, out & 255);
         this._u8.set(offset + 1, (out >> 8) & 255);
     }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
+    }
 }
 
 class Int16Array {
     private _u16: Uint16Array;
+    static BYTES_PER_ELEMENT: int = 2;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
 
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         this._u16 = new Uint16Array(source, byteOffset, length);
+        this.buffer = this._u16.buffer;
         this.byteOffset = this._u16.byteOffset;
         this.byteLength = this._u16.byteLength;
         this.length = this._u16.length;
@@ -505,16 +691,31 @@ class Int16Array {
     set(index: int, value: int): void {
         this._u16.set(index, value);
     }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
+    }
 }
 
 class Uint32Array {
     private _i32: Int32Array;
+    static BYTES_PER_ELEMENT: int = 4;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
 
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         this._i32 = new Int32Array(source, byteOffset, length);
+        this.buffer = this._i32.buffer;
         this.byteOffset = this._i32.byteOffset;
         this.byteLength = this._i32.byteLength;
         this.length = this._i32.length;
@@ -542,17 +743,32 @@ class Uint32Array {
             this._i32.set(index, out as int);
         }
     }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
+    }
 }
 
 class Float32Array {
     // Pragmatic subset: 32-bit semantics are approximated via number storage.
     private _f64: Float64Array;
+    static BYTES_PER_ELEMENT: int = 4;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
 
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         this._f64 = new Float64Array(source, byteOffset, length);
+        this.buffer = this._f64.buffer;
         this.byteOffset = this._f64.byteOffset;
         this.byteLength = this._f64.byteLength;
         this.length = this._f64.length;
@@ -564,18 +780,33 @@ class Float32Array {
 
     set(index: int, value: number): void {
         this._f64.set(index, value);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
     }
 }
 
 class Float16Array {
     // Pragmatic subset: 16-bit semantics are approximated via number storage.
     private _f64: Float64Array;
+    static BYTES_PER_ELEMENT: int = 2;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
 
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         this._f64 = new Float64Array(source, byteOffset, length);
+        this.buffer = this._f64.buffer;
         this.byteOffset = this._f64.byteOffset;
         this.byteLength = this._f64.byteLength;
         this.length = this._f64.length;
@@ -587,18 +818,33 @@ class Float16Array {
 
     set(index: int, value: number): void {
         this._f64.set(index, value);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
     }
 }
 
 class BigInt64Array {
     // Pragmatic subset: values are represented as number.
     private _f64: Float64Array;
+    static BYTES_PER_ELEMENT: int = 8;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
 
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         this._f64 = new Float64Array(source, byteOffset, length);
+        this.buffer = this._f64.buffer;
         this.byteOffset = this._f64.byteOffset;
         this.byteLength = this._f64.byteLength;
         this.length = this._f64.length;
@@ -610,18 +856,33 @@ class BigInt64Array {
 
     set(index: int, value: number): void {
         this._f64.set(index, value);
+    }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
     }
 }
 
 class BigUint64Array {
     // Pragmatic subset: values are represented as number.
     private _f64: Float64Array;
+    static BYTES_PER_ELEMENT: int = 8;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
 
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         this._f64 = new Float64Array(source, byteOffset, length);
+        this.buffer = this._f64.buffer;
         this.byteOffset = this._f64.byteOffset;
         this.byteLength = this._f64.byteLength;
         this.length = this._f64.length;
@@ -634,10 +895,24 @@ class BigUint64Array {
     set(index: int, value: number): void {
         this._f64.set(index, value);
     }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
+    }
 }
 
 class TypedArray<T> {
     // Global TypedArray surface for compatibility checks.
+    static BYTES_PER_ELEMENT: int = 1;
+    buffer: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
     length: int;
@@ -650,11 +925,39 @@ class TypedArray<T> {
                 throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
             }
             this.length = n;
+            this.buffer = new ArrayBuffer(n);
         } else {
             let ab = source as ArrayBuffer;
             this.length = ab.byteLength;
+            this.buffer = ab;
         }
         this.byteOffset = 0;
         this.byteLength = this.length;
     }
+
+    at(index: any): any {
+        return __typedArrayAt(this as any, index);
+    }
+
+    indexOf(element: any): number {
+        return __typedArrayIndexOf(this as any, element);
+    }
+
+    toLocaleString(): string {
+        return __typedArrayToLocaleString(this as any);
+    }
 }
+
+(Uint8Array as any)["BYTES_PER_ELEMENT"] = 1;
+(Int8Array as any)["BYTES_PER_ELEMENT"] = 1;
+(Uint8ClampedArray as any)["BYTES_PER_ELEMENT"] = 1;
+(Uint16Array as any)["BYTES_PER_ELEMENT"] = 2;
+(Int16Array as any)["BYTES_PER_ELEMENT"] = 2;
+(Uint32Array as any)["BYTES_PER_ELEMENT"] = 4;
+(Int32Array as any)["BYTES_PER_ELEMENT"] = 4;
+(Float16Array as any)["BYTES_PER_ELEMENT"] = 2;
+(Float32Array as any)["BYTES_PER_ELEMENT"] = 4;
+(Float64Array as any)["BYTES_PER_ELEMENT"] = 8;
+(BigInt64Array as any)["BYTES_PER_ELEMENT"] = 8;
+(BigUint64Array as any)["BYTES_PER_ELEMENT"] = 8;
+(TypedArray as any)["BYTES_PER_ELEMENT"] = 1;

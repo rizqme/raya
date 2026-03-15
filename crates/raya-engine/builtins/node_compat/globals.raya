@@ -30,6 +30,7 @@ function __is_space(ch: string): boolean {
 
 export {
     globalThis,
+    BigInt,
     parseInt,
     parseFloat,
     isNaN,

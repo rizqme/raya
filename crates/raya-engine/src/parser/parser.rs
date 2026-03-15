@@ -16,6 +16,7 @@ pub mod types;
 use crate::parser::ast::*;
 use crate::parser::interner::Interner;
 use crate::parser::lexer::Lexer;
+use crate::parser::interner::Symbol;
 use crate::parser::token::{Span, Token};
 
 pub use error::{ParseError, ParseErrorKind};
@@ -269,6 +270,37 @@ impl Parser {
     #[inline]
     pub fn resolve(&self, symbol: crate::parser::interner::Symbol) -> &str {
         self.interner.resolve(symbol)
+    }
+
+    /// Check whether the current token can behave like an identifier in JS value/binding syntax.
+    #[inline]
+    pub(crate) fn check_identifier_like(&self) -> bool {
+        matches!(
+            self.current(),
+            Token::Identifier(_) | Token::Async | Token::From | Token::Type
+        )
+    }
+
+    /// Resolve the current token to an identifier-like symbol in JS value/binding syntax.
+    pub(crate) fn current_identifier_like_symbol(&mut self) -> Option<Symbol> {
+        match self.current().clone() {
+            Token::Identifier(name) => Some(name),
+            Token::Async => Some(self.intern("async")),
+            Token::From => Some(self.intern("from")),
+            Token::Type => Some(self.intern("type")),
+            _ => None,
+        }
+    }
+
+    /// Consume the current token as an identifier-like token in JS value/binding syntax.
+    pub(crate) fn expect_identifier_like(&mut self) -> Result<Identifier, ParseError> {
+        if let Some(name) = self.current_identifier_like_symbol() {
+            let span = self.current_span();
+            self.advance();
+            Ok(Identifier { name, span })
+        } else {
+            Err(self.unexpected_token(&[Token::Identifier(Symbol::dummy())]))
+        }
     }
 
     /// Intern a new string, returning its symbol.

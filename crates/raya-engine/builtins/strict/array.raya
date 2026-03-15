@@ -54,6 +54,58 @@ function arrayHasOwnIndex(target: any, index: number): boolean {
     return Object.prototype.hasOwnProperty.call(target, "" + index);
 }
 
+function arrayLikeAt(target: any, index: any): any {
+    let length = Number(target["length"]);
+    if (length <= 0) {
+        return undefined;
+    }
+
+    let relative = Number(index);
+    if (relative != relative) {
+        relative = 0;
+    }
+
+    let actual = relative as int;
+    if (actual < 0) {
+        actual = (length as int) + actual;
+    }
+    if (actual < 0 || actual >= (length as int)) {
+        return undefined;
+    }
+    if (target["get"] != null) {
+        return target["get"].call(target, actual);
+    }
+    return target[actual];
+}
+
+function arrayLikeToLocaleString(target: any): string {
+    let length = Number(target["length"]);
+    if (length <= 0) {
+        return "";
+    }
+
+    let out = "";
+    let i = 0;
+    while (i < (length as int)) {
+        if (i > 0) {
+            out = out + ",";
+        }
+        let value = null;
+        if (target["get"] != null) {
+            value = target["get"].call(target, i);
+        } else {
+            value = target[i];
+        }
+        if (value != null && value["toLocaleString"] != null) {
+            out = out + value["toLocaleString"].call(value);
+        } else {
+            out = out + String(value);
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
 class __ArrayIterator<T> {
     public target: T[];
     public index: number;
@@ -296,8 +348,16 @@ class Array<T> {
         return __NATIVE_CALL<T[]>(CONCAT, this, other);
     }
 
+    at(index: any): any {
+        return arrayLikeAt(this as any, index);
+    }
+
     join(separator: string): string {
         return __NATIVE_CALL<string>(JOIN, this, separator);
+    }
+
+    toLocaleString(): string {
+        return arrayLikeToLocaleString(this as any);
     }
 
     reverse(): T[] {

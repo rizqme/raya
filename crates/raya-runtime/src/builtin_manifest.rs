@@ -77,6 +77,10 @@ pub const NODE_COMPAT_ONLY_SYMBOLS: &[CompatSymbol] = &[
         hint: "Typed arrays are node-compat-only; use number[]/Buffer in strict mode.",
     },
     CompatSymbol {
+        symbol: "BigInt",
+        hint: "Enable --node-compat for JS bigint compatibility helpers.",
+    },
+    CompatSymbol {
         symbol: "BigInt64Array",
         hint: "Typed arrays are node-compat-only; use number[]/Buffer in strict mode.",
     },

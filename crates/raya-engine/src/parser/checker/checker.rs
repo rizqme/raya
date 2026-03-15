@@ -2574,6 +2574,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn for_of_element_type(&mut self, iterable_ty: TypeId, span: Span) -> TypeId {
+        if self.allows_dynamic_any() && self.type_is_dynamic_anyish(iterable_ty) {
+            return self.type_ctx.any_type();
+        }
+
         if let Some(elem_ty) = self.try_for_of_element_type(iterable_ty) {
             return elem_ty;
         }
