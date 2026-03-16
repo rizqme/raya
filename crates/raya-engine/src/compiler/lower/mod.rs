@@ -979,6 +979,23 @@ impl Visitor for CapturedRefAnalyzer<'_> {
                 }
             }
         }
+        if let Expression::Unary(unary) = expr {
+            if matches!(
+                unary.operator,
+                ast::UnaryOperator::PrefixIncrement
+                    | ast::UnaryOperator::PrefixDecrement
+                    | ast::UnaryOperator::PostfixIncrement
+                    | ast::UnaryOperator::PostfixDecrement
+            ) {
+                if let Expression::Identifier(ident) = &*unary.operand {
+                    if self.outer_locals.contains(&ident.name)
+                        && !self.arrow_locals.contains(&ident.name)
+                    {
+                        self.refcell_vars.insert(ident.name);
+                    }
+                }
+            }
+        }
         // Nested arrow = new scope boundary — delegate back to ArrowCaptureFinder
         if matches!(expr, Expression::Arrow(_) | Expression::Function(_)) {
             let mut finder = ArrowCaptureFinder {
@@ -2508,35 +2525,35 @@ impl<'a> Lowerer<'a> {
         let mut extends_type_args: Option<Vec<TypeId>> = None;
         let (parent_class, parent_runtime_name, parent_constructor_symbol) =
             if let Some(ref extends) = class.extends {
-            if let ast::Type::Reference(type_ref) = &extends.ty {
-                // Extract type arguments from extends clause (e.g., Base<string>)
-                if let Some(ref type_args) = type_ref.type_args {
-                    let resolved: Vec<TypeId> = type_args
-                        .iter()
-                        .map(|ta| self.resolve_type_annotation(ta))
-                        .collect();
-                    extends_type_args = Some(resolved);
-                }
-                let parent_name = self.interner.resolve(type_ref.name.name).to_string();
-                let local_parent_class = self
-                    .class_decl_history
-                    .get(&type_ref.name.name)
-                    .and_then(|_| self.class_map.get(&type_ref.name.name).copied());
-                let imported_parent_class = if local_parent_class.is_none() {
-                    self.nominal_type_id_from_type_name(&parent_name)
+                if let ast::Type::Reference(type_ref) = &extends.ty {
+                    // Extract type arguments from extends clause (e.g., Base<string>)
+                    if let Some(ref type_args) = type_ref.type_args {
+                        let resolved: Vec<TypeId> = type_args
+                            .iter()
+                            .map(|ta| self.resolve_type_annotation(ta))
+                            .collect();
+                        extends_type_args = Some(resolved);
+                    }
+                    let parent_name = self.interner.resolve(type_ref.name.name).to_string();
+                    let local_parent_class = self
+                        .class_decl_history
+                        .get(&type_ref.name.name)
+                        .and_then(|_| self.class_map.get(&type_ref.name.name).copied());
+                    let imported_parent_class = if local_parent_class.is_none() {
+                        self.nominal_type_id_from_type_name(&parent_name)
+                    } else {
+                        None
+                    };
+                    let parent_class = local_parent_class.or(imported_parent_class);
+                    let runtime_name = (imported_parent_class.is_some() || parent_class.is_none())
+                        .then_some(parent_name);
+                    (parent_class, runtime_name, Some(type_ref.name.name))
                 } else {
-                    None
-                };
-                let parent_class = local_parent_class.or(imported_parent_class);
-                let runtime_name =
-                    (imported_parent_class.is_some() || parent_class.is_none()).then_some(parent_name);
-                (parent_class, runtime_name, Some(type_ref.name.name))
+                    (None, None, None)
+                }
             } else {
                 (None, None, None)
-            }
-        } else {
-            (None, None, None)
-        };
+            };
 
         // Collect instance and static field information
         let mut fields = Vec::new();
@@ -4287,12 +4304,12 @@ impl<'a> Lowerer<'a> {
                 .and_then(|parent_id| self.class_info_map.get(&parent_id))
                 .map(|info| info.constructor_params.clone())
                 .unwrap_or_default();
-            let has_parent_constructor = self
-                .class_info_map
-                .get(&nominal_type_id)
-                .is_some_and(|info| {
-                    info.parent_class.is_some() || info.parent_constructor_symbol.is_some()
-                });
+            let has_parent_constructor =
+                self.class_info_map
+                    .get(&nominal_type_id)
+                    .is_some_and(|info| {
+                        info.parent_class.is_some() || info.parent_constructor_symbol.is_some()
+                    });
             let forwarded_param_count = if has_parent_constructor {
                 parent_constructor_params.len().max(8)
             } else {
@@ -4354,8 +4371,7 @@ impl<'a> Lowerer<'a> {
                 parent_class
                     .map(|parent_id| self.load_class_value_for_nominal_type(parent_id))
                     .or_else(|| {
-                        parent_symbol
-                            .map(|symbol| self.lower_runtime_constructor_symbol(symbol))
+                        parent_symbol.map(|symbol| self.lower_runtime_constructor_symbol(symbol))
                     })
             });
             if let Some(parent_constructor) = parent_constructor {
@@ -4477,10 +4493,11 @@ impl<'a> Lowerer<'a> {
             else_block: rest_count_ready_block,
         });
 
-        self.current_function_mut().add_block(BasicBlock::with_label(
-            rest_count_compute_block,
-            "rest.count.compute",
-        ));
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(
+                rest_count_compute_block,
+                "rest.count.compute",
+            ));
         self.current_block = rest_count_compute_block;
         self.emit(IrInstr::BinaryOp {
             dest: rest_count_reg.clone(),
@@ -4490,10 +4507,11 @@ impl<'a> Lowerer<'a> {
         });
         self.set_terminator(Terminator::Jump(rest_count_ready_block));
 
-        self.current_function_mut().add_block(BasicBlock::with_label(
-            rest_count_ready_block,
-            "rest.count.ready",
-        ));
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(
+                rest_count_ready_block,
+                "rest.count.ready",
+            ));
         self.current_block = rest_count_ready_block;
 
         // Create array with rest_count size

@@ -1,3 +1,4 @@
+use crate::compiler::Module;
 use crate::compiler::Opcode;
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::core::value_to_f64;
@@ -7,7 +8,6 @@ use crate::vm::object::RayaString;
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
-use crate::compiler::Module;
 use crate::vm::VmError;
 use std::any::TypeId;
 use std::sync::Arc;
@@ -94,13 +94,17 @@ impl<'a> Interpreter<'a> {
         }
 
         if self.js_abstract_equality_objectish(a)
-            && (Self::numeric_value(b).is_some() || Self::ptr_is_raya_string(b) || b.as_bool().is_some())
+            && (Self::numeric_value(b).is_some()
+                || Self::ptr_is_raya_string(b)
+                || b.as_bool().is_some())
         {
             let primitive = self.js_to_primitive_with_hint(a, "default", task, module)?;
             return self.js_abstract_equality(primitive, b, task, module);
         }
         if self.js_abstract_equality_objectish(b)
-            && (Self::numeric_value(a).is_some() || Self::ptr_is_raya_string(a) || a.as_bool().is_some())
+            && (Self::numeric_value(a).is_some()
+                || Self::ptr_is_raya_string(a)
+                || a.as_bool().is_some())
         {
             let primitive = self.js_to_primitive_with_hint(b, "default", task, module)?;
             return self.js_abstract_equality(a, primitive, task, module);

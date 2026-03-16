@@ -98,8 +98,9 @@ fn compile_builtin_mode(
 
     for logical_path in builtin_logical_paths(mode) {
         let source_path = builtins_root.join(logical_path);
-        let module_source = fs::read_to_string(&source_path)
-            .map_err(|error| format!("Failed to read builtin source '{}': {error}", logical_path))?;
+        let module_source = fs::read_to_string(&source_path).map_err(|error| {
+            format!("Failed to read builtin source '{}': {error}", logical_path)
+        })?;
         let parser = Parser::new(&module_source).map_err(|errors| {
             format!(
                 "Failed to lex builtin source '{}': {}",
@@ -250,7 +251,11 @@ fn compile_builtin_mode(
             is_async: false,
             module_name: ambient_contract.module_name.clone(),
             module_id: module_id_from_name(&ambient_contract.module_name),
-            symbol_id: symbol_id_from_name(&ambient_contract.module_name, SymbolScope::Global, name),
+            symbol_id: symbol_id_from_name(
+                &ambient_contract.module_name,
+                SymbolScope::Global,
+                name,
+            ),
             signature_hash: raya_engine::parser::types::signature_hash(&type_signature),
             type_signature,
             scope: SymbolScope::Global,
@@ -275,7 +280,12 @@ fn compile_builtin_mode(
     let synthetic_entry = parsed_units
         .iter()
         .enumerate()
-        .map(|(idx, unit)| format!("import * as __builtin_{idx} from \"./{}\";", unit.logical_path))
+        .map(|(idx, unit)| {
+            format!(
+                "import * as __builtin_{idx} from \"./{}\";",
+                unit.logical_path
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let compiled = compiler
@@ -442,9 +452,9 @@ fn literal_expr_value(expr: &Expression, interner: &Interner) -> Option<Embedded
             .map(EmbeddedLiteralValue::I32)
             .or_else(|| Some(EmbeddedLiteralValue::F64(lit.value as f64))),
         Expression::FloatLiteral(lit) => Some(EmbeddedLiteralValue::F64(lit.value)),
-        Expression::StringLiteral(lit) => {
-            Some(EmbeddedLiteralValue::String(interner.resolve(lit.value).to_string()))
-        }
+        Expression::StringLiteral(lit) => Some(EmbeddedLiteralValue::String(
+            interner.resolve(lit.value).to_string(),
+        )),
         Expression::BooleanLiteral(lit) => Some(EmbeddedLiteralValue::Bool(lit.value)),
         Expression::NullLiteral(_) => Some(EmbeddedLiteralValue::Null),
         _ => None,
@@ -517,8 +527,12 @@ fn write_embedded_artifacts(
 ) -> Result<(), String> {
     let strict_modules =
         write_mode_bytecode_files(out_dir, "strict", BuiltinInventoryMode::RayaStrict, strict)?;
-    let node_modules =
-        write_mode_bytecode_files(out_dir, "node_compat", BuiltinInventoryMode::NodeCompat, node)?;
+    let node_modules = write_mode_bytecode_files(
+        out_dir,
+        "node_compat",
+        BuiltinInventoryMode::NodeCompat,
+        node,
+    )?;
 
     let generated = format!(
         "pub static STRICT_EMBEDDED_BUILTIN_MODULES: &[EmbeddedBuiltinModule] = &[\n{strict_modules}];\n\n\

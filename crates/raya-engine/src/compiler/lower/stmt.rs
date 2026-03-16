@@ -2658,27 +2658,28 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_nested_function_decl(&mut self, func_decl: &ast::FunctionDecl) {
-        use crate::parser::ast::{ArrowBody, ArrowFunction};
+        use crate::parser::ast::FunctionExpression;
         use crate::parser::token::Span;
 
-        // Build a synthetic ArrowFunction from the FunctionDecl
-        let arrow = ArrowFunction {
+        // Lower nested JS/Raya function declarations as real function objects,
+        // not synthetic arrows, so they keep their own `this`, `arguments`,
+        // constructibility, and declaration semantics.
+        let function_expr = FunctionExpression {
+            name: Some(func_decl.name.clone()),
+            type_params: func_decl.type_params.clone(),
             params: func_decl.params.clone(),
-            body: ArrowBody::Block(func_decl.body.clone()),
+            body: func_decl.body.clone(),
             return_type: func_decl.return_type.clone(),
+            is_method: false,
             is_async: func_decl.is_async,
+            is_generator: func_decl.is_generator,
             span: Span::new(0, 0, 0, 0),
         };
 
-        // Lower as arrow (handles capture analysis, MakeClosure, etc.).
         // Std wrapper nested functions may have a pre-assigned function ID.
         let preassigned_func_id = self.function_id_for_decl(func_decl);
-        if let Some(func_id) = preassigned_func_id {
-            // Register before lowering body so recursive calls resolve through
-            // direct-call lowering instead of falling back to non-callable locals.
-            self.function_map.insert(func_decl.name.name, func_id);
-        }
-        let closure_reg = self.lower_arrow_with_preassigned_id(&arrow, preassigned_func_id);
+        let closure_reg =
+            self.lower_function_expression_with_preassigned_id(&function_expr, preassigned_func_id);
         if let Some(func_id) = preassigned_func_id.or(self.last_arrow_func_id) {
             let declared_name = self.interner.resolve(func_decl.name.name).to_string();
             if let Some((_, ir_func)) = self

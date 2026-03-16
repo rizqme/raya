@@ -196,9 +196,17 @@ function __262_evalScript(source) {
     return __262_indirect_eval(source);
 }
 
+function __262_detachArrayBuffer(buffer) {
+    if (buffer == null || typeof buffer.detach !== "function") {
+        throw new TypeError("$262.detachArrayBuffer requires a detachable ArrayBuffer");
+    }
+    buffer.detach();
+}
+
 const $262 = {
     createRealm: __262_createRealm,
     evalScript: __262_evalScript,
+    detachArrayBuffer: __262_detachArrayBuffer,
 };
 "#;
 
@@ -797,8 +805,13 @@ fn matches_expected_error(actual: &str, expected: Option<&str>) -> bool {
 
 fn execute_case_program(runtime: &Runtime, path: &Path) -> std::result::Result<(), String> {
     let debug_case = std::env::var("RAYA_DEBUG_ES262_CASE").is_ok();
-    let source = fs::read_to_string(path)
-        .map_err(|error| format!("failed to read transformed source {}: {}", path.display(), error))?;
+    let source = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "failed to read transformed source {}: {}",
+            path.display(),
+            error
+        )
+    })?;
     if debug_case {
         eprintln!("[es262-case] compile:start path={}", path.display());
     }
@@ -841,11 +854,6 @@ fn prepare_case_source(root: &Path, case: &TestCase) -> std::result::Result<Stri
         return Err("uses module syntax".to_string());
     }
 
-    let supported_host_hooks = supported_262_hooks(&case.source);
-    if supported_host_hooks.is_none() && case.source.contains("$262") {
-        return Err("uses unsupported $262 host hooks".to_string());
-    }
-
     let mut include_sources = String::new();
     for include in &case.metadata.includes {
         match include.as_str() {
@@ -866,6 +874,12 @@ fn prepare_case_source(root: &Path, case: &TestCase) -> std::result::Result<Stri
                 include_sources.push('\n');
             }
         }
+    }
+
+    let combined_host_source = format!("{}\n{}", case.source, include_sources);
+    let supported_host_hooks = supported_262_hooks(&combined_host_source);
+    if supported_host_hooks.is_none() && combined_host_source.contains("$262") {
+        return Err("uses unsupported $262 host hooks".to_string());
     }
 
     let transformed = transform_source(&case.source)?;
@@ -940,7 +954,7 @@ fn supported_262_hooks(source: &str) -> Option<bool> {
         let Some(name) = captures.get(1).map(|m| m.as_str()) else {
             return None;
         };
-        if !matches!(name, "createRealm" | "evalScript") {
+        if !matches!(name, "createRealm" | "evalScript" | "detachArrayBuffer") {
             return None;
         }
     }

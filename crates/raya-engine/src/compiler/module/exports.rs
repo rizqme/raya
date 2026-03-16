@@ -181,7 +181,10 @@ impl ModuleExports {
     }
 }
 
-pub fn module_exports_from_bytecode(path: &std::path::Path, module: &BytecodeModule) -> ModuleExports {
+pub fn module_exports_from_bytecode(
+    path: &std::path::Path,
+    module: &BytecodeModule,
+) -> ModuleExports {
     let module_name = module.metadata.name.clone();
     let module_id = module_id_from_name(&module_name);
     let mut exports = ModuleExports::new(path.to_path_buf(), module_name.clone());

@@ -774,12 +774,9 @@ fn jit_execute_sync_frame(
                 task.pop_closure();
             }
             if let Some(frame) = frames.pop() {
-                if let Err(error) = jit_apply_return_action(
-                    interpreter,
-                    stack,
-                    return_value,
-                    current_return_action,
-                ) {
+                if let Err(error) =
+                    jit_apply_return_action(interpreter, stack, return_value, current_return_action)
+                {
                     jit_raise_vm_error(bridge, error);
                     finish_nested_call!(JitNestedCallResult::Exception, true);
                 }

@@ -2052,7 +2052,9 @@ impl<'a> Interpreter<'a> {
                                         }
                                         ReturnAction::PushConstructResult(receiver) => {
                                             let construct_value = self
-                                                .constructor_result_or_receiver(return_val, receiver);
+                                                .constructor_result_or_receiver(
+                                                    return_val, receiver,
+                                                );
                                             if let Err(e) = stack_guard.push(construct_value) {
                                                 return ExecutionResult::Failed(e);
                                             }
@@ -2180,6 +2182,22 @@ impl<'a> Interpreter<'a> {
                         .take(arg_count)
                         .collect();
                     current_arg_count = arg_count; // Set current arg count to callee's arg count
+                    if std::env::var("RAYA_DEBUG_ARGS_ENTRY").is_ok() {
+                        let func_name = module
+                            .functions
+                            .get(func_id)
+                            .map(|f| f.name.as_str())
+                            .unwrap_or("<unknown>");
+                        if func_name.ends_with("::fill") {
+                            eprintln!(
+                                "[args-entry] {} arg_count={} locals_base={} args={:?}",
+                                func_name,
+                                current_arg_count,
+                                locals_base,
+                                current_args
+                            );
+                        }
+                    }
                     #[cfg(feature = "jit")]
                     {
                         ip = forced_callee_ip.unwrap_or(0);

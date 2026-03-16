@@ -15,8 +15,8 @@ pub mod types;
 
 use crate::parser::ast::*;
 use crate::parser::interner::Interner;
-use crate::parser::lexer::Lexer;
 use crate::parser::interner::Symbol;
+use crate::parser::lexer::Lexer;
 use crate::parser::token::{Span, Token};
 
 pub use error::{ParseError, ParseErrorKind};

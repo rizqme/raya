@@ -9,8 +9,8 @@
 //! - Cross-module symbol resolution
 //! - Type definition parsing (`.d.ts` subset)
 
-mod cache;
 mod builtin_contract;
+mod cache;
 mod compiler;
 mod declaration;
 mod exports;

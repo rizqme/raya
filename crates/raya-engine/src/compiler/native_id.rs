@@ -59,6 +59,10 @@ pub const OBJECT_JS_ADD: u16 = 0x001A;
 pub const OBJECT_SET_PROTOTYPE_OF: u16 = 0x001B;
 /// JS `eval(source)` helper executed inside the current VM.
 pub const FUNCTION_EVAL_HELPER: u16 = 0x001C;
+/// ECMAScript ToNumber with runtime ToPrimitive semantics.
+pub const OBJECT_JS_TO_NUMBER: u16 = 0x001D;
+/// ECMAScript ToIntegerOrInfinity with runtime ToPrimitive semantics.
+pub const OBJECT_JS_TO_INTEGER_OR_INFINITY: u16 = 0x001E;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -567,6 +571,8 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",
         FUNCTION_EVAL_HELPER => "Function.eval",
+        OBJECT_JS_TO_NUMBER => "Object.jsToNumber",
+        OBJECT_JS_TO_INTEGER_OR_INFINITY => "Object.jsToIntegerOrInfinity",
 
         // Array
         ARRAY_PUSH => "Array.push",

@@ -1238,6 +1238,27 @@ impl<'a> TypeChecker<'a> {
                 }
                 _ => {}
             }
+            return;
+        }
+
+        let declared_ty = decl
+            .type_annotation
+            .as_ref()
+            .map(|annot| self.resolve_type_annotation(annot))
+            .unwrap_or_else(|| self.inference_fallback_type());
+
+        match &decl.pattern {
+            Pattern::Identifier(ident) => {
+                let name = self.resolve(ident.name);
+                let inferred_scope_id = self.inferred_var_scope_id(&name);
+                self.inferred_var_types
+                    .insert((inferred_scope_id, name.clone()), declared_ty);
+                self.type_env.set(name, declared_ty);
+            }
+            Pattern::Array(_) | Pattern::Object(_) => {
+                self.check_destructure_pattern(&decl.pattern, declared_ty);
+            }
+            _ => {}
         }
     }
 
@@ -2342,26 +2363,19 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn check_truthy_condition_type(&mut self, cond_ty: TypeId, span: Span) {
+        if self.is_js_mode() {
+            return;
+        }
+        let bool_ty = self.type_ctx.boolean_type();
+        self.check_assignable(cond_ty, bool_ty, span);
+    }
+
     /// Check if statement
     fn check_if(&mut self, if_stmt: &IfStatement) {
         // Check condition — allow any type (truthiness), not just boolean
         let cond_ty = self.check_expr(&if_stmt.condition);
-        let bool_ty = self.type_ctx.boolean_type();
-        // Only enforce boolean for non-union, non-nullable types
-        // TypeScript allows any expression in if-conditions (truthiness)
-        let is_union_or_nullable = matches!(
-            self.type_ctx.get(cond_ty),
-            Some(crate::parser::types::Type::Union(_))
-                | Some(crate::parser::types::Type::Primitive(
-                    crate::parser::types::PrimitiveType::String
-                ))
-                | Some(crate::parser::types::Type::Primitive(
-                    crate::parser::types::PrimitiveType::Number
-                ))
-        );
-        if !is_union_or_nullable {
-            self.check_assignable(cond_ty, bool_ty, *if_stmt.condition.span());
-        }
+        self.check_truthy_condition_type(cond_ty, *if_stmt.condition.span());
 
         // Try to extract single type guard (used for else-branch / early-return narrowing)
         let type_guard = extract_type_guard(&if_stmt.condition, self.interner);
@@ -2437,10 +2451,8 @@ impl<'a> TypeChecker<'a> {
 
     /// Check while loop
     fn check_while(&mut self, while_stmt: &WhileStatement) {
-        // Check condition is boolean
         let cond_ty = self.check_expr(&while_stmt.condition);
-        let bool_ty = self.type_ctx.boolean_type();
-        self.check_assignable(cond_ty, bool_ty, *while_stmt.condition.span());
+        self.check_truthy_condition_type(cond_ty, *while_stmt.condition.span());
 
         // Try to extract type guard from condition
         let type_guard = extract_type_guard(&while_stmt.condition, self.interner);
@@ -2490,8 +2502,7 @@ impl<'a> TypeChecker<'a> {
         // Check test condition if present
         if let Some(ref test) = for_stmt.test {
             let cond_ty = self.check_expr(test);
-            let bool_ty = self.type_ctx.boolean_type();
-            self.check_assignable(cond_ty, bool_ty, *test.span());
+            self.check_truthy_condition_type(cond_ty, *test.span());
         }
 
         // Check update expression if present
@@ -3264,10 +3275,11 @@ impl<'a> TypeChecker<'a> {
 
         match un.operator {
             UnaryOperator::Not => {
-                // Logical not requires boolean
-                let bool_ty = self.type_ctx.boolean_type();
-                self.check_assignable(operand_ty, bool_ty, *un.operand.span());
-                bool_ty
+                if !self.is_js_mode() {
+                    let bool_ty = self.type_ctx.boolean_type();
+                    self.check_assignable(operand_ty, bool_ty, *un.operand.span());
+                }
+                self.type_ctx.boolean_type()
             }
             UnaryOperator::Plus | UnaryOperator::Minus | UnaryOperator::BitwiseNot => {
                 // Numeric operations require number
@@ -4552,10 +4564,7 @@ impl<'a> TypeChecker<'a> {
         )
     }
 
-    fn seed_expression_local_declarations(
-        &mut self,
-        block: &crate::parser::ast::BlockStatement,
-    ) {
+    fn seed_expression_local_declarations(&mut self, block: &crate::parser::ast::BlockStatement) {
         let placeholder_ty = self.type_ctx.any_type();
         for stmt in &block.statements {
             self.seed_expression_local_declarations_from_stmt(stmt, placeholder_ty);
@@ -6794,6 +6803,7 @@ impl<'a> TypeChecker<'a> {
         let array_ty = self.type_ctx.array_type(elem_ty);
         let any_ty = self.type_ctx.any_type();
         let search_elem_ty = if self.is_js_mode() { any_ty } else { elem_ty };
+        let index_arg_ty = if self.is_js_mode() { any_ty } else { number_ty };
         let mut callback_context_params = |return_ty: TypeId| {
             if self.is_js_mode() {
                 self.type_ctx.function_type_with_min_params(
@@ -6818,19 +6828,21 @@ impl<'a> TypeChecker<'a> {
             "unshift" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
             // indexOf(value: T, fromIndex?: number) -> number
             "indexOf" => Some(self.type_ctx.function_type_with_min_params(
-                vec![search_elem_ty, number_ty],
+                vec![search_elem_ty, index_arg_ty],
                 number_ty,
                 false,
                 1,
             )),
-            // includes(value: T) -> boolean
-            "includes" => Some(
-                self.type_ctx
-                    .function_type(vec![search_elem_ty], boolean_ty, false),
-            ),
+            // includes(value: T, fromIndex?: number) -> boolean
+            "includes" => Some(self.type_ctx.function_type_with_min_params(
+                vec![search_elem_ty, index_arg_ty],
+                boolean_ty,
+                false,
+                1,
+            )),
             // slice(start: number, end?: number) -> Array<T>
             "slice" => Some(self.type_ctx.function_type_with_min_params(
-                vec![number_ty, number_ty],
+                vec![index_arg_ty, index_arg_ty],
                 array_ty,
                 false,
                 1,
@@ -6910,7 +6922,7 @@ impl<'a> TypeChecker<'a> {
             "length" => Some(number_ty),
             // lastIndexOf(value: T, fromIndex?: number) -> number
             "lastIndexOf" => Some(self.type_ctx.function_type_with_min_params(
-                vec![search_elem_ty, number_ty],
+                vec![search_elem_ty, index_arg_ty],
                 number_ty,
                 false,
                 1,
@@ -6956,7 +6968,7 @@ impl<'a> TypeChecker<'a> {
                 let callback_ty = if self.is_js_mode() {
                     self.type_ctx.function_type_with_min_params(
                         vec![any_ty, any_ty, any_ty, any_ty],
-                        acc_ty,
+                        any_ty,
                         false,
                         2,
                     )
@@ -6964,14 +6976,23 @@ impl<'a> TypeChecker<'a> {
                     self.type_ctx
                         .function_type(vec![acc_ty, elem_ty], acc_ty, false)
                 };
-                Some(
-                    self.type_ctx
-                        .function_type(vec![callback_ty, acc_ty], acc_ty, false),
-                )
+                if self.is_js_mode() {
+                    Some(self.type_ctx.function_type_with_min_params(
+                        vec![callback_ty, any_ty],
+                        any_ty,
+                        false,
+                        1,
+                    ))
+                } else {
+                    Some(
+                        self.type_ctx
+                            .function_type(vec![callback_ty, acc_ty], acc_ty, false),
+                    )
+                }
             }
             // fill(value: T, start?: number, end?: number) -> Array<T>
             "fill" => Some(self.type_ctx.function_type_with_min_params(
-                vec![elem_ty, number_ty, number_ty],
+                vec![elem_ty, index_arg_ty, index_arg_ty],
                 array_ty,
                 false,
                 1,
@@ -6981,7 +7002,14 @@ impl<'a> TypeChecker<'a> {
             // splice(start: number, deleteCount?: number, ...items: T[]) -> Array<T>
             // Note: simplified type signature - actual splice takes variable arguments
             "splice" => Some(self.type_ctx.function_type_with_min_params(
-                vec![number_ty, number_ty, elem_ty, elem_ty, elem_ty, elem_ty],
+                vec![
+                    index_arg_ty,
+                    index_arg_ty,
+                    elem_ty,
+                    elem_ty,
+                    elem_ty,
+                    elem_ty,
+                ],
                 array_ty,
                 false,
                 1,

@@ -353,11 +353,7 @@ impl<'a> Interpreter<'a> {
         Ok(self.constructor_result_or_receiver(returned, object_value))
     }
 
-    pub(crate) fn constructor_result_or_receiver(
-        &self,
-        returned: Value,
-        receiver: Value,
-    ) -> Value {
+    pub(crate) fn constructor_result_or_receiver(&self, returned: Value, receiver: Value) -> Value {
         if self.is_js_object_value(returned) {
             returned
         } else {
@@ -533,12 +529,14 @@ impl<'a> Interpreter<'a> {
 
             let (constructor_id, constructor_module) = {
                 let classes = self.classes.read();
-                let class = classes.get_class(constructor_nominal_type_id).ok_or_else(|| {
-                    VmError::RuntimeError(format!(
-                        "Class {} not found",
-                        constructor_nominal_type_id
-                    ))
-                })?;
+                let class = classes
+                    .get_class(constructor_nominal_type_id)
+                    .ok_or_else(|| {
+                        VmError::RuntimeError(format!(
+                            "Class {} not found",
+                            constructor_nominal_type_id
+                        ))
+                    })?;
                 (class.get_constructor(), class.module.clone())
             };
 
@@ -626,7 +624,9 @@ impl<'a> Interpreter<'a> {
             "Object" => {
                 let first = args.first().copied().unwrap_or(Value::undefined());
                 if first.is_null() || first.is_undefined() {
-                    return self.construct_builtin_object(callable, task, module).map(Some);
+                    return self
+                        .construct_builtin_object(callable, task, module)
+                        .map(Some);
                 }
                 if self.is_js_object_value(first) || Self::is_callable_value(first) {
                     return Ok(Some(first));
@@ -634,7 +634,8 @@ impl<'a> Interpreter<'a> {
                 if let Some(boxed) = self.box_js_this_primitive(first)? {
                     return Ok(Some(boxed));
                 }
-                self.construct_builtin_object(callable, task, module).map(Some)
+                self.construct_builtin_object(callable, task, module)
+                    .map(Some)
             }
             "Array" => self
                 .construct_builtin_array(callable, args, task, module)
@@ -644,24 +645,15 @@ impl<'a> Interpreter<'a> {
                     self.construct_value_with_new_target(callable, callable, args, task, module)?;
                 let to_string = self
                     .get_property_value_via_js_semantics_with_context(
-                        date_value,
-                        "toString",
-                        task,
-                        module,
+                        date_value, "toString", task, module,
                     )?
                     .ok_or_else(|| {
                         VmError::TypeError(
                             "Date ordinary call requires a callable toString method".to_string(),
                         )
                     })?;
-                self.invoke_callable_sync_with_this(
-                    to_string,
-                    Some(date_value),
-                    &[],
-                    task,
-                    module,
-                )
-                .map(Some)
+                self.invoke_callable_sync_with_this(to_string, Some(date_value), &[], task, module)
+                    .map(Some)
             }
             _ => Ok(None),
         }
@@ -1356,8 +1348,9 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> Option<(bool, bool, bool)> {
-        (self.is_runtime_global_object(target) && self.builtin_global_slots.read().contains_key(key))
-            .then_some((true, true, false))
+        (self.is_runtime_global_object(target)
+            && self.builtin_global_slots.read().contains_key(key))
+        .then_some((true, true, false))
     }
 
     fn bind_script_global_property(
@@ -1567,10 +1560,7 @@ impl<'a> Interpreter<'a> {
         Ok(receiver)
     }
 
-    fn intrinsic_callable_function_info(
-        &self,
-        target: Value,
-    ) -> Option<(String, usize)> {
+    fn intrinsic_callable_function_info(&self, target: Value) -> Option<(String, usize)> {
         let target = self
             .unwrapped_proxy_like(target)
             .map(|proxy| proxy.target)
@@ -1650,10 +1640,10 @@ impl<'a> Interpreter<'a> {
             )
             .or_else(|| {
                 crate::vm::builtins::get_all_signatures()
-                .iter()
-                .flat_map(|sig| sig.classes.iter())
-                .find(|sig| sig.name == visible_name)
-                .and_then(|sig| sig.constructor.map(|ctor| ctor.len()))
+                    .iter()
+                    .flat_map(|sig| sig.classes.iter())
+                    .find(|sig| sig.name == visible_name)
+                    .and_then(|sig| sig.constructor.map(|ctor| ctor.len()))
             });
             let runtime_arity = class
                 .get_constructor()
@@ -2053,11 +2043,8 @@ impl<'a> Interpreter<'a> {
     ) -> Result<Value, VmError> {
         let rebind_call_helper = self.callable_native_alias_id(target)
             == Some(crate::compiler::native_id::FUNCTION_CALL_HELPER);
-        let target_name = self.callable_observable_name_with_context(
-            target,
-            caller_task,
-            caller_module,
-        )?;
+        let target_name =
+            self.callable_observable_name_with_context(target, caller_task, caller_module)?;
         let visible_name = format!("bound {}", target_name);
         let visible_length = self.callable_observable_length_with_context(
             target,
@@ -2150,7 +2137,11 @@ impl<'a> Interpreter<'a> {
                 let array = unsafe { &mut *array_ptr.as_ptr() };
                 let _ = array.delete_index(index);
                 let mut metadata = self.metadata.lock();
-                let _ = metadata.delete_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, target, &key_name);
+                let _ = metadata.delete_metadata_property(
+                    NODE_DESCRIPTOR_METADATA_KEY,
+                    target,
+                    &key_name,
+                );
                 let _ = metadata.delete_metadata_property(
                     NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY,
                     target,
@@ -2932,6 +2923,7 @@ impl<'a> Interpreter<'a> {
         if let Some(value) = self.descriptor_property_value_with_context(
             proxy.target,
             key,
+            value,
             caller_task,
             caller_module,
         )? {
@@ -3352,6 +3344,7 @@ impl<'a> Interpreter<'a> {
             || value.as_i32().is_some()
             || value.as_f64().is_some()
             || checked_string_ptr(value).is_some()
+            || self.is_symbol_value(value)
     }
 
     pub(in crate::vm::interpreter) fn js_to_primitive_with_hint(
@@ -3365,9 +3358,12 @@ impl<'a> Interpreter<'a> {
             return Ok(value);
         }
 
-        if let Ok(Some(exotic)) =
-            self.well_known_symbol_property_value(value, "Symbol.toPrimitive", caller_task, caller_module)
-        {
+        if let Ok(Some(exotic)) = self.well_known_symbol_property_value(
+            value,
+            "Symbol.toPrimitive",
+            caller_task,
+            caller_module,
+        ) {
             if !Self::is_callable_value(exotic) {
                 return Err(VmError::TypeError(
                     "Cannot convert object to primitive value".to_string(),
@@ -3443,6 +3439,11 @@ impl<'a> Interpreter<'a> {
         &self,
         value: Value,
     ) -> Result<f64, VmError> {
+        if self.is_symbol_value(value) {
+            return Err(VmError::TypeError(
+                "Cannot convert a Symbol value to a number".to_string(),
+            ));
+        }
         if value.is_undefined() {
             return Ok(f64::NAN);
         }
@@ -3501,6 +3502,26 @@ impl<'a> Interpreter<'a> {
         self.js_to_number_from_primitive(primitive)
     }
 
+    pub(in crate::vm::interpreter) fn js_to_integer_or_infinity_with_context(
+        &mut self,
+        value: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<f64, VmError> {
+        let number = self.js_to_number_with_context(value, caller_task, caller_module)?;
+        if number.is_nan() {
+            return Ok(0.0);
+        }
+        if !number.is_finite() || number == 0.0 {
+            return Ok(if number == 0.0 { 0.0 } else { number });
+        }
+        Ok(if number.is_sign_negative() {
+            number.ceil()
+        } else {
+            number.floor()
+        })
+    }
+
     fn js_add_with_context(
         &mut self,
         left: Value,
@@ -3508,11 +3529,13 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Value, VmError> {
-        let left_primitive = self.js_to_primitive_with_hint(left, "default", caller_task, caller_module)?;
+        let left_primitive =
+            self.js_to_primitive_with_hint(left, "default", caller_task, caller_module)?;
         let right_primitive =
             self.js_to_primitive_with_hint(right, "default", caller_task, caller_module)?;
 
-        if checked_string_ptr(left_primitive).is_some() || checked_string_ptr(right_primitive).is_some()
+        if checked_string_ptr(left_primitive).is_some()
+            || checked_string_ptr(right_primitive).is_some()
         {
             let left_text =
                 self.js_function_argument_to_string(left_primitive, caller_task, caller_module)?;
@@ -3941,7 +3964,10 @@ impl<'a> Interpreter<'a> {
                 let bound = unsafe { &*bound_ptr.as_ptr() };
                 return match key {
                     "name" => {
-                        let ptr = self.gc.lock().allocate(RayaString::new(bound.visible_name.clone()));
+                        let ptr = self
+                            .gc
+                            .lock()
+                            .allocate(RayaString::new(bound.visible_name.clone()));
                         Some(unsafe {
                             Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap())
                         })
@@ -4099,11 +4125,7 @@ impl<'a> Interpreter<'a> {
         body_source: &str,
     ) -> Result<Arc<Module>, VmError> {
         let source = format!("function __dynamic_fn__({params_source}) {{\n{body_source}\n}}\n");
-        self.compile_dynamic_js_module_source(
-            &source,
-            "__dynamic_function__",
-            "Dynamic Function",
-        )
+        self.compile_dynamic_js_module_source(&source, "__dynamic_function__", "Dynamic Function")
     }
 
     fn alloc_dynamic_js_closure(
@@ -4114,7 +4136,9 @@ impl<'a> Interpreter<'a> {
         missing_symbol_context: &str,
     ) -> Result<Value, VmError> {
         self.register_dynamic_module(function_module.clone())
-            .map_err(|message| VmError::RuntimeError(format!("{registration_context}: {message}")))?;
+            .map_err(|message| {
+                VmError::RuntimeError(format!("{registration_context}: {message}"))
+            })?;
         let func_id = function_module
             .functions
             .iter()
@@ -4242,7 +4266,8 @@ impl<'a> Interpreter<'a> {
                 caller_module,
             )?
             .unwrap_or(Value::undefined());
-        let length_number = self.js_to_number_with_context(length_value, caller_task, caller_module)?;
+        let length_number =
+            self.js_to_number_with_context(length_value, caller_task, caller_module)?;
         let length = if length_number.is_nan() || length_number <= 0.0 {
             0
         } else if length_number.is_infinite() {
@@ -4452,19 +4477,11 @@ impl<'a> Interpreter<'a> {
                 );
             }
             match class.name.as_str() {
-                "Uint8Array"
-                | "Int8Array"
-                | "Uint16Array"
-                | "Int16Array"
-                | "Uint32Array"
-                | "Int32Array"
-                | "Float16Array"
-                | "Float32Array"
-                | "Float64Array"
-                | "Uint8ClampedArray"
-                | "BigInt64Array"
-                | "BigUint64Array"
-                | "TypedArray" => return true,
+                "Uint8Array" | "Int8Array" | "Uint16Array" | "Int16Array" | "Uint32Array"
+                | "Int32Array" | "Float16Array" | "Float32Array" | "Float64Array"
+                | "Uint8ClampedArray" | "BigInt64Array" | "BigUint64Array" | "TypedArray" => {
+                    return true
+                }
                 _ => {
                     let Some(parent_id) = class.parent_id else {
                         return false;
@@ -4482,19 +4499,11 @@ impl<'a> Interpreter<'a> {
         loop {
             let class = classes.get_class(nominal_type_id)?;
             match class.name.as_str() {
-                "Uint8Array"
-                | "Int8Array"
-                | "Uint16Array"
-                | "Int16Array"
-                | "Uint32Array"
-                | "Int32Array"
-                | "Float16Array"
-                | "Float32Array"
-                | "Float64Array"
-                | "Uint8ClampedArray"
-                | "BigInt64Array"
-                | "BigUint64Array"
-                | "TypedArray" => return Some(class.name.clone()),
+                "Uint8Array" | "Int8Array" | "Uint16Array" | "Int16Array" | "Uint32Array"
+                | "Int32Array" | "Float16Array" | "Float32Array" | "Float64Array"
+                | "Uint8ClampedArray" | "BigInt64Array" | "BigUint64Array" | "TypedArray" => {
+                    return Some(class.name.clone())
+                }
                 _ => {
                     nominal_type_id = class.parent_id?;
                 }
@@ -4512,6 +4521,12 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn is_symbol_value(&self, value: Value) -> bool {
+        self.nominal_class_name_for_value(value)
+            .as_deref()
+            .is_some_and(|name| name == "Symbol")
+    }
+
     fn own_exotic_state_value(&self, target: Value, key: &str) -> Option<Value> {
         self.get_own_js_property_value_by_name(target, key)
     }
@@ -4522,9 +4537,15 @@ impl<'a> Interpreter<'a> {
         }
         let class_name = self.typed_array_runtime_class_name(target)?;
         let buffer = self.own_exotic_state_value(target, "buffer")?;
-        let byte_length = self.own_exotic_state_value(buffer, "byteLength")?.as_i32()? as isize;
-        let byte_offset = self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as isize;
-        let fixed_length = self.own_exotic_state_value(target, "_fixedLength")?.as_i32()? as isize;
+        let byte_length = self
+            .own_exotic_state_value(buffer, "byteLength")?
+            .as_i32()? as isize;
+        let byte_offset = self
+            .own_exotic_state_value(target, "byteOffset")?
+            .as_i32()? as isize;
+        let fixed_length = self
+            .own_exotic_state_value(target, "_fixedLength")?
+            .as_i32()? as isize;
         let length_tracking = self
             .own_exotic_state_value(target, "_lengthTracking")?
             .as_bool()
@@ -4612,8 +4633,9 @@ impl<'a> Interpreter<'a> {
         match class_name.as_str() {
             "Uint8Array" => {
                 let buffer = self.own_exotic_state_value(target, "buffer")?;
-                let byte_offset =
-                    self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as usize;
+                let byte_offset = self
+                    .own_exotic_state_value(target, "byteOffset")?
+                    .as_i32()? as usize;
                 if debug_typed_array {
                     eprintln!(
                         "[typed-array.direct] target={:#x} index={} byteOffset={}",
@@ -4637,8 +4659,9 @@ impl<'a> Interpreter<'a> {
             }
             "Uint16Array" => {
                 let buffer = self.own_exotic_state_value(target, "buffer")?;
-                let byte_offset =
-                    self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as usize;
+                let byte_offset = self
+                    .own_exotic_state_value(target, "byteOffset")?
+                    .as_i32()? as usize;
                 let base = byte_offset + (index << 1);
                 let b0 = self.array_buffer_byte_at(buffer, base)? as i32;
                 let b1 = self.array_buffer_byte_at(buffer, base + 1)? as i32;
@@ -4652,8 +4675,9 @@ impl<'a> Interpreter<'a> {
             }
             "Int32Array" => {
                 let buffer = self.own_exotic_state_value(target, "buffer")?;
-                let byte_offset =
-                    self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as usize;
+                let byte_offset = self
+                    .own_exotic_state_value(target, "byteOffset")?
+                    .as_i32()? as usize;
                 let base = byte_offset + (index << 2);
                 let bytes = [
                     self.array_buffer_byte_at(buffer, base)?,
@@ -4691,8 +4715,9 @@ impl<'a> Interpreter<'a> {
             }
             "Float64Array" => {
                 let buffer = self.own_exotic_state_value(target, "buffer")?;
-                let byte_offset =
-                    self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as usize;
+                let byte_offset = self
+                    .own_exotic_state_value(target, "byteOffset")?
+                    .as_i32()? as usize;
                 let base = byte_offset + (index << 3);
                 let bytes = [
                     self.array_buffer_byte_at(buffer, base)?,
@@ -4712,8 +4737,9 @@ impl<'a> Interpreter<'a> {
             }
             "TypedArray" => {
                 let buffer = self.own_exotic_state_value(target, "buffer")?;
-                let byte_offset =
-                    self.own_exotic_state_value(target, "byteOffset")?.as_i32()? as usize;
+                let byte_offset = self
+                    .own_exotic_state_value(target, "byteOffset")?
+                    .as_i32()? as usize;
                 self.array_buffer_byte_at(buffer, byte_offset + index)
                     .map(|byte| Value::i32(byte as i32))
             }
@@ -4721,7 +4747,11 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn typed_array_index_property_flags(&self, target: Value, key: &str) -> Option<(bool, bool, bool)> {
+    fn typed_array_index_property_flags(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<(bool, bool, bool)> {
         if !self.is_typed_array_like_value(target) {
             return None;
         }
@@ -4901,7 +4931,8 @@ impl<'a> Interpreter<'a> {
             return Ok(None);
         }
 
-        let Some(len) = self.typed_array_live_length_with_context(target, caller_task, caller_module)?
+        let Some(len) =
+            self.typed_array_live_length_with_context(target, caller_task, caller_module)?
         else {
             return Ok(None);
         };
@@ -5000,7 +5031,11 @@ impl<'a> Interpreter<'a> {
         None
     }
 
-    fn has_own_property_via_js_semantics(&self, target: Value, key: &str) -> bool {
+    pub(in crate::vm::interpreter) fn has_own_property_via_js_semantics(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> bool {
         self.get_descriptor_metadata(target, key).is_some()
             || self.builtin_global_property_value(target, key).is_some()
             || self.typed_array_index_property_flags(target, key).is_some()
@@ -5045,6 +5080,7 @@ impl<'a> Interpreter<'a> {
         &mut self,
         target: Value,
         key: &str,
+        receiver: Value,
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
@@ -5058,7 +5094,7 @@ impl<'a> Interpreter<'a> {
             if let Some(getter) = self.descriptor_accessor(target, key, "get") {
                 let value = self.invoke_callable_sync_with_this(
                     getter,
-                    Some(target),
+                    Some(receiver),
                     &[],
                     caller_task,
                     caller_module,
@@ -5078,19 +5114,39 @@ impl<'a> Interpreter<'a> {
         Ok(None)
     }
 
-    fn get_own_property_value_via_js_semantics_with_context(
+    pub(in crate::vm::interpreter) fn get_own_property_value_via_js_semantics_with_context(
         &mut self,
         target: Value,
         key: &str,
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
-        if let Some(value) = self.descriptor_property_value_with_context(
+        self.get_own_property_value_on_receiver_via_js_semantics_with_context(
             target,
             key,
+            target,
             caller_task,
             caller_module,
-        )? {
+        )
+    }
+
+    pub(in crate::vm::interpreter) fn get_own_property_value_on_receiver_via_js_semantics_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        receiver: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        if let Some(value) =
+            self.descriptor_property_value_with_context(
+                target,
+                key,
+                receiver,
+                caller_task,
+                caller_module,
+            )?
+        {
             return Ok(Some(value));
         }
 
@@ -5098,14 +5154,12 @@ impl<'a> Interpreter<'a> {
             return Ok(Some(value));
         }
 
-        if let Some(value) =
-            self.typed_array_own_property_value_with_context(
-                target,
-                key,
-                caller_task,
-                caller_module,
-            )?
-        {
+        if let Some(value) = self.typed_array_own_property_value_with_context(
+            target,
+            key,
+            caller_task,
+            caller_module,
+        )? {
             return Ok(Some(value));
         }
 
@@ -5137,13 +5191,31 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
+        self.get_property_value_on_receiver_via_js_semantics_with_context(
+            target,
+            key,
+            target,
+            caller_task,
+            caller_module,
+        )
+    }
+
+    pub(in crate::vm::interpreter) fn get_property_value_on_receiver_via_js_semantics_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        receiver: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<Value>, VmError> {
         let mut current = Some(target);
         let mut seen = vec![target.raw()];
 
         while let Some(candidate) = current {
-            if let Some(value) = self.get_own_property_value_via_js_semantics_with_context(
+            if let Some(value) = self.get_own_property_value_on_receiver_via_js_semantics_with_context(
                 candidate,
                 key,
+                receiver,
                 caller_task,
                 caller_module,
             )? {
@@ -5226,7 +5298,9 @@ impl<'a> Interpreter<'a> {
                 return false;
             }
             seen.push(candidate.raw());
-            cursor = self.prototype_of_value(candidate).filter(|value| !value.is_null());
+            cursor = self
+                .prototype_of_value(candidate)
+                .filter(|value| !value.is_null());
         }
 
         self.set_explicit_object_prototype(target, prototype);
@@ -6164,9 +6238,9 @@ impl<'a> Interpreter<'a> {
         &self,
         nominal_type_id: usize,
     ) -> Result<Value, VmError> {
-        let (layout_id, field_count) = self.nominal_allocation(nominal_type_id).ok_or_else(|| {
-            VmError::RuntimeError(format!("Class {} not found", nominal_type_id))
-        })?;
+        let (layout_id, field_count) = self
+            .nominal_allocation(nominal_type_id)
+            .ok_or_else(|| VmError::RuntimeError(format!("Class {} not found", nominal_type_id)))?;
 
         let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
         let gc_ptr = self.gc.lock().allocate(obj);
@@ -6269,7 +6343,8 @@ impl<'a> Interpreter<'a> {
         }
         let typed_array_value = parse_js_array_index_name(key)
             .and_then(|index| self.typed_array_index_value_direct(target, index));
-        let exotic_value = typed_array_value.or_else(|| self.get_own_js_property_value_by_name(target, key));
+        let exotic_value =
+            typed_array_value.or_else(|| self.get_own_js_property_value_by_name(target, key));
         let callable_value = self
             .callable_virtual_property_value(target, key)
             .or_else(|| self.materialize_constructor_static_method(target, key));
@@ -6833,6 +6908,59 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_JS_TO_NUMBER => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Object.jsToNumber expects exactly one argument".to_string(),
+                            ));
+                        }
+                        let number = match self.js_to_number_with_context(args[0], task, module) {
+                            Ok(number) => number,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = if number.fract() == 0.0
+                            && number.is_finite()
+                            && number >= i32::MIN as f64
+                            && number <= i32::MAX as f64
+                        {
+                            Value::i32(number as i32)
+                        } else {
+                            Value::f64(number)
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_JS_TO_INTEGER_OR_INFINITY => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Object.jsToIntegerOrInfinity expects exactly one argument"
+                                    .to_string(),
+                            ));
+                        }
+                        let number = match self
+                            .js_to_integer_or_infinity_with_context(args[0], task, module)
+                        {
+                            Ok(number) => number,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = if number.fract() == 0.0
+                            && number.is_finite()
+                            && number >= i32::MIN as f64
+                            && number <= i32::MAX as f64
+                        {
+                            Value::i32(number as i32)
+                        } else {
+                            Value::f64(number)
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::FUNCTION_CALL_HELPER => {
                         if args.is_empty() {
                             return OpcodeResult::Error(VmError::TypeError(
@@ -6913,10 +7041,9 @@ impl<'a> Interpreter<'a> {
                                         .as_ptr()
                                 };
                                 let receiver = if self.callable_uses_js_this_slot(target_callable) {
-                                    match self.js_this_value_for_callable(
-                                        target_callable,
-                                        Some(this_arg),
-                                    ) {
+                                    match self
+                                        .js_this_value_for_callable(target_callable, Some(this_arg))
+                                    {
                                         Ok(value) => value,
                                         Err(error) => return OpcodeResult::Error(error),
                                     }
@@ -8298,8 +8425,7 @@ impl<'a> Interpreter<'a> {
                             Ok(match native_id {
                                 0x2000 => self.js_math_number_arg(&args, 0, task, module)?.abs(),
                                 0x2001 => {
-                                    let number =
-                                        self.js_math_number_arg(&args, 0, task, module)?;
+                                    let number = self.js_math_number_arg(&args, 0, task, module)?;
                                     if number.is_nan() {
                                         f64::NAN
                                     } else if number == 0.0 {
@@ -8310,23 +8436,17 @@ impl<'a> Interpreter<'a> {
                                         1.0
                                     }
                                 }
-                                0x2002 => {
-                                    self.js_math_number_arg(&args, 0, task, module)?.floor()
-                                }
+                                0x2002 => self.js_math_number_arg(&args, 0, task, module)?.floor(),
                                 0x2003 => self.js_math_number_arg(&args, 0, task, module)?.ceil(),
                                 0x2004 => {
-                                    let number =
-                                        self.js_math_number_arg(&args, 0, task, module)?;
+                                    let number = self.js_math_number_arg(&args, 0, task, module)?;
                                     Self::js_math_round(number)
                                 }
-                                0x2005 => {
-                                    self.js_math_number_arg(&args, 0, task, module)?.trunc()
-                                }
+                                0x2005 => self.js_math_number_arg(&args, 0, task, module)?.trunc(),
                                 0x2006 => self.js_math_min_max(&args, true, task, module)?,
                                 0x2007 => self.js_math_min_max(&args, false, task, module)?,
                                 0x2008 => {
-                                    let base =
-                                        self.js_math_number_arg(&args, 0, task, module)?;
+                                    let base = self.js_math_number_arg(&args, 0, task, module)?;
                                     let exponent =
                                         self.js_math_number_arg(&args, 1, task, module)?;
                                     base.powf(exponent)
@@ -8335,15 +8455,9 @@ impl<'a> Interpreter<'a> {
                                 0x200A => self.js_math_number_arg(&args, 0, task, module)?.sin(),
                                 0x200B => self.js_math_number_arg(&args, 0, task, module)?.cos(),
                                 0x200C => self.js_math_number_arg(&args, 0, task, module)?.tan(),
-                                0x200D => {
-                                    self.js_math_number_arg(&args, 0, task, module)?.asin()
-                                }
-                                0x200E => {
-                                    self.js_math_number_arg(&args, 0, task, module)?.acos()
-                                }
-                                0x200F => {
-                                    self.js_math_number_arg(&args, 0, task, module)?.atan()
-                                }
+                                0x200D => self.js_math_number_arg(&args, 0, task, module)?.asin(),
+                                0x200E => self.js_math_number_arg(&args, 0, task, module)?.acos(),
+                                0x200F => self.js_math_number_arg(&args, 0, task, module)?.atan(),
                                 0x2010 => {
                                     let y = self.js_math_number_arg(&args, 0, task, module)?;
                                     let x = self.js_math_number_arg(&args, 1, task, module)?;
@@ -8351,9 +8465,7 @@ impl<'a> Interpreter<'a> {
                                 }
                                 0x2011 => self.js_math_number_arg(&args, 0, task, module)?.exp(),
                                 0x2012 => self.js_math_number_arg(&args, 0, task, module)?.ln(),
-                                0x2013 => {
-                                    self.js_math_number_arg(&args, 0, task, module)?.log10()
-                                }
+                                0x2013 => self.js_math_number_arg(&args, 0, task, module)?.log10(),
                                 0x2014 => rand::random::<f64>(),
                                 _ => unreachable!("math native range already matched"),
                             })
@@ -8596,8 +8708,7 @@ impl<'a> Interpreter<'a> {
                     id if id == crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF => {
                         if args.len() < 2 {
                             return OpcodeResult::Error(VmError::TypeError(
-                                "Object.setPrototypeOf requires target and prototype"
-                                    .to_string(),
+                                "Object.setPrototypeOf requires target and prototype".to_string(),
                             ));
                         }
                         let target = args[0];

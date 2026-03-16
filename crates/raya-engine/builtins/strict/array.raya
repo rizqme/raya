@@ -11,14 +11,25 @@ const SLICE: number = 0x0106;
 const REVERSE: number = 0x0108;
 const JOIN: number = 0x0109;
 const LAST_INDEX_OF: number = 0x0110;
+const REDUCE: number = 0x0113;
 const FILL: number = 0x0114;
 const FLAT: number = 0x0115;
 const SPLICE: number = 0x0117;
 const ARRAY_IS_ARRAY: number = 0x0D54;
 const ARRAY_FROM: number = 0x0118;
+const JS_TO_NUMBER: number = 0x001D;
+const JS_TO_INTEGER_OR_INFINITY: number = 0x001E;
 
 function arrayFromAsyncIsCallable(value: any): boolean {
     return typeof value == "function";
+}
+
+function arrayJsToNumber(value: any): number {
+    return __NATIVE_CALL<number>(JS_TO_NUMBER, value);
+}
+
+function arrayJsToIntegerOrInfinity(value: any): number {
+    return __NATIVE_CALL<number>(JS_TO_INTEGER_OR_INFINITY, value);
 }
 
 export { Array };
@@ -63,28 +74,24 @@ function arrayCreateDataProperty(target: any, index: number, value: any): void {
 }
 
 function arrayLikeAt(target: any, index: any): any {
-    let length = Number(target["length"]);
+    let length = arrayJsToNumber(target["length"]);
     if (length <= 0) {
         return undefined;
     }
 
-    let relative = Number(index);
-    if (relative != relative) {
-        relative = 0;
-    }
-
-    let actual = relative as int;
+    let relative = arrayJsToIntegerOrInfinity(index);
+    let actual = relative;
     if (actual < 0) {
-        actual = (length as int) + actual;
+        actual = length + actual;
     }
-    if (actual < 0 || actual >= (length as int)) {
+    if (actual < 0 || actual >= length) {
         return undefined;
     }
-    return target[actual];
+    return target[actual as int];
 }
 
 function arrayLikeToLocaleString(target: any): string {
-    let length = Number(target["length"]);
+    let length = arrayJsToNumber(target["length"]);
     if (length <= 0) {
         return "";
     }
@@ -123,7 +130,7 @@ function arrayConcatAppend(target: any[], item: any): void {
         return;
     }
 
-    let length = Number((item as any)["length"]);
+    let length = arrayJsToNumber((item as any)["length"]);
     let i = 0;
     while (i < (length as int)) {
         if (arrayHasOwnIndex(item, i)) {
@@ -133,6 +140,48 @@ function arrayConcatAppend(target: any[], item: any): void {
         }
         i = i + 1;
     }
+}
+
+function __createArrayValueIterator(target: any): any {
+    let index = 0;
+    let iterator: any = {};
+    iterator["next"] = function(): any {
+        if (index < target.length) {
+            let value = target[index];
+            index = index + 1;
+            return { value, done: false };
+        }
+        return { value: undefined, done: true };
+    };
+    return iterator;
+}
+
+function __createArrayKeyIterator(target: any): any {
+    let index = 0;
+    let iterator: any = {};
+    iterator["next"] = function(): any {
+        if (index < target.length) {
+            let value = index;
+            index = index + 1;
+            return { value, done: false };
+        }
+        return { value: undefined, done: true };
+    };
+    return iterator;
+}
+
+function __createArrayEntryIterator(target: any): any {
+    let index = 0;
+    let iterator: any = {};
+    iterator["next"] = function(): any {
+        if (index < target.length) {
+            let value = [index, target[index]];
+            index = index + 1;
+            return { value, done: false };
+        }
+        return { value: undefined, done: true };
+    };
+    return iterator;
 }
 
 class __ArrayIterator<T> {
@@ -357,20 +406,32 @@ class Array<T> {
         return __NATIVE_CALL<number>(UNSHIFT, this, element);
     }
 
-    indexOf(element: T): number {
+    indexOf(element: any, ...rest: any[]): number {
+        if (arguments.length > 1) {
+            return __NATIVE_CALL<number>(INDEX_OF, this, element, arguments[1]);
+        }
         return __NATIVE_CALL<number>(INDEX_OF, this, element);
     }
 
-    lastIndexOf(element: T): number {
+    lastIndexOf(element: any, ...rest: any[]): number {
+        if (arguments.length > 1) {
+            return __NATIVE_CALL<number>(LAST_INDEX_OF, this, element, arguments[1]);
+        }
         return __NATIVE_CALL<number>(LAST_INDEX_OF, this, element);
     }
 
-    includes(element: T): boolean {
+    includes(element: any, ...rest: any[]): boolean {
+        if (arguments.length > 1) {
+            return __NATIVE_CALL<boolean>(INCLUDES, this, element, arguments[1]);
+        }
         return __NATIVE_CALL<boolean>(INCLUDES, this, element);
     }
 
     slice(start: number, end?: number): T[] {
-        return __NATIVE_CALL<T[]>(SLICE, this, start, end);
+        if (arguments.length > 1) {
+            return __NATIVE_CALL<T[]>(SLICE, this, start, arguments[1]);
+        }
+        return __NATIVE_CALL<T[]>(SLICE, this, start);
     }
 
     concat(...items: any[]): any[] {
@@ -400,8 +461,14 @@ class Array<T> {
         return __NATIVE_CALL<T[]>(REVERSE, this);
     }
 
-    fill(value: T, start?: number, end?: number): T[] {
-        return __NATIVE_CALL<T[]>(FILL, this, value, start, end);
+    fill(value: T, ...rest: any[]): T[] {
+        if (arguments.length > 2) {
+            return __NATIVE_CALL<T[]>(FILL, this, value, arguments[1], arguments[2]);
+        }
+        if (arguments.length > 1) {
+            return __NATIVE_CALL<T[]>(FILL, this, value, arguments[1]);
+        }
+        return __NATIVE_CALL<T[]>(FILL, this, value);
     }
 
     flat(): T[] {
@@ -409,19 +476,22 @@ class Array<T> {
     }
 
     splice(start: number, deleteCount?: number): T[] {
-        return __NATIVE_CALL<T[]>(SPLICE, this, start, deleteCount);
+        if (arguments.length > 1) {
+            return __NATIVE_CALL<T[]>(SPLICE, this, start, arguments[1]);
+        }
+        return __NATIVE_CALL<T[]>(SPLICE, this, start);
     }
 
     values(): any {
-        return new __ArrayIterator<T>(this);
+        return __createArrayValueIterator(this);
     }
 
     keys(): any {
-        return new __ArrayKeyIterator<T>(this);
+        return __createArrayKeyIterator(this);
     }
 
     entries(): any {
-        return new __ArrayEntryIterator<T>(this);
+        return __createArrayEntryIterator(this);
     }
 
     // Iterator protocol hook (for-of lowering target)
@@ -527,16 +597,11 @@ class Array<T> {
     }
 
     //@@class_method
-    reduce<U>(fn: (accumulator: U, element: T, index: number, array: T[]) => U, initial: U): U {
-        let acc: U = initial;
-        let length = this.length;
-        for (let i = 0; i < length; i++) {
-            if (!arrayHasOwnIndex(this, i)) {
-                continue;
-            }
-            acc = fn(acc, this[i], i, this);
+    reduce(fn: any, ...rest: any[]): any {
+        if (rest.length > 0) {
+            return __NATIVE_CALL<any>(REDUCE, this, fn, rest[0]);
         }
-        return acc;
+        return __NATIVE_CALL<any>(REDUCE, this, fn);
     }
 
     //@@class_method

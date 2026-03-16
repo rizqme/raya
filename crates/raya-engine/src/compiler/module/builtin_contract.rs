@@ -30,19 +30,25 @@ pub fn builtin_global_exports_from_source(
         BuiltinSurfaceMode::NodeCompat => &NODE_COMPAT_BUILTIN_CONTRACT,
     };
 
-    let cached = cache.get_or_init(|| build_builtin_global_exports(mode).map_err(|err| err.to_string()));
-    cached.as_ref().cloned().map_err(|message| DeclarationError::InvalidDeclaration {
-        path: PathBuf::from(match mode {
-            BuiltinSurfaceMode::RayaStrict => "__raya_builtin__/strict.raya",
-            BuiltinSurfaceMode::NodeCompat => "__raya_builtin__/node_compat.raya",
-        }),
-        line: 1,
-        column: 1,
-        message: message.clone(),
-    })
+    let cached =
+        cache.get_or_init(|| build_builtin_global_exports(mode).map_err(|err| err.to_string()));
+    cached
+        .as_ref()
+        .cloned()
+        .map_err(|message| DeclarationError::InvalidDeclaration {
+            path: PathBuf::from(match mode {
+                BuiltinSurfaceMode::RayaStrict => "__raya_builtin__/strict.raya",
+                BuiltinSurfaceMode::NodeCompat => "__raya_builtin__/node_compat.raya",
+            }),
+            line: 1,
+            column: 1,
+            message: message.clone(),
+        })
 }
 
-fn build_builtin_global_exports(mode: BuiltinSurfaceMode) -> Result<ModuleExports, DeclarationError> {
+fn build_builtin_global_exports(
+    mode: BuiltinSurfaceMode,
+) -> Result<ModuleExports, DeclarationError> {
     let mut parsed_units = Vec::new();
     for (logical_path, source) in builtin_source_modules_for_mode(mode) {
         let mut local_names = top_level_runtime_names(source, logical_path)?;
@@ -61,14 +67,16 @@ fn build_builtin_global_exports(mode: BuiltinSurfaceMode) -> Result<ModuleExport
                 .collect::<Vec<_>>()
                 .join("; "),
         })?;
-        let (ast, interner) = parser.parse().map_err(|errors| DeclarationError::ParseError {
-            path: PathBuf::from(format!("__raya_builtin__/{}", logical_path)),
-            message: errors
-                .iter()
-                .map(|error| error.to_string())
-                .collect::<Vec<_>>()
-                .join("; "),
-        })?;
+        let (ast, interner) = parser
+            .parse()
+            .map_err(|errors| DeclarationError::ParseError {
+                path: PathBuf::from(format!("__raya_builtin__/{}", logical_path)),
+                message: errors
+                    .iter()
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            })?;
 
         parsed_units.push(ParsedBuiltinUnit {
             logical_path,
@@ -82,9 +90,12 @@ fn build_builtin_global_exports(mode: BuiltinSurfaceMode) -> Result<ModuleExport
     let mut provisional_symbols = HashMap::new();
     for unit in &parsed_units {
         for local_name in &unit.local_names {
-            if let Some(kind) = infer_runtime_export_symbol_type(&unit.ast, &unit.interner, local_name)
+            if let Some(kind) =
+                infer_runtime_export_symbol_type(&unit.ast, &unit.interner, local_name)
             {
-                provisional_symbols.entry(local_name.clone()).or_insert(kind);
+                provisional_symbols
+                    .entry(local_name.clone())
+                    .or_insert(kind);
             }
         }
     }
@@ -160,9 +171,8 @@ fn build_builtin_global_exports(mode: BuiltinSurfaceMode) -> Result<ModuleExport
             ambient_symbols.remove(local_name);
         }
         seed_provisional_builtin_contract_symbols(&mut binder, &ambient_symbols);
-        let symbols = binder
-            .bind_module(&unit.ast)
-            .map_err(|errors| DeclarationError::InvalidDeclaration {
+        let symbols = binder.bind_module(&unit.ast).map_err(|errors| {
+            DeclarationError::InvalidDeclaration {
                 path: PathBuf::from(format!("__raya_builtin__/{}", unit.logical_path)),
                 line: 1,
                 column: 1,
@@ -171,23 +181,26 @@ fn build_builtin_global_exports(mode: BuiltinSurfaceMode) -> Result<ModuleExport
                     .map(|error| error.to_string())
                     .collect::<Vec<_>>()
                     .join("; "),
-            })?;
+            }
+        })?;
 
         for export_name in &unit.export_names {
             let Some(symbol) = symbols.resolve(export_name) else {
                 continue;
             };
             let Some(kind) = (match symbol.kind {
-                SymbolKind::Function | SymbolKind::Class | SymbolKind::Variable | SymbolKind::EnumMember => {
-                    Some(symbol.kind)
-                }
+                SymbolKind::Function
+                | SymbolKind::Class
+                | SymbolKind::Variable
+                | SymbolKind::EnumMember => Some(symbol.kind),
                 _ => None,
             }) else {
                 continue;
             };
 
             if let Some(existing) = merged.symbols.get(export_name) {
-                let structural = crate::parser::types::canonical_type_signature(symbol.ty, &contract_type_ctx);
+                let structural =
+                    crate::parser::types::canonical_type_signature(symbol.ty, &contract_type_ctx);
                 if existing.kind == kind
                     && existing.type_signature == structural.canonical
                     && existing.is_const == symbol.flags.is_const
@@ -208,7 +221,8 @@ fn build_builtin_global_exports(mode: BuiltinSurfaceMode) -> Result<ModuleExport
 
             let symbol_id =
                 symbol_id_from_name(&merged_module_identity, SymbolScope::Module, export_name);
-            let structural = crate::parser::types::canonical_type_signature(symbol.ty, &contract_type_ctx);
+            let structural =
+                crate::parser::types::canonical_type_signature(symbol.ty, &contract_type_ctx);
             merged.add_symbol(ExportedSymbol {
                 name: export_name.clone(),
                 local_name: export_name.clone(),
@@ -264,14 +278,16 @@ fn explicit_runtime_export_names(
             .collect::<Vec<_>>()
             .join("; "),
     })?;
-    let (ast, interner) = parser.parse().map_err(|errors| DeclarationError::ParseError {
-        path: PathBuf::from(format!("__raya_builtin__/{}", logical_path)),
-        message: errors
-            .iter()
-            .map(|error| error.to_string())
-            .collect::<Vec<_>>()
-            .join("; "),
-    })?;
+    let (ast, interner) = parser
+        .parse()
+        .map_err(|errors| DeclarationError::ParseError {
+            path: PathBuf::from(format!("__raya_builtin__/{}", logical_path)),
+            message: errors
+                .iter()
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        })?;
     let mut names = Vec::new();
     for stmt in &ast.statements {
         match stmt {
@@ -310,7 +326,10 @@ fn explicit_runtime_export_names(
     Ok(names)
 }
 
-fn top_level_runtime_names(source: &str, logical_path: &str) -> Result<Vec<String>, DeclarationError> {
+fn top_level_runtime_names(
+    source: &str,
+    logical_path: &str,
+) -> Result<Vec<String>, DeclarationError> {
     let parser = Parser::new(source).map_err(|errors| DeclarationError::LexError {
         path: PathBuf::from(format!("__raya_builtin__/{}", logical_path)),
         message: errors
@@ -319,14 +338,16 @@ fn top_level_runtime_names(source: &str, logical_path: &str) -> Result<Vec<Strin
             .collect::<Vec<_>>()
             .join("; "),
     })?;
-    let (ast, interner) = parser.parse().map_err(|errors| DeclarationError::ParseError {
-        path: PathBuf::from(format!("__raya_builtin__/{}", logical_path)),
-        message: errors
-            .iter()
-            .map(|error| error.to_string())
-            .collect::<Vec<_>>()
-            .join("; "),
-    })?;
+    let (ast, interner) = parser
+        .parse()
+        .map_err(|errors| DeclarationError::ParseError {
+            path: PathBuf::from(format!("__raya_builtin__/{}", logical_path)),
+            message: errors
+                .iter()
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        })?;
     let mut names = Vec::new();
     for stmt in &ast.statements {
         match stmt {
@@ -353,7 +374,9 @@ fn infer_runtime_export_symbol_type(
 ) -> Option<crate::compiler::SymbolType> {
     for stmt in &ast.statements {
         match stmt {
-            Statement::ClassDecl(class_decl) if interner.resolve(class_decl.name.name) == export_name => {
+            Statement::ClassDecl(class_decl)
+                if interner.resolve(class_decl.name.name) == export_name =>
+            {
                 return Some(crate::compiler::SymbolType::Class);
             }
             Statement::FunctionDecl(func_decl)
@@ -419,22 +442,58 @@ pub fn builtin_source_modules_for_mode(
 
 fn strict_builtin_source_modules() -> &'static [(&'static str, &'static str)] {
     &[
-        ("strict/object.raya", include_str!("../../../builtins/strict/object.raya")),
-        ("strict/symbol.raya", include_str!("../../../builtins/strict/symbol.raya")),
+        (
+            "strict/object.raya",
+            include_str!("../../../builtins/strict/object.raya"),
+        ),
+        (
+            "strict/symbol.raya",
+            include_str!("../../../builtins/strict/symbol.raya"),
+        ),
         (
             "strict/globals.shared.raya",
             include_str!("../../../builtins/strict/globals.shared.raya"),
         ),
-        ("strict/error.raya", include_str!("../../../builtins/strict/error.raya")),
-        ("strict/array.raya", include_str!("../../../builtins/strict/array.raya")),
-        ("strict/regexp.raya", include_str!("../../../builtins/strict/regexp.raya")),
-        ("strict/map.raya", include_str!("../../../builtins/strict/map.raya")),
-        ("strict/set.raya", include_str!("../../../builtins/strict/set.raya")),
-        ("strict/buffer.raya", include_str!("../../../builtins/strict/buffer.raya")),
-        ("strict/date.raya", include_str!("../../../builtins/strict/date.raya")),
-        ("strict/channel.raya", include_str!("../../../builtins/strict/channel.raya")),
-        ("strict/mutex.raya", include_str!("../../../builtins/strict/mutex.raya")),
-        ("strict/promise.raya", include_str!("../../../builtins/strict/promise.raya")),
+        (
+            "strict/error.raya",
+            include_str!("../../../builtins/strict/error.raya"),
+        ),
+        (
+            "strict/array.raya",
+            include_str!("../../../builtins/strict/array.raya"),
+        ),
+        (
+            "strict/regexp.raya",
+            include_str!("../../../builtins/strict/regexp.raya"),
+        ),
+        (
+            "strict/map.raya",
+            include_str!("../../../builtins/strict/map.raya"),
+        ),
+        (
+            "strict/set.raya",
+            include_str!("../../../builtins/strict/set.raya"),
+        ),
+        (
+            "strict/buffer.raya",
+            include_str!("../../../builtins/strict/buffer.raya"),
+        ),
+        (
+            "strict/date.raya",
+            include_str!("../../../builtins/strict/date.raya"),
+        ),
+        (
+            "strict/channel.raya",
+            include_str!("../../../builtins/strict/channel.raya"),
+        ),
+        (
+            "strict/mutex.raya",
+            include_str!("../../../builtins/strict/mutex.raya"),
+        ),
+        (
+            "strict/promise.raya",
+            include_str!("../../../builtins/strict/promise.raya"),
+        ),
         (
             "strict/event_emitter.raya",
             include_str!("../../../builtins/strict/event_emitter.raya"),
@@ -452,13 +511,22 @@ fn strict_builtin_source_modules() -> &'static [(&'static str, &'static str)] {
 
 fn node_compat_builtin_source_modules() -> &'static [(&'static str, &'static str)] {
     &[
-        ("node_compat/object.raya", include_str!("../../../builtins/node_compat/object.raya")),
-        ("node_compat/symbol.raya", include_str!("../../../builtins/node_compat/symbol.raya")),
+        (
+            "node_compat/object.raya",
+            include_str!("../../../builtins/node_compat/object.raya"),
+        ),
+        (
+            "node_compat/symbol.raya",
+            include_str!("../../../builtins/node_compat/symbol.raya"),
+        ),
         (
             "node_compat/globals.shared.raya",
             include_str!("../../../builtins/node_compat/globals.shared.raya"),
         ),
-        ("node_compat/error.raya", include_str!("../../../builtins/node_compat/error.raya")),
+        (
+            "node_compat/error.raya",
+            include_str!("../../../builtins/node_compat/error.raya"),
+        ),
         (
             "node_compat/function_families.raya",
             include_str!("../../../builtins/node_compat/function_families.raya"),
@@ -467,17 +535,38 @@ fn node_compat_builtin_source_modules() -> &'static [(&'static str, &'static str
             "node_compat/globals.raya",
             include_str!("../../../builtins/node_compat/globals.raya"),
         ),
-        ("strict/array.raya", include_str!("../../../builtins/strict/array.raya")),
-        ("strict/regexp.raya", include_str!("../../../builtins/strict/regexp.raya")),
-        ("node_compat/map.raya", include_str!("../../../builtins/node_compat/map.raya")),
-        ("node_compat/set.raya", include_str!("../../../builtins/node_compat/set.raya")),
-        ("node_compat/buffer.raya", include_str!("../../../builtins/node_compat/buffer.raya")),
-        ("node_compat/date.raya", include_str!("../../../builtins/node_compat/date.raya")),
+        (
+            "strict/array.raya",
+            include_str!("../../../builtins/strict/array.raya"),
+        ),
+        (
+            "strict/regexp.raya",
+            include_str!("../../../builtins/strict/regexp.raya"),
+        ),
+        (
+            "node_compat/map.raya",
+            include_str!("../../../builtins/node_compat/map.raya"),
+        ),
+        (
+            "node_compat/set.raya",
+            include_str!("../../../builtins/node_compat/set.raya"),
+        ),
+        (
+            "node_compat/buffer.raya",
+            include_str!("../../../builtins/node_compat/buffer.raya"),
+        ),
+        (
+            "node_compat/date.raya",
+            include_str!("../../../builtins/node_compat/date.raya"),
+        ),
         (
             "node_compat/channel.raya",
             include_str!("../../../builtins/node_compat/channel.raya"),
         ),
-        ("node_compat/mutex.raya", include_str!("../../../builtins/node_compat/mutex.raya")),
+        (
+            "node_compat/mutex.raya",
+            include_str!("../../../builtins/node_compat/mutex.raya"),
+        ),
         (
             "node_compat/promise.raya",
             include_str!("../../../builtins/node_compat/promise.raya"),
@@ -510,7 +599,10 @@ fn node_compat_builtin_source_modules() -> &'static [(&'static str, &'static str
             "node_compat/disposal.raya",
             include_str!("../../../builtins/node_compat/disposal.raya"),
         ),
-        ("node_compat/intl.raya", include_str!("../../../builtins/node_compat/intl.raya")),
+        (
+            "node_compat/intl.raya",
+            include_str!("../../../builtins/node_compat/intl.raya"),
+        ),
         (
             "node_compat/weak_collections.raya",
             include_str!("../../../builtins/node_compat/weak_collections.raya"),

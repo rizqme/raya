@@ -36,7 +36,8 @@ fn collect_precompiled_builtins(dir: &Path) -> Result<Vec<(String, PathBuf)>, St
         .map_err(|error| format!("Failed to read builtin artifact directory: {error}"))?;
 
     for entry in entries {
-        let entry = entry.map_err(|error| format!("Failed to read builtin artifact entry: {error}"))?;
+        let entry =
+            entry.map_err(|error| format!("Failed to read builtin artifact entry: {error}"))?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("ryb") {
             continue;

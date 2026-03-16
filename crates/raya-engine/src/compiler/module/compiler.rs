@@ -310,7 +310,11 @@ impl ModuleCompiler {
         self.declaration_modules
             .get(path)
             .map(|decl| decl.module_identity.clone())
-            .or_else(|| self.exports.get(&path.to_path_buf()).map(|exports| exports.module_name.clone()))
+            .or_else(|| {
+                self.exports
+                    .get(&path.to_path_buf())
+                    .map(|exports| exports.module_name.clone())
+            })
             .unwrap_or_else(|| path.to_string_lossy().to_string())
     }
 
@@ -982,7 +986,10 @@ impl ModuleCompiler {
                 })?;
         if debug_stages {
             eprintln!("[module-compile] check:done path={}", path.display());
-            eprintln!("[module-compile] lower+codegen:start path={}", path.display());
+            eprintln!(
+                "[module-compile] lower+codegen:start path={}",
+                path.display()
+            );
         }
 
         // Apply inferred types
@@ -1045,7 +1052,10 @@ impl ModuleCompiler {
                 source: e,
             })?;
         if debug_stages {
-            eprintln!("[module-compile] lower+codegen:done path={}", path.display());
+            eprintln!(
+                "[module-compile] lower+codegen:done path={}",
+                path.display()
+            );
         }
         bytecode.metadata.name = module_name;
         self.populate_link_tables(

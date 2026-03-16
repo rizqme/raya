@@ -11,6 +11,12 @@ use crate::vm::VmError;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum ArrayIndexMode {
+    SkipHoles,
+    ReadThroughHoles,
+}
+
 impl<'a> Interpreter<'a> {
     fn array_release_ephemeral_root(&self, value: Value) {
         let mut roots = self.ephemeral_gc_roots.write();
@@ -23,32 +29,22 @@ impl<'a> Interpreter<'a> {
         optional_this.unwrap_or(Value::undefined())
     }
 
-    fn array_integer_argument(&self, value: Value) -> Result<i64, VmError> {
-        let number = if value.is_undefined() || value.is_null() {
-            0.0
-        } else if let Some(boolean) = value.as_bool() {
-            if boolean {
-                1.0
-            } else {
-                0.0
-            }
-        } else {
-            value_to_f64(value)?
-        };
-        if !number.is_finite() || number == 0.0 {
+    fn array_integer_argument_with_context(
+        &mut self,
+        value: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<i64, VmError> {
+        let number = self.js_to_integer_or_infinity_with_context(value, task, module)?;
+        if number == 0.0 || number.is_nan() {
             return Ok(0);
         }
-        let truncated = if number.is_sign_negative() {
-            number.ceil()
-        } else {
-            number.floor()
-        };
-        if truncated <= i64::MIN as f64 {
+        if number <= i64::MIN as f64 {
             Ok(i64::MIN)
-        } else if truncated >= i64::MAX as f64 {
+        } else if number >= i64::MAX as f64 {
             Ok(i64::MAX)
         } else {
-            Ok(truncated as i64)
+            Ok(number as i64)
         }
     }
 
@@ -114,6 +110,109 @@ impl<'a> Interpreter<'a> {
         self.boxed_primitive_internal_value(value, "String")
     }
 
+    fn array_index_value(index: usize) -> Value {
+        if index <= i32::MAX as usize {
+            Value::i32(index as i32)
+        } else {
+            Value::f64(index as f64)
+        }
+    }
+
+    fn is_js_array_index_name(key: &str) -> bool {
+        if key.is_empty() {
+            return false;
+        }
+        if key != "0" && key.starts_with('0') {
+            return false;
+        }
+        let Ok(index) = key.parse::<u32>() else {
+            return false;
+        };
+        index != u32::MAX && index.to_string() == key
+    }
+
+    fn value_has_own_indexed_properties(&self, value: Value) -> bool {
+        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(value) {
+            let array = unsafe { &*array_ptr.as_ptr() };
+            return array.present.iter().copied().any(|present| present)
+                || !array.sparse_elements.is_empty();
+        }
+
+        let Some(object_ptr) = crate::vm::interpreter::opcodes::native::checked_object_ptr(value)
+        else {
+            return false;
+        };
+        let object = unsafe { &*object_ptr.as_ptr() };
+        if self
+            .layout_field_names_for_object(object)
+            .into_iter()
+            .flatten()
+            .any(|name| Self::is_js_array_index_name(&name))
+        {
+            return true;
+        }
+        object
+            .dyn_map()
+            .into_iter()
+            .flatten()
+            .filter_map(|(key, _)| self.prop_key_name(*key))
+            .any(|name| Self::is_js_array_index_name(&name))
+    }
+
+    fn array_like_has_indexed_prototype_properties(&self, value: Value) -> bool {
+        let mut current = self.prototype_of_value(value);
+        let mut seen = vec![value.raw()];
+        while let Some(prototype) = current {
+            if seen.contains(&prototype.raw()) {
+                break;
+            }
+            if self.value_has_own_indexed_properties(prototype) {
+                return true;
+            }
+            seen.push(prototype.raw());
+            current = self.prototype_of_value(prototype);
+        }
+        false
+    }
+
+    fn array_like_index_query_with_context(
+        &mut self,
+        value: Value,
+        index: usize,
+        mode: ArrayIndexMode,
+        prototype_has_indexed_properties: bool,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        if crate::vm::interpreter::opcodes::native::checked_array_ptr(value).is_some()
+            && !prototype_has_indexed_properties
+        {
+            let key = index.to_string();
+            if self.has_own_property_via_js_semantics(value, &key) {
+                return Ok(Some(
+                    self.get_own_property_value_via_js_semantics_with_context(
+                        value, &key, task, module,
+                    )?
+                    .unwrap_or(Value::undefined()),
+                ));
+            }
+            return Ok(match mode {
+                ArrayIndexMode::SkipHoles => None,
+                ArrayIndexMode::ReadThroughHoles => Some(Value::undefined()),
+            });
+        }
+
+        if matches!(mode, ArrayIndexMode::SkipHoles)
+            && !self.array_like_has_index_with_context(value, index)
+        {
+            return Ok(None);
+        }
+
+        Ok(Some(self.array_like_index_value_with_context(
+            value, index, task, module,
+        )?))
+    }
+
     fn array_like_length_with_context(
         &mut self,
         value: Value,
@@ -150,11 +249,7 @@ impl<'a> Interpreter<'a> {
         Ok(numeric.floor().min(u32::MAX as f64) as usize)
     }
 
-    fn array_like_has_index_with_context(
-        &self,
-        value: Value,
-        index: usize,
-    ) -> bool {
+    fn array_like_has_index_with_context(&self, value: Value, index: usize) -> bool {
         let key = index.to_string();
         if self.has_property_via_js_semantics(value, &key) {
             return true;
@@ -180,14 +275,12 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Value, VmError> {
-        if let Some(property_value) =
-            self.get_property_value_via_js_semantics_with_context(
-                value,
-                &index.to_string(),
-                task,
-                module,
-            )?
-        {
+        if let Some(property_value) = self.get_property_value_via_js_semantics_with_context(
+            value,
+            &index.to_string(),
+            task,
+            module,
+        )? {
             return Ok(property_value);
         }
         if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(value) {
@@ -208,7 +301,12 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::undefined());
         }
         Ok(self
-            .get_property_value_via_js_semantics_with_context(value, &index.to_string(), task, module)?
+            .get_property_value_via_js_semantics_with_context(
+                value,
+                &index.to_string(),
+                task,
+                module,
+            )?
             .unwrap_or(Value::undefined()))
     }
 
@@ -825,7 +923,7 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 let from_index = if arg_count == 2 {
-                    Some(self.array_integer_argument(stack.pop()?)?)
+                    Some(self.array_integer_argument_with_context(stack.pop()?, task, module)?)
                 } else {
                     None
                 };
@@ -841,13 +939,21 @@ impl<'a> Interpreter<'a> {
                 } else {
                     0
                 };
+                let prototype_has_indexed_properties =
+                    self.array_like_has_indexed_prototype_properties(array_val);
                 let mut result: i32 = -1;
                 for index in start..len {
-                    if !self.array_like_has_index_with_context(array_val, index) {
+                    let Some(candidate) = self.array_like_index_query_with_context(
+                        array_val,
+                        index,
+                        ArrayIndexMode::SkipHoles,
+                        prototype_has_indexed_properties,
+                        task,
+                        module,
+                    )?
+                    else {
                         continue;
-                    }
-                    let candidate =
-                        self.array_like_index_value_with_context(array_val, index, task, module)?;
+                    };
                     if self.array_search_values_strict_equal(candidate, value) {
                         result = index as i32;
                         break;
@@ -857,22 +963,43 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             array::INCLUDES => {
-                if arg_count != 1 {
+                if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.includes expects 1 argument, got {}",
+                        "Array.includes expects 1-2 arguments, got {}",
                         arg_count
                     )));
                 }
+                let from_index = if arg_count == 2 {
+                    Some(self.array_integer_argument_with_context(stack.pop()?, task, module)?)
+                } else {
+                    None
+                };
                 let value = stack.pop()?;
                 let array_val = stack.pop()?;
                 let len = self.array_like_length_with_context(array_val, task, module)?;
-                let mut result = false;
-                for index in 0..len {
-                    if !self.array_like_has_index_with_context(array_val, index) {
-                        continue;
+                let prototype_has_indexed_properties =
+                    self.array_like_has_indexed_prototype_properties(array_val);
+                let start = if let Some(from_index) = from_index {
+                    if from_index >= 0 {
+                        (from_index as usize).min(len)
+                    } else {
+                        len.saturating_sub(from_index.unsigned_abs() as usize)
                     }
-                    let candidate =
-                        self.array_like_index_value_with_context(array_val, index, task, module)?;
+                } else {
+                    0
+                };
+                let mut result = false;
+                for index in start..len {
+                    let candidate = self
+                        .array_like_index_query_with_context(
+                            array_val,
+                            index,
+                            ArrayIndexMode::ReadThroughHoles,
+                            prototype_has_indexed_properties,
+                            task,
+                            module,
+                        )?
+                        .unwrap_or(Value::undefined());
                     if self.array_search_values_same_value_zero(candidate, value) {
                         result = true;
                         break;
@@ -979,7 +1106,8 @@ impl<'a> Interpreter<'a> {
                 }
 
                 let len = arr.len();
-                let relative_start = self.array_integer_argument(start_val)?;
+                let relative_start =
+                    self.array_integer_argument_with_context(start_val, task, module)?;
                 let start = if relative_start < 0 {
                     len.saturating_sub(relative_start.unsigned_abs() as usize)
                 } else {
@@ -988,7 +1116,8 @@ impl<'a> Interpreter<'a> {
 
                 // Calculate delete count (default to rest of array if not specified)
                 let delete_count = if let Some(dc_val) = delete_count_val {
-                    self.array_integer_argument(dc_val)?.max(0) as usize
+                    self.array_integer_argument_with_context(dc_val, task, module)?
+                        .max(0) as usize
                 } else {
                     len.saturating_sub(start)
                 };
@@ -1118,7 +1247,7 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 let from_index = if arg_count == 2 {
-                    Some(self.array_integer_argument(stack.pop()?)?)
+                    Some(self.array_integer_argument_with_context(stack.pop()?, task, module)?)
                 } else {
                     None
                 };
@@ -1136,18 +1265,22 @@ impl<'a> Interpreter<'a> {
                 } else {
                     Some(len - 1)
                 };
+                let prototype_has_indexed_properties =
+                    self.array_like_has_indexed_prototype_properties(array_val);
                 let mut found_index: i32 = -1;
                 if let Some(end) = end {
                     for index in (0..=end).rev() {
-                        if !self.array_like_has_index_with_context(array_val, index) {
-                            continue;
-                        }
-                        let candidate = self.array_like_index_value_with_context(
+                        let Some(candidate) = self.array_like_index_query_with_context(
                             array_val,
                             index,
+                            ArrayIndexMode::SkipHoles,
+                            prototype_has_indexed_properties,
                             task,
                             module,
-                        )?;
+                        )?
+                        else {
+                            continue;
+                        };
                         if self.array_search_values_strict_equal(candidate, search_val) {
                             found_index = index as i32;
                             break;
@@ -1174,6 +1307,20 @@ impl<'a> Interpreter<'a> {
                 }
                 args.reverse();
 
+                if std::env::var("RAYA_DEBUG_ARRAY_FILL").is_ok() {
+                    eprintln!(
+                        "[array.fill] arg_count={} a0={:#x} a1={} a2={}",
+                        arg_count,
+                        args[0].raw(),
+                        args.get(1)
+                            .map(|value| format!("{:?}", value))
+                            .unwrap_or_else(|| "<missing>".to_string()),
+                        args.get(2)
+                            .map(|value| format!("{:?}", value))
+                            .unwrap_or_else(|| "<missing>".to_string()),
+                    );
+                }
+
                 let array_val = stack.pop()?;
                 if !array_val.is_ptr() {
                     return Err(VmError::TypeError("Expected array".to_string()));
@@ -1183,18 +1330,39 @@ impl<'a> Interpreter<'a> {
                 let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
 
                 let fill_value = args[0];
+                let len = arr.len();
                 let start = if arg_count >= 2 {
-                    args[1].as_i32().unwrap_or(0).max(0) as usize
+                    let relative_start =
+                        self.array_integer_argument_with_context(args[1], task, module)?;
+                    if relative_start == i64::MIN {
+                        0
+                    } else if relative_start < 0 {
+                        len.saturating_sub(relative_start.unsigned_abs() as usize)
+                    } else {
+                        (relative_start as usize).min(len)
+                    }
                 } else {
                     0
                 };
                 let end = if arg_count >= 3 {
-                    args[2].as_i32().unwrap_or(arr.len() as i32).max(0) as usize
+                    if args[2].is_undefined() {
+                        len
+                    } else {
+                    let relative_end =
+                        self.array_integer_argument_with_context(args[2], task, module)?;
+                        if relative_end == i64::MIN {
+                            0
+                        } else if relative_end < 0 {
+                            len.saturating_sub(relative_end.unsigned_abs() as usize)
+                        } else {
+                            (relative_end as usize).min(len)
+                        }
+                    }
                 } else {
-                    arr.len()
+                    len
                 };
 
-                for i in start..end.min(arr.len()) {
+                for i in start..end.min(len) {
                     arr.elements[i] = fill_value;
                 }
 
@@ -1262,16 +1430,26 @@ impl<'a> Interpreter<'a> {
                 };
                 let callback = stack.pop()?;
                 let array_val = stack.pop()?;
-                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                };
-                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let len = self.array_like_length_with_context(array_val, task, module)?;
+                let prototype_has_indexed_properties =
+                    self.array_like_has_indexed_prototype_properties(array_val);
                 let callback_this = Self::array_callback_this_arg(this_arg);
-                for (index, element) in elements.iter().copied().enumerate() {
+                for index in 0..len {
+                    let Some(element) = self.array_like_index_query_with_context(
+                        array_val,
+                        index,
+                        ArrayIndexMode::SkipHoles,
+                        prototype_has_indexed_properties,
+                        task,
+                        module,
+                    )?
+                    else {
+                        continue;
+                    };
                     let _ = self.invoke_callable_sync_with_this(
                         callback,
                         Some(callback_this),
-                        &[element, Value::i32(index as i32), array_val],
+                        &[element, Self::array_index_value(index), array_val],
                         task,
                         module,
                     )?;
@@ -1293,20 +1471,32 @@ impl<'a> Interpreter<'a> {
                 };
                 let callback = stack.pop()?;
                 let array_val = stack.pop()?;
-                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                };
-                let (array_type_id, elements) = {
-                    let arr = unsafe { &*arr_ptr.as_ptr() };
-                    (arr.type_id, arr.elements.clone())
+                let len = self.array_like_length_with_context(array_val, task, module)?;
+                let prototype_has_indexed_properties =
+                    self.array_like_has_indexed_prototype_properties(array_val);
+                let array_type_id = if let Some(arr_ptr) = unsafe { array_val.as_ptr::<Array>() } {
+                    unsafe { &*arr_ptr.as_ptr() }.type_id
+                } else {
+                    0
                 };
                 let callback_this = Self::array_callback_this_arg(this_arg);
                 let mut result = Array::new(array_type_id, 0);
-                for (index, element) in elements.iter().copied().enumerate() {
+                for index in 0..len {
+                    let Some(element) = self.array_like_index_query_with_context(
+                        array_val,
+                        index,
+                        ArrayIndexMode::SkipHoles,
+                        prototype_has_indexed_properties,
+                        task,
+                        module,
+                    )?
+                    else {
+                        continue;
+                    };
                     let keep = self.invoke_callable_sync_with_this(
                         callback,
                         Some(callback_this),
-                        &[element, Value::i32(index as i32), array_val],
+                        &[element, Self::array_index_value(index), array_val],
                         task,
                         module,
                     )?;
@@ -1334,16 +1524,26 @@ impl<'a> Interpreter<'a> {
                 };
                 let callback = stack.pop()?;
                 let array_val = stack.pop()?;
-                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                };
-                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let len = self.array_like_length_with_context(array_val, task, module)?;
+                let prototype_has_indexed_properties =
+                    self.array_like_has_indexed_prototype_properties(array_val);
                 let callback_this = Self::array_callback_this_arg(this_arg);
-                for (index, element) in elements.iter().copied().enumerate() {
+                for index in 0..len {
+                    let Some(element) = self.array_like_index_query_with_context(
+                        array_val,
+                        index,
+                        ArrayIndexMode::SkipHoles,
+                        prototype_has_indexed_properties,
+                        task,
+                        module,
+                    )?
+                    else {
+                        continue;
+                    };
                     let found = self.invoke_callable_sync_with_this(
                         callback,
                         Some(callback_this),
-                        &[element, Value::i32(index as i32), array_val],
+                        &[element, Self::array_index_value(index), array_val],
                         task,
                         module,
                     )?;
@@ -1369,16 +1569,26 @@ impl<'a> Interpreter<'a> {
                 };
                 let callback = stack.pop()?;
                 let array_val = stack.pop()?;
-                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                };
-                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let len = self.array_like_length_with_context(array_val, task, module)?;
+                let prototype_has_indexed_properties =
+                    self.array_like_has_indexed_prototype_properties(array_val);
                 let callback_this = Self::array_callback_this_arg(this_arg);
-                for (index, element) in elements.iter().copied().enumerate() {
+                for index in 0..len {
+                    let Some(element) = self.array_like_index_query_with_context(
+                        array_val,
+                        index,
+                        ArrayIndexMode::SkipHoles,
+                        prototype_has_indexed_properties,
+                        task,
+                        module,
+                    )?
+                    else {
+                        continue;
+                    };
                     let found = self.invoke_callable_sync_with_this(
                         callback,
                         Some(callback_this),
-                        &[element, Value::i32(index as i32), array_val],
+                        &[element, Self::array_index_value(index), array_val],
                         task,
                         module,
                     )?;
@@ -1404,16 +1614,26 @@ impl<'a> Interpreter<'a> {
                 };
                 let callback = stack.pop()?;
                 let array_val = stack.pop()?;
-                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                };
-                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let len = self.array_like_length_with_context(array_val, task, module)?;
+                let prototype_has_indexed_properties =
+                    self.array_like_has_indexed_prototype_properties(array_val);
                 let callback_this = Self::array_callback_this_arg(this_arg);
-                for (index, element) in elements.iter().copied().enumerate() {
+                for index in 0..len {
+                    let Some(element) = self.array_like_index_query_with_context(
+                        array_val,
+                        index,
+                        ArrayIndexMode::SkipHoles,
+                        prototype_has_indexed_properties,
+                        task,
+                        module,
+                    )?
+                    else {
+                        continue;
+                    };
                     let keep = self.invoke_callable_sync_with_this(
                         callback,
                         Some(callback_this),
-                        &[element, Value::i32(index as i32), array_val],
+                        &[element, Self::array_index_value(index), array_val],
                         task,
                         module,
                     )?;
@@ -1439,16 +1659,26 @@ impl<'a> Interpreter<'a> {
                 };
                 let callback = stack.pop()?;
                 let array_val = stack.pop()?;
-                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                };
-                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let len = self.array_like_length_with_context(array_val, task, module)?;
+                let prototype_has_indexed_properties =
+                    self.array_like_has_indexed_prototype_properties(array_val);
                 let callback_this = Self::array_callback_this_arg(this_arg);
-                for (index, element) in elements.iter().copied().enumerate() {
+                for index in 0..len {
+                    let Some(element) = self.array_like_index_query_with_context(
+                        array_val,
+                        index,
+                        ArrayIndexMode::SkipHoles,
+                        prototype_has_indexed_properties,
+                        task,
+                        module,
+                    )?
+                    else {
+                        continue;
+                    };
                     let keep = self.invoke_callable_sync_with_this(
                         callback,
                         Some(callback_this),
-                        &[element, Value::i32(index as i32), array_val],
+                        &[element, Self::array_index_value(index), array_val],
                         task,
                         module,
                     )?;
@@ -1474,21 +1704,32 @@ impl<'a> Interpreter<'a> {
                 };
                 let callback = stack.pop()?;
                 let array_val = stack.pop()?;
-                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                };
-                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let len = self.array_like_length_with_context(array_val, task, module)?;
+                let prototype_has_indexed_properties =
+                    self.array_like_has_indexed_prototype_properties(array_val);
                 let callback_this = Self::array_callback_this_arg(this_arg);
-                let mut result = Array::new(0, 0);
-                for (index, element) in elements.iter().copied().enumerate() {
+                let mut result = Array::new(0, len);
+                result.resize_holey(len);
+                for index in 0..len {
+                    let Some(element) = self.array_like_index_query_with_context(
+                        array_val,
+                        index,
+                        ArrayIndexMode::SkipHoles,
+                        prototype_has_indexed_properties,
+                        task,
+                        module,
+                    )?
+                    else {
+                        continue;
+                    };
                     let mapped = self.invoke_callable_sync_with_this(
                         callback,
                         Some(callback_this),
-                        &[element, Value::i32(index as i32), array_val],
+                        &[element, Self::array_index_value(index), array_val],
                         task,
                         module,
                     )?;
-                    result.push(mapped);
+                    result.set(index, mapped).map_err(VmError::RuntimeError)?;
                 }
                 let gc_ptr = self.gc.lock().allocate(result);
                 let value =
@@ -1510,24 +1751,48 @@ impl<'a> Interpreter<'a> {
                 };
                 let callback = stack.pop()?;
                 let array_val = stack.pop()?;
-                let Some(arr_ptr) = (unsafe { array_val.as_ptr::<Array>() }) else {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                };
-                let elements = unsafe { &*arr_ptr.as_ptr() }.elements.clone();
+                let len = self.array_like_length_with_context(array_val, task, module)?;
+                let prototype_has_indexed_properties =
+                    self.array_like_has_indexed_prototype_properties(array_val);
                 let (mut acc, start_index) = if let Some(initial) = initial {
                     (initial, 0usize)
-                } else if let Some(first) = elements.first().copied() {
-                    (first, 1usize)
                 } else {
-                    return Err(VmError::TypeError(
-                        "Reduce of empty array with no initial value".to_string(),
-                    ));
+                    let mut first_present = None;
+                    for index in 0..len {
+                        if let Some(value) = self.array_like_index_query_with_context(
+                            array_val,
+                            index,
+                            ArrayIndexMode::SkipHoles,
+                            prototype_has_indexed_properties,
+                            task,
+                            module,
+                        )? {
+                            first_present = Some((value, index + 1));
+                            break;
+                        }
+                    }
+                    first_present.ok_or_else(|| {
+                        VmError::TypeError(
+                            "Reduce of empty array with no initial value".to_string(),
+                        )
+                    })?
                 };
-                for (index, element) in elements.iter().copied().enumerate().skip(start_index) {
+                for index in start_index..len {
+                    let Some(element) = self.array_like_index_query_with_context(
+                        array_val,
+                        index,
+                        ArrayIndexMode::SkipHoles,
+                        prototype_has_indexed_properties,
+                        task,
+                        module,
+                    )?
+                    else {
+                        continue;
+                    };
                     acc = self.invoke_callable_sync_with_this(
                         callback,
                         Some(Value::undefined()),
-                        &[acc, element, Value::i32(index as i32), array_val],
+                        &[acc, element, Self::array_index_value(index), array_val],
                         task,
                         module,
                     )?;

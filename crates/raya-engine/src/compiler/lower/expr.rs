@@ -148,9 +148,9 @@ impl<'a> Lowerer<'a> {
                     .iter()
                     .copied()
                     .any(|member| self.type_requires_js_runtime_member_semantics(member)),
-                Some(Type::TypeVar(tv)) => tv
-                    .constraint
-                    .is_some_and(|constraint| self.type_requires_js_runtime_member_semantics(constraint)),
+                Some(Type::TypeVar(tv)) => tv.constraint.is_some_and(|constraint| {
+                    self.type_requires_js_runtime_member_semantics(constraint)
+                }),
                 _ => false,
             }
     }
@@ -326,6 +326,64 @@ impl<'a> Lowerer<'a> {
             native_id: crate::compiler::native_id::FUNCTION_CALL_HELPER,
             args: vec![closure, receiver, args_array],
         });
+    }
+
+    fn emit_js_bound_closure_helper(&mut self, closure: Register, receiver: Register) -> Register {
+        let bound = self.alloc_register(closure.ty);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(bound.clone()),
+            native_id: crate::compiler::native_id::FUNCTION_BIND_HELPER,
+            args: vec![closure, receiver],
+        });
+        bound
+    }
+
+    fn lower_index_reference_call(
+        &mut self,
+        index: &ast::IndexExpression,
+        dest: Register,
+        call_ty: TypeId,
+        args: Vec<Register>,
+    ) -> Register {
+        let receiver = self.lower_expr(&index.object);
+        let key = self.lower_expr(&index.index);
+        let closure_ty = self.get_expr_type(&Expression::Index(index.clone()));
+        let closure = self.alloc_register(if closure_ty.as_u32() == UNRESOLVED_TYPE_ID {
+            UNRESOLVED
+        } else {
+            closure_ty
+        });
+
+        if self.index_uses_dynamic_keyed_access_for_expr(
+            self.get_expr_type(&index.object),
+            &index.index,
+        ) {
+            self.emit(IrInstr::DynGetKeyed {
+                dest: closure.clone(),
+                object: receiver.clone(),
+                key,
+            });
+        } else {
+            self.emit(IrInstr::LoadElement {
+                dest: closure.clone(),
+                array: receiver.clone(),
+                index: key,
+            });
+        }
+
+        if self.type_id_is_async_callable(closure.ty) {
+            let bound = self.emit_js_bound_closure_helper(closure, receiver);
+            self.emit(IrInstr::SpawnClosure {
+                dest: dest.clone(),
+                closure: bound,
+                args,
+            });
+        } else {
+            self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
+            self.propagate_type_projection_to_register(call_ty, &dest);
+        }
+
+        dest
     }
 
     fn poison_register(&mut self, dest: &Register) {
@@ -1598,39 +1656,7 @@ impl<'a> Lowerer<'a> {
 
         // Store new value back to the variable
         if let Expression::Identifier(ident) = &*unary.operand {
-            if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                self.emit(IrInstr::StoreLocal {
-                    index: local_idx,
-                    value: new_value.clone(),
-                });
-            } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
-                self.emit(IrInstr::StoreGlobal {
-                    index: global_idx,
-                    value: new_value.clone(),
-                });
-            } else if let Some(binding) = self
-                .current_method_env_globals
-                .as_ref()
-                .and_then(|m| m.get(&ident.name))
-                .copied()
-            {
-                if binding.is_refcell {
-                    let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                    self.emit(IrInstr::LoadGlobal {
-                        dest: refcell_reg.clone(),
-                        index: binding.global_idx,
-                    });
-                    self.emit(IrInstr::StoreRefCell {
-                        refcell: refcell_reg,
-                        value: new_value.clone(),
-                    });
-                } else {
-                    self.emit(IrInstr::StoreGlobal {
-                        index: binding.global_idx,
-                        value: new_value.clone(),
-                    });
-                }
-            }
+            self.store_identifier_value(ident.name, new_value.clone());
         }
 
         // Return old value for postfix, new value for prefix
@@ -1697,7 +1723,8 @@ impl<'a> Lowerer<'a> {
                 });
                 if let Some(parent_constructor) = parent_constructor {
                     let this_reg = self.lower_this();
-                    let new_target = self.load_class_value_for_nominal_type(current_nominal_type_id);
+                    let new_target =
+                        self.load_class_value_for_nominal_type(current_nominal_type_id);
                     let mut native_args = vec![parent_constructor, new_target];
                     native_args.extend(args);
                     self.emit(IrInstr::NativeCall {
@@ -3093,12 +3120,11 @@ impl<'a> Lowerer<'a> {
                 }
             }
             let inferred_nominal_type_id = nominal_type_id;
-            let use_js_runtime_member_semantics =
-                self.js_mode_uses_runtime_member_semantics(
-                    &member.object,
-                    self.get_expr_type(&member.object),
-                    nominal_type_id,
-                );
+            let use_js_runtime_member_semantics = self.js_mode_uses_runtime_member_semantics(
+                &member.object,
+                self.get_expr_type(&member.object),
+                nominal_type_id,
+            );
 
             // Skip class dispatch for builtin primitive types — their methods
             // are dispatched via the type registry (native calls / class methods)
@@ -3852,6 +3878,11 @@ impl<'a> Lowerer<'a> {
                 callee_ty_raw == UNKNOWN_TYPE_ID
             );
         }
+
+        if let Expression::Index(index) = &*call.callee {
+            return self.lower_index_reference_call(index, dest, call_ty, args);
+        }
+
         if !self.type_is_callable(callee_ty)
             && !self.expression_is_callable_hint(&call.callee)
             && !ambient_runtime_callable
@@ -3893,6 +3924,87 @@ impl<'a> Lowerer<'a> {
     ) -> Register {
         let call_ty = self.get_expr_type(full_expr);
         let dest = self.alloc_register(call_ty);
+
+        if let Expression::Index(index) = &*call.callee {
+            let receiver = self.lower_expr(&index.object);
+            let key = self.lower_expr(&index.index);
+            let closure_ty = self.get_expr_type(&call.callee);
+            let callee = self.alloc_register(if closure_ty.as_u32() == UNRESOLVED_TYPE_ID {
+                UNRESOLVED
+            } else {
+                closure_ty
+            });
+            if self.index_uses_dynamic_keyed_access_for_expr(
+                self.get_expr_type(&index.object),
+                &index.index,
+            ) {
+                self.emit(IrInstr::DynGetKeyed {
+                    dest: callee.clone(),
+                    object: receiver.clone(),
+                    key,
+                });
+            } else {
+                self.emit(IrInstr::LoadElement {
+                    dest: callee.clone(),
+                    array: receiver.clone(),
+                    index: key,
+                });
+            }
+
+            let null_block = self.alloc_block();
+            let call_block = self.alloc_block();
+            let merge_block = self.alloc_block();
+            self.set_terminator(Terminator::BranchIfNull {
+                value: callee.clone(),
+                null_block,
+                not_null_block: call_block,
+            });
+
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(
+                    null_block,
+                    "opt.call.index.null",
+                ));
+            self.current_block = null_block;
+            let null_result = self.lower_null_literal();
+            let null_exit = self.current_block;
+            self.set_terminator(Terminator::Jump(merge_block));
+
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(
+                    call_block,
+                    "opt.call.index.invoke",
+                ));
+            self.current_block = call_block;
+            let args: Vec<Register> = call.arguments.iter().map(|a| self.lower_expr(a)).collect();
+            let call_result = self.alloc_register(dest.ty);
+            if self.type_id_is_async_callable(callee.ty) {
+                let bound = self.emit_js_bound_closure_helper(callee, receiver);
+                self.emit(IrInstr::SpawnClosure {
+                    dest: call_result.clone(),
+                    closure: bound,
+                    args,
+                });
+            } else {
+                self.emit_js_member_call_helper(call_result.clone(), receiver, callee, args);
+                self.propagate_type_projection_to_register(call_ty, &call_result);
+            }
+            let call_exit = self.current_block;
+            self.set_terminator(Terminator::Jump(merge_block));
+
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(
+                    merge_block,
+                    "opt.call.index.merge",
+                ));
+            self.current_block = merge_block;
+            self.emit(IrInstr::Phi {
+                dest: dest.clone(),
+                sources: vec![(null_exit, null_result), (call_exit, call_result)],
+            });
+            return dest;
+        }
+
         let callee = self.lower_expr(&call.callee);
 
         let null_block = self.alloc_block();
@@ -6543,15 +6655,15 @@ impl<'a> Lowerer<'a> {
             {
                 self.lower_runtime_js_add(current, rhs)
             } else {
-            let dest_ty = self.infer_binary_result_type(&op, &current, &rhs);
-            let dest = self.alloc_register(dest_ty);
-            self.emit(IrInstr::BinaryOp {
-                dest: dest.clone(),
-                op,
-                left: current,
-                right: rhs,
-            });
-            dest
+                let dest_ty = self.infer_binary_result_type(&op, &current, &rhs);
+                let dest = self.alloc_register(dest_ty);
+                self.emit(IrInstr::BinaryOp {
+                    dest: dest.clone(),
+                    op,
+                    left: current,
+                    right: rhs,
+                });
+                dest
             }
         } else {
             rhs
@@ -7042,19 +7154,28 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_function_expression(&mut self, func: &ast::FunctionExpression) -> Register {
+        self.lower_function_expression_with_preassigned_id(func, None)
+    }
+
+    pub(super) fn lower_function_expression_with_preassigned_id(
+        &mut self,
+        func: &ast::FunctionExpression,
+        preassigned_func_id: Option<crate::ir::FunctionId>,
+    ) -> Register {
         let saved_function_map = self.function_map.clone();
-        let preassigned_func_id = if let Some(name) = &func.name {
-            let func_id = crate::ir::FunctionId::new(self.next_function_id);
+        let resolved_preassigned = if let Some(name) = &func.name {
+            let func_id = preassigned_func_id
+                .unwrap_or_else(|| crate::ir::FunctionId::new(self.next_function_id));
             self.function_map.insert(name.name, func_id);
             Some(func_id)
         } else {
-            None
+            preassigned_func_id
         };
 
         let function_name = format!("__function_{}", self.arrow_counter);
         self.arrow_counter += 1;
 
-        let func_id = if let Some(func_id) = preassigned_func_id {
+        let func_id = if let Some(func_id) = resolved_preassigned {
             if func_id.as_u32() >= self.next_function_id {
                 self.next_function_id = func_id.as_u32() + 1;
             }

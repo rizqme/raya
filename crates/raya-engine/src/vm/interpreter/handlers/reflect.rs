@@ -718,13 +718,14 @@ impl<'a> Interpreter<'a> {
 
             // ===== Phase 3: Field Access =====
             reflect::GET => {
-                // get(target, propertyKey) -> get field value by name
+                // get(target, propertyKey, receiver?) -> get field value by name
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
                         "get requires 2 arguments (target, propertyKey)".to_string(),
                     ));
                 }
                 let target = args[0];
+                let receiver = args.get(2).copied().unwrap_or(target);
                 let property_key = get_property_key(args[1], "Reflect.set")?;
 
                 if !self.is_js_object_value(target) {
@@ -733,9 +734,10 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
 
-                if let Some(value) = self.get_property_value_via_js_semantics_with_context(
+                if let Some(value) = self.get_property_value_on_receiver_via_js_semantics_with_context(
                     target,
                     &property_key,
+                    receiver,
                     task,
                     module,
                 )? {
@@ -779,9 +781,7 @@ impl<'a> Interpreter<'a> {
                             };
                             let gc_ptr = self.gc.lock().allocate(bm);
                             unsafe {
-                                Value::from_ptr(
-                                    std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap(),
-                                )
+                                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
                             }
                         } else {
                             Value::undefined()

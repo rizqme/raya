@@ -201,10 +201,7 @@ impl<'a> Interpreter<'a> {
 
             if bound.rebind_call_helper {
                 let target_callable = bound.this_arg;
-                let this_arg = combined_args
-                    .first()
-                    .copied()
-                    .unwrap_or(Value::undefined());
+                let this_arg = combined_args.first().copied().unwrap_or(Value::undefined());
                 let rest_args = if combined_args.len() > 1 {
                     combined_args[1..].to_vec()
                 } else {
@@ -254,7 +251,8 @@ impl<'a> Interpreter<'a> {
                 return_action,
             }));
         }
-        if let Some(result) = self.call_builtin_constructor_as_function(callable, args, task, module)?
+        if let Some(result) =
+            self.call_builtin_constructor_as_function(callable, args, task, module)?
         {
             stack.push(result)?;
             return Ok(Some(OpcodeResult::Continue));
