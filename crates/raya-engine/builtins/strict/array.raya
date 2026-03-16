@@ -19,6 +19,8 @@ const ARRAY_IS_ARRAY: number = 0x0D54;
 const ARRAY_FROM: number = 0x0118;
 const JS_TO_NUMBER: number = 0x001D;
 const JS_TO_INTEGER_OR_INFINITY: number = 0x001E;
+const ARRAY_POSITIVE_INFINITY: number = 1.0 / 0.0;
+const ARRAY_NEGATIVE_INFINITY: number = -ARRAY_POSITIVE_INFINITY;
 
 function arrayFromAsyncIsCallable(value: any): boolean {
     return typeof value == "function";
@@ -111,6 +113,106 @@ function arrayLikeToLocaleString(target: any): string {
         i = i + 1;
     }
     return out;
+}
+
+function arrayLikeCopyWithin(target: any, targetIndex: any, start: any, end: any = undefined): any {
+    let length = arrayJsToNumber(target["length"]);
+    if (length <= 0) {
+        return target;
+    }
+
+    let len = length as int;
+    let relativeTarget = arrayJsToIntegerOrInfinity(targetIndex);
+    let to = 0;
+    if (relativeTarget == relativeTarget) {
+        if (relativeTarget == ARRAY_NEGATIVE_INFINITY) {
+            to = 0;
+        } else if (relativeTarget == ARRAY_POSITIVE_INFINITY) {
+            to = len;
+        } else if (relativeTarget < 0) {
+            if (relativeTarget <= -(len as number)) {
+                to = 0;
+            } else {
+                to = len + (relativeTarget as int);
+            }
+        } else if (relativeTarget >= (len as number)) {
+            to = len;
+        } else {
+            to = relativeTarget as int;
+        }
+    }
+
+    let relativeStart = arrayJsToIntegerOrInfinity(start);
+    let from = 0;
+    if (relativeStart == relativeStart) {
+        if (relativeStart == ARRAY_NEGATIVE_INFINITY) {
+            from = 0;
+        } else if (relativeStart == ARRAY_POSITIVE_INFINITY) {
+            from = len;
+        } else if (relativeStart < 0) {
+            if (relativeStart <= -(len as number)) {
+                from = 0;
+            } else {
+                from = len + (relativeStart as int);
+            }
+        } else if (relativeStart >= (len as number)) {
+            from = len;
+        } else {
+            from = relativeStart as int;
+        }
+    }
+
+    let relativeEnd = length;
+    if (end !== undefined) {
+        relativeEnd = arrayJsToIntegerOrInfinity(end);
+    }
+    let final = len;
+    if (relativeEnd == relativeEnd) {
+        if (relativeEnd == ARRAY_NEGATIVE_INFINITY) {
+            final = 0;
+        } else if (relativeEnd == ARRAY_POSITIVE_INFINITY) {
+            final = len;
+        } else if (relativeEnd < 0) {
+            if (relativeEnd <= -(len as number)) {
+                final = 0;
+            } else {
+                final = len + (relativeEnd as int);
+            }
+        } else if (relativeEnd >= (len as number)) {
+            final = len;
+        } else {
+            final = relativeEnd as int;
+        }
+    }
+
+    let count = final - from;
+    let maxCount = len - to;
+    if (count > maxCount) {
+        count = maxCount;
+    }
+    if (count <= 0) {
+        return target;
+    }
+
+    let direction = 1;
+    if (from < to && to < (from + count)) {
+        direction = -1;
+        from = from + count - 1;
+        to = to + count - 1;
+    }
+
+    while (count > 0) {
+        if (arrayHasOwnIndex(target, from)) {
+            target[to] = target[from];
+        } else {
+            delete target[to];
+        }
+        from = from + direction;
+        to = to + direction;
+        count = count - 1;
+    }
+
+    return target;
 }
 
 function arrayConcatAppend(target: any[], item: any): void {
@@ -443,6 +545,10 @@ class Array<T> {
             i = i + 1;
         }
         return out;
+    }
+
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any[] {
+        return arrayLikeCopyWithin(this as any, targetIndex, start, end);
     }
 
     at(index: any): any {

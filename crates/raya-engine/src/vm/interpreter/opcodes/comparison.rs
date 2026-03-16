@@ -1,7 +1,6 @@
 use crate::compiler::Module;
 use crate::compiler::Opcode;
 use crate::vm::gc::header_ptr_from_value_ptr;
-use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::RayaString;
@@ -113,6 +112,92 @@ impl<'a> Interpreter<'a> {
         Ok(false)
     }
 
+    fn js_abstract_relational_compare(
+        &mut self,
+        left: Value,
+        right: Value,
+        left_first: bool,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Option<bool>, VmError> {
+        let (left_primitive, right_primitive) = if left_first {
+            (
+                self.js_to_primitive_number_hint(left, task, module)?,
+                self.js_to_primitive_number_hint(right, task, module)?,
+            )
+        } else {
+            let right_primitive = self.js_to_primitive_number_hint(right, task, module)?;
+            let left_primitive = self.js_to_primitive_number_hint(left, task, module)?;
+            (left_primitive, right_primitive)
+        };
+
+        if Self::ptr_is_raya_string(left_primitive) && Self::ptr_is_raya_string(right_primitive) {
+            let left_ptr = unsafe { left_primitive.as_ptr::<RayaString>() }.expect("string ptr");
+            let right_ptr =
+                unsafe { right_primitive.as_ptr::<RayaString>() }.expect("string ptr");
+            let left_str = unsafe { &*left_ptr.as_ptr() };
+            let right_str = unsafe { &*right_ptr.as_ptr() };
+            return Ok(Some(left_str.data < right_str.data));
+        }
+
+        let left_number = self.js_to_number_from_primitive(left_primitive)?;
+        let right_number = self.js_to_number_from_primitive(right_primitive)?;
+        if left_number.is_nan() || right_number.is_nan() {
+            return Ok(None);
+        }
+        Ok(Some(left_number < right_number))
+    }
+
+    fn js_less_than(
+        &mut self,
+        left: Value,
+        right: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<bool, VmError> {
+        Ok(self
+            .js_abstract_relational_compare(left, right, true, task, module)?
+            .unwrap_or(false))
+    }
+
+    fn js_less_equal(
+        &mut self,
+        left: Value,
+        right: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<bool, VmError> {
+        Ok(match self.js_abstract_relational_compare(right, left, false, task, module)? {
+            Some(value) => !value,
+            None => false,
+        })
+    }
+
+    fn js_greater_than(
+        &mut self,
+        left: Value,
+        right: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<bool, VmError> {
+        Ok(self
+            .js_abstract_relational_compare(right, left, false, task, module)?
+            .unwrap_or(false))
+    }
+
+    fn js_greater_equal(
+        &mut self,
+        left: Value,
+        right: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<bool, VmError> {
+        Ok(match self.js_abstract_relational_compare(left, right, true, task, module)? {
+            Some(value) => !value,
+            None => false,
+        })
+    }
+
     pub(in crate::vm::interpreter) fn exec_comparison_ops(
         &mut self,
         stack: &mut Stack,
@@ -171,16 +256,9 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let result = if a.is_f64() || b.is_f64() {
-                    let fa = a
-                        .as_f64()
-                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    let fb = b
-                        .as_f64()
-                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    fa < fb
-                } else {
-                    a.as_i32().unwrap_or(0) < b.as_i32().unwrap_or(0)
+                let result = match self.js_less_than(a, b, task, module) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
                 };
                 if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
@@ -197,16 +275,9 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let result = if a.is_f64() || b.is_f64() {
-                    let fa = a
-                        .as_f64()
-                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    let fb = b
-                        .as_f64()
-                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    fa <= fb
-                } else {
-                    a.as_i32().unwrap_or(0) <= b.as_i32().unwrap_or(0)
+                let result = match self.js_less_equal(a, b, task, module) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
                 };
                 if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
@@ -223,16 +294,9 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let result = if a.is_f64() || b.is_f64() {
-                    let fa = a
-                        .as_f64()
-                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    let fb = b
-                        .as_f64()
-                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    fa > fb
-                } else {
-                    a.as_i32().unwrap_or(0) > b.as_i32().unwrap_or(0)
+                let result = match self.js_greater_than(a, b, task, module) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
                 };
                 if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
@@ -249,16 +313,9 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let result = if a.is_f64() || b.is_f64() {
-                    let fa = a
-                        .as_f64()
-                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    let fb = b
-                        .as_f64()
-                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    fa >= fb
-                } else {
-                    a.as_i32().unwrap_or(0) >= b.as_i32().unwrap_or(0)
+                let result = match self.js_greater_equal(a, b, task, module) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
                 };
                 if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
@@ -308,60 +365,76 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Flt => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a < b)) {
+                let result = match self.js_less_than(a, b, task, module) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
             }
 
             Opcode::Fle => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a <= b)) {
+                let result = match self.js_less_equal(a, b, task, module) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
             }
 
             Opcode::Fgt => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a > b)) {
+                let result = match self.js_greater_than(a, b, task, module) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
             }
 
             Opcode::Fge => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a >= b)) {
+                let result = match self.js_greater_equal(a, b, task, module) {
+                    Ok(value) => value,
+                    Err(error) => return OpcodeResult::Error(error),
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue

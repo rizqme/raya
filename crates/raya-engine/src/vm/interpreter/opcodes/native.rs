@@ -80,7 +80,7 @@ fn value_as_string(arg: Value) -> Result<String, VmError> {
     if !arg.is_ptr() {
         return Err(VmError::TypeError("Expected string".to_string()));
     }
-    let Some(s) = (unsafe { arg.as_ptr::<RayaString>() }) else {
+    let Some(s) = checked_string_ptr(arg) else {
         return Err(VmError::TypeError("Expected string".to_string()));
     };
     Ok(unsafe { &*s.as_ptr() }.data.clone())
@@ -102,7 +102,7 @@ fn primitive_to_js_string(value: Value) -> Option<String> {
     if let Some(value) = value.as_f64() {
         return Some(value.to_string());
     }
-    let string_ptr = unsafe { value.as_ptr::<RayaString>() }?;
+    let string_ptr = checked_string_ptr(value)?;
     Some(unsafe { &*string_ptr.as_ptr() }.data.clone())
 }
 
@@ -3559,6 +3559,41 @@ impl<'a> Interpreter<'a> {
         self.js_to_number_with_context(native_arg(args, index), caller_task, caller_module)
     }
 
+    fn js_usize_arg_with_context(
+        &mut self,
+        value: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<usize, VmError> {
+        let number = self.js_to_integer_or_infinity_with_context(value, caller_task, caller_module)?;
+        if number.is_nan() || number <= 0.0 {
+            return Ok(0);
+        }
+        if !number.is_finite() || number >= usize::MAX as f64 {
+            return Ok(usize::MAX);
+        }
+        Ok(number as usize)
+    }
+
+    fn js_i32_arg_with_context(
+        &mut self,
+        value: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<i32, VmError> {
+        let number = self.js_to_integer_or_infinity_with_context(value, caller_task, caller_module)?;
+        if number.is_nan() {
+            return Ok(0);
+        }
+        if number <= i32::MIN as f64 {
+            return Ok(i32::MIN);
+        }
+        if number >= i32::MAX as f64 {
+            return Ok(i32::MAX);
+        }
+        Ok(number as i32)
+    }
+
     fn js_math_min_max(
         &mut self,
         args: &[Value],
@@ -4010,7 +4045,7 @@ impl<'a> Interpreter<'a> {
             .map(|class| class.name.clone())
     }
 
-    fn js_function_argument_to_string(
+    pub(in crate::vm::interpreter) fn js_function_argument_to_string(
         &mut self,
         value: Value,
         task: &Arc<Task>,
@@ -4531,38 +4566,70 @@ impl<'a> Interpreter<'a> {
         self.get_own_js_property_value_by_name(target, key)
     }
 
+    fn numeric_value_as_isize(&self, value: Value) -> Option<isize> {
+        if let Some(v) = value.as_i32() {
+            return Some(v as isize);
+        }
+        if let Some(v) = value.as_i64() {
+            return isize::try_from(v).ok();
+        }
+        if let Some(v) = value.as_f64() {
+            if v.is_finite() {
+                return Some(v as isize);
+            }
+        }
+        None
+    }
+
+    fn numeric_value_as_usize(&self, value: Value) -> Option<usize> {
+        let value = self.numeric_value_as_isize(value)?;
+        if value < 0 {
+            return None;
+        }
+        Some(value as usize)
+    }
+
+    fn typed_array_raw_length_direct(&self, target: Value, bytes_per_element: isize) -> isize {
+        let Some(buffer) = self.typed_array_backing_field_value(target, "buffer") else {
+            return -1;
+        };
+        let byte_length = self
+            .own_exotic_state_value(buffer, "byteLength")
+            .and_then(|value| self.numeric_value_as_isize(value))
+            .unwrap_or(0);
+        let byte_offset = self
+            .typed_array_backing_field_value(target, "byteOffset")
+            .and_then(|value| self.numeric_value_as_isize(value))
+            .unwrap_or(0);
+        let fixed_length = self
+            .typed_array_backing_field_value(target, "_fixedLength")
+            .and_then(|value| self.numeric_value_as_isize(value))
+            .unwrap_or(0);
+        let length_tracking = self
+            .typed_array_backing_field_value(target, "_lengthTracking")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+
+        let available = byte_length - byte_offset;
+        if available < 0 {
+            return -1;
+        }
+        if length_tracking {
+            return (available / bytes_per_element).max(0);
+        }
+        if fixed_length * bytes_per_element > available {
+            return -1;
+        }
+        fixed_length.max(0)
+    }
+
     fn typed_array_live_length_direct(&self, target: Value) -> Option<usize> {
         if !self.is_typed_array_like_value(target) {
             return None;
         }
         let class_name = self.typed_array_runtime_class_name(target)?;
-        let buffer = self.own_exotic_state_value(target, "buffer")?;
-        let byte_length = self
-            .own_exotic_state_value(buffer, "byteLength")?
-            .as_i32()? as isize;
-        let byte_offset = self
-            .own_exotic_state_value(target, "byteOffset")?
-            .as_i32()? as isize;
-        let fixed_length = self
-            .own_exotic_state_value(target, "_fixedLength")?
-            .as_i32()? as isize;
-        let length_tracking = self
-            .own_exotic_state_value(target, "_lengthTracking")?
-            .as_bool()
-            .unwrap_or(false);
         let bytes_per_element = self.typed_array_bytes_per_element(&class_name);
-
-        let available = byte_length - byte_offset;
-        if available < 0 {
-            return Some(0);
-        }
-        if length_tracking {
-            return Some((available / bytes_per_element).max(0) as usize);
-        }
-        if fixed_length * bytes_per_element > available {
-            return Some(0);
-        }
-        Some(fixed_length.max(0) as usize)
+        Some(self.typed_array_raw_length_direct(target, bytes_per_element).max(0) as usize)
     }
 
     fn typed_array_live_length_with_context(
@@ -4632,10 +4699,10 @@ impl<'a> Interpreter<'a> {
         }
         match class_name.as_str() {
             "Uint8Array" => {
-                let buffer = self.own_exotic_state_value(target, "buffer")?;
-                let byte_offset = self
-                    .own_exotic_state_value(target, "byteOffset")?
-                    .as_i32()? as usize;
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
                 if debug_typed_array {
                     eprintln!(
                         "[typed-array.direct] target={:#x} index={} byteOffset={}",
@@ -4658,10 +4725,10 @@ impl<'a> Interpreter<'a> {
                 self.typed_array_index_value_direct(inner, index)
             }
             "Uint16Array" => {
-                let buffer = self.own_exotic_state_value(target, "buffer")?;
-                let byte_offset = self
-                    .own_exotic_state_value(target, "byteOffset")?
-                    .as_i32()? as usize;
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
                 let base = byte_offset + (index << 1);
                 let b0 = self.array_buffer_byte_at(buffer, base)? as i32;
                 let b1 = self.array_buffer_byte_at(buffer, base + 1)? as i32;
@@ -4674,10 +4741,10 @@ impl<'a> Interpreter<'a> {
                 Some(Value::i32(if raw > 32767 { raw - 65536 } else { raw }))
             }
             "Int32Array" => {
-                let buffer = self.own_exotic_state_value(target, "buffer")?;
-                let byte_offset = self
-                    .own_exotic_state_value(target, "byteOffset")?
-                    .as_i32()? as usize;
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
                 let base = byte_offset + (index << 2);
                 let bytes = [
                     self.array_buffer_byte_at(buffer, base)?,
@@ -4714,10 +4781,10 @@ impl<'a> Interpreter<'a> {
                     .or(Some(value))
             }
             "Float64Array" => {
-                let buffer = self.own_exotic_state_value(target, "buffer")?;
-                let byte_offset = self
-                    .own_exotic_state_value(target, "byteOffset")?
-                    .as_i32()? as usize;
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
                 let base = byte_offset + (index << 3);
                 let bytes = [
                     self.array_buffer_byte_at(buffer, base)?,
@@ -4736,10 +4803,10 @@ impl<'a> Interpreter<'a> {
                 self.typed_array_index_value_direct(inner, index)
             }
             "TypedArray" => {
-                let buffer = self.own_exotic_state_value(target, "buffer")?;
-                let byte_offset = self
-                    .own_exotic_state_value(target, "byteOffset")?
-                    .as_i32()? as usize;
+                let buffer = self.typed_array_backing_field_value(target, "buffer")?;
+                let byte_offset = self.numeric_value_as_usize(
+                    self.typed_array_backing_field_value(target, "byteOffset")?,
+                )?;
                 self.array_buffer_byte_at(buffer, byte_offset + index)
                     .map(|byte| Value::i32(byte as i32))
             }
@@ -4864,6 +4931,16 @@ impl<'a> Interpreter<'a> {
         Ok(Some(false))
     }
 
+    fn typed_array_backing_field_value(&self, target: Value, field_name: &str) -> Option<Value> {
+        let field_name = match field_name {
+            "buffer" => "_buffer",
+            "byteOffset" => "_byteOffset",
+            "byteLength" => "_byteLength",
+            other => other,
+        };
+        self.get_own_field_value_by_name(target, field_name)
+    }
+
     fn typed_array_define_indexed_property(
         &mut self,
         target: Value,
@@ -4927,8 +5004,85 @@ impl<'a> Interpreter<'a> {
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
         let debug_typed_array = std::env::var("RAYA_DEBUG_TYPED_ARRAY_PROP").is_ok();
-        if key != "length" && parse_js_array_index_name(key).is_none() {
+        let wants_accessor =
+            matches!(key, "buffer" | "byteOffset" | "byteLength" | "length");
+        if !wants_accessor && parse_js_array_index_name(key).is_none() {
             return Ok(None);
+        }
+
+        if matches!(key, "buffer" | "byteOffset" | "byteLength") {
+            let Some(class_name) = self.typed_array_runtime_class_name(target) else {
+                return Ok(None);
+            };
+            let has_backing_slots = self
+                .typed_array_backing_field_value(target, "buffer")
+                .is_some()
+                && self
+                    .typed_array_backing_field_value(target, "byteOffset")
+                    .is_some()
+                && self
+                    .typed_array_backing_field_value(target, "byteLength")
+                    .is_some();
+            if debug_typed_array {
+                eprintln!(
+                    "[typed-array.own] target={:#x} key={} class={} has_backing_slots={} buffer={:?} byteOffset={:?} byteLength={:?} fixed={:?} length_tracking={:?}",
+                    target.raw(),
+                    key,
+                    class_name,
+                    has_backing_slots,
+                    self.typed_array_backing_field_value(target, "buffer")
+                        .map(|value| value.raw()),
+                    self.typed_array_backing_field_value(target, "byteOffset")
+                        .map(|value| value.raw()),
+                    self.typed_array_backing_field_value(target, "byteLength")
+                        .map(|value| value.raw()),
+                    self.typed_array_backing_field_value(target, "_fixedLength")
+                        .map(|value| value.raw()),
+                    self.typed_array_backing_field_value(target, "_lengthTracking")
+                        .map(|value| value.raw()),
+                );
+            }
+            if class_name == "TypedArray" || !has_backing_slots {
+                return Err(VmError::TypeError(format!(
+                    "TypedArray.prototype.{key} called on incompatible receiver"
+                )));
+            }
+            return match key {
+                "buffer" => Ok(self.typed_array_backing_field_value(target, "buffer")),
+                "byteOffset" => {
+                    let bytes_per_element = self.typed_array_bytes_per_element(&class_name);
+                    let raw_len = self.typed_array_raw_length_direct(target, bytes_per_element);
+                    if raw_len < 0 {
+                        Ok(Some(Value::i32(0)))
+                    } else {
+                        Ok(self.typed_array_backing_field_value(target, "byteOffset"))
+                    }
+                }
+                "byteLength" => {
+                    let bytes_per_element = self.typed_array_bytes_per_element(&class_name);
+                    let raw_len = self.typed_array_raw_length_direct(target, bytes_per_element);
+                    if debug_typed_array {
+                        eprintln!(
+                            "[typed-array.own] target={:#x} key={} bytes_per_element={} raw_len={}",
+                            target.raw(),
+                            key,
+                            bytes_per_element,
+                            raw_len,
+                        );
+                    }
+                    if raw_len < 0 {
+                        Ok(Some(Value::i32(0)))
+                    } else {
+                        let byte_length = raw_len.saturating_mul(bytes_per_element);
+                        Ok(Some(if byte_length <= i32::MAX as isize {
+                            Value::i32(byte_length as i32)
+                        } else {
+                            Value::f64(byte_length as f64)
+                        }))
+                    }
+                }
+                _ => Ok(None),
+            };
         }
 
         let Some(len) =
@@ -7419,7 +7573,10 @@ impl<'a> Interpreter<'a> {
 
                     // Buffer native calls
                     id if id == buffer::NEW => {
-                        let size = args[0].as_i32().unwrap_or(0) as usize;
+                        let size = match self.js_usize_arg_with_context(args[0], task, module) {
+                            Ok(size) => size,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         let buf = Buffer::new(size);
                         let handle = self.allocate_pinned_handle(buf);
                         let wrapped = match self.alloc_buffer_object(handle, size) {
@@ -7453,7 +7610,10 @@ impl<'a> Interpreter<'a> {
                             Ok(h) => h,
                             Err(err) => return OpcodeResult::Error(err),
                         };
-                        let index = args[1].as_i32().unwrap_or(0) as usize;
+                        let index = match self.js_usize_arg_with_context(args[1], task, module) {
+                            Ok(index) => index,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -7472,8 +7632,14 @@ impl<'a> Interpreter<'a> {
                             Ok(h) => h,
                             Err(err) => return OpcodeResult::Error(err),
                         };
-                        let index = args[1].as_i32().unwrap_or(0) as usize;
-                        let value = args[2].as_i32().unwrap_or(0) as u8;
+                        let index = match self.js_usize_arg_with_context(args[1], task, module) {
+                            Ok(index) => index,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = match self.js_i32_arg_with_context(args[2], task, module) {
+                            Ok(value) => value as u8,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         let buf_ptr = handle as *mut Buffer;
                         if buf_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -7494,7 +7660,10 @@ impl<'a> Interpreter<'a> {
                             Ok(h) => h,
                             Err(err) => return OpcodeResult::Error(err),
                         };
-                        let index = args[1].as_i32().unwrap_or(0) as usize;
+                        let index = match self.js_usize_arg_with_context(args[1], task, module) {
+                            Ok(index) => index,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -7513,8 +7682,14 @@ impl<'a> Interpreter<'a> {
                             Ok(h) => h,
                             Err(err) => return OpcodeResult::Error(err),
                         };
-                        let index = args[1].as_i32().unwrap_or(0) as usize;
-                        let value = args[2].as_i32().unwrap_or(0);
+                        let index = match self.js_usize_arg_with_context(args[1], task, module) {
+                            Ok(index) => index,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = match self.js_i32_arg_with_context(args[2], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         let buf_ptr = handle as *mut Buffer;
                         if buf_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -7535,7 +7710,10 @@ impl<'a> Interpreter<'a> {
                             Ok(h) => h,
                             Err(err) => return OpcodeResult::Error(err),
                         };
-                        let index = args[1].as_i32().unwrap_or(0) as usize;
+                        let index = match self.js_usize_arg_with_context(args[1], task, module) {
+                            Ok(index) => index,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -7554,8 +7732,14 @@ impl<'a> Interpreter<'a> {
                             Ok(h) => h,
                             Err(err) => return OpcodeResult::Error(err),
                         };
-                        let index = args[1].as_i32().unwrap_or(0) as usize;
-                        let value = args[2].as_f64().unwrap_or(0.0);
+                        let index = match self.js_usize_arg_with_context(args[1], task, module) {
+                            Ok(index) => index,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let value = match self.js_to_number_with_context(args[2], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         let buf_ptr = handle as *mut Buffer;
                         if buf_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -7576,7 +7760,10 @@ impl<'a> Interpreter<'a> {
                             Ok(h) => h,
                             Err(err) => return OpcodeResult::Error(err),
                         };
-                        let start = args[1].as_i32().unwrap_or(0) as usize;
+                        let start = match self.js_usize_arg_with_context(args[1], task, module) {
+                            Ok(start) => start,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -7586,7 +7773,10 @@ impl<'a> Interpreter<'a> {
                         let buf = unsafe { &*buf_ptr };
                         // end is optional - if not provided, use buffer length
                         let end = if arg_count >= 3 {
-                            args[2].as_i32().unwrap_or(buf.length() as i32) as usize
+                            match self.js_usize_arg_with_context(args[2], task, module) {
+                                Ok(end) => end,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
                         } else {
                             buf.length()
                         };
@@ -7627,17 +7817,26 @@ impl<'a> Interpreter<'a> {
 
                         // Optional parameters with defaults
                         let tgt_start = if arg_count >= 3 {
-                            args[2].as_i32().unwrap_or(0) as usize
+                            match self.js_usize_arg_with_context(args[2], task, module) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
                         } else {
                             0
                         };
                         let src_start = if arg_count >= 4 {
-                            args[3].as_i32().unwrap_or(0) as usize
+                            match self.js_usize_arg_with_context(args[3], task, module) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
                         } else {
                             0
                         };
                         let src_end = if arg_count >= 5 {
-                            args[4].as_i32().unwrap_or(src.data.len() as i32) as usize
+                            match self.js_usize_arg_with_context(args[4], task, module) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
                         } else {
                             src.data.len()
                         };

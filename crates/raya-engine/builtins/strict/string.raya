@@ -99,16 +99,16 @@ class string {
         return __NATIVE_CALL<int>(LAST_INDEX_OF, this, searchStr, fromIndex);
     }
 
-    includes(searchStr: string): boolean {
-        return __NATIVE_CALL<boolean>(INCLUDES, this, searchStr);
+    includes(searchStr: string, position: number = 0): boolean {
+        return __NATIVE_CALL<boolean>(INCLUDES, this, searchStr, position);
     }
 
-    startsWith(prefix: string): boolean {
-        return __NATIVE_CALL<boolean>(STARTS_WITH, this, prefix);
+    startsWith(prefix: string, position: number = 0): boolean {
+        return __NATIVE_CALL<boolean>(STARTS_WITH, this, prefix, position);
     }
 
-    endsWith(suffix: string): boolean {
-        return __NATIVE_CALL<boolean>(ENDS_WITH, this, suffix);
+    endsWith(suffix: string, endPosition?: number): boolean {
+        return __NATIVE_CALL<boolean>(ENDS_WITH, this, suffix, endPosition);
     }
 
     split(separator: string, limit?: number): string[] {

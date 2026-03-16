@@ -22,11 +22,11 @@ impl<'a> Interpreter<'a> {
     /// Handle built-in string methods
     pub(in crate::vm::interpreter) fn call_string_method(
         &mut self,
-        _task: &Arc<Task>,
+        task: &Arc<Task>,
         stack: &mut Stack,
         method_id: u16,
         arg_count: usize,
-        _module: &Module,
+        module: &Module,
     ) -> Result<(), VmError> {
         use crate::vm::builtin::string;
 
@@ -39,12 +39,8 @@ impl<'a> Interpreter<'a> {
 
         // Pop the string (receiver)
         let string_val = stack.pop()?;
-        if !string_val.is_ptr() {
-            return Err(VmError::TypeError("Expected string".to_string()));
-        }
-        let str_ptr = unsafe { string_val.as_ptr::<RayaString>() };
-        let raya_str = unsafe { &*str_ptr.unwrap().as_ptr() };
-        let s = &raya_str.data;
+        let s = self.js_function_argument_to_string(string_val, task, module)?;
+        let s = s.as_str();
 
         match method_id {
             string::CHAR_AT => {
@@ -101,12 +97,7 @@ impl<'a> Interpreter<'a> {
                         arg_count
                     )));
                 }
-                let search_val = args[0];
-                let search_str = if let Some(ptr) = unsafe { search_val.as_ptr::<RayaString>() } {
-                    unsafe { &*ptr.as_ptr() }.data.clone()
-                } else {
-                    String::new()
-                };
+                let search_str = self.js_function_argument_to_string(args[0], task, module)?;
                 let from_index = if arg_count == 2 {
                     to_i32_arg(args[1], 0).max(0) as usize
                 } else {
@@ -124,53 +115,59 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             string::INCLUDES => {
-                if arg_count != 1 {
+                if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
-                        "String.includes expects 1 argument, got {}",
+                        "String.includes expects 1 or 2 arguments, got {}",
                         arg_count
                     )));
                 }
-                let search_val = args[0];
-                let search_str = if let Some(ptr) = unsafe { search_val.as_ptr::<RayaString>() } {
-                    unsafe { &*ptr.as_ptr() }.data.clone()
+                let search_str = self.js_function_argument_to_string(args[0], task, module)?;
+                let start = if arg_count >= 2 {
+                    to_i32_arg(args[1], 0).max(0) as usize
                 } else {
-                    String::new()
+                    0
                 };
-                let result = s.contains(&search_str);
+                let result = s
+                    .get(start.min(s.len())..)
+                    .is_some_and(|slice| slice.contains(&search_str));
                 stack.push(Value::bool(result))?;
                 Ok(())
             }
             string::STARTS_WITH => {
-                if arg_count != 1 {
+                if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
-                        "String.startsWith expects 1 argument, got {}",
+                        "String.startsWith expects 1 or 2 arguments, got {}",
                         arg_count
                     )));
                 }
-                let prefix_val = args[0];
-                let prefix_str = if let Some(ptr) = unsafe { prefix_val.as_ptr::<RayaString>() } {
-                    unsafe { &*ptr.as_ptr() }.data.clone()
+                let prefix_str = self.js_function_argument_to_string(args[0], task, module)?;
+                let start = if arg_count >= 2 {
+                    to_i32_arg(args[1], 0).max(0) as usize
                 } else {
-                    String::new()
+                    0
                 };
-                let result = s.starts_with(&prefix_str);
+                let result = s
+                    .get(start.min(s.len())..)
+                    .is_some_and(|slice| slice.starts_with(&prefix_str));
                 stack.push(Value::bool(result))?;
                 Ok(())
             }
             string::ENDS_WITH => {
-                if arg_count != 1 {
+                if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
-                        "String.endsWith expects 1 argument, got {}",
+                        "String.endsWith expects 1 or 2 arguments, got {}",
                         arg_count
                     )));
                 }
-                let suffix_val = args[0];
-                let suffix_str = if let Some(ptr) = unsafe { suffix_val.as_ptr::<RayaString>() } {
-                    unsafe { &*ptr.as_ptr() }.data.clone()
+                let suffix_str = self.js_function_argument_to_string(args[0], task, module)?;
+                let end = if arg_count >= 2 {
+                    to_i32_arg(args[1], s.len() as i32).max(0) as usize
                 } else {
-                    String::new()
+                    s.len()
                 };
-                let result = s.ends_with(&suffix_str);
+                let result = s
+                    .get(..end.min(s.len()))
+                    .is_some_and(|slice| slice.ends_with(&suffix_str));
                 stack.push(Value::bool(result))?;
                 Ok(())
             }
@@ -208,12 +205,7 @@ impl<'a> Interpreter<'a> {
                         arg_count
                     )));
                 }
-                let sep_val = args[0];
-                let sep_str = if let Some(ptr) = unsafe { sep_val.as_ptr::<RayaString>() } {
-                    unsafe { &*ptr.as_ptr() }.data.clone()
-                } else {
-                    String::new()
-                };
+                let sep_str = self.js_function_argument_to_string(args[0], task, module)?;
 
                 // Get optional limit argument (try both i32 and i64)
                 // In Raya, limit 0 means "no limit"
@@ -280,12 +272,7 @@ impl<'a> Interpreter<'a> {
                         arg_count
                     )));
                 }
-                let search_val = args[0];
-                let search_str = if let Some(ptr) = unsafe { search_val.as_ptr::<RayaString>() } {
-                    unsafe { &*ptr.as_ptr() }.data.clone()
-                } else {
-                    String::new()
-                };
+                let search_str = self.js_function_argument_to_string(args[0], task, module)?;
                 let result = if arg_count == 2 {
                     let end_index = to_i32_arg(args[1], s.len() as i32).max(0) as usize;
                     let end = (end_index + search_str.len()).min(s.len());
@@ -306,17 +293,13 @@ impl<'a> Interpreter<'a> {
                 }
                 let target_length = to_i32_arg(args[0], 0) as usize;
                 let pad_str = if arg_count >= 2 {
-                    if let Some(ptr) = unsafe { args[1].as_ptr::<RayaString>() } {
-                        unsafe { &*ptr.as_ptr() }.data.clone()
-                    } else {
-                        " ".to_string()
-                    }
+                    self.js_function_argument_to_string(args[1], task, module)?
                 } else {
                     " ".to_string()
                 };
 
                 let result = if s.len() >= target_length {
-                    s.clone()
+                    s.to_string()
                 } else {
                     let pad_len = target_length - s.len();
                     let pad_repeated = pad_str.repeat((pad_len / pad_str.len().max(1)) + 1);
@@ -340,17 +323,13 @@ impl<'a> Interpreter<'a> {
                 }
                 let target_length = to_i32_arg(args[0], 0) as usize;
                 let pad_str = if arg_count >= 2 {
-                    if let Some(ptr) = unsafe { args[1].as_ptr::<RayaString>() } {
-                        unsafe { &*ptr.as_ptr() }.data.clone()
-                    } else {
-                        " ".to_string()
-                    }
+                    self.js_function_argument_to_string(args[1], task, module)?
                 } else {
                     " ".to_string()
                 };
 
                 let result = if s.len() >= target_length {
-                    s.clone()
+                    s.to_string()
                 } else {
                     let pad_len = target_length - s.len();
                     let pad_repeated = pad_str.repeat((pad_len / pad_str.len().max(1)) + 1);
@@ -528,11 +507,7 @@ impl<'a> Interpreter<'a> {
                 }
                 let re = unsafe { &*re_ptr };
 
-                let replacement = if let Some(ptr) = unsafe { args[1].as_ptr::<RayaString>() } {
-                    unsafe { &*ptr.as_ptr() }.data.clone()
-                } else {
-                    String::new()
-                };
+                let replacement = self.js_function_argument_to_string(args[1], task, module)?;
 
                 let is_global = re.flags.contains('g');
                 let result = if is_global {
@@ -659,16 +634,9 @@ impl<'a> Interpreter<'a> {
                         arg_count
                     )));
                 }
-                let search_str = if let Some(ptr) = unsafe { args[0].as_ptr::<RayaString>() } {
-                    unsafe { &*ptr.as_ptr() }.data.clone()
-                } else {
-                    String::new()
-                };
-                let replacement_str = if let Some(ptr) = unsafe { args[1].as_ptr::<RayaString>() } {
-                    unsafe { &*ptr.as_ptr() }.data.clone()
-                } else {
-                    String::new()
-                };
+                let search_str = self.js_function_argument_to_string(args[0], task, module)?;
+                let replacement_str =
+                    self.js_function_argument_to_string(args[1], task, module)?;
                 let result = s.replacen(&search_str, &replacement_str, 1);
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);

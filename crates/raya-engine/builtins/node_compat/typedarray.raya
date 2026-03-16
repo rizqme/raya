@@ -1,10 +1,86 @@
 // TypedArray and ArrayBuffer builtins
 // Node-like surface for Raya strict numeric model (int indices/lengths).
 
+const JS_TO_NUMBER: number = 0x001D;
 const JS_TO_INTEGER_OR_INFINITY: number = 0x001E;
+const __FLOAT32_NAN_SENTINEL: int = -2147483648;
+const __FLOAT32_POSITIVE_INFINITY_SENTINEL: int = -2147483647;
+const __FLOAT32_NEGATIVE_INFINITY_SENTINEL: int = -2147483646;
+const __FLOAT16_NAN_SENTINEL: int = 65535;
+const __FLOAT16_POSITIVE_INFINITY_SENTINEL: int = 65534;
+const __FLOAT16_NEGATIVE_INFINITY_SENTINEL: int = 65533;
+const __POSITIVE_INFINITY: number = 1.0 / 0.0;
+const __NEGATIVE_INFINITY: number = -__POSITIVE_INFINITY;
+const __NaN: number = 0.0 / 0.0;
+
+function typedArrayJsToNumber(value: any): number {
+    return __NATIVE_CALL<number>(JS_TO_NUMBER, value);
+}
 
 function typedArrayJsToIntegerOrInfinity(value: any): number {
     return __NATIVE_CALL<number>(JS_TO_INTEGER_OR_INFINITY, value);
+}
+
+function __typedArrayIntegerElementValue(value: any): int {
+    let numeric = typedArrayJsToNumber(value);
+    if (numeric != numeric || numeric == __POSITIVE_INFINITY || numeric == __NEGATIVE_INFINITY) {
+        return 0;
+    }
+    return numeric as int;
+}
+
+function __typedArrayFloat32StoredValue(value: any): int {
+    let numeric = typedArrayJsToNumber(value);
+    if (numeric != numeric) {
+        return __FLOAT32_NAN_SENTINEL;
+    }
+    if (numeric == __POSITIVE_INFINITY) {
+        return __FLOAT32_POSITIVE_INFINITY_SENTINEL;
+    }
+    if (numeric == __NEGATIVE_INFINITY) {
+        return __FLOAT32_NEGATIVE_INFINITY_SENTINEL;
+    }
+    return numeric as int;
+}
+
+function __typedArrayDecodeFloat32StoredValue(raw: int): number {
+    if (raw == __FLOAT32_NAN_SENTINEL) {
+        return __NaN;
+    }
+    if (raw == __FLOAT32_POSITIVE_INFINITY_SENTINEL) {
+        return __POSITIVE_INFINITY;
+    }
+    if (raw == __FLOAT32_NEGATIVE_INFINITY_SENTINEL) {
+        return __NEGATIVE_INFINITY;
+    }
+    return raw as number;
+}
+
+function __typedArrayFloat16StoredValue(value: any): int {
+    let numeric = typedArrayJsToNumber(value);
+    if (numeric != numeric) {
+        return __FLOAT16_NAN_SENTINEL;
+    }
+    if (numeric == __POSITIVE_INFINITY) {
+        return __FLOAT16_POSITIVE_INFINITY_SENTINEL;
+    }
+    if (numeric == __NEGATIVE_INFINITY) {
+        return __FLOAT16_NEGATIVE_INFINITY_SENTINEL;
+    }
+    return numeric as int;
+}
+
+function __typedArrayDecodeFloat16StoredValue(raw: int): number {
+    if (raw == __FLOAT16_NAN_SENTINEL) {
+        return __NaN;
+    }
+    if (raw == __FLOAT16_POSITIVE_INFINITY_SENTINEL) {
+        return __POSITIVE_INFINITY;
+    }
+    if (raw == __FLOAT16_NEGATIVE_INFINITY_SENTINEL) {
+        return __NEGATIVE_INFINITY;
+    }
+    return raw as number;
 }
 
 class ArrayBuffer {
@@ -263,6 +339,42 @@ function __typedArrayLengthTracking(source: any, requestedLength: int): boolean 
     return requestedLength < 0;
 }
 
+function __typedArrayDefineDataField(target: any, key: string, value: any): void {
+    Object.defineProperty(target, key, {
+        value: value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+    });
+}
+
+function __typedArrayDefineInternalField(target: any, key: string, value: any): void {
+    Object.defineProperty(target, key, {
+        value: value,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+    });
+}
+
+function __typedArrayBuffer(target: any): ArrayBuffer {
+    return target._buffer as ArrayBuffer;
+}
+
+function __typedArrayByteOffset(target: any): int {
+    return target._byteOffset as int;
+}
+
+function __typedArrayByteLength(target: any): int {
+    return target._byteLength as int;
+}
+
+function __typedArraySetBacking(target: any, buffer: ArrayBuffer, byteOffset: int, byteLength: int): void {
+    __typedArrayDefineInternalField(target, "_buffer", buffer);
+    __typedArrayDefineInternalField(target, "_byteOffset", byteOffset);
+    __typedArrayDefineInternalField(target, "_byteLength", byteLength);
+}
+
 function __typedArrayFixedLength(source: any, requestedLength: int): int {
     let sourceType = typeof source;
     if (sourceType == "int" || sourceType == "number") {
@@ -282,7 +394,7 @@ function __typedArrayInit(
     bytesPerElement: int,
     name: string
 ): void {
-    target._typedArrayName = name;
+    __typedArrayDefineInternalField(target, "_typedArrayName", name);
     let normalizedByteOffset = typedArrayJsToIntegerOrInfinity(byteOffset);
     if (normalizedByteOffset != normalizedByteOffset) {
         normalizedByteOffset = 0;
@@ -314,27 +426,29 @@ function __typedArrayInit(
             throw createRangeError(ERR_OUT_OF_RANGE, "length out of range");
         }
 
-        target.buffer = ab;
-        target.byteOffset = normalizedByteOffsetInt;
-        target.length = outLen;
-        target.byteLength = outLen * bytesPerElement;
-        target._lengthTracking = __typedArrayLengthTracking(source, requestedLength);
-        target._fixedLength = __typedArrayFixedLength(source, requestedLength);
+        __typedArraySetBacking(target, ab, normalizedByteOffsetInt, outLen * bytesPerElement);
+        __typedArrayDefineInternalField(
+            target,
+            "_lengthTracking",
+            __typedArrayLengthTracking(source, requestedLength)
+        );
+        __typedArrayDefineInternalField(
+            target,
+            "_fixedLength",
+            __typedArrayFixedLength(source, requestedLength)
+        );
         return;
     }
 
     if (sourceType != "int" && sourceType != "number") {
         let values = __typedArraySourceValues(source);
         let elementCount = values.length as int;
-        target.buffer = new ArrayBuffer(elementCount * bytesPerElement);
-        target.byteOffset = 0;
-        target.length = elementCount;
-        target.byteLength = elementCount * bytesPerElement;
-        target._lengthTracking = false;
-        target._fixedLength = elementCount;
+        __typedArraySetBacking(target, new ArrayBuffer(elementCount * bytesPerElement), 0, elementCount * bytesPerElement);
+        __typedArrayDefineInternalField(target, "_lengthTracking", false);
+        __typedArrayDefineInternalField(target, "_fixedLength", elementCount);
         let i = 0;
         while (i < elementCount) {
-            target[i] = values[i];
+            target.set(i, values[i]);
             i = i + 1;
         }
         return;
@@ -344,20 +458,17 @@ function __typedArrayInit(
     if (numericSize < 0) {
         throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
     }
-    target.buffer = new ArrayBuffer(numericSize * bytesPerElement);
-    target.byteOffset = 0;
-    target.length = numericSize;
-    target.byteLength = numericSize * bytesPerElement;
-    target._lengthTracking = false;
-    target._fixedLength = numericSize;
+    __typedArraySetBacking(target, new ArrayBuffer(numericSize * bytesPerElement), 0, numericSize * bytesPerElement);
+    __typedArrayDefineInternalField(target, "_lengthTracking", false);
+    __typedArrayDefineInternalField(target, "_fixedLength", numericSize);
 }
 
 function __typedArrayRawLength(target: any, bytesPerElement: int): int {
-    let buffer = target.buffer as ArrayBuffer;
+    let buffer = __typedArrayBuffer(target);
     if (buffer.isDetached()) {
         return -1;
     }
-    let byteOffset = target.byteOffset as int;
+    let byteOffset = __typedArrayByteOffset(target);
     let available = buffer.byteLength - byteOffset;
     if (available < 0) {
         return -1;
@@ -389,6 +500,91 @@ function __typedArrayToStringTag(target: any): any {
     return name;
 }
 
+function __typedArrayBytesPerElementForName(name: string): int {
+    if (name == "Uint8Array" || name == "Int8Array" || name == "Uint8ClampedArray" || name == "TypedArray") {
+        return 1;
+    }
+    if (name == "Uint16Array" || name == "Int16Array" || name == "Float16Array") {
+        return 2;
+    }
+    if (name == "Uint32Array" || name == "Int32Array" || name == "Float32Array") {
+        return 4;
+    }
+    return 8;
+}
+
+function __typedArrayAccessorTarget(target: any, property: string): any {
+    if (target == null || typeof target != "object") {
+        throw new TypeError("TypedArray.prototype." + property + " called on incompatible receiver");
+    }
+    if (Object.getOwnPropertyDescriptor(target, "_buffer") == null
+        || Object.getOwnPropertyDescriptor(target, "_byteOffset") == null
+        || Object.getOwnPropertyDescriptor(target, "_byteLength") == null) {
+        throw new TypeError("TypedArray.prototype." + property + " called on incompatible receiver");
+    }
+    if (target["_typedArrayName"] == null) {
+        throw new TypeError("TypedArray.prototype." + property + " called on incompatible receiver");
+    }
+    return target;
+}
+
+function __typedArrayPrototypeBufferGetter(): any {
+    let target = __typedArrayAccessorTarget(this, "buffer");
+    return __typedArrayBuffer(target);
+}
+
+function __typedArrayPrototypeByteOffsetGetter(): any {
+    let target = __typedArrayAccessorTarget(this, "byteOffset");
+    let bytesPerElement = __typedArrayBytesPerElementForName(target["_typedArrayName"] as string);
+    if (__typedArrayRawLength(target, bytesPerElement) < 0) {
+        return 0;
+    }
+    return __typedArrayByteOffset(target);
+}
+
+function __typedArrayPrototypeByteLengthGetter(): any {
+    let target = __typedArrayAccessorTarget(this, "byteLength");
+    let bytesPerElement = __typedArrayBytesPerElementForName(target["_typedArrayName"] as string);
+    let len = __typedArrayRawLength(target, bytesPerElement);
+    if (len < 0) {
+        return 0;
+    }
+    return len * bytesPerElement;
+}
+
+function __typedArrayPrototypeBytesPerElementGetter(): any {
+    let target = __typedArrayAccessorTarget(this, "BYTES_PER_ELEMENT");
+    return __typedArrayBytesPerElementForName(target["_typedArrayName"] as string);
+}
+
+Object.defineProperty(__typedArrayPrototypeBufferGetter, "name", {
+    value: "get buffer",
+    writable: false,
+    enumerable: false,
+    configurable: true,
+});
+
+Object.defineProperty(__typedArrayPrototypeByteOffsetGetter, "name", {
+    value: "get byteOffset",
+    writable: false,
+    enumerable: false,
+    configurable: true,
+});
+
+Object.defineProperty(__typedArrayPrototypeByteLengthGetter, "name", {
+    value: "get byteLength",
+    writable: false,
+    enumerable: false,
+    configurable: true,
+});
+
+Object.defineProperty(__typedArrayPrototypeBytesPerElementGetter, "name", {
+    value: "get BYTES_PER_ELEMENT",
+    writable: false,
+    enumerable: false,
+    configurable: true,
+});
+
 function __typedArrayLiveLengthForProperty(target: any, bytesPerElement: int): int {
     let len = __typedArrayRawLength(target, bytesPerElement);
     if (len < 0) {
@@ -409,6 +605,50 @@ function __typedArrayValidatedSnapshotLength(target: any, bytesPerElement: int):
     return __typedArrayRequireLength(target, bytesPerElement);
 }
 
+function __typedArrayCreateWitness(target: any, property: string, bytesPerElement: int, throwOnOutOfBounds: boolean = false): any {
+    let checked = __typedArrayAccessorTarget(target, property);
+    let snapshotLength = __typedArrayRawLength(checked, bytesPerElement);
+    if (snapshotLength < 0) {
+        if (throwOnOutOfBounds) {
+            throw new TypeError("TypedArray is out of bounds");
+        }
+        snapshotLength = 0;
+    }
+    let witness: any = {};
+    witness["target"] = checked;
+    witness["bytesPerElement"] = bytesPerElement;
+    witness["snapshotLength"] = snapshotLength;
+    witness["throwOnOutOfBounds"] = throwOnOutOfBounds;
+    return witness;
+}
+
+function __typedArrayWitnessTarget(witness: any): any {
+    return witness["target"];
+}
+
+function __typedArrayWitnessSnapshotLength(witness: any): int {
+    return witness["snapshotLength"] as int;
+}
+
+function __typedArrayWitnessCurrentLength(witness: any): int {
+    let target = witness["target"];
+    let bytesPerElement = witness["bytesPerElement"] as int;
+    return __typedArrayRawLength(target, bytesPerElement);
+}
+
+function __typedArrayWitnessRefreshForMutation(witness: any): int {
+    let len = __typedArrayWitnessCurrentLength(witness);
+    if (len < 0) {
+        throw new TypeError("TypedArray is out of bounds");
+    }
+    return len;
+}
+
+function __typedArrayWitnessHasIndex(witness: any, index: int): boolean {
+    let len = __typedArrayWitnessCurrentLength(witness);
+    return index >= 0 && index < len;
+}
+
 function __typedArrayCheckIndex(target: any, index: int, bytesPerElement: int): void {
     let len = __typedArrayRequireLength(target, bytesPerElement);
     if (index < 0 || index >= len) {
@@ -417,18 +657,18 @@ function __typedArrayCheckIndex(target: any, index: int, bytesPerElement: int): 
 }
 
 function __typedArrayElementOffset(target: any, index: int, bytesPerElement: int): int {
-    return (target.byteOffset as int) + (index * bytesPerElement);
+    return __typedArrayByteOffset(target) + (index * bytesPerElement);
 }
 
 function __typedArrayGetUint8(target: any, index: int): int {
     __typedArrayCheckIndex(target, index, 1);
-    let buffer = target.buffer as ArrayBuffer;
+    let buffer = __typedArrayBuffer(target);
     return buffer.getByte(__typedArrayElementOffset(target, index, 1));
 }
 
 function __typedArraySetUint8(target: any, index: int, value: int): void {
     __typedArrayCheckIndex(target, index, 1);
-    let buffer = target.buffer as ArrayBuffer;
+    let buffer = __typedArrayBuffer(target);
     let out = value % 256;
     if (out < 0) {
         out = out + 256;
@@ -438,7 +678,7 @@ function __typedArraySetUint8(target: any, index: int, value: int): void {
 
 function __typedArrayGetUint16(target: any, index: int): int {
     __typedArrayCheckIndex(target, index, 2);
-    let buffer = target.buffer as ArrayBuffer;
+    let buffer = __typedArrayBuffer(target);
     let offset = __typedArrayElementOffset(target, index, 2);
     let b0 = buffer.getByte(offset);
     let b1 = buffer.getByte(offset + 1);
@@ -447,7 +687,7 @@ function __typedArrayGetUint16(target: any, index: int): int {
 
 function __typedArraySetUint16(target: any, index: int, value: int): void {
     __typedArrayCheckIndex(target, index, 2);
-    let buffer = target.buffer as ArrayBuffer;
+    let buffer = __typedArrayBuffer(target);
     let offset = __typedArrayElementOffset(target, index, 2);
     let out = value % 65536;
     if (out < 0) {
@@ -459,32 +699,47 @@ function __typedArraySetUint16(target: any, index: int, value: int): void {
 
 function __typedArrayGetInt32(target: any, index: int): int {
     __typedArrayCheckIndex(target, index, 4);
-    let buffer = target.buffer as ArrayBuffer;
+    let buffer = __typedArrayBuffer(target);
     return buffer.getInt32(__typedArrayElementOffset(target, index, 4));
 }
 
 function __typedArraySetInt32(target: any, index: int, value: int): void {
     __typedArrayCheckIndex(target, index, 4);
-    let buffer = target.buffer as ArrayBuffer;
+    let buffer = __typedArrayBuffer(target);
     buffer.setInt32(__typedArrayElementOffset(target, index, 4), value);
 }
 
 function __typedArrayGetFloat64(target: any, index: int): number {
     __typedArrayCheckIndex(target, index, 8);
-    let buffer = target.buffer as ArrayBuffer;
-    return buffer.getInt32(__typedArrayElementOffset(target, index, 8)) as number;
+    let buffer = __typedArrayBuffer(target);
+    return buffer.getFloat64(__typedArrayElementOffset(target, index, 8));
 }
 
 function __typedArraySetFloat64(target: any, index: int, value: number): void {
     __typedArrayCheckIndex(target, index, 8);
-    let buffer = target.buffer as ArrayBuffer;
-    let offset = __typedArrayElementOffset(target, index, 8);
-    buffer.setInt32(offset, value as int);
-    buffer.setInt32(offset + 4, 0);
+    let buffer = __typedArrayBuffer(target);
+    buffer.setFloat64(__typedArrayElementOffset(target, index, 8), value);
+}
+
+function __typedArrayGetFloat32(target: any, index: int): number {
+    return __typedArrayDecodeFloat32StoredValue(__typedArrayGetInt32(target, index));
+}
+
+function __typedArraySetFloat32(target: any, index: int, value: any): void {
+    __typedArraySetInt32(target, index, __typedArrayFloat32StoredValue(value));
+}
+
+function __typedArrayGetFloat16(target: any, index: int): number {
+    return __typedArrayDecodeFloat16StoredValue(__typedArrayGetUint16(target, index));
+}
+
+function __typedArraySetFloat16(target: any, index: int, value: any): void {
+    __typedArraySetUint16(target, index, __typedArrayFloat16StoredValue(value));
 }
 
 function __typedArrayAt(target: any, index: any, bytesPerElement: int): any {
-    let len = __typedArrayValidatedSnapshotLength(target, bytesPerElement);
+    let witness = __typedArrayCreateWitness(target, "at", bytesPerElement);
+    let len = __typedArrayWitnessSnapshotLength(witness);
     let relative = typedArrayJsToIntegerOrInfinity(index);
     let actual = relative;
     if (actual < 0) {
@@ -493,7 +748,10 @@ function __typedArrayAt(target: any, index: any, bytesPerElement: int): any {
     if (actual < 0 || actual >= (len as number)) {
         return undefined;
     }
-    return target[actual as int];
+    if (!__typedArrayWitnessHasIndex(witness, actual as int)) {
+        return undefined;
+    }
+    return (__typedArrayWitnessTarget(witness))[actual as int];
 }
 
 function __typedArrayIndexOf(
@@ -502,7 +760,8 @@ function __typedArrayIndexOf(
     fromIndex: any,
     bytesPerElement: int
 ): number {
-    let len = __typedArrayRequireLength(target, bytesPerElement);
+    let witness = __typedArrayCreateWitness(target, "indexOf", bytesPerElement);
+    let len = __typedArrayWitnessSnapshotLength(witness);
     let normalizedFromIndex = typedArrayJsToIntegerOrInfinity(fromIndex);
     let start = normalizedFromIndex;
     if (start < 0) {
@@ -517,7 +776,11 @@ function __typedArrayIndexOf(
         return -1;
     }
     while (i < len) {
-        if (target[i] === searchElement) {
+        if (!__typedArrayWitnessHasIndex(witness, i)) {
+            i = i + 1;
+            continue;
+        }
+        if ((__typedArrayWitnessTarget(witness))[i] === searchElement) {
             return i;
         }
         i = i + 1;
@@ -571,6 +834,116 @@ function __typedArrayFill(target: any, value: any, start: any, end: any, bytesPe
         target.set(k, value);
         k = k + 1;
     }
+    return target;
+}
+
+function __typedArrayCopyWithin(target: any, targetIndex: any, start: any, end: any, bytesPerElement: int): any {
+    let witness = __typedArrayCreateWitness(target, "copyWithin", bytesPerElement, true);
+    let len = __typedArrayWitnessSnapshotLength(witness);
+
+    let relativeTarget = typedArrayJsToIntegerOrInfinity(targetIndex);
+    let to = 0;
+    if (relativeTarget == relativeTarget) {
+        if (relativeTarget == __NEGATIVE_INFINITY) {
+            to = 0;
+        } else if (relativeTarget == __POSITIVE_INFINITY) {
+            to = len;
+        } else if (relativeTarget < 0) {
+            if (relativeTarget <= -(len as number)) {
+                to = 0;
+            } else {
+                to = len + (relativeTarget as int);
+            }
+        } else if (relativeTarget >= (len as number)) {
+            to = len;
+        } else {
+            to = relativeTarget as int;
+        }
+    }
+
+    let relativeStart = typedArrayJsToIntegerOrInfinity(start);
+    let from = 0;
+    if (relativeStart == relativeStart) {
+        if (relativeStart == __NEGATIVE_INFINITY) {
+            from = 0;
+        } else if (relativeStart == __POSITIVE_INFINITY) {
+            from = len;
+        } else if (relativeStart < 0) {
+            if (relativeStart <= -(len as number)) {
+                from = 0;
+            } else {
+                from = len + (relativeStart as int);
+            }
+        } else if (relativeStart >= (len as number)) {
+            from = len;
+        } else {
+            from = relativeStart as int;
+        }
+    }
+
+    let relativeEnd = len as number;
+    if (end !== undefined) {
+        relativeEnd = typedArrayJsToIntegerOrInfinity(end);
+        if (relativeEnd != relativeEnd) {
+            relativeEnd = 0;
+        }
+    }
+    let final = len;
+    if (relativeEnd == relativeEnd) {
+        if (relativeEnd == __NEGATIVE_INFINITY) {
+            final = 0;
+        } else if (relativeEnd == __POSITIVE_INFINITY) {
+            final = len;
+        } else if (relativeEnd < 0) {
+            if (relativeEnd <= -(len as number)) {
+                final = 0;
+            } else {
+                final = len + (relativeEnd as int);
+            }
+        } else if (relativeEnd >= (len as number)) {
+            final = len;
+        } else {
+            final = relativeEnd as int;
+        }
+    }
+
+    let currentLen = __typedArrayWitnessRefreshForMutation(witness);
+
+    let count = final - from;
+    let maxCount = len - to;
+    if (count > maxCount) {
+        count = maxCount;
+    }
+    let availableFrom = currentLen - from;
+    if (count > availableFrom) {
+        count = availableFrom;
+    }
+    let availableTo = currentLen - to;
+    if (count > availableTo) {
+        count = availableTo;
+    }
+    if (count <= 0) {
+        return target;
+    }
+
+    let direction = 1;
+    if (from < to && to < (from + count)) {
+        direction = -1;
+        from = from + count - 1;
+        to = to + count - 1;
+    }
+
+    let receiver = __typedArrayWitnessTarget(witness);
+    while (count > 0) {
+        if (!__typedArrayWitnessHasIndex(witness, from) || !__typedArrayWitnessHasIndex(witness, to)) {
+            break;
+        }
+        receiver.set(to, receiver.get(from));
+        from = from + direction;
+        to = to + direction;
+        count = count - 1;
+    }
+
     return target;
 }
 
@@ -655,11 +1028,10 @@ class Uint8Array {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 1;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 1, "Uint8Array");
@@ -673,8 +1045,8 @@ class Uint8Array {
         return __typedArrayGetUint8(this as any, index);
     }
 
-    set(index: int, value: int): void {
-        __typedArraySetUint8(this as any, index, value);
+    set(index: int, value: any): void {
+        __typedArraySetUint8(this as any, index, __typedArrayIntegerElementValue(value));
     }
 
     at(index: any): any {
@@ -697,6 +1069,10 @@ class Uint8Array {
         return __typedArrayFill(this as any, value, start, end, 1);
     }
 
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 1);
+    }
+
     indexOf(element: any, fromIndex: any = 0): number {
         return __typedArrayIndexOf(this as any, element, fromIndex, 1);
     }
@@ -706,7 +1082,7 @@ class Uint8Array {
     }
 
     asArrayBuffer(): ArrayBuffer {
-        return this.buffer;
+        return this._buffer;
     }
 }
 
@@ -714,11 +1090,10 @@ class Int8Array {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 1;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 1, "Int8Array");
@@ -736,8 +1111,8 @@ class Int8Array {
         return value;
     }
 
-    set(index: int, value: int): void {
-        __typedArraySetUint8(this as any, index, value);
+    set(index: int, value: any): void {
+        __typedArraySetUint8(this as any, index, __typedArrayIntegerElementValue(value));
     }
 
     at(index: any): any {
@@ -760,6 +1135,10 @@ class Int8Array {
         return __typedArrayFill(this as any, value, start, end, 1);
     }
 
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 1);
+    }
+
     indexOf(element: any, fromIndex: any = 0): number {
         return __typedArrayIndexOf(this as any, element, fromIndex, 1);
     }
@@ -773,11 +1152,10 @@ class Int32Array {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 4;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 4, "Int32Array");
@@ -791,8 +1169,8 @@ class Int32Array {
         return __typedArrayGetInt32(this as any, index);
     }
 
-    set(index: int, value: int): void {
-        __typedArraySetInt32(this as any, index, value);
+    set(index: int, value: any): void {
+        __typedArraySetInt32(this as any, index, __typedArrayIntegerElementValue(value));
     }
 
     at(index: any): any {
@@ -815,6 +1193,10 @@ class Int32Array {
         return __typedArrayFill(this as any, value, start, end, 4);
     }
 
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 4);
+    }
+
     indexOf(element: any, fromIndex: any = 0): number {
         return __typedArrayIndexOf(this as any, element, fromIndex, 4);
     }
@@ -828,11 +1210,10 @@ class Float64Array {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 8;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 8, "Float64Array");
@@ -846,8 +1227,8 @@ class Float64Array {
         return __typedArrayGetFloat64(this as any, index);
     }
 
-    set(index: int, value: number): void {
-        __typedArraySetFloat64(this as any, index, value);
+    set(index: int, value: any): void {
+        __typedArraySetFloat64(this as any, index, typedArrayJsToNumber(value));
     }
 
     at(index: any): any {
@@ -870,6 +1251,10 @@ class Float64Array {
         return __typedArrayFill(this as any, value, start, end, 8);
     }
 
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 8);
+    }
+
     indexOf(element: any, fromIndex: any = 0): number {
         return __typedArrayIndexOf(this as any, element, fromIndex, 8);
     }
@@ -883,11 +1268,10 @@ class Uint8ClampedArray {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 1;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 1, "Uint8ClampedArray");
@@ -901,8 +1285,8 @@ class Uint8ClampedArray {
         return __typedArrayGetUint8(this as any, index);
     }
 
-    set(index: int, value: int): void {
-        let out = value;
+    set(index: int, value: any): void {
+        let out = __typedArrayIntegerElementValue(value);
         if (out < 0) {
             out = 0;
         }
@@ -932,6 +1316,10 @@ class Uint8ClampedArray {
         return __typedArrayFill(this as any, value, start, end, 1);
     }
 
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 1);
+    }
+
     indexOf(element: any, fromIndex: any = 0): number {
         return __typedArrayIndexOf(this as any, element, fromIndex, 1);
     }
@@ -945,11 +1333,10 @@ class Uint16Array {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 2;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 2, "Uint16Array");
@@ -963,8 +1350,8 @@ class Uint16Array {
         return __typedArrayGetUint16(this as any, index);
     }
 
-    set(index: int, value: int): void {
-        __typedArraySetUint16(this as any, index, value);
+    set(index: int, value: any): void {
+        __typedArraySetUint16(this as any, index, __typedArrayIntegerElementValue(value));
     }
 
     at(index: any): any {
@@ -987,6 +1374,10 @@ class Uint16Array {
         return __typedArrayFill(this as any, value, start, end, 2);
     }
 
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 2);
+    }
+
     indexOf(element: any, fromIndex: any = 0): number {
         return __typedArrayIndexOf(this as any, element, fromIndex, 2);
     }
@@ -1000,11 +1391,10 @@ class Int16Array {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 2;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 2, "Int16Array");
@@ -1022,8 +1412,8 @@ class Int16Array {
         return value;
     }
 
-    set(index: int, value: int): void {
-        __typedArraySetUint16(this as any, index, value);
+    set(index: int, value: any): void {
+        __typedArraySetUint16(this as any, index, __typedArrayIntegerElementValue(value));
     }
 
     at(index: any): any {
@@ -1046,6 +1436,10 @@ class Int16Array {
         return __typedArrayFill(this as any, value, start, end, 2);
     }
 
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 2);
+    }
+
     indexOf(element: any, fromIndex: any = 0): number {
         return __typedArrayIndexOf(this as any, element, fromIndex, 2);
     }
@@ -1059,11 +1453,10 @@ class Uint32Array {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 4;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 4, "Uint32Array");
@@ -1081,8 +1474,8 @@ class Uint32Array {
         return value;
     }
 
-    set(index: int, value: number): void {
-        __typedArraySetInt32(this as any, index, value as int);
+    set(index: int, value: any): void {
+        __typedArraySetInt32(this as any, index, __typedArrayIntegerElementValue(value));
     }
 
     at(index: any): any {
@@ -1103,6 +1496,10 @@ class Uint32Array {
 
     fill(value: any, start: any = 0, end: any = undefined): any {
         return __typedArrayFill(this as any, value, start, end, 4);
+    }
+
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 4);
     }
 
     indexOf(element: any, fromIndex: any = 0): number {
@@ -1120,11 +1517,10 @@ class Float32Array {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 4;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 4, "Float32Array");
@@ -1135,11 +1531,11 @@ class Float32Array {
     }
 
     get(index: int): number {
-        return __typedArrayGetInt32(this as any, index) as number;
+        return __typedArrayGetFloat32(this as any, index);
     }
 
-    set(index: int, value: number): void {
-        __typedArraySetInt32(this as any, index, value as int);
+    set(index: int, value: any): void {
+        __typedArraySetFloat32(this as any, index, value);
     }
 
     at(index: any): any {
@@ -1162,6 +1558,10 @@ class Float32Array {
         return __typedArrayFill(this as any, value, start, end, 4);
     }
 
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 4);
+    }
+
     indexOf(element: any, fromIndex: any = 0): number {
         return __typedArrayIndexOf(this as any, element, fromIndex, 4);
     }
@@ -1177,11 +1577,10 @@ class Float16Array {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 2;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 2, "Float16Array");
@@ -1192,11 +1591,11 @@ class Float16Array {
     }
 
     get(index: int): number {
-        return __typedArrayGetUint16(this as any, index) as number;
+        return __typedArrayGetFloat16(this as any, index);
     }
 
-    set(index: int, value: number): void {
-        __typedArraySetUint16(this as any, index, value as int);
+    set(index: int, value: any): void {
+        __typedArraySetFloat16(this as any, index, value);
     }
 
     at(index: any): any {
@@ -1219,6 +1618,10 @@ class Float16Array {
         return __typedArrayFill(this as any, value, start, end, 2);
     }
 
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 2);
+    }
+
     indexOf(element: any, fromIndex: any = 0): number {
         return __typedArrayIndexOf(this as any, element, fromIndex, 2);
     }
@@ -1233,11 +1636,10 @@ class BigInt64Array {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 8;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 8, "BigInt64Array");
@@ -1251,8 +1653,8 @@ class BigInt64Array {
         return __typedArrayGetFloat64(this as any, index);
     }
 
-    set(index: int, value: number): void {
-        __typedArraySetFloat64(this as any, index, value);
+    set(index: int, value: any): void {
+        __typedArraySetFloat64(this as any, index, typedArrayJsToNumber(value));
     }
 
     at(index: any): any {
@@ -1273,6 +1675,10 @@ class BigInt64Array {
 
     fill(value: any, start: any = 0, end: any = undefined): any {
         return __typedArrayFill(this as any, value, start, end, 8);
+    }
+
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 8);
     }
 
     indexOf(element: any, fromIndex: any = 0): number {
@@ -1289,11 +1695,10 @@ class BigUint64Array {
     _fixedLength: int;
     _lengthTracking: boolean;
     _typedArrayName: string;
+    _buffer: ArrayBuffer;
+    _byteOffset: int;
+    _byteLength: int;
     static BYTES_PER_ELEMENT: int = 8;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: Object | number, byteOffset: int = 0, length: int = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 8, "BigUint64Array");
@@ -1307,8 +1712,8 @@ class BigUint64Array {
         return __typedArrayGetFloat64(this as any, index);
     }
 
-    set(index: int, value: number): void {
-        __typedArraySetFloat64(this as any, index, value);
+    set(index: int, value: any): void {
+        __typedArraySetFloat64(this as any, index, typedArrayJsToNumber(value));
     }
 
     at(index: any): any {
@@ -1331,6 +1736,10 @@ class BigUint64Array {
         return __typedArrayFill(this as any, value, start, end, 8);
     }
 
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 8);
+    }
+
     indexOf(element: any, fromIndex: any = 0): number {
         return __typedArrayIndexOf(this as any, element, fromIndex, 8);
     }
@@ -1344,11 +1753,10 @@ class TypedArray<T> {
     private _fixedLength: int;
     private _lengthTracking: boolean;
     private _typedArrayName: string;
+    private _buffer: ArrayBuffer;
+    private _byteOffset: int;
+    private _byteLength: int;
     static BYTES_PER_ELEMENT: int = 1;
-    buffer: ArrayBuffer;
-    byteOffset: int;
-    byteLength: int;
-    length: int;
 
     constructor(source: any = 0, byteOffset: any = 0, length: any = -1) {
         __typedArrayInit(this as any, source, byteOffset, length, 1, "TypedArray");
@@ -1376,6 +1784,10 @@ class TypedArray<T> {
 
     fill(value: any, start: any = 0, end: any = undefined): any {
         return __typedArrayFill(this as any, value, start, end, 1);
+    }
+
+    copyWithin(targetIndex: any, start: any, end: any = undefined): any {
+        return __typedArrayCopyWithin(this as any, targetIndex, start, end, 1);
     }
 
     indexOf(element: any, fromIndex: any = 0): number {
@@ -1438,6 +1850,15 @@ function __defineTypedArrayToStringTagGetter(proto: any): void {
     });
 }
 
+function __defineTypedArrayAccessor(proto: any, name: string, getter: any): void {
+    Object.defineProperty(proto, name, {
+        get: getter,
+        set: undefined,
+        enumerable: false,
+        configurable: true,
+    });
+}
+
 __defineTypedArrayIteratorAlias((TypedArray as any).prototype);
 __defineTypedArrayIteratorAlias((Uint8Array as any).prototype);
 __defineTypedArrayIteratorAlias((Int8Array as any).prototype);
@@ -1452,6 +1873,10 @@ __defineTypedArrayIteratorAlias((Float16Array as any).prototype);
 __defineTypedArrayIteratorAlias((BigInt64Array as any).prototype);
 __defineTypedArrayIteratorAlias((BigUint64Array as any).prototype);
 __defineTypedArrayToStringTagGetter((TypedArray as any).prototype);
+__defineTypedArrayAccessor((TypedArray as any).prototype, "buffer", __typedArrayPrototypeBufferGetter);
+__defineTypedArrayAccessor((TypedArray as any).prototype, "byteOffset", __typedArrayPrototypeByteOffsetGetter);
+__defineTypedArrayAccessor((TypedArray as any).prototype, "byteLength", __typedArrayPrototypeByteLengthGetter);
+__defineTypedArrayAccessor((TypedArray as any).prototype, "BYTES_PER_ELEMENT", __typedArrayPrototypeBytesPerElementGetter);
 
 __linkTypedArrayHierarchy(Uint8Array);
 __linkTypedArrayHierarchy(Int8Array);

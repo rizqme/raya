@@ -199,6 +199,10 @@ enum LogosToken {
     PrivateIdentifier(String),
 
     // Numbers with numeric separator support
+    #[regex(r"0x[0-9a-fA-F]+(_[0-9a-fA-F]+)*n", parse_bigint_hex)]
+    #[regex(r"0b[01]+(_[01]+)*n", parse_bigint_binary)]
+    #[regex(r"0o[0-7]+(_[0-7]+)*n", parse_bigint_octal)]
+    #[regex(r"[0-9]+(_[0-9]+)*n", parse_bigint_int)]
     #[regex(r"0x[0-9a-fA-F]+(_[0-9a-fA-F]+)*", parse_hex)]
     #[regex(r"0b[01]+(_[01]+)*", parse_binary)]
     #[regex(r"0o[0-7]+(_[0-7]+)*", parse_octal)]
@@ -417,8 +421,20 @@ fn parse_hex(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
     i64::from_str_radix(&s, 16).ok()
 }
 
+fn parse_bigint_hex(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
+    let s = lex.slice();
+    let s = s[..s.len() - 1][2..].replace('_', "");
+    i64::from_str_radix(&s, 16).ok()
+}
+
 fn parse_binary(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
     let s = lex.slice()[2..].replace('_', "");
+    i64::from_str_radix(&s, 2).ok()
+}
+
+fn parse_bigint_binary(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
+    let s = lex.slice();
+    let s = s[..s.len() - 1][2..].replace('_', "");
     i64::from_str_radix(&s, 2).ok()
 }
 
@@ -427,8 +443,19 @@ fn parse_octal(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
     i64::from_str_radix(&s, 8).ok()
 }
 
+fn parse_bigint_octal(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
+    let s = lex.slice();
+    let s = s[..s.len() - 1][2..].replace('_', "");
+    i64::from_str_radix(&s, 8).ok()
+}
+
 fn parse_int(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
     lex.slice().replace('_', "").parse().ok()
+}
+
+fn parse_bigint_int(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
+    let s = lex.slice();
+    s[..s.len() - 1].replace('_', "").parse().ok()
 }
 
 fn parse_float(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<f64> {
