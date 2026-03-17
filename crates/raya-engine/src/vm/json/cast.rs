@@ -691,9 +691,9 @@ mod tests {
         prop_keys.insert("age".to_string(), age_key);
         let mut object = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
         {
-            let dyn_map = object.ensure_dyn_map();
-            dyn_map.insert(name_key, make_string(&mut gc, "Alice"));
-            dyn_map.insert(age_key, Value::f64(30.0));
+            let dyn_props = object.ensure_dyn_props();
+            dyn_props.insert(name_key, crate::vm::object::DynProp::data(make_string(&mut gc, "Alice")));
+            dyn_props.insert(age_key, crate::vm::object::DynProp::data(Value::f64(30.0)));
         }
         let object_ptr = gc.allocate(object);
         let json = value_to_json_stack(unsafe {

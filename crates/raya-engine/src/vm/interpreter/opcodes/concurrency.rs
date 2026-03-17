@@ -4,7 +4,7 @@ use crate::compiler::{Module, Opcode};
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, BoundMethod, Closure};
+use crate::vm::object::{Array, CallableKind, CallableObject};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::{MutexId, SemaphoreId};
@@ -89,34 +89,42 @@ impl<'a> Interpreter<'a> {
                     &*header_ptr_from_value_ptr(closure_val.as_ptr::<u8>().unwrap().as_ptr())
                 };
 
-                let new_task = if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-                    let bm = unsafe { &*closure_val.as_ptr::<BoundMethod>().unwrap().as_ptr() };
-                    let mut method_args = Vec::with_capacity(args.len() + 1);
-                    method_args.push(bm.receiver);
-                    method_args.extend(args);
-                    let target_module = bm.module.clone().unwrap_or_else(|| task.current_module());
-                    Arc::new(Task::with_args(
-                        bm.func_id,
-                        target_module,
-                        Some(task.id()),
-                        method_args,
-                    ))
-                } else if header.type_id() == std::any::TypeId::of::<Closure>() {
-                    let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
-                    let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                    // Don't prepend captures to args - the closure body uses LoadCaptured
-                    // which reads from the Closure object via task.current_closure()
-                    let target_module = closure.module().unwrap_or_else(|| task.current_module());
-                    let new_task = Arc::new(Task::with_args(
-                        closure.func_id,
-                        target_module,
-                        Some(task.id()),
-                        args,
-                    ));
-                    // Push the closure onto the spawned task's closure stack
-                    // so LoadCaptured can find it when the task starts executing
-                    new_task.push_closure(closure_val);
-                    new_task
+                let new_task = if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+                    let callable = unsafe { &*closure_val.as_ptr::<CallableObject>().unwrap().as_ptr() };
+                    match &callable.kind {
+                        CallableKind::BoundMethod { func_id, receiver } => {
+                            let mut method_args = Vec::with_capacity(args.len() + 1);
+                            method_args.push(*receiver);
+                            method_args.extend(args);
+                            let target_module = callable.module().unwrap_or_else(|| task.current_module());
+                            Arc::new(Task::with_args(
+                                *func_id,
+                                target_module,
+                                Some(task.id()),
+                                method_args,
+                            ))
+                        }
+                        CallableKind::Closure { func_id } => {
+                            // Don't prepend captures to args - the closure body uses LoadCaptured
+                            // which reads from the Closure object via task.current_closure()
+                            let target_module = callable.module().unwrap_or_else(|| task.current_module());
+                            let new_task = Arc::new(Task::with_args(
+                                *func_id,
+                                target_module,
+                                Some(task.id()),
+                                args,
+                            ));
+                            // Push the closure onto the spawned task's closure stack
+                            // so LoadCaptured can find it when the task starts executing
+                            new_task.push_closure(closure_val);
+                            new_task
+                        }
+                        _ => {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Expected closure or bound method".to_string(),
+                            ));
+                        }
+                    }
                 } else {
                     return OpcodeResult::Error(VmError::TypeError(
                         "Expected closure or bound method".to_string(),

@@ -347,12 +347,19 @@ impl GarbageCollector {
                     for &field_value in &obj.fields {
                         self.mark_value(field_value);
                     }
-                    if let Some(dyn_map) = obj.dyn_map() {
-                        let dyn_values: Vec<Value> = dyn_map.values().copied().collect();
-                        for value in dyn_values {
-                            self.mark_value(value);
+                    if let Some(dyn_props) = obj.dyn_props() {
+                        for key in dyn_props.keys_in_order() {
+                            if let Some(prop) = dyn_props.get(key) {
+                                self.mark_value(prop.value);
+                                if prop.is_accessor {
+                                    self.mark_value(prop.get);
+                                    self.mark_value(prop.set);
+                                }
+                            }
                         }
                     }
+                    // Trace prototype chain
+                    self.mark_value(obj.prototype);
                     return;
                 }
                 "Array" => {
@@ -370,15 +377,41 @@ impl GarbageCollector {
                     // Strings have no GC pointers
                     return;
                 }
-                "BoundMethod" => {
-                    // Trace the receiver (it's a GC-allocated object)
-                    let bm = unsafe { &*(ptr as *const crate::vm::object::BoundMethod) };
-                    self.mark_value(bm.receiver);
-                    return;
-                }
-                "BoundNativeMethod" => {
-                    let bm = unsafe { &*(ptr as *const crate::vm::object::BoundNativeMethod) };
-                    self.mark_value(bm.receiver);
+                "CallableObject" => {
+                    let callable = unsafe { &*(ptr as *const crate::vm::object::CallableObject) };
+                    // Trace captures
+                    for &cap in &callable.captures {
+                        self.mark_value(cap);
+                    }
+                    // Trace kind-specific values
+                    match &callable.kind {
+                        crate::vm::object::CallableKind::BoundMethod { receiver, .. } => {
+                            self.mark_value(*receiver);
+                        }
+                        crate::vm::object::CallableKind::BoundNative { receiver, .. } => {
+                            self.mark_value(*receiver);
+                        }
+                        crate::vm::object::CallableKind::Bound { target, this_arg, bound_args, .. } => {
+                            self.mark_value(*target);
+                            self.mark_value(*this_arg);
+                            for &arg in bound_args {
+                                self.mark_value(arg);
+                            }
+                        }
+                        _ => {}
+                    }
+                    // Trace dynamic own properties
+                    if let Some(ref dp) = callable.dyn_props {
+                        for key in dp.keys_in_order() {
+                            if let Some(prop) = dp.get(key) {
+                                self.mark_value(prop.value);
+                                if prop.is_accessor {
+                                    self.mark_value(prop.get);
+                                    self.mark_value(prop.set);
+                                }
+                            }
+                        }
+                    }
                     return;
                 }
                 _ => {

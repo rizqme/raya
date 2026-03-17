@@ -472,6 +472,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code,
+            ..Default::default()
         };
 
         let analyzer = HeuristicsAnalyzer::new();
@@ -529,6 +530,7 @@ mod tests {
             param_count: 0,
             local_count: 3,
             code,
+            ..Default::default()
         };
 
         let analyzer = HeuristicsAnalyzer::new();
@@ -560,6 +562,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code,
+            ..Default::default()
         };
 
         let analyzer = HeuristicsAnalyzer::new();
@@ -620,18 +623,21 @@ mod tests {
                 param_count: 0,
                 local_count: 3,
                 code: math_code,
+                ..Default::default()
             },
             Function {
                 name: "trivial".to_string(),
                 param_count: 0,
                 local_count: 0,
                 code: trivial_code,
+                ..Default::default()
             },
             Function {
                 name: "io_bound".to_string(),
                 param_count: 0,
                 local_count: 0,
                 code: io_code,
+                ..Default::default()
             },
         ]);
 
@@ -673,6 +679,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code,
+            ..Default::default()
         };
 
         let analyzer = HeuristicsAnalyzer::new();
@@ -695,6 +702,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![],
+            ..Default::default()
         };
 
         let analyzer = HeuristicsAnalyzer::new();
@@ -734,12 +742,14 @@ mod tests {
                 param_count: 0,
                 local_count: 0,
                 code: slow_code,
+                ..Default::default()
             },
             Function {
                 name: "faster".to_string(),
                 param_count: 0,
                 local_count: 0,
                 code: fast_code,
+                ..Default::default()
             },
         ]);
 
@@ -776,6 +786,7 @@ mod tests {
             param_count: 0,
             local_count: 1,
             code,
+            ..Default::default()
         };
         assert!(function_supported_for_jit(&func));
     }
@@ -791,6 +802,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code,
+            ..Default::default()
         };
 
         assert!(function_supported_for_jit(&func));
@@ -807,6 +819,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code,
+            ..Default::default()
         };
 
         assert!(!function_supported_for_jit(&func));

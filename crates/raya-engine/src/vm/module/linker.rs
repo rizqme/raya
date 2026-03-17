@@ -544,6 +544,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![],
+            ..Default::default()
         });
         module.exports.push(Export {
             name: "f".to_string(),
@@ -698,6 +699,7 @@ mod tests {
             param_count: 1,
             local_count: 1,
             code: vec![],
+            ..Default::default()
         });
         module.exports.push(Export {
             name: "f".to_string(),

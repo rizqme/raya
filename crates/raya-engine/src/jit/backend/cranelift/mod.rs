@@ -148,6 +148,7 @@ mod tests {
                 param_count,
                 local_count,
                 code,
+                ..Default::default()
             }],
             classes: vec![],
             metadata: Metadata {

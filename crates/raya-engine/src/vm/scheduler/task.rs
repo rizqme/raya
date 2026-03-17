@@ -1327,6 +1327,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::Return as u8],
+            ..Default::default()
         });
         // Finalize checksum so snapshot-restore tests exercise strict module identity.
         let encoded = module.encode();

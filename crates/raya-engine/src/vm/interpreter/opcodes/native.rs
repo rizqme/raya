@@ -15,9 +15,9 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    layout_id_from_ordered_names, Array, BoundFunction, BoundMethod, BoundNativeMethod, Buffer,
-    ChannelObject, Class, Closure, DateObject, LayoutId, MapObject, Object, RayaString,
-    RegExpObject, SetObject, TypeHandle,
+    layout_id_from_ordered_names, Array, CallableKind, CallableObject, DynProp, Buffer,
+    ChannelObject, Class, DateObject, LayoutId, MapObject, Object, RayaString,
+    RegExpObject, SetObject, SlotMeta, TypeHandle,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -30,16 +30,24 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 const NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY: &str = "__dynamic_value_property";
-const CALLABLE_VIRTUAL_DELETE_METADATA_KEY: &str = "__callable_virtual_deleted";
 const CALLABLE_VIRTUAL_VALUE_METADATA_KEY: &str = "__callable_virtual_value";
-const FIXED_PROPERTY_DELETE_METADATA_KEY: &str = "__fixed_property_deleted";
 const OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY: &str = "__object_prototype_override__";
-const OBJECT_DESCRIPTOR_MARKER_METADATA_KEY: &str = "__object_descriptor_marker__";
-const OBJECT_DESCRIPTOR_PRESENT_METADATA_KEY: &str = "__object_descriptor_present__";
 const OBJECT_EXTENSIBLE_METADATA_KEY: &str = "__object_extensible__";
 static DYNAMIC_JS_FUNCTION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Map descriptor field names to bit positions for the presence bitmask.
+fn descriptor_field_bit(field_name: &str) -> u32 {
+    match field_name {
+        "value" => 1 << 0,
+        "writable" => 1 << 1,
+        "enumerable" => 1 << 2,
+        "configurable" => 1 << 3,
+        "get" => 1 << 4,
+        "set" => 1 << 5,
+        _ => 0,
+    }
+}
 
 #[derive(Clone, Copy)]
 struct JsPropertyDescriptorRecord {
@@ -148,6 +156,20 @@ pub(in crate::vm::interpreter) fn checked_array_ptr(value: Value) -> Option<NonN
     unsafe { value.as_ptr::<Array>() }
 }
 
+pub(in crate::vm::interpreter) fn checked_callable_ptr(
+    value: Value,
+) -> Option<NonNull<CallableObject>> {
+    if !value.is_ptr() || value.is_null() {
+        return None;
+    }
+    let raw_ptr = unsafe { value.as_ptr::<u8>() }?;
+    let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+    if header.type_id() != TypeId::of::<CallableObject>() {
+        return None;
+    }
+    unsafe { value.as_ptr::<CallableObject>() }
+}
+
 pub(in crate::vm::interpreter) fn checked_string_ptr(value: Value) -> Option<NonNull<RayaString>> {
     if !value.is_ptr() || value.is_null() {
         return None;
@@ -160,16 +182,16 @@ pub(in crate::vm::interpreter) fn checked_string_ptr(value: Value) -> Option<Non
     unsafe { value.as_ptr::<RayaString>() }
 }
 
-pub(in crate::vm::interpreter) fn checked_closure_ptr(value: Value) -> Option<NonNull<Closure>> {
+pub(in crate::vm::interpreter) fn checked_closure_ptr(value: Value) -> Option<NonNull<CallableObject>> {
     if !value.is_ptr() || value.is_null() {
         return None;
     }
     let raw_ptr = unsafe { value.as_ptr::<u8>() }?;
     let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
-    if header.type_id() != TypeId::of::<Closure>() {
+    if header.type_id() != TypeId::of::<CallableObject>() {
         return None;
     }
-    unsafe { value.as_ptr::<Closure>() }
+    unsafe { value.as_ptr::<CallableObject>() }
 }
 
 fn value_same_value(a: Value, b: Value) -> bool {
@@ -466,22 +488,24 @@ impl<'a> Interpreter<'a> {
 
         if let Some(raw_ptr) = unsafe { constructor.as_ptr::<u8>() } {
             let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
-            if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
-                let bound = unsafe { &*constructor.as_ptr::<BoundFunction>().unwrap().as_ptr() };
-                let mut combined_args = bound.bound_args.clone();
-                combined_args.extend_from_slice(args);
-                let adjusted_new_target = if constructor.raw() == new_target.raw() {
-                    bound.target
-                } else {
-                    new_target
-                };
-                return self.construct_value_with_new_target(
-                    bound.target,
-                    adjusted_new_target,
-                    &combined_args,
-                    task,
-                    module,
-                );
+            if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+                let co = unsafe { &*constructor.as_ptr::<CallableObject>().unwrap().as_ptr() };
+                if let CallableKind::Bound { target, bound_args, .. } = &co.kind {
+                    let mut combined_args = bound_args.clone();
+                    combined_args.extend_from_slice(args);
+                    let adjusted_new_target = if constructor.raw() == new_target.raw() {
+                        *target
+                    } else {
+                        new_target
+                    };
+                    return self.construct_value_with_new_target(
+                        *target,
+                        adjusted_new_target,
+                        &combined_args,
+                        task,
+                        module,
+                    );
+                }
             }
         }
 
@@ -542,9 +566,9 @@ impl<'a> Interpreter<'a> {
 
             if let Some(constructor_id) = constructor_id {
                 let closure = if let Some(module) = constructor_module {
-                    Closure::with_module(constructor_id, Vec::new(), module)
+                    CallableObject::closure_with_module(constructor_id, Vec::new(), module)
                 } else {
-                    Closure::new(constructor_id, Vec::new())
+                    CallableObject::closure(constructor_id, Vec::new())
                 };
                 let closure_ptr = self.gc.lock().allocate(closure);
                 let closure_val = unsafe {
@@ -775,15 +799,16 @@ impl<'a> Interpreter<'a> {
                     }
                 }
 
-                if let Some(dyn_map) = obj.dyn_map() {
-                    for (key, value) in dyn_map {
-                        let Some(name) = self.prop_key_name(*key) else {
+                if let Some(dp) = obj.dyn_props() {
+                    for key in dp.keys_in_order() {
+                        let Some(prop) = dp.get(key) else { continue; };
+                        let Some(name) = self.prop_key_name(key) else {
                             continue;
                         };
                         if entries.iter().any(|(existing, _)| existing == &name) {
                             continue;
                         }
-                        entries.push((name, self.normalize_dynamic_value(*value)));
+                        entries.push((name, self.normalize_dynamic_value(prop.value)));
                     }
                 }
 
@@ -803,8 +828,8 @@ impl<'a> Interpreter<'a> {
                     if let Some(index) = self.get_field_index_for_value(target, key) {
                         let _ = obj.set_field(index, *value);
                     } else {
-                        obj.ensure_dyn_map()
-                            .insert(self.intern_prop_key(key), *value);
+                        obj.ensure_dyn_props()
+                            .insert(self.intern_prop_key(key), DynProp::data(*value));
                     }
                 }
             }
@@ -841,10 +866,7 @@ impl<'a> Interpreter<'a> {
             return false;
         }
         let header = unsafe { &*header_ptr_from_value_ptr(value.as_ptr::<u8>().unwrap().as_ptr()) };
-        header.type_id() == std::any::TypeId::of::<Closure>()
-            || header.type_id() == std::any::TypeId::of::<BoundMethod>()
-            || header.type_id() == std::any::TypeId::of::<BoundNativeMethod>()
-            || header.type_id() == std::any::TypeId::of::<BoundFunction>()
+        header.type_id() == std::any::TypeId::of::<CallableObject>()
     }
 
     pub(in crate::vm::interpreter) fn js_callable_builtin_constructor_name(
@@ -895,6 +917,7 @@ impl<'a> Interpreter<'a> {
         &self,
         value: Value,
     ) -> Option<Value> {
+        // TODO: migrate to Object.prototype field once initialization sets prototypes at allocation
         self.metadata
             .lock()
             .get_metadata(OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY, value)
@@ -905,6 +928,11 @@ impl<'a> Interpreter<'a> {
         value: Value,
         prototype: Value,
     ) {
+        // Write to both kernel and metadata
+        if let Some(obj_ptr) = checked_object_ptr(value) {
+            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+            obj.prototype = prototype;
+        }
         self.metadata.lock().define_metadata(
             OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY.to_string(),
             prototype,
@@ -942,6 +970,12 @@ impl<'a> Interpreter<'a> {
         if !self.js_value_supports_extensibility(value) {
             return false;
         }
+        // Property kernel: check OBJECT_FLAG_NOT_EXTENSIBLE
+        if let Some(obj_ptr) = checked_object_ptr(value) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            return !obj.has_flag(crate::vm::object::OBJECT_FLAG_NOT_EXTENSIBLE);
+        }
+        // Fallback for non-Object values
         self.metadata
             .lock()
             .get_metadata(OBJECT_EXTENSIBLE_METADATA_KEY, value)
@@ -953,6 +987,17 @@ impl<'a> Interpreter<'a> {
         if !self.js_value_supports_extensibility(value) {
             return;
         }
+        // Property kernel: set/clear OBJECT_FLAG_NOT_EXTENSIBLE
+        if let Some(obj_ptr) = checked_object_ptr(value) {
+            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+            if extensible {
+                obj.clear_flag(crate::vm::object::OBJECT_FLAG_NOT_EXTENSIBLE);
+            } else {
+                obj.set_flag(crate::vm::object::OBJECT_FLAG_NOT_EXTENSIBLE);
+            }
+            return;
+        }
+        // Fallback for non-Object values
         let mut metadata = self.metadata.lock();
         if extensible {
             metadata.delete_metadata(OBJECT_EXTENSIBLE_METADATA_KEY, value);
@@ -1139,7 +1184,7 @@ impl<'a> Interpreter<'a> {
                 continue;
             };
 
-            let closure = Closure::with_module(func_id, Vec::new(), module.clone());
+            let closure = CallableObject::closure_with_module(func_id, Vec::new(), module.clone());
             let closure_ptr = self.gc.lock().allocate(closure);
             let closure_value = unsafe {
                 Value::from_ptr(
@@ -1208,14 +1253,11 @@ impl<'a> Interpreter<'a> {
 
     pub(in crate::vm::interpreter) fn callable_virtual_property_deleted(
         &self,
-        target: Value,
-        key: &str,
+        _target: Value,
+        _key: &str,
     ) -> bool {
-        self.metadata
-            .lock()
-            .get_metadata_property(CALLABLE_VIRTUAL_DELETE_METADATA_KEY, target, key)
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
+        // No-op: property kernel handles presence via dyn_props
+        false
     }
 
     fn cached_callable_virtual_property_value(&self, target: Value, key: &str) -> Option<Value> {
@@ -1249,57 +1291,29 @@ impl<'a> Interpreter<'a> {
 
     pub(in crate::vm::interpreter) fn set_callable_virtual_property_deleted(
         &self,
-        target: Value,
-        key: &str,
-        deleted: bool,
+        _target: Value,
+        _key: &str,
+        _deleted: bool,
     ) {
-        let mut metadata = self.metadata.lock();
-        if deleted {
-            metadata.define_metadata_property(
-                CALLABLE_VIRTUAL_DELETE_METADATA_KEY.to_string(),
-                Value::bool(true),
-                target,
-                key.to_string(),
-            );
-        } else {
-            let _ = metadata.delete_metadata_property(
-                CALLABLE_VIRTUAL_DELETE_METADATA_KEY,
-                target,
-                key,
-            );
-        }
+        // No-op: property kernel handles presence via dyn_props
     }
 
     pub(in crate::vm::interpreter) fn fixed_property_deleted(
         &self,
-        target: Value,
-        key: &str,
+        _target: Value,
+        _key: &str,
     ) -> bool {
-        self.metadata
-            .lock()
-            .get_metadata_property(FIXED_PROPERTY_DELETE_METADATA_KEY, target, key)
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
+        // No-op: property kernel handles presence via dyn_props
+        false
     }
 
     pub(in crate::vm::interpreter) fn set_fixed_property_deleted(
         &self,
-        target: Value,
-        key: &str,
-        deleted: bool,
+        _target: Value,
+        _key: &str,
+        _deleted: bool,
     ) {
-        let mut metadata = self.metadata.lock();
-        if deleted {
-            metadata.define_metadata_property(
-                FIXED_PROPERTY_DELETE_METADATA_KEY.to_string(),
-                Value::bool(true),
-                target,
-                key.to_string(),
-            );
-        } else {
-            let _ =
-                metadata.delete_metadata_property(FIXED_PROPERTY_DELETE_METADATA_KEY, target, key);
-        }
+        // No-op: property kernel handles presence via dyn_props
     }
 
     pub(in crate::vm::interpreter) fn is_runtime_global_object(&self, target: Value) -> bool {
@@ -1569,66 +1583,64 @@ impl<'a> Interpreter<'a> {
         let raw_ptr = unsafe { target.as_ptr::<u8>() }?;
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<Closure>() {
-            let closure = unsafe { &*target.as_ptr::<Closure>()?.as_ptr() };
-            let module = closure.module()?;
-            if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
-                eprintln!(
-                    "[callable-info] closure target={:#x} func_id={} module={}",
-                    target.raw(),
-                    closure.func_id,
-                    module.metadata.name
-                );
-            }
-            let function = module.functions.get(closure.func_id)?;
-            if module.metadata.name.starts_with("__dynamic_function__/") {
-                return Some(("anonymous".to_string(), function.visible_length));
-            }
-            return Some((
-                Self::visible_function_name(&function.name),
-                function.visible_length,
-            ));
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-            let method = unsafe { &*target.as_ptr::<BoundMethod>()?.as_ptr() };
-            let module = method.module.clone()?;
-            let function = module.functions.get(method.func_id)?;
-            return Some((
-                Self::visible_function_name(&function.name),
-                function.visible_length,
-            ));
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
-            let method = unsafe { &*target.as_ptr::<BoundNativeMethod>()?.as_ptr() };
-            let raw_name = crate::compiler::native_id::native_name(method.native_id);
-            let visible_name = raw_name.rsplit('.').next().unwrap_or(raw_name).to_string();
-            let arity = match method.native_id {
-                crate::compiler::native_id::FUNCTION_CALL_HELPER => 1,
-                crate::compiler::native_id::FUNCTION_APPLY_HELPER => 2,
-                crate::compiler::native_id::FUNCTION_BIND_HELPER => 1,
-                _ => 0,
-            };
-            return Some((visible_name, arity));
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
-            let bound = unsafe { &*target.as_ptr::<BoundFunction>()?.as_ptr() };
-            let length = if let Some(v) = bound.visible_length.as_i32() {
-                v.max(0) as usize
-            } else if let Some(v) = bound.visible_length.as_i64() {
-                v.max(0) as usize
-            } else if let Some(v) = bound.visible_length.as_f64() {
-                if !v.is_finite() {
-                    usize::MAX
-                } else {
-                    v.max(0.0).floor().min(usize::MAX as f64) as usize
+        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+            let co = unsafe { &*target.as_ptr::<CallableObject>()?.as_ptr() };
+            match &co.kind {
+                CallableKind::Closure { func_id } => {
+                    let module = co.module()?;
+                    if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
+                        eprintln!(
+                            "[callable-info] closure target={:#x} func_id={} module={}",
+                            target.raw(),
+                            func_id,
+                            module.metadata.name
+                        );
+                    }
+                    let function = module.functions.get(*func_id)?;
+                    if module.metadata.name.starts_with("__dynamic_function__/") {
+                        return Some(("anonymous".to_string(), function.visible_length));
+                    }
+                    return Some((
+                        Self::visible_function_name(&function.name),
+                        function.visible_length,
+                    ));
                 }
-            } else {
-                0
-            };
-            return Some((bound.visible_name.clone(), length));
+                CallableKind::BoundMethod { func_id, .. } => {
+                    let module = co.module()?;
+                    let function = module.functions.get(*func_id)?;
+                    return Some((
+                        Self::visible_function_name(&function.name),
+                        function.visible_length,
+                    ));
+                }
+                CallableKind::BoundNative { native_id, .. } => {
+                    let raw_name = crate::compiler::native_id::native_name(*native_id);
+                    let visible_name = raw_name.rsplit('.').next().unwrap_or(raw_name).to_string();
+                    let arity = match *native_id {
+                        crate::compiler::native_id::FUNCTION_CALL_HELPER => 1,
+                        crate::compiler::native_id::FUNCTION_APPLY_HELPER => 2,
+                        crate::compiler::native_id::FUNCTION_BIND_HELPER => 1,
+                        _ => 0,
+                    };
+                    return Some((visible_name, arity));
+                }
+                CallableKind::Bound { visible_name, visible_length, .. } => {
+                    let length = if let Some(v) = visible_length.as_i32() {
+                        v.max(0) as usize
+                    } else if let Some(v) = visible_length.as_i64() {
+                        v.max(0) as usize
+                    } else if let Some(v) = visible_length.as_f64() {
+                        if !v.is_finite() {
+                            usize::MAX
+                        } else {
+                            v.max(0.0).floor().min(usize::MAX as f64) as usize
+                        }
+                    } else {
+                        0
+                    };
+                    return Some((visible_name.clone(), length));
+                }
+            }
         }
 
         if let Some(nominal_type_id) = self.constructor_nominal_type_id(target) {
@@ -1746,25 +1758,21 @@ impl<'a> Interpreter<'a> {
         };
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<Closure>() {
-            let Some(closure_ptr) = (unsafe { target.as_ptr::<Closure>() }) else {
+        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+            let Some(co_ptr) = (unsafe { target.as_ptr::<CallableObject>() }) else {
                 return false;
             };
-            let closure = unsafe { &*closure_ptr.as_ptr() };
-            let Some(module) = closure.module() else {
-                return false;
-            };
-            return module
-                .functions
-                .get(closure.func_id)
-                .is_some_and(|function| function.is_constructible);
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
-            let Some(bound_ptr) = (unsafe { target.as_ptr::<BoundFunction>() }) else {
-                return false;
-            };
-            return self.callable_is_constructible(unsafe { &*bound_ptr.as_ptr() }.target);
+            let co = unsafe { &*co_ptr.as_ptr() };
+            match &co.kind {
+                CallableKind::Closure { func_id } => {
+                    let Some(module) = co.module() else { return false; };
+                    return module.functions.get(*func_id).is_some_and(|f| f.is_constructible);
+                }
+                CallableKind::Bound { target: t, .. } => {
+                    return self.callable_is_constructible(*t);
+                }
+                _ => {}
+            }
         }
 
         self.constructor_nominal_type_id(target).is_some()
@@ -1782,25 +1790,21 @@ impl<'a> Interpreter<'a> {
         };
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<Closure>() {
-            let Some(closure_ptr) = (unsafe { target.as_ptr::<Closure>() }) else {
+        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+            let Some(co_ptr) = (unsafe { target.as_ptr::<CallableObject>() }) else {
                 return false;
             };
-            let closure = unsafe { &*closure_ptr.as_ptr() };
-            let Some(module) = closure.module() else {
-                return false;
-            };
-            return module
-                .functions
-                .get(closure.func_id)
-                .is_some_and(|function| function.is_constructible || function.is_generator);
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
-            let Some(bound_ptr) = (unsafe { target.as_ptr::<BoundFunction>() }) else {
-                return false;
-            };
-            return self.callable_exposes_default_prototype(unsafe { &*bound_ptr.as_ptr() }.target);
+            let co = unsafe { &*co_ptr.as_ptr() };
+            match &co.kind {
+                CallableKind::Closure { func_id } => {
+                    let Some(module) = co.module() else { return false; };
+                    return module.functions.get(*func_id).is_some_and(|f| f.is_constructible || f.is_generator);
+                }
+                CallableKind::Bound { target: t, .. } => {
+                    return self.callable_exposes_default_prototype(*t);
+                }
+                _ => {}
+            }
         }
 
         self.constructor_nominal_type_id(target).is_some()
@@ -1818,39 +1822,21 @@ impl<'a> Interpreter<'a> {
         };
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<Closure>() {
-            let Some(closure_ptr) = (unsafe { target.as_ptr::<Closure>() }) else {
+        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+            let Some(co_ptr) = (unsafe { target.as_ptr::<CallableObject>() }) else {
                 return false;
             };
-            let closure = unsafe { &*closure_ptr.as_ptr() };
-            let Some(module) = closure.module() else {
-                return false;
-            };
-            return module
-                .functions
-                .get(closure.func_id)
-                .is_some_and(|function| function.is_strict_js);
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
-            let Some(bound_ptr) = (unsafe { target.as_ptr::<BoundFunction>() }) else {
-                return false;
-            };
-            return self.callable_is_strict_js(unsafe { &*bound_ptr.as_ptr() }.target);
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-            let Some(method_ptr) = (unsafe { target.as_ptr::<BoundMethod>() }) else {
-                return false;
-            };
-            let method = unsafe { &*method_ptr.as_ptr() };
-            let Some(module) = method.module.as_ref() else {
-                return false;
-            };
-            return module
-                .functions
-                .get(method.func_id)
-                .is_some_and(|function| function.is_strict_js);
+            let co = unsafe { &*co_ptr.as_ptr() };
+            match &co.kind {
+                CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
+                    let Some(module) = co.module() else { return false; };
+                    return module.functions.get(*func_id).is_some_and(|f| f.is_strict_js);
+                }
+                CallableKind::Bound { target: t, .. } => {
+                    return self.callable_is_strict_js(*t);
+                }
+                _ => return false,
+            }
         }
 
         false
@@ -1870,40 +1856,22 @@ impl<'a> Interpreter<'a> {
         };
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<Closure>() {
-            let Some(closure_ptr) = (unsafe { target.as_ptr::<Closure>() }) else {
+        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+            let Some(co_ptr) = (unsafe { target.as_ptr::<CallableObject>() }) else {
                 return false;
             };
-            let closure = unsafe { &*closure_ptr.as_ptr() };
-            let Some(module) = closure.module() else {
-                return false;
-            };
-            return module
-                .functions
-                .get(closure.func_id)
-                .is_some_and(|function| function.uses_builtin_this_coercion);
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
-            let Some(bound_ptr) = (unsafe { target.as_ptr::<BoundFunction>() }) else {
-                return false;
-            };
-            return self
-                .callable_uses_builtin_this_coercion(unsafe { &*bound_ptr.as_ptr() }.target);
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-            let Some(method_ptr) = (unsafe { target.as_ptr::<BoundMethod>() }) else {
-                return false;
-            };
-            let method = unsafe { &*method_ptr.as_ptr() };
-            let Some(module) = method.module.as_ref() else {
-                return false;
-            };
-            return module
-                .functions
-                .get(method.func_id)
-                .is_some_and(|function| function.uses_builtin_this_coercion);
+            let co = unsafe { &*co_ptr.as_ptr() };
+            match &co.kind {
+                CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
+                    let Some(module) = co.module() else { return false; };
+                    return module.functions.get(*func_id)
+                        .is_some_and(|function| function.uses_builtin_this_coercion);
+                }
+                CallableKind::Bound { target: t, .. } => {
+                    return self.callable_uses_builtin_this_coercion(*t);
+                }
+                _ => return false,
+            }
         }
 
         false
@@ -1968,28 +1936,26 @@ impl<'a> Interpreter<'a> {
         let raw_ptr = unsafe { callable.as_ptr::<u8>() }?;
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<Closure>() {
-            let closure = unsafe { &*callable.as_ptr::<Closure>()?.as_ptr() };
-            let module = closure.module()?;
-            let function = module.functions.get(closure.func_id())?;
-            return Self::function_native_alias_id(&function.name);
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-            let method = unsafe { &*callable.as_ptr::<BoundMethod>()?.as_ptr() };
-            let module = method.module.clone()?;
-            let function = module.functions.get(method.func_id)?;
-            return Self::function_native_alias_id(&function.name);
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
-            let method = unsafe { &*callable.as_ptr::<BoundNativeMethod>()?.as_ptr() };
-            return Some(method.native_id);
-        }
-
-        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
-            let bound = unsafe { &*callable.as_ptr::<BoundFunction>()?.as_ptr() };
-            return self.callable_native_alias_id(bound.target);
+        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+            let co = unsafe { &*callable.as_ptr::<CallableObject>()?.as_ptr() };
+            match &co.kind {
+                CallableKind::Closure { func_id } => {
+                    let module = co.module()?;
+                    let function = module.functions.get(*func_id)?;
+                    return Self::function_native_alias_id(&function.name);
+                }
+                CallableKind::BoundMethod { func_id, .. } => {
+                    let module = co.module()?;
+                    let function = module.functions.get(*func_id)?;
+                    return Self::function_native_alias_id(&function.name);
+                }
+                CallableKind::BoundNative { native_id, .. } => {
+                    return Some(*native_id);
+                }
+                CallableKind::Bound { target, .. } => {
+                    return self.callable_native_alias_id(*target);
+                }
+            }
         }
 
         None
@@ -2000,35 +1966,20 @@ impl<'a> Interpreter<'a> {
             return false;
         };
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
-        if header.type_id() == std::any::TypeId::of::<Closure>() {
-            let closure = unsafe { &*callable.as_ptr::<Closure>().unwrap().as_ptr() };
-            if let Some(module) = closure.module() {
-                return module
-                    .functions
-                    .get(closure.func_id())
-                    .map(|function| function.uses_js_this_slot)
-                    .unwrap_or(false);
+        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+            let co = unsafe { &*callable.as_ptr::<CallableObject>().unwrap().as_ptr() };
+            match &co.kind {
+                CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
+                    let Some(module) = co.module() else { return false; };
+                    return module.functions.get(*func_id).map(|f| f.uses_js_this_slot).unwrap_or(false);
+                }
+                CallableKind::BoundNative { native_id, .. } => {
+                    return self.native_callable_uses_receiver(*native_id);
+                }
+                CallableKind::Bound { target, .. } => {
+                    return self.callable_uses_js_this_slot(*target);
+                }
             }
-            return false;
-        }
-        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-            let method = unsafe { &*callable.as_ptr::<BoundMethod>().unwrap().as_ptr() };
-            let Some(module) = method.module.as_ref() else {
-                return false;
-            };
-            return module
-                .functions
-                .get(method.func_id)
-                .map(|function| function.uses_js_this_slot)
-                .unwrap_or(false);
-        }
-        if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
-            let method = unsafe { &*callable.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
-            return self.native_callable_uses_receiver(method.native_id);
-        }
-        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
-            let bound = unsafe { &*callable.as_ptr::<BoundFunction>().unwrap().as_ptr() };
-            return self.callable_uses_js_this_slot(bound.target);
         }
         false
     }
@@ -2052,14 +2003,7 @@ impl<'a> Interpreter<'a> {
             caller_module,
             bound_args.len(),
         )?;
-        let bound = BoundFunction {
-            target,
-            this_arg,
-            visible_length,
-            bound_args,
-            visible_name,
-            rebind_call_helper,
-        };
+        let bound = CallableObject::bound_function(target, this_arg, bound_args, visible_name, visible_length, rebind_call_helper);
         let bound_ptr = self.gc.lock().allocate(bound);
         Ok(unsafe {
             Value::from_ptr(std::ptr::NonNull::new(bound_ptr.as_ptr()).expect("bound function ptr"))
@@ -2138,11 +2082,6 @@ impl<'a> Interpreter<'a> {
                 let _ = array.delete_index(index);
                 let mut metadata = self.metadata.lock();
                 let _ = metadata.delete_metadata_property(
-                    NODE_DESCRIPTOR_METADATA_KEY,
-                    target,
-                    &key_name,
-                );
-                let _ = metadata.delete_metadata_property(
                     NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY,
                     target,
                     &key_name,
@@ -2172,24 +2111,21 @@ impl<'a> Interpreter<'a> {
         let mut removed = false;
         if let Some(obj_ptr) = checked_object_ptr(target) {
             let obj = unsafe { &mut *obj_ptr.as_ptr() };
-            if let Some(dyn_map) = obj.dyn_map_mut() {
-                removed = dyn_map.remove(&self.intern_prop_key(&key_name)).is_some();
+            if let Some(dp) = obj.dyn_props_mut() {
+                removed = dp.remove(self.intern_prop_key(&key_name)).is_some();
             }
         }
 
-        let (metadata_removed, dynamic_value_removed) = {
+        let dynamic_value_removed = {
             let mut metadata = self.metadata.lock();
-            (
-                metadata.delete_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, target, &key_name),
-                metadata.delete_metadata_property(
-                    NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY,
-                    target,
-                    &key_name,
-                ),
+            metadata.delete_metadata_property(
+                NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY,
+                target,
+                &key_name,
             )
         };
 
-        if removed || metadata_removed || dynamic_value_removed {
+        if removed || dynamic_value_removed {
             self.set_callable_virtual_property_deleted(
                 target,
                 &key_name,
@@ -2386,9 +2322,9 @@ impl<'a> Interpreter<'a> {
                 continue;
             };
             let closure = if let Some(module) = class_module.clone() {
-                Closure::with_module(func_id, Vec::new(), module)
+                CallableObject::closure_with_module(func_id, Vec::new(), module)
             } else {
-                Closure::new(func_id, Vec::new())
+                CallableObject::closure(func_id, Vec::new())
             };
             let closure_ptr = self.gc.lock().allocate(closure);
             let closure_val = unsafe {
@@ -2570,8 +2506,8 @@ impl<'a> Interpreter<'a> {
         if let Some(obj_ptr) = checked_object_ptr(constructor) {
             let obj = unsafe { &*obj_ptr.as_ptr() };
             if let Some(existing) = obj
-                .dyn_map()
-                .and_then(|dyn_map| dyn_map.get(&self.intern_prop_key("prototype")).copied())
+                .dyn_props()
+                .and_then(|dp| dp.get(self.intern_prop_key("prototype")).map(|p| p.value))
             {
                 return Some(existing);
             }
@@ -2748,10 +2684,20 @@ impl<'a> Interpreter<'a> {
         if self.callable_function_info(receiver).is_some()
             && self.get_descriptor_metadata(receiver, key).is_none()
         {
-            if let Some((writable, _, _)) = self.callable_virtual_property_descriptor(receiver, key)
+            if let Some((writable, enumerable, configurable)) =
+                self.callable_virtual_property_descriptor(receiver, key)
             {
                 if !writable {
                     return Ok(false);
+                }
+                // Write to CallableObject.dyn_props if target is a callable
+                if let Some(co_ptr) = checked_callable_ptr(receiver) {
+                    let prop_key = self.intern_prop_key(key);
+                    let co = unsafe { &mut *co_ptr.as_ptr() };
+                    co.ensure_dyn_props().insert(
+                        prop_key,
+                        DynProp::data_with_attrs(value, writable, enumerable, configurable),
+                    );
                 }
                 self.set_cached_callable_virtual_property_value(receiver, key, value);
                 self.sync_descriptor_value(receiver, key, value);
@@ -2769,8 +2715,8 @@ impl<'a> Interpreter<'a> {
                 if !self.is_js_value_extensible(receiver) {
                     return Ok(false);
                 }
-                obj.ensure_dyn_map()
-                    .insert(self.intern_prop_key(key), value);
+                obj.ensure_dyn_props()
+                    .insert(self.intern_prop_key(key), DynProp::data(value));
             }
             self.sync_descriptor_value(receiver, key, value);
             self.set_callable_virtual_property_deleted(receiver, key, false);
@@ -2961,8 +2907,8 @@ impl<'a> Interpreter<'a> {
         if let Some(class_obj_ptr) = checked_object_ptr(class_value) {
             let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
             if let Some(existing) = class_obj
-                .dyn_map()
-                .and_then(|dyn_map| dyn_map.get(&self.intern_prop_key("prototype")).copied())
+                .dyn_props()
+                .and_then(|dp| dp.get(self.intern_prop_key("prototype")).map(|p| p.value))
             {
                 self.ensure_intrinsic_prototype_parent(class_name, existing);
                 return Some(existing);
@@ -3085,9 +3031,9 @@ impl<'a> Interpreter<'a> {
                 continue;
             };
             let closure = if let Some(module) = class_module.clone() {
-                Closure::with_module(func_id, Vec::new(), module)
+                CallableObject::closure_with_module(func_id, Vec::new(), module)
             } else {
-                Closure::new(func_id, Vec::new())
+                CallableObject::closure(func_id, Vec::new())
             };
             let closure_ptr = self.gc.lock().allocate(closure);
             let closure_val = unsafe {
@@ -3114,8 +3060,8 @@ impl<'a> Interpreter<'a> {
         if let Some(class_obj_ptr) = checked_object_ptr(class_value) {
             let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
             class_obj
-                .ensure_dyn_map()
-                .insert(self.intern_prop_key("prototype"), prototype_val);
+                .ensure_dyn_props()
+                .insert(self.intern_prop_key("prototype"), DynProp::data(prototype_val));
         }
         Some(prototype_val)
     }
@@ -3229,8 +3175,8 @@ impl<'a> Interpreter<'a> {
         if let Some(class_obj_ptr) = checked_object_ptr(class_value) {
             let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
             class_obj
-                .ensure_dyn_map()
-                .insert(self.intern_prop_key("prototype"), prototype_val);
+                .ensure_dyn_props()
+                .insert(self.intern_prop_key("prototype"), DynProp::data(prototype_val));
         }
         if debug_dynamic_function {
             eprintln!("[generic-fn-proto] target={:#x} done", class_value.raw());
@@ -3964,6 +3910,16 @@ impl<'a> Interpreter<'a> {
         if self.callable_virtual_property_deleted(target, key) {
             return None;
         }
+        // Check CallableObject.dyn_props first (property kernel path)
+        if let Some(co_ptr) = checked_callable_ptr(target) {
+            let co = unsafe { &*co_ptr.as_ptr() };
+            if let Some(ref dp) = co.dyn_props {
+                let key_id = self.intern_prop_key(key);
+                if let Some(prop) = dp.get(key_id) {
+                    return Some((prop.writable, prop.enumerable, prop.configurable));
+                }
+            }
+        }
         match key {
             "prototype" if self.constructor_prototype_value(target).is_some() => {
                 let writable = self.builtin_global_name_for_value(target).is_none()
@@ -3992,22 +3948,27 @@ impl<'a> Interpreter<'a> {
         if self.callable_virtual_property_deleted(target, key) {
             return None;
         }
-        if let Some(bound_ptr) = unsafe { target.as_ptr::<BoundFunction>() } {
-            let raw_ptr = unsafe { target.as_ptr::<u8>() }?;
-            let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
-            if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
-                let bound = unsafe { &*bound_ptr.as_ptr() };
+        // Check CallableObject.dyn_props first (property kernel path)
+        if let Some(co_ptr) = checked_callable_ptr(target) {
+            let co = unsafe { &*co_ptr.as_ptr() };
+            if let Some(ref dp) = co.dyn_props {
+                let key_id = self.intern_prop_key(key);
+                if let Some(prop) = dp.get(key_id) {
+                    return Some(prop.value);
+                }
+            }
+            if let CallableKind::Bound { visible_name, visible_length, .. } = &co.kind {
                 return match key {
                     "name" => {
                         let ptr = self
                             .gc
                             .lock()
-                            .allocate(RayaString::new(bound.visible_name.clone()));
+                            .allocate(RayaString::new(visible_name.clone()));
                         Some(unsafe {
                             Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap())
                         })
                     }
-                    "length" => Some(bound.visible_length),
+                    "length" => Some(*visible_length),
                     _ => None,
                 };
             }
@@ -4179,7 +4140,7 @@ impl<'a> Interpreter<'a> {
             .iter()
             .position(|function| function.name == function_name)
             .ok_or_else(|| VmError::RuntimeError(missing_symbol_context.to_string()))?;
-        let closure = Closure::with_module(func_id, Vec::new(), function_module);
+        let closure = CallableObject::closure_with_module(func_id, Vec::new(), function_module);
         let closure_ptr = self.gc.lock().allocate(closure);
         Ok(unsafe {
             Value::from_ptr(
@@ -4423,7 +4384,7 @@ impl<'a> Interpreter<'a> {
                 field_name,
                 obj.layout_id(),
                 obj.nominal_type_id(),
-                obj.dyn_map().is_some(),
+                obj.dyn_props().is_some(),
                 obj.field_count()
             );
         }
@@ -4442,7 +4403,7 @@ impl<'a> Interpreter<'a> {
         if debug_field_lookup {
             eprintln!("[field.lookup] target={:#x} dyn-key={}", obj_val.raw(), key);
         }
-        obj.dyn_map().and_then(|map| map.get(&key).copied())
+        obj.dyn_props().and_then(|dp| dp.get(key).map(|p| p.value))
     }
 
     fn get_own_js_property_value_by_name(&self, target: Value, key: &str) -> Option<Value> {
@@ -5580,13 +5541,47 @@ impl<'a> Interpreter<'a> {
     }
 
     fn set_descriptor_metadata(&self, target: Value, key: &str, descriptor: Value) {
-        let mut metadata = self.metadata.lock();
-        metadata.define_metadata_property(
-            NODE_DESCRIPTOR_METADATA_KEY.to_string(),
-            descriptor,
-            target,
-            key.to_string(),
-        );
+        // Write to property kernel only (single source of truth)
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            // Non-object targets: no-op
+            return;
+        };
+        let obj = unsafe { &mut *obj_ptr.as_ptr() };
+        let key_id = self.intern_prop_key(key);
+
+        // Extract descriptor fields from the descriptor Value (a JS object)
+        let desc_value = self.get_field_value_by_name(descriptor, "value");
+        let desc_get = self.get_field_value_by_name(descriptor, "get");
+        let desc_set = self.get_field_value_by_name(descriptor, "set");
+        let desc_writable = self
+            .get_field_value_by_name(descriptor, "writable")
+            .and_then(|v| v.as_bool());
+        let desc_enumerable = self
+            .get_field_value_by_name(descriptor, "enumerable")
+            .and_then(|v| v.as_bool());
+        let desc_configurable = self
+            .get_field_value_by_name(descriptor, "configurable")
+            .and_then(|v| v.as_bool());
+
+        let has_accessor = desc_get.is_some() || desc_set.is_some();
+
+        let prop = if has_accessor {
+            DynProp::accessor(
+                desc_get.unwrap_or(Value::undefined()),
+                desc_set.unwrap_or(Value::undefined()),
+                desc_enumerable.unwrap_or(false),
+                desc_configurable.unwrap_or(false),
+            )
+        } else {
+            DynProp::data_with_attrs(
+                desc_value.unwrap_or(Value::undefined()),
+                desc_writable.unwrap_or(true),
+                desc_enumerable.unwrap_or(true),
+                desc_configurable.unwrap_or(true),
+            )
+        };
+
+        obj.ensure_dyn_props().insert(key_id, prop);
     }
 
     pub(in crate::vm::interpreter) fn define_data_property_on_target(
@@ -5682,8 +5677,32 @@ impl<'a> Interpreter<'a> {
         if self.fixed_property_deleted(target, key) {
             return None;
         }
-        let metadata = self.metadata.lock();
-        metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, target, key)
+
+        // Property kernel is the single source of truth
+        let obj_ptr = checked_object_ptr(target)?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+
+        // Check fixed slots via shape — any own property in a slot has a descriptor
+        if let Some(slot_idx) = self.shape_resolve_key(obj.header.layout_id, key) {
+            if let Some(meta) = obj.slot_meta.get(slot_idx) {
+                let value = obj
+                    .fields
+                    .get(slot_idx)
+                    .copied()
+                    .unwrap_or(Value::undefined());
+                return self
+                    .synthesize_descriptor_from_slot_meta(meta, value)
+                    .ok();
+            }
+        }
+
+        // Check dyn_props
+        let key_id = self.intern_prop_key(key);
+        if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
+            return self.synthesize_descriptor_from_dyn_prop(prop).ok();
+        }
+
+        None
     }
 
     pub(in crate::vm::interpreter) fn metadata_data_property_value(
@@ -5699,11 +5718,17 @@ impl<'a> Interpreter<'a> {
     }
 
     fn is_descriptor_object(&self, value: Value) -> bool {
-        self.metadata
-            .lock()
-            .get_metadata(OBJECT_DESCRIPTOR_MARKER_METADATA_KEY, value)
-            .and_then(|marker| marker.as_bool())
-            .unwrap_or(false)
+        // Check if the value has descriptor-like fields
+        self.get_own_field_value_by_name(value, "value").is_some()
+            || self.get_own_field_value_by_name(value, "writable").is_some()
+            || self.get_own_field_value_by_name(value, "get").is_some()
+            || self.get_own_field_value_by_name(value, "set").is_some()
+            || self
+                .get_own_field_value_by_name(value, "enumerable")
+                .is_some()
+            || self
+                .get_own_field_value_by_name(value, "configurable")
+                .is_some()
     }
 
     pub(in crate::vm::interpreter) fn descriptor_field_present(
@@ -5711,46 +5736,35 @@ impl<'a> Interpreter<'a> {
         descriptor: Value,
         field_name: &str,
     ) -> bool {
-        if self.is_descriptor_object(descriptor) {
+        if !self.is_descriptor_object(descriptor) {
             return self
-                .metadata
-                .lock()
-                .get_metadata_property(
-                    OBJECT_DESCRIPTOR_PRESENT_METADATA_KEY,
-                    descriptor,
-                    field_name,
-                )
-                .and_then(|present| present.as_bool())
-                .unwrap_or(false);
+                .get_own_field_value_by_name(descriptor, field_name)
+                .is_some();
         }
-        self.get_own_field_value_by_name(descriptor, field_name)
-            .is_some()
+        // For internally-allocated descriptor objects (which have all 6 fields
+        // pre-allocated), check the presence bitmask stored in dyn_props.
+        let Some(obj_ptr) = checked_object_ptr(descriptor) else {
+            return false;
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let mask_key = self.intern_prop_key("__field_present_mask__");
+        let current_mask = obj
+            .dyn_props
+            .as_deref()
+            .and_then(|dp| dp.get(mask_key))
+            .and_then(|prop| prop.value.as_i32())
+            .unwrap_or(0) as u32;
+        let bit = descriptor_field_bit(field_name);
+        (current_mask & bit) != 0
     }
 
     pub(in crate::vm::interpreter) fn set_descriptor_field_present(
         &self,
-        descriptor: Value,
-        field_name: &str,
-        present: bool,
+        _descriptor: Value,
+        _field_name: &str,
+        _present: bool,
     ) {
-        if !self.is_descriptor_object(descriptor) {
-            return;
-        }
-        let mut metadata = self.metadata.lock();
-        if present {
-            metadata.define_metadata_property(
-                OBJECT_DESCRIPTOR_PRESENT_METADATA_KEY.to_string(),
-                Value::bool(true),
-                descriptor,
-                field_name.to_string(),
-            );
-        } else {
-            let _ = metadata.delete_metadata_property(
-                OBJECT_DESCRIPTOR_PRESENT_METADATA_KEY,
-                descriptor,
-                field_name,
-            );
-        }
+        // No-op: property kernel tracks presence via DynProp existence
     }
 
     pub(in crate::vm::interpreter) fn is_property_enumerable(
@@ -5854,7 +5868,6 @@ impl<'a> Interpreter<'a> {
         // Apply data descriptor value directly to the target field if provided.
         if let Some(value) = value_field {
             if self.set_builtin_global_property(target, key, value) {
-                self.set_descriptor_metadata(target, key, descriptor);
                 if self
                     .callable_virtual_property_descriptor(target, key)
                     .is_some()
@@ -5887,13 +5900,30 @@ impl<'a> Interpreter<'a> {
                 }
             } else if let Some(obj_ptr) = checked_object_ptr(target) {
                 let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                let w = self.descriptor_flag(descriptor, "writable", true);
+                let e = self.descriptor_flag(descriptor, "enumerable", true);
+                let c = self.descriptor_flag(descriptor, "configurable", true);
                 if let Some(field_index) = self.get_field_index_for_value(target, key) {
                     obj.set_field(field_index, value)
                         .map_err(VmError::RuntimeError)?;
+                    if let Some(meta) = obj.slot_meta.get_mut(field_index) {
+                        meta.writable = w;
+                        meta.enumerable = e;
+                        meta.configurable = c;
+                    }
                 } else {
                     let prop_key = self.intern_prop_key(key);
-                    obj.ensure_dyn_map().insert(prop_key, value);
+                    obj.ensure_dyn_props()
+                        .insert(prop_key, DynProp::data_with_attrs(value, w, e, c));
                 }
+            } else if let Some(co_ptr) = checked_callable_ptr(target) {
+                let w = self.descriptor_flag(descriptor, "writable", true);
+                let e = self.descriptor_flag(descriptor, "enumerable", true);
+                let c = self.descriptor_flag(descriptor, "configurable", true);
+                let prop_key = self.intern_prop_key(key);
+                let co = unsafe { &mut *co_ptr.as_ptr() };
+                co.ensure_dyn_props()
+                    .insert(prop_key, DynProp::data_with_attrs(value, w, e, c));
             } else {
                 self.metadata.lock().define_metadata_property(
                     NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
@@ -5910,7 +5940,29 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        self.set_descriptor_metadata(target, key, descriptor);
+        // Property kernel: write accessor descriptors into DynProp
+        if has_accessor {
+            if let Some(obj_ptr) = checked_object_ptr(target) {
+                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                let e = self.descriptor_flag(descriptor, "enumerable", false);
+                let c = self.descriptor_flag(descriptor, "configurable", false);
+                let get_val = getter.unwrap_or(Value::undefined());
+                let set_val = setter.unwrap_or(Value::undefined());
+                let prop_key = self.intern_prop_key(key);
+                obj.ensure_dyn_props()
+                    .insert(prop_key, DynProp::accessor(get_val, set_val, e, c));
+            } else if let Some(co_ptr) = checked_callable_ptr(target) {
+                let e = self.descriptor_flag(descriptor, "enumerable", false);
+                let c = self.descriptor_flag(descriptor, "configurable", false);
+                let get_val = getter.unwrap_or(Value::undefined());
+                let set_val = setter.unwrap_or(Value::undefined());
+                let prop_key = self.intern_prop_key(key);
+                let co = unsafe { &mut *co_ptr.as_ptr() };
+                co.ensure_dyn_props()
+                    .insert(prop_key, DynProp::accessor(get_val, set_val, e, c));
+            }
+        }
+
         self.set_callable_virtual_property_deleted(target, key, false);
         self.set_fixed_property_deleted(target, key, false);
         Ok(())
@@ -6094,7 +6146,6 @@ impl<'a> Interpreter<'a> {
 
         if let Some(value) = value_field {
             if self.set_builtin_global_property(target, key, value) {
-                self.set_descriptor_metadata(target, key, descriptor);
                 if self
                     .callable_virtual_property_descriptor(target, key)
                     .is_some()
@@ -6132,13 +6183,31 @@ impl<'a> Interpreter<'a> {
                 }
             } else if let Some(obj_ptr) = checked_object_ptr(target) {
                 let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                let w = self.descriptor_flag(descriptor, "writable", true);
+                let e = self.descriptor_flag(descriptor, "enumerable", true);
+                let c = self.descriptor_flag(descriptor, "configurable", true);
                 if let Some(field_index) = self.get_field_index_for_value(target, key) {
                     obj.set_field(field_index, value)
                         .map_err(VmError::RuntimeError)?;
+                    // Mirror descriptor attributes into slot_meta
+                    if let Some(meta) = obj.slot_meta.get_mut(field_index) {
+                        meta.writable = w;
+                        meta.enumerable = e;
+                        meta.configurable = c;
+                    }
                 } else {
                     let prop_key = self.intern_prop_key(key);
-                    obj.ensure_dyn_map().insert(prop_key, value);
+                    obj.ensure_dyn_props()
+                        .insert(prop_key, DynProp::data_with_attrs(value, w, e, c));
                 }
+            } else if let Some(co_ptr) = checked_callable_ptr(target) {
+                let w = self.descriptor_flag(descriptor, "writable", true);
+                let e = self.descriptor_flag(descriptor, "enumerable", true);
+                let c = self.descriptor_flag(descriptor, "configurable", true);
+                let prop_key = self.intern_prop_key(key);
+                let co = unsafe { &mut *co_ptr.as_ptr() };
+                co.ensure_dyn_props()
+                    .insert(prop_key, DynProp::data_with_attrs(value, w, e, c));
             } else {
                 self.metadata.lock().define_metadata_property(
                     NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
@@ -6155,7 +6224,29 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        self.set_descriptor_metadata(target, key, descriptor);
+        // Property kernel: write accessor descriptors into DynProp
+        if has_accessor {
+            if let Some(obj_ptr) = checked_object_ptr(target) {
+                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                let e = self.descriptor_flag(descriptor, "enumerable", false);
+                let c = self.descriptor_flag(descriptor, "configurable", false);
+                let get_val = getter.unwrap_or(Value::undefined());
+                let set_val = setter.unwrap_or(Value::undefined());
+                let prop_key = self.intern_prop_key(key);
+                obj.ensure_dyn_props()
+                    .insert(prop_key, DynProp::accessor(get_val, set_val, e, c));
+            } else if let Some(co_ptr) = checked_callable_ptr(target) {
+                let e = self.descriptor_flag(descriptor, "enumerable", false);
+                let c = self.descriptor_flag(descriptor, "configurable", false);
+                let get_val = getter.unwrap_or(Value::undefined());
+                let set_val = setter.unwrap_or(Value::undefined());
+                let prop_key = self.intern_prop_key(key);
+                let co = unsafe { &mut *co_ptr.as_ptr() };
+                co.ensure_dyn_props()
+                    .insert(prop_key, DynProp::accessor(get_val, set_val, e, c));
+            }
+        }
+
         self.set_callable_virtual_property_deleted(target, key, false);
         self.set_fixed_property_deleted(target, key, false);
         Ok(())
@@ -6450,11 +6541,6 @@ impl<'a> Interpreter<'a> {
         let obj_ptr = self.gc.lock().allocate(obj);
         let descriptor =
             unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) };
-        self.metadata.lock().define_metadata(
-            OBJECT_DESCRIPTOR_MARKER_METADATA_KEY.to_string(),
-            Value::bool(true),
-            descriptor,
-        );
         Ok(descriptor)
     }
 
@@ -6515,8 +6601,8 @@ impl<'a> Interpreter<'a> {
                     fixed_value
                 };
             let dynamic_value = obj
-                .dyn_map()
-                .and_then(|dyn_map| dyn_map.get(&self.intern_prop_key(key)).copied());
+                .dyn_props()
+                .and_then(|dp| dp.get(self.intern_prop_key(key)).map(|p| p.value));
             fixed_value.or(dynamic_value)
         });
         let metadata_value = self.metadata_data_property_value(target, key);
@@ -6643,6 +6729,134 @@ impl<'a> Interpreter<'a> {
         }
 
         Ok(Some(descriptor))
+    }
+
+    /// Synthesize a descriptor object from a `DynProp` stored in the property kernel.
+    fn synthesize_descriptor_from_dyn_prop(
+        &self,
+        prop: &DynProp,
+    ) -> Result<Value, VmError> {
+        let descriptor = self.alloc_object_descriptor()?;
+        let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() }) else {
+            return Err(VmError::RuntimeError(
+                "Failed to allocate property descriptor object".to_string(),
+            ));
+        };
+        let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
+
+        if prop.is_accessor {
+            // Accessor descriptor: get, set, enumerable, configurable
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "get") {
+                descriptor_obj
+                    .set_field(idx, prop.get)
+                    .map_err(VmError::RuntimeError)?;
+            }
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "set") {
+                descriptor_obj
+                    .set_field(idx, prop.set)
+                    .map_err(VmError::RuntimeError)?;
+            }
+            // value and writable are undefined for accessor descriptors
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "value") {
+                descriptor_obj
+                    .set_field(idx, Value::undefined())
+                    .map_err(VmError::RuntimeError)?;
+            }
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "writable") {
+                descriptor_obj
+                    .set_field(idx, Value::undefined())
+                    .map_err(VmError::RuntimeError)?;
+            }
+        } else {
+            // Data descriptor: value, writable, enumerable, configurable
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "value") {
+                descriptor_obj
+                    .set_field(idx, prop.value)
+                    .map_err(VmError::RuntimeError)?;
+            }
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "writable") {
+                descriptor_obj
+                    .set_field(idx, Value::bool(prop.writable))
+                    .map_err(VmError::RuntimeError)?;
+            }
+        }
+
+        if let Some(idx) = self.get_field_index_for_value(descriptor, "enumerable") {
+            descriptor_obj
+                .set_field(idx, Value::bool(prop.enumerable))
+                .map_err(VmError::RuntimeError)?;
+        }
+        if let Some(idx) = self.get_field_index_for_value(descriptor, "configurable") {
+            descriptor_obj
+                .set_field(idx, Value::bool(prop.configurable))
+                .map_err(VmError::RuntimeError)?;
+        }
+
+        Ok(descriptor)
+    }
+
+    /// Synthesize a descriptor object from `SlotMeta` and its corresponding value.
+    fn synthesize_descriptor_from_slot_meta(
+        &self,
+        meta: &SlotMeta,
+        value: Value,
+    ) -> Result<Value, VmError> {
+        let descriptor = self.alloc_object_descriptor()?;
+        let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() }) else {
+            return Err(VmError::RuntimeError(
+                "Failed to allocate property descriptor object".to_string(),
+            ));
+        };
+        let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
+
+        if let Some(ref accessor) = meta.accessor {
+            // Accessor descriptor
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "get") {
+                descriptor_obj
+                    .set_field(idx, accessor.get)
+                    .map_err(VmError::RuntimeError)?;
+            }
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "set") {
+                descriptor_obj
+                    .set_field(idx, accessor.set)
+                    .map_err(VmError::RuntimeError)?;
+            }
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "value") {
+                descriptor_obj
+                    .set_field(idx, Value::undefined())
+                    .map_err(VmError::RuntimeError)?;
+            }
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "writable") {
+                descriptor_obj
+                    .set_field(idx, Value::undefined())
+                    .map_err(VmError::RuntimeError)?;
+            }
+        } else {
+            // Data descriptor
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "value") {
+                descriptor_obj
+                    .set_field(idx, value)
+                    .map_err(VmError::RuntimeError)?;
+            }
+            if let Some(idx) = self.get_field_index_for_value(descriptor, "writable") {
+                descriptor_obj
+                    .set_field(idx, Value::bool(meta.writable))
+                    .map_err(VmError::RuntimeError)?;
+            }
+        }
+
+        if let Some(idx) = self.get_field_index_for_value(descriptor, "enumerable") {
+            descriptor_obj
+                .set_field(idx, Value::bool(meta.enumerable))
+                .map_err(VmError::RuntimeError)?;
+        }
+        if let Some(idx) = self.get_field_index_for_value(descriptor, "configurable") {
+            descriptor_obj
+                .set_field(idx, Value::bool(meta.configurable))
+                .map_err(VmError::RuntimeError)?;
+        }
+
+        Ok(descriptor)
     }
 
     fn legacy_error_field_descriptor(
@@ -6957,9 +7171,9 @@ impl<'a> Interpreter<'a> {
                         };
                         if let Some(constructor_id) = constructor_id {
                             let closure = if let Some(module) = constructor_module {
-                                Closure::with_module(constructor_id, Vec::new(), module)
+                                CallableObject::closure_with_module(constructor_id, Vec::new(), module)
                             } else {
-                                Closure::new(constructor_id, Vec::new())
+                                CallableObject::closure(constructor_id, Vec::new())
                             };
                             let closure_ptr = self.gc.lock().allocate(closure);
                             let closure_val = unsafe {
@@ -7172,54 +7386,52 @@ impl<'a> Interpreter<'a> {
                         if let Some(target_ptr) = unsafe { target_callable.as_ptr::<u8>() } {
                             let header =
                                 unsafe { &*header_ptr_from_value_ptr(target_ptr.as_ptr()) };
-                            if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
-                                let method = unsafe {
+                            if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+                                let co = unsafe {
                                     &*target_callable
-                                        .as_ptr::<BoundNativeMethod>()
-                                        .expect("bound native target")
+                                        .as_ptr::<CallableObject>()
+                                        .expect("callable target")
                                         .as_ptr()
                                 };
-                                return self.exec_bound_native_method_call(
-                                    stack,
-                                    this_arg,
-                                    method.native_id,
-                                    apply_args,
-                                    module,
-                                    task,
-                                );
-                            } else if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-                                let method = unsafe {
-                                    &*target_callable
-                                        .as_ptr::<BoundMethod>()
-                                        .expect("bound method target")
-                                        .as_ptr()
-                                };
-                                let receiver = if self.callable_uses_js_this_slot(target_callable) {
-                                    match self
-                                        .js_this_value_for_callable(target_callable, Some(this_arg))
-                                    {
-                                        Ok(value) => value,
-                                        Err(error) => return OpcodeResult::Error(error),
+                                match &co.kind {
+                                    CallableKind::BoundNative { native_id, .. } => {
+                                        return self.exec_bound_native_method_call(
+                                            stack,
+                                            this_arg,
+                                            *native_id,
+                                            apply_args,
+                                            module,
+                                            task,
+                                        );
                                     }
-                                } else {
-                                    this_arg
-                                };
-                                if let Err(e) = stack.push(receiver) {
-                                    return OpcodeResult::Error(e);
-                                }
-                                for arg in &apply_args {
-                                    if let Err(e) = stack.push(*arg) {
-                                        return OpcodeResult::Error(e);
+                                    CallableKind::BoundMethod { func_id, .. } => {
+                                        let receiver = if self.callable_uses_js_this_slot(target_callable) {
+                                            match self.js_this_value_for_callable(target_callable, Some(this_arg)) {
+                                                Ok(value) => value,
+                                                Err(error) => return OpcodeResult::Error(error),
+                                            }
+                                        } else {
+                                            this_arg
+                                        };
+                                        if let Err(e) = stack.push(receiver) {
+                                            return OpcodeResult::Error(e);
+                                        }
+                                        for arg in &apply_args {
+                                            if let Err(e) = stack.push(*arg) {
+                                                return OpcodeResult::Error(e);
+                                            }
+                                        }
+                                        return OpcodeResult::PushFrame {
+                                            func_id: *func_id,
+                                            arg_count: apply_args.len() + 1,
+                                            is_closure: false,
+                                            closure_val: None,
+                                            module: co.module.clone(),
+                                            return_action: ReturnAction::PushReturnValue,
+                                        };
                                     }
+                                    _ => {}
                                 }
-                                return OpcodeResult::PushFrame {
-                                    func_id: method.func_id,
-                                    arg_count: apply_args.len() + 1,
-                                    is_closure: false,
-                                    closure_val: None,
-                                    module: method.module.clone(),
-                                    return_action: ReturnAction::PushReturnValue,
-                                };
                             }
                         }
 
@@ -8796,19 +9008,56 @@ impl<'a> Interpreter<'a> {
                                     .to_string(),
                             ));
                         };
-                        let value = match self.get_descriptor_metadata(target, &key) {
-                            Some(descriptor) => descriptor,
-                            None => {
-                                match self.synthesize_accessor_property_descriptor(target, &key) {
-                                    Ok(Some(descriptor)) => descriptor,
-                                    Ok(None) => match self
-                                        .synthesize_data_property_descriptor(target, &key)
+                        // Property kernel fast path: check DynProp / SlotMeta first
+                        let kernel_descriptor = 'kernel: {
+                            let obj_ptr =
+                                if let Some(p) = checked_object_ptr(target) { p } else { break 'kernel None };
+                            let obj = unsafe { &*obj_ptr.as_ptr() };
+                            let key_id = self.intern_prop_key(&key);
+                            // Check dyn_props
+                            if let Some(prop) = obj.dyn_props().and_then(|dp| dp.get(key_id)) {
+                                match self.synthesize_descriptor_from_dyn_prop(prop) {
+                                    Ok(desc) => break 'kernel Some(desc),
+                                    Err(error) => return OpcodeResult::Error(error),
+                                }
+                            }
+                            // Check slot_meta for fixed slots
+                            if let Some(slot_idx) =
+                                self.get_field_index_for_value(target, &key)
+                            {
+                                if let Some(meta) = obj.slot_meta.get(slot_idx) {
+                                    let slot_value = obj
+                                        .get_field(slot_idx)
+                                        .unwrap_or(Value::undefined());
+                                    match self.synthesize_descriptor_from_slot_meta(
+                                        meta, slot_value,
+                                    ) {
+                                        Ok(desc) => break 'kernel Some(desc),
+                                        Err(error) => return OpcodeResult::Error(error),
+                                    }
+                                }
+                            }
+                            None
+                        };
+                        let value = if let Some(desc) = kernel_descriptor {
+                            desc
+                        } else {
+                            match self.get_descriptor_metadata(target, &key) {
+                                Some(descriptor) => descriptor,
+                                None => {
+                                    match self
+                                        .synthesize_accessor_property_descriptor(target, &key)
                                     {
                                         Ok(Some(descriptor)) => descriptor,
-                                        Ok(None) => Value::undefined(),
+                                        Ok(None) => match self
+                                            .synthesize_data_property_descriptor(target, &key)
+                                        {
+                                            Ok(Some(descriptor)) => descriptor,
+                                            Ok(None) => Value::undefined(),
+                                            Err(error) => return OpcodeResult::Error(error),
+                                        },
                                         Err(error) => return OpcodeResult::Error(error),
-                                    },
-                                    Err(error) => return OpcodeResult::Error(error),
+                                    }
                                 }
                             }
                         };

@@ -10,8 +10,8 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::{Interpreter, ReturnAction};
 use crate::vm::object::{
-    layout_id_from_ordered_names, Array, BoundFunction, BoundMethod, BoundNativeMethod,
-    ChannelObject, Closure, MapObject, Object, RayaString, RegExpObject, SetObject, TypeHandle,
+    layout_id_from_ordered_names, Array, CallableObject, DynProp,
+    ChannelObject, MapObject, Object, RayaString, RegExpObject, SetObject, TypeHandle,
 };
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
@@ -96,11 +96,7 @@ fn value_kind_mask(value: Value) -> u16 {
     if header.type_id() == std::any::TypeId::of::<Object>() {
         return CAST_KIND_OBJECT;
     }
-    if header.type_id() == std::any::TypeId::of::<Closure>()
-        || header.type_id() == std::any::TypeId::of::<BoundMethod>()
-        || header.type_id() == std::any::TypeId::of::<BoundNativeMethod>()
-        || header.type_id() == std::any::TypeId::of::<BoundFunction>()
-    {
+    if header.type_id() == std::any::TypeId::of::<CallableObject>() {
         return CAST_KIND_FUNCTION;
     }
     0
@@ -127,10 +123,7 @@ pub(in crate::vm::interpreter) fn builtin_handle_native_method_id(
         let ptr = unsafe { value.as_ptr::<u8>() }?;
         let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
         let ty = header.type_id();
-        if ty == std::any::TypeId::of::<Closure>()
-            || ty == std::any::TypeId::of::<BoundMethod>()
-            || ty == std::any::TypeId::of::<BoundNativeMethod>()
-            || ty == std::any::TypeId::of::<BoundFunction>()
+        if ty == std::any::TypeId::of::<CallableObject>()
         {
             return match key {
                 "call" => Some(crate::compiler::native_id::FUNCTION_CALL_HELPER),
@@ -696,7 +689,7 @@ impl<'a> Interpreter<'a> {
         let obj = unsafe { &*object_ptr.as_ptr() };
         let effective_field_count = obj
             .field_count()
-            .max(obj.dyn_map().map(|dyn_map| dyn_map.len()).unwrap_or(0));
+            .max(obj.dyn_props().map(|dp| dp.len()).unwrap_or(0));
         if effective_field_count < required_fields {
             return OpcodeResult::Error(VmError::TypeError(format!(
                 "Cannot cast object(field_count={}) to required field count {}",
@@ -1162,10 +1155,7 @@ impl<'a> Interpreter<'a> {
                                     None
                                 })
                             {
-                                let method = BoundNativeMethod {
-                                    receiver: obj_val,
-                                    native_id,
-                                };
+                                let method = CallableObject::bound_native(obj_val, native_id);
                                 let method_ptr = self.gc.lock().allocate(method);
                                 unsafe {
                                     Value::from_ptr(
@@ -1221,10 +1211,7 @@ impl<'a> Interpreter<'a> {
                                     None
                                 })
                             {
-                                let method = BoundNativeMethod {
-                                    receiver: obj_val,
-                                    native_id,
-                                };
+                                let method = CallableObject::bound_native(obj_val, native_id);
                                 let method_ptr = self.gc.lock().allocate(method);
                                 unsafe {
                                     Value::from_ptr(
@@ -1243,10 +1230,12 @@ impl<'a> Interpreter<'a> {
                         let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
                         let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() }
                             .expect("JSView::Struct should always be an object");
-                        let _obj = unsafe { &*obj_ptr.as_ptr() };
+                        let obj = unsafe { &*obj_ptr.as_ptr() };
                         let key_str = key_str
                             .as_deref()
                             .expect("dyn object property access should always have a key string");
+
+                        // Well-known symbol short-circuit
                         if let Some(result) = match self
                             .well_known_symbol_property_value(actual_obj, key_str, task, module)
                         {
@@ -1258,12 +1247,132 @@ impl<'a> Interpreter<'a> {
                             }
                             return OpcodeResult::Continue;
                         }
-                        match self.get_property_value_via_js_semantics_with_context(
-                            actual_obj, key_str, task, module,
-                        ) {
-                            Ok(Some(value)) => value,
-                            Ok(None) => Value::undefined(),
-                            Err(error) => return OpcodeResult::Error(error),
+
+                        // Accessor descriptor check (existing descriptor_accessor path)
+                        if let Some(getter) = self.descriptor_accessor(actual_obj, key_str, "get") {
+                            match self.callable_frame_for_value(
+                                getter, stack, &[], None, ReturnAction::PushReturnValue, module, task,
+                            ) {
+                                Ok(Some(frame)) => return frame,
+                                Ok(None) => {
+                                    return OpcodeResult::Error(VmError::TypeError(format!(
+                                        "Property '{}' getter is not callable", key_str
+                                    )));
+                                }
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+
+                        // 1. Shape lookup: resolve key -> slot index via layout
+                        if let Some(slot_idx) = self.shape_resolve_key(obj.header.layout_id, key_str) {
+                            if slot_idx < obj.fields.len() {
+                                // Check accessor in slot_meta
+                                if let Some(meta) = obj.slot_meta.get(slot_idx) {
+                                    if let Some(ref accessor) = meta.accessor {
+                                        // Accessor property — invoke getter
+                                        // For now, return undefined (full accessor invocation comes later)
+                                        let _ = accessor;
+                                        Value::undefined()
+                                    } else {
+                                        obj.fields[slot_idx]
+                                    }
+                                } else {
+                                    obj.fields[slot_idx]
+                                }
+                            } else {
+                                Value::undefined()
+                            }
+                        }
+                        // 2. Method slot lookup (class vtable)
+                        else if let Some(method_slot) = obj.nominal_type_id_usize().and_then(|nominal_type_id| {
+                            let class_metadata = self.class_metadata.read();
+                            class_metadata
+                                .get(nominal_type_id)
+                                .and_then(|meta| meta.get_method_index(key_str))
+                                .or_else(|| {
+                                    drop(class_metadata);
+                                    let classes = self.classes.read();
+                                    let class = classes.get_class(nominal_type_id)?;
+                                    let module = class.module.as_ref()?;
+                                    module
+                                        .classes
+                                        .iter()
+                                        .find(|class_def| class_def.name == class.name)
+                                        .and_then(|class_def| {
+                                            class_def.methods.iter().find_map(|method| {
+                                                let plain_name = method.name.rsplit("::").next().unwrap_or(method.name.as_str());
+                                                if method.name == key_str || plain_name == key_str {
+                                                    Some(method.slot)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                        })
+                                })
+                        }) {
+                            match self.bound_method_value_for_slot(obj_val, method_slot) {
+                                Ok(value) => value,
+                                Err(_) => Value::undefined(),
+                            }
+                        }
+                        // 3. Dynamic fallback: check dyn_props
+                        else {
+                            let key_id = self.intern_prop_key(key_str);
+                            if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
+                                if prop.is_accessor {
+                                    // Accessor in dyn_props — invoke getter (later)
+                                    Value::undefined()
+                                } else {
+                                    prop.value
+                                }
+                            }
+                            // 4. Prototype chain walk
+                            else if !obj.prototype.is_null() && obj.prototype != Value::undefined() {
+                                // Recurse through existing prototype chain mechanism
+                                match self.get_property_value_via_js_semantics_with_context(
+                                    actual_obj, key_str, task, module,
+                                ) {
+                                    Ok(Some(value)) => value,
+                                    Ok(None) => {
+                                        // Try builtin native method as last resort
+                                        if let Some(native_id) = builtin_handle_native_method_id(obj_val, key_str)
+                                            .or_else(|| {
+                                                for alias in protocol_alias_names(key_str) {
+                                                    if let Some(id) = builtin_handle_native_method_id(obj_val, alias) {
+                                                        return Some(id);
+                                                    }
+                                                }
+                                                None
+                                            })
+                                        {
+                                            let method = CallableObject::bound_native(obj_val, native_id);
+                                            let method_ptr = self.gc.lock().allocate(method);
+                                            unsafe { Value::from_ptr(NonNull::new(method_ptr.as_ptr()).expect("ptr")) }
+                                        } else {
+                                            Value::undefined()
+                                        }
+                                    }
+                                    Err(error) => return OpcodeResult::Error(error),
+                                }
+                            }
+                            // 5. Builtin native method lookup
+                            else if let Some(native_id) = builtin_handle_native_method_id(obj_val, key_str)
+                                .or_else(|| {
+                                    for alias in protocol_alias_names(key_str) {
+                                        if let Some(id) = builtin_handle_native_method_id(obj_val, alias) {
+                                            return Some(id);
+                                        }
+                                    }
+                                    None
+                                })
+                            {
+                                let method = CallableObject::bound_native(obj_val, native_id);
+                                let method_ptr = self.gc.lock().allocate(method);
+                                unsafe { Value::from_ptr(NonNull::new(method_ptr.as_ptr()).expect("ptr")) }
+                            }
+                            else {
+                                Value::undefined()
+                            }
                         }
                     }
                     _ => {
@@ -1284,10 +1393,7 @@ impl<'a> Interpreter<'a> {
                                         if let Some(native_id) =
                                             builtin_handle_native_method_id(obj_val, key_str)
                                         {
-                                            let method = BoundNativeMethod {
-                                                receiver: obj_val,
-                                                native_id,
-                                            };
+                                            let method = CallableObject::bound_native(obj_val, native_id);
                                             let method_ptr = self.gc.lock().allocate(method);
                                             unsafe {
                                                 Value::from_ptr(
@@ -1467,7 +1573,7 @@ impl<'a> Interpreter<'a> {
                             self.set_descriptor_field_present(actual_obj, &key_str, true);
                         } else {
                             let key = self.intern_prop_key(&key_str);
-                            obj.ensure_dyn_map().insert(key, value);
+                            obj.ensure_dyn_props().insert(key, DynProp::data(value));
                             self.sync_descriptor_value(actual_obj, &key_str, value);
                             self.set_callable_virtual_property_deleted(actual_obj, &key_str, false);
                             self.set_descriptor_field_present(actual_obj, &key_str, true);
@@ -1708,10 +1814,7 @@ impl<'a> Interpreter<'a> {
                     let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
                     if header.type_id() == std::any::TypeId::of::<RayaString>() {
                         "string"
-                    } else if header.type_id() == std::any::TypeId::of::<Closure>()
-                        || header.type_id() == std::any::TypeId::of::<BoundMethod>()
-                        || header.type_id() == std::any::TypeId::of::<BoundNativeMethod>()
-                        || header.type_id() == std::any::TypeId::of::<BoundFunction>()
+                    } else if header.type_id() == std::any::TypeId::of::<CallableObject>()
                         || header.type_id() == std::any::TypeId::of::<TypeHandle>()
                     {
                         "function"
@@ -1730,8 +1833,8 @@ impl<'a> Interpreter<'a> {
                             } else {
                                 let handle_key = self.intern_prop_key("__raya_type_handle__");
                                 if obj
-                                    .dyn_map()
-                                    .is_some_and(|dyn_map| dyn_map.contains_key(&handle_key))
+                                    .dyn_props()
+                                    .is_some_and(|dp| dp.contains_key(handle_key))
                                 {
                                     "function"
                                 } else {

@@ -26,7 +26,7 @@ use super::frame::{
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
 use crate::vm::interpreter::SharedVmState;
 use crate::vm::json::view::{js_classify, JSView};
-use crate::vm::object::{Array, BoundMethod, Object, RayaString};
+use crate::vm::object::{Array, CallableObject, DynProp, Object, RayaString};
 use crate::vm::scheduler::{IoSubmission, Task};
 use crate::vm::value::Value;
 use parking_lot::RwLock;
@@ -471,10 +471,7 @@ fn aot_value_kind_mask(value: Value) -> u16 {
     if unsafe { value.as_ptr::<Object>() }.is_some() {
         return CAST_KIND_OBJECT;
     }
-    if unsafe { value.as_ptr::<crate::vm::object::Closure>() }.is_some()
-        || unsafe { value.as_ptr::<crate::vm::object::BoundMethod>() }.is_some()
-        || unsafe { value.as_ptr::<crate::vm::object::BoundNativeMethod>() }.is_some()
-    {
+    if unsafe { value.as_ptr::<CallableObject>() }.is_some() {
         return CAST_KIND_FUNCTION;
     }
     0
@@ -529,12 +526,12 @@ fn aot_shape_slot_map_for_object(
         .nominal_type_id_usize()
         .and_then(|nominal_type_id| shared.class_metadata.read().get(nominal_type_id).cloned());
     let dynamic_binding_for = |name: &str| {
-        object.dyn_map().and_then(|dyn_map| {
-            dyn_map.keys().find_map(|key| {
+        object.dyn_props().and_then(|dp| {
+            dp.keys_in_order().find_map(|key| {
                 shared
-                    .prop_key_name(*key)
+                    .prop_key_name(key)
                     .filter(|actual| actual == name)
-                    .map(|_| StructuralSlotBinding::Dynamic(*key))
+                    .map(|_| StructuralSlotBinding::Dynamic(key))
             })
         })
     };
@@ -723,8 +720,8 @@ unsafe extern "C" fn helper_object_get_shape_field(
             object_ref.get_field(slot).unwrap_or(Value::null()).raw()
         }
         StructuralSlotBinding::Dynamic(key) => object_ref
-            .dyn_map()
-            .and_then(|dyn_map| dyn_map.get(&key).copied())
+            .dyn_props()
+            .and_then(|dp| dp.get(key).map(|p| p.value))
             .unwrap_or(Value::null())
             .raw(),
         StructuralSlotBinding::Method(method_slot) => {
@@ -742,11 +739,7 @@ unsafe extern "C" fn helper_object_get_shape_field(
                 (fid, class.module.clone())
             };
             let mut gc = shared.gc.lock();
-            let ptr = gc.allocate(BoundMethod {
-                receiver: object,
-                func_id,
-                module: method_module,
-            });
+            let ptr = gc.allocate(CallableObject::bound_method(object, func_id, method_module));
             Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()).raw()
         }
         StructuralSlotBinding::Missing => Value::null().raw(),
@@ -781,8 +774,8 @@ unsafe extern "C" fn helper_object_set_shape_field(
             .unwrap_or(0),
         StructuralSlotBinding::Dynamic(key) => {
             object_ref
-                .ensure_dyn_map()
-                .insert(key, Value::from_raw(value_raw));
+                .ensure_dyn_props()
+                .insert(key, DynProp::data(Value::from_raw(value_raw)));
             1
         }
         StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => 0,
@@ -837,7 +830,7 @@ unsafe extern "C" fn helper_cast_value(
             let object = unsafe { &*ptr.as_ptr() };
             let field_count = object
                 .field_count()
-                .max(object.dyn_map().map(|dyn_map| dyn_map.len()).unwrap_or(0));
+                .max(object.dyn_props().map(|dp| dp.len()).unwrap_or(0));
             if field_count < required_fields {
                 aot_raise_type_error(
                     ctx,
@@ -1044,8 +1037,8 @@ unsafe extern "C" fn helper_dyn_get_prop(
                 obj.get_field(index).unwrap_or(Value::null()).raw()
             } else {
                 let key_id = shared.prop_keys.write().intern(&key_str);
-                obj.dyn_map()
-                    .and_then(|dyn_map| dyn_map.get(&key_id).copied())
+                obj.dyn_props()
+                    .and_then(|dp| dp.get(key_id).map(|p| p.value))
                     .unwrap_or(Value::null())
                     .raw()
             }
@@ -1101,7 +1094,7 @@ unsafe extern "C" fn helper_dyn_set_prop(
                 let _ = obj.set_field(index, value);
             } else {
                 let key_id = shared.prop_keys.write().intern(&key_str);
-                obj.ensure_dyn_map().insert(key_id, value);
+                obj.ensure_dyn_props().insert(key_id, DynProp::data(value));
             }
         }
         _ => {}

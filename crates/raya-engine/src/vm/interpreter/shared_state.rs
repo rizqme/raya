@@ -161,7 +161,7 @@ pub type NominalTypeId = crate::vm::object::NominalTypeId;
 /// Stable interned property-key identity.
 pub type PropKeyId = crate::vm::object::PropKeyId;
 
-/// Runtime-local property key interner for `Object::dyn_map`.
+/// Runtime-local property key interner for `Object::dyn_props`.
 #[derive(Debug, Default)]
 pub struct PropertyKeyRegistry {
     next_id: PropKeyId,
@@ -493,7 +493,7 @@ impl SharedVmState {
         for export in &module.exports {
             let value = match export.symbol_type {
                 crate::compiler::SymbolType::Function => {
-                    let closure = crate::vm::object::Closure::with_module(
+                    let closure = crate::vm::object::CallableObject::closure_with_module(
                         export.index,
                         Vec::new(),
                         module.clone(),

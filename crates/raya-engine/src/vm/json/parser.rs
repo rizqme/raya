@@ -36,7 +36,7 @@ pub fn parse(input: &str, gc: &mut GarbageCollector) -> VmResult<Value> {
     Ok(val)
 }
 
-/// Parse JSON directly into unified `Object + dyn_map` carriers by interning
+/// Parse JSON directly into unified `Object + dyn_props` carriers by interning
 /// dynamic property keys through the provided callback.
 pub fn parse_with_prop_key_interner(
     input: &str,
@@ -425,9 +425,9 @@ impl<'a> Parser<'a> {
         if let Some(intern_prop_key) = self.intern_prop_key.as_deref_mut() {
             let mut obj = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
             {
-                let dyn_map = obj.ensure_dyn_map();
+                let dyn_props = obj.ensure_dyn_props();
                 for (key, value) in entries {
-                    dyn_map.insert(intern_prop_key(&key), value);
+                    dyn_props.insert(intern_prop_key(&key), crate::vm::object::DynProp::data(value));
                 }
             }
             let obj_ptr = self.gc.allocate(obj);

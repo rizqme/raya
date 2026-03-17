@@ -428,6 +428,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
+            ..Default::default()
         });
         Arc::new(Task::new(0, Arc::new(module), None))
     }

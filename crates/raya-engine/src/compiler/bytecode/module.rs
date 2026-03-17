@@ -634,7 +634,7 @@ impl LineEntry {
 }
 
 /// Function definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Function {
     /// Function name
     pub name: String,

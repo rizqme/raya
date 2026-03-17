@@ -20,7 +20,7 @@ pub fn stringify(value: Value) -> VmResult<String> {
 
 /// Convert a VM `Value` to a JSON string using a dynamic-property key resolver.
 ///
-/// This is the runtime path used for unified `Object + dyn_map` carriers, where
+/// This is the runtime path used for unified `Object + dyn_props` carriers, where
 /// dynamic property names are stored as interned `PropKeyId`s.
 pub fn stringify_with_prop_keys<F>(value: Value, mut resolve_prop_key: F) -> VmResult<String>
 where
@@ -105,7 +105,7 @@ where
         JSView::Struct { ptr, layout_id, .. } => {
             let obj = unsafe { &*ptr };
             let fixed_names = resolve_layout_names(layout_id);
-            if fixed_names.is_some() || obj.dyn_map().is_some() {
+            if fixed_names.is_some() || obj.dyn_props().is_some() {
                 let fixed_names = fixed_names.unwrap_or_default();
                 output.push('{');
                 let mut first = true;
@@ -120,14 +120,15 @@ where
                     output.push_str("\":");
                     stringify_impl(value, output, resolve_prop_key, resolve_layout_names)?;
                 }
-                if let Some(dyn_map) = obj.dyn_map() {
-                    for (key, val) in dyn_map {
-                        let Some(name) = resolve_prop_key(*key) else {
+                if let Some(dyn_props) = obj.dyn_props() {
+                    for key in dyn_props.keys_in_order() {
+                        let Some(name) = resolve_prop_key(key) else {
                             continue;
                         };
                         if fixed_names.iter().any(|fixed| fixed == &name) {
                             continue;
                         }
+                        let val = dyn_props.get(key).map(|p| p.value).unwrap_or(Value::undefined());
                         if !first {
                             output.push(',');
                         }
@@ -135,7 +136,7 @@ where
                         output.push('"');
                         escape_string(&name, output);
                         output.push_str("\":");
-                        stringify_impl(*val, output, resolve_prop_key, resolve_layout_names)?;
+                        stringify_impl(val, output, resolve_prop_key, resolve_layout_names)?;
                     }
                 }
                 output.push('}');

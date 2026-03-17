@@ -7,7 +7,7 @@ use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    Array, BoundFunction, BoundMethod, BoundNativeMethod, Closure, Object, RayaString,
+    Array, CallableKind, CallableObject, Object, RayaString,
 };
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
@@ -637,8 +637,8 @@ impl<'a> Interpreter<'a> {
                         }
 
                         let callable = obj
-                            .dyn_map()
-                            .and_then(|dyn_map| dyn_map.get(&key).copied())
+                            .dyn_props()
+                            .and_then(|dp| dp.get(key).map(|p| p.value))
                             .unwrap_or(Value::null());
                         match self.callable_frame_for_value(
                             callable,
@@ -909,14 +909,8 @@ impl<'a> Interpreter<'a> {
                         "Array"
                     } else if receiver_header.type_id() == std::any::TypeId::of::<RayaString>() {
                         "RayaString"
-                    } else if receiver_header.type_id() == std::any::TypeId::of::<Closure>() {
-                        "Closure"
-                    } else if receiver_header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-                        "BoundMethod"
-                    } else if receiver_header.type_id()
-                        == std::any::TypeId::of::<BoundNativeMethod>()
-                    {
-                        "BoundNativeMethod"
+                    } else if receiver_header.type_id() == std::any::TypeId::of::<CallableObject>() {
+                        "CallableObject"
                     } else {
                         "UnknownGcType"
                     };
@@ -959,14 +953,8 @@ impl<'a> Interpreter<'a> {
                                 "Array"
                             } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
                                 "RayaString"
-                            } else if header.type_id() == std::any::TypeId::of::<Closure>() {
-                                "Closure"
-                            } else if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-                                "BoundMethod"
-                            } else if header.type_id()
-                                == std::any::TypeId::of::<BoundNativeMethod>()
-                            {
-                                "BoundNativeMethod"
+                            } else if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+                                "CallableObject"
                             } else {
                                 "UnknownGcType"
                             }

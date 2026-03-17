@@ -1479,6 +1479,7 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![Self::reg(object), *method as u32],
                 });
             }
+
         }
     }
 

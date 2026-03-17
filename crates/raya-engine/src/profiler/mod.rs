@@ -425,6 +425,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![],
+            ..Default::default()
         });
 
         let resolved = resolve_frame(&module, 0, 10);
@@ -443,6 +444,7 @@ mod tests {
             param_count: 1,
             local_count: 1,
             code: vec![],
+            ..Default::default()
         });
 
         let mut debug_info = DebugInfo::new();

@@ -184,6 +184,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
 
         // u16 + u8 operands (module native call)
         Opcode::ModuleNativeCall => 1 + 2 + 1,
+
     }
 }
 

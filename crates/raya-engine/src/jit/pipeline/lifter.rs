@@ -1808,6 +1808,7 @@ fn lift_instruction(
         Opcode::BindMethod => {
             // Falls back to interpreter — bound method creation requires GC allocation
         }
+
     }
 
     Ok(())
@@ -1988,6 +1989,7 @@ mod tests {
             param_count: param_count as usize,
             local_count: local_count as usize,
             code,
+            ..Default::default()
         }
     }
 

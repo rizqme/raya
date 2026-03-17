@@ -5,7 +5,7 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    layout_id_from_ordered_names, Array, BoundMethod, BoundNativeMethod, Closure, Object, Proxy,
+    layout_id_from_ordered_names, Array, CallableObject, DynProp, Object, Proxy,
     RayaString,
 };
 use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
@@ -83,9 +83,9 @@ impl<'a> Interpreter<'a> {
             })
         };
 
-        if let Some(dyn_map) = obj.dyn_map() {
-            for key in dyn_map.keys() {
-                let Some(name) = self.prop_key_name(*key) else {
+        if let Some(dp) = obj.dyn_props() {
+            for key in dp.keys_in_order() {
+                let Some(name) = self.prop_key_name(key) else {
                     continue;
                 };
                 if !field_names.iter().any(|existing| existing == &name) {
@@ -228,9 +228,7 @@ impl<'a> Interpreter<'a> {
             return false;
         }
         let header = unsafe { &*header_ptr_from_value_ptr(value.as_ptr::<u8>().unwrap().as_ptr()) };
-        header.type_id() == std::any::TypeId::of::<Closure>()
-            || header.type_id() == std::any::TypeId::of::<BoundMethod>()
-            || header.type_id() == std::any::TypeId::of::<BoundNativeMethod>()
+        header.type_id() == std::any::TypeId::of::<CallableObject>()
     }
 
     fn reflect_has_property(&self, target: Value, property_key: &str) -> bool {
@@ -241,7 +239,7 @@ impl<'a> Interpreter<'a> {
                 return true;
             }
             let key = self.intern_prop_key(property_key);
-            if obj.dyn_map().is_some_and(|map| map.contains_key(&key)) {
+            if obj.dyn_props().is_some_and(|dp| dp.contains_key(key)) {
                 return true;
             }
             if self
@@ -774,11 +772,7 @@ impl<'a> Interpreter<'a> {
                             let method_module = class.module.clone();
                             drop(classes);
 
-                            let bm = BoundMethod {
-                                receiver: target,
-                                func_id,
-                                module: method_module,
-                            };
+                            let bm = CallableObject::bound_method(target, func_id, method_module);
                             let gc_ptr = self.gc.lock().allocate(bm);
                             unsafe {
                                 Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())

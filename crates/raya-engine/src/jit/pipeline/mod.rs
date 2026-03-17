@@ -124,6 +124,7 @@ mod tests {
                 param_count,
                 local_count,
                 code,
+                ..Default::default()
             }],
             classes: vec![],
             metadata: Metadata {
@@ -294,12 +295,14 @@ mod tests {
                     param_count: 0,
                     local_count: 0,
                     code: code1,
+                    ..Default::default()
                 },
                 Function {
                     name: "func_b".to_string(),
                     param_count: 0,
                     local_count: 0,
                     code: code2,
+                    ..Default::default()
                 },
             ],
             classes: vec![],

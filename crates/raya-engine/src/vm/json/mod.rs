@@ -88,9 +88,9 @@ impl JsonValue {
                         let Some(prop_key) = resolve_prop_key(key) else {
                             return JsonValue::Undefined;
                         };
-                        obj.dyn_map()
-                            .and_then(|dyn_map| dyn_map.get(&prop_key).copied())
-                            .map(value_to_json_stack)
+                        obj.dyn_props()
+                            .and_then(|dp| dp.get(prop_key))
+                            .map(|p| value_to_json_stack(p.value))
                             .unwrap_or(JsonValue::Undefined)
                     }
                     _ => JsonValue::Undefined,

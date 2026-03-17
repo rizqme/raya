@@ -12,7 +12,7 @@ use crate::vm::builtins::handlers::{
 };
 use crate::vm::gc::GarbageCollector;
 use crate::vm::native_handler::NativeHandler;
-use crate::vm::object::{BoundNativeMethod, Class, Object, RayaString};
+use crate::vm::object::{CallableKind, CallableObject, Class, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
@@ -840,16 +840,31 @@ impl<'a> Interpreter<'a> {
 
         let opcode_result = if let Some(raw_ptr) = unsafe { callable.as_ptr::<u8>() } {
             let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
-            if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
-                let method = unsafe { &*callable.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
-                self.exec_bound_native_method_call(
-                    &mut stack,
-                    method.receiver,
-                    method.native_id,
-                    args.to_vec(),
-                    caller_module,
-                    &scratch_task,
-                )
+            if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+                let co = unsafe { &*callable.as_ptr::<CallableObject>().unwrap().as_ptr() };
+                if let CallableKind::BoundNative { native_id, receiver } = &co.kind {
+                    self.exec_bound_native_method_call(
+                        &mut stack,
+                        *receiver,
+                        *native_id,
+                        args.to_vec(),
+                        caller_module,
+                        &scratch_task,
+                    )
+                } else {
+                    match self.callable_frame_for_value(
+                        callable,
+                        &mut stack,
+                        args,
+                        explicit_this,
+                        ReturnAction::PushReturnValue,
+                        caller_module,
+                        &scratch_task,
+                    )? {
+                        Some(result) => result,
+                        None => return Err(VmError::TypeError("Value is not callable".to_string())),
+                    }
+                }
             } else {
                 match self.callable_frame_for_value(
                     callable,
@@ -977,6 +992,42 @@ impl<'a> Interpreter<'a> {
             return None;
         }
         names.get(field_offset).cloned()
+    }
+
+    /// Resolve a property key string to a fixed-slot index via the object's layout.
+    /// This is the runtime equivalent of what LoadFieldShape does at compile time.
+    pub(in crate::vm::interpreter) fn shape_resolve_key(&self, layout_id: crate::vm::object::LayoutId, key: &str) -> Option<usize> {
+        // Try layout registry (covers both nominal and structural registered layouts)
+        {
+            let layouts = self.layouts.read();
+            if let Some(field_names) = layouts.layout_field_names(layout_id) {
+                for (idx, name) in field_names.iter().enumerate() {
+                    if name == key {
+                        return Some(idx);
+                    }
+                }
+            }
+        }
+
+        // Try structural object shapes fallback
+        if let Some(names) = self.structural_object_shapes.read().get(&layout_id) {
+            for (idx, name) in names.iter().enumerate() {
+                if name == key {
+                    return Some(idx);
+                }
+            }
+        }
+
+        // Try global layout names fallback
+        if let Some(field_names) = crate::vm::object::global_layout_names(layout_id) {
+            for (idx, name) in field_names.iter().enumerate() {
+                if name == key {
+                    return Some(idx);
+                }
+            }
+        }
+
+        None
     }
 
     #[inline]

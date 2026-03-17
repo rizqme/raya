@@ -10,14 +10,17 @@ use crate::vm::interpreter::shared_state::{
 };
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    Array, BoundFunction, BoundMethod, BoundNativeMethod, Closure, Object, RayaString,
+    Array, CallableKind, CallableObject, DynProp, Object, RayaString,
 };
+use super::native::checked_object_ptr;
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
 use std::sync::Arc;
 
+// Property kernel is now the source of truth for descriptors.
+// Old metadata key retained only for callable_virtual_property fallback paths.
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
 impl<'a> Interpreter<'a> {
@@ -35,10 +38,7 @@ impl<'a> Interpreter<'a> {
         };
 
         let bound_native = |this: &mut Self, native_id: u16| {
-            let method = crate::vm::object::BoundNativeMethod {
-                receiver,
-                native_id,
-            };
+            let method = CallableObject::bound_native(receiver, native_id);
             let method_ptr = this.gc.lock().allocate(method);
             unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) }
         };
@@ -137,11 +137,7 @@ impl<'a> Interpreter<'a> {
         }
         drop(classes);
 
-        let bm = BoundMethod {
-            receiver,
-            func_id,
-            module: method_module,
-        };
+        let bm = CallableObject::bound_method(receiver, func_id, method_module);
         let gc_ptr = self.gc.lock().allocate(bm);
         Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
     }
@@ -161,95 +157,96 @@ impl<'a> Interpreter<'a> {
         }
         let header =
             unsafe { &*header_ptr_from_value_ptr(callable.as_ptr::<u8>().unwrap().as_ptr()) };
-        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-            let bm = unsafe { &*callable.as_ptr::<BoundMethod>().unwrap().as_ptr() };
-            let receiver_value = explicit_this.unwrap_or(bm.receiver);
-            let receiver = if self.callable_uses_js_this_slot(callable) {
-                self.js_this_value_for_callable(callable, Some(receiver_value))?
-            } else {
-                receiver_value
-            };
-            stack.push(receiver)?;
-            for arg in args {
-                stack.push(*arg)?;
-            }
-            return Ok(Some(OpcodeResult::PushFrame {
-                func_id: bm.func_id,
-                arg_count: args.len() + 1,
-                is_closure: false,
-                closure_val: None,
-                module: bm.module.clone(),
-                return_action,
-            }));
-        }
-        if header.type_id() == std::any::TypeId::of::<BoundNativeMethod>() {
-            let method = unsafe { &*callable.as_ptr::<BoundNativeMethod>().unwrap().as_ptr() };
-            let receiver = explicit_this.unwrap_or(method.receiver);
-            return Ok(Some(self.exec_bound_native_method_call(
-                stack,
-                receiver,
-                method.native_id,
-                args.to_vec(),
-                module,
-                task,
-            )));
-        }
-        if header.type_id() == std::any::TypeId::of::<BoundFunction>() {
-            let bound = unsafe { &*callable.as_ptr::<BoundFunction>().unwrap().as_ptr() };
-            let mut combined_args = bound.bound_args.clone();
-            combined_args.extend_from_slice(args);
+        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+            let co = unsafe { &*callable.as_ptr::<CallableObject>().unwrap().as_ptr() };
+            match &co.kind {
+                CallableKind::BoundMethod { func_id, receiver } => {
+                    let receiver_value = explicit_this.unwrap_or(*receiver);
+                    let receiver_final = if self.callable_uses_js_this_slot(callable) {
+                        self.js_this_value_for_callable(callable, Some(receiver_value))?
+                    } else {
+                        receiver_value
+                    };
+                    stack.push(receiver_final)?;
+                    for arg in args {
+                        stack.push(*arg)?;
+                    }
+                    return Ok(Some(OpcodeResult::PushFrame {
+                        func_id: *func_id,
+                        arg_count: args.len() + 1,
+                        is_closure: false,
+                        closure_val: None,
+                        module: co.module.clone(),
+                        return_action,
+                    }));
+                }
+                CallableKind::BoundNative { native_id, receiver } => {
+                    let recv = explicit_this.unwrap_or(*receiver);
+                    return Ok(Some(self.exec_bound_native_method_call(
+                        stack,
+                        recv,
+                        *native_id,
+                        args.to_vec(),
+                        module,
+                        task,
+                    )));
+                }
+                CallableKind::Bound { target, this_arg, bound_args, rebind_call_helper, .. } => {
+                    let mut combined_args = bound_args.clone();
+                    combined_args.extend_from_slice(args);
 
-            if bound.rebind_call_helper {
-                let target_callable = bound.this_arg;
-                let this_arg = combined_args.first().copied().unwrap_or(Value::undefined());
-                let rest_args = if combined_args.len() > 1 {
-                    combined_args[1..].to_vec()
-                } else {
-                    Vec::new()
-                };
-                return self.callable_frame_for_value(
-                    target_callable,
-                    stack,
-                    &rest_args,
-                    Some(this_arg),
-                    return_action,
-                    module,
-                    task,
-                );
-            }
+                    if *rebind_call_helper {
+                        let target_callable = *this_arg;
+                        let this_a = combined_args.first().copied().unwrap_or(Value::undefined());
+                        let rest_args = if combined_args.len() > 1 {
+                            combined_args[1..].to_vec()
+                        } else {
+                            Vec::new()
+                        };
+                        return self.callable_frame_for_value(
+                            target_callable,
+                            stack,
+                            &rest_args,
+                            Some(this_a),
+                            return_action,
+                            module,
+                            task,
+                        );
+                    }
 
-            return self.callable_frame_for_value(
-                bound.target,
-                stack,
-                &combined_args,
-                Some(bound.this_arg),
-                return_action,
-                module,
-                task,
-            );
-        }
-        if header.type_id() == std::any::TypeId::of::<Closure>() {
-            let closure_module =
-                unsafe { &*callable.as_ptr::<Closure>().unwrap().as_ptr() }.module();
-            let mut arg_count = args.len();
-            if self.callable_uses_js_this_slot(callable) {
-                stack.push(self.js_this_value_for_callable(callable, explicit_this)?)?;
-                arg_count += 1;
-            } else if let Some(this_arg) = explicit_this {
-                stack.push(this_arg)?;
-                arg_count += 1;
+                    return self.callable_frame_for_value(
+                        *target,
+                        stack,
+                        &combined_args,
+                        Some(*this_arg),
+                        return_action,
+                        module,
+                        task,
+                    );
+                }
+                CallableKind::Closure { func_id } => {
+                    let closure_module = co.module();
+                    let mut arg_count = args.len();
+                    if self.callable_uses_js_this_slot(callable) {
+                        stack.push(self.js_this_value_for_callable(callable, explicit_this)?)?;
+                        arg_count += 1;
+                    } else if let Some(this_arg) = explicit_this {
+                        stack.push(this_arg)?;
+                        arg_count += 1;
+                    }
+                    for arg in args {
+                        stack.push(*arg)?;
+                    }
+                    return Ok(Some(OpcodeResult::PushFrame {
+                        func_id: *func_id,
+                        arg_count,
+                        is_closure: true,
+                        closure_val: Some(callable),
+                        module: closure_module,
+                        return_action,
+                    }));
+                }
             }
-            for arg in args {
-                stack.push(*arg)?;
-            }
-            return Ok(Some(OpcodeResult::PushFrame {
-                func_id: unsafe { &*callable.as_ptr::<Closure>().unwrap().as_ptr() }.func_id(),
-                arg_count,
-                is_closure: true,
-                closure_val: Some(callable),
-                module: closure_module,
-                return_action,
-            }));
         }
         if let Some(result) =
             self.call_builtin_constructor_as_function(callable, args, task, module)?
@@ -335,9 +332,9 @@ impl<'a> Interpreter<'a> {
     ) -> Option<Vec<StructuralSlotBinding>> {
         let dynamic_binding_for = |name: &str| -> Option<StructuralSlotBinding> {
             let key = self.intern_prop_key(name);
-            obj.dyn_map().and_then(|dyn_map| {
-                dyn_map
-                    .contains_key(&key)
+            obj.dyn_props().and_then(|dp| {
+                dp
+                    .contains_key(key)
                     .then_some(StructuralSlotBinding::Dynamic(key))
             })
         };
@@ -502,57 +499,53 @@ impl<'a> Interpreter<'a> {
     }
 
     pub(crate) fn is_field_writable(&self, obj_val: Value, field_name: &str) -> bool {
-        let metadata = self.metadata.lock();
-        let Some(descriptor) =
-            metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
-        else {
-            drop(metadata);
-            return self
-                .callable_virtual_property_descriptor(obj_val, field_name)
-                .map(|(writable, _, _)| writable)
-                .unwrap_or(true);
-        };
-        let Some(writable) = self.get_value_field_by_name(descriptor, "writable") else {
-            return true;
-        };
-        if let Some(b) = writable.as_bool() {
-            b
-        } else if let Some(i) = writable.as_i32() {
-            i != 0
-        } else {
-            true
+        // Property kernel: check SlotMeta and DynProp first
+        if let Some(obj_ptr) = checked_object_ptr(obj_val) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            // Check fixed slots via shape
+            if let Some(slot_idx) = self.shape_resolve_key(obj.header.layout_id, field_name) {
+                if let Some(meta) = obj.slot_meta.get(slot_idx) {
+                    return meta.writable;
+                }
+            }
+            // Check dyn_props
+            let key_id = self.intern_prop_key(field_name);
+            if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
+                return prop.writable;
+            }
         }
+        // Fallback: callable virtual property descriptor
+        self.callable_virtual_property_descriptor(obj_val, field_name)
+            .map(|(writable, _, _)| writable)
+            .unwrap_or(true)
     }
 
-    pub(crate) fn sync_descriptor_value(&self, obj_val: Value, field_name: &str, value: Value) {
-        let descriptor = {
-            let metadata = self.metadata.lock();
-            metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
-        };
-        let Some(descriptor) = descriptor else {
-            return;
-        };
-        if !self.descriptor_field_present(descriptor, "value") {
-            return;
-        }
-        let Some(value_index) = self.field_index_for_value(descriptor, "value") else {
-            return;
-        };
-        if let Some(desc_ptr) = unsafe { descriptor.as_ptr::<Object>() } {
-            let desc = unsafe { &mut *desc_ptr.as_ptr() };
-            let _ = desc.set_field(value_index, value);
-        }
+    pub(crate) fn sync_descriptor_value(&self, _obj_val: Value, _field_name: &str, _value: Value) {
+        // No-op: the property kernel (DynProp/SlotMeta) is written directly by
+        // the caller. No secondary descriptor object needs syncing.
     }
 
     pub(crate) fn descriptor_data_value(&self, obj_val: Value, field_name: &str) -> Option<Value> {
-        let descriptor = {
-            let metadata = self.metadata.lock();
-            metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
-        }?;
-        if !self.descriptor_field_present(descriptor, "value") {
-            return None;
+        // Property kernel: read from SlotMeta/DynProp
+        if let Some(obj_ptr) = checked_object_ptr(obj_val) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            // Check fixed slots
+            if let Some(slot_idx) = self.shape_resolve_key(obj.header.layout_id, field_name) {
+                if let Some(meta) = obj.slot_meta.get(slot_idx) {
+                    if meta.accessor.is_none() {
+                        return obj.fields.get(slot_idx).copied();
+                    }
+                }
+            }
+            // Check dyn_props
+            let key_id = self.intern_prop_key(field_name);
+            if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
+                if !prop.is_accessor {
+                    return Some(prop.value);
+                }
+            }
         }
-        self.get_field_value_by_name(descriptor, "value")
+        None
     }
 
     pub(crate) fn descriptor_accessor(
@@ -561,20 +554,42 @@ impl<'a> Interpreter<'a> {
         field_name: &str,
         accessor_name: &str,
     ) -> Option<Value> {
-        let descriptor = {
-            let metadata = self.metadata.lock();
-            metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
-        };
-        if let Some(descriptor) = descriptor {
-            if !self.descriptor_field_present(descriptor, accessor_name) {
-                return None;
+        // Property kernel: check SlotMeta and DynProp for accessor get/set
+        if let Some(obj_ptr) = checked_object_ptr(obj_val) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            // Check fixed slots
+            if let Some(slot_idx) = self.shape_resolve_key(obj.header.layout_id, field_name) {
+                if let Some(meta) = obj.slot_meta.get(slot_idx) {
+                    if let Some(ref accessor) = meta.accessor {
+                        let val = match accessor_name {
+                            "get" => accessor.get,
+                            "set" => accessor.set,
+                            _ => return None,
+                        };
+                        if !val.is_undefined() {
+                            return Some(val);
+                        }
+                        return None;
+                    }
+                }
             }
-            let accessor = self.get_field_value_by_name(descriptor, accessor_name)?;
-            if accessor.is_undefined() {
-                return None;
+            // Check dyn_props
+            let key_id = self.intern_prop_key(field_name);
+            if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
+                if prop.is_accessor {
+                    let val = match accessor_name {
+                        "get" => prop.get,
+                        "set" => prop.set,
+                        _ => return None,
+                    };
+                    if !val.is_undefined() {
+                        return Some(val);
+                    }
+                    return None;
+                }
             }
-            return Some(accessor);
         }
+        // Fallback: callable virtual accessor
         self.callable_virtual_accessor_value(obj_val, field_name, accessor_name)
     }
 
@@ -598,10 +613,8 @@ impl<'a> Interpreter<'a> {
             "Array"
         } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
             "RayaString"
-        } else if header.type_id() == std::any::TypeId::of::<Closure>() {
-            "Closure"
-        } else if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
-            "BoundMethod"
+        } else if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+            "CallableObject"
         } else {
             "UnknownGcType"
         };
@@ -793,8 +806,8 @@ impl<'a> Interpreter<'a> {
                 }
                 if let StructuralSlotBinding::Dynamic(key) = slot_binding {
                     let value = obj
-                        .dyn_map()
-                        .and_then(|dyn_map| dyn_map.get(&key).copied())
+                        .dyn_props()
+                        .and_then(|dp| dp.get(key).map(|p| p.value))
                         .unwrap_or(Value::null());
                     if let Err(e) = stack.push(value) {
                         return OpcodeResult::Error(e);
@@ -964,7 +977,7 @@ impl<'a> Interpreter<'a> {
                 let field_offset = match slot_binding {
                     StructuralSlotBinding::Field(offset) => offset,
                     StructuralSlotBinding::Dynamic(key) => {
-                        obj.ensure_dyn_map().insert(key, value);
+                        obj.ensure_dyn_props().insert(key, DynProp::data(value));
                         return OpcodeResult::Continue;
                     }
                     StructuralSlotBinding::Method(_) => {
@@ -1113,8 +1126,8 @@ impl<'a> Interpreter<'a> {
                 }
                 if let StructuralSlotBinding::Dynamic(key) = slot_binding {
                     let value = obj
-                        .dyn_map()
-                        .and_then(|dyn_map| dyn_map.get(&key).copied())
+                        .dyn_props()
+                        .and_then(|dp| dp.get(key).map(|p| p.value))
                         .unwrap_or(Value::null());
                     if let Err(e) = stack.push(value) {
                         return OpcodeResult::Error(e);
@@ -1249,11 +1262,7 @@ impl<'a> Interpreter<'a> {
                 let method_module = class.module.clone();
                 drop(classes);
 
-                let bm = BoundMethod {
-                    receiver: obj_val,
-                    func_id,
-                    module: method_module,
-                };
+                let bm = CallableObject::bound_method(obj_val, func_id, method_module);
                 let gc_ptr = self.gc.lock().allocate(bm);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };

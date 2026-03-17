@@ -618,17 +618,22 @@ impl<'a> Lowerer<'a> {
     }
 
     fn emit_dyn_get_named(&mut self, dest: Register, object: Register, property: &str) {
+        // TODO Phase 2 completion: emit JsGetNamed when js_this_binding_compat is true
+        // and handlers are fully wired to the property kernel. For now, DynGetKeyed
+        // handles both Raya and JS semantics through the existing mature handler.
         let key = self.emit_named_key_register(property);
         self.emit(IrInstr::DynGetKeyed { dest, object, key });
     }
 
     fn emit_dyn_set_named(&mut self, object: Register, property: &str, value: Register) {
+        // TODO Phase 2 completion: emit JsSetNamed when js_this_binding_compat is true.
         let key = self.emit_named_key_register(property);
         self.emit(IrInstr::DynSetKeyed { object, key, value });
     }
 
     fn emit_reflect_has_named(&mut self, object: Register, property: &str) -> Register {
         let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        // TODO Phase 2 completion: emit JsHas when handlers are wired to property kernel
         let key = self.emit_named_key_register(property);
         self.emit(IrInstr::NativeCall {
             dest: Some(dest.clone()),
@@ -1478,12 +1483,12 @@ impl<'a> Lowerer<'a> {
         let bool_ty = TypeId::new(BOOLEAN_TYPE_ID);
         if let Expression::Member(member) = &*unary.operand {
             let object = self.lower_expr(&member.object);
+            let name = self.interner.resolve(member.property.name).to_string();
+            // TODO Phase 2 completion: emit JsDelete when handlers are wired to property kernel
             let key = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             self.emit(IrInstr::Assign {
                 dest: key.clone(),
-                value: IrValue::Constant(IrConstant::String(
-                    self.interner.resolve(member.property.name).to_string(),
-                )),
+                value: IrValue::Constant(IrConstant::String(name)),
             });
             let dest = self.alloc_register(bool_ty);
             self.emit(IrInstr::NativeCall {

@@ -177,12 +177,14 @@ mod tests {
                 param_count: 0,
                 local_count: 0,
                 code: math_code,
+                ..Default::default()
             },
             Function {
                 name: "trivial".to_string(),
                 param_count: 0,
                 local_count: 0,
                 code: trivial_code,
+                ..Default::default()
             },
         ]);
 
@@ -235,6 +237,7 @@ mod tests {
                 param_count: 0,
                 local_count: 1,
                 code,
+                ..Default::default()
             });
         }
 

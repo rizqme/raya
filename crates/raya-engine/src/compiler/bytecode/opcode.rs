@@ -341,26 +341,22 @@ pub enum Opcode {
     StoreRefCell = 0xDE,
 
     // ===== Dynamic-object Operations (0xE0-0xEF) =====
-    // Note: JSON.parse / JSON.stringify use NativeCall (0x0C00, 0x0C01) instead of opcodes
-    // 0xE0-0xE4 reserved
     /// Get property by runtime string key: pop key, pop object, push value  (no operand)
     DynGetKeyed = 0xE5,
     /// Set property by runtime string key: pop value, pop key, pop object  (no operand)
     DynSetKeyed = 0xE6,
-    // 0xE7-0xE9 reserved
     /// Check if object satisfies a structural shape (operand: u64 shapeId)
     ImplementsShape = 0xEA,
 
-    // ===== Task Control & Type Operations (0xED-0xEF) =====
-    /// Cancel a task: pop TaskHandle, task is marked for cancellation
-    TaskCancel = 0xED,
-    /// Check if object is instance of a nominal type (operand: u16 nominalTypeIndex)
-    IsNominal = 0xEE,
+    // ===== Task Control & Type Operations (0xEB-0xEF) =====
     /// Cast object to a nominal type (operand: u16 nominalTypeIndex)
     CastNominal = 0xEB,
     /// Cast object to a structural shape (operand: u64 shapeId)
     CastShape = 0xEC,
-    // 0xEF reserved
+    /// Cancel a task: pop TaskHandle, task is marked for cancellation
+    TaskCancel = 0xED,
+    /// Check if object is instance of a nominal type (operand: u16 nominalTypeIndex)
+    IsNominal = 0xEE,
 
     // ===== Closures & Modules (0xF0-0xF7) =====
     /// Create closure object (operands: u32 funcIndex, u16 captureCount)
@@ -576,7 +572,7 @@ impl Opcode {
             0xDD => Some(Self::LoadRefCell),
             0xDE => Some(Self::StoreRefCell),
 
-            // Dynamic-object operations (0xE0, 0xE1 reserved for NativeCall parse/stringify)
+            // Dynamic-object operations
             0xE5 => Some(Self::DynGetKeyed),
             0xE6 => Some(Self::DynSetKeyed),
             0xEA => Some(Self::ImplementsShape),
@@ -866,8 +862,7 @@ mod tests {
     #[test]
     fn test_invalid_opcode() {
         let invalid_bytes = [
-            0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x95, 0x96, 0x97, 0x98, 0x99, 0xE0, 0xE1, 0xE2, 0xE3,
-            0xE4, 0xE7, 0xE8, 0xE9, 0xEF, 0xFF,
+            0x0C, 0x0D, 0x0E, 0x0F, 0x95, 0x96, 0x97, 0x98, 0x99, 0xFF,
         ];
         for byte in invalid_bytes {
             assert_eq!(

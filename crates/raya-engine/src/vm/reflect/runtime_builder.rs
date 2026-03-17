@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::vm::object::Closure;
+use crate::vm::object::CallableObject;
 use crate::vm::reflect::{FieldDefinition, MethodDefinition, SubclassDefinition};
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -386,8 +386,8 @@ impl DynamicClosure {
     }
 
     /// Convert to Closure object
-    pub fn to_closure(&self) -> Closure {
-        Closure::new(self.function_id, self.capture_values())
+    pub fn to_closure(&self) -> CallableObject {
+        CallableObject::closure(self.function_id, self.capture_values())
     }
 }
 

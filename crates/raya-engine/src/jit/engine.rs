@@ -521,6 +521,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code,
+            ..Default::default()
         }]);
 
         let summary = engine.prewarm(&module);

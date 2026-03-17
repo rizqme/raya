@@ -69,7 +69,7 @@ use raya_engine::parser::types::{
 use raya_engine::parser::Interner;
 use raya_engine::vm::json::JSView;
 use raya_engine::vm::module::{ModuleLinker, ResolvedSymbol};
-use raya_engine::vm::object::{layout_id_from_ordered_names, Closure, Object, RayaString};
+use raya_engine::vm::object::{layout_id_from_ordered_names, CallableObject, Object, RayaString};
 #[cfg(feature = "aot")]
 use raya_engine::vm::scheduler::{Task, TaskState};
 #[cfg(feature = "aot")]
@@ -1242,7 +1242,7 @@ impl Runtime {
                         return Ok(value);
                     }
                 }
-                let closure = Closure::with_module(export.index, Vec::new(), module.clone());
+                let closure = CallableObject::closure_with_module(export.index, Vec::new(), module.clone());
                 let gc_ptr = vm.shared_state().gc.lock().allocate(closure);
                 Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
             }

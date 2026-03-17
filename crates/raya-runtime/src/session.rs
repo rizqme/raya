@@ -19,7 +19,7 @@ use std::any::TypeId;
 
 use raya_engine::vm::gc::{header_ptr_from_value_ptr, GcHeader};
 use raya_engine::vm::object::{
-    Array, BoundMethod, Buffer, ChannelObject, Closure, DateObject, MapObject, RegExpObject,
+    Array, CallableObject, Buffer, ChannelObject, DateObject, MapObject, RegExpObject,
     SetObject,
 };
 use raya_engine::vm::{Object, RayaString, Value, Vm, VmError};
@@ -189,14 +189,9 @@ fn format_heap_value(value: &Value, vm: &Vm) -> String {
         return format!("[Array({})]", arr.len());
     }
 
-    // Closure
-    if tid == TypeId::of::<Closure>() {
+    // CallableObject (Closure, BoundMethod, etc.)
+    if tid == TypeId::of::<CallableObject>() {
         return "[Function]".to_string();
-    }
-
-    // BoundMethod
-    if tid == TypeId::of::<BoundMethod>() {
-        return "[Function (bound)]".to_string();
     }
 
     // Map

@@ -152,11 +152,13 @@ impl<'a> Interpreter<'a> {
             return true;
         }
         object
-            .dyn_map()
-            .into_iter()
-            .flatten()
-            .filter_map(|(key, _)| self.prop_key_name(*key))
-            .any(|name| Self::is_js_array_index_name(&name))
+            .dyn_props()
+            .map(|dp| {
+                dp.keys_in_order()
+                    .filter_map(|key| self.prop_key_name(key))
+                    .any(|name| Self::is_js_array_index_name(&name))
+            })
+            .unwrap_or(false)
     }
 
     fn array_like_has_indexed_prototype_properties(&self, value: Value) -> bool {

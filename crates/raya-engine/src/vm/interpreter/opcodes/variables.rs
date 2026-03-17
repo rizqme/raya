@@ -3,7 +3,7 @@ use crate::compiler::Opcode;
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Closure, Object, RayaString, TypeHandle};
+use crate::vm::object::{CallableObject, Object, RayaString, TypeHandle};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -161,8 +161,8 @@ impl<'a> Interpreter<'a> {
                             let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr) };
                             if header.type_id() == TypeId::of::<Object>() {
                                 "Object"
-                            } else if header.type_id() == TypeId::of::<Closure>() {
-                                "Closure"
+                            } else if header.type_id() == TypeId::of::<CallableObject>() {
+                                "CallableObject"
                             } else if header.type_id() == TypeId::of::<TypeHandle>() {
                                 "TypeHandle"
                             } else if header.type_id() == TypeId::of::<RayaString>() {

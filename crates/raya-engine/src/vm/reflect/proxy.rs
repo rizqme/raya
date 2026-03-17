@@ -24,7 +24,7 @@
 //! ```
 
 use crate::vm::gc::header_ptr_from_value_ptr;
-use crate::vm::object::{Closure, Object, Proxy};
+use crate::vm::object::{CallableObject, Object, Proxy};
 use crate::vm::value::Value;
 use std::any::TypeId;
 
@@ -162,7 +162,7 @@ pub fn get_trap_method(handler: Value, trap_name: &str) -> TrapMethod {
 
     // Check if it's a closure
     if field_value.is_ptr() {
-        if let Some(_closure_ptr) = unsafe { field_value.as_ptr::<Closure>() } {
+        if let Some(_closure_ptr) = unsafe { field_value.as_ptr::<CallableObject>() } {
             return TrapMethod::Closure(field_value);
         }
     }

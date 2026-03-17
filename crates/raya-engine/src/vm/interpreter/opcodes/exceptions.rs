@@ -83,7 +83,7 @@ impl<'a> Interpreter<'a> {
             }
         }
         let key = self.intern_prop_key(field_name);
-        object.dyn_map().and_then(|map| map.get(&key).copied())
+        object.dyn_props().and_then(|dp| dp.get(key)).map(|p| p.value)
     }
 
     pub(in crate::vm::interpreter) fn has_object_named_field(
@@ -97,11 +97,11 @@ impl<'a> Interpreter<'a> {
         {
             return true;
         }
-        let Some(map) = object.dyn_map() else {
+        let Some(dp) = object.dyn_props() else {
             return false;
         };
         let key = self.intern_prop_key(field_name);
-        map.contains_key(&key)
+        dp.contains_key(key)
     }
 
     pub(in crate::vm::interpreter) fn set_object_named_field_value(
@@ -113,12 +113,14 @@ impl<'a> Interpreter<'a> {
         if let Some(index) = self.get_object_named_field_index(object, field_name) {
             return object.set_field(index, value).is_ok();
         }
-        let Some(map) = object.dyn_map_mut() else {
+        let Some(dp) = object.dyn_props_mut() else {
             return false;
         };
         let key = self.intern_prop_key(field_name);
-        if map.contains_key(&key) {
-            map.insert(key, value);
+        if dp.contains_key(key) {
+            if let Some(prop) = dp.get_mut(key) {
+                prop.value = value;
+            }
             true
         } else {
             false

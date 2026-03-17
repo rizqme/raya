@@ -16,7 +16,7 @@ use crate::vm::interpreter::{
 use crate::vm::native_handler::NativeHandler;
 use crate::vm::native_registry::ResolvedNatives;
 use crate::vm::object::{
-    global_layout_names, BoundMethod, BoundNativeMethod, Closure, Object, RayaString,
+    global_layout_names, CallableObject, DynProp, Object, RayaString,
 };
 use crate::vm::reflect::ClassMetadataRegistry;
 use crate::vm::scheduler::IoSubmission;
@@ -233,9 +233,9 @@ fn jit_build_shape_slot_map_for_object(
             return None;
         }
         let key = unsafe { &*bridge.prop_keys }.write().intern(name);
-        object.dyn_map().and_then(|dyn_map| {
-            dyn_map
-                .contains_key(&key)
+        object.dyn_props().and_then(|dp| {
+            dp
+                .contains_key(key)
                 .then_some(StructuralSlotBinding::Dynamic(key))
         })
     };
@@ -1398,18 +1398,14 @@ unsafe extern "C" fn helper_object_get_field(
                 (fid, class.module.clone())
             };
 
-            let bound = BoundMethod {
-                receiver: object_val,
-                func_id,
-                module: method_module,
-            };
+            let bound = CallableObject::bound_method(object_val, func_id, method_module);
             let mut gc = (&*bridge.gc).lock();
             let bm_ptr = gc.allocate(bound);
             Value::from_ptr(NonNull::new(bm_ptr.as_ptr()).unwrap()).raw()
         }
         StructuralSlotBinding::Dynamic(key) => object
-            .dyn_map()
-            .and_then(|dyn_map| dyn_map.get(&key).copied())
+            .dyn_props()
+            .and_then(|dp| dp.get(key).map(|p| p.value))
             .unwrap_or(Value::null())
             .raw(),
         StructuralSlotBinding::Missing => Value::null().raw(),
@@ -1443,8 +1439,8 @@ unsafe extern "C" fn helper_object_set_field(
         }
         StructuralSlotBinding::Dynamic(key) => {
             object
-                .ensure_dyn_map()
-                .insert(key, Value::from_raw(value_raw));
+                .ensure_dyn_props()
+                .insert(key, DynProp::data(Value::from_raw(value_raw)));
             true
         }
         StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => false,
@@ -1549,8 +1545,8 @@ unsafe extern "C" fn helper_object_get_shape_field(
     match binding {
         StructuralSlotBinding::Field(slot) => object.get_field(slot).unwrap_or(Value::null()).raw(),
         StructuralSlotBinding::Dynamic(key) => object
-            .dyn_map()
-            .and_then(|dyn_map| dyn_map.get(&key).copied())
+            .dyn_props()
+            .and_then(|dp| dp.get(key).map(|p| p.value))
             .unwrap_or(Value::null())
             .raw(),
         StructuralSlotBinding::Method(method_slot) => {
@@ -1567,11 +1563,7 @@ unsafe extern "C" fn helper_object_get_shape_field(
                 };
                 (fid, class.module.clone())
             };
-            let bound = BoundMethod {
-                receiver: object_val,
-                func_id,
-                module: method_module,
-            };
+            let bound = CallableObject::bound_method(object_val, func_id, method_module);
             let mut gc = (&*bridge.gc).lock();
             let bm_ptr = gc.allocate(bound);
             Value::from_ptr(NonNull::new(bm_ptr.as_ptr()).unwrap()).raw()
@@ -1608,8 +1600,8 @@ unsafe extern "C" fn helper_object_set_shape_field(
             .unwrap_or(JIT_STORE_FALLBACK),
         StructuralSlotBinding::Dynamic(key) => {
             object
-                .ensure_dyn_map()
-                .insert(key, Value::from_raw(value_raw));
+                .ensure_dyn_props()
+                .insert(key, DynProp::data(Value::from_raw(value_raw)));
             JIT_STORE_SUCCESS
         }
         StructuralSlotBinding::Method(_) | StructuralSlotBinding::Missing => JIT_STORE_FALLBACK,
