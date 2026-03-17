@@ -1180,7 +1180,13 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
 
-                let obj = Object::new_structural(layout_id, field_count);
+                let mut obj = Object::new_structural(layout_id, field_count);
+                // Set [[Prototype]] to Object.prototype for JS object literals
+                if let Some(object_proto) = self.builtin_global_value("Object")
+                    .and_then(|ctor| self.object_constructor_prototype_value(ctor))
+                {
+                    obj.prototype = object_proto;
+                }
                 let gc_ptr = self.gc.lock().allocate(obj);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };

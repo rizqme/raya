@@ -2383,6 +2383,20 @@ impl<'a> Interpreter<'a> {
 
     pub(in crate::vm::interpreter) fn prototype_of_value(&self, value: Value) -> Option<Value> {
         let debug_proto_resolve = std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok();
+        // Property kernel: check Object.prototype field first
+        if let Some(obj_ptr) = checked_object_ptr(value) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            if !obj.prototype.is_null() && obj.prototype != Value::undefined() {
+                if debug_proto_resolve {
+                    eprintln!(
+                        "[proto-of] value={:#x} kernel-proto={:#x}",
+                        value.raw(),
+                        obj.prototype.raw()
+                    );
+                }
+                return Some(obj.prototype);
+            }
+        }
         if let Some(prototype) = self.explicit_object_prototype(value) {
             if debug_proto_resolve {
                 eprintln!(

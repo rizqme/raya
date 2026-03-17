@@ -10,9 +10,10 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::{Interpreter, ReturnAction};
 use crate::vm::object::{
-    layout_id_from_ordered_names, Array, CallableObject, DynProp,
+    layout_id_from_ordered_names, Array, CallableKind, CallableObject, DynProp,
     ChannelObject, MapObject, Object, RayaString, RegExpObject, SetObject, TypeHandle,
 };
+use super::native::{checked_object_ptr, checked_callable_ptr};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -345,14 +346,62 @@ pub(in crate::vm::interpreter) fn dyn_key_parts(
 
 impl<'a> Interpreter<'a> {
     fn property_value_with_protocol_alias(&self, target: Value, key: &str) -> Option<Value> {
-        self.get_field_value_by_name(target, key).or_else(|| {
-            for alias in protocol_alias_names(key) {
-                if let Some(value) = self.get_field_value_by_name(target, alias) {
+        // Check fields first
+        if let Some(value) = self.get_field_value_by_name(target, key) {
+            return Some(value);
+        }
+        // Check dyn_props
+        if let Some(obj_ptr) = checked_object_ptr(target) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            let key_id = self.intern_prop_key(key);
+            if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
+                if !prop.is_accessor {
+                    return Some(prop.value);
+                }
+            }
+        }
+        // Check method vtable
+        if let Some(obj_ptr) = checked_object_ptr(target) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            if let Some(method_slot) = obj.nominal_type_id_usize().and_then(|ntid| {
+                let class_metadata = self.class_metadata.read();
+                class_metadata
+                    .get(ntid)
+                    .and_then(|meta| meta.get_method_index(key))
+                    .or_else(|| {
+                        drop(class_metadata);
+                        let classes = self.classes.read();
+                        let class = classes.get_class(ntid)?;
+                        let module = class.module.as_ref()?;
+                        module.classes.iter()
+                            .find(|cd| cd.name == class.name)
+                            .and_then(|cd| cd.methods.iter().find_map(|m| {
+                                let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
+                                if m.name == key || plain == key { Some(m.slot) } else { None }
+                            }))
+                    })
+            }) {
+                if let Ok(value) = self.bound_method_value_for_slot(target, method_slot) {
                     return Some(value);
                 }
             }
-            None
-        })
+        }
+        // Check builtin native methods
+        if let Some(native_id) = builtin_handle_native_method_id(target, key) {
+            let method = CallableObject::bound_native(target, native_id);
+            let method_ptr = self.gc.lock().allocate(method);
+            let val = unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap())
+            };
+            return Some(val);
+        }
+        // Protocol aliases
+        for alias in protocol_alias_names(key) {
+            if let Some(value) = self.get_field_value_by_name(target, alias) {
+                return Some(value);
+            }
+        }
+        None
     }
 
     fn prototype_chain_property_value_with_protocol_alias(
