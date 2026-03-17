@@ -5296,6 +5296,41 @@ impl<'a> Interpreter<'a> {
             return Ok(Some(value));
         }
 
+        // Class vtable method lookup
+        if let Some(obj_ptr) = checked_object_ptr(target) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            if let Some(method_slot) = obj.nominal_type_id_usize().and_then(|ntid| {
+                let class_metadata = self.class_metadata.read();
+                class_metadata
+                    .get(ntid)
+                    .and_then(|meta| meta.get_method_index(key))
+                    .or_else(|| {
+                        drop(class_metadata);
+                        let classes = self.classes.read();
+                        let class = classes.get_class(ntid)?;
+                        let module = class.module.as_ref()?;
+                        module.classes.iter()
+                            .find(|cd| cd.name == class.name)
+                            .and_then(|cd| cd.methods.iter().find_map(|m| {
+                                let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
+                                if m.name == key || plain == key { Some(m.slot) } else { None }
+                            }))
+                    })
+            }) {
+                if let Ok(value) = self.bound_method_value_for_slot(target, method_slot) {
+                    return Ok(Some(value));
+                }
+            }
+        }
+
+        // Builtin native method lookup
+        if let Some(native_id) = crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key) {
+            let method = CallableObject::bound_native(target, native_id);
+            let method_ptr = self.gc.lock().allocate(method);
+            let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) };
+            return Ok(Some(val));
+        }
+
         if key == "prototype" {
             if let Some(value) = self.constructor_prototype_value(target) {
                 return Ok(Some(value));
@@ -7351,6 +7386,24 @@ impl<'a> Interpreter<'a> {
                         }
                         let target_callable = args[0];
                         if !self.js_call_target_supported(target_callable) {
+                            if std::env::var("RAYA_DEBUG_CALL_HELPER").is_ok() {
+                                let type_info = if target_callable.is_null() { "null" }
+                                    else if target_callable.is_undefined() { "undefined" }
+                                    else if target_callable.is_i32() { "i32" }
+                                    else if target_callable.is_f64() { "f64" }
+                                    else if target_callable.is_bool() { "bool" }
+                                    else if target_callable.is_ptr() {
+                                        let ptr = unsafe { target_callable.as_ptr::<u8>().unwrap() };
+                                        let hdr = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
+                                        if hdr.type_id() == std::any::TypeId::of::<CallableObject>() { "CallableObject" }
+                                        else if hdr.type_id() == std::any::TypeId::of::<Object>() { "Object" }
+                                        else if hdr.type_id() == std::any::TypeId::of::<RayaString>() { "String" }
+                                        else if hdr.type_id() == std::any::TypeId::of::<Array>() { "Array" }
+                                        else { "ptr(other)" }
+                                    } else { "unknown" };
+                                eprintln!("[CALL_HELPER] target not callable: raw={:#x} type={} nargs={}",
+                                    target_callable.raw(), type_info, args.len());
+                            }
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Function.prototype.call target is not callable".to_string(),
                             ));
