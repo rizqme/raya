@@ -1,69 +1,144 @@
-# Test262 Conformance Root Cause Analysis
+# Test262 Conformance — Root Cause Analysis & Fix Plan
 
-## Failure Clusters (from first 200 tests)
+## Current State (after unified object model)
 
-1. **`Function.prototype.call target is not callable`** (~70% of failures)
-   Root cause: builtin static methods (Object.keys, Object.defineProperty, etc.)
-   are not installed as properties on constructor values at runtime. The compiler
-   resolves them statically, but `DynGetKeyed` can't find them. Test harness
-   functions like `assert.throws` also fail because they try to call functions
-   through dynamic dispatch.
+- Prototype methods work: `typeof Object.prototype.hasOwnProperty` → "function"
+- One heap type: Object + optional callable data
+- Property kernel: shape → dyn_props → prototype chain
+- Descriptors: writable/enumerable/configurable in SlotMeta/DynProp
 
-2. **`Expected function to throw the requested constructor`** (~15%)
-   Root cause: errors thrown by the runtime are plain RuntimeError/TypeError
-   strings, not actual `TypeError` constructor instances. `assert.throws(TypeError, fn)`
-   checks `instanceof TypeError` which fails.
+## The Three Foundational Flaws
 
-3. **`in` operator not supported** (~5%)
-   Root cause: parser doesn't support `key in obj` expression syntax.
+### Flaw 1: Missing builtins (~40% of failures)
 
-4. **Property accessor/descriptor failures** (~10%)
-   Root cause: `hasOwnProperty`, `propertyIsEnumerable`, `toString` etc. not
-   found on objects because Object.prototype methods are not in the prototype
-   chain (Object.prototype is null on newly created objects).
+Many ES standard builtins are simply not implemented:
 
-## Root Causes (Architectural)
+**Object:** `keys`, `assign`, `freeze`, `seal`, `create`, `entries`, `values`,
+`fromEntries`, `isFrozen`, `isSealed`, `hasOwn`
 
-### A. Builtin constructors don't have static methods as properties
+**Array:** `from`, `of`, `isArray` (static); `find`, `findIndex`, `flat`,
+`flatMap`, `every`, `some`, `reduce`, `reduceRight`, `fill`, `copyWithin`,
+`entries`, `keys`, `values`, `at` (prototype)
 
-When JS code does `Object.keys(obj)`, the compiler resolves `Object.keys` as
-a static method call and emits a NativeCall directly. But when code does
-`var f = Object.keys; f(obj)`, the `Object.keys` access goes through DynGetKeyed
-which can't find `keys` because:
-- Object (the constructor value) doesn't have `keys` in its dyn_props
-- The shape has no slot for `keys`
-- The prototype chain walk finds nothing
+**String:** `raw`, `fromCodePoint` (static); `padStart`, `padEnd`, `repeat`,
+`startsWith`, `endsWith`, `trimStart`, `trimEnd`, `matchAll`, `replaceAll`,
+`at` (prototype)
 
-Fix: at runtime initialization, install static methods as DynProp entries on
-builtin constructor values (Object, Array, String, Number, etc.).
+**Number:** `isInteger`, `isSafeInteger`, `isFinite`, `isNaN`, `parseFloat`,
+`parseInt` (static)
 
-### B. Object.prototype not set on new objects
+**Math:** Many methods may be present but return wrong values for edge cases
+(NaN, -0, Infinity).
 
-When `{}` is created via ObjectLiteral, `Object.prototype` is `Value::null()`.
-So `obj.hasOwnProperty`, `obj.toString`, `obj.valueOf` etc. can't be found
-through prototype chain walk. Every JS object needs `[[Prototype]] = Object.prototype`.
+These are the highest-impact gap. Each method is straightforward to implement
+as either:
+- A native handler (Rust function with native_id)
+- A .raya builtin source method
 
-Fix: when ObjectLiteral creates an object, set `obj.prototype` to the runtime's
-registered `Object.prototype` value.
+### Flaw 2: Thrown errors are strings, not constructor instances (~30%)
 
-### C. Errors are not constructor instances
+`VmError::TypeError("msg")` is a Rust string. Test harness does:
+```js
+assert.throws(TypeError, fn);
+```
+Which checks `error instanceof TypeError`. Fails because error is a string.
 
-`throw new TypeError(message)` in the engine creates a string error, not a
-TypeError instance. `assert.throws(TypeError, fn)` checks `instanceof TypeError`
-which fails.
+**Fix:** New `VmError::ThrownValue(Value)` variant. When throwing TypeError,
+allocate an error object via `alloc_builtin_error_value("TypeError", msg)`.
 
-Fix: runtime errors should be actual constructor instances with proper prototype
-chain.
+### Flaw 3: Static method access as values (~20%)
 
-### D. `in` operator parsing
+Even for methods that DO exist (`Object.defineProperty`, `Object.getOwnPropertyNames`
+etc.), `typeof Object.defineProperty` → "undefined" because the method isn't stored
+as a runtime property on the constructor.
 
-Parser doesn't support `key in obj`. This is a parser-level fix.
+`materialize_constructor_static_method` finds them but the result isn't cached
+in dyn_props, so DynGetKeyed doesn't see them.
 
-## Priority Order
+**Fix:** In `materialize_constructor_static_method`, after creating the closure,
+store it in the constructor's `dyn_props`. Then subsequent accesses find it.
 
-1. **B (Object.prototype on new objects)** — highest impact, fixes all inherited
-   method resolution. Unblocks hasOwnProperty, toString, valueOf, etc.
-2. **A (static methods on constructors)** — fixes Object.keys, Object.freeze,
-   Array.isArray, etc. as first-class values.
-3. **C (errors as constructor instances)** — fixes assert.throws pattern.
-4. **D (in operator)** — parser feature.
+## Priority Execution Order
+
+### Phase A: Cache materialized static methods in dyn_props
+
+**Impact:** Makes existing static methods (defineProperty, getOwnPropertyNames,
+getPrototypeOf, setPrototypeOf, isExtensible, preventExtensions, is) accessible
+as first-class values.
+
+**Where:** `materialize_constructor_static_method` in native.rs.
+**How:** After creating the bound closure, store it in the constructor's dyn_props.
+
+### Phase B: Implement missing Object builtins
+
+Add to `builtins/node_compat/object.raya`:
+
+```raya
+static keys(obj: any): string[] {
+    var names = Object.getOwnPropertyNames(obj);
+    var result: string[] = [];
+    for (var i = 0; i < names.length; i = i + 1) {
+        var desc = Object.getOwnPropertyDescriptor(obj, names[i]);
+        if (desc != null && desc["enumerable"] == true) {
+            result.push(names[i]);
+        }
+    }
+    return result;
+}
+
+static assign(target: any, ...sources: any[]): any {
+    for (var i = 0; i < sources.length; i = i + 1) {
+        var source = sources[i];
+        if (source != null) {
+            var keys = Object.keys(source);
+            for (var j = 0; j < keys.length; j = j + 1) {
+                target[keys[j]] = source[keys[j]];
+            }
+        }
+    }
+    return target;
+}
+
+static freeze(obj: any): any { ... }
+static seal(obj: any): any { ... }
+static isFrozen(obj: any): boolean { ... }
+static isSealed(obj: any): boolean { ... }
+static create(proto: any, props: any): any { ... }
+static entries(obj: any): any[][] { ... }
+static values(obj: any): any[] { ... }
+static fromEntries(iterable: any): any { ... }
+static hasOwn(obj: any, key: any): boolean { ... }
+```
+
+### Phase C: Error objects as constructor instances
+
+Add `VmError::ThrownValue(Value)` variant. Modify error-throwing paths to
+allocate actual error objects. Modify catch blocks to extract Value.
+
+### Phase D: ToString coercion for special values
+
+Fix `Infinity`, `-Infinity`, `NaN`, `undefined`, `null` string representations.
+
+### Phase E: Implement missing Array/String/Number builtins
+
+Add methods as needed based on test262 failure clusters.
+
+## Success Criteria
+
+After Phase A: `typeof Object.defineProperty === "function"` ✓
+After Phase B: `Object.keys({a:1})` returns `["a"]` ✓
+After Phase A+B: Object category improves from 0% to ~30%
+After Phase C: assert.throws works → all categories improve ~20%
+After all phases: Overall test262 pass rate ~40-50%
+
+## Foundational Engine Architecture (Done)
+
+The following architectural work is COMPLETE and should not be revisited:
+
+- One heap type (Object with optional callable)
+- Property kernel (SlotMeta + DynProps + prototype)
+- Shape system retained for fast-path slot access
+- Prototype chain with nominal_type_id for vtable method lookup
+- Prototype layouts don't shadow vtable methods
+- defineProperty/getOwnPropertyDescriptor through kernel
+- Extensibility via OBJECT_FLAG_NOT_EXTENSIBLE
