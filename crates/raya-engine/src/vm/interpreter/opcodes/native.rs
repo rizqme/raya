@@ -312,6 +312,7 @@ impl<'a> Interpreter<'a> {
         class_name: &str,
         message: &str,
     ) -> Value {
+        // Layout: slot 0 = "message", slot 1 = "name"
         let member_names = vec!["message".to_string(), "name".to_string()];
         let layout_id = layout_id_from_ordered_names(&member_names);
         let object_ptr = self
@@ -321,25 +322,25 @@ impl<'a> Interpreter<'a> {
         let object_value = unsafe {
             Value::from_ptr(std::ptr::NonNull::new(object_ptr.as_ptr()).expect("error object ptr"))
         };
+
+        // Set prototype from constructor (e.g., TypeError.prototype)
         if let Some(constructor) = self.builtin_global_value(class_name) {
             self.set_constructed_object_prototype_from_constructor(object_value, constructor);
         }
-        let _ = self.define_data_property_on_target(
-            object_value,
-            "name",
-            self.alloc_string_value(class_name),
-            true,
-            false,
-            true,
-        );
-        let _ = self.define_data_property_on_target(
-            object_value,
-            "message",
-            self.alloc_string_value(message),
-            true,
-            false,
-            true,
-        );
+
+        // Set nominal_type_id so `instanceof` works in all modes (not just JS prototype chain)
+        if let Some(nominal_type_id) = self.builtin_class_nominal_type_id(class_name) {
+            let obj = unsafe { &mut *object_ptr.as_ptr() };
+            obj.set_nominal_type_id(Some(nominal_type_id as u32));
+        }
+
+        // Directly write fields — we just created the object with known layout
+        let name_value = self.alloc_string_value(class_name);
+        let message_value = self.alloc_string_value(message);
+        let obj = unsafe { &mut *object_ptr.as_ptr() };
+        let _ = obj.set_field(0, message_value); // slot 0 = "message"
+        let _ = obj.set_field(1, name_value);    // slot 1 = "name"
+
         object_value
     }
 
@@ -2174,6 +2175,12 @@ impl<'a> Interpreter<'a> {
         self.globals_by_index.read().get(slot).copied()
     }
 
+    /// Look up the nominal type ID for a builtin class by name (e.g., "TypeError", "Error").
+    fn builtin_class_nominal_type_id(&self, class_name: &str) -> Option<usize> {
+        let classes = self.classes.read();
+        classes.get_class_by_name(class_name).map(|c| c.id)
+    }
+
     pub(in crate::vm::interpreter) fn builtin_global_name_for_value(
         &self,
         value: Value,
@@ -2939,6 +2946,7 @@ impl<'a> Interpreter<'a> {
                     if let Some(proto_val) = class.prototype_value {
                         drop(classes);
                         self.ensure_intrinsic_prototype_parent(class_name, proto_val);
+                        self.ensure_prototype_constructor(proto_val, class_value);
                         return Some(proto_val);
                     }
                 }
@@ -3075,15 +3083,12 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        self.define_data_property_on_target(
-            prototype_val,
-            "constructor",
-            class_value,
-            true,
-            false,
-            true,
-        )
-        .ok()?;
+        // Directly write "constructor" field (slot 0) — the prototype was just
+        // created with layout ["constructor"], so we know the slot index.
+        if let Some(proto_ptr) = checked_object_ptr(prototype_val) {
+            let proto_obj = unsafe { &mut *proto_ptr.as_ptr() };
+            let _ = proto_obj.set_field(0, class_value);
+        }
 
         if class_name == "Array" {
             self.define_data_property_on_target(
@@ -3168,6 +3173,34 @@ impl<'a> Interpreter<'a> {
             if let Some(object_proto) = self.object_constructor_prototype_value(object_ctor) {
                 self.set_constructed_object_prototype_from_value(prototype_val, object_proto);
             }
+        }
+    }
+
+    /// Ensure a prototype object has a "constructor" property pointing to the class value.
+    /// Always updates to the latest class_value to ensure identity matches user code.
+    fn ensure_prototype_constructor(&self, prototype_val: Value, constructor: Value) {
+        if let Some(proto_ptr) = checked_object_ptr(prototype_val) {
+            let proto_obj = unsafe { &*proto_ptr.as_ptr() };
+            // Try shape slot first (prototype created by prototype_object_for_class_name)
+            if let Some(slot_idx) = self.shape_resolve_key(proto_obj.header.layout_id, "constructor") {
+                if slot_idx < proto_obj.fields.len() {
+                    let proto_mut = unsafe { &mut *proto_ptr.as_ptr() };
+                    let _ = proto_mut.set_field(slot_idx, constructor);
+                    return;
+                }
+            }
+            // Set via dyn_props (always update to latest constructor value)
+            let key_id = self.intern_prop_key("constructor");
+            let proto_mut = unsafe { &mut *proto_ptr.as_ptr() };
+            proto_mut.ensure_dyn_props().insert(key_id, crate::vm::object::DynProp {
+                value: constructor,
+                writable: true,
+                enumerable: false,
+                configurable: true,
+                is_accessor: false,
+                get: crate::vm::value::Value::null(),
+                set: crate::vm::value::Value::null(),
+            });
         }
     }
 

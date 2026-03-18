@@ -1156,6 +1156,16 @@ impl<'a> Interpreter<'a> {
                     Err(error) => return OpcodeResult::Error(error),
                 };
 
+                // ES spec: TypeError when accessing properties on null or undefined
+                if obj_val.is_null() || obj_val.is_undefined() {
+                    let type_name = if obj_val.is_null() { "null" } else { "undefined" };
+                    let key_display = key_str.as_deref().unwrap_or("<computed>");
+                    return OpcodeResult::Error(VmError::TypeError(format!(
+                        "Cannot read properties of {} (reading '{}')",
+                        type_name, key_display
+                    )));
+                }
+
                 if let Some(key_str) = key_str.as_deref() {
                     match self.try_proxy_like_get_property(obj_val, key_str, task, module) {
                         Ok(Some(value)) => {
@@ -1498,6 +1508,16 @@ impl<'a> Interpreter<'a> {
                     Ok(parts) => parts,
                     Err(error) => return OpcodeResult::Error(error),
                 };
+
+                // ES spec: TypeError when setting properties on null or undefined
+                if obj_val.is_null() || obj_val.is_undefined() {
+                    let type_name = if obj_val.is_null() { "null" } else { "undefined" };
+                    let key_display = key_str.as_deref().unwrap_or("<computed>");
+                    return OpcodeResult::Error(VmError::TypeError(format!(
+                        "Cannot set properties of {} (setting '{}')",
+                        type_name, key_display
+                    )));
+                }
 
                 if (matches!(js_classify(obj_val), JSView::Arr(_) | JSView::Struct { .. })
                     || Self::is_callable_value(obj_val))

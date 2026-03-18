@@ -503,7 +503,14 @@ impl fmt::Display for Value {
         } else if self.is_i32() {
             write!(f, "{}", self.as_i32().unwrap())
         } else if self.is_f64() {
-            write!(f, "{}", self.as_f64().unwrap())
+            let v = self.as_f64().unwrap();
+            if v.is_nan() {
+                write!(f, "NaN")
+            } else if v.is_infinite() {
+                if v.is_sign_positive() { write!(f, "Infinity") } else { write!(f, "-Infinity") }
+            } else {
+                write!(f, "{}", v)
+            }
         } else if self.is_u32() {
             write!(f, "{}", self.as_u32().unwrap())
         } else if self.is_f32() {

@@ -39,8 +39,12 @@ impl<'a> Interpreter<'a> {
                     } else if let Some(i) = val.as_i32() {
                         i.to_string()
                     } else if let Some(f) = val.as_f64() {
-                        // Format float like JavaScript: no trailing zeros for whole numbers
-                        if f.fract() == 0.0 && f.abs() < 1e15 {
+                        // ES spec number-to-string conversion
+                        if f.is_nan() {
+                            "NaN".to_string()
+                        } else if f.is_infinite() {
+                            if f.is_sign_positive() { "Infinity".to_string() } else { "-Infinity".to_string() }
+                        } else if f.fract() == 0.0 && f.abs() < 1e15 {
                             (f as i64).to_string()
                         } else {
                             f.to_string()
@@ -206,8 +210,12 @@ impl<'a> Interpreter<'a> {
                 } else if let Some(i) = val.as_i32() {
                     i.to_string()
                 } else if let Some(f) = val.as_f64() {
-                    // Format float like JavaScript: no trailing zeros, no scientific notation for small numbers
-                    if f.fract() == 0.0 && f.abs() < 1e15 {
+                    // ES spec number-to-string conversion
+                    if f.is_nan() {
+                        "NaN".to_string()
+                    } else if f.is_infinite() {
+                        if f.is_sign_positive() { "Infinity".to_string() } else { "-Infinity".to_string() }
+                    } else if f.fract() == 0.0 && f.abs() < 1e15 {
                         (f as i64).to_string()
                     } else {
                         f.to_string()

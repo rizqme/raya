@@ -525,7 +525,24 @@ impl SharedVmState {
             };
 
             if let Some(value) = value {
-                self.set_builtin_global(export.name.clone(), value);
+                // Point builtin_global_slots to the module's global slot (when available)
+                // so that builtin_global_value() returns the same identity as LoadGlobal.
+                // This ensures e.g. TypeError.prototype.constructor === TypeError.
+                if let Some(runtime_slot) = export.runtime_global_slot {
+                    let module_slot = layout.global_base + runtime_slot as usize;
+                    // Store the initial value at the module slot too
+                    let mut globals = self.globals_by_index.write();
+                    if module_slot >= globals.len() {
+                        globals.resize(module_slot + 1, Value::null());
+                    }
+                    if globals[module_slot].is_null() || globals[module_slot].is_undefined() {
+                        globals[module_slot] = value;
+                    }
+                    drop(globals);
+                    self.builtin_global_slots.write().insert(export.name.clone(), module_slot);
+                } else {
+                    self.set_builtin_global(export.name.clone(), value);
+                }
             }
         }
     }
