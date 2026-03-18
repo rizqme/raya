@@ -2294,6 +2294,9 @@ impl<'a> Interpreter<'a> {
             }
         } else {
             let layout_id = layout_id_from_ordered_names(&member_names);
+            // Register the layout so structural_field_slot_index_for_object can
+            // resolve "constructor" → slot 0 even when nominal_type_id is set.
+            self.register_structural_layout_shape(layout_id, &member_names);
             let mut proto_obj = Object::new_dynamic(layout_id, member_names.len());
             proto_obj.header.nominal_type_id = Some(nominal_type_id as u32);
             let prototype_ptr = self.gc.lock().allocate(proto_obj);
