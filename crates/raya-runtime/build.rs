@@ -296,6 +296,15 @@ fn compile_builtin_mode(
                 mode
             )
         })?;
+    println!("cargo:warning=[builtin-compile] mode={mode:?} compiled {} modules", compiled.len());
+    for module in &compiled {
+        let func_count = module.bytecode.functions.len();
+        let static_funcs: Vec<_> = module.bytecode.functions.iter()
+            .filter(|f| f.name.contains("::static::"))
+            .map(|f| f.name.as_str())
+            .collect();
+        println!("cargo:warning=[builtin-compile] {} funcs={} statics={:?}", module.path.display(), func_count, static_funcs);
+    }
     let compiled_by_path = compiled
         .into_iter()
         .map(|module| (module.path, module.bytecode))

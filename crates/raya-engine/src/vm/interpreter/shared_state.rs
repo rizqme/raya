@@ -1243,6 +1243,24 @@ impl SharedVmState {
             };
             class.module = Some(module.clone());
 
+            // If a class with this name already exists and the new module has
+            // MORE functions, update the existing class's module reference.
+            if let Some(existing) = classes.get_class_by_name(&class_def.name) {
+                let existing_func_count = existing.module.as_ref()
+                    .map(|m| m.functions.len()).unwrap_or(0);
+                let new_func_count = module.functions.len();
+                if std::env::var("RAYA_DEBUG_CLASS_MODULE_UPDATE").is_ok() {
+                    eprintln!("[class-module-update] class={} existing_id={} existing_funcs={} new_funcs={} will_update={}",
+                        class_def.name, existing.id, existing_func_count, new_func_count, new_func_count > existing_func_count);
+                }
+                if new_func_count > existing_func_count {
+                    let existing_id = existing.id;
+                    if let Some(existing_class) = classes.get_class_mut(existing_id) {
+                        existing_class.module = Some(module.clone());
+                    }
+                }
+            }
+
             // Pre-size vtable to accommodate all slots (including gaps from abstract methods)
             if let Some(max_slot) = class_def.methods.iter().map(|m| m.slot + 1).max() {
                 while class.vtable.methods.len() < max_slot {
