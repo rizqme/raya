@@ -7,7 +7,7 @@ use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    Array, CallableKind, CallableObject, Object, RayaString,
+    Array, CallableKind, Object, RayaString,
 };
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
@@ -909,8 +909,6 @@ impl<'a> Interpreter<'a> {
                         "Array"
                     } else if receiver_header.type_id() == std::any::TypeId::of::<RayaString>() {
                         "RayaString"
-                    } else if receiver_header.type_id() == std::any::TypeId::of::<CallableObject>() {
-                        "CallableObject"
                     } else {
                         "UnknownGcType"
                     };
@@ -953,8 +951,6 @@ impl<'a> Interpreter<'a> {
                                 "Array"
                             } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
                                 "RayaString"
-                            } else if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-                                "CallableObject"
                             } else {
                                 "UnknownGcType"
                             }

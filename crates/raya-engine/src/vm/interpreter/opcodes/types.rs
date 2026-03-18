@@ -10,7 +10,7 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::{Interpreter, ReturnAction};
 use crate::vm::object::{
-    layout_id_from_ordered_names, Array, CallableKind, CallableObject, DynProp,
+    layout_id_from_ordered_names, Array, CallableKind, DynProp,
     ChannelObject, MapObject, Object, RayaString, RegExpObject, SetObject, TypeHandle,
 };
 use super::native::{checked_object_ptr, checked_callable_ptr};
@@ -95,10 +95,11 @@ fn value_kind_mask(value: Value) -> u16 {
         return CAST_KIND_ARRAY;
     }
     if header.type_id() == std::any::TypeId::of::<Object>() {
+        let obj = unsafe { &*(ptr.as_ptr() as *const Object) };
+        if obj.is_callable() {
+            return CAST_KIND_FUNCTION;
+        }
         return CAST_KIND_OBJECT;
-    }
-    if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-        return CAST_KIND_FUNCTION;
     }
     0
 }
@@ -124,14 +125,16 @@ pub(in crate::vm::interpreter) fn builtin_handle_native_method_id(
         let ptr = unsafe { value.as_ptr::<u8>() }?;
         let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
         let ty = header.type_id();
-        if ty == std::any::TypeId::of::<CallableObject>()
-        {
-            return match key {
-                "call" => Some(crate::compiler::native_id::FUNCTION_CALL_HELPER),
-                "apply" => Some(crate::compiler::native_id::FUNCTION_APPLY_HELPER),
-                "bind" => Some(crate::compiler::native_id::FUNCTION_BIND_HELPER),
-                _ => None,
-            };
+        if ty == std::any::TypeId::of::<Object>() {
+            let obj = unsafe { &*(ptr.as_ptr() as *const Object) };
+            if obj.is_callable() {
+                return match key {
+                    "call" => Some(crate::compiler::native_id::FUNCTION_CALL_HELPER),
+                    "apply" => Some(crate::compiler::native_id::FUNCTION_APPLY_HELPER),
+                    "bind" => Some(crate::compiler::native_id::FUNCTION_BIND_HELPER),
+                    _ => None,
+                };
+            }
         }
     }
     if let Some(ptr) = object_ptr_checked(value) {
@@ -388,7 +391,7 @@ impl<'a> Interpreter<'a> {
         }
         // Check builtin native methods
         if let Some(native_id) = builtin_handle_native_method_id(target, key) {
-            let method = CallableObject::bound_native(target, native_id);
+            let method = Object::new_bound_native(target, native_id);
             let method_ptr = self.gc.lock().allocate(method);
             let val = unsafe {
                 Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap())
@@ -1204,7 +1207,7 @@ impl<'a> Interpreter<'a> {
                                     None
                                 })
                             {
-                                let method = CallableObject::bound_native(obj_val, native_id);
+                                let method = Object::new_bound_native(obj_val, native_id);
                                 let method_ptr = self.gc.lock().allocate(method);
                                 unsafe {
                                     Value::from_ptr(
@@ -1260,7 +1263,7 @@ impl<'a> Interpreter<'a> {
                                     None
                                 })
                             {
-                                let method = CallableObject::bound_native(obj_val, native_id);
+                                let method = Object::new_bound_native(obj_val, native_id);
                                 let method_ptr = self.gc.lock().allocate(method);
                                 unsafe {
                                     Value::from_ptr(
@@ -1394,7 +1397,7 @@ impl<'a> Interpreter<'a> {
                                                 None
                                             })
                                         {
-                                            let method = CallableObject::bound_native(obj_val, native_id);
+                                            let method = Object::new_bound_native(obj_val, native_id);
                                             let method_ptr = self.gc.lock().allocate(method);
                                             unsafe { Value::from_ptr(NonNull::new(method_ptr.as_ptr()).expect("ptr")) }
                                         } else {
@@ -1415,7 +1418,7 @@ impl<'a> Interpreter<'a> {
                                     None
                                 })
                             {
-                                let method = CallableObject::bound_native(obj_val, native_id);
+                                let method = Object::new_bound_native(obj_val, native_id);
                                 let method_ptr = self.gc.lock().allocate(method);
                                 unsafe { Value::from_ptr(NonNull::new(method_ptr.as_ptr()).expect("ptr")) }
                             }
@@ -1442,7 +1445,7 @@ impl<'a> Interpreter<'a> {
                                         if let Some(native_id) =
                                             builtin_handle_native_method_id(obj_val, key_str)
                                         {
-                                            let method = CallableObject::bound_native(obj_val, native_id);
+                                            let method = Object::new_bound_native(obj_val, native_id);
                                             let method_ptr = self.gc.lock().allocate(method);
                                             unsafe {
                                                 Value::from_ptr(
@@ -1863,31 +1866,34 @@ impl<'a> Interpreter<'a> {
                     let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
                     if header.type_id() == std::any::TypeId::of::<RayaString>() {
                         "string"
-                    } else if header.type_id() == std::any::TypeId::of::<CallableObject>()
-                        || header.type_id() == std::any::TypeId::of::<TypeHandle>()
+                    } else if header.type_id() == std::any::TypeId::of::<TypeHandle>()
                     {
                         "function"
                     } else if header.type_id() == std::any::TypeId::of::<Object>() {
                         if let Some(obj_ptr) = unsafe { value.as_ptr::<Object>() } {
                             let obj = unsafe { &*obj_ptr.as_ptr() };
-                            let layout_is_symbol = self
-                                .layouts
-                                .read()
-                                .get_layout(obj.layout_id())
-                                .and_then(|layout| layout.name.as_deref().map(str::to_string))
-                                .as_deref()
-                                == Some("Symbol");
-                            if layout_is_symbol {
-                                "symbol"
+                            if obj.is_callable() {
+                                "function"
                             } else {
-                                let handle_key = self.intern_prop_key("__raya_type_handle__");
-                                if obj
-                                    .dyn_props()
-                                    .is_some_and(|dp| dp.contains_key(handle_key))
-                                {
-                                    "function"
+                                let layout_is_symbol = self
+                                    .layouts
+                                    .read()
+                                    .get_layout(obj.layout_id())
+                                    .and_then(|layout| layout.name.as_deref().map(str::to_string))
+                                    .as_deref()
+                                    == Some("Symbol");
+                                if layout_is_symbol {
+                                    "symbol"
                                 } else {
-                                    "object"
+                                    let handle_key = self.intern_prop_key("__raya_type_handle__");
+                                    if obj
+                                        .dyn_props()
+                                        .is_some_and(|dp| dp.contains_key(handle_key))
+                                    {
+                                        "function"
+                                    } else {
+                                        "object"
+                                    }
                                 }
                             }
                         } else {

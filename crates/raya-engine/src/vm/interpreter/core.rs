@@ -12,7 +12,7 @@ use crate::vm::builtins::handlers::{
 };
 use crate::vm::gc::GarbageCollector;
 use crate::vm::native_handler::NativeHandler;
-use crate::vm::object::{CallableKind, CallableObject, Class, Object, RayaString};
+use crate::vm::object::{CallableKind, Class, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::{MutexRegistry, SemaphoreRegistry};
@@ -840,17 +840,32 @@ impl<'a> Interpreter<'a> {
 
         let opcode_result = if let Some(raw_ptr) = unsafe { callable.as_ptr::<u8>() } {
             let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
-            if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-                let co = unsafe { &*callable.as_ptr::<CallableObject>().unwrap().as_ptr() };
-                if let CallableKind::BoundNative { native_id, receiver } = &co.kind {
-                    self.exec_bound_native_method_call(
-                        &mut stack,
-                        *receiver,
-                        *native_id,
-                        args.to_vec(),
-                        caller_module,
-                        &scratch_task,
-                    )
+            if header.type_id() == std::any::TypeId::of::<Object>() {
+                let co = unsafe { &*callable.as_ptr::<Object>().unwrap().as_ptr() };
+                if let Some(ref callable_data) = co.callable {
+                    if let CallableKind::BoundNative { native_id, receiver } = &callable_data.kind {
+                        self.exec_bound_native_method_call(
+                            &mut stack,
+                            *receiver,
+                            *native_id,
+                            args.to_vec(),
+                            caller_module,
+                            &scratch_task,
+                        )
+                    } else {
+                        match self.callable_frame_for_value(
+                            callable,
+                            &mut stack,
+                            args,
+                            explicit_this,
+                            ReturnAction::PushReturnValue,
+                            caller_module,
+                            &scratch_task,
+                        )? {
+                            Some(result) => result,
+                            None => return Err(VmError::TypeError("Value is not callable".to_string())),
+                        }
+                    }
                 } else {
                     match self.callable_frame_for_value(
                         callable,
@@ -866,18 +881,7 @@ impl<'a> Interpreter<'a> {
                     }
                 }
             } else {
-                match self.callable_frame_for_value(
-                    callable,
-                    &mut stack,
-                    args,
-                    explicit_this,
-                    ReturnAction::PushReturnValue,
-                    caller_module,
-                    &scratch_task,
-                )? {
-                    Some(result) => result,
-                    None => return Err(VmError::TypeError("Value is not callable".to_string())),
-                }
+                return Err(VmError::TypeError("Value is not callable".to_string()));
             }
         } else {
             return Err(VmError::TypeError("Value is not callable".to_string()));

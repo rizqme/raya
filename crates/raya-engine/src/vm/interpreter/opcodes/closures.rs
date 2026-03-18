@@ -3,7 +3,7 @@
 use crate::compiler::{Module, Opcode};
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::CallableObject;
+use crate::vm::object::Object;
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -41,7 +41,7 @@ impl<'a> Interpreter<'a> {
                 }
                 captures.reverse();
 
-                let closure = CallableObject::closure_with_module(func_index, captures, Arc::new(module.clone()));
+                let closure = Object::new_closure_with_module(func_index, captures, Arc::new(module.clone()));
                 let gc_ptr = self.gc.lock().allocate(closure);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
@@ -66,9 +66,9 @@ impl<'a> Interpreter<'a> {
                     }
                 };
 
-                let closure_ptr = unsafe { closure_val.as_ptr::<CallableObject>() };
+                let closure_ptr = unsafe { closure_val.as_ptr::<Object>() };
                 let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                let value = match closure.get_captured(capture_index) {
+                let value = match closure.callable_get_captured(capture_index) {
                     Some(v) => v,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
@@ -110,9 +110,9 @@ impl<'a> Interpreter<'a> {
                     }
                 };
 
-                let closure_ptr = unsafe { closure_val.as_ptr::<CallableObject>() };
+                let closure_ptr = unsafe { closure_val.as_ptr::<Object>() };
                 let closure = unsafe { &mut *closure_ptr.unwrap().as_ptr() };
-                if let Err(e) = closure.set_captured(capture_index, value) {
+                if let Err(e) = closure.callable_set_captured(capture_index, value) {
                     return OpcodeResult::Error(VmError::RuntimeError(e));
                 }
                 OpcodeResult::Continue
@@ -136,9 +136,9 @@ impl<'a> Interpreter<'a> {
                     return OpcodeResult::Error(VmError::TypeError("Expected closure".to_string()));
                 }
 
-                let closure_ptr = unsafe { closure_val.as_ptr::<CallableObject>() };
+                let closure_ptr = unsafe { closure_val.as_ptr::<Object>() };
                 let closure = unsafe { &mut *closure_ptr.unwrap().as_ptr() };
-                if let Err(e) = closure.set_captured(capture_index, value) {
+                if let Err(e) = closure.callable_set_captured(capture_index, value) {
                     return OpcodeResult::Error(VmError::RuntimeError(e));
                 }
                 if let Err(e) = stack.push(closure_val) {

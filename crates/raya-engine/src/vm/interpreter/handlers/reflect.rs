@@ -5,7 +5,7 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    layout_id_from_ordered_names, Array, CallableObject, DynProp, Object, Proxy,
+    layout_id_from_ordered_names, Array, DynProp, Object, Proxy,
     RayaString,
 };
 use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
@@ -228,7 +228,11 @@ impl<'a> Interpreter<'a> {
             return false;
         }
         let header = unsafe { &*header_ptr_from_value_ptr(value.as_ptr::<u8>().unwrap().as_ptr()) };
-        header.type_id() == std::any::TypeId::of::<CallableObject>()
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let obj = unsafe { &*value.as_ptr::<Object>().unwrap().as_ptr() };
+            return obj.is_callable();
+        }
+        false
     }
 
     fn reflect_has_property(&self, target: Value, property_key: &str) -> bool {
@@ -772,7 +776,7 @@ impl<'a> Interpreter<'a> {
                             let method_module = class.module.clone();
                             drop(classes);
 
-                            let bm = CallableObject::bound_method(target, func_id, method_module);
+                            let bm = Object::new_bound_method(target, func_id, method_module);
                             let gc_ptr = self.gc.lock().allocate(bm);
                             unsafe {
                                 Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())

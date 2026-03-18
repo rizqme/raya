@@ -290,6 +290,14 @@ impl ObjectHeader {
     }
 }
 
+/// Callable extension data. Stored on Object when the object is a function/closure/method.
+#[derive(Debug, Clone)]
+pub struct CallableData {
+    pub kind: CallableKind,
+    pub captures: Vec<Value>,
+    pub module: Option<Arc<crate::compiler::Module>>,
+}
+
 /// Object instance (heap-allocated)
 #[derive(Debug, Clone)]
 pub struct Object {
@@ -303,6 +311,8 @@ pub struct Object {
     pub dyn_props: Option<Box<DynProps>>,
     /// Prototype chain link.
     pub prototype: Value,
+    /// Callable extension. None for plain objects, Some for functions.
+    pub callable: Option<Box<CallableData>>,
 }
 
 impl Object {
@@ -318,6 +328,7 @@ impl Object {
             slot_meta: SlotMetaTable::with_count(field_count),
             dyn_props: None,
             prototype: Value::null(),
+            callable: None,
         }
     }
 
@@ -329,6 +340,7 @@ impl Object {
             slot_meta: SlotMetaTable::with_count(field_count),
             dyn_props: None,
             prototype: Value::null(),
+            callable: None,
         }
     }
 
@@ -480,6 +492,130 @@ impl Object {
     #[inline]
     pub fn is_structural(&self) -> bool {
         self.nominal_type_id().is_none()
+    }
+
+    // ========================================================================
+    // Callable extension helpers
+    // ========================================================================
+
+    /// Return true when this object carries callable data (function/closure/method).
+    #[inline]
+    pub fn is_callable(&self) -> bool {
+        self.callable.is_some()
+    }
+
+    /// Get the function ID if this is a Closure or BoundMethod callable.
+    pub fn callable_func_id(&self) -> Option<usize> {
+        match &self.callable.as_ref()?.kind {
+            CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => Some(*func_id),
+            _ => None,
+        }
+    }
+
+    /// Get the receiver if this is a BoundMethod or BoundNative callable.
+    pub fn callable_receiver(&self) -> Option<Value> {
+        match &self.callable.as_ref()?.kind {
+            CallableKind::BoundMethod { receiver, .. } | CallableKind::BoundNative { receiver, .. } => Some(*receiver),
+            _ => None,
+        }
+    }
+
+    /// Get the native ID if this is a BoundNative callable.
+    pub fn callable_native_id(&self) -> Option<u16> {
+        match &self.callable.as_ref()?.kind {
+            CallableKind::BoundNative { native_id, .. } => Some(*native_id),
+            _ => None,
+        }
+    }
+
+    /// Get the module binding from the callable extension.
+    pub fn callable_module(&self) -> Option<Arc<crate::compiler::Module>> {
+        self.callable.as_ref()?.module.clone()
+    }
+
+    /// Get captured variable values from the callable extension.
+    pub fn callable_captures(&self) -> &[Value] {
+        self.callable.as_ref().map(|c| c.captures.as_slice()).unwrap_or(&[])
+    }
+
+    /// Get a captured variable by index from the callable extension.
+    pub fn callable_get_captured(&self, index: usize) -> Option<Value> {
+        self.callable.as_ref()?.captures.get(index).copied()
+    }
+
+    /// Set a captured variable by index in the callable extension.
+    pub fn callable_set_captured(&mut self, index: usize, value: Value) -> Result<(), String> {
+        let callable = self.callable.as_mut().ok_or_else(|| "Not a callable object".to_string())?;
+        if index < callable.captures.len() {
+            callable.captures[index] = value;
+            Ok(())
+        } else {
+            Err(format!("Captured variable index {} out of bounds", index))
+        }
+    }
+
+    /// Get number of captured variables in the callable extension.
+    pub fn callable_capture_count(&self) -> usize {
+        self.callable.as_ref().map(|c| c.captures.len()).unwrap_or(0)
+    }
+
+    // ========================================================================
+    // Callable factory methods
+    // ========================================================================
+
+    /// Create a closure object (function with captures).
+    pub fn new_closure(func_id: usize, captures: Vec<Value>) -> Self {
+        let mut obj = Self::new_structural(1, 0);
+        obj.callable = Some(Box::new(CallableData {
+            kind: CallableKind::Closure { func_id },
+            captures,
+            module: None,
+        }));
+        obj
+    }
+
+    /// Create a closure object with an explicit module binding.
+    pub fn new_closure_with_module(func_id: usize, captures: Vec<Value>, module: Arc<crate::compiler::Module>) -> Self {
+        let mut obj = Self::new_structural(1, 0);
+        obj.callable = Some(Box::new(CallableData {
+            kind: CallableKind::Closure { func_id },
+            captures,
+            module: Some(module),
+        }));
+        obj
+    }
+
+    /// Create a bound method object.
+    pub fn new_bound_method(receiver: Value, func_id: usize, module: Option<Arc<crate::compiler::Module>>) -> Self {
+        let mut obj = Self::new_structural(1, 0);
+        obj.callable = Some(Box::new(CallableData {
+            kind: CallableKind::BoundMethod { func_id, receiver },
+            captures: Vec::new(),
+            module,
+        }));
+        obj
+    }
+
+    /// Create a bound native method object.
+    pub fn new_bound_native(receiver: Value, native_id: u16) -> Self {
+        let mut obj = Self::new_structural(1, 0);
+        obj.callable = Some(Box::new(CallableData {
+            kind: CallableKind::BoundNative { native_id, receiver },
+            captures: Vec::new(),
+            module: None,
+        }));
+        obj
+    }
+
+    /// Create a bound function object (JS-style Function.prototype.bind result).
+    pub fn new_bound_function(target: Value, this_arg: Value, bound_args: Vec<Value>, visible_name: String, visible_length: Value, rebind_call_helper: bool) -> Self {
+        let mut obj = Self::new_structural(1, 0);
+        obj.callable = Some(Box::new(CallableData {
+            kind: CallableKind::Bound { target, this_arg, bound_args, visible_name, visible_length, rebind_call_helper },
+            captures: Vec::new(),
+            module: None,
+        }));
+        obj
     }
 }
 
@@ -927,151 +1063,6 @@ pub enum CallableKind {
     },
 }
 
-/// Unified callable object. Replaces Closure, BoundMethod, BoundNativeMethod, BoundFunction.
-#[derive(Debug, Clone)]
-pub struct CallableObject {
-    /// What kind of callable this is and its type-specific data.
-    pub kind: CallableKind,
-    /// Captured variable values (non-empty only for Closure kind).
-    pub captures: Vec<Value>,
-    /// Optional explicit module binding for cross-module calls.
-    pub module: Option<Arc<crate::compiler::Module>>,
-    /// Dynamic own properties (name, length, prototype, user-defined).
-    pub dyn_props: Option<Box<DynProps>>,
-}
-
-impl CallableObject {
-    /// Create a closure (replaces Closure::new)
-    pub fn closure(func_id: usize, captures: Vec<Value>) -> Self {
-        Self {
-            kind: CallableKind::Closure { func_id },
-            captures,
-            module: None,
-            dyn_props: None,
-        }
-    }
-
-    /// Create a closure with module (replaces Closure::with_module)
-    pub fn closure_with_module(
-        func_id: usize,
-        captures: Vec<Value>,
-        module: Arc<crate::compiler::Module>,
-    ) -> Self {
-        Self {
-            kind: CallableKind::Closure { func_id },
-            captures,
-            module: Some(module),
-            dyn_props: None,
-        }
-    }
-
-    /// Create a bound method (replaces BoundMethod)
-    pub fn bound_method(
-        receiver: Value,
-        func_id: usize,
-        module: Option<Arc<crate::compiler::Module>>,
-    ) -> Self {
-        Self {
-            kind: CallableKind::BoundMethod { func_id, receiver },
-            captures: Vec::new(),
-            module,
-            dyn_props: None,
-        }
-    }
-
-    /// Create a bound native method (replaces BoundNativeMethod)
-    pub fn bound_native(receiver: Value, native_id: u16) -> Self {
-        Self {
-            kind: CallableKind::BoundNative { native_id, receiver },
-            captures: Vec::new(),
-            module: None,
-            dyn_props: None,
-        }
-    }
-
-    /// Create a bound function (replaces BoundFunction)
-    pub fn bound_function(
-        target: Value,
-        this_arg: Value,
-        bound_args: Vec<Value>,
-        visible_name: String,
-        visible_length: Value,
-        rebind_call_helper: bool,
-    ) -> Self {
-        Self {
-            kind: CallableKind::Bound {
-                target,
-                this_arg,
-                bound_args,
-                visible_name,
-                visible_length,
-                rebind_call_helper,
-            },
-            captures: Vec::new(),
-            module: None,
-            dyn_props: None,
-        }
-    }
-
-    /// Get the function ID if this is a Closure or BoundMethod.
-    pub fn func_id(&self) -> Option<usize> {
-        match &self.kind {
-            CallableKind::Closure { func_id }
-            | CallableKind::BoundMethod { func_id, .. } => Some(*func_id),
-            _ => None,
-        }
-    }
-
-    /// Get the receiver if this is a BoundMethod or BoundNative.
-    pub fn receiver(&self) -> Option<Value> {
-        match &self.kind {
-            CallableKind::BoundMethod { receiver, .. }
-            | CallableKind::BoundNative { receiver, .. } => Some(*receiver),
-            _ => None,
-        }
-    }
-
-    /// Get the native ID if this is a BoundNative.
-    pub fn native_id(&self) -> Option<u16> {
-        match &self.kind {
-            CallableKind::BoundNative { native_id, .. } => Some(*native_id),
-            _ => None,
-        }
-    }
-
-    /// Get the module binding.
-    pub fn module(&self) -> Option<Arc<crate::compiler::Module>> {
-        self.module.clone()
-    }
-
-    /// Get a captured variable by index.
-    pub fn get_captured(&self, index: usize) -> Option<Value> {
-        self.captures.get(index).copied()
-    }
-
-    /// Set a captured variable by index.
-    pub fn set_captured(&mut self, index: usize, value: Value) -> Result<(), String> {
-        if index < self.captures.len() {
-            self.captures[index] = value;
-            Ok(())
-        } else {
-            Err(format!(
-                "Captured variable index {} out of bounds",
-                index
-            ))
-        }
-    }
-
-    /// Get number of captured variables.
-    pub fn capture_count(&self) -> usize {
-        self.captures.len()
-    }
-
-    /// Get or create the dynamic property map for this callable.
-    pub fn ensure_dyn_props(&mut self) -> &mut DynProps {
-        self.dyn_props.get_or_insert_with(|| Box::new(DynProps::new()))
-    }
-}
 
 /// RefCell - A heap-allocated mutable cell for capture-by-reference semantics
 ///

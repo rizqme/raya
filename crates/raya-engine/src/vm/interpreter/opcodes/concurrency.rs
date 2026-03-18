@@ -4,7 +4,7 @@ use crate::compiler::{Module, Opcode};
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, CallableKind, CallableObject};
+use crate::vm::object::{Array, CallableKind, Object};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::{MutexId, SemaphoreId};
@@ -89,14 +89,19 @@ impl<'a> Interpreter<'a> {
                     &*header_ptr_from_value_ptr(closure_val.as_ptr::<u8>().unwrap().as_ptr())
                 };
 
-                let new_task = if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-                    let callable = unsafe { &*closure_val.as_ptr::<CallableObject>().unwrap().as_ptr() };
+                let new_task = if header.type_id() == std::any::TypeId::of::<Object>() {
+                    let obj = unsafe { &*closure_val.as_ptr::<Object>().unwrap().as_ptr() };
+                    let Some(ref callable) = obj.callable else {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "Expected closure or bound method".to_string(),
+                        ));
+                    };
                     match &callable.kind {
                         CallableKind::BoundMethod { func_id, receiver } => {
                             let mut method_args = Vec::with_capacity(args.len() + 1);
                             method_args.push(*receiver);
                             method_args.extend(args);
-                            let target_module = callable.module().unwrap_or_else(|| task.current_module());
+                            let target_module = obj.callable_module().unwrap_or_else(|| task.current_module());
                             Arc::new(Task::with_args(
                                 *func_id,
                                 target_module,
@@ -107,7 +112,7 @@ impl<'a> Interpreter<'a> {
                         CallableKind::Closure { func_id } => {
                             // Don't prepend captures to args - the closure body uses LoadCaptured
                             // which reads from the Closure object via task.current_closure()
-                            let target_module = callable.module().unwrap_or_else(|| task.current_module());
+                            let target_module = obj.callable_module().unwrap_or_else(|| task.current_module());
                             let new_task = Arc::new(Task::with_args(
                                 *func_id,
                                 target_module,

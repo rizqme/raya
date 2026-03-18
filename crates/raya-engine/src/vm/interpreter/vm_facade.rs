@@ -7,7 +7,7 @@ use crate::compiler::Module;
 use crate::vm::{
     gc::{GarbageCollector, GcHeader},
     object::{
-        Array, CallableKind, CallableObject, ChannelObject, Object, Proxy, RayaString,
+        Array, CallableKind, ChannelObject, Object, Proxy, RayaString,
         RefCell,
     },
     scheduler::{Scheduler, Task, TaskState},
@@ -83,42 +83,83 @@ fn serialize_heap(
         let type_id = header.type_id();
         let entry = if type_id == TypeId::of::<Object>() {
             let object = unsafe { &*(value_ptr as *const Object) };
-            let dyn_entries = object
-                .dyn_props()
-                .map(|dp| {
-                    dp.keys_in_order()
-                        .filter_map(|key| {
-                            let prop = dp.get(key)?;
-                            let name = shared.prop_key_name(key).ok_or_else(|| {
-                                VmError::RuntimeError(format!(
-                                    "snapshot missing dynamic property key name for id {}",
-                                    key
-                                ))
-                            }).ok()?;
-                            Some(Ok(SerializedDynEntry {
-                                key: name,
-                                value: SerializedValue::from_live(prop.value, pointer_map)
-                                    .map_err(|e| VmError::IoError(e.to_string()))
-                                    .ok()?,
-                            }))
-                        })
-                        .collect::<VmResult<Vec<_>>>()
-                })
-                .transpose()?
-                .unwrap_or_default();
-            SerializedHeapEntry::Object {
-                object_id,
-                layout_id: object.layout_id(),
-                nominal_type_id: object.nominal_type_id(),
-                flags: object.flags(),
-                fields: object
-                    .fields
-                    .iter()
-                    .copied()
-                    .map(|value| SerializedValue::from_live(value, pointer_map))
-                    .collect::<std::io::Result<Vec<_>>>()
-                    .map_err(|e| VmError::IoError(e.to_string()))?,
-                dyn_entries,
+            // Check if this is a callable object — serialize as callable variant
+            if let Some(ref callable) = object.callable {
+                match &callable.kind {
+                    CallableKind::Closure { func_id } => {
+                        SerializedHeapEntry::Closure {
+                            object_id,
+                            func_id: *func_id,
+                            captures: callable
+                                .captures
+                                .iter()
+                                .copied()
+                                .map(|value| SerializedValue::from_live(value, pointer_map))
+                                .collect::<std::io::Result<Vec<_>>>()
+                                .map_err(|e| VmError::IoError(e.to_string()))?,
+                            module_checksum: callable.module.as_ref().map(|module| module.checksum),
+                        }
+                    }
+                    CallableKind::BoundMethod { func_id, receiver } => {
+                        SerializedHeapEntry::BoundMethod {
+                            object_id,
+                            receiver: SerializedValue::from_live(*receiver, pointer_map)
+                                .map_err(|e| VmError::IoError(e.to_string()))?,
+                            func_id: *func_id,
+                            module_checksum: callable.module.as_ref().map(|module| module.checksum),
+                        }
+                    }
+                    CallableKind::BoundNative { native_id, receiver } => {
+                        SerializedHeapEntry::BoundNativeMethod {
+                            object_id,
+                            receiver: SerializedValue::from_live(*receiver, pointer_map)
+                                .map_err(|e| VmError::IoError(e.to_string()))?,
+                            native_id: *native_id,
+                        }
+                    }
+                    CallableKind::Bound { .. } => {
+                        // BoundFunction not yet serialized; skip
+                        continue;
+                    }
+                }
+            } else {
+                let dyn_entries = object
+                    .dyn_props()
+                    .map(|dp| {
+                        dp.keys_in_order()
+                            .filter_map(|key| {
+                                let prop = dp.get(key)?;
+                                let name = shared.prop_key_name(key).ok_or_else(|| {
+                                    VmError::RuntimeError(format!(
+                                        "snapshot missing dynamic property key name for id {}",
+                                        key
+                                    ))
+                                }).ok()?;
+                                Some(Ok(SerializedDynEntry {
+                                    key: name,
+                                    value: SerializedValue::from_live(prop.value, pointer_map)
+                                        .map_err(|e| VmError::IoError(e.to_string()))
+                                        .ok()?,
+                                }))
+                            })
+                            .collect::<VmResult<Vec<_>>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                SerializedHeapEntry::Object {
+                    object_id,
+                    layout_id: object.layout_id(),
+                    nominal_type_id: object.nominal_type_id(),
+                    flags: object.flags(),
+                    fields: object
+                        .fields
+                        .iter()
+                        .copied()
+                        .map(|value| SerializedValue::from_live(value, pointer_map))
+                        .collect::<std::io::Result<Vec<_>>>()
+                        .map_err(|e| VmError::IoError(e.to_string()))?,
+                    dyn_entries,
+                }
             }
         } else if type_id == TypeId::of::<Array>() {
             let array = unsafe { &*(value_ptr as *const Array) };
@@ -138,45 +179,6 @@ fn serialize_heap(
             SerializedHeapEntry::String {
                 object_id,
                 data: string.data.clone(),
-            }
-        } else if type_id == TypeId::of::<CallableObject>() {
-            let callable = unsafe { &*(value_ptr as *const CallableObject) };
-            match &callable.kind {
-                CallableKind::Closure { func_id } => {
-                    SerializedHeapEntry::Closure {
-                        object_id,
-                        func_id: *func_id,
-                        captures: callable
-                            .captures
-                            .iter()
-                            .copied()
-                            .map(|value| SerializedValue::from_live(value, pointer_map))
-                            .collect::<std::io::Result<Vec<_>>>()
-                            .map_err(|e| VmError::IoError(e.to_string()))?,
-                        module_checksum: callable.module.as_ref().map(|module| module.checksum),
-                    }
-                }
-                CallableKind::BoundMethod { func_id, receiver } => {
-                    SerializedHeapEntry::BoundMethod {
-                        object_id,
-                        receiver: SerializedValue::from_live(*receiver, pointer_map)
-                            .map_err(|e| VmError::IoError(e.to_string()))?,
-                        func_id: *func_id,
-                        module_checksum: callable.module.as_ref().map(|module| module.checksum),
-                    }
-                }
-                CallableKind::BoundNative { native_id, receiver } => {
-                    SerializedHeapEntry::BoundNativeMethod {
-                        object_id,
-                        receiver: SerializedValue::from_live(*receiver, pointer_map)
-                            .map_err(|e| VmError::IoError(e.to_string()))?,
-                        native_id: *native_id,
-                    }
-                }
-                CallableKind::Bound { .. } => {
-                    // BoundFunction not yet serialized; skip
-                    continue;
-                }
             }
         } else if type_id == TypeId::of::<RefCell>() {
             let cell = unsafe { &*(value_ptr as *const RefCell) };
@@ -272,9 +274,9 @@ fn restore_heap_snapshot(
                     .as_ref()
                     .and_then(|checksum| module_registry.get_by_checksum(checksum).cloned());
                 let callable = if let Some(m) = module {
-                    CallableObject::closure_with_module(*func_id, vec![Value::null(); captures.len()], m)
+                    Object::new_closure_with_module(*func_id, vec![Value::null(); captures.len()], m)
                 } else {
-                    CallableObject::closure(*func_id, vec![Value::null(); captures.len()])
+                    Object::new_closure(*func_id, vec![Value::null(); captures.len()])
                 };
                 let ptr = gc.allocate(callable);
                 unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
@@ -287,12 +289,12 @@ fn restore_heap_snapshot(
                 let module = module_checksum
                     .as_ref()
                     .and_then(|checksum| module_registry.get_by_checksum(checksum).cloned());
-                let callable = CallableObject::bound_method(Value::null(), *func_id, module);
+                let callable = Object::new_bound_method(Value::null(), *func_id, module);
                 let ptr = gc.allocate(callable);
                 unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
             }
             SerializedHeapEntry::BoundNativeMethod { native_id, .. } => {
-                let callable = CallableObject::bound_native(Value::null(), *native_id);
+                let callable = Object::new_bound_native(Value::null(), *native_id);
                 let ptr = gc.allocate(callable);
                 unsafe { Value::from_ptr(NonNull::new(ptr.as_ptr()).unwrap()) }
             }
@@ -364,8 +366,9 @@ fn restore_heap_snapshot(
                 module_checksum,
                 ..
             } => {
-                let ptr = unsafe { value.as_ptr::<CallableObject>() }.unwrap();
-                let callable = unsafe { &mut *ptr.as_ptr() };
+                let ptr = unsafe { value.as_ptr::<Object>() }.unwrap();
+                let obj = unsafe { &mut *ptr.as_ptr() };
+                let callable = obj.callable.as_mut().expect("callable data for closure");
                 for (index, capture) in captures.iter().enumerate() {
                     let decoded: Value = capture
                         .to_live(&values)
@@ -381,8 +384,9 @@ fn restore_heap_snapshot(
                 module_checksum,
                 ..
             } => {
-                let ptr = unsafe { value.as_ptr::<CallableObject>() }.unwrap();
-                let callable = unsafe { &mut *ptr.as_ptr() };
+                let ptr = unsafe { value.as_ptr::<Object>() }.unwrap();
+                let obj = unsafe { &mut *ptr.as_ptr() };
+                let callable = obj.callable.as_mut().expect("callable data for bound method");
                 if let CallableKind::BoundMethod { receiver: ref mut recv, .. } = callable.kind {
                     *recv = receiver
                         .to_live(&values)
@@ -393,8 +397,9 @@ fn restore_heap_snapshot(
                     .and_then(|checksum| module_registry.get_by_checksum(checksum).cloned());
             }
             SerializedHeapEntry::BoundNativeMethod { receiver, .. } => {
-                let ptr = unsafe { value.as_ptr::<CallableObject>() }.unwrap();
-                let callable = unsafe { &mut *ptr.as_ptr() };
+                let ptr = unsafe { value.as_ptr::<Object>() }.unwrap();
+                let obj = unsafe { &mut *ptr.as_ptr() };
+                let callable = obj.callable.as_mut().expect("callable data for bound native");
                 if let CallableKind::BoundNative { receiver: ref mut recv, .. } = callable.kind {
                     *recv = receiver
                         .to_live(&values)

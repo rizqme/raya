@@ -10,7 +10,7 @@ use crate::vm::interpreter::shared_state::{
 };
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    Array, CallableKind, CallableObject, DynProp, Object, RayaString,
+    Array, CallableKind, DynProp, Object, RayaString,
 };
 use super::native::checked_object_ptr;
 use crate::vm::scheduler::Task;
@@ -38,7 +38,7 @@ impl<'a> Interpreter<'a> {
         };
 
         let bound_native = |this: &mut Self, native_id: u16| {
-            let method = CallableObject::bound_native(receiver, native_id);
+            let method = Object::new_bound_native(receiver, native_id);
             let method_ptr = this.gc.lock().allocate(method);
             unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) }
         };
@@ -137,7 +137,7 @@ impl<'a> Interpreter<'a> {
         }
         drop(classes);
 
-        let bm = CallableObject::bound_method(receiver, func_id, method_module);
+        let bm = Object::new_bound_method(receiver, func_id, method_module);
         let gc_ptr = self.gc.lock().allocate(bm);
         Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
     }
@@ -157,94 +157,96 @@ impl<'a> Interpreter<'a> {
         }
         let header =
             unsafe { &*header_ptr_from_value_ptr(callable.as_ptr::<u8>().unwrap().as_ptr()) };
-        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-            let co = unsafe { &*callable.as_ptr::<CallableObject>().unwrap().as_ptr() };
-            match &co.kind {
-                CallableKind::BoundMethod { func_id, receiver } => {
-                    let receiver_value = explicit_this.unwrap_or(*receiver);
-                    let receiver_final = if self.callable_uses_js_this_slot(callable) {
-                        self.js_this_value_for_callable(callable, Some(receiver_value))?
-                    } else {
-                        receiver_value
-                    };
-                    stack.push(receiver_final)?;
-                    for arg in args {
-                        stack.push(*arg)?;
-                    }
-                    return Ok(Some(OpcodeResult::PushFrame {
-                        func_id: *func_id,
-                        arg_count: args.len() + 1,
-                        is_closure: false,
-                        closure_val: None,
-                        module: co.module.clone(),
-                        return_action,
-                    }));
-                }
-                CallableKind::BoundNative { native_id, receiver } => {
-                    let recv = explicit_this.unwrap_or(*receiver);
-                    return Ok(Some(self.exec_bound_native_method_call(
-                        stack,
-                        recv,
-                        *native_id,
-                        args.to_vec(),
-                        module,
-                        task,
-                    )));
-                }
-                CallableKind::Bound { target, this_arg, bound_args, rebind_call_helper, .. } => {
-                    let mut combined_args = bound_args.clone();
-                    combined_args.extend_from_slice(args);
-
-                    if *rebind_call_helper {
-                        let target_callable = *this_arg;
-                        let this_a = combined_args.first().copied().unwrap_or(Value::undefined());
-                        let rest_args = if combined_args.len() > 1 {
-                            combined_args[1..].to_vec()
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let co = unsafe { &*callable.as_ptr::<Object>().unwrap().as_ptr() };
+            if let Some(ref callable_data) = co.callable {
+                match &callable_data.kind {
+                    CallableKind::BoundMethod { func_id, receiver } => {
+                        let receiver_value = explicit_this.unwrap_or(*receiver);
+                        let receiver_final = if self.callable_uses_js_this_slot(callable) {
+                            self.js_this_value_for_callable(callable, Some(receiver_value))?
                         } else {
-                            Vec::new()
+                            receiver_value
                         };
-                        return self.callable_frame_for_value(
-                            target_callable,
+                        stack.push(receiver_final)?;
+                        for arg in args {
+                            stack.push(*arg)?;
+                        }
+                        return Ok(Some(OpcodeResult::PushFrame {
+                            func_id: *func_id,
+                            arg_count: args.len() + 1,
+                            is_closure: false,
+                            closure_val: None,
+                            module: callable_data.module.clone(),
+                            return_action,
+                        }));
+                    }
+                    CallableKind::BoundNative { native_id, receiver } => {
+                        let recv = explicit_this.unwrap_or(*receiver);
+                        return Ok(Some(self.exec_bound_native_method_call(
                             stack,
-                            &rest_args,
-                            Some(this_a),
+                            recv,
+                            *native_id,
+                            args.to_vec(),
+                            module,
+                            task,
+                        )));
+                    }
+                    CallableKind::Bound { target, this_arg, bound_args, rebind_call_helper, .. } => {
+                        let mut combined_args = bound_args.clone();
+                        combined_args.extend_from_slice(args);
+
+                        if *rebind_call_helper {
+                            let target_callable = *this_arg;
+                            let this_a = combined_args.first().copied().unwrap_or(Value::undefined());
+                            let rest_args = if combined_args.len() > 1 {
+                                combined_args[1..].to_vec()
+                            } else {
+                                Vec::new()
+                            };
+                            return self.callable_frame_for_value(
+                                target_callable,
+                                stack,
+                                &rest_args,
+                                Some(this_a),
+                                return_action,
+                                module,
+                                task,
+                            );
+                        }
+
+                        return self.callable_frame_for_value(
+                            *target,
+                            stack,
+                            &combined_args,
+                            Some(*this_arg),
                             return_action,
                             module,
                             task,
                         );
                     }
-
-                    return self.callable_frame_for_value(
-                        *target,
-                        stack,
-                        &combined_args,
-                        Some(*this_arg),
-                        return_action,
-                        module,
-                        task,
-                    );
-                }
-                CallableKind::Closure { func_id } => {
-                    let closure_module = co.module();
-                    let mut arg_count = args.len();
-                    if self.callable_uses_js_this_slot(callable) {
-                        stack.push(self.js_this_value_for_callable(callable, explicit_this)?)?;
-                        arg_count += 1;
-                    } else if let Some(this_arg) = explicit_this {
-                        stack.push(this_arg)?;
-                        arg_count += 1;
+                    CallableKind::Closure { func_id } => {
+                        let closure_module = co.callable_module();
+                        let mut arg_count = args.len();
+                        if self.callable_uses_js_this_slot(callable) {
+                            stack.push(self.js_this_value_for_callable(callable, explicit_this)?)?;
+                            arg_count += 1;
+                        } else if let Some(this_arg) = explicit_this {
+                            stack.push(this_arg)?;
+                            arg_count += 1;
+                        }
+                        for arg in args {
+                            stack.push(*arg)?;
+                        }
+                        return Ok(Some(OpcodeResult::PushFrame {
+                            func_id: *func_id,
+                            arg_count,
+                            is_closure: true,
+                            closure_val: Some(callable),
+                            module: closure_module,
+                            return_action,
+                        }));
                     }
-                    for arg in args {
-                        stack.push(*arg)?;
-                    }
-                    return Ok(Some(OpcodeResult::PushFrame {
-                        func_id: *func_id,
-                        arg_count,
-                        is_closure: true,
-                        closure_val: Some(callable),
-                        module: closure_module,
-                        return_action,
-                    }));
                 }
             }
         }
@@ -613,8 +615,6 @@ impl<'a> Interpreter<'a> {
             "Array"
         } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
             "RayaString"
-        } else if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-            "CallableObject"
         } else {
             "UnknownGcType"
         };
@@ -1268,7 +1268,7 @@ impl<'a> Interpreter<'a> {
                 let method_module = class.module.clone();
                 drop(classes);
 
-                let bm = CallableObject::bound_method(obj_val, func_id, method_module);
+                let bm = Object::new_bound_method(obj_val, func_id, method_module);
                 let gc_ptr = self.gc.lock().allocate(bm);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };

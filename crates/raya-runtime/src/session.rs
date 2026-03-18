@@ -19,7 +19,7 @@ use std::any::TypeId;
 
 use raya_engine::vm::gc::{header_ptr_from_value_ptr, GcHeader};
 use raya_engine::vm::object::{
-    Array, CallableObject, Buffer, ChannelObject, DateObject, MapObject, RegExpObject,
+    Array, Buffer, ChannelObject, DateObject, MapObject, RegExpObject,
     SetObject,
 };
 use raya_engine::vm::{Object, RayaString, Value, Vm, VmError};
@@ -170,9 +170,12 @@ fn format_heap_value(value: &Value, vm: &Vm) -> String {
         }
     }
 
-    // Object (class instance)
+    // Object (class instance or callable)
     if tid == TypeId::of::<Object>() {
         let obj = unsafe { &*(value.as_ptr::<Object>().unwrap().as_ptr()) };
+        if obj.is_callable() {
+            return "[Function]".to_string();
+        }
         if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
             let classes = vm.shared_state().classes.read();
             if let Some(class) = classes.get_class(nominal_type_id) {
@@ -187,11 +190,6 @@ fn format_heap_value(value: &Value, vm: &Vm) -> String {
     if tid == TypeId::of::<Array>() {
         let arr = unsafe { &*(value.as_ptr::<Array>().unwrap().as_ptr()) };
         return format!("[Array({})]", arr.len());
-    }
-
-    // CallableObject (Closure, BoundMethod, etc.)
-    if tid == TypeId::of::<CallableObject>() {
-        return "[Function]".to_string();
     }
 
     // Map

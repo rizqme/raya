@@ -493,7 +493,7 @@ impl SharedVmState {
         for export in &module.exports {
             let value = match export.symbol_type {
                 crate::compiler::SymbolType::Function => {
-                    let closure = crate::vm::object::CallableObject::closure_with_module(
+                    let closure = crate::vm::object::Object::new_closure_with_module(
                         export.index,
                         Vec::new(),
                         module.clone(),

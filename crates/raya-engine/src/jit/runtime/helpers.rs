@@ -16,7 +16,7 @@ use crate::vm::interpreter::{
 use crate::vm::native_handler::NativeHandler;
 use crate::vm::native_registry::ResolvedNatives;
 use crate::vm::object::{
-    global_layout_names, CallableObject, DynProp, Object, RayaString,
+    global_layout_names, DynProp, Object, RayaString,
 };
 use crate::vm::reflect::ClassMetadataRegistry;
 use crate::vm::scheduler::IoSubmission;
@@ -1398,7 +1398,7 @@ unsafe extern "C" fn helper_object_get_field(
                 (fid, class.module.clone())
             };
 
-            let bound = CallableObject::bound_method(object_val, func_id, method_module);
+            let bound = Object::new_bound_method(object_val, func_id, method_module);
             let mut gc = (&*bridge.gc).lock();
             let bm_ptr = gc.allocate(bound);
             Value::from_ptr(NonNull::new(bm_ptr.as_ptr()).unwrap()).raw()
@@ -1563,7 +1563,7 @@ unsafe extern "C" fn helper_object_get_shape_field(
                 };
                 (fid, class.module.clone())
             };
-            let bound = CallableObject::bound_method(object_val, func_id, method_module);
+            let bound = Object::new_bound_method(object_val, func_id, method_module);
             let mut gc = (&*bridge.gc).lock();
             let bm_ptr = gc.allocate(bound);
             Value::from_ptr(NonNull::new(bm_ptr.as_ptr()).unwrap()).raw()

@@ -26,7 +26,7 @@ use super::frame::{
 use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
 use crate::vm::interpreter::SharedVmState;
 use crate::vm::json::view::{js_classify, JSView};
-use crate::vm::object::{Array, CallableObject, DynProp, Object, RayaString};
+use crate::vm::object::{Array, DynProp, Object, RayaString};
 use crate::vm::scheduler::{IoSubmission, Task};
 use crate::vm::value::Value;
 use parking_lot::RwLock;
@@ -469,10 +469,11 @@ fn aot_value_kind_mask(value: Value) -> u16 {
         return CAST_KIND_ARRAY;
     }
     if unsafe { value.as_ptr::<Object>() }.is_some() {
+        let obj = unsafe { &*value.as_ptr::<Object>().unwrap().as_ptr() };
+        if obj.is_callable() {
+            return CAST_KIND_FUNCTION;
+        }
         return CAST_KIND_OBJECT;
-    }
-    if unsafe { value.as_ptr::<CallableObject>() }.is_some() {
-        return CAST_KIND_FUNCTION;
     }
     0
 }
@@ -739,7 +740,7 @@ unsafe extern "C" fn helper_object_get_shape_field(
                 (fid, class.module.clone())
             };
             let mut gc = shared.gc.lock();
-            let ptr = gc.allocate(CallableObject::bound_method(object, func_id, method_module));
+            let ptr = gc.allocate(Object::new_bound_method(object, func_id, method_module));
             Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap()).raw()
         }
         StructuralSlotBinding::Missing => Value::null().raw(),

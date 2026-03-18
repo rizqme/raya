@@ -15,7 +15,7 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    layout_id_from_ordered_names, Array, CallableKind, CallableObject, DynProp, Buffer,
+    layout_id_from_ordered_names, Array, CallableKind, DynProp, Buffer,
     ChannelObject, Class, DateObject, LayoutId, MapObject, Object, RayaString,
     RegExpObject, SetObject, SlotMeta, TypeHandle,
 };
@@ -156,18 +156,17 @@ pub(in crate::vm::interpreter) fn checked_array_ptr(value: Value) -> Option<NonN
     unsafe { value.as_ptr::<Array>() }
 }
 
+/// Check if value is a callable Object (has callable data) and return pointer.
 pub(in crate::vm::interpreter) fn checked_callable_ptr(
     value: Value,
-) -> Option<NonNull<CallableObject>> {
-    if !value.is_ptr() || value.is_null() {
-        return None;
+) -> Option<NonNull<Object>> {
+    let obj_ptr = checked_object_ptr(value)?;
+    let obj = unsafe { &*obj_ptr.as_ptr() };
+    if obj.is_callable() {
+        Some(obj_ptr)
+    } else {
+        None
     }
-    let raw_ptr = unsafe { value.as_ptr::<u8>() }?;
-    let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
-    if header.type_id() != TypeId::of::<CallableObject>() {
-        return None;
-    }
-    unsafe { value.as_ptr::<CallableObject>() }
 }
 
 pub(in crate::vm::interpreter) fn checked_string_ptr(value: Value) -> Option<NonNull<RayaString>> {
@@ -182,16 +181,9 @@ pub(in crate::vm::interpreter) fn checked_string_ptr(value: Value) -> Option<Non
     unsafe { value.as_ptr::<RayaString>() }
 }
 
-pub(in crate::vm::interpreter) fn checked_closure_ptr(value: Value) -> Option<NonNull<CallableObject>> {
-    if !value.is_ptr() || value.is_null() {
-        return None;
-    }
-    let raw_ptr = unsafe { value.as_ptr::<u8>() }?;
-    let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
-    if header.type_id() != TypeId::of::<CallableObject>() {
-        return None;
-    }
-    unsafe { value.as_ptr::<CallableObject>() }
+/// Check if value is a callable Object and return pointer (alias for checked_callable_ptr).
+pub(in crate::vm::interpreter) fn checked_closure_ptr(value: Value) -> Option<NonNull<Object>> {
+    checked_callable_ptr(value)
 }
 
 fn value_same_value(a: Value, b: Value) -> bool {
@@ -488,23 +480,25 @@ impl<'a> Interpreter<'a> {
 
         if let Some(raw_ptr) = unsafe { constructor.as_ptr::<u8>() } {
             let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
-            if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-                let co = unsafe { &*constructor.as_ptr::<CallableObject>().unwrap().as_ptr() };
-                if let CallableKind::Bound { target, bound_args, .. } = &co.kind {
-                    let mut combined_args = bound_args.clone();
-                    combined_args.extend_from_slice(args);
-                    let adjusted_new_target = if constructor.raw() == new_target.raw() {
-                        *target
-                    } else {
-                        new_target
-                    };
-                    return self.construct_value_with_new_target(
-                        *target,
-                        adjusted_new_target,
-                        &combined_args,
-                        task,
-                        module,
-                    );
+            if header.type_id() == std::any::TypeId::of::<Object>() {
+                let co = unsafe { &*constructor.as_ptr::<Object>().unwrap().as_ptr() };
+                if let Some(ref callable) = co.callable {
+                    if let CallableKind::Bound { target, bound_args, .. } = &callable.kind {
+                        let mut combined_args = bound_args.clone();
+                        combined_args.extend_from_slice(args);
+                        let adjusted_new_target = if constructor.raw() == new_target.raw() {
+                            *target
+                        } else {
+                            new_target
+                        };
+                        return self.construct_value_with_new_target(
+                            *target,
+                            adjusted_new_target,
+                            &combined_args,
+                            task,
+                            module,
+                        );
+                    }
                 }
             }
         }
@@ -566,9 +560,9 @@ impl<'a> Interpreter<'a> {
 
             if let Some(constructor_id) = constructor_id {
                 let closure = if let Some(module) = constructor_module {
-                    CallableObject::closure_with_module(constructor_id, Vec::new(), module)
+                    Object::new_closure_with_module(constructor_id, Vec::new(), module)
                 } else {
-                    CallableObject::closure(constructor_id, Vec::new())
+                    Object::new_closure(constructor_id, Vec::new())
                 };
                 let closure_ptr = self.gc.lock().allocate(closure);
                 let closure_val = unsafe {
@@ -862,11 +856,11 @@ impl<'a> Interpreter<'a> {
     }
 
     pub(in crate::vm::interpreter) fn is_callable_value(value: Value) -> bool {
-        if !value.is_ptr() {
-            return false;
+        if let Some(obj_ptr) = checked_object_ptr(value) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            return obj.is_callable();
         }
-        let header = unsafe { &*header_ptr_from_value_ptr(value.as_ptr::<u8>().unwrap().as_ptr()) };
-        header.type_id() == std::any::TypeId::of::<CallableObject>()
+        false
     }
 
     pub(in crate::vm::interpreter) fn js_callable_builtin_constructor_name(
@@ -1184,7 +1178,7 @@ impl<'a> Interpreter<'a> {
                 continue;
             };
 
-            let closure = CallableObject::closure_with_module(func_id, Vec::new(), module.clone());
+            let closure = Object::new_closure_with_module(func_id, Vec::new(), module.clone());
             let closure_ptr = self.gc.lock().allocate(closure);
             let closure_value = unsafe {
                 Value::from_ptr(
@@ -1583,11 +1577,12 @@ impl<'a> Interpreter<'a> {
         let raw_ptr = unsafe { target.as_ptr::<u8>() }?;
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-            let co = unsafe { &*target.as_ptr::<CallableObject>()?.as_ptr() };
-            match &co.kind {
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let co = unsafe { &*target.as_ptr::<Object>()?.as_ptr() };
+            let callable_data = co.callable.as_ref()?;
+            match &callable_data.kind {
                 CallableKind::Closure { func_id } => {
-                    let module = co.module()?;
+                    let module = co.callable_module()?;
                     if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
                         eprintln!(
                             "[callable-info] closure target={:#x} func_id={} module={}",
@@ -1606,7 +1601,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 CallableKind::BoundMethod { func_id, .. } => {
-                    let module = co.module()?;
+                    let module = co.callable_module()?;
                     let function = module.functions.get(*func_id)?;
                     return Some((
                         Self::visible_function_name(&function.name),
@@ -1758,20 +1753,22 @@ impl<'a> Interpreter<'a> {
         };
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-            let Some(co_ptr) = (unsafe { target.as_ptr::<CallableObject>() }) else {
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let Some(co_ptr) = (unsafe { target.as_ptr::<Object>() }) else {
                 return false;
             };
             let co = unsafe { &*co_ptr.as_ptr() };
-            match &co.kind {
-                CallableKind::Closure { func_id } => {
-                    let Some(module) = co.module() else { return false; };
-                    return module.functions.get(*func_id).is_some_and(|f| f.is_constructible);
+            if let Some(ref cd) = co.callable {
+                match &cd.kind {
+                    CallableKind::Closure { func_id } => {
+                        let Some(module) = co.callable_module() else { return false; };
+                        return module.functions.get(*func_id).is_some_and(|f| f.is_constructible);
+                    }
+                    CallableKind::Bound { target: t, .. } => {
+                        return self.callable_is_constructible(*t);
+                    }
+                    _ => {}
                 }
-                CallableKind::Bound { target: t, .. } => {
-                    return self.callable_is_constructible(*t);
-                }
-                _ => {}
             }
         }
 
@@ -1790,20 +1787,22 @@ impl<'a> Interpreter<'a> {
         };
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-            let Some(co_ptr) = (unsafe { target.as_ptr::<CallableObject>() }) else {
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let Some(co_ptr) = (unsafe { target.as_ptr::<Object>() }) else {
                 return false;
             };
             let co = unsafe { &*co_ptr.as_ptr() };
-            match &co.kind {
-                CallableKind::Closure { func_id } => {
-                    let Some(module) = co.module() else { return false; };
-                    return module.functions.get(*func_id).is_some_and(|f| f.is_constructible || f.is_generator);
+            if let Some(ref cd) = co.callable {
+                match &cd.kind {
+                    CallableKind::Closure { func_id } => {
+                        let Some(module) = co.callable_module() else { return false; };
+                        return module.functions.get(*func_id).is_some_and(|f| f.is_constructible || f.is_generator);
+                    }
+                    CallableKind::Bound { target: t, .. } => {
+                        return self.callable_exposes_default_prototype(*t);
+                    }
+                    _ => {}
                 }
-                CallableKind::Bound { target: t, .. } => {
-                    return self.callable_exposes_default_prototype(*t);
-                }
-                _ => {}
             }
         }
 
@@ -1822,20 +1821,22 @@ impl<'a> Interpreter<'a> {
         };
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-            let Some(co_ptr) = (unsafe { target.as_ptr::<CallableObject>() }) else {
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let Some(co_ptr) = (unsafe { target.as_ptr::<Object>() }) else {
                 return false;
             };
             let co = unsafe { &*co_ptr.as_ptr() };
-            match &co.kind {
-                CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
-                    let Some(module) = co.module() else { return false; };
-                    return module.functions.get(*func_id).is_some_and(|f| f.is_strict_js);
+            if let Some(ref cd) = co.callable {
+                match &cd.kind {
+                    CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
+                        let Some(module) = co.callable_module() else { return false; };
+                        return module.functions.get(*func_id).is_some_and(|f| f.is_strict_js);
+                    }
+                    CallableKind::Bound { target: t, .. } => {
+                        return self.callable_is_strict_js(*t);
+                    }
+                    _ => return false,
                 }
-                CallableKind::Bound { target: t, .. } => {
-                    return self.callable_is_strict_js(*t);
-                }
-                _ => return false,
             }
         }
 
@@ -1856,21 +1857,23 @@ impl<'a> Interpreter<'a> {
         };
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-            let Some(co_ptr) = (unsafe { target.as_ptr::<CallableObject>() }) else {
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let Some(co_ptr) = (unsafe { target.as_ptr::<Object>() }) else {
                 return false;
             };
             let co = unsafe { &*co_ptr.as_ptr() };
-            match &co.kind {
-                CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
-                    let Some(module) = co.module() else { return false; };
-                    return module.functions.get(*func_id)
-                        .is_some_and(|function| function.uses_builtin_this_coercion);
+            if let Some(ref cd) = co.callable {
+                match &cd.kind {
+                    CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
+                        let Some(module) = co.callable_module() else { return false; };
+                        return module.functions.get(*func_id)
+                            .is_some_and(|function| function.uses_builtin_this_coercion);
+                    }
+                    CallableKind::Bound { target: t, .. } => {
+                        return self.callable_uses_builtin_this_coercion(*t);
+                    }
+                    _ => return false,
                 }
-                CallableKind::Bound { target: t, .. } => {
-                    return self.callable_uses_builtin_this_coercion(*t);
-                }
-                _ => return false,
             }
         }
 
@@ -1936,16 +1939,17 @@ impl<'a> Interpreter<'a> {
         let raw_ptr = unsafe { callable.as_ptr::<u8>() }?;
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
 
-        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-            let co = unsafe { &*callable.as_ptr::<CallableObject>()?.as_ptr() };
-            match &co.kind {
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let co = unsafe { &*callable.as_ptr::<Object>()?.as_ptr() };
+            let cd = co.callable.as_ref()?;
+            match &cd.kind {
                 CallableKind::Closure { func_id } => {
-                    let module = co.module()?;
+                    let module = co.callable_module()?;
                     let function = module.functions.get(*func_id)?;
                     return Self::function_native_alias_id(&function.name);
                 }
                 CallableKind::BoundMethod { func_id, .. } => {
-                    let module = co.module()?;
+                    let module = co.callable_module()?;
                     let function = module.functions.get(*func_id)?;
                     return Self::function_native_alias_id(&function.name);
                 }
@@ -1966,18 +1970,20 @@ impl<'a> Interpreter<'a> {
             return false;
         };
         let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
-        if header.type_id() == std::any::TypeId::of::<CallableObject>() {
-            let co = unsafe { &*callable.as_ptr::<CallableObject>().unwrap().as_ptr() };
-            match &co.kind {
-                CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
-                    let Some(module) = co.module() else { return false; };
-                    return module.functions.get(*func_id).map(|f| f.uses_js_this_slot).unwrap_or(false);
-                }
-                CallableKind::BoundNative { native_id, .. } => {
-                    return self.native_callable_uses_receiver(*native_id);
-                }
-                CallableKind::Bound { target, .. } => {
-                    return self.callable_uses_js_this_slot(*target);
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            let co = unsafe { &*callable.as_ptr::<Object>().unwrap().as_ptr() };
+            if let Some(ref cd) = co.callable {
+                match &cd.kind {
+                    CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
+                        let Some(module) = co.callable_module() else { return false; };
+                        return module.functions.get(*func_id).map(|f| f.uses_js_this_slot).unwrap_or(false);
+                    }
+                    CallableKind::BoundNative { native_id, .. } => {
+                        return self.native_callable_uses_receiver(*native_id);
+                    }
+                    CallableKind::Bound { target, .. } => {
+                        return self.callable_uses_js_this_slot(*target);
+                    }
                 }
             }
         }
@@ -2003,7 +2009,7 @@ impl<'a> Interpreter<'a> {
             caller_module,
             bound_args.len(),
         )?;
-        let bound = CallableObject::bound_function(target, this_arg, bound_args, visible_name, visible_length, rebind_call_helper);
+        let bound = Object::new_bound_function(target, this_arg, bound_args, visible_name, visible_length, rebind_call_helper);
         let bound_ptr = self.gc.lock().allocate(bound);
         Ok(unsafe {
             Value::from_ptr(std::ptr::NonNull::new(bound_ptr.as_ptr()).expect("bound function ptr"))
@@ -2242,14 +2248,11 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        let mut member_names = method_names
-            .iter()
-            .filter(|name| !name.is_empty())
-            .cloned()
-            .collect::<Vec<_>>();
-        member_names.push("constructor".to_string());
-        member_names.sort_unstable();
-        member_names.dedup();
+        // Prototype layout only includes "constructor" as a field.
+        // Methods live in the class vtable and are found via nominal_type_id
+        // lookup. Including method names in the layout would create null-valued
+        // field slots that shadow the vtable methods.
+        let member_names = vec!["constructor".to_string()];
 
         let prototype_val = if class_name == "Array" {
             let prototype_ptr = self.gc.lock().allocate(Array::new(0, 0));
@@ -2322,9 +2325,9 @@ impl<'a> Interpreter<'a> {
                 continue;
             };
             let closure = if let Some(module) = class_module.clone() {
-                CallableObject::closure_with_module(func_id, Vec::new(), module)
+                Object::new_closure_with_module(func_id, Vec::new(), module)
             } else {
-                CallableObject::closure(func_id, Vec::new())
+                Object::new_closure(func_id, Vec::new())
             };
             let closure_ptr = self.gc.lock().allocate(closure);
             let closure_val = unsafe {
@@ -2715,7 +2718,7 @@ impl<'a> Interpreter<'a> {
                 if !writable {
                     return Ok(false);
                 }
-                // Write to CallableObject.dyn_props if target is a callable
+                // Write to Object.dyn_props if target is a callable
                 if let Some(co_ptr) = checked_callable_ptr(receiver) {
                     let prop_key = self.intern_prop_key(key);
                     let co = unsafe { &mut *co_ptr.as_ptr() };
@@ -3035,14 +3038,11 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        let mut member_names = method_names
-            .iter()
-            .filter(|name| !name.is_empty())
-            .cloned()
-            .collect::<Vec<_>>();
-        member_names.push("constructor".to_string());
-        member_names.sort_unstable();
-        member_names.dedup();
+        // Prototype layout only includes "constructor" as a field.
+        // Methods live in the class vtable and are found via nominal_type_id
+        // lookup. Including method names in the layout would create null-valued
+        // field slots that shadow the vtable methods.
+        let member_names = vec!["constructor".to_string()];
 
         let prototype_val = if class_name == "Array" {
             let prototype_ptr = self.gc.lock().allocate(Array::new(0, 0));
@@ -3110,9 +3110,9 @@ impl<'a> Interpreter<'a> {
                 continue;
             };
             let closure = if let Some(module) = class_module.clone() {
-                CallableObject::closure_with_module(func_id, Vec::new(), module)
+                Object::new_closure_with_module(func_id, Vec::new(), module)
             } else {
-                CallableObject::closure(func_id, Vec::new())
+                Object::new_closure(func_id, Vec::new())
             };
             let closure_ptr = self.gc.lock().allocate(closure);
             let closure_val = unsafe {
@@ -4026,7 +4026,7 @@ impl<'a> Interpreter<'a> {
         if self.callable_virtual_property_deleted(target, key) {
             return None;
         }
-        // Check CallableObject.dyn_props first (property kernel path)
+        // Check callable Object.dyn_props first (property kernel path)
         if let Some(co_ptr) = checked_callable_ptr(target) {
             let co = unsafe { &*co_ptr.as_ptr() };
             if let Some(ref dp) = co.dyn_props {
@@ -4064,7 +4064,7 @@ impl<'a> Interpreter<'a> {
         if self.callable_virtual_property_deleted(target, key) {
             return None;
         }
-        // Check CallableObject.dyn_props first (property kernel path)
+        // Check callable Object.dyn_props first (property kernel path)
         if let Some(co_ptr) = checked_callable_ptr(target) {
             let co = unsafe { &*co_ptr.as_ptr() };
             if let Some(ref dp) = co.dyn_props {
@@ -4073,20 +4073,22 @@ impl<'a> Interpreter<'a> {
                     return Some(prop.value);
                 }
             }
-            if let CallableKind::Bound { visible_name, visible_length, .. } = &co.kind {
-                return match key {
-                    "name" => {
-                        let ptr = self
-                            .gc
-                            .lock()
-                            .allocate(RayaString::new(visible_name.clone()));
-                        Some(unsafe {
-                            Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap())
-                        })
-                    }
-                    "length" => Some(*visible_length),
-                    _ => None,
-                };
+            if let Some(ref cd) = co.callable {
+                if let CallableKind::Bound { visible_name, visible_length, .. } = &cd.kind {
+                    return match key {
+                        "name" => {
+                            let ptr = self
+                                .gc
+                                .lock()
+                                .allocate(RayaString::new(visible_name.clone()));
+                            Some(unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).unwrap())
+                            })
+                        }
+                        "length" => Some(*visible_length),
+                        _ => None,
+                    };
+                }
             }
         }
         let (name, length) = self.callable_function_info(target)?;
@@ -4256,7 +4258,7 @@ impl<'a> Interpreter<'a> {
             .iter()
             .position(|function| function.name == function_name)
             .ok_or_else(|| VmError::RuntimeError(missing_symbol_context.to_string()))?;
-        let closure = CallableObject::closure_with_module(func_id, Vec::new(), function_module);
+        let closure = Object::new_closure_with_module(func_id, Vec::new(), function_module);
         let closure_ptr = self.gc.lock().allocate(closure);
         Ok(unsafe {
             Value::from_ptr(
@@ -5395,6 +5397,10 @@ impl<'a> Interpreter<'a> {
         }
 
         if let Some(value) = self.get_own_js_property_value_by_name(target, key) {
+            // Ensure prototype objects have nominal_type_id for vtable method lookup
+            if key == "prototype" {
+                self.ensure_prototype_nominal_type_id(target, value);
+            }
             return Ok(Some(value));
         }
 
@@ -5427,7 +5433,7 @@ impl<'a> Interpreter<'a> {
 
         // Builtin native method lookup
         if let Some(native_id) = crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key) {
-            let method = CallableObject::bound_native(target, native_id);
+            let method = Object::new_bound_native(target, native_id);
             let method_ptr = self.gc.lock().allocate(method);
             let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) };
             return Ok(Some(val));
@@ -5440,6 +5446,10 @@ impl<'a> Interpreter<'a> {
         }
 
         if let Some(value) = self.callable_virtual_property_value(target, key) {
+            // Ensure prototype objects have nominal_type_id for vtable method lookup
+            if key == "prototype" {
+                self.ensure_prototype_nominal_type_id(target, value);
+            }
             return Ok(Some(value));
         }
 
@@ -7331,9 +7341,9 @@ impl<'a> Interpreter<'a> {
                         };
                         if let Some(constructor_id) = constructor_id {
                             let closure = if let Some(module) = constructor_module {
-                                CallableObject::closure_with_module(constructor_id, Vec::new(), module)
+                                Object::new_closure_with_module(constructor_id, Vec::new(), module)
                             } else {
-                                CallableObject::closure(constructor_id, Vec::new())
+                                Object::new_closure(constructor_id, Vec::new())
                             };
                             let closure_ptr = self.gc.lock().allocate(closure);
                             let closure_val = unsafe {
@@ -7506,8 +7516,10 @@ impl<'a> Interpreter<'a> {
                                     else if target_callable.is_ptr() {
                                         let ptr = unsafe { target_callable.as_ptr::<u8>().unwrap() };
                                         let hdr = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
-                                        if hdr.type_id() == std::any::TypeId::of::<CallableObject>() { "CallableObject" }
-                                        else if hdr.type_id() == std::any::TypeId::of::<Object>() { "Object" }
+                                        if hdr.type_id() == std::any::TypeId::of::<Object>() {
+                                            let obj = unsafe { &*target_callable.as_ptr::<Object>().unwrap().as_ptr() };
+                                            if obj.is_callable() { "Object(callable)" } else { "Object" }
+                                        }
                                         else if hdr.type_id() == std::any::TypeId::of::<RayaString>() { "String" }
                                         else if hdr.type_id() == std::any::TypeId::of::<Array>() { "Array" }
                                         else { "ptr(other)" }
@@ -7564,51 +7576,53 @@ impl<'a> Interpreter<'a> {
                         if let Some(target_ptr) = unsafe { target_callable.as_ptr::<u8>() } {
                             let header =
                                 unsafe { &*header_ptr_from_value_ptr(target_ptr.as_ptr()) };
-                            if header.type_id() == std::any::TypeId::of::<CallableObject>() {
+                            if header.type_id() == std::any::TypeId::of::<Object>() {
                                 let co = unsafe {
                                     &*target_callable
-                                        .as_ptr::<CallableObject>()
+                                        .as_ptr::<Object>()
                                         .expect("callable target")
                                         .as_ptr()
                                 };
-                                match &co.kind {
-                                    CallableKind::BoundNative { native_id, .. } => {
-                                        return self.exec_bound_native_method_call(
-                                            stack,
-                                            this_arg,
-                                            *native_id,
-                                            apply_args,
-                                            module,
-                                            task,
-                                        );
-                                    }
-                                    CallableKind::BoundMethod { func_id, .. } => {
-                                        let receiver = if self.callable_uses_js_this_slot(target_callable) {
-                                            match self.js_this_value_for_callable(target_callable, Some(this_arg)) {
-                                                Ok(value) => value,
-                                                Err(error) => return OpcodeResult::Error(error),
-                                            }
-                                        } else {
-                                            this_arg
-                                        };
-                                        if let Err(e) = stack.push(receiver) {
-                                            return OpcodeResult::Error(e);
+                                if let Some(ref cd) = co.callable {
+                                    match &cd.kind {
+                                        CallableKind::BoundNative { native_id, .. } => {
+                                            return self.exec_bound_native_method_call(
+                                                stack,
+                                                this_arg,
+                                                *native_id,
+                                                apply_args,
+                                                module,
+                                                task,
+                                            );
                                         }
-                                        for arg in &apply_args {
-                                            if let Err(e) = stack.push(*arg) {
+                                        CallableKind::BoundMethod { func_id, .. } => {
+                                            let receiver = if self.callable_uses_js_this_slot(target_callable) {
+                                                match self.js_this_value_for_callable(target_callable, Some(this_arg)) {
+                                                    Ok(value) => value,
+                                                    Err(error) => return OpcodeResult::Error(error),
+                                                }
+                                            } else {
+                                                this_arg
+                                            };
+                                            if let Err(e) = stack.push(receiver) {
                                                 return OpcodeResult::Error(e);
                                             }
+                                            for arg in &apply_args {
+                                                if let Err(e) = stack.push(*arg) {
+                                                    return OpcodeResult::Error(e);
+                                                }
+                                            }
+                                            return OpcodeResult::PushFrame {
+                                                func_id: *func_id,
+                                                arg_count: apply_args.len() + 1,
+                                                is_closure: false,
+                                                closure_val: None,
+                                                module: cd.module.clone(),
+                                                return_action: ReturnAction::PushReturnValue,
+                                            };
                                         }
-                                        return OpcodeResult::PushFrame {
-                                            func_id: *func_id,
-                                            arg_count: apply_args.len() + 1,
-                                            is_closure: false,
-                                            closure_val: None,
-                                            module: co.module.clone(),
-                                            return_action: ReturnAction::PushReturnValue,
-                                        };
+                                        _ => {}
                                     }
-                                    _ => {}
                                 }
                             }
                         }
