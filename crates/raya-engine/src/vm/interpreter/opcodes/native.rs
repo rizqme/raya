@@ -2996,34 +2996,6 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    /// Ensure a prototype object has a "constructor" property pointing to the class value.
-    /// Always updates to the latest class_value to ensure identity matches user code.
-    fn ensure_prototype_constructor(&self, prototype_val: Value, constructor: Value) {
-        if let Some(proto_ptr) = checked_object_ptr(prototype_val) {
-            let proto_obj = unsafe { &*proto_ptr.as_ptr() };
-            // Try shape slot first (prototype created by prototype_object_for_class_name)
-            if let Some(slot_idx) = self.shape_resolve_key(proto_obj.header.layout_id, "constructor") {
-                if slot_idx < proto_obj.fields.len() {
-                    let proto_mut = unsafe { &mut *proto_ptr.as_ptr() };
-                    let _ = proto_mut.set_field(slot_idx, constructor);
-                    return;
-                }
-            }
-            // Set via dyn_props (always update to latest constructor value)
-            let key_id = self.intern_prop_key("constructor");
-            let proto_mut = unsafe { &mut *proto_ptr.as_ptr() };
-            proto_mut.ensure_dyn_props().insert(key_id, crate::vm::object::DynProp {
-                value: constructor,
-                writable: true,
-                enumerable: false,
-                configurable: true,
-                is_accessor: false,
-                get: crate::vm::value::Value::null(),
-                set: crate::vm::value::Value::null(),
-            });
-        }
-    }
-
     fn generic_function_prototype_value(&self, class_value: Value) -> Option<Value> {
         let debug_dynamic_function = std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok();
         if let Some(existing) =
