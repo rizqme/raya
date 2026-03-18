@@ -2198,40 +2198,68 @@ impl<'a> Interpreter<'a> {
             })
     }
 
-    fn prototype_object_for_nominal_type(
+    /// Unified prototype creation for any class with a nominal_type_id.
+    ///
+    /// This is the single path for creating class prototypes. It always:
+    /// - Writes "constructor" to shape slot 0 (never dyn_props)
+    /// - Tags the prototype with nominal_type_id for vtable method lookup
+    /// - Stores in Class.prototype_value and callable virtual property cache
+    /// - Uses builtin_global_value(class_name) for constructor identity when available
+    fn create_prototype_for_class(
         &self,
         nominal_type_id: usize,
+        class_name: &str,
         constructor_value: Value,
     ) -> Option<Value> {
+        // Check caches: Class.prototype_value, then callable virtual property cache
+        {
+            let classes = self.classes.read();
+            if let Some(class) = classes.get_class(nominal_type_id) {
+                if let Some(proto_val) = class.prototype_value {
+                    drop(classes);
+                    self.ensure_intrinsic_prototype_parent(class_name, proto_val);
+                    return Some(proto_val);
+                }
+            }
+        }
         if let Some(existing) =
             self.cached_callable_virtual_property_value(constructor_value, "prototype")
         {
+            // Fix up nominal_type_id if missing
+            if let Some(proto_ptr) = checked_object_ptr(existing) {
+                let proto_obj = unsafe { &mut *proto_ptr.as_ptr() };
+                if proto_obj.header.nominal_type_id.is_none() {
+                    proto_obj.header.nominal_type_id = Some(nominal_type_id as u32);
+                }
+            }
+            // Store in class for future lookups
+            {
+                let mut classes = self.classes.write();
+                if let Some(class) = classes.get_class_mut(nominal_type_id) {
+                    class.prototype_value = Some(existing);
+                }
+            }
+            self.ensure_intrinsic_prototype_parent(class_name, existing);
             return Some(existing);
         }
-        let (class_name, class_module, method_ids, mut method_names, parent_id) = {
+
+        // Read class metadata for method population
+        let (class_module, method_ids, mut method_names) = {
             let classes = self.classes.read();
             let class = classes.get_class(nominal_type_id)?;
-            let class_name = class.name.clone();
             let class_module = class.module.clone();
             let method_ids = class.vtable.methods.clone();
-            let parent_id = class.parent_id;
             drop(classes);
-
             let method_names = self
                 .class_metadata
                 .read()
                 .get(nominal_type_id)
                 .map(|meta| meta.method_names.clone())
                 .unwrap_or_default();
-
-            (
-                class_name,
-                class_module,
-                method_ids,
-                method_names,
-                parent_id,
-            )
+            (class_module, method_ids, method_names)
         };
+
+        // Resolve method names from module function table
         if let Some(module) = class_module.as_ref() {
             if method_names.len() < method_ids.len() {
                 method_names.resize(method_ids.len(), String::new());
@@ -2255,12 +2283,8 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        // Prototype layout only includes "constructor" as a field.
-        // Methods live in the class vtable and are found via nominal_type_id
-        // lookup. Including method names in the layout would create null-valued
-        // field slots that shadow the vtable methods.
+        // Allocate prototype object with layout ["constructor"]
         let member_names = vec!["constructor".to_string()];
-
         let prototype_val = if class_name == "Array" {
             let prototype_ptr = self.gc.lock().allocate(Array::new(0, 0));
             unsafe {
@@ -2270,32 +2294,40 @@ impl<'a> Interpreter<'a> {
             }
         } else {
             let layout_id = layout_id_from_ordered_names(&member_names);
-            let prototype_ptr = self
-                .gc
-                .lock()
-                .allocate(Object::new_dynamic(layout_id, member_names.len()));
+            let mut proto_obj = Object::new_dynamic(layout_id, member_names.len());
+            proto_obj.header.nominal_type_id = Some(nominal_type_id as u32);
+            let prototype_ptr = self.gc.lock().allocate(proto_obj);
             unsafe {
                 Value::from_ptr(
                     std::ptr::NonNull::new(prototype_ptr.as_ptr()).expect("prototype object ptr"),
                 )
             }
         };
+
+        // Cache in callable virtual property store and Class.prototype_value
         self.set_cached_callable_virtual_property_value(
             constructor_value,
             "prototype",
             prototype_val,
         );
+        {
+            let mut classes = self.classes.write();
+            if let Some(class) = classes.get_class_mut(nominal_type_id) {
+                class.prototype_value = Some(prototype_val);
+            }
+        }
 
-        self.define_data_property_on_target(
-            prototype_val,
-            "constructor",
-            constructor_value,
-            true,
-            false,
-            true,
-        )
-        .ok()?;
+        // Write "constructor" to shape slot 0. Prefer canonical builtin global
+        // value so prototype.constructor === the ambient global that user code sees.
+        let canonical_ctor = self
+            .builtin_global_value(class_name)
+            .unwrap_or(constructor_value);
+        if let Some(proto_ptr) = checked_object_ptr(prototype_val) {
+            let proto_obj = unsafe { &mut *proto_ptr.as_ptr() };
+            let _ = proto_obj.set_field(0, canonical_ctor);
+        }
 
+        // Array-specific: "length" property and Symbol.unscopables
         if class_name == "Array" {
             self.define_data_property_on_target(
                 prototype_val,
@@ -2309,20 +2341,13 @@ impl<'a> Interpreter<'a> {
             self.seed_array_unscopables_property(prototype_val)?;
         }
 
-        if let Some(parent_id) = parent_id {
-            if let Some(parent_ctor) = self.constructor_value_for_nominal_type(parent_id) {
-                if let Some(parent_proto) = self.constructor_prototype_value(parent_ctor) {
-                    self.set_constructed_object_prototype_from_value(prototype_val, parent_proto);
-                }
-            }
-        } else if let Some(object_ctor) = self.builtin_global_value("Object") {
-            if let Some(object_proto) = self.object_constructor_prototype_value(object_ctor) {
-                self.set_constructed_object_prototype_from_value(prototype_val, object_proto);
-            }
-        }
+        // Set up prototype chain via intrinsic parent resolution
+        self.ensure_intrinsic_prototype_parent(class_name, prototype_val);
 
-        self.seed_builtin_error_prototype_properties(prototype_val, &class_name)?;
+        // Seed error-specific prototype properties (name, message defaults)
+        self.seed_builtin_error_prototype_properties(prototype_val, class_name)?;
 
+        // Populate methods from vtable as data properties
         let mut method_values = Vec::new();
         for (slot, method_name) in method_names.iter().enumerate() {
             if method_name.is_empty() {
@@ -2343,7 +2368,7 @@ impl<'a> Interpreter<'a> {
                 )
             };
             method_values.push((method_name.clone(), closure_val));
-            if Self::should_skip_public_prototype_method_name(&class_name, method_name) {
+            if Self::should_skip_public_prototype_method_name(class_name, method_name) {
                 continue;
             }
             self.define_data_property_on_target(
@@ -2356,7 +2381,7 @@ impl<'a> Interpreter<'a> {
             )
             .ok()?;
         }
-        self.define_prototype_symbol_aliases(&class_name, prototype_val, &method_values)?;
+        self.define_prototype_symbol_aliases(class_name, prototype_val, &method_values)?;
 
         Some(prototype_val)
     }
@@ -2383,7 +2408,7 @@ impl<'a> Interpreter<'a> {
                 constructor_value.raw()
             );
         }
-        self.prototype_object_for_nominal_type(nominal_type_id, constructor_value)
+        self.create_prototype_for_class(nominal_type_id, &class_name, constructor_value)
     }
 
     fn ordinary_object_prototype_value(&self) -> Option<Value> {
@@ -2549,7 +2574,13 @@ impl<'a> Interpreter<'a> {
         }
 
         if let Some(nominal_type_id) = self.constructor_nominal_type_id(constructor) {
-            let prototype = self.prototype_object_for_nominal_type(nominal_type_id, constructor);
+            let class_name = self
+                .classes
+                .read()
+                .get_class(nominal_type_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            let prototype = self.create_prototype_for_class(nominal_type_id, &class_name, constructor);
             if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
                 eprintln!(
                     "[ctor-proto] ctor={:#x} nominal_type_id={} -> {:?}",
@@ -2562,9 +2593,17 @@ impl<'a> Interpreter<'a> {
         }
 
         let (visible_name, _) = self.callable_function_info(constructor)?;
-        let prototype = self
-            .prototype_object_for_class_name(&visible_name, constructor)
-            .or_else(|| self.generic_function_prototype_value(constructor));
+        // For non-nominal constructors, try class-name lookup then generic fallback
+        let nominal_type_id = self
+            .classes
+            .read()
+            .get_class_by_name(&visible_name)
+            .map(|c| c.id);
+        let prototype = if let Some(ntid) = nominal_type_id {
+            self.create_prototype_for_class(ntid, &visible_name, constructor)
+        } else {
+            self.generic_function_prototype_value(constructor)
+        };
         if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
             eprintln!(
                 "[ctor-proto] ctor={:#x} class='{}' -> {:?}",
@@ -2926,228 +2965,6 @@ impl<'a> Interpreter<'a> {
         }
 
         Ok(Some(Value::null()))
-    }
-
-    fn prototype_object_for_class_name(
-        &self,
-        class_name: &str,
-        class_value: Value,
-    ) -> Option<Value> {
-        // Check Class.prototype_value first (class-owned prototype)
-        {
-            let classes = self.classes.read();
-            let lookup_name = if classes.get_class_by_name(class_name).is_some() {
-                Some(class_name)
-            } else {
-                boxed_primitive_helper_class_name(class_name)
-            };
-            if let Some(name) = lookup_name {
-                if let Some(class) = classes.get_class_by_name(name) {
-                    if let Some(proto_val) = class.prototype_value {
-                        drop(classes);
-                        self.ensure_intrinsic_prototype_parent(class_name, proto_val);
-                        self.ensure_prototype_constructor(proto_val, class_value);
-                        return Some(proto_val);
-                    }
-                }
-            }
-        }
-
-        // Fallback: check callable virtual property cache
-        if let Some(existing) =
-            self.cached_callable_virtual_property_value(class_value, "prototype")
-        {
-            // Fix up nominal_type_id if missing
-            if let Some(proto_ptr) = checked_object_ptr(existing) {
-                let proto_obj = unsafe { &mut *proto_ptr.as_ptr() };
-                if proto_obj.header.nominal_type_id.is_none() {
-                    let ntid = self.classes.read()
-                        .get_class_by_name(class_name)
-                        .map(|c| c.id);
-                    if let Some(ntid) = ntid {
-                        proto_obj.header.nominal_type_id = Some(ntid as u32);
-                    }
-                }
-            }
-            // Store in class for future lookups
-            {
-                let ntid = self.classes.read()
-                    .get_class_by_name(class_name)
-                    .map(|c| c.id);
-                if let Some(ntid) = ntid {
-                    let mut classes = self.classes.write();
-                    if let Some(class) = classes.get_class_mut(ntid) {
-                        class.prototype_value = Some(existing);
-                    }
-                }
-            }
-            self.ensure_intrinsic_prototype_parent(class_name, existing);
-            return Some(existing);
-        }
-        if let Some(class_obj_ptr) = checked_object_ptr(class_value) {
-            let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
-            if let Some(existing) = class_obj
-                .dyn_props()
-                .and_then(|dp| dp.get(self.intern_prop_key("prototype")).map(|p| p.value))
-            {
-                self.ensure_intrinsic_prototype_parent(class_name, existing);
-                return Some(existing);
-            }
-        }
-
-        let lookup_class_name = {
-            let classes = self.classes.read();
-            if classes.get_class_by_name(class_name).is_some() {
-                class_name.to_string()
-            } else {
-                boxed_primitive_helper_class_name(class_name)?.to_string()
-            }
-        };
-
-        let (class_module, method_ids, mut method_names, class_nominal_type_id) = {
-            let classes = self.classes.read();
-            let class = classes.get_class_by_name(&lookup_class_name)?;
-            let class_module = class.module.clone();
-            let method_ids = class.vtable.methods.clone();
-            drop(classes);
-            let nominal_type_id = self
-                .classes
-                .read()
-                .get_class_by_name(&lookup_class_name)
-                .map(|class| class.id)?;
-            let method_names = self
-                .class_metadata
-                .read()
-                .get(nominal_type_id)
-                .map(|meta| meta.method_names.clone())
-                .unwrap_or_default();
-            (class_module, method_ids, method_names, nominal_type_id)
-        };
-        if let Some(module) = class_module.as_ref() {
-            if method_names.len() < method_ids.len() {
-                method_names.resize(method_ids.len(), String::new());
-            }
-            for (slot, func_id) in method_ids.iter().copied().enumerate() {
-                if func_id == usize::MAX {
-                    continue;
-                }
-                if module.functions.get(func_id).is_none() {
-                    method_names[slot].clear();
-                    continue;
-                }
-                if !method_names.get(slot).is_some_and(|name| name.is_empty()) {
-                    continue;
-                }
-                if let Some(function) = module.functions.get(func_id) {
-                    if let Some(name) = function.name.rsplit("::").next() {
-                        method_names[slot] = name.to_string();
-                    }
-                }
-            }
-        }
-
-        // Prototype layout only includes "constructor" as a field.
-        // Methods live in the class vtable and are found via nominal_type_id
-        // lookup. Including method names in the layout would create null-valued
-        // field slots that shadow the vtable methods.
-        let member_names = vec!["constructor".to_string()];
-
-        let prototype_val = if class_name == "Array" {
-            let prototype_ptr = self.gc.lock().allocate(Array::new(0, 0));
-            unsafe {
-                Value::from_ptr(
-                    std::ptr::NonNull::new(prototype_ptr.as_ptr()).expect("prototype array ptr"),
-                )
-            }
-        } else {
-            let layout_id = layout_id_from_ordered_names(&member_names);
-            let mut proto_obj = Object::new_dynamic(layout_id, member_names.len());
-            // Tag prototype with the class's nominal_type_id so vtable method
-            // lookup works. Without this, prototype methods (hasOwnProperty,
-            // toString, valueOf etc.) are invisible to DynGetKeyed.
-            proto_obj.header.nominal_type_id = Some(class_nominal_type_id as u32);
-            let prototype_ptr = self.gc.lock().allocate(proto_obj);
-            unsafe {
-                Value::from_ptr(
-                    std::ptr::NonNull::new(prototype_ptr.as_ptr()).expect("prototype object ptr"),
-                )
-            }
-        };
-        self.set_cached_callable_virtual_property_value(class_value, "prototype", prototype_val);
-
-        // Store prototype in class for future lookups via Class.prototype_value
-        {
-            let mut classes = self.classes.write();
-            if let Some(class) = classes.get_class_mut(class_nominal_type_id) {
-                class.prototype_value = Some(prototype_val);
-            }
-        }
-
-        // Directly write "constructor" field (slot 0) — the prototype was just
-        // created with layout ["constructor"], so we know the slot index.
-        if let Some(proto_ptr) = checked_object_ptr(prototype_val) {
-            let proto_obj = unsafe { &mut *proto_ptr.as_ptr() };
-            let _ = proto_obj.set_field(0, class_value);
-        }
-
-        if class_name == "Array" {
-            self.define_data_property_on_target(
-                prototype_val,
-                "length",
-                Value::i32(0),
-                true,
-                false,
-                false,
-            )
-            .ok()?;
-        }
-
-        self.ensure_intrinsic_prototype_parent(class_name, prototype_val);
-
-        self.seed_builtin_error_prototype_properties(prototype_val, class_name)?;
-
-        let mut method_values = Vec::new();
-        for (slot, method_name) in method_names.iter().enumerate() {
-            if method_name.is_empty() {
-                continue;
-            }
-            let Some(&func_id) = method_ids.get(slot) else {
-                continue;
-            };
-            let closure = if let Some(module) = class_module.clone() {
-                Object::new_closure_with_module(func_id, Vec::new(), module)
-            } else {
-                Object::new_closure(func_id, Vec::new())
-            };
-            let closure_ptr = self.gc.lock().allocate(closure);
-            let closure_val = unsafe {
-                Value::from_ptr(
-                    std::ptr::NonNull::new(closure_ptr.as_ptr()).expect("prototype method ptr"),
-                )
-            };
-            method_values.push((method_name.clone(), closure_val));
-            if Self::should_skip_public_prototype_method_name(class_name, method_name) {
-                continue;
-            }
-            self.define_data_property_on_target(
-                prototype_val,
-                method_name,
-                closure_val,
-                true,
-                false,
-                true,
-            )
-            .ok()?;
-        }
-        self.define_prototype_symbol_aliases(class_name, prototype_val, &method_values)?;
-
-        if let Some(class_obj_ptr) = checked_object_ptr(class_value) {
-            let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
-            class_obj
-                .ensure_dyn_props()
-                .insert(self.intern_prop_key("prototype"), DynProp::data(prototype_val));
-        }
-        Some(prototype_val)
     }
 
     fn ensure_intrinsic_prototype_parent(&self, class_name: &str, prototype_val: Value) {
@@ -3946,28 +3763,46 @@ impl<'a> Interpreter<'a> {
         &self,
         class_value: Value,
     ) -> Option<Value> {
-        self.prototype_object_for_class_name("Object", class_value)
+        self.create_prototype_for_class_by_name("Object", class_value)
     }
 
     pub(in crate::vm::interpreter) fn array_constructor_prototype_value(
         &self,
         class_value: Value,
     ) -> Option<Value> {
-        self.prototype_object_for_class_name("Array", class_value)
+        self.create_prototype_for_class_by_name("Array", class_value)
     }
 
     pub(in crate::vm::interpreter) fn string_constructor_prototype_value(
         &self,
         class_value: Value,
     ) -> Option<Value> {
-        self.prototype_object_for_class_name("String", class_value)
+        self.create_prototype_for_class_by_name("String", class_value)
     }
 
     pub(in crate::vm::interpreter) fn function_constructor_prototype_value(
         &self,
         class_value: Value,
     ) -> Option<Value> {
-        self.prototype_object_for_class_name("Function", class_value)
+        self.create_prototype_for_class_by_name("Function", class_value)
+    }
+
+    /// Helper: resolve nominal_type_id from class name and delegate to create_prototype_for_class.
+    fn create_prototype_for_class_by_name(
+        &self,
+        class_name: &str,
+        constructor_value: Value,
+    ) -> Option<Value> {
+        let lookup_name = {
+            let classes = self.classes.read();
+            if classes.get_class_by_name(class_name).is_some() {
+                class_name.to_string()
+            } else {
+                boxed_primitive_helper_class_name(class_name)?.to_string()
+            }
+        };
+        let ntid = self.classes.read().get_class_by_name(&lookup_name)?.id;
+        self.create_prototype_for_class(ntid, &lookup_name, constructor_value)
     }
 
     fn species_accessor_getter_for_constructor(&self, class_value: Value) -> Option<Value> {
