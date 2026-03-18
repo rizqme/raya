@@ -110,6 +110,130 @@ class Object {
     static defineProperties<T, D>(obj: T, descriptors: D): T {
         return __NATIVE_CALL<T>(OBJECT_DEFINE_PROPERTIES, obj, descriptors);
     }
+
+    static keys(obj: any): string[] {
+        let names = Object.getOwnPropertyNames(obj);
+        let result: string[] = [];
+        for (let i: number = 0; i < names.length; i = i + 1) {
+            let desc = Object.getOwnPropertyDescriptor(obj, names[i]);
+            if (desc != null && desc["enumerable"] == true) {
+                result.push(names[i]);
+            }
+        }
+        return result;
+    }
+
+    static values(obj: any): any[] {
+        let k = Object.keys(obj);
+        let result: any[] = [];
+        for (let i: number = 0; i < k.length; i = i + 1) {
+            result.push(obj[k[i]]);
+        }
+        return result;
+    }
+
+    static entries(obj: any): any[] {
+        let k = Object.keys(obj);
+        let result: any[] = [];
+        for (let i: number = 0; i < k.length; i = i + 1) {
+            result.push([k[i], obj[k[i]]]);
+        }
+        return result;
+    }
+
+    static fromEntries(iterable: any): any {
+        let result: any = {};
+        let arr = iterable;
+        for (let i: number = 0; i < arr.length; i = i + 1) {
+            let entry = arr[i];
+            result[entry[0]] = entry[1];
+        }
+        return result;
+    }
+
+    static assign(target: any, ...sources: any[]): any {
+        for (let i: number = 0; i < sources.length; i = i + 1) {
+            let source = sources[i];
+            if (source != null) {
+                let keys = Object.keys(source);
+                for (let j: number = 0; j < keys.length; j = j + 1) {
+                    target[keys[j]] = source[keys[j]];
+                }
+            }
+        }
+        return target;
+    }
+
+    static create(proto: any, props: any): any {
+        let obj: any = {};
+        Object.setPrototypeOf(obj, proto);
+        if (props != null) {
+            Object.defineProperties(obj, props);
+        }
+        return obj;
+    }
+
+    static freeze(obj: any): any {
+        Object.preventExtensions(obj);
+        let names = Object.getOwnPropertyNames(obj);
+        for (let i: number = 0; i < names.length; i = i + 1) {
+            let desc = Object.getOwnPropertyDescriptor(obj, names[i]);
+            if (desc != null) {
+                if (desc["get"] != null || desc["set"] != null) {
+                    Object.defineProperty(obj, names[i], { configurable: false });
+                } else {
+                    Object.defineProperty(obj, names[i], { writable: false, configurable: false });
+                }
+            }
+        }
+        return obj;
+    }
+
+    static seal(obj: any): any {
+        Object.preventExtensions(obj);
+        let names = Object.getOwnPropertyNames(obj);
+        for (let i: number = 0; i < names.length; i = i + 1) {
+            Object.defineProperty(obj, names[i], { configurable: false });
+        }
+        return obj;
+    }
+
+    static isFrozen(obj: any): boolean {
+        if (!Object.isExtensible(obj)) {
+            let names = Object.getOwnPropertyNames(obj);
+            for (let i: number = 0; i < names.length; i = i + 1) {
+                let desc = Object.getOwnPropertyDescriptor(obj, names[i]);
+                if (desc != null) {
+                    if (desc["configurable"] == true) {
+                        return false;
+                    }
+                    if (desc["get"] == null && desc["set"] == null && desc["writable"] == true) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    static isSealed(obj: any): boolean {
+        if (!Object.isExtensible(obj)) {
+            let names = Object.getOwnPropertyNames(obj);
+            for (let i: number = 0; i < names.length; i = i + 1) {
+                let desc = Object.getOwnPropertyDescriptor(obj, names[i]);
+                if (desc != null && desc["configurable"] == true) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    static hasOwn(obj: any, key: any): boolean {
+        return Object.getOwnPropertyDescriptor(obj, key) != null;
+    }
 }
 
 export { Object };
