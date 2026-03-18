@@ -144,10 +144,10 @@ fn apply_typeof_guard(
     let target_ty = match type_name {
         "string" => ctx.string_type(),
         "number" => ctx.number_type(),
-        "int" => ctx.int_type(),
         "boolean" => ctx.boolean_type(),
         "function" => return narrow_by_predicate(ctx, ty, negated, is_function_type),
         "object" => return narrow_by_predicate(ctx, ty, negated, is_object_like_type),
+        "undefined" => return if negated { Some(ty) } else { Some(ctx.null_type()) },
         _ => return Some(ty), // Unknown type name, no narrowing
     };
 
@@ -239,10 +239,8 @@ fn apply_typeof_guard_bare_union(
     // Map type name to PrimitiveType
     let target_prim = match type_name {
         "number" => PrimitiveType::Number,
-        "int" => PrimitiveType::Int,
         "string" => PrimitiveType::String,
         "boolean" => PrimitiveType::Boolean,
-        "null" => PrimitiveType::Null,
         _ => return Some(union_ty), // Unknown type name, no narrowing
     };
 

@@ -526,6 +526,41 @@ fn test_function_call() {
     assert!(has_call, "Should emit CALL opcode");
 }
 
+#[test]
+fn test_optional_method_call_opcode() {
+    let mut module = IrModule::new("test");
+    let mut func = IrFunction::new("main", vec![], TypeId::new(0));
+    let mut entry = BasicBlock::new(BasicBlockId(0));
+
+    let obj = make_reg(0, 0);
+    let result = make_reg(1, 0);
+
+    entry.add_instr(IrInstr::Assign {
+        dest: obj.clone(),
+        value: IrValue::Constant(IrConstant::Null),
+    });
+    entry.add_instr(IrInstr::CallMethod {
+        dest: Some(result.clone()),
+        object: obj,
+        method: 42,
+        args: vec![],
+        optional: true,
+    });
+    entry.set_terminator(Terminator::Return(Some(result)));
+    func.add_block(entry);
+    module.add_function(func);
+
+    let generated = codegen::generate(&module, false).unwrap();
+    let code = &generated.functions[0].code;
+    let has_optional_call_method = code
+        .iter()
+        .any(|&b| b == Opcode::OptionalCallMethod as u8);
+    assert!(
+        has_optional_call_method,
+        "Should emit OPTIONAL_CALL_METHOD opcode for optional method calls"
+    );
+}
+
 // =============================================================================
 // LOCAL VARIABLE TESTS
 // =============================================================================

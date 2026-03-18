@@ -1869,12 +1869,12 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let type_str = if value.is_null() {
-                    "null"
+                    "object" // ES spec: typeof null === "object"
                 } else if value.is_bool() {
                     "boolean"
-                } else if value.is_i32() {
-                    "int"
-                } else if value.is_i64() || value.is_f64() {
+                } else if value.is_i32() || value.is_f64() || value.is_f32()
+                    || value.is_u32() || value.is_i64() || value.is_u64()
+                {
                     "number"
                 } else if self.callable_function_info(value).is_some() {
                     "function"

@@ -1,7 +1,7 @@
 //! Rule: no-typeof-class (L1010)
 //!
 //! Flags `typeof x == "MyClass"` or any string that looks like a class name.
-//! Raya's `typeof` only returns primitive type strings (`"int"`, `"string"`, etc.),
+//! `typeof` only returns primitive type strings (`"number"`, `"string"`, etc.),
 //! not class names. Use `instanceof` for class checks.
 
 use crate::linter::rule::*;

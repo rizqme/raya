@@ -485,10 +485,10 @@ fn test_three_level_abstract_hierarchy() {
 // 15. Typeof on Various Values
 // ============================================================================
 
-// FIXED: `typeof 42` now returns "int" for i32 values
+// ES spec: `typeof 42` returns "number"
 #[test]
 fn test_typeof_int() {
-    expect_string("return typeof 42;", "int");
+    expect_string("return typeof 42;", "number");
 }
 
 #[test]
@@ -508,7 +508,7 @@ fn test_typeof_boolean() {
 
 #[test]
 fn test_typeof_null() {
-    expect_string("return typeof null;", "null");
+    expect_string("return typeof null;", "object"); // ES spec: typeof null === "object"
 }
 
 // ============================================================================

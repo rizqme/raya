@@ -1,12 +1,8 @@
 //! Rule: no-invalid-typeof (L1011)
 //!
 //! Flags `typeof x == "..."` comparisons where the string is not a valid
-//! Raya typeof result. Raya's `typeof` returns: `"int"`, `"float"`, `"string"`,
-//! `"boolean"`, `"function"`, `"object"`, `"null"`.
-//!
-//! Common mistakes from JavaScript habits:
-//! - `"number"` → use `"int"` or `"float"`
-//! - `"undefined"` → use `"null"`
+//! typeof result. Raya follows ES spec for typeof: `"number"`, `"string"`,
+//! `"boolean"`, `"function"`, `"object"`, `"undefined"`, `"symbol"`.
 
 use crate::linter::rule::*;
 use crate::parser::ast::{self, BinaryOperator};
@@ -22,9 +18,9 @@ static META: RuleMeta = RuleMeta {
     fixable: true,
 };
 
-/// Valid strings that Raya's `typeof` operator can return.
+/// Valid strings that the `typeof` operator can return (ES spec).
 const VALID_TYPEOF_RESULTS: &[&str] = &[
-    "int", "float", "string", "boolean", "function", "object", "null",
+    "number", "string", "boolean", "function", "object", "undefined", "symbol",
 ];
 
 impl LintRule for NoInvalidTypeof {
@@ -74,7 +70,7 @@ impl LintRule for NoInvalidTypeof {
         let (fix, suggestion) = suggest_replacement(&value);
 
         let mut notes = vec![format!(
-            "Valid typeof results in Raya: {}",
+            "Valid typeof results: {}",
             VALID_TYPEOF_RESULTS
                 .iter()
                 .map(|s| format!("\"{}\"", s))
@@ -118,16 +114,19 @@ fn extract_string(
 /// Returns (auto-fix replacement, human-readable suggestion) for common mistakes.
 fn suggest_replacement(value: &str) -> (Option<String>, Option<String>) {
     match value {
-        "number" => (
-            Some("\"int\"".to_string()),
-            Some("Did you mean \"int\" or \"float\"?".to_string()),
+        "int" => (
+            Some("\"number\"".to_string()),
+            Some("Did you mean \"number\"? typeof always returns \"number\" for numeric values.".to_string()),
         ),
-        "undefined" => (
-            Some("\"null\"".to_string()),
-            Some("Raya has no undefined — did you mean \"null\"?".to_string()),
+        "float" => (
+            Some("\"number\"".to_string()),
+            Some("Did you mean \"number\"? typeof always returns \"number\" for numeric values.".to_string()),
+        ),
+        "null" => (
+            Some("\"object\"".to_string()),
+            Some("typeof null === \"object\" per ES spec. Use `x === null` to check for null.".to_string()),
         ),
         "bigint" => (None, Some("Raya has no bigint type".to_string())),
-        "symbol" => (None, Some("Raya has no symbol type".to_string())),
         _ => (None, None),
     }
 }
@@ -147,62 +146,69 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_typeof_string() {
-        let diags = lint(r#"const x: boolean = typeof y == "int";"#);
-        assert!(!has_rule(&diags, "L1011"));
-    }
-
-    #[test]
-    fn test_valid_typeof_float() {
-        let diags = lint(r#"const x: boolean = typeof y == "float";"#);
-        assert!(!has_rule(&diags, "L1011"));
-    }
-
-    #[test]
-    fn test_valid_typeof_null() {
-        let diags = lint(r#"const x: boolean = typeof y == "null";"#);
-        assert!(!has_rule(&diags, "L1011"));
-    }
-
-    #[test]
-    fn test_invalid_number() {
+    fn test_valid_typeof_number() {
         let diags = lint(r#"const x: boolean = typeof y == "number";"#);
+        assert!(!has_rule(&diags, "L1011"));
+    }
+
+    #[test]
+    fn test_valid_typeof_string() {
+        let diags = lint(r#"const x: boolean = typeof y == "string";"#);
+        assert!(!has_rule(&diags, "L1011"));
+    }
+
+    #[test]
+    fn test_valid_typeof_object() {
+        let diags = lint(r#"const x: boolean = typeof y == "object";"#);
+        assert!(!has_rule(&diags, "L1011"));
+    }
+
+    #[test]
+    fn test_valid_typeof_undefined() {
+        let diags = lint(r#"const x: boolean = typeof y == "undefined";"#);
+        assert!(!has_rule(&diags, "L1011"));
+    }
+
+    #[test]
+    fn test_invalid_int() {
+        let diags = lint(r#"const x: boolean = typeof y == "int";"#);
         assert!(
             has_rule(&diags, "L1011"),
-            "should flag 'number', got: {:?}",
+            "should flag 'int', got: {:?}",
             diags
         );
         assert!(diags.iter().any(|d| d.fix.is_some()), "should be fixable");
     }
 
     #[test]
-    fn test_invalid_undefined() {
-        let diags = lint(r#"const x: boolean = typeof y == "undefined";"#);
-        assert!(has_rule(&diags, "L1011"), "should flag 'undefined'");
+    fn test_invalid_float() {
+        let diags = lint(r#"const x: boolean = typeof y == "float";"#);
+        assert!(has_rule(&diags, "L1011"), "should flag 'float'");
         assert!(diags.iter().any(|d| d.fix.is_some()), "should be fixable");
     }
 
     #[test]
-    fn test_invalid_symbol() {
-        let diags = lint(r#"const x: boolean = typeof y == "symbol";"#);
-        assert!(has_rule(&diags, "L1011"), "should flag 'symbol'");
+    fn test_invalid_null() {
+        let diags = lint(r#"const x: boolean = typeof y == "null";"#);
+        assert!(has_rule(&diags, "L1011"), "should flag 'null'");
+        assert!(diags.iter().any(|d| d.fix.is_some()), "should be fixable");
     }
 
     #[test]
     fn test_reversed_order() {
-        let diags = lint(r#"const x: boolean = "number" == typeof y;"#);
+        let diags = lint(r#"const x: boolean = "int" == typeof y;"#);
         assert!(has_rule(&diags, "L1011"), "should detect reversed order");
     }
 
     #[test]
     fn test_strict_equality() {
-        let diags = lint(r#"const x: boolean = typeof y === "number";"#);
+        let diags = lint(r#"const x: boolean = typeof y === "int";"#);
         assert!(has_rule(&diags, "L1011"), "should work with ===");
     }
 
     #[test]
     fn test_not_equal() {
-        let diags = lint(r#"const x: boolean = typeof y != "undefined";"#);
+        let diags = lint(r#"const x: boolean = typeof y != "float";"#);
         assert!(has_rule(&diags, "L1011"), "should work with !=");
     }
 

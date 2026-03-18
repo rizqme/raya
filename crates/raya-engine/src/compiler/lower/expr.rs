@@ -8207,26 +8207,23 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Preserve explicit int-literal behavior: `typeof 42` should be "int".
-        // For non-literals, runtime TYPEOF handles value-based classification.
+        // ES spec: typeof always returns "number" for all numerics, "object" for null.
         if let Expression::IntLiteral(_) = &*typeof_expr.argument {
             let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             self.emit(IrInstr::Assign {
                 dest: dest.clone(),
-                value: IrValue::Constant(IrConstant::String("int".to_string())),
+                value: IrValue::Constant(IrConstant::String("number".to_string())),
             });
             return dest;
         }
 
         // Prefer static primitive classification when the checker already knows it.
-        // This keeps `let x: number = 42; typeof x` consistent with declared surface
-        // types even when runtime representation is stored as integer.
+        // Follows ES spec: typeof null === "object", typeof int === "number".
         let static_typeof_name = match self.get_expr_type(&typeof_expr.argument).as_u32() {
-            NUMBER_TYPE_ID => Some("number"),
-            INT_TYPE_ID => Some("int"),
+            NUMBER_TYPE_ID | INT_TYPE_ID => Some("number"),
             STRING_TYPE_ID => Some("string"),
             BOOLEAN_TYPE_ID => Some("boolean"),
-            NULL_TYPE_ID => Some("null"),
+            NULL_TYPE_ID => Some("object"),
             _ => None,
         };
         if let Some(type_name) = static_typeof_name {
@@ -8238,119 +8235,13 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        let should_normalize_int_to_number =
-            self.should_normalize_typeof_int_to_number(self.get_expr_type(&typeof_expr.argument));
-
         let operand = self.lower_expr(&typeof_expr.argument);
-        let raw_typeof = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
         self.emit(IrInstr::Typeof {
-            dest: raw_typeof.clone(),
+            dest: dest.clone(),
             operand,
         });
-
-        if !should_normalize_int_to_number {
-            return raw_typeof;
-        }
-
-        // In declared `number` surfaces (especially unions like `string | number`),
-        // normalize runtime `"int"` to `"number"` so control-flow narrowing and
-        // `typeof` comparisons align with the declared type contract.
-        let int_lit = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-        self.emit(IrInstr::Assign {
-            dest: int_lit.clone(),
-            value: IrValue::Constant(IrConstant::String("int".to_string())),
-        });
-        let is_int = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
-        self.emit(IrInstr::BinaryOp {
-            dest: is_int.clone(),
-            op: BinaryOp::Equal,
-            left: raw_typeof.clone(),
-            right: int_lit,
-        });
-
-        let normalize_block = self.alloc_block();
-        let passthrough_block = self.alloc_block();
-        let merge_block = self.alloc_block();
-        self.set_terminator(crate::compiler::ir::Terminator::Branch {
-            cond: is_int,
-            then_block: normalize_block,
-            else_block: passthrough_block,
-        });
-
-        self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(
-                normalize_block,
-                "typeof.normalize.number",
-            ));
-        self.current_block = normalize_block;
-        let normalized = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-        self.emit(IrInstr::Assign {
-            dest: normalized.clone(),
-            value: IrValue::Constant(IrConstant::String("number".to_string())),
-        });
-        let normalize_exit = self.current_block;
-        self.set_terminator(crate::compiler::ir::Terminator::Jump(merge_block));
-
-        self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(
-                passthrough_block,
-                "typeof.passthrough",
-            ));
-        self.current_block = passthrough_block;
-        let passthrough_exit = self.current_block;
-        self.set_terminator(crate::compiler::ir::Terminator::Jump(merge_block));
-
-        self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(
-                merge_block,
-                "typeof.merge",
-            ));
-        self.current_block = merge_block;
-        let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
-        self.emit(IrInstr::Phi {
-            dest: dest.clone(),
-            sources: vec![(normalize_exit, normalized), (passthrough_exit, raw_typeof)],
-        });
         dest
-    }
-
-    fn should_normalize_typeof_int_to_number(&self, ty_id: TypeId) -> bool {
-        fn contains_type_id(
-            lowerer: &super::Lowerer<'_>,
-            ty_id: TypeId,
-            target: u32,
-            visited: &mut rustc_hash::FxHashSet<TypeId>,
-        ) -> bool {
-            if !visited.insert(ty_id) {
-                return false;
-            }
-            let Some(ty) = lowerer.type_ctx.get(ty_id).cloned() else {
-                return false;
-            };
-            match ty {
-                Type::Primitive(prim) => match prim {
-                    crate::parser::types::PrimitiveType::Number => target == NUMBER_TYPE_ID,
-                    crate::parser::types::PrimitiveType::Int => target == INT_TYPE_ID,
-                    _ => false,
-                },
-                Type::Union(union) => union
-                    .members
-                    .iter()
-                    .copied()
-                    .any(|member| contains_type_id(lowerer, member, target, visited)),
-                Type::Reference(type_ref) => {
-                    let resolved = lowerer.type_ctx.lookup_named_type(&type_ref.name);
-                    resolved.is_some_and(|resolved_ty| {
-                        contains_type_id(lowerer, resolved_ty, target, visited)
-                    })
-                }
-                Type::Generic(generic) => contains_type_id(lowerer, generic.base, target, visited),
-                _ => ty_id.as_u32() == target,
-            }
-        }
-
-        let mut visited_number = rustc_hash::FxHashSet::default();
-        contains_type_id(self, ty_id, NUMBER_TYPE_ID, &mut visited_number)
     }
 
     fn lower_new(&mut self, new_expr: &ast::NewExpression) -> Register {
