@@ -2533,7 +2533,7 @@ impl<'a> Interpreter<'a> {
         &self,
         constructor: Value,
     ) -> Option<Value> {
-        // Check Class.prototype_value first (class-owned prototype with nominal_type_id)
+        // 1. Fast path: Class.prototype_value (authoritative cache for nominal classes)
         if let Some(ntid) = self.constructor_nominal_type_id(constructor) {
             let classes = self.classes.read();
             if let Some(class) = classes.get_class(ntid) {
@@ -2541,81 +2541,38 @@ impl<'a> Interpreter<'a> {
                     return Some(proto_val);
                 }
             }
+            drop(classes);
+            // Not yet created — create and cache via the unified path
+            let class_name = self
+                .classes
+                .read()
+                .get_class(ntid)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            return self.create_prototype_for_class(ntid, &class_name, constructor);
         }
-        if let Some(existing) = self.metadata_data_property_value(constructor, "prototype") {
-            self.ensure_prototype_nominal_type_id(constructor, existing);
-            if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
-                eprintln!(
-                    "[ctor-proto] ctor={:#x} metadata={:#x}",
-                    constructor.raw(),
-                    existing.raw()
-                );
-            }
-            return Some(existing);
-        }
+
+        // 2. Callable virtual property cache (for non-nominal constructors,
+        //    user-defined classes, or prototypes set via defineProperty)
         if let Some(existing) =
             self.cached_callable_virtual_property_value(constructor, "prototype")
         {
             self.ensure_prototype_nominal_type_id(constructor, existing);
-            if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
-                eprintln!(
-                    "[ctor-proto] ctor={:#x} cached={:#x}",
-                    constructor.raw(),
-                    existing.raw()
-                );
-            }
             return Some(existing);
         }
-        if let Some(obj_ptr) = checked_object_ptr(constructor) {
-            let obj = unsafe { &*obj_ptr.as_ptr() };
-            if let Some(existing) = obj
-                .dyn_props()
-                .and_then(|dp| dp.get(self.intern_prop_key("prototype")).map(|p| p.value))
-            {
-                return Some(existing);
-            }
-        }
 
-        if let Some(nominal_type_id) = self.constructor_nominal_type_id(constructor) {
-            let class_name = self
-                .classes
-                .read()
-                .get_class(nominal_type_id)
-                .map(|c| c.name.clone())
-                .unwrap_or_default();
-            let prototype = self.create_prototype_for_class(nominal_type_id, &class_name, constructor);
-            if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
-                eprintln!(
-                    "[ctor-proto] ctor={:#x} nominal_type_id={} -> {:?}",
-                    constructor.raw(),
-                    nominal_type_id,
-                    prototype.map(|value| format!("{:#x}", value.raw()))
-                );
-            }
-            return prototype;
-        }
-
+        // 3. Create: resolve class name and create prototype, or use generic fallback
         let (visible_name, _) = self.callable_function_info(constructor)?;
-        // For non-nominal constructors, try class-name lookup then generic fallback
         let nominal_type_id = self
             .classes
             .read()
             .get_class_by_name(&visible_name)
             .map(|c| c.id);
-        let prototype = if let Some(ntid) = nominal_type_id {
+        if let Some(ntid) = nominal_type_id {
             self.create_prototype_for_class(ntid, &visible_name, constructor)
         } else {
             self.generic_function_prototype_value(constructor)
-        };
-        if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
-            eprintln!(
-                "[ctor-proto] ctor={:#x} class='{}' -> {:?}",
-                constructor.raw(),
-                visible_name,
-                prototype.map(|value| format!("{:#x}", value.raw()))
-            );
         }
-        prototype
     }
 
     fn constructed_object_prototype_from_constructor(&self, constructor: Value) -> Option<Value> {
