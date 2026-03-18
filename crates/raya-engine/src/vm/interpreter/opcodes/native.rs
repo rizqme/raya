@@ -2495,7 +2495,17 @@ impl<'a> Interpreter<'a> {
         &self,
         constructor: Value,
     ) -> Option<Value> {
+        // Check Class.prototype_value first (class-owned prototype with nominal_type_id)
+        if let Some(ntid) = self.constructor_nominal_type_id(constructor) {
+            let classes = self.classes.read();
+            if let Some(class) = classes.get_class(ntid) {
+                if let Some(proto_val) = class.prototype_value {
+                    return Some(proto_val);
+                }
+            }
+        }
         if let Some(existing) = self.metadata_data_property_value(constructor, "prototype") {
+            self.ensure_prototype_nominal_type_id(constructor, existing);
             if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
                 eprintln!(
                     "[ctor-proto] ctor={:#x} metadata={:#x}",
@@ -2508,6 +2518,7 @@ impl<'a> Interpreter<'a> {
         if let Some(existing) =
             self.cached_callable_virtual_property_value(constructor, "prototype")
         {
+            self.ensure_prototype_nominal_type_id(constructor, existing);
             if std::env::var("RAYA_DEBUG_PROTO_RESOLVE").is_ok() {
                 eprintln!(
                     "[ctor-proto] ctor={:#x} cached={:#x}",
@@ -2912,9 +2923,53 @@ impl<'a> Interpreter<'a> {
         class_name: &str,
         class_value: Value,
     ) -> Option<Value> {
+        // Check Class.prototype_value first (class-owned prototype)
+        {
+            let classes = self.classes.read();
+            let lookup_name = if classes.get_class_by_name(class_name).is_some() {
+                Some(class_name)
+            } else {
+                boxed_primitive_helper_class_name(class_name)
+            };
+            if let Some(name) = lookup_name {
+                if let Some(class) = classes.get_class_by_name(name) {
+                    if let Some(proto_val) = class.prototype_value {
+                        drop(classes);
+                        self.ensure_intrinsic_prototype_parent(class_name, proto_val);
+                        return Some(proto_val);
+                    }
+                }
+            }
+        }
+
+        // Fallback: check callable virtual property cache
         if let Some(existing) =
             self.cached_callable_virtual_property_value(class_value, "prototype")
         {
+            // Fix up nominal_type_id if missing
+            if let Some(proto_ptr) = checked_object_ptr(existing) {
+                let proto_obj = unsafe { &mut *proto_ptr.as_ptr() };
+                if proto_obj.header.nominal_type_id.is_none() {
+                    let ntid = self.classes.read()
+                        .get_class_by_name(class_name)
+                        .map(|c| c.id);
+                    if let Some(ntid) = ntid {
+                        proto_obj.header.nominal_type_id = Some(ntid as u32);
+                    }
+                }
+            }
+            // Store in class for future lookups
+            {
+                let ntid = self.classes.read()
+                    .get_class_by_name(class_name)
+                    .map(|c| c.id);
+                if let Some(ntid) = ntid {
+                    let mut classes = self.classes.write();
+                    if let Some(class) = classes.get_class_mut(ntid) {
+                        class.prototype_value = Some(existing);
+                    }
+                }
+            }
             self.ensure_intrinsic_prototype_parent(class_name, existing);
             return Some(existing);
         }
@@ -2938,7 +2993,7 @@ impl<'a> Interpreter<'a> {
             }
         };
 
-        let (class_module, method_ids, mut method_names) = {
+        let (class_module, method_ids, mut method_names, class_nominal_type_id) = {
             let classes = self.classes.read();
             let class = classes.get_class_by_name(&lookup_class_name)?;
             let class_module = class.module.clone();
@@ -2955,7 +3010,7 @@ impl<'a> Interpreter<'a> {
                 .get(nominal_type_id)
                 .map(|meta| meta.method_names.clone())
                 .unwrap_or_default();
-            (class_module, method_ids, method_names)
+            (class_module, method_ids, method_names, nominal_type_id)
         };
         if let Some(module) = class_module.as_ref() {
             if method_names.len() < method_ids.len() {
@@ -2998,10 +3053,12 @@ impl<'a> Interpreter<'a> {
             }
         } else {
             let layout_id = layout_id_from_ordered_names(&member_names);
-            let prototype_ptr = self
-                .gc
-                .lock()
-                .allocate(Object::new_dynamic(layout_id, member_names.len()));
+            let mut proto_obj = Object::new_dynamic(layout_id, member_names.len());
+            // Tag prototype with the class's nominal_type_id so vtable method
+            // lookup works. Without this, prototype methods (hasOwnProperty,
+            // toString, valueOf etc.) are invisible to DynGetKeyed.
+            proto_obj.header.nominal_type_id = Some(class_nominal_type_id as u32);
+            let prototype_ptr = self.gc.lock().allocate(proto_obj);
             unsafe {
                 Value::from_ptr(
                     std::ptr::NonNull::new(prototype_ptr.as_ptr()).expect("prototype object ptr"),
@@ -3009,6 +3066,14 @@ impl<'a> Interpreter<'a> {
             }
         };
         self.set_cached_callable_virtual_property_value(class_value, "prototype", prototype_val);
+
+        // Store prototype in class for future lookups via Class.prototype_value
+        {
+            let mut classes = self.classes.write();
+            if let Some(class) = classes.get_class_mut(class_nominal_type_id) {
+                class.prototype_value = Some(prototype_val);
+            }
+        }
 
         self.define_data_property_on_target(
             prototype_val,
@@ -3904,15 +3969,52 @@ impl<'a> Interpreter<'a> {
             return None;
         }
         if let Some(value) = self.metadata_data_property_value(target, key) {
+            // Fixup: ensure prototype objects have nominal_type_id
+            if key == "prototype" {
+                self.ensure_prototype_nominal_type_id(target, value);
+            }
             return Some(value);
         }
         if let Some(value) = self.cached_callable_virtual_property_value(target, key) {
+            // Fixup: ensure prototype objects have nominal_type_id
+            if key == "prototype" {
+                self.ensure_prototype_nominal_type_id(target, value);
+            }
             return Some(value);
         }
         match key {
-            "prototype" => self.constructor_prototype_value(target),
+            "prototype" => {
+                let proto = self.constructor_prototype_value(target)?;
+                // Ensure prototype has nominal_type_id for vtable method lookup
+                if let Some(proto_ptr) = checked_object_ptr(proto) {
+                    let proto_obj = unsafe { &mut *proto_ptr.as_ptr() };
+                    if proto_obj.header.nominal_type_id.is_none() {
+                        if let Some(ntid) = self.constructor_nominal_type_id(target) {
+                            proto_obj.header.nominal_type_id = Some(ntid as u32);
+                        }
+                    }
+                }
+                Some(proto)
+            }
             "name" | "length" => self.callable_property_value(target, key),
             _ => None,
+        }
+    }
+
+    /// Ensure a prototype object has nominal_type_id set from its constructor.
+    /// This is needed so DynGetKeyed's vtable method lookup works on prototype objects.
+    fn ensure_prototype_nominal_type_id(&self, constructor: Value, prototype: Value) {
+        if let Some(proto_ptr) = checked_object_ptr(prototype) {
+            let proto_obj = unsafe { &mut *proto_ptr.as_ptr() };
+            if proto_obj.header.nominal_type_id.is_none() {
+                if let Some(ntid) = self.constructor_nominal_type_id(constructor) {
+                    proto_obj.header.nominal_type_id = Some(ntid as u32);
+                    if std::env::var("RAYA_DEBUG_PROTO_FIXUP").is_ok() {
+                        eprintln!("[proto-fixup] set nominal_type_id={} on proto={:#x} from ctor={:#x}",
+                            ntid, prototype.raw(), constructor.raw());
+                    }
+                }
+            }
         }
     }
 
@@ -6536,7 +6638,16 @@ impl<'a> Interpreter<'a> {
             .nominal_allocation(nominal_type_id)
             .ok_or_else(|| VmError::RuntimeError(format!("Class {} not found", nominal_type_id)))?;
 
-        let obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
+        let mut obj = Object::new_nominal(layout_id, nominal_type_id as u32, field_count);
+        // Set [[Prototype]] from the class's registered prototype
+        {
+            let classes = self.classes.read();
+            if let Some(class) = classes.get_class(nominal_type_id) {
+                if let Some(proto_val) = class.prototype_value {
+                    obj.prototype = proto_val;
+                }
+            }
+        }
         let gc_ptr = self.gc.lock().allocate(obj);
         let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
         let field_names = {

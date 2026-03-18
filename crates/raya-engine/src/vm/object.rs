@@ -504,6 +504,11 @@ pub struct Class {
     pub module: Option<Arc<crate::compiler::Module>>,
     /// Shared template for per-slot property metadata.
     pub slot_meta_template: Arc<SlotMetaInner>,
+    /// Runtime prototype object for instances of this class.
+    /// Created at class registration time with `nominal_type_id` set so
+    /// vtable method lookup works naturally through the prototype chain.
+    /// `None` until the prototype is materialized during module initialization.
+    pub prototype_value: Option<Value>,
 }
 
 impl Class {
@@ -519,6 +524,7 @@ impl Class {
             constructor_id: None,
             module: None,
             slot_meta_template: Arc::new(SlotMetaInner { entries: vec![SlotMeta::data_default(); field_count] }),
+            prototype_value: None,
         }
     }
 
@@ -534,6 +540,7 @@ impl Class {
             constructor_id: None,
             module: None,
             slot_meta_template: Arc::new(SlotMetaInner { entries: vec![SlotMeta::data_default(); field_count] }),
+            prototype_value: None,
         }
     }
 
@@ -554,6 +561,7 @@ impl Class {
             constructor_id: None,
             module: None,
             slot_meta_template: Arc::new(SlotMetaInner { entries: vec![SlotMeta::data_default(); field_count] }),
+            prototype_value: None,
         }
     }
 
