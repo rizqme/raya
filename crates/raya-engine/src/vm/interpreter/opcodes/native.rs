@@ -5143,6 +5143,31 @@ impl<'a> Interpreter<'a> {
         None
     }
 
+    fn has_class_vtable_method(&self, target: Value, key: &str) -> bool {
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return false;
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        obj.nominal_type_id_usize().is_some_and(|ntid| {
+            let class_metadata = self.class_metadata.read();
+            if class_metadata.get(ntid).and_then(|m| m.get_method_index(key)).is_some() {
+                return true;
+            }
+            drop(class_metadata);
+            let classes = self.classes.read();
+            classes.get_class(ntid).is_some_and(|class| {
+                class.module.as_ref().is_some_and(|module| {
+                    module.classes.iter().any(|cd| {
+                        cd.name == class.name && cd.methods.iter().any(|m| {
+                            let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
+                            m.name == key || plain == key
+                        })
+                    })
+                })
+            })
+        })
+    }
+
     pub(in crate::vm::interpreter) fn has_own_property_via_js_semantics(
         &self,
         target: Value,
@@ -5153,6 +5178,9 @@ impl<'a> Interpreter<'a> {
             || self.typed_array_index_property_flags(target, key).is_some()
             || self
                 .get_own_js_property_value_by_name(target, key)
+                .is_some()
+            || self.has_class_vtable_method(target, key)
+            || crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key)
                 .is_some()
             || self
                 .callable_virtual_property_descriptor(target, key)
@@ -7243,6 +7271,36 @@ impl<'a> Interpreter<'a> {
                             Value::undefined()
                         };
                         if let Err(e) = stack.push(result) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_HAS_PROPERTY => {
+                        // ES `key in obj` — HasProperty on prototype chain
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "in operator requires 2 arguments".to_string(),
+                            ));
+                        }
+                        let obj = args[1];
+                        if !self.is_js_object_value(obj) {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Cannot use 'in' operator to search for a property in a non-object"
+                                    .to_string(),
+                            ));
+                        }
+                        let key_str = if let Some(s) = checked_string_ptr(args[0]) {
+                            unsafe { &*s.as_ptr() }.data.clone()
+                        } else if let Some(s) = primitive_to_js_string(args[0]) {
+                            s
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Cannot convert property key to string".to_string(),
+                            ));
+                        };
+                        let result = self.has_property_via_js_semantics(obj, &key_str);
+                        if let Err(e) = stack.push(Value::bool(result)) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

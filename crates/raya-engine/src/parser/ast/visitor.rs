@@ -477,6 +477,10 @@ pub fn walk_expression<V: Visitor>(visitor: &mut V, expr: &Expression) {
             visitor.visit_expression(&instanceof.object);
             visitor.visit_type_annotation(&instanceof.type_name);
         }
+        Expression::In(in_expr) => {
+            visitor.visit_expression(&in_expr.property);
+            visitor.visit_expression(&in_expr.object);
+        }
         Expression::TypeCast(cast) => {
             visitor.visit_expression(&cast.object);
             visitor.visit_type_annotation(&cast.target_type);

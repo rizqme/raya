@@ -67,6 +67,8 @@ pub const OBJECT_JS_TO_INTEGER_OR_INFINITY: u16 = 0x001E;
 /// Checks builtin_global_slots then globalThis properties.
 /// Used by `typeof` on potentially-unresolvable identifiers (ES spec §13.5.1).
 pub const TRY_GET_GLOBAL: u16 = 0x001F;
+/// ES `key in obj` — checks HasProperty on prototype chain.
+pub const OBJECT_HAS_PROPERTY: u16 = 0x0020;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -578,6 +580,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_JS_TO_NUMBER => "Object.jsToNumber",
         OBJECT_JS_TO_INTEGER_OR_INFINITY => "Object.jsToIntegerOrInfinity",
         TRY_GET_GLOBAL => "tryGetGlobal",
+        OBJECT_HAS_PROPERTY => "Object.hasProperty",
 
         // Array
         ARRAY_PUSH => "Array.push",

@@ -1,15 +1,46 @@
-use crate::compiler::Opcode;
+use crate::compiler::{Module, Opcode};
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
+use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
+    /// ES spec ToNumber: calls ToPrimitive then converts the primitive to f64.
+    /// Unlike the free `value_to_f64`, this can invoke valueOf/Symbol.toPrimitive
+    /// on heap objects.
+    #[inline]
+    fn to_number(
+        &mut self,
+        v: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<f64, VmError> {
+        // Fast path: primitives don't need ToPrimitive
+        if v.as_f64().is_some()
+            || v.as_i32().is_some()
+            || v.as_bool().is_some()
+            || v.is_null()
+            || v.is_undefined()
+        {
+            return value_to_f64(v);
+        }
+        // String: parse directly (no valueOf call needed)
+        if super::native::checked_string_ptr(v).is_some() {
+            return value_to_f64(v);
+        }
+        // Heap object: call ToPrimitive(value, "number") then convert
+        self.js_to_number_with_context(v, task, module)
+    }
+
     pub(in crate::vm::interpreter) fn exec_arithmetic_ops(
         &mut self,
         stack: &mut Stack,
+        module: &Module,
+        task: &Arc<Task>,
         opcode: Opcode,
     ) -> OpcodeResult {
         match opcode {
@@ -329,11 +360,19 @@ impl<'a> Interpreter<'a> {
             // Float Arithmetic
             // =========================================================
             Opcode::Fadd => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let b = match self.to_number(b_val, task, module) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let a = match self.to_number(a_val, task, module) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -344,11 +383,19 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fsub => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let b = match self.to_number(b_val, task, module) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let a = match self.to_number(a_val, task, module) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -359,11 +406,19 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fmul => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let b = match self.to_number(b_val, task, module) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let a = match self.to_number(a_val, task, module) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -388,11 +443,11 @@ impl<'a> Interpreter<'a> {
                         "division by zero".to_string(),
                     ));
                 }
-                let b = match value_to_f64(b_val) {
+                let b = match self.to_number(b_val, task, module) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match value_to_f64(a_val) {
+                let a = match self.to_number(a_val, task, module) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -403,7 +458,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fneg => {
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let a = match self.to_number(a_val, task, module) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -414,11 +473,19 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fpow => {
-                let b = match stack.pop().and_then(value_to_f64) {
+                let b_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(value_to_f64) {
+                let a_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let b = match self.to_number(b_val, task, module) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let a = match self.to_number(a_val, task, module) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -443,11 +510,11 @@ impl<'a> Interpreter<'a> {
                         "division by zero".to_string(),
                     ));
                 }
-                let b = match value_to_f64(b_val) {
+                let b = match self.to_number(b_val, task, module) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match value_to_f64(a_val) {
+                let a = match self.to_number(a_val, task, module) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };

@@ -100,6 +100,9 @@ pub enum Expression {
     /// InstanceOf expression: expr instanceof ClassName
     InstanceOf(InstanceOfExpression),
 
+    /// In expression: key in object
+    In(InExpression),
+
     /// Type cast expression: expr as TypeName
     TypeCast(TypeCastExpression),
 
@@ -146,6 +149,7 @@ impl Expression {
             Expression::This(span) => span,
             Expression::Super(span) => span,
             Expression::InstanceOf(e) => &e.span,
+            Expression::In(e) => &e.span,
             Expression::TypeCast(e) => &e.span,
             Expression::RegexLiteral(e) => &e.span,
             Expression::TaggedTemplate(e) => &e.span,
@@ -697,6 +701,16 @@ pub struct JsxOpeningFragment {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct JsxClosingFragment {
+    pub span: Span,
+}
+
+/// In expression: property in object (ES `key in obj`)
+#[derive(Debug, Clone, PartialEq)]
+pub struct InExpression {
+    /// The property key to check
+    pub property: Box<Expression>,
+    /// The object to check against
+    pub object: Box<Expression>,
     pub span: Span,
 }
 

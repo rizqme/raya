@@ -2504,7 +2504,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::Fdiv
             | Opcode::Fneg
             | Opcode::Fpow
-            | Opcode::Fmod => self.exec_arithmetic_ops(stack, opcode),
+            | Opcode::Fmod => self.exec_arithmetic_ops(stack, module, task, opcode),
 
             // =========================================================
             // Comparisons and Logical Operators

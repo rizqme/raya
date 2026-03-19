@@ -2520,6 +2520,10 @@ impl<'a> Binder<'a> {
             Expression::InstanceOf(instanceof) => {
                 self.expression_uses_linker_dep_binding(&instanceof.object)
             }
+            Expression::In(in_expr) => {
+                self.expression_uses_linker_dep_binding(&in_expr.property)
+                    || self.expression_uses_linker_dep_binding(&in_expr.object)
+            }
             Expression::TypeCast(cast) => self.expression_uses_linker_dep_binding(&cast.object),
             Expression::TemplateLiteral(tpl) => tpl.parts.iter().any(|part| match part {
                 crate::parser::ast::TemplatePart::Expression(expr) => {

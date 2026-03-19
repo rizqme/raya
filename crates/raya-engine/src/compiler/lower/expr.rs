@@ -553,6 +553,7 @@ impl<'a> Lowerer<'a> {
             Expression::Super(_) => self.lower_super(),
             Expression::AsyncCall(async_call) => self.lower_async_call(async_call),
             Expression::InstanceOf(instanceof) => self.lower_instanceof(instanceof),
+            Expression::In(in_expr) => self.lower_in_expression(in_expr),
             Expression::TypeCast(cast) => self.lower_type_cast(cast),
             Expression::RegexLiteral(regex) => self.lower_regex_literal(regex),
             Expression::TaggedTemplate(tagged) => self.lower_tagged_template(tagged),
@@ -9007,6 +9008,19 @@ impl<'a> Lowerer<'a> {
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
             value: IrValue::Constant(IrConstant::Boolean(false)),
+        });
+        dest
+    }
+
+    /// Lower `in` expression: key in object → boolean
+    fn lower_in_expression(&mut self, in_expr: &ast::InExpression) -> Register {
+        let property = self.lower_expr(&in_expr.property);
+        let object = self.lower_expr(&in_expr.object);
+        let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_HAS_PROPERTY,
+            args: vec![property, object],
         });
         dest
     }

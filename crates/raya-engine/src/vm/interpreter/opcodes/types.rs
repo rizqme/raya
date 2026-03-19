@@ -1388,52 +1388,17 @@ impl<'a> Interpreter<'a> {
                                     prop.value
                                 }
                             }
-                            // 4. Prototype chain walk
-                            else if !obj.prototype.is_null() && obj.prototype != Value::undefined() {
-                                // Recurse through existing prototype chain mechanism
+                            // 4. Full JS-spec property chain: prototype walk, callable
+                            // virtual properties (name/length/prototype), constructor
+                            // prototypes, and materialized static methods.
+                            else {
                                 match self.get_property_value_via_js_semantics_with_context(
                                     actual_obj, key_str, task, module,
                                 ) {
                                     Ok(Some(value)) => value,
-                                    Ok(None) => {
-                                        // Try builtin native method as last resort
-                                        if let Some(native_id) = builtin_handle_native_method_id(obj_val, key_str)
-                                            .or_else(|| {
-                                                for alias in protocol_alias_names(key_str) {
-                                                    if let Some(id) = builtin_handle_native_method_id(obj_val, alias) {
-                                                        return Some(id);
-                                                    }
-                                                }
-                                                None
-                                            })
-                                        {
-                                            let method = Object::new_bound_native(obj_val, native_id);
-                                            let method_ptr = self.gc.lock().allocate(method);
-                                            unsafe { Value::from_ptr(NonNull::new(method_ptr.as_ptr()).expect("ptr")) }
-                                        } else {
-                                            Value::undefined()
-                                        }
-                                    }
+                                    Ok(None) => Value::undefined(),
                                     Err(error) => return OpcodeResult::Error(error),
                                 }
-                            }
-                            // 5. Builtin native method lookup
-                            else if let Some(native_id) = builtin_handle_native_method_id(obj_val, key_str)
-                                .or_else(|| {
-                                    for alias in protocol_alias_names(key_str) {
-                                        if let Some(id) = builtin_handle_native_method_id(obj_val, alias) {
-                                            return Some(id);
-                                        }
-                                    }
-                                    None
-                                })
-                            {
-                                let method = Object::new_bound_native(obj_val, native_id);
-                                let method_ptr = self.gc.lock().allocate(method);
-                                unsafe { Value::from_ptr(NonNull::new(method_ptr.as_ptr()).expect("ptr")) }
-                            }
-                            else {
-                                Value::undefined()
                             }
                         }
                     }

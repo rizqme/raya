@@ -2986,6 +2986,11 @@ impl<'a> TypeChecker<'a> {
             Expression::Await(await_expr) => self.check_await(await_expr),
             Expression::AsyncCall(async_call) => self.check_async_call(async_call),
             Expression::InstanceOf(instanceof) => self.check_instanceof(instanceof),
+            Expression::In(in_expr) => {
+                self.check_expr(&in_expr.property);
+                self.check_expr(&in_expr.object);
+                self.type_ctx.boolean_type()
+            }
             Expression::TypeCast(cast) => self.check_type_cast(cast),
             Expression::RegexLiteral(_) => self.type_ctx.regexp_type(),
             Expression::TaggedTemplate(tagged) => self.check_tagged_template(tagged),

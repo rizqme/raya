@@ -823,20 +823,16 @@ fn parse_infix(
             return parse_postfix(parser, cast);
         }
         Token::In => {
-            // `in` is lexed and participates in precedence, but expression-level
-            // support is intentionally not part of the AST/lowering pipeline yet.
-            // Consume and fail deterministically instead of leaving the token
-            // unconsumed (which can cause parse loops).
             parser.advance(); // consume `in`
-            let _ = parse_expression_with_precedence(parser, precedence)?;
-            return Err(ParseError {
-                kind: ParseErrorKind::InvalidSyntax {
-                    reason: "The 'in' operator is not supported in expressions yet".to_string(),
-                },
-                span: parser.current_span(),
-                message: "Unsupported operator 'in'".to_string(),
-                suggestion: Some("Use explicit key checks for now".to_string()),
+            let next_prec = Precedence::from((precedence as u8) + 1);
+            let right = parse_expression_with_precedence(parser, next_prec)?;
+            let span = left.span().merge(right.span());
+            let in_expr = Expression::In(crate::parser::ast::expression::InExpression {
+                property: Box::new(left),
+                object: Box::new(right),
+                span,
             });
+            return parse_postfix(parser, in_expr);
         }
         _ => {
             return parse_postfix(parser, left);
