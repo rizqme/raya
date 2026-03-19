@@ -31,6 +31,34 @@ pub(in crate::vm::interpreter) fn value_to_f64(v: Value) -> Result<f64, VmError>
         Ok(f)
     } else if let Some(i) = v.as_i32() {
         Ok(i as f64)
+    } else if let Some(b) = v.as_bool() {
+        // ES spec: ToNumber(true) = 1, ToNumber(false) = 0
+        Ok(if b { 1.0 } else { 0.0 })
+    } else if v.is_null() {
+        // ES spec: ToNumber(null) = 0
+        Ok(0.0)
+    } else if v.is_undefined() {
+        // ES spec: ToNumber(undefined) = NaN
+        Ok(f64::NAN)
+    } else if let Some(s) = super::opcodes::native::checked_string_ptr(v) {
+        // ES spec: ToNumber(string) — parse trimmed string as number
+        let s = unsafe { &*s.as_ptr() };
+        let trimmed = s.data.trim();
+        if trimmed.is_empty() {
+            Ok(0.0)
+        } else if trimmed == "Infinity" || trimmed == "+Infinity" {
+            Ok(f64::INFINITY)
+        } else if trimmed == "-Infinity" {
+            Ok(f64::NEG_INFINITY)
+        } else if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+            Ok(u64::from_str_radix(hex, 16).map(|n| n as f64).unwrap_or(f64::NAN))
+        } else if let Some(bin) = trimmed.strip_prefix("0b").or_else(|| trimmed.strip_prefix("0B")) {
+            Ok(u64::from_str_radix(bin, 2).map(|n| n as f64).unwrap_or(f64::NAN))
+        } else if let Some(oct) = trimmed.strip_prefix("0o").or_else(|| trimmed.strip_prefix("0O")) {
+            Ok(u64::from_str_radix(oct, 8).map(|n| n as f64).unwrap_or(f64::NAN))
+        } else {
+            Ok(trimmed.parse::<f64>().unwrap_or(f64::NAN))
+        }
     } else {
         Err(VmError::TypeError("Expected number".to_string()))
     }

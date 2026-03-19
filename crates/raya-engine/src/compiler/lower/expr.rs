@@ -1465,24 +1465,24 @@ impl<'a> Lowerer<'a> {
             )
         {
             let operand = self.lower_expr(&unary.operand);
-            let factor = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-            let factor_value = match unary.operator {
-                ast::UnaryOperator::Minus => -1.0,
-                ast::UnaryOperator::Plus => 1.0,
-                _ => unreachable!(),
-            };
-            self.emit(IrInstr::Assign {
-                dest: factor.clone(),
-                value: IrValue::Constant(IrConstant::F64(factor_value)),
+            // ES spec: unary +/- first applies ToNumber, then negates if minus.
+            // Use OBJECT_JS_TO_NUMBER for proper coercion (string→number, etc.).
+            let number = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+            self.emit(IrInstr::NativeCall {
+                dest: Some(number.clone()),
+                native_id: crate::compiler::native_id::OBJECT_JS_TO_NUMBER,
+                args: vec![operand],
             });
-            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-            self.emit(IrInstr::BinaryOp {
-                dest: dest.clone(),
-                op: BinaryOp::Mul,
-                left: factor,
-                right: operand,
-            });
-            return dest;
+            if matches!(unary.operator, ast::UnaryOperator::Minus) {
+                let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                self.emit(IrInstr::UnaryOp {
+                    dest: dest.clone(),
+                    op: UnaryOp::Neg,
+                    operand: number,
+                });
+                return dest;
+            }
+            return number;
         }
 
         let operand = self.lower_expr(&unary.operand);
