@@ -401,8 +401,16 @@ impl Value {
             i != 0
         } else if let Some(u) = self.as_u64() {
             u != 0
+        } else if self.is_ptr() {
+            // ES spec: empty string is falsy, all other strings are truthy.
+            // All other pointer types (objects, arrays, functions) are truthy.
+            if let Some(s) = (unsafe { self.as_ptr::<crate::vm::object::RayaString>() }) {
+                let s = unsafe { &*s.as_ptr() };
+                !s.data.is_empty()
+            } else {
+                true
+            }
         } else {
-            // Pointers are always truthy
             true
         }
     }

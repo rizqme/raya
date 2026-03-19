@@ -1638,9 +1638,13 @@ impl<'a> Interpreter<'a> {
         if !self.native_callable_uses_builtin_this_coercion(native_id) {
             return Ok(receiver);
         }
-        if let Some(boxed) = self.box_js_this_primitive(receiver)? {
-            return Ok(boxed);
-        }
+        // Don't box primitives for native builtin methods — they already
+        // handle raw primitive values directly (string handlers expect
+        // RayaString, number handlers expect numeric values).  Boxing
+        // would wrap the primitive in an object whose toString/valueOf
+        // produces the wrong representation (e.g., "[object String]").
+        // Boxing is only needed for user-defined methods on primitives,
+        // which are not dispatched through this path.
         Ok(receiver)
     }
 
