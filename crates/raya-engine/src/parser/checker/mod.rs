@@ -150,7 +150,7 @@ pub use builtins::{
 pub use captures::{CaptureInfo, ClosureCaptures, ClosureId, ModuleCaptureInfo};
 pub use checker::{CheckResult, InferredTypes, TypeChecker};
 pub use diagnostic::{create_files, Diagnostic, ErrorCode, SimpleFiles};
-pub use error::{BindError, CheckError, CheckWarning, WarningCode, WarningConfig};
+pub use error::{BindError, CheckError, CheckWarning, SoftDiagnostic, WarningCode, WarningConfig};
 pub use exhaustiveness::ExhaustivenessResult;
 pub use narrowing::TypeEnv;
 pub use symbols::{Scope, ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind, SymbolTable};

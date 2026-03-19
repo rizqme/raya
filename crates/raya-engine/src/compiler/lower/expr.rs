@@ -1187,6 +1187,24 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
+        // In JS-compat mode with runtime fallback, emit a dynamic global lookup
+        // instead of a hard compile error.  The runtime will throw ReferenceError if
+        // the identifier is truly absent.
+        if self.allow_unresolved_runtime_fallback {
+            let dest = self.alloc_register(UNRESOLVED);
+            let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: name_reg.clone(),
+                value: IrValue::Constant(IrConstant::String(name.to_string())),
+            });
+            self.emit(IrInstr::NativeCall {
+                dest: Some(dest.clone()),
+                native_id: crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL,
+                args: vec![name_reg],
+            });
+            return dest;
+        }
+
         // Unknown identifier: do not silently lower to null.
         // Keep lowering moving, but surface a hard compile error.
         if std::env::var("RAYA_DEBUG_UNRESOLVED_IDENT").is_ok() {

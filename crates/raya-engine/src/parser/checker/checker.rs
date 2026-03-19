@@ -7,7 +7,7 @@
 use super::captures::{
     CaptureInfo, ClosureCaptures, ClosureId, FreeVariableCollector, ModuleCaptureInfo,
 };
-use super::error::{CheckError, CheckWarning};
+use super::error::{CheckError, CheckWarning, SoftDiagnostic};
 use super::exhaustiveness::{check_switch_exhaustiveness, ExhaustivenessResult};
 use super::narrowing::{apply_type_guard, TypeEnv};
 use super::symbols::{SymbolKind, SymbolTable};
@@ -54,6 +54,10 @@ pub struct CheckResult {
     pub type_annotation_types: FxHashMap<usize, TypeId>,
     /// Warnings collected during type checking
     pub warnings: Vec<CheckWarning>,
+    /// Soft diagnostics: type errors downgraded in JS mode that did not block compilation.
+    /// The checker assigned a fallback type (usually `any`) at each site so the compiler
+    /// can emit dynamic dispatch code.
+    pub soft_diagnostics: Vec<SoftDiagnostic>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -155,8 +159,10 @@ pub struct TypeChecker<'a> {
     /// Resolved types for type-annotation AST nodes (keyed by node pointer).
     type_annotation_types: FxHashMap<usize, TypeId>,
 
-    /// Type checking errors
+    /// Type checking errors (hard errors that block compilation)
     errors: Vec<CheckError>,
+    /// Soft diagnostics collected in JS mode (do not block compilation)
+    soft_diagnostics: Vec<SoftDiagnostic>,
 
     /// Current function return type (for checking return statements)
     current_function_return_type: Option<TypeId>,
@@ -264,6 +270,7 @@ impl<'a> TypeChecker<'a> {
             expr_types: FxHashMap::default(),
             type_annotation_types: FxHashMap::default(),
             errors: Vec::new(),
+            soft_diagnostics: Vec::new(),
             current_function_return_type: None,
             type_env: TypeEnv::new(),
             current_scope: super::symbols::ScopeId(0), // Start at global scope
@@ -330,6 +337,37 @@ impl<'a> TypeChecker<'a> {
         !self.is_js_mode()
     }
 
+    /// Push a check error.  In JS mode, if the error is soft, it is
+    /// immediately downgraded to a `SoftDiagnostic` and `true` is returned
+    /// so the caller knows to use a fallback type (typically `any`).
+    /// Returns `false` when the error was pushed as a hard error.
+    #[inline]
+    fn push_error_soft(&mut self, error: CheckError) -> bool {
+        if self.is_js_mode() && error.is_soft_in_js_mode() {
+            let any_ty = self.type_ctx.any_type();
+            self.soft_diagnostics.push(SoftDiagnostic {
+                error,
+                fallback_type: any_ty,
+            });
+            true // was soft — caller should use fallback type
+        } else {
+            self.errors.push(error);
+            false
+        }
+    }
+
+    /// In JS mode returns `any` (triggers dynamic dispatch in the compiler);
+    /// otherwise returns `unknown`.  Use this at error-recovery sites that feed
+    /// a type back to the compiler.
+    #[inline]
+    fn js_or_unknown_type(&mut self) -> TypeId {
+        if self.is_js_mode() {
+            self.type_ctx.any_type()
+        } else {
+            self.type_ctx.unknown_type()
+        }
+    }
+
     #[inline]
     fn type_is_unknown(&mut self, ty: TypeId) -> bool {
         matches!(
@@ -375,7 +413,7 @@ impl<'a> TypeChecker<'a> {
 
     fn check_unknown_actionable(&mut self, ty: TypeId, operation: &str, span: Span) {
         if self.policy.enforce_unknown_not_actionable && self.type_is_unknown(ty) {
-            self.errors.push(CheckError::UnknownNotActionable {
+            self.push_error_soft(CheckError::UnknownNotActionable {
                 operation: operation.to_string(),
                 span,
             });
@@ -963,6 +1001,24 @@ impl<'a> TypeChecker<'a> {
         // Collect unused variable warnings
         self.collect_unused_warnings();
 
+        // In JS mode, partition errors into hard (block compilation) and soft
+        // (downgraded to diagnostics, compilation continues).
+        if self.is_js_mode() && !self.errors.is_empty() {
+            let mut hard = Vec::new();
+            let any_ty = self.type_ctx.any_type();
+            for err in self.errors.drain(..) {
+                if err.is_soft_in_js_mode() {
+                    self.soft_diagnostics.push(SoftDiagnostic {
+                        error: err,
+                        fallback_type: any_ty,
+                    });
+                } else {
+                    hard.push(err);
+                }
+            }
+            self.errors = hard;
+        }
+
         if self.errors.is_empty() {
             Ok(CheckResult {
                 inferred_types: self.inferred_var_types,
@@ -970,6 +1026,7 @@ impl<'a> TypeChecker<'a> {
                 expr_types: self.expr_types,
                 type_annotation_types: self.type_annotation_types,
                 warnings: self.warnings,
+                soft_diagnostics: self.soft_diagnostics,
             })
         } else {
             Err(self.errors)
@@ -1086,7 +1143,7 @@ impl<'a> TypeChecker<'a> {
         if !required.is_empty() {
             let mut missing: Vec<_> = required.into_iter().collect();
             missing.sort_unstable();
-            self.errors.push(CheckError::ConstraintViolation {
+            self.push_error_soft(CheckError::ConstraintViolation {
                 message: format!(
                     "Class '{}' must implement abstract member(s): {}",
                     self.resolve(class.name.name),
@@ -1988,7 +2045,7 @@ impl<'a> TypeChecker<'a> {
 
                 for (name, span) in required_fields {
                     if !assigned.contains(&name) {
-                        self.errors.push(CheckError::StrictPropertyInitialization {
+                        self.push_error_soft(CheckError::StrictPropertyInitialization {
                             property: name,
                             span,
                         });
@@ -2200,7 +2257,7 @@ impl<'a> TypeChecker<'a> {
             if let Some(expected_ty) = self.current_function_return_type {
                 let void_ty = self.type_ctx.void_type();
                 if expected_ty != void_ty {
-                    self.errors.push(CheckError::ReturnTypeMismatch {
+                    self.push_error_soft(CheckError::ReturnTypeMismatch {
                         expected: format!("{:?}", expected_ty),
                         actual: "void".to_string(),
                         span: ret.span,
@@ -2593,7 +2650,7 @@ impl<'a> TypeChecker<'a> {
             return elem_ty;
         }
 
-        self.errors.push(CheckError::TypeMismatch {
+        self.push_error_soft(CheckError::TypeMismatch {
             expected: "iterable (Array, Set, Map, or class with iterator())".to_string(),
             actual: self.format_type(iterable_ty),
             span,
@@ -2771,7 +2828,7 @@ impl<'a> TypeChecker<'a> {
 
         // Report non-exhaustive matches
         if let ExhaustivenessResult::NonExhaustive(missing) = exhaustiveness {
-            self.errors.push(CheckError::NonExhaustiveMatch {
+            self.push_error_soft(CheckError::NonExhaustiveMatch {
                 missing,
                 span: switch_stmt.span,
             });
@@ -3003,10 +3060,13 @@ impl<'a> TypeChecker<'a> {
         }
 
         if !self.type_is_unknown(tag_ty) {
-            self.errors.push(CheckError::NotCallable {
+            let err = CheckError::NotCallable {
                 ty: self.format_type(tag_ty),
                 span: tagged.span,
-            });
+            };
+            if self.push_error_soft(err) {
+                return self.type_ctx.any_type();
+            }
         }
 
         // Mirror call-expression behavior: keep flow moving with unknown type
@@ -3086,11 +3146,15 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                self.errors.push(CheckError::UndefinedVariable {
+                let err = CheckError::UndefinedVariable {
                     name,
                     span: ident.span,
-                });
-                self.type_ctx.unknown_type()
+                };
+                if self.push_error_soft(err) {
+                    self.type_ctx.any_type()
+                } else {
+                    self.type_ctx.unknown_type()
+                }
             }
         }
     }
@@ -3327,10 +3391,13 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            self.errors.push(CheckError::NotCallable {
+            let err = CheckError::NotCallable {
                 ty: "super".to_string(),
                 span: call.span,
-            });
+            };
+            if self.push_error_soft(err) {
+                return self.type_ctx.any_type();
+            }
             return self.type_ctx.unknown_type();
         }
 
@@ -3366,7 +3433,7 @@ impl<'a> TypeChecker<'a> {
         if let Expression::Identifier(ident) = call.callee.as_ref() {
             let name = self.resolve(ident.name);
             if !self.is_js_mode() && self.is_unbound_method_var(&name) {
-                self.errors.push(CheckError::UnboundMethodCall {
+                self.push_error_soft(CheckError::UnboundMethodCall {
                     name,
                     span: call.span,
                 });
@@ -3461,7 +3528,7 @@ impl<'a> TypeChecker<'a> {
                 if self.enforce_call_arity()
                     && (arg_types.len() > max_params || arg_types.len() < min_params)
                 {
-                    self.errors.push(CheckError::ArgumentCountMismatch {
+                    self.push_error_soft(CheckError::ArgumentCountMismatch {
                         expected: func.params.len(),
                         min_expected: min_params,
                         actual: arg_types.len(),
@@ -3649,21 +3716,29 @@ impl<'a> TypeChecker<'a> {
                         };
                     }
                 }
-                self.errors.push(CheckError::NotCallable {
+                let err = CheckError::NotCallable {
                     ty: self.format_type(callee_ty),
                     span: call.span,
-                });
-                self.type_ctx.unknown_type()
+                };
+                if self.push_error_soft(err) {
+                    self.type_ctx.any_type()
+                } else {
+                    self.type_ctx.unknown_type()
+                }
             }
             _ => {
                 if self.allows_dynamic_any() && self.type_is_dynamic_anyish(callee_ty) {
                     return self.type_ctx.any_type();
                 }
-                self.errors.push(CheckError::NotCallable {
+                let err = CheckError::NotCallable {
                     ty: self.format_type(callee_ty),
                     span: call.span,
-                });
-                self.type_ctx.unknown_type()
+                };
+                if self.push_error_soft(err) {
+                    self.type_ctx.any_type()
+                } else {
+                    self.type_ctx.unknown_type()
+                }
             }
         }
     }
@@ -3817,7 +3892,7 @@ impl<'a> TypeChecker<'a> {
         span: crate::parser::Span,
     ) -> usize {
         if self.enforce_call_arity() && helper_args.len() < skip {
-            self.errors.push(CheckError::ArgumentCountMismatch {
+            self.push_error_soft(CheckError::ArgumentCountMismatch {
                 expected: skip,
                 min_expected: skip,
                 actual: helper_args.len(),
@@ -3830,7 +3905,7 @@ impl<'a> TypeChecker<'a> {
         let (min_args, max_args) = self.compute_fn_arity_bounds(func);
         if self.enforce_call_arity() && (invocation_count < min_args || invocation_count > max_args)
         {
-            self.errors.push(CheckError::ArgumentCountMismatch {
+            self.push_error_soft(CheckError::ArgumentCountMismatch {
                 expected: max_args,
                 min_expected: min_args,
                 actual: invocation_count,
@@ -3854,7 +3929,7 @@ impl<'a> TypeChecker<'a> {
         span: crate::parser::Span,
     ) {
         if self.enforce_call_arity() && (helper_args.is_empty() || helper_args.len() > 2) {
-            self.errors.push(CheckError::ArgumentCountMismatch {
+            self.push_error_soft(CheckError::ArgumentCountMismatch {
                 expected: 2,
                 min_expected: 1,
                 actual: helper_args.len(),
@@ -3867,7 +3942,7 @@ impl<'a> TypeChecker<'a> {
         if helper_args.len() <= 1 {
             let (min_args, _max_args) = self.compute_fn_arity_bounds(func);
             if self.enforce_call_arity() && min_args > 0 {
-                self.errors.push(CheckError::ArgumentCountMismatch {
+                self.push_error_soft(CheckError::ArgumentCountMismatch {
                     expected: func.params.len(),
                     min_expected: min_args,
                     actual: 0,
@@ -3902,7 +3977,7 @@ impl<'a> TypeChecker<'a> {
             }
             _ if self.is_js_mode() && self.apply_helper_accepts_runtime_array_like(args_ty) => {}
             _ => {
-                self.errors.push(CheckError::TypeMismatch {
+                self.push_error_soft(CheckError::TypeMismatch {
                     expected: "tuple or array".to_string(),
                     actual: self.format_type(args_ty),
                     span: args_span,
@@ -3951,7 +4026,7 @@ impl<'a> TypeChecker<'a> {
         span: crate::parser::Span,
     ) -> usize {
         if self.enforce_call_arity() && helper_args.is_empty() {
-            self.errors.push(CheckError::ArgumentCountMismatch {
+            self.push_error_soft(CheckError::ArgumentCountMismatch {
                 expected: 1,
                 min_expected: 1,
                 actual: 0,
@@ -3963,7 +4038,7 @@ impl<'a> TypeChecker<'a> {
         let bound_count = helper_args.len().saturating_sub(1);
         let (_min_args, max_args) = self.compute_fn_arity_bounds(func);
         if self.enforce_call_arity() && bound_count > max_args {
-            self.errors.push(CheckError::ArgumentCountMismatch {
+            self.push_error_soft(CheckError::ArgumentCountMismatch {
                 expected: max_args,
                 min_expected: 0,
                 actual: bound_count,
@@ -5013,7 +5088,7 @@ impl<'a> TypeChecker<'a> {
                 if self.has_named_member_or_index_signature(object_ty, key) {
                     return false;
                 }
-                self.errors.push(CheckError::PropertyNotFound {
+                self.push_error_soft(CheckError::PropertyNotFound {
                     property: key.to_string(),
                     ty: self.format_type(object_ty),
                     span,
@@ -5044,7 +5119,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 if object_like_members > 0 && !found {
-                    self.errors.push(CheckError::PropertyNotFound {
+                    self.push_error_soft(CheckError::PropertyNotFound {
                         property: key.to_string(),
                         ty: self.format_type(object_ty),
                         span,
@@ -5143,7 +5218,7 @@ impl<'a> TypeChecker<'a> {
                         self.type_ctx.get(symbol.ty).cloned()
                     {
                         if class.is_abstract {
-                            self.errors.push(CheckError::AbstractClassInstantiation {
+                            self.push_error_soft(CheckError::AbstractClassInstantiation {
                                 name: name.clone(),
                                 span: new_expr.span,
                             });
@@ -5162,7 +5237,7 @@ impl<'a> TypeChecker<'a> {
                                 && !allow_non_public_ctor
                             {
                                 // Non-public constructors are not directly constructible.
-                                self.errors.push(CheckError::NewNonClass {
+                                self.push_error_soft(CheckError::NewNonClass {
                                     name: name.clone(),
                                     span: new_expr.span,
                                 });
@@ -5286,7 +5361,7 @@ impl<'a> TypeChecker<'a> {
             if self.enforce_call_arity()
                 && (arg_types.len() < min_params || arg_types.len() > max_params)
             {
-                self.errors.push(CheckError::ArgumentCountMismatch {
+                self.push_error_soft(CheckError::ArgumentCountMismatch {
                     expected: func.params.len(),
                     min_expected: min_params,
                     actual: arg_types.len(),
@@ -5309,7 +5384,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         if let Some(name) = deferred_non_class_name {
-            self.errors.push(CheckError::NewNonClass {
+            self.push_error_soft(CheckError::NewNonClass {
                 name,
                 span: new_expr.span,
             });
@@ -5362,7 +5437,7 @@ impl<'a> TypeChecker<'a> {
             return class_ty;
         }
         if self.policy.no_implicit_this {
-            self.errors.push(CheckError::ImplicitThisForbidden { span });
+            self.push_error_soft(CheckError::ImplicitThisForbidden { span });
         }
         // Outside of a class, 'this' is unknown
         self.type_ctx.unknown_type()
@@ -5604,10 +5679,14 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Non-callable async callee is a compile-time error.
-        self.errors.push(CheckError::NotCallable {
+        let err = CheckError::NotCallable {
             ty: self.format_type(callee_ty),
             span: async_call.span,
-        });
+        };
+        if self.push_error_soft(err) {
+            let any = self.type_ctx.any_type();
+            return self.type_ctx.task_type(any);
+        }
 
         // Keep checking flow moving with Promise<unknown> fallback.
         let unknown = self.fallback_type(
@@ -5655,7 +5734,7 @@ impl<'a> TypeChecker<'a> {
         // super.member access inside class methods
         if let Expression::Super(_) = &*member.object {
             let Some(class_ty) = self.current_class_type else {
-                self.errors.push(CheckError::PropertyNotFound {
+                self.push_error_soft(CheckError::PropertyNotFound {
                     property: property_name,
                     ty: "super".to_string(),
                     span: member.span,
@@ -5664,7 +5743,7 @@ impl<'a> TypeChecker<'a> {
             };
 
             let Some(current_class) = self.resolve_class_type(class_ty) else {
-                self.errors.push(CheckError::PropertyNotFound {
+                self.push_error_soft(CheckError::PropertyNotFound {
                     property: property_name,
                     ty: "super".to_string(),
                     span: member.span,
@@ -5673,7 +5752,7 @@ impl<'a> TypeChecker<'a> {
             };
 
             let Some(parent_ty) = current_class.extends else {
-                self.errors.push(CheckError::PropertyNotFound {
+                self.push_error_soft(CheckError::PropertyNotFound {
                     property: property_name,
                     ty: format!("class {}", current_class.name),
                     span: member.span,
@@ -5682,7 +5761,7 @@ impl<'a> TypeChecker<'a> {
             };
 
             let Some(parent_class) = self.resolve_class_type(parent_ty) else {
-                self.errors.push(CheckError::PropertyNotFound {
+                self.push_error_soft(CheckError::PropertyNotFound {
                     property: property_name,
                     ty: format!("class {}", current_class.name),
                     span: member.span,
@@ -5694,7 +5773,7 @@ impl<'a> TypeChecker<'a> {
                 self.lookup_class_member_with_owner(&parent_class, &property_name)
             {
                 if vis == crate::parser::ast::Visibility::Private {
-                    self.errors.push(CheckError::PropertyNotFound {
+                    self.push_error_soft(CheckError::PropertyNotFound {
                         property: format!("private member '{}'", property_name),
                         ty: owner_name,
                         span: member.span,
@@ -5704,7 +5783,7 @@ impl<'a> TypeChecker<'a> {
                 return ty;
             }
 
-            self.errors.push(CheckError::PropertyNotFound {
+            self.push_error_soft(CheckError::PropertyNotFound {
                 property: property_name,
                 ty: format!("class {}", parent_class.name),
                 span: member.span,
@@ -5723,7 +5802,7 @@ impl<'a> TypeChecker<'a> {
                 if self.is_js_mode() {
                     non_null_object_ty
                 } else if !self.in_assignment_lhs {
-                    self.errors.push(CheckError::TypeMismatch {
+                    self.push_error_soft(CheckError::TypeMismatch {
                         expected: "non-null object".to_string(),
                         actual: self.format_type(object_ty),
                         span: member.span,
@@ -5745,7 +5824,7 @@ impl<'a> TypeChecker<'a> {
         if property_name == "$type" || property_name == "$value" {
             if let Some(crate::parser::types::Type::Union(union)) = self.type_ctx.get(object_ty) {
                 if union.is_bare {
-                    self.errors.push(CheckError::ForbiddenFieldAccess {
+                    self.push_error_soft(CheckError::ForbiddenFieldAccess {
                         field: property_name,
                         span: member.span,
                     });
@@ -5903,7 +5982,7 @@ impl<'a> TypeChecker<'a> {
                             self.inference_fallback_type()
                         };
                     }
-                    self.errors.push(CheckError::UndefinedMember {
+                    self.push_error_soft(CheckError::UndefinedMember {
                         member: property_name.clone(),
                         span: member.span,
                     });
@@ -6123,7 +6202,7 @@ impl<'a> TypeChecker<'a> {
                 if vis == crate::parser::ast::Visibility::Private
                     && !self.is_current_class_same_or_subclass_of(&owner_name, false)
                 {
-                    self.errors.push(CheckError::PropertyNotFound {
+                    self.push_error_soft(CheckError::PropertyNotFound {
                         property: format!("private member '{}'", property_name),
                         ty: owner_name,
                         span: member.span,
@@ -6133,7 +6212,7 @@ impl<'a> TypeChecker<'a> {
                 if vis == crate::parser::ast::Visibility::Protected
                     && !self.is_current_class_same_or_subclass_of(&owner_name, true)
                 {
-                    self.errors.push(CheckError::PropertyNotFound {
+                    self.push_error_soft(CheckError::PropertyNotFound {
                         property: format!("protected member '{}'", property_name),
                         ty: owner_name,
                         span: member.span,
@@ -6159,7 +6238,7 @@ impl<'a> TypeChecker<'a> {
                         return self.type_ctx.jsobject_of(object_ty);
                     }
                 }
-                self.errors.push(CheckError::PropertyNotFound {
+                self.push_error_soft(CheckError::PropertyNotFound {
                     property: property_name.clone(),
                     ty: format!("class {}", class_to_use.name),
                     span: member.span,
@@ -6347,7 +6426,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             if missing_on_some_object_like {
-                self.errors.push(CheckError::PropertyNotFound {
+                self.push_error_soft(CheckError::PropertyNotFound {
                     property: property_name.clone(),
                     ty: self.format_type(object_ty),
                     span: member.span,
@@ -6364,7 +6443,7 @@ impl<'a> TypeChecker<'a> {
                 return self.type_ctx.union_type(found_types);
             }
             if object_like_variants > 0 {
-                self.errors.push(CheckError::PropertyNotFound {
+                self.push_error_soft(CheckError::PropertyNotFound {
                     property: property_name.clone(),
                     ty: self.format_type(object_ty),
                     span: member.span,
@@ -6437,7 +6516,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if object_like_constraint {
-                    self.errors.push(CheckError::PropertyNotFound {
+                    self.push_error_soft(CheckError::PropertyNotFound {
                         property: property_name.clone(),
                         ty: self.format_type(constraint_id),
                         span: member.span,
@@ -6774,7 +6853,7 @@ impl<'a> TypeChecker<'a> {
         if vis == crate::parser::ast::Visibility::Private
             && !self.is_current_class_same_or_subclass_of(&owner_name, false)
         {
-            self.errors.push(CheckError::PropertyNotFound {
+            self.push_error_soft(CheckError::PropertyNotFound {
                 property: format!("private member '{}'", property_name),
                 ty: owner_name,
                 span,
@@ -6784,7 +6863,7 @@ impl<'a> TypeChecker<'a> {
         if vis == crate::parser::ast::Visibility::Protected
             && !self.is_current_class_same_or_subclass_of(&owner_name, true)
         {
-            self.errors.push(CheckError::PropertyNotFound {
+            self.push_error_soft(CheckError::PropertyNotFound {
                 property: format!("protected member '{}'", property_name),
                 ty: owner_name,
                 span,
@@ -7727,7 +7806,7 @@ impl<'a> TypeChecker<'a> {
                             Self::insert_or_override_property(&mut properties, spread_prop);
                         }
                     } else {
-                        self.errors.push(CheckError::TypeMismatch {
+                        self.push_error_soft(CheckError::TypeMismatch {
                             expected: "object-like type".to_string(),
                             actual: self.format_type(spread_ty),
                             span: spread.span,
@@ -7780,7 +7859,7 @@ impl<'a> TypeChecker<'a> {
                 self.in_assignment_lhs = prev;
                 let property_name = self.resolve(member.property.name);
                 if self.is_readonly_property(object_ty, &property_name) {
-                    self.errors.push(CheckError::ReadonlyAssignment {
+                    self.push_error_soft(CheckError::ReadonlyAssignment {
                         property: property_name,
                         span: member.span,
                     });
@@ -7793,7 +7872,7 @@ impl<'a> TypeChecker<'a> {
             let name = self.resolve(ident.name);
             if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
                 if symbol.flags.is_const {
-                    self.errors.push(CheckError::ConstReassignment {
+                    self.push_error_soft(CheckError::ConstReassignment {
                         name: name.clone(),
                         span: assign.span,
                     });
@@ -7975,7 +8054,7 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
-            self.errors.push(CheckError::TypeMismatch {
+            self.push_error_soft(CheckError::TypeMismatch {
                 expected: self.format_type(target),
                 actual: self.format_type(source),
                 span,
@@ -8046,7 +8125,7 @@ impl<'a> TypeChecker<'a> {
                 let name = self.resolve(type_ref.name.name);
                 if name == "any" {
                     if !self.allows_explicit_any() {
-                        self.errors.push(CheckError::StrictAnyForbidden {
+                        self.push_error_soft(CheckError::StrictAnyForbidden {
                             span: type_ref.name.span,
                         });
                         return self.type_ctx.unknown_type();
@@ -8064,7 +8143,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     let actual = type_ref.type_args.as_ref().map_or(0, |args| args.len());
-                    self.errors.push(CheckError::InvalidTypeReferenceArity {
+                    self.push_error_soft(CheckError::InvalidTypeReferenceArity {
                         name: name.clone(),
                         expected: 1,
                         actual,
@@ -8086,7 +8165,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     let actual = type_ref.type_args.as_ref().map_or(0, |args| args.len());
-                    self.errors.push(CheckError::InvalidTypeReferenceArity {
+                    self.push_error_soft(CheckError::InvalidTypeReferenceArity {
                         name: name.clone(),
                         expected: 1,
                         actual,
@@ -8107,7 +8186,7 @@ impl<'a> TypeChecker<'a> {
                 if name == TC::CHANNEL_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() != 1 {
-                            self.errors.push(CheckError::InvalidTypeReferenceArity {
+                            self.push_error_soft(CheckError::InvalidTypeReferenceArity {
                                 name: name.clone(),
                                 expected: 1,
                                 actual: type_args.len(),
@@ -8127,7 +8206,7 @@ impl<'a> TypeChecker<'a> {
                 if name == TC::MAP_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() != 2 {
-                            self.errors.push(CheckError::InvalidTypeReferenceArity {
+                            self.push_error_soft(CheckError::InvalidTypeReferenceArity {
                                 name: name.clone(),
                                 expected: 2,
                                 actual: type_args.len(),
@@ -8148,7 +8227,7 @@ impl<'a> TypeChecker<'a> {
                 if name == TC::SET_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() != 1 {
-                            self.errors.push(CheckError::InvalidTypeReferenceArity {
+                            self.push_error_soft(CheckError::InvalidTypeReferenceArity {
                                 name: name.clone(),
                                 expected: 1,
                                 actual: type_args.len(),
@@ -8181,7 +8260,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     let actual = type_ref.type_args.as_ref().map_or(0, |args| args.len());
-                    self.errors.push(CheckError::InvalidTypeReferenceArity {
+                    self.push_error_soft(CheckError::InvalidTypeReferenceArity {
                         name: name.clone(),
                         expected: 2,
                         actual,
@@ -8213,7 +8292,7 @@ impl<'a> TypeChecker<'a> {
                                     self.symbols.generic_type_alias_params(&name)
                                 {
                                     if param_names.len() != resolved_args.len() {
-                                        self.errors.push(CheckError::InvalidTypeReferenceArity {
+                                        self.push_error_soft(CheckError::InvalidTypeReferenceArity {
                                             name: name.clone(),
                                             expected: param_names.len(),
                                             actual: resolved_args.len(),
@@ -8760,7 +8839,7 @@ impl<'a> TypeChecker<'a> {
                 // Class decorator should take 1 parameter (the class)
                 // and return the class type or void
                 if func.params.len() != 1 {
-                    self.errors.push(CheckError::InvalidDecorator {
+                    self.push_error_soft(CheckError::InvalidDecorator {
                         ty: self.type_ctx.display(decorator_ty),
                         expected: "ClassDecorator<T> = (target: Class<T>) => Class<T> | void"
                             .to_string(),
@@ -8774,7 +8853,7 @@ impl<'a> TypeChecker<'a> {
             Some(_) | None => {
                 // Decorator expression must resolve to a callable decorator.
                 // Call expressions are only valid if their return type is a function.
-                self.errors.push(CheckError::InvalidDecorator {
+                self.push_error_soft(CheckError::InvalidDecorator {
                     ty: self.type_ctx.display(decorator_ty),
                     expected: "ClassDecorator<T> or decorator factory returning ClassDecorator<T>"
                         .to_string(),
@@ -8842,7 +8921,7 @@ impl<'a> TypeChecker<'a> {
                         // Check if the method type is assignable to the parameter type
                         let mut assign_ctx = self.make_assignability_ctx();
                         if !assign_ctx.is_assignable(method_ty, param_ty) {
-                            self.errors.push(CheckError::DecoratorSignatureMismatch {
+                            self.push_error_soft(CheckError::DecoratorSignatureMismatch {
                                 expected_signature: self.type_ctx.display(param_ty),
                                 actual_signature: self.type_ctx.display(method_ty),
                                 span: decorator.span,
@@ -8854,7 +8933,7 @@ impl<'a> TypeChecker<'a> {
                         if !assign_ctx.is_assignable(func.return_type, method_ty)
                             && !assign_ctx.is_assignable(method_ty, func.return_type)
                         {
-                            self.errors.push(CheckError::DecoratorReturnMismatch {
+                            self.push_error_soft(CheckError::DecoratorReturnMismatch {
                                 expected: self.type_ctx.display(method_ty),
                                 actual: self.type_ctx.display(func.return_type),
                                 span: decorator.span,
@@ -8867,7 +8946,7 @@ impl<'a> TypeChecker<'a> {
                 // will be caught elsewhere, or custom decorator patterns)
             }
             Some(_) | None => {
-                self.errors.push(CheckError::InvalidDecorator {
+                self.push_error_soft(CheckError::InvalidDecorator {
                     ty: self.type_ctx.display(decorator_ty),
                     expected: "MethodDecorator or decorator factory returning MethodDecorator"
                         .to_string(),
@@ -8898,7 +8977,7 @@ impl<'a> TypeChecker<'a> {
             Some(crate::parser::types::Type::Function(func)) => {
                 // Field decorator should take 2 parameters (target, fieldName)
                 if func.params.len() != 2 {
-                    self.errors.push(CheckError::InvalidDecorator {
+                    self.push_error_soft(CheckError::InvalidDecorator {
                         ty: self.type_ctx.display(decorator_ty),
                         expected: "FieldDecorator<T> = (target: T, fieldName: string) => void"
                             .to_string(),
@@ -8911,7 +8990,7 @@ impl<'a> TypeChecker<'a> {
                 let string_ty = self.type_ctx.string_type();
                 let mut assign_ctx = self.make_assignability_ctx();
                 if !assign_ctx.is_assignable(string_ty, func.params[1]) {
-                    self.errors.push(CheckError::InvalidDecorator {
+                    self.push_error_soft(CheckError::InvalidDecorator {
                         ty: self.type_ctx.display(decorator_ty),
                         expected: "FieldDecorator<T> = (target: T, fieldName: string) => void"
                             .to_string(),
@@ -8922,7 +9001,7 @@ impl<'a> TypeChecker<'a> {
                 // Return type should be void
                 let void_ty = self.type_ctx.void_type();
                 if func.return_type != void_ty {
-                    self.errors.push(CheckError::DecoratorReturnMismatch {
+                    self.push_error_soft(CheckError::DecoratorReturnMismatch {
                         expected: "void".to_string(),
                         actual: self.type_ctx.display(func.return_type),
                         span: decorator.span,
@@ -8930,7 +9009,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Some(_) | None => {
-                self.errors.push(CheckError::InvalidDecorator {
+                self.push_error_soft(CheckError::InvalidDecorator {
                     ty: self.type_ctx.display(decorator_ty),
                     expected: "FieldDecorator<T> or decorator factory returning FieldDecorator<T>"
                         .to_string(),
@@ -8962,7 +9041,7 @@ impl<'a> TypeChecker<'a> {
             Some(crate::parser::types::Type::Function(func)) => {
                 // Parameter decorator should take 3 parameters
                 if func.params.len() != 3 {
-                    self.errors.push(CheckError::InvalidDecorator {
+                    self.push_error_soft(CheckError::InvalidDecorator {
                         ty: self.type_ctx.display(decorator_ty),
                         expected: "ParameterDecorator<T> = (target: T, methodName: string, parameterIndex: number) => void".to_string(),
                         span: decorator.span,
@@ -8978,7 +9057,7 @@ impl<'a> TypeChecker<'a> {
                     assign_ctx.is_assignable(string_ty, func.params[1])
                 };
                 if !second_ok {
-                    self.errors.push(CheckError::InvalidDecorator {
+                    self.push_error_soft(CheckError::InvalidDecorator {
                         ty: self.type_ctx.display(decorator_ty),
                         expected: "ParameterDecorator<T> - second param should be string"
                             .to_string(),
@@ -8992,7 +9071,7 @@ impl<'a> TypeChecker<'a> {
                     assign_ctx.is_assignable(number_ty, func.params[2])
                 };
                 if !third_ok {
-                    self.errors.push(CheckError::InvalidDecorator {
+                    self.push_error_soft(CheckError::InvalidDecorator {
                         ty: self.type_ctx.display(decorator_ty),
                         expected: "ParameterDecorator<T> - third param should be number"
                             .to_string(),
@@ -9003,7 +9082,7 @@ impl<'a> TypeChecker<'a> {
                 // Return type should be void
                 let void_ty = self.type_ctx.void_type();
                 if func.return_type != void_ty {
-                    self.errors.push(CheckError::DecoratorReturnMismatch {
+                    self.push_error_soft(CheckError::DecoratorReturnMismatch {
                         expected: "void".to_string(),
                         actual: self.type_ctx.display(func.return_type),
                         span: decorator.span,
@@ -9011,7 +9090,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Some(_) | None => {
-                self.errors.push(CheckError::InvalidDecorator {
+                self.push_error_soft(CheckError::InvalidDecorator {
                     ty: self.type_ctx.display(decorator_ty),
                     expected:
                         "ParameterDecorator<T> or decorator factory returning ParameterDecorator<T>"

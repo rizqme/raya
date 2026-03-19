@@ -4,6 +4,7 @@
 //! type checking and name binding errors.
 
 use crate::parser::Span;
+use crate::parser::types::TypeId;
 use thiserror::Error;
 
 /// Errors that can occur during name binding
@@ -407,7 +408,66 @@ pub enum CheckError {
     },
 }
 
+/// A type-check error that was downgraded to a soft diagnostic in JS mode.
+///
+/// The checker still records the error for optional reporting, but compilation
+/// is not blocked.  The `fallback_type` is the type that was assigned to the
+/// expression node instead of raising a hard error (typically `any`).
+#[derive(Debug, Clone)]
+pub struct SoftDiagnostic {
+    /// The original check error that was downgraded.
+    pub error: CheckError,
+    /// The type the checker assigned at this node instead of erroring.
+    pub fallback_type: TypeId,
+}
+
 impl CheckError {
+    /// Returns `true` when this error should be downgraded to a soft
+    /// diagnostic in JS mode instead of blocking compilation.
+    ///
+    /// Hard errors (structural violations that are illegal even in JS) return
+    /// `false`; soft errors (things JS defers to runtime) return `true`.
+    pub fn is_soft_in_js_mode(&self) -> bool {
+        match self {
+            // --- Soft: deferred to runtime in JS ---
+            CheckError::UndefinedVariable { .. }
+            | CheckError::NotCallable { .. }
+            | CheckError::TypeMismatch { .. }
+            | CheckError::PropertyNotFound { .. }
+            | CheckError::UndefinedMember { .. }
+            | CheckError::ArgumentCountMismatch { .. }
+            | CheckError::InvalidBinaryOp { .. }
+            | CheckError::InvalidUnaryOp { .. }
+            | CheckError::ReturnTypeMismatch { .. }
+            | CheckError::NewNonClass { .. }
+            | CheckError::NonExhaustiveMatch { .. }
+            | CheckError::GenericInstantiationError { .. }
+            | CheckError::ConstraintViolation { .. }
+            | CheckError::ReadonlyAssignment { .. }
+            | CheckError::UnknownNotActionable { .. }
+            | CheckError::InvalidIntrinsicInferenceContext { .. }
+            | CheckError::InvalidTypeReferenceArity { .. }
+            | CheckError::UnsupportedExpressionTypingPath { .. }
+            | CheckError::UnboundMethodCall { .. }
+            | CheckError::ForbiddenFieldAccess { .. } => true,
+
+            // --- Hard: structurally illegal even in JS ---
+            CheckError::BreakOutsideLoop { .. }
+            | CheckError::ContinueOutsideLoop { .. }
+            | CheckError::ReturnOutsideFunction { .. }
+            | CheckError::ConstReassignment { .. }
+            | CheckError::AbstractClassInstantiation { .. }
+            | CheckError::StrictAnyForbidden { .. }
+            | CheckError::StrictBareLetForbidden { .. }
+            | CheckError::ImplicitThisForbidden { .. }
+            | CheckError::ImplicitAnyForbidden { .. }
+            | CheckError::StrictPropertyInitialization { .. }
+            | CheckError::InvalidDecorator { .. }
+            | CheckError::DecoratorSignatureMismatch { .. }
+            | CheckError::DecoratorReturnMismatch { .. } => false,
+        }
+    }
+
     /// Get the span associated with this error
     pub fn span(&self) -> Span {
         match self {

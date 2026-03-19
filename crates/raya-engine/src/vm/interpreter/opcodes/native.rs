@@ -312,8 +312,12 @@ impl<'a> Interpreter<'a> {
         class_name: &str,
         message: &str,
     ) -> Value {
-        // Layout: slot 0 = "message", slot 1 = "name"
-        let member_names = vec!["message".to_string(), "name".to_string()];
+        // Layout: slot 0 = "message", slot 1 = "name", slot 2 = "constructor"
+        let member_names = vec![
+            "message".to_string(),
+            "name".to_string(),
+            "constructor".to_string(),
+        ];
         let layout_id = layout_id_from_ordered_names(&member_names);
         let object_ptr = self
             .gc
@@ -324,7 +328,8 @@ impl<'a> Interpreter<'a> {
         };
 
         // Set prototype from constructor (e.g., TypeError.prototype)
-        if let Some(constructor) = self.builtin_global_value(class_name) {
+        let constructor_value = self.builtin_global_value(class_name);
+        if let Some(constructor) = constructor_value {
             self.set_constructed_object_prototype_from_constructor(object_value, constructor);
         }
 
@@ -340,6 +345,11 @@ impl<'a> Interpreter<'a> {
         let obj = unsafe { &mut *object_ptr.as_ptr() };
         let _ = obj.set_field(0, message_value); // slot 0 = "message"
         let _ = obj.set_field(1, name_value);    // slot 1 = "name"
+        // slot 2 = "constructor" — set to the builtin constructor global so
+        // `caught_error.constructor === TypeError` works in JS test harnesses.
+        if let Some(ctor) = constructor_value {
+            let _ = obj.set_field(2, ctor);
+        }
 
         object_value
     }
@@ -674,6 +684,59 @@ impl<'a> Interpreter<'a> {
                 self.invoke_callable_sync_with_this(to_string, Some(date_value), &[], task, module)
                     .map(Some)
             }
+            // Number(value) — ES spec: ToNumber coercion, returns primitive
+            "Number" => {
+                let first = args.first().copied().unwrap_or(Value::i32(0));
+                let n = self.js_to_number_from_primitive(first)?;
+                Ok(Some(if n == (n as i32) as f64 && !n.is_nan() {
+                    Value::i32(n as i32)
+                } else {
+                    Value::f64(n)
+                }))
+            }
+            // String(value) — ES spec: ToString coercion, returns string
+            "String" => {
+                let first = args.first().copied().unwrap_or(Value::undefined());
+                let s = self.js_function_argument_to_string(first, task, module)?;
+                Ok(Some(self.alloc_string_value(&s)))
+            }
+            // Boolean(value) — ES spec: ToBoolean coercion, returns primitive
+            "Boolean" => {
+                let first = args.first().copied().unwrap_or(Value::undefined());
+                Ok(Some(Value::bool(first.is_truthy())))
+            }
+            // Symbol(desc) — creates a new symbol
+            "Symbol" => {
+                // Calling Symbol() as a function creates a new symbol
+                self.construct_value_with_new_target(callable, callable, args, task, module)
+                    .map(Some)
+            }
+            // Error constructors: calling without `new` behaves as `new`
+            "Error" | "TypeError" | "RangeError" | "ReferenceError"
+            | "SyntaxError" | "URIError" | "EvalError" | "AggregateError" => {
+                self.construct_value_with_new_target(callable, callable, args, task, module)
+                    .map(Some)
+            }
+            // RegExp(pattern, flags) without `new` behaves as `new`
+            "RegExp" => {
+                self.construct_value_with_new_target(callable, callable, args, task, module)
+                    .map(Some)
+            }
+            // Collections: calling without `new` should throw TypeError per spec,
+            // but many test262 patterns use `.call()` so we delegate to construct.
+            "Map" | "Set" | "WeakMap" | "WeakSet" | "Promise"
+            | "ArrayBuffer" | "DataView"
+            | "Int8Array" | "Uint8Array" | "Int16Array" | "Uint16Array"
+            | "Int32Array" | "Uint32Array" | "Float32Array" | "Float64Array"
+            | "BigInt64Array" | "BigUint64Array" | "Uint8ClampedArray" => {
+                self.construct_value_with_new_target(callable, callable, args, task, module)
+                    .map(Some)
+            }
+            "Function" => {
+                // Function() as a function call creates a new function
+                self.construct_value_with_new_target(callable, callable, args, task, module)
+                    .map(Some)
+            }
             _ => Ok(None),
         }
     }
@@ -872,7 +935,19 @@ impl<'a> Interpreter<'a> {
             .unwrapped_proxy_like(value)
             .map(|proxy| proxy.target)
             .unwrap_or(value);
-        for name in ["Object", "Array", "Date"] {
+        // All standard built-in constructors that JS code may call as functions
+        // (via `Constructor(value)` or `Function.prototype.call(Constructor, ...)`).
+        static CALLABLE_CONSTRUCTORS: &[&str] = &[
+            "Object", "Array", "Date", "Number", "String", "Boolean",
+            "Error", "TypeError", "RangeError", "ReferenceError",
+            "SyntaxError", "URIError", "EvalError", "AggregateError",
+            "Function", "RegExp", "Map", "Set", "WeakMap", "WeakSet",
+            "Promise", "Symbol", "ArrayBuffer", "DataView",
+            "Int8Array", "Uint8Array", "Int16Array", "Uint16Array",
+            "Int32Array", "Uint32Array", "Float32Array", "Float64Array",
+            "BigInt64Array", "BigUint64Array", "Uint8ClampedArray",
+        ];
+        for &name in CALLABLE_CONSTRUCTORS {
             if self
                 .builtin_global_value(name)
                 .is_some_and(|builtin| builtin.raw() == value.raw())

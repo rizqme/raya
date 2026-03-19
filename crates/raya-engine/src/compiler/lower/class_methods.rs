@@ -110,6 +110,7 @@ fn compile_and_extract(
                 expr_types: FxHashMap::default(),
                 type_annotation_types: FxHashMap::default(),
                 warnings: Vec::new(),
+                soft_diagnostics: Vec::new(),
             }
         }
     };

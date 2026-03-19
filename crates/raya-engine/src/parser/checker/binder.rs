@@ -2008,7 +2008,29 @@ impl<'a> Binder<'a> {
         let func_name = self.resolve(func.name.name);
 
         // Skip only when this scope already has the declaration.
+        // In JS mode, we allow redeclaration by replacing the existing symbol.
         if self.has_symbol_in_current_scope(&func_name) {
+            if self.is_js_mode() {
+                // Replace the existing symbol so the last declaration wins.
+                let unknown_ty = self.type_ctx.unknown_type();
+                let symbol = Symbol {
+                    name: func_name.clone(),
+                    kind: SymbolKind::Function,
+                    ty: unknown_ty,
+                    flags: SymbolFlags {
+                        is_exported: false,
+                        is_const: true,
+                        is_async: func.is_async,
+                        is_readonly: false,
+                        is_imported: false,
+                    },
+                    scope_id: self.symbols.current_scope_id(),
+                    span: func.name.span,
+                    referenced: false,
+                };
+                let scope_id = self.symbols.current_scope_id();
+                self.symbols.replace_in_scope(scope_id, symbol);
+            }
             return Ok(());
         }
 
@@ -2560,7 +2582,8 @@ impl<'a> Binder<'a> {
         let func_name = self.resolve(func.name.name);
 
         // Detect duplicate function declarations
-        if self.reject_duplicate_top_level_declarations {
+        // In JS mode, function redeclaration in the same scope is allowed (ES spec).
+        if self.reject_duplicate_top_level_declarations && !self.is_js_mode() {
             if let Some(&original_span) = self.bound_functions.get(&func_name) {
                 return Err(BindError::DuplicateSymbol {
                     name: func_name,
@@ -2741,22 +2764,30 @@ impl<'a> Binder<'a> {
             if existing.kind == SymbolKind::Function && !existing.flags.is_imported {
                 self.symbols.replace_in_scope(parent_scope_id, symbol);
             } else {
-                self.symbols
-                    .define_in_scope(parent_scope_id, symbol)
-                    .map_err(|err| BindError::DuplicateSymbol {
+                if let Err(err) = self.symbols.define_in_scope(parent_scope_id, symbol.clone()) {
+                    if self.is_js_mode() {
+                        self.symbols.replace_in_scope(parent_scope_id, symbol);
+                    } else {
+                        return Err(BindError::DuplicateSymbol {
+                            name: err.name,
+                            original: err.original,
+                            duplicate: err.duplicate,
+                        });
+                    }
+                }
+            }
+        } else {
+            if let Err(err) = self.symbols.define_in_scope(parent_scope_id, symbol.clone()) {
+                if self.is_js_mode() {
+                    self.symbols.replace_in_scope(parent_scope_id, symbol);
+                } else {
+                    return Err(BindError::DuplicateSymbol {
                         name: err.name,
                         original: err.original,
                         duplicate: err.duplicate,
-                    })?;
+                    });
+                }
             }
-        } else {
-            self.symbols
-                .define_in_scope(parent_scope_id, symbol)
-                .map_err(|err| BindError::DuplicateSymbol {
-                    name: err.name,
-                    original: err.original,
-                    duplicate: err.duplicate,
-                })?;
         }
 
         // Bind parameters in the function scope
