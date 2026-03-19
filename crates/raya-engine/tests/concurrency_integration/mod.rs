@@ -29,7 +29,8 @@ fn create_module_with_task(task_result: i32) -> Module {
             ((task_result >> 24) & 0xFF) as u8,
             Opcode::Return as u8,
         ],
-    });
+    
+    ..Default::default()});
 
     // Function 1: main that spawns and awaits the task
     module.functions.push(Function {
@@ -47,7 +48,8 @@ fn create_module_with_task(task_result: i32) -> Module {
             code.push(Opcode::Return as u8);
             code
         },
-    });
+    
+    ..Default::default()});
 
     module
 }
@@ -62,7 +64,8 @@ fn create_module_with_multiple_tasks() -> Module {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 10, 0, 0, 0, Opcode::Return as u8],
-    });
+    
+    ..Default::default()});
 
     // Function 1: task2 returns 20
     module.functions.push(Function {
@@ -70,7 +73,8 @@ fn create_module_with_multiple_tasks() -> Module {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 20, 0, 0, 0, Opcode::Return as u8],
-    });
+    
+    ..Default::default()});
 
     // Function 2: task3 returns 30
     module.functions.push(Function {
@@ -78,7 +82,8 @@ fn create_module_with_multiple_tasks() -> Module {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 30, 0, 0, 0, Opcode::Return as u8],
-    });
+    
+    ..Default::default()});
 
     // Function 3: main spawns all three tasks and awaits them
     module.functions.push(Function {
@@ -110,7 +115,8 @@ fn create_module_with_multiple_tasks() -> Module {
             code.push(Opcode::Return as u8);
             code
         },
-    });
+    
+    ..Default::default()});
 
     module
 }
@@ -182,7 +188,8 @@ fn create_module_with_compute_task(iterations: u32) -> Module {
         param_count: 0,
         local_count: 2, // counter, result
         code: compute_code,
-    });
+    
+    ..Default::default()});
 
     // Function 1: main spawns and awaits compute task
     module.functions.push(Function {
@@ -196,7 +203,8 @@ fn create_module_with_compute_task(iterations: u32) -> Module {
             code.push(Opcode::Return as u8);
             code
         },
-    });
+    
+    ..Default::default()});
 
     module
 }
@@ -291,7 +299,8 @@ fn test_spawn_await_with_scheduler_stress() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 1, 0, 0, 0, Opcode::Return as u8],
-    });
+    
+    ..Default::default()});
 
     // Function 1: main spawns 10 tasks and sums results
     let mut main_code = vec![];
@@ -323,7 +332,8 @@ fn test_spawn_await_with_scheduler_stress() {
         param_count: 0,
         local_count: 10, // Store 10 TaskIds
         code: main_code,
-    });
+    
+    ..Default::default()});
 
     let mut vm = Vm::new();
     let result = vm.execute(&module).expect("Execution failed");
@@ -342,7 +352,8 @@ fn test_nested_task_spawning() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 5, 0, 0, 0, Opcode::Return as u8],
-    });
+    
+    ..Default::default()});
 
     // Function 1: middle task spawns leaf and doubles result
     module.functions.push(Function {
@@ -359,7 +370,8 @@ fn test_nested_task_spawning() {
             code.push(Opcode::Return as u8);
             code
         },
-    });
+    
+    ..Default::default()});
 
     // Function 2: main spawns middle task
     module.functions.push(Function {
@@ -373,7 +385,8 @@ fn test_nested_task_spawning() {
             code.push(Opcode::Return as u8);
             code
         },
-    });
+    
+    ..Default::default()});
 
     let mut vm = Vm::new();
     let result = vm.execute(&module).expect("Execution failed");
@@ -392,7 +405,8 @@ fn test_spawn_await_returns_null() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::Nop as u8, Opcode::Return as u8],
-    });
+    
+    ..Default::default()});
 
     // Function 1: main
     module.functions.push(Function {
@@ -406,7 +420,8 @@ fn test_spawn_await_returns_null() {
             code.push(Opcode::Return as u8);
             code
         },
-    });
+    
+    ..Default::default()});
 
     let mut vm = Vm::new();
     let result = vm.execute(&module).expect("Execution failed");

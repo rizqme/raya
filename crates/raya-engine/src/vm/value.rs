@@ -417,6 +417,91 @@ impl Value {
         }
     }
 
+    /// Check if value is a heap-allocated string (RayaString).
+    pub fn is_string(&self) -> bool {
+        if !self.is_ptr() { return false; }
+        let ptr = match unsafe { self.as_ptr::<u8>() } {
+            Some(p) => p,
+            None => return false,
+        };
+        let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr()) };
+        header.type_id() == std::any::TypeId::of::<crate::vm::object::RayaString>()
+    }
+
+    /// Check if value is a heap-allocated array.
+    pub fn is_array(&self) -> bool {
+        if !self.is_ptr() { return false; }
+        let ptr = match unsafe { self.as_ptr::<u8>() } {
+            Some(p) => p,
+            None => return false,
+        };
+        let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr()) };
+        header.type_id() == std::any::TypeId::of::<crate::vm::object::Array>()
+    }
+
+    /// Check if value is a heap-allocated object (not string, not array).
+    pub fn is_object(&self) -> bool {
+        if !self.is_ptr() { return false; }
+        let ptr = match unsafe { self.as_ptr::<u8>() } {
+            Some(p) => p,
+            None => return false,
+        };
+        let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr()) };
+        header.type_id() == std::any::TypeId::of::<crate::vm::object::Object>()
+    }
+
+    /// Extract RayaString pointer if this is a string value.
+    pub fn as_string(&self) -> Option<std::ptr::NonNull<crate::vm::object::RayaString>> {
+        if !self.is_ptr() { return None; }
+        let ptr = unsafe { self.as_ptr::<crate::vm::object::RayaString>() }?;
+        let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr() as *const u8) };
+        if header.type_id() != std::any::TypeId::of::<crate::vm::object::RayaString>() {
+            return None;
+        }
+        Some(ptr)
+    }
+
+    /// Extract array ref if this is an Array.
+    pub fn as_array(&self) -> Option<std::ptr::NonNull<crate::vm::object::Array>> {
+        if !self.is_ptr() { return None; }
+        let ptr = unsafe { self.as_ptr::<crate::vm::object::Array>() }?;
+        let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr() as *const u8) };
+        if header.type_id() != std::any::TypeId::of::<crate::vm::object::Array>() {
+            return None;
+        }
+        Some(ptr)
+    }
+
+    /// Extract as f64 (from either i32 or f64 representation).
+    pub fn as_number(&self) -> Option<f64> {
+        self.as_f64().or_else(|| self.as_i32().map(|i| i as f64))
+    }
+
+    /// Get a named property from an Object value.
+    /// Checks shape-based fields (via global layout registry) and dynamic properties.
+    /// Returns undefined if not found or not an object.
+    pub fn get_property(&self, key: &str) -> Value {
+        if !self.is_ptr() { return Value::undefined(); }
+        let ptr = match unsafe { self.as_ptr::<crate::vm::object::Object>() } {
+            Some(p) => p,
+            None => return Value::undefined(),
+        };
+        let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr() as *const u8) };
+        if header.type_id() != std::any::TypeId::of::<crate::vm::object::Object>() {
+            return Value::undefined();
+        }
+        let obj = unsafe { &*ptr.as_ptr() };
+        // Check shape-based fields via global layout registry
+        if let Some(names) = crate::vm::object::global_layout_names(obj.header.layout_id) {
+            for (idx, name) in names.iter().enumerate() {
+                if name == key && idx < obj.fields.len() {
+                    return obj.fields[idx];
+                }
+            }
+        }
+        Value::undefined()
+    }
+
     /// Get type name for debugging
     pub const fn type_name(&self) -> &'static str {
         if !self.is_nan_boxed() {

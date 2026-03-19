@@ -715,7 +715,7 @@ impl Function {
 }
 
 /// Class definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ClassDef {
     /// Class name
     pub name: String,

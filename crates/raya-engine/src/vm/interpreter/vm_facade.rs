@@ -1230,6 +1230,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1245,6 +1246,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstTrue as u8, Opcode::Return as u8],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1260,6 +1262,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstFalse as u8, Opcode::Return as u8],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1275,6 +1278,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1304,6 +1308,7 @@ mod tests {
                 Opcode::Iadd as u8,
                 Opcode::Return as u8,
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1333,6 +1338,7 @@ mod tests {
                 Opcode::Isub as u8,
                 Opcode::Return as u8,
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1362,6 +1368,7 @@ mod tests {
                 Opcode::Imul as u8,
                 Opcode::Return as u8,
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1391,6 +1398,7 @@ mod tests {
                 Opcode::Idiv as u8,
                 Opcode::Return as u8,
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1420,6 +1428,7 @@ mod tests {
                 Opcode::Idiv as u8,
                 Opcode::Return as u8,
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1446,6 +1455,7 @@ mod tests {
                 Opcode::Iadd as u8,
                 Opcode::Return as u8,
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1489,6 +1499,7 @@ mod tests {
                 Opcode::Iadd as u8,
                 Opcode::Return as u8,
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1518,6 +1529,7 @@ mod tests {
                 Opcode::Ieq as u8,
                 Opcode::Return as u8,
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1547,6 +1559,7 @@ mod tests {
                 Opcode::Ine as u8,
                 Opcode::Return as u8,
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1576,6 +1589,7 @@ mod tests {
                 Opcode::Ilt as u8,
                 Opcode::Return as u8,
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1623,6 +1637,7 @@ mod tests {
                 0,                    // offset 22-26
                 Opcode::Return as u8, // offset 27
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1659,6 +1674,7 @@ mod tests {
                 0,                    // offset 10-14
                 Opcode::Return as u8, // offset 15
             ],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1686,6 +1702,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1709,6 +1726,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::Return as u8],
+            ..Default::default()
         });
         let module = {
             let bytes = module.encode();
@@ -1757,6 +1775,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::Return as u8],
+            ..Default::default()
         });
         let module = {
             let bytes = module.encode();
@@ -1803,6 +1822,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::Return as u8],
+            ..Default::default()
         });
         let module = {
             let bytes = module.encode();
@@ -1921,6 +1941,7 @@ mod tests {
                                               // Offset = 14, so target = 20 + 14 = 34... hmm
                                               // Let me just use a simple straight-line program instead
             ],
+            ..Default::default()
         });
 
         // Actually, let's use a simpler approach — just a basic program
@@ -1932,6 +1953,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
+            ..Default::default()
         });
 
         let mut vm = Vm::new();
@@ -1993,6 +2015,7 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![],
+            ..Default::default()
         });
 
         let resolved = data.resolve(&module);

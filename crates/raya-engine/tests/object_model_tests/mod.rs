@@ -19,6 +19,7 @@ fn class_def(name: &str, field_count: usize, parent_id: Option<u32>) -> ClassDef
         field_count,
         parent_id,
         methods: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -74,7 +75,8 @@ fn test_object_creation_and_field_access() {
             0, // field offset 0
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     let result = vm.execute(&module).unwrap();
@@ -161,7 +163,8 @@ fn test_array_creation_and_access() {
             Opcode::LoadElem as u8,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -199,7 +202,8 @@ fn test_array_length() {
             Opcode::ArrayLen as u8,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -294,7 +298,8 @@ fn test_multiple_objects() {
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     let result = vm.execute(&module).unwrap();
@@ -342,7 +347,8 @@ fn test_object_with_gc() {
             0,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     let result = vm.execute(&module).unwrap();
@@ -372,7 +378,8 @@ fn test_object_literal() {
         param_count: 0,
         local_count: 0,
         code,
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     let result = vm.execute(&module).unwrap();
@@ -427,7 +434,8 @@ fn test_array_literal() {
             Opcode::LoadElem as u8,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -474,7 +482,8 @@ fn test_static_fields() {
             0, // field offset 0
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     let runtime_module = Arc::new(Module::decode(&module.encode()).unwrap());
@@ -538,7 +547,8 @@ fn test_optional_field_non_null() {
             0, // field offset 0
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     let result = vm.execute(&module).unwrap();
@@ -563,7 +573,8 @@ fn test_optional_field_null() {
             0, // field offset 0
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     let result = vm.execute(&module).unwrap();
@@ -617,7 +628,8 @@ fn test_constructor_no_args() {
             0,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     // Empty constructor
@@ -630,7 +642,8 @@ fn test_constructor_no_args() {
             Opcode::ConstNull as u8,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(constructor_fn);
 
     let result = vm.execute(&module).unwrap();
@@ -683,7 +696,8 @@ fn test_constructor_basic() {
             0,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     // Constructor function: initializes fields from args
@@ -720,7 +734,8 @@ fn test_constructor_basic() {
             Opcode::ConstNull as u8,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(constructor_fn);
 
     let result = vm.execute(&module).unwrap();
@@ -774,7 +789,8 @@ fn test_call_super() {
             0,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(main_fn);
 
     // Shape constructor: sets color
@@ -796,7 +812,8 @@ fn test_call_super() {
             Opcode::ConstNull as u8,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(shape_constructor);
 
     // Circle constructor: calls super, then sets radius
@@ -833,7 +850,8 @@ fn test_call_super() {
             Opcode::ConstNull as u8,
             Opcode::Return as u8,
         ],
-    };
+    
+    ..Default::default()};
     module.functions.push(circle_constructor);
 
     let result = vm.execute(&module).unwrap();

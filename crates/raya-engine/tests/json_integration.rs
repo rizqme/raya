@@ -13,6 +13,7 @@
 use raya_engine::vm::gc::GarbageCollector;
 use raya_engine::vm::json::{json_to_value, parser, stringify, JsonValue};
 use raya_engine::vm::object::RayaString;
+use raya_engine::vm::value::Value;
 
 // ============================================================================
 // Runtime JSON Tests (parser, stringify, property access)
@@ -84,11 +85,11 @@ fn test_parse_and_access_array() {
     assert_eq!(arr.len(), 5, "Array should have 5 elements");
 
     // Test array indexing
-    assert_eq!(arr[0].as_number(), Some(10.0), "arr[0] should be 10");
-    assert_eq!(arr[1].as_number(), Some(20.0), "arr[1] should be 20");
-    assert_eq!(arr[2].as_number(), Some(30.0), "arr[2] should be 30");
-    assert_eq!(arr[3].as_number(), Some(40.0), "arr[3] should be 40");
-    assert_eq!(arr[4].as_number(), Some(50.0), "arr[4] should be 50");
+    assert_eq!(arr.get(0).unwrap().as_number(), Some(10.0), "arr[0] should be 10");
+    assert_eq!(arr.get(1).unwrap().as_number(), Some(20.0), "arr[1] should be 20");
+    assert_eq!(arr.get(2).unwrap().as_number(), Some(30.0), "arr[2] should be 30");
+    assert_eq!(arr.get(3).unwrap().as_number(), Some(40.0), "arr[3] should be 40");
+    assert_eq!(arr.get(4).unwrap().as_number(), Some(50.0), "arr[4] should be 50");
 }
 
 #[test]
@@ -142,7 +143,7 @@ fn test_parse_nested_structures() {
     assert_eq!(posts_arr.len(), 2);
 
     // Access first post
-    let post1 = &posts_arr[0];
+    let post1 = posts_arr.get(0).unwrap();
     assert!(post1.is_object());
     let post1_id = post1.get_property("id");
     assert_eq!(post1_id.as_number(), Some(1.0));
@@ -163,7 +164,7 @@ fn test_round_trip_parse_stringify() {
     let parsed = parser::parse(original_json, &mut gc).unwrap();
 
     // Stringify
-    let stringified = stringify::stringify(&parsed).unwrap();
+    let stringified = stringify::stringify(parsed).unwrap();
 
     // Parse again
     let reparsed = parser::parse(&stringified, &mut gc).unwrap();
@@ -209,19 +210,14 @@ fn test_parse_error_invalid_json() {
 
 #[test]
 fn test_stringify_error_nan_infinity() {
-    use raya_engine::vm::json::JsonValue;
-
     // NaN should error
-    let nan_value = JsonValue::Number(f64::NAN);
-    assert!(stringify::stringify(&nan_value).is_err());
+    assert!(stringify::stringify(Value::f64(f64::NAN)).is_err());
 
     // Infinity should error
-    let inf_value = JsonValue::Number(f64::INFINITY);
-    assert!(stringify::stringify(&inf_value).is_err());
+    assert!(stringify::stringify(Value::f64(f64::INFINITY)).is_err());
 
     // Negative infinity should error
-    let neg_inf_value = JsonValue::Number(f64::NEG_INFINITY);
-    assert!(stringify::stringify(&neg_inf_value).is_err());
+    assert!(stringify::stringify(Value::f64(f64::NEG_INFINITY)).is_err());
 }
 
 #[test]
@@ -277,11 +273,11 @@ fn test_parse_large_json() {
     assert_eq!(arr.len(), 1000);
 
     // Verify first and last elements
-    let first = &arr[0];
+    let first = arr.get(0).unwrap();
     let first_id = first.get_property("id");
     assert_eq!(first_id.as_number(), Some(0.0));
 
-    let last = &arr[999];
+    let last = arr.get(999).unwrap();
     let last_id = last.get_property("id");
     assert_eq!(last_id.as_number(), Some(999.0));
 }
@@ -324,37 +320,33 @@ fn test_parse_deeply_nested() {
 
 #[test]
 fn test_stringify_preserves_types() {
-    use raya_engine::vm::json::JsonValue;
     let mut gc = GarbageCollector::default();
 
     // Null
-    let null_val = JsonValue::Null;
-    assert_eq!(stringify::stringify(&null_val).unwrap(), "null");
+    assert_eq!(stringify::stringify(Value::null()).unwrap(), "null");
 
     // Boolean
-    let bool_val = JsonValue::Bool(true);
-    assert_eq!(stringify::stringify(&bool_val).unwrap(), "true");
+    assert_eq!(stringify::stringify(Value::bool(true)).unwrap(), "true");
 
     // Number (integer)
-    let int_val = JsonValue::Number(42.0);
-    assert_eq!(stringify::stringify(&int_val).unwrap(), "42");
+    assert_eq!(stringify::stringify(Value::f64(42.0)).unwrap(), "42");
 
     // Number (float)
-    let float_val = JsonValue::Number(3.14);
-    let stringified = stringify::stringify(&float_val).unwrap();
+    let stringified = stringify::stringify(Value::f64(3.14)).unwrap();
     assert!(stringified.starts_with("3.14"));
 
     // String
-    let str_val = JsonValue::String(gc.allocate(RayaString::new("hello".to_string())));
-    assert_eq!(stringify::stringify(&str_val).unwrap(), r#""hello""#);
+    let str_json = JsonValue::String(gc.allocate(RayaString::new("hello".to_string())));
+    let str_val = json_to_value(&str_json, &mut gc);
+    assert_eq!(stringify::stringify(str_val).unwrap(), r#""hello""#);
 
-    // Empty array
-    let empty_arr = JsonValue::Array(gc.allocate(vec![]));
-    assert_eq!(stringify::stringify(&empty_arr).unwrap(), "[]");
+    // Empty array — parse from JSON to get a proper VM Value
+    let empty_arr_val = parser::parse("[]", &mut gc).unwrap();
+    assert_eq!(stringify::stringify(empty_arr_val).unwrap(), "[]");
 
-    // Empty object
-    let empty_obj = JsonValue::Object(gc.allocate(rustc_hash::FxHashMap::default()));
-    assert_eq!(stringify::stringify(&empty_obj).unwrap(), "{}");
+    // Empty object — parse from JSON to get a proper VM Value
+    let empty_obj_val = parser::parse("{}", &mut gc).unwrap();
+    assert_eq!(stringify::stringify(empty_obj_val).unwrap(), "{}");
 }
 
 #[test]
@@ -384,11 +376,11 @@ fn test_parse_edge_cases() {
     let mixed_arr_ptr = mixed.as_array().unwrap();
     let mixed_arr = unsafe { &*mixed_arr_ptr.as_ptr() };
     assert_eq!(mixed_arr.len(), 5);
-    assert_eq!(mixed_arr[0].as_number(), Some(1.0));
-    assert!(mixed_arr[1].is_string());
-    assert_eq!(mixed_arr[2].as_bool(), Some(true));
-    assert!(mixed_arr[3].is_null());
-    assert!(mixed_arr[4].is_object());
+    assert_eq!(mixed_arr.get(0).unwrap().as_number(), Some(1.0));
+    assert!(mixed_arr.get(1).unwrap().is_string());
+    assert_eq!(mixed_arr.get(2).unwrap().as_bool(), Some(true));
+    assert!(mixed_arr.get(3).unwrap().is_null());
+    assert!(mixed_arr.get(4).unwrap().is_object());
 }
 
 #[test]
@@ -398,9 +390,10 @@ fn test_stringify_special_characters() {
     // Create string with special characters
     let special = RayaString::new("Line1\nLine2\tTab\rReturn\"Quote\\Backslash".to_string());
     let str_ptr = gc.allocate(special);
-    let json_val = raya_engine::vm::json::JsonValue::String(str_ptr);
+    let json_val = JsonValue::String(str_ptr);
+    let val = json_to_value(&json_val, &mut gc);
 
-    let stringified = stringify::stringify(&json_val).unwrap();
+    let stringified = stringify::stringify(val).unwrap();
 
     // Should have escaped sequences
     assert!(stringified.contains("\\n"));
@@ -433,7 +426,7 @@ fn test_json_gc_survival_simple() {
     let parsed = parser::parse(json, &mut gc).unwrap();
 
     // Trigger multiple collections
-    collect_json_with_root(&mut gc, &parsed, 5);
+    collect_json_with_root(&mut gc, parsed, 5);
 
     // Verify structure is still accessible and intact
     assert!(parsed.is_object());
@@ -462,7 +455,7 @@ fn test_json_gc_nested_structures() {
     assert!(parsed.is_object());
 
     // Trigger GC - all nested objects should survive if rooted
-    collect_json_with_root(&mut gc, &parsed, 1);
+    collect_json_with_root(&mut gc, parsed, 1);
 
     // Navigate to verify structure survived
     let mut current = parsed;
@@ -489,7 +482,7 @@ fn test_json_gc_array_of_objects() {
     assert!(parsed.is_array());
 
     // Trigger GC multiple times
-    collect_json_with_root(&mut gc, &parsed, 5);
+    collect_json_with_root(&mut gc, parsed, 5);
 
     // Verify structure is intact
     let arr_ptr = parsed.as_array().unwrap();
@@ -497,7 +490,7 @@ fn test_json_gc_array_of_objects() {
     assert_eq!(arr.len(), 3);
 
     for i in 0..3 {
-        let obj = &arr[i];
+        let obj = arr.get(i).unwrap();
         assert!(obj.is_object());
         let id = obj.get_property("id");
         assert_eq!(id.as_number(), Some((i + 1) as f64));
@@ -526,7 +519,7 @@ fn test_json_gc_large_allocation() {
     assert!(parsed.is_array());
 
     // Trigger GC - should handle the large structure
-    collect_json_with_root(&mut gc, &parsed, 1);
+    collect_json_with_root(&mut gc, parsed, 1);
 
     // Verify structure is intact
     let arr_ptr = parsed.as_array().unwrap();
@@ -534,9 +527,9 @@ fn test_json_gc_large_allocation() {
     assert_eq!(arr.len(), 100);
 
     // Verify first and last elements
-    let first = &arr[0];
+    let first = arr.get(0).unwrap();
     assert_eq!(first.get_property("id").as_number(), Some(0.0));
-    let last = &arr[99];
+    let last = arr.get(99).unwrap();
     assert_eq!(last.get_property("id").as_number(), Some(99.0));
 }
 
@@ -560,7 +553,7 @@ fn test_json_gc_mixed_types() {
     assert!(parsed.is_object());
 
     // Trigger GC
-    collect_json_with_root(&mut gc, &parsed, 1);
+    collect_json_with_root(&mut gc, parsed, 1);
 
     // Verify all types survived
     assert!(parsed.get_property("null_val").is_null());
@@ -589,7 +582,7 @@ fn test_json_gc_string_deduplication() {
     assert!(parsed.is_object());
 
     // Trigger GC
-    collect_json_with_root(&mut gc, &parsed, 1);
+    collect_json_with_root(&mut gc, parsed, 1);
 
     // Verify all strings are accessible
     let key1 = parsed.get_property("key1");
@@ -604,14 +597,13 @@ fn test_json_gc_string_deduplication() {
     let arr_ptr = array.as_array().unwrap();
     let arr = unsafe { &*arr_ptr.as_ptr() };
     assert_eq!(arr.len(), 3);
-    assert!(arr[0].is_string());
-    assert!(arr[1].is_string());
-    assert!(arr[2].is_string());
+    assert!(arr.get(0).unwrap().is_string());
+    assert!(arr.get(1).unwrap().is_string());
+    assert!(arr.get(2).unwrap().is_string());
 }
 
-fn collect_json_with_root(gc: &mut GarbageCollector, value: &JsonValue, iterations: usize) {
-    let root_value = json_to_value(value, gc);
-    gc.add_root(root_value);
+fn collect_json_with_root(gc: &mut GarbageCollector, value: Value, iterations: usize) {
+    gc.add_root(value);
     for _ in 0..iterations {
         gc.collect();
     }
