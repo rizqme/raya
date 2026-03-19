@@ -7152,6 +7152,61 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::TRY_GET_GLOBAL => {
+                        // Non-throwing global lookup: returns value or undefined.
+                        // Checks builtin_global_slots, then globalThis properties.
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "tryGetGlobal expects exactly one string argument"
+                                    .to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "tryGetGlobal expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        // 1. Check builtin_global_slots (builtins + module exports)
+                        let value = self
+                            .builtin_global_slots
+                            .read()
+                            .get(name.data.as_str())
+                            .copied()
+                            .and_then(|slot| {
+                                self.globals_by_index
+                                    .read()
+                                    .get(slot)
+                                    .copied()
+                            });
+                        let result = if let Some(v) = value {
+                            v
+                        } else if let Some(gt) = self.builtin_global_value("globalThis") {
+                            // 2. Check globalThis properties (script-level var bindings)
+                            let prop = self.get_property_value_via_js_semantics_with_context(
+                                gt, &name.data, task, module,
+                            );
+                            if std::env::var("RAYA_DEBUG_TRY_GET_GLOBAL").is_ok() {
+                                eprintln!(
+                                    "[try-get-global] name='{}' globalThis={:#x} prop={:?}",
+                                    name.data,
+                                    gt.raw(),
+                                    prop.as_ref().map(|p| p.is_some()),
+                                );
+                            }
+                            match prop {
+                                Ok(Some(v)) => v,
+                                _ => Value::undefined(),
+                            }
+                        } else {
+                            Value::undefined()
+                        };
+                        if let Err(e) = stack.push(result) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::OBJECT_BIND_SCRIPT_GLOBAL => {
                         if args.len() != 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(

@@ -1440,13 +1440,13 @@ impl<'a> Lowerer<'a> {
             | ast::UnaryOperator::PrefixDecrement => {
                 return self.lower_increment_decrement(unary);
             }
-            // void expr: evaluate for side-effects, return null
+            // void expr: evaluate for side-effects, return undefined (ES spec)
             ast::UnaryOperator::Void => {
                 let _operand = self.lower_expr(&unary.operand);
-                let dest = self.alloc_register(TypeId::new(NULL_TYPE_ID));
+                let dest = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
                 self.emit(IrInstr::Assign {
                     dest: dest.clone(),
-                    value: IrValue::Constant(IrConstant::Null),
+                    value: IrValue::Constant(IrConstant::Undefined),
                 });
                 return dest;
             }
@@ -3797,43 +3797,15 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
-            if nominal_type_id.is_none()
-                && !self.allow_unresolved_runtime_fallback
-                && (obj_type_id == UNRESOLVED_TYPE_ID
-                    || self.type_is_runtime_dynamic_dispatch(object.ty)
-                    || self.type_is_runtime_dynamic_dispatch(self.get_expr_type(&member.object)))
-            {
-                self.errors
-                    .push(crate::compiler::CompileError::InternalError {
-                        message: format!(
-                            "strict mode forbids runtime late-bound fallback for unresolved member call '{}()'",
-                            method_name
-                        ),
-                    });
-                self.poison_register(&dest);
-                return dest;
-            }
-
-            if nominal_type_id.is_some()
-                && self.js_this_binding_compat
-                && self.allow_unresolved_runtime_fallback
-            {
+            // JS mode catch-all: emit runtime dynamic member call for ANY type
+            // the compiler cannot statically resolve.  At runtime, DynGetKeyed
+            // handles all ES spec semantics (TypeError for null/undefined,
+            // property lookup, prototype chain traversal, etc.).
+            if self.allow_unresolved_runtime_fallback {
                 let closure = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::LateBoundMember {
-                    dest: closure.clone(),
-                    object: object.clone(),
-                    property: method_name.to_string(),
-                });
-                if self.late_bound_member_call_is_async(&member.object, &call.callee, method_name) {
-                    self.emit(IrInstr::SpawnClosure {
-                        dest: dest.clone(),
-                        closure,
-                        args,
-                    });
-                } else {
-                    let receiver = object;
-                    self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
-                }
+                self.emit_dyn_get_named(closure.clone(), object.clone(), method_name);
+                let receiver = object;
+                self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
                 return dest;
             }
 
@@ -4708,6 +4680,8 @@ impl<'a> Lowerer<'a> {
             })
             .unwrap_or_else(|| "unknown receiver type".to_string());
 
+        // Late-bound dispatch: imported objects without local metadata need
+        // deferred resolution via LateBoundMember (resolved after monomorphization).
         let receiver_requires_late_bound = match &*member.object {
             Expression::Identifier(obj_ident) => {
                 self.identifier_requires_late_bound_dispatch(obj_ident.name)
@@ -4736,39 +4710,7 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        // Dynamic/member-latebound fallback: when receiver typing remains unresolved
-        // (unknown/any/jsobject/etc), preserve runtime behavior instead of hard ICE.
-        if nominal_type_id.is_none()
-            && self.allow_unresolved_runtime_fallback
-            && (obj_ty_id == UNRESOLVED_TYPE_ID
-                || self.type_is_runtime_dynamic_dispatch(object.ty)
-                || self.type_is_runtime_dynamic_dispatch(self.get_expr_type(&member.object)))
-        {
-            let dest = self.alloc_register(UNRESOLVED);
-            self.emit(IrInstr::LateBoundMember {
-                dest: dest.clone(),
-                object,
-                property: prop_name.to_string(),
-            });
-            return dest;
-        }
-
-        if nominal_type_id.is_none()
-            && !self.allow_unresolved_runtime_fallback
-            && (obj_ty_id == UNRESOLVED_TYPE_ID
-                || self.type_is_runtime_dynamic_dispatch(object.ty)
-                || self.type_is_runtime_dynamic_dispatch(self.get_expr_type(&member.object)))
-        {
-            self.errors
-                .push(crate::compiler::CompileError::InternalError {
-                    message: format!(
-                        "strict mode forbids runtime late-bound fallback for unresolved member property '{}.{}'",
-                        object_type, prop_name
-                    ),
-            });
-            return self.lower_unresolved_poison();
-        }
-
+        // JS-compat dynamic property path for Function/Array/Tuple/String receivers.
         if self.js_this_binding_compat
             && self.member_read_uses_dynamic_property_path(&member.object, object.ty)
         {
@@ -4786,16 +4728,13 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        if nominal_type_id.is_some()
-            && self.js_this_binding_compat
-            && self.allow_unresolved_runtime_fallback
-        {
+        // JS mode catch-all: emit runtime dynamic property access for ANY type the
+        // compiler cannot statically resolve.  At runtime, DynGetKeyed handles all
+        // ES spec semantics (TypeError for null/undefined, property lookup for objects,
+        // prototype chain traversal, etc.).
+        if self.allow_unresolved_runtime_fallback {
             let dest = self.alloc_register(UNRESOLVED);
-            self.emit(IrInstr::LateBoundMember {
-                dest: dest.clone(),
-                object,
-                property: prop_name.to_string(),
-            });
+            self.emit_dyn_get_named(dest.clone(), object, prop_name);
             return dest;
         }
 
@@ -8237,7 +8176,14 @@ impl<'a> Lowerer<'a> {
 
         // Prefer static primitive classification when the checker already knows it.
         // Follows ES spec: typeof null === "object", typeof int === "number".
-        let static_typeof_name = match self.get_expr_type(&typeof_expr.argument).as_u32() {
+        let arg_type_id = self.get_expr_type(&typeof_expr.argument).as_u32();
+        if std::env::var("RAYA_DEBUG_TYPEOF_STATIC").is_ok() {
+            if let Expression::Identifier(id) = &*typeof_expr.argument {
+                let n = self.interner.resolve(id.name);
+                eprintln!("[typeof-static] ident='{}' type_id={}", n, arg_type_id);
+            }
+        }
+        let static_typeof_name = match arg_type_id {
             NUMBER_TYPE_ID | INT_TYPE_ID => Some("number"),
             STRING_TYPE_ID => Some("string"),
             BOOLEAN_TYPE_ID => Some("boolean"),
@@ -8251,6 +8197,47 @@ impl<'a> Lowerer<'a> {
                 value: IrValue::Constant(IrConstant::String(type_name.to_string())),
             });
             return dest;
+        }
+
+        // ES spec §13.5.1: typeof on an unresolvable reference returns "undefined"
+        // without throwing.  For identifiers that would use OBJECT_GET_AMBIENT_GLOBAL
+        // (which throws on missing names), use TRY_GET_GLOBAL instead (returns
+        // undefined on missing names), then apply Typeof normally.
+        if self.allow_unresolved_runtime_fallback {
+            if let Expression::Identifier(ident) = &*typeof_expr.argument {
+                let name = self.interner.resolve(ident.name);
+                // Check if lower_identifier would fall through to the
+                // OBJECT_GET_AMBIENT_GLOBAL runtime path (the throwing one).
+                let resolved_locally = self.local_map.contains_key(&ident.name)
+                    || self.constant_map.contains_key(&ident.name)
+                    || self.function_map.contains_key(&ident.name)
+                    || self.class_map.contains_key(&ident.name)
+                    || self.captures.iter().any(|c| c.symbol == ident.name)
+                    || self.ancestor_variables.as_ref().is_some_and(|av| av.contains_key(&ident.name))
+                    || self.module_var_globals.contains_key(&ident.name)
+                    || self.ambient_builtin_globals.contains(name)
+                    || matches!(name, "Infinity" | "NaN" | "undefined" | "arguments");
+                if !resolved_locally {
+                    // Use TRY_GET_GLOBAL (non-throwing) + Typeof
+                    let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                    self.emit(IrInstr::Assign {
+                        dest: name_reg.clone(),
+                        value: IrValue::Constant(IrConstant::String(name.to_string())),
+                    });
+                    let operand = self.alloc_register(UNRESOLVED);
+                    self.emit(IrInstr::NativeCall {
+                        dest: Some(operand.clone()),
+                        native_id: crate::compiler::native_id::TRY_GET_GLOBAL,
+                        args: vec![name_reg],
+                    });
+                    let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                    self.emit(IrInstr::Typeof {
+                        dest: dest.clone(),
+                        operand,
+                    });
+                    return dest;
+                }
+            }
         }
 
         let operand = self.lower_expr(&typeof_expr.argument);

@@ -63,6 +63,10 @@ pub const FUNCTION_EVAL_HELPER: u16 = 0x001C;
 pub const OBJECT_JS_TO_NUMBER: u16 = 0x001D;
 /// ECMAScript ToIntegerOrInfinity with runtime ToPrimitive semantics.
 pub const OBJECT_JS_TO_INTEGER_OR_INFINITY: u16 = 0x001E;
+/// Non-throwing global lookup: returns the value if found, undefined if not.
+/// Checks builtin_global_slots then globalThis properties.
+/// Used by `typeof` on potentially-unresolvable identifiers (ES spec §13.5.1).
+pub const TRY_GET_GLOBAL: u16 = 0x001F;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -573,6 +577,7 @@ pub fn native_name(id: u16) -> &'static str {
         FUNCTION_EVAL_HELPER => "Function.eval",
         OBJECT_JS_TO_NUMBER => "Object.jsToNumber",
         OBJECT_JS_TO_INTEGER_OR_INFINITY => "Object.jsToIntegerOrInfinity",
+        TRY_GET_GLOBAL => "tryGetGlobal",
 
         // Array
         ARRAY_PUSH => "Array.push",
