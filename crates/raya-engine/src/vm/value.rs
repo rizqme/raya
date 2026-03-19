@@ -402,13 +402,15 @@ impl Value {
         } else if let Some(u) = self.as_u64() {
             u != 0
         } else if self.is_ptr() {
-            // ES spec: empty string is falsy, all other strings are truthy.
-            // All other pointer types (objects, arrays, functions) are truthy.
-            if let Some(s) = (unsafe { self.as_ptr::<crate::vm::object::RayaString>() }) {
-                let s = unsafe { &*s.as_ptr() };
+            // ES spec: empty string is falsy, all other strings/objects are truthy.
+            // Use GC header type check to safely distinguish RayaString from Object/Array.
+            let ptr = unsafe { self.as_ptr::<u8>() }.expect("is_ptr was true");
+            let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr()) };
+            if header.type_id() == std::any::TypeId::of::<crate::vm::object::RayaString>() {
+                let s = unsafe { &*(ptr.as_ptr() as *const crate::vm::object::RayaString) };
                 !s.data.is_empty()
             } else {
-                true
+                true // Objects, Arrays, functions are always truthy
             }
         } else {
             true
