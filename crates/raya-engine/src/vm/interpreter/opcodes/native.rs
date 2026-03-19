@@ -5808,14 +5808,51 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> bool {
+        // Explicit descriptor metadata takes precedence (e.g., from defineProperty
+        // with enumerable:false, or Object.seal/freeze).
         if let Some(descriptor) = self.get_descriptor_metadata(target, key) {
-            return self.descriptor_flag(descriptor, "enumerable", false);
+            // Only trust the descriptor's enumerable flag if the "enumerable"
+            // field was explicitly set (via defineProperty).  Synthesized
+            // descriptors from the property kernel have all fields present but
+            // with default false, which incorrectly marks data properties as
+            // non-enumerable.
+            if self.descriptor_field_present(descriptor, "enumerable") {
+                return self.descriptor_flag(descriptor, "enumerable", false);
+            }
         }
 
-        match self.synthesize_data_property_descriptor(target, key) {
-            Ok(Some(descriptor)) => self.descriptor_flag(descriptor, "enumerable", false),
-            _ => false,
+        // Check explicit per-property flags (set by the property kernel).
+        if let Some((writable, configurable, enumerable)) = self.own_js_property_flags(target, key) {
+            if std::env::var("RAYA_DEBUG_FORIN_ENUM").is_ok() {
+                eprintln!("[enum-flags] key='{}' w={} c={} e={}", key, writable, configurable, enumerable);
+            }
+            return enumerable;
         }
+
+        // Default: data properties are enumerable, callable properties
+        // (methods, constructor) are non-enumerable.  This matches ES spec:
+        // object literal fields are enumerable, prototype methods are not.
+        if let Some(obj_ptr) = checked_object_ptr(target) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            // Check slot-based fields
+            if let Some(field_idx) = self.get_field_index_for_value(target, key) {
+                let value = obj.get_field(field_idx);
+                // Callable values (methods) default to non-enumerable
+                if value.is_some_and(|v| self.callable_function_info(v).is_some()) {
+                    return false;
+                }
+                return true;
+            }
+            // Dynamic properties are enumerable (set by assignment/defineProperty)
+            if obj
+                .dyn_props()
+                .is_some_and(|dp| dp.get(self.intern_prop_key(key)).is_some())
+            {
+                return true;
+            }
+        }
+
+        false
     }
 
     fn apply_descriptor_to_target(

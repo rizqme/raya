@@ -1447,6 +1447,16 @@ impl SharedVmState {
             self.register_structural_layout_shape(layout_id, names);
         }
 
+        // Register structural layouts emitted by the compiler for object literals.
+        // Without this, for-in and property enumeration cannot discover field names
+        // for structural objects at runtime.
+        for layout in &module.metadata.structural_layouts {
+            if layout.member_names.is_empty() {
+                continue;
+            }
+            self.register_structural_layout_shape(layout.layout_id, &layout.member_names);
+        }
+
         // Register classes from the module (rebased to global class IDs).
         self.register_classes(&module, nominal_type_base);
 

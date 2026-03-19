@@ -112,6 +112,7 @@ impl<'a> Interpreter<'a> {
 
     fn own_enumerable_property_names(&self, target: Value) -> Vec<String> {
         let mut names = Vec::new();
+        let debug = std::env::var("RAYA_DEBUG_FORIN").is_ok();
 
         if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target)
         {
@@ -130,11 +131,22 @@ impl<'a> Interpreter<'a> {
 
         if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
             let obj = unsafe { obj_ptr.as_ref() };
-            for name in self.reflect_object_field_names(obj) {
-                if self.is_property_enumerable(target, &name) {
+            let field_names = self.reflect_object_field_names(obj);
+            if debug {
+                eprintln!("[forin] own_enum: target={:#x} field_names={:?} field_count={} layout_id={}",
+                    target.raw(), field_names, obj.field_count(), obj.layout_id());
+            }
+            for name in field_names {
+                let enumerable = self.is_property_enumerable(target, &name);
+                if debug {
+                    eprintln!("[forin] own_enum: name='{}' enumerable={}", name, enumerable);
+                }
+                if enumerable {
                     names.push(name);
                 }
             }
+        } else if debug {
+            eprintln!("[forin] own_enum: target={:#x} is NOT an object ptr", target.raw());
         }
 
         names
@@ -2041,6 +2053,9 @@ impl<'a> Interpreter<'a> {
                 let target = args[0];
 
                 let keys = self.enumerable_property_names_for_iteration(target);
+                if std::env::var("RAYA_DEBUG_FORIN").is_ok() {
+                    eprintln!("[forin] getEnumerableKeys: target={:#x} keys={:?}", target.raw(), keys);
+                }
                 let mut arr = Array::new(0, 0);
                 for name in keys {
                     let s = RayaString::new(name);

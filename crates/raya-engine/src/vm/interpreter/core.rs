@@ -507,6 +507,17 @@ impl<'a> Interpreter<'a> {
             self.register_structural_layout_shape(layout_id, names);
         }
 
+        // Register structural layouts emitted by the compiler for object literals.
+        // The compiler stores layout_id → field_names in structural_layouts;
+        // without this registration, for-in and property enumeration cannot
+        // discover the field names for structural objects at runtime.
+        for layout in &module.metadata.structural_layouts {
+            if layout.member_names.is_empty() {
+                continue;
+            }
+            self.register_structural_layout_shape(layout.layout_id, &layout.member_names);
+        }
+
         self.register_dynamic_module_classes(&module, nominal_type_base);
         Ok(())
     }
