@@ -3732,7 +3732,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => {
-                if self.allows_dynamic_any() && self.type_is_dynamic_anyish(callee_ty) {
+                if self.type_is_dynamic_anyish(callee_ty) {
                     return self.type_ctx.any_type();
                 }
                 let err = CheckError::NotCallable {
@@ -4777,11 +4777,9 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        self.fallback_type(
-            index.span,
-            FallbackReason::RecoverableUnsupportedExpr,
-            "index-access",
-        )
+        // Index access is inherently dynamic — return `any` so the result is usable
+        // in call expressions, member access, etc. without triggering strict-mode errors.
+        self.type_ctx.any_type()
     }
 
     fn expr_is_es_array_index_key(&self, expr: &Expression) -> bool {
