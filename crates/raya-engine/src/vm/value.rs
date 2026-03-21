@@ -514,7 +514,7 @@ impl Value {
                 3 => "u32",
                 4 => "f32",
                 5 => "i64",
-                6 => "nullish",
+                6 => "null",
                 7 => "u64",
                 _ => "unknown",
             }

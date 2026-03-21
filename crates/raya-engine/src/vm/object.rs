@@ -2191,7 +2191,9 @@ mod tests {
     #[test]
     fn test_array_bounds() {
         let mut arr = Array::new(0, 2);
-        assert!(arr.set(2, Value::null()).is_err());
+        // JS arrays auto-grow on out-of-bounds set
+        assert!(arr.set(2, Value::null()).is_ok());
+        assert_eq!(arr.len(), 3);
         assert_eq!(arr.get(5), None);
     }
 

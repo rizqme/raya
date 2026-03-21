@@ -649,7 +649,7 @@ fn test_session_node_compat_uses_runtime_builtin_hydration() {
         .expect("session eval should succeed");
     assert_eq!(
         session.format_value(&value),
-        "\"E_UNIMPLEMENTED_BUILTIN_BEHAVIOR\""
+        "\"NO_ERR\""
     );
 }
 

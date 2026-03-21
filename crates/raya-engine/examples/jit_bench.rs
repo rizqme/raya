@@ -612,6 +612,7 @@ fn main() {
                 param_count: 0,
                 local_count: 0,
                 code: code.clone(),
+                ..Default::default()
             }],
         );
 
@@ -636,6 +637,7 @@ fn main() {
                 param_count: 0,
                 local_count: 0,
                 code: code.clone(),
+                ..Default::default()
             }],
         );
 
@@ -666,6 +668,7 @@ fn main() {
                 param_count: 0,
                 local_count: 1,
                 code,
+                ..Default::default()
             }],
         );
 
@@ -701,6 +704,7 @@ fn main() {
                 param_count: 0,
                 local_count: 1,
                 code,
+                ..Default::default()
             }],
         );
 
@@ -734,6 +738,7 @@ fn main() {
                 param_count: 0,
                 local_count: 0,
                 code,
+                ..Default::default()
             });
         }
         let module = make_module("prewarm_bench", functions);
@@ -778,6 +783,7 @@ fn main() {
                 param_count: 0,
                 local_count: 1,
                 code: code.clone(),
+                ..Default::default()
             }],
         );
 
@@ -797,6 +803,7 @@ fn main() {
                 param_count: 0,
                 local_count: 1,
                 code,
+                ..Default::default()
             }],
         );
 
@@ -848,6 +855,7 @@ fn main() {
                 param_count: 0,
                 local_count: 0,
                 code,
+                ..Default::default()
             }],
         );
 
@@ -918,6 +926,7 @@ fn main() {
                 param_count: 0,
                 local_count: 0,
                 code: code.clone(),
+                ..Default::default()
             }],
         );
         let mut vm = Vm::with_worker_count(1);
@@ -930,6 +939,7 @@ fn main() {
                 param_count: 0,
                 local_count: 0,
                 code,
+                ..Default::default()
             }],
         );
 
@@ -981,6 +991,7 @@ fn main() {
                 param_count: 0,
                 local_count: 3,
                 code: code.clone(),
+                ..Default::default()
             }],
         );
 
@@ -991,6 +1002,7 @@ fn main() {
                 param_count: 0,
                 local_count: 3,
                 code,
+                ..Default::default()
             }],
         );
 
@@ -1054,6 +1066,7 @@ fn main() {
                 param_count: 0,
                 local_count: 5,
                 code: code.clone(),
+                ..Default::default()
             }],
         );
 
@@ -1064,6 +1077,7 @@ fn main() {
                 param_count: 0,
                 local_count: 5,
                 code,
+                ..Default::default()
             }],
         );
 

@@ -231,9 +231,6 @@ impl<'a> Interpreter<'a> {
                         if self.callable_uses_js_this_slot(callable) {
                             stack.push(self.js_this_value_for_callable(callable, explicit_this)?)?;
                             arg_count += 1;
-                        } else if let Some(this_arg) = explicit_this {
-                            stack.push(this_arg)?;
-                            arg_count += 1;
                         }
                         for arg in args {
                             stack.push(*arg)?;

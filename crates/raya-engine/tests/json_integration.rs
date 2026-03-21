@@ -448,7 +448,7 @@ fn test_json_gc_nested_structures() {
     }
     json.push_str(r#""deep""#);
     for _ in 0..20 {
-        json.push_str("}}");
+        json.push_str("}");
     }
 
     let parsed = parser::parse(&json, &mut gc).unwrap();

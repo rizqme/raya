@@ -4822,7 +4822,6 @@ impl<'a> TypeChecker<'a> {
 
     fn type_uses_dynamic_js_member_fallback(&self, ty: TypeId) -> bool {
         use crate::parser::types::{PrimitiveType, Type};
-
         if let Some(inner) = self.type_ctx.jsobject_inner(ty) {
             return self.type_uses_dynamic_js_member_fallback(inner);
         }
@@ -4832,11 +4831,29 @@ impl<'a> TypeChecker<'a> {
             | Some(Type::Array(_))
             | Some(Type::Tuple(_))
             | Some(Type::Object(_))
-            | Some(Type::Class(_))
             | Some(Type::Interface(_))
             | Some(Type::Primitive(PrimitiveType::String))
             | Some(Type::StringLiteral(_)) => true,
-            Some(Type::Reference(_)) => true,
+            Some(Type::Class(class)) => {
+                // Typed class instances with declared members should go through
+                // normal class member resolution, not dynamic fallback.
+                // Only empty/placeholder classes need dynamic fallback.
+                class.properties.is_empty() && class.methods.is_empty()
+            }
+            Some(Type::Reference(type_ref)) => {
+                // If the reference resolves to a class symbol, check the class type
+                let is_typed_class = self
+                    .symbols
+                    .resolve_from_scope(&type_ref.name, self.current_scope)
+                    .is_some_and(|s| {
+                        if s.kind != SymbolKind::Class { return false; }
+                        match self.type_ctx.get(s.ty) {
+                            Some(Type::Class(c)) => !c.properties.is_empty() || !c.methods.is_empty(),
+                            _ => false,
+                        }
+                    });
+                !is_typed_class
+            }
             Some(Type::Generic(generic)) => self.type_ctx.get(generic.base).is_some_and(|base| {
                 matches!(
                     base,
@@ -5733,7 +5750,6 @@ impl<'a> TypeChecker<'a> {
     /// Check member access
     fn check_member(&mut self, member: &MemberExpression) -> TypeId {
         let property_name = self.resolve(member.property.name);
-
         // super.member access inside class methods
         if let Expression::Super(_) = &*member.object {
             let Some(class_ty) = self.current_class_type else {
@@ -6165,11 +6181,27 @@ impl<'a> TypeChecker<'a> {
         }
 
         if self.is_js_mode() {
-            return if self.allows_dynamic_any() {
-                self.type_ctx.any_type()
+            // For class instances on the LHS of assignment, fall through to class
+            // member checking so we can reject writes to undeclared properties.
+            let is_class_type = if let Some(crate::parser::types::Type::Class(c)) = &obj_type {
+                if c.properties.is_empty() && c.methods.is_empty() {
+                    // Placeholder — check if symbol resolves to a real class
+                    self.symbols
+                        .resolve_from_scope(&c.name, self.current_scope)
+                        .map_or(false, |s| s.kind == SymbolKind::Class)
+                } else {
+                    true
+                }
             } else {
-                self.inference_fallback_type()
+                false
             };
+            if !is_class_type || !self.in_assignment_lhs {
+                return if self.allows_dynamic_any() {
+                    self.type_ctx.any_type()
+                } else {
+                    self.inference_fallback_type()
+                };
+            }
         }
 
         // Check for class properties and methods (including inherited ones)
@@ -6228,20 +6260,33 @@ impl<'a> TypeChecker<'a> {
             // If we have a class type and the member was not found, emit an error
             // (unless the class has no properties/methods, which means it's a placeholder)
             if !class_to_use.properties.is_empty() || !class_to_use.methods.is_empty() {
-                if self.is_js_mode() && self.in_assignment_lhs {
-                    self.maybe_escalate_identifier_to_jsobject(&member.object, None);
-                    return self.type_ctx.any_type();
-                }
                 if !self.is_strict_mode() {
                     let object_is_anyish = self.type_is_dynamic_anyish(object_ty);
                     let explicit_any_cast = self.is_explicit_any_cast_expr(&member.object);
-                    // Dot writes on class instances require explicit dynamic opt-in.
-                    if !self.in_assignment_lhs || object_is_anyish || explicit_any_cast {
+                    if self.in_assignment_lhs {
+                        // Dot writes on typed class instances require explicit any-cast.
+                        // Only allow if the object is already anyish or explicitly cast to any.
+                        if object_is_anyish || explicit_any_cast {
+                            self.maybe_escalate_identifier_to_jsobject(&member.object, None);
+                            return if self.is_js_mode() {
+                                self.type_ctx.any_type()
+                            } else {
+                                self.type_ctx.jsobject_of(object_ty)
+                            };
+                        }
+                        // Fall through to hard error for typed class dot-writes
+                    } else {
+                        // Read access — allow with dynamic fallback
                         self.maybe_escalate_identifier_to_jsobject(&member.object, None);
-                        return self.type_ctx.jsobject_of(object_ty);
+                        return if self.is_js_mode() {
+                            self.type_ctx.any_type()
+                        } else {
+                            self.type_ctx.jsobject_of(object_ty)
+                        };
                     }
                 }
-                self.push_error_soft(CheckError::PropertyNotFound {
+                // Hard error: property not found on typed class
+                self.errors.push(CheckError::PropertyNotFound {
                     property: property_name.clone(),
                     ty: format!("class {}", class_to_use.name),
                     span: member.span,

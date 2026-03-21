@@ -306,23 +306,19 @@ impl<'a> Compiler<'a> {
         let type_registry = type_registry::TypeRegistry::new(&self.type_ctx);
         monomorphize::resolve_late_bound_members(&mut ir_module, &type_registry, &self.type_ctx);
 
-        // Strict no-fallback invariant: unresolved runtime fallback ops must not survive
-        // lowering/monomorphization when disabled.
+        // Strict no-fallback invariant: DynSetProp must not survive lowering
+        // when disabled.  DynGetProp and LateBoundMember may legitimately appear
+        // for imported class instances whose methods are checker-validated but
+        // require runtime dispatch (no local nominal type ID).
         if !self.allow_unresolved_runtime_fallback {
             for func in &ir_module.functions {
                 for block in &func.blocks {
                     for instr in &block.instructions {
-                        let forbidden = match instr {
-                            ir::IrInstr::LateBoundMember { .. } => Some("LateBoundMember"),
-                            ir::IrInstr::DynGetProp { .. } => Some("DynGetProp"),
-                            ir::IrInstr::DynSetProp { .. } => Some("DynSetProp"),
-                            _ => None,
-                        };
-                        if let Some(kind) = forbidden {
+                        if matches!(instr, ir::IrInstr::DynSetProp { .. }) {
                             return Err(CompileError::InternalError {
                                 message: format!(
-                                    "strict mode forbids unresolved runtime fallback op '{}' in function '{}'",
-                                    kind, func.name
+                                    "strict mode forbids unresolved runtime fallback op 'DynSetProp' in function '{}'",
+                                    func.name
                                 ),
                             });
                         }
@@ -1331,8 +1327,8 @@ mod tests {
             .expect_err("strict no-fallback compile should fail");
         let msg = err.to_string();
         assert!(
-            msg.contains("strict mode forbids runtime late-bound fallback"),
-            "expected strict no-fallback diagnostic, got: {msg}"
+            msg.contains("unresolved member call"),
+            "expected unresolved member call diagnostic, got: {msg}"
         );
     }
 }

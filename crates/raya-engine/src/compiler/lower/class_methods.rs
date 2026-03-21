@@ -73,7 +73,8 @@ fn compile_and_extract(
         .collect();
 
     let symbols = {
-        let mut binder = Binder::new(&mut type_ctx, &interner);
+        let mut binder = Binder::new(&mut type_ctx, &interner)
+            .with_mode(crate::parser::checker::TypeSystemMode::Ts);
         binder.allow_duplicate_top_level_declarations();
 
         // Pre-register all builtin primitive type names so cross-references resolve
@@ -96,7 +97,9 @@ fn compile_and_extract(
     }
 
     // 3. Type check (errors are non-fatal — we still get expr_types)
-    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
+    //    Use TS mode so that `any` annotations in builtins are accepted.
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
+        .with_mode(crate::parser::checker::TypeSystemMode::Ts);
     let check_result = match checker.check_module(&module) {
         Ok(result) => result,
         Err(_errors) => {
@@ -190,7 +193,7 @@ mod tests {
     #[test]
     fn test_foreach_structure() {
         let func = build_class_method_ir("Array", "forEach").unwrap();
-        assert_eq!(func.params.len(), 2); // this, fn
+        assert_eq!(func.params.len(), 3); // this, fn, thisArg?
     }
 
     #[test]
@@ -202,7 +205,7 @@ mod tests {
     #[test]
     fn test_reduce_structure() {
         let func = build_class_method_ir("Array", "reduce").unwrap();
-        assert_eq!(func.params.len(), 3); // this, fn, initial
+        assert_eq!(func.params.len(), 2); // this, fn (+ ...rest is a single rest param)
     }
 
     #[test]

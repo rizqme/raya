@@ -1820,7 +1820,7 @@ fn parse_decorator(parser: &mut Parser) -> Result<Decorator, ParseError> {
         if !parser.check(&Token::RightParen) {
             loop {
                 guard.check()?;
-                arguments.push(super::expr::parse_expression(parser)?);
+                arguments.push(super::expr::parse_assignment_expression(parser)?);
                 if parser.check(&Token::Comma) {
                     parser.advance();
                 } else {

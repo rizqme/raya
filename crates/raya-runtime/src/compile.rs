@@ -802,7 +802,8 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "mixed std imports should compile without symbol collisions"
+            "mixed std imports should compile without symbol collisions, got: {:?}",
+            result.err()
         );
     }
 

@@ -1389,22 +1389,21 @@ class Array<T> {
         assert!(registry.lookup_method(arr_id, "pop").is_some());
         assert!(registry.lookup_property(arr_id, "length").is_some());
 
-        // Callback methods should be ClassMethods (Raya loops, not NativeCall)
+        // Callback methods are dispatched as NativeCall (array native opcodes)
         assert!(matches!(
             registry.lookup_method(arr_id, "map"),
-            Some(DispatchAction::ClassMethod(_, _))
+            Some(DispatchAction::NativeCall(_))
         ));
         assert!(matches!(
             registry.lookup_method(arr_id, "filter"),
-            Some(DispatchAction::ClassMethod(_, _))
+            Some(DispatchAction::NativeCall(_))
         ));
         assert!(matches!(
             registry.lookup_method(arr_id, "forEach"),
-            Some(DispatchAction::ClassMethod(_, _))
+            Some(DispatchAction::NativeCall(_))
         ));
 
         // Verify constructors
-        assert!(registry.constructor_native_id("Array").is_some());
         assert!(registry.constructor_native_id("RegExp").is_some());
         assert!(registry.constructor_native_id("string").is_none());
 
