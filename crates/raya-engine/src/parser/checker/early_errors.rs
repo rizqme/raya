@@ -14,6 +14,12 @@ struct FunctionContext {
     is_generator: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct LexicalContext {
+    super_property_allowed: bool,
+    super_call_allowed: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LabelContext {
     name: Symbol,
@@ -40,6 +46,7 @@ struct EarlyErrorPass<'a> {
     mode: TypeSystemMode,
     errors: Vec<ParseError>,
     function_stack: Vec<FunctionContext>,
+    lexical_stack: Vec<LexicalContext>,
     label_stack: Vec<LabelContext>,
     loop_depth: usize,
     breakable_depth: usize,
@@ -52,6 +59,7 @@ impl<'a> EarlyErrorPass<'a> {
             mode,
             errors: Vec::new(),
             function_stack: Vec::new(),
+            lexical_stack: vec![LexicalContext::default()],
             label_stack: Vec::new(),
             loop_depth: 0,
             breakable_depth: 0,
@@ -68,10 +76,15 @@ impl<'a> EarlyErrorPass<'a> {
         self.function_stack.last().copied()
     }
 
+    fn current_lexical(&self) -> LexicalContext {
+        self.lexical_stack.last().copied().unwrap_or_default()
+    }
+
     fn push_function<T>(
         &mut self,
         is_async: bool,
         is_generator: bool,
+        lexical: LexicalContext,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
         let saved_loop_depth = self.loop_depth;
@@ -81,13 +94,22 @@ impl<'a> EarlyErrorPass<'a> {
             is_async,
             is_generator,
         });
+        self.lexical_stack.push(lexical);
         self.loop_depth = 0;
         self.breakable_depth = 0;
         let result = f(self);
         self.function_stack.pop();
+        self.lexical_stack.pop();
         self.loop_depth = saved_loop_depth;
         self.breakable_depth = saved_breakable_depth;
         self.label_stack.truncate(saved_label_len);
+        result
+    }
+
+    fn push_lexical<T>(&mut self, lexical: LexicalContext, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.lexical_stack.push(lexical);
+        let result = f(self);
+        self.lexical_stack.pop();
         result
     }
 
@@ -258,16 +280,24 @@ impl<'a> EarlyErrorPass<'a> {
         for param in &func.params {
             self.check_parameter(param);
         }
-        self.push_function(func.is_async, func.is_generator, |this| {
-            this.check_block(&func.body);
-        });
+        self.push_function(
+            func.is_async,
+            func.is_generator,
+            LexicalContext::default(),
+            |this| this.check_block(&func.body),
+        );
     }
 
     fn check_function_expr(&mut self, func: &FunctionExpression) {
         for param in &func.params {
             self.check_parameter(param);
         }
-        self.push_function(func.is_async, func.is_generator, |this| {
+        let lexical = if func.is_method {
+            self.current_lexical()
+        } else {
+            LexicalContext::default()
+        };
+        self.push_function(func.is_async, func.is_generator, lexical, |this| {
             this.check_block(&func.body);
         });
     }
@@ -276,13 +306,17 @@ impl<'a> EarlyErrorPass<'a> {
         for param in &arrow.params {
             self.check_parameter(param);
         }
-        self.push_function(arrow.is_async, false, |this| match &arrow.body {
-            ArrowBody::Expression(expr) => this.check_expr(expr),
-            ArrowBody::Block(block) => this.check_block(block),
+        self.push_function(arrow.is_async, false, self.current_lexical(), |this| {
+            match &arrow.body {
+                ArrowBody::Expression(expr) => this.check_expr(expr),
+                ArrowBody::Block(block) => this.check_block(block),
+            }
         });
     }
 
     fn check_class_decl(&mut self, class: &ClassDecl) {
+        let has_super_class = class.extends.is_some();
+        let mut constructor_count = 0usize;
         if let Some(extends) = &class.extends {
             self.check_type_annotation_exprs(extends);
         }
@@ -293,28 +327,67 @@ impl<'a> EarlyErrorPass<'a> {
             match member {
                 ClassMember::Field(field) => {
                     if let Some(initializer) = &field.initializer {
-                        self.check_expr(initializer);
+                        self.push_lexical(
+                            LexicalContext {
+                                super_property_allowed: has_super_class,
+                                super_call_allowed: false,
+                            },
+                            |this| this.check_expr(initializer),
+                        );
                     }
                 }
                 ClassMember::Method(method) => {
+                    match method.kind {
+                        MethodKind::Getter if !method.params.is_empty() => self.error(
+                            "Getter must not declare parameters",
+                            method.span,
+                        ),
+                        MethodKind::Setter if method.params.len() != 1 => self.error(
+                            "Setter must declare exactly one parameter",
+                            method.span,
+                        ),
+                        _ => {}
+                    }
                     for param in &method.params {
                         self.check_parameter(param);
                     }
                     if let Some(body) = &method.body {
-                        self.push_function(method.is_async, method.is_generator, |this| {
-                            this.check_block(body);
-                        });
+                        self.push_function(
+                            method.is_async,
+                            method.is_generator,
+                            LexicalContext {
+                                super_property_allowed: has_super_class,
+                                super_call_allowed: false,
+                            },
+                            |this| this.check_block(body),
+                        );
                     }
                 }
                 ClassMember::Constructor(ctor) => {
+                    constructor_count += 1;
+                    if constructor_count > 1 {
+                        self.error("Class must not declare multiple constructors", ctor.span);
+                    }
                     for param in &ctor.params {
                         self.check_parameter(param);
                     }
-                    self.push_function(false, false, |this| {
-                        this.check_block(&ctor.body);
-                    });
+                    self.push_function(
+                        false,
+                        false,
+                        LexicalContext {
+                            super_property_allowed: has_super_class,
+                            super_call_allowed: has_super_class,
+                        },
+                        |this| this.check_block(&ctor.body),
+                    );
                 }
-                ClassMember::StaticBlock(block) => self.check_block(block),
+                ClassMember::StaticBlock(block) => self.push_lexical(
+                    LexicalContext {
+                        super_property_allowed: has_super_class,
+                        super_call_allowed: false,
+                    },
+                    |this| this.check_block(block),
+                ),
             }
         }
     }
@@ -419,7 +492,78 @@ impl<'a> EarlyErrorPass<'a> {
         }
     }
 
+    fn check_assignment_target(&mut self, expr: &Expression) {
+        if !Self::is_valid_assignment_target(expr) {
+            self.error("Invalid assignment target", *expr.span());
+            return;
+        }
+
+        match expr {
+            Expression::Parenthesized(paren) => self.check_assignment_target(&paren.expression),
+            Expression::Array(array) => {
+                for (index, elem) in array.elements.iter().flatten().enumerate() {
+                    match elem {
+                        ArrayElement::Expression(expr) => self.check_assignment_target(expr),
+                        ArrayElement::Spread(expr) => {
+                            if index + 1 != array.elements.len() {
+                                self.error(
+                                    "Rest element must be the last element in an assignment pattern",
+                                    *expr.span(),
+                                );
+                            }
+                            self.check_assignment_target(expr);
+                        }
+                    }
+                }
+            }
+            Expression::Object(obj) => {
+                for (index, prop) in obj.properties.iter().enumerate() {
+                    match prop {
+                        ObjectProperty::Property(prop) => self.check_assignment_target(&prop.value),
+                        ObjectProperty::Spread(spread) => {
+                            if index + 1 != obj.properties.len() {
+                                self.error(
+                                    "Rest property must be the last property in an assignment pattern",
+                                    spread.span,
+                                );
+                            }
+                            self.check_assignment_target(&spread.argument);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn is_valid_assignment_target(expr: &Expression) -> bool {
+        match expr {
+            Expression::Identifier(_)
+            | Expression::Member(_)
+            | Expression::Index(_) => true,
+            Expression::Parenthesized(paren) => Self::is_valid_assignment_target(&paren.expression),
+            Expression::Array(array) => array.elements.iter().flatten().all(|elem| match elem {
+                ArrayElement::Expression(expr) | ArrayElement::Spread(expr) => {
+                    Self::is_valid_assignment_target(expr)
+                }
+            }),
+            Expression::Object(obj) => obj.properties.iter().all(|prop| match prop {
+                ObjectProperty::Property(prop) => Self::is_valid_assignment_target(&prop.value),
+                ObjectProperty::Spread(spread) => Self::is_valid_assignment_target(&spread.argument),
+            }),
+            _ => false,
+        }
+    }
+
     fn check_expr(&mut self, expr: &Expression) {
+        self.check_expr_with_super_policy(expr, false);
+    }
+
+    fn check_expr_allowing_super_operand(&mut self, expr: &Expression) {
+        self.check_expr_with_super_policy(expr, true);
+    }
+
+    fn check_expr_with_super_policy(&mut self, expr: &Expression, allow_super_operand: bool) {
         match expr {
             Expression::Identifier(_)
             | Expression::IntLiteral(_)
@@ -428,8 +572,15 @@ impl<'a> EarlyErrorPass<'a> {
             | Expression::BooleanLiteral(_)
             | Expression::NullLiteral(_)
             | Expression::This(_)
-            | Expression::Super(_)
             | Expression::RegexLiteral(_) => {}
+            Expression::Super(span) => {
+                if !allow_super_operand {
+                    self.error(
+                        "Bare `super` is only valid in property access or super(...) calls",
+                        *span,
+                    );
+                }
+            }
             Expression::TemplateLiteral(tpl) => {
                 for part in &tpl.parts {
                     if let TemplatePart::Expression(expr) = part {
@@ -459,12 +610,24 @@ impl<'a> EarlyErrorPass<'a> {
                     }
                 }
             }
-            Expression::Unary(unary) => self.check_expr(&unary.operand),
+            Expression::Unary(unary) => {
+                if matches!(
+                    unary.operator,
+                    UnaryOperator::PrefixIncrement
+                        | UnaryOperator::PrefixDecrement
+                        | UnaryOperator::PostfixIncrement
+                        | UnaryOperator::PostfixDecrement
+                ) {
+                    self.check_assignment_target(&unary.operand);
+                }
+                self.check_expr(&unary.operand);
+            }
             Expression::Binary(binary) => {
                 self.check_expr(&binary.left);
                 self.check_expr(&binary.right);
             }
             Expression::Assignment(assign) => {
+                self.check_assignment_target(&assign.left);
                 self.check_expr(&assign.left);
                 self.check_expr(&assign.right);
             }
@@ -478,20 +641,46 @@ impl<'a> EarlyErrorPass<'a> {
                 self.check_expr(&cond.alternate);
             }
             Expression::Call(call) => {
-                self.check_expr(&call.callee);
+                if matches!(call.callee.as_ref(), Expression::Super(_))
+                    && !self.current_lexical().super_call_allowed
+                {
+                    self.error(
+                        "`super(...)` is only valid in a derived class constructor",
+                        call.span,
+                    );
+                }
+                self.check_expr_allowing_super_operand(&call.callee);
                 for arg in &call.arguments {
                     self.check_expr(arg.expression());
                 }
             }
             Expression::AsyncCall(call) => {
-                self.check_expr(&call.callee);
+                self.check_expr_allowing_super_operand(&call.callee);
                 for arg in &call.arguments {
                     self.check_expr(arg.expression());
                 }
             }
-            Expression::Member(member) => self.check_expr(&member.object),
+            Expression::Member(member) => {
+                if matches!(member.object.as_ref(), Expression::Super(_))
+                    && !self.current_lexical().super_property_allowed
+                {
+                    self.error(
+                        "`super` property access is only valid inside derived class members",
+                        member.span,
+                    );
+                }
+                self.check_expr_allowing_super_operand(&member.object);
+            }
             Expression::Index(index) => {
-                self.check_expr(&index.object);
+                if matches!(index.object.as_ref(), Expression::Super(_))
+                    && !self.current_lexical().super_property_allowed
+                {
+                    self.error(
+                        "`super` property access is only valid inside derived class members",
+                        index.span,
+                    );
+                }
+                self.check_expr_allowing_super_operand(&index.object);
                 self.check_expr(&index.index);
             }
             Expression::New(new_expr) => {
@@ -647,5 +836,86 @@ mod tests {
     fn test_labeled_break_and_continue_in_loop_are_allowed() {
         let (module, interner) = parse_module("outer: while (true) { continue outer; break outer; }");
         check_early_errors(&module, &interner, TypeSystemMode::Ts).expect("should pass");
+    }
+
+    #[test]
+    fn test_invalid_assignment_target_is_early_error() {
+        let (module, interner) = parse_module("1 = value;");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors[0].message.contains("Invalid assignment target"));
+    }
+
+    #[test]
+    fn test_invalid_update_target_is_early_error() {
+        let (module, interner) = parse_module("call()++;");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors[0].message.contains("Invalid assignment target"));
+    }
+
+    #[test]
+    fn test_super_call_outside_derived_constructor_is_early_error() {
+        let (module, interner) = parse_module("class Base {} class Child extends Base { method() { super(); } }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors[0]
+            .message
+            .contains("`super(...)` is only valid in a derived class constructor"));
+    }
+
+    #[test]
+    fn test_super_property_outside_derived_member_is_early_error() {
+        let (module, interner) = parse_module("super.value;");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors[0]
+            .message
+            .contains("`super` property access is only valid inside derived class members"));
+    }
+
+    #[test]
+    fn test_super_call_in_derived_constructor_is_allowed() {
+        let (module, interner) =
+            parse_module("class Base {} class Child extends Base { constructor() { super(); } }");
+        check_early_errors(&module, &interner, TypeSystemMode::Ts).expect("should pass");
+    }
+
+    #[test]
+    fn test_super_property_in_derived_method_is_allowed() {
+        let (module, interner) =
+            parse_module("class Base { value() {} } class Child extends Base { method() { return super.value; } }");
+        check_early_errors(&module, &interner, TypeSystemMode::Ts).expect("should pass");
+    }
+
+    #[test]
+    fn test_multiple_constructors_is_early_error() {
+        let (module, interner) =
+            parse_module("class Example { constructor() {} constructor(value: number) {} }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors[0]
+            .message
+            .contains("Class must not declare multiple constructors"));
+    }
+
+    #[test]
+    fn test_getter_with_parameter_is_early_error() {
+        let (module, interner) = parse_module("class Example { get value(x: number) { return x; } }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors[0]
+            .message
+            .contains("Getter must not declare parameters"));
+    }
+
+    #[test]
+    fn test_setter_without_single_parameter_is_early_error() {
+        let (module, interner) = parse_module("class Example { set value() {} }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors[0]
+            .message
+            .contains("Setter must declare exactly one parameter"));
     }
 }
