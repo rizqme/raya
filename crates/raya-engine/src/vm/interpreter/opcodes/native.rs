@@ -250,6 +250,13 @@ struct JsResolvedPropertyRecord {
     record: JsOwnPropertyRecord,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JsExoticAdapterKind {
+    Arguments,
+    Array,
+    TypedArray,
+}
+
 #[derive(Clone, Copy)]
 struct ArgumentsDataDescriptorState {
     value: Value,
@@ -2638,10 +2645,6 @@ impl<'a> Interpreter<'a> {
             return Ok(true);
         };
 
-        if let Some(result) = self.arguments_exotic_delete(target, &key_name) {
-            return Ok(result);
-        }
-
         if !target.is_ptr() {
             return Ok(true);
         }
@@ -2655,20 +2658,9 @@ impl<'a> Interpreter<'a> {
             return Ok(true);
         }
 
-        if let Some(array_ptr) = checked_array_ptr(target) {
-            if key_name == "length" {
-                return Ok(false);
-            }
-            if let Some(index) = parse_js_array_index_name(&key_name) {
-                let array = unsafe { &mut *array_ptr.as_ptr() };
-                let _ = array.delete_index(index);
-                let mut metadata = self.metadata.lock();
-                let _ = metadata.delete_metadata_property(
-                    NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY,
-                    target,
-                    &key_name,
-                );
-                return Ok(true);
+        if let Some(kind) = self.exotic_adapter_kind(target) {
+            if let Some(result) = self.exotic_delete_own_property(kind, target, &key_name)? {
+                return Ok(result);
             }
         }
 
@@ -3939,29 +3931,11 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<bool, VmError> {
-        if let Some(array_ptr) = checked_array_ptr(receiver) {
-            if key == "length" {
-                return self.set_array_length_via_array_set_length(
-                    receiver,
-                    value,
-                    caller_task,
-                    caller_module,
-                );
-            }
-            if let Some(index) = parse_js_array_index_name(key) {
-                let array = unsafe { &mut *array_ptr.as_ptr() };
-                if !self.is_js_value_extensible(receiver) && array.get(index).is_none() {
-                    return Ok(false);
-                }
-                array.set(index, value).map_err(VmError::RuntimeError)?;
-                return Ok(true);
-            }
-        }
-
-        if let Some(index) = parse_js_array_index_name(key) {
-            if let Some(updated) = self.typed_array_set_index_value_with_context(
+        if let Some(kind) = self.exotic_adapter_kind(receiver) {
+            if let Some(updated) = self.exotic_set_property_on_receiver_with_context(
+                kind,
                 receiver,
-                index,
+                key,
                 value,
                 caller_task,
                 caller_module,
@@ -5626,46 +5600,49 @@ impl<'a> Interpreter<'a> {
     }
 
     fn get_own_js_property_value_by_name(&self, target: Value, key: &str) -> Option<Value> {
-        if let Ok(Some(value)) = self.arguments_exotic_get(target, key) {
-            return Some(value);
-        }
-
-        if let Some(array_ptr) = checked_array_ptr(target) {
-            let array = unsafe { &*array_ptr.as_ptr() };
-            if key == "length" {
-                let len = array.len();
-                return Some(if len <= i32::MAX as usize {
-                    Value::i32(len as i32)
-                } else {
-                    Value::f64(len as f64)
-                });
-            }
-            if let Some(index) = parse_js_array_index_name(key) {
-                return array.get(index);
-            }
-            if let Some(value) = self.metadata_data_property_value(target, key) {
-                return Some(value);
-            }
-            if let Some(value) = self.get_own_field_value_by_name(target, key) {
-                return Some(value);
-            }
-        }
-
-        if self.is_typed_array_like_value(target) {
-            if key == "length" {
-                let len = self.typed_array_live_length_direct(target)?;
-                return Some(if len <= i32::MAX as usize {
-                    Value::i32(len as i32)
-                } else {
-                    Value::f64(len as f64)
-                });
-            }
-            if let Some(index) = parse_js_array_index_name(key) {
-                let len = self.typed_array_live_length_direct(target)?;
-                if index >= len {
-                    return None;
+        if let Some(kind) = self.exotic_adapter_kind(target) {
+            match kind {
+                JsExoticAdapterKind::Arguments => {
+                    if let Ok(Some(value)) = self.arguments_exotic_get(target, key) {
+                        return Some(value);
+                    }
                 }
-                return self.typed_array_index_value_direct(target, index);
+                JsExoticAdapterKind::Array => {
+                    if let Some(array_ptr) = checked_array_ptr(target) {
+                        let array = unsafe { &*array_ptr.as_ptr() };
+                        if key == "length" {
+                            let len = array.len();
+                            return Some(if len <= i32::MAX as usize {
+                                Value::i32(len as i32)
+                            } else {
+                                Value::f64(len as f64)
+                            });
+                        }
+                        if let Some(index) = parse_js_array_index_name(key) {
+                            return array.get(index);
+                        }
+                        if let Some(value) = self.metadata_data_property_value(target, key) {
+                            return Some(value);
+                        }
+                    }
+                }
+                JsExoticAdapterKind::TypedArray => {
+                    if key == "length" {
+                        let len = self.typed_array_live_length_direct(target)?;
+                        return Some(if len <= i32::MAX as usize {
+                            Value::i32(len as i32)
+                        } else {
+                            Value::f64(len as f64)
+                        });
+                    }
+                    if let Some(index) = parse_js_array_index_name(key) {
+                        let len = self.typed_array_live_length_direct(target)?;
+                        if index >= len {
+                            return None;
+                        }
+                        return self.typed_array_index_value_direct(target, index);
+                    }
+                }
             }
         }
 
@@ -5751,6 +5728,10 @@ impl<'a> Interpreter<'a> {
 
     fn own_exotic_state_value(&self, target: Value, key: &str) -> Option<Value> {
         self.get_own_js_property_value_by_name(target, key)
+    }
+
+    fn is_public_string_property_name(name: &str) -> bool {
+        !name.starts_with("Symbol.")
     }
 
     fn numeric_value_as_isize(&self, value: Value) -> Option<isize> {
@@ -6362,10 +6343,33 @@ impl<'a> Interpreter<'a> {
         Some(unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) })
     }
 
-    fn resolve_own_property_shape(&self, target: Value, key: &str) -> Option<JsOwnPropertyShape> {
-        if let Some(obj_ptr) = checked_object_ptr(target) {
-            let obj = unsafe { &*obj_ptr.as_ptr() };
-            if let Some(arguments) = obj.arguments.as_deref() {
+    fn exotic_adapter_kind(&self, target: Value) -> Option<JsExoticAdapterKind> {
+        if checked_object_ptr(target)
+            .and_then(|obj_ptr| unsafe { obj_ptr.as_ref() }.arguments.as_deref())
+            .is_some()
+        {
+            return Some(JsExoticAdapterKind::Arguments);
+        }
+        if checked_array_ptr(target).is_some() {
+            return Some(JsExoticAdapterKind::Array);
+        }
+        if self.is_typed_array_like_value(target) {
+            return Some(JsExoticAdapterKind::TypedArray);
+        }
+        None
+    }
+
+    fn exotic_own_property_shape(
+        &self,
+        kind: JsExoticAdapterKind,
+        target: Value,
+        key: &str,
+    ) -> Option<JsOwnPropertyShape> {
+        match kind {
+            JsExoticAdapterKind::Arguments => {
+                let obj_ptr = checked_object_ptr(target)?;
+                let obj = unsafe { &*obj_ptr.as_ptr() };
+                let arguments = obj.arguments.as_deref()?;
                 if key == "length" {
                     let length = arguments.length.as_ref()?;
                     return Some(JsOwnPropertyShape::data(
@@ -6391,39 +6395,29 @@ impl<'a> Interpreter<'a> {
                         callee.enumerable,
                     ));
                 }
-                if key != "caller" {
-                    if let Some(index) = parse_js_array_index_name(key) {
-                        let property = arguments.indexed.get(index)?;
-                        if !property.deleted {
-                            return Some(JsOwnPropertyShape::data(
-                                JsOwnPropertySource::ArgumentsExotic,
-                                property.writable,
-                                property.configurable,
-                                property.enumerable,
-                            ));
-                        }
-                    }
+                if key == "caller" {
+                    return None;
                 }
+                let index = parse_js_array_index_name(key)?;
+                let property = arguments.indexed.get(index)?;
+                (!property.deleted).then_some(JsOwnPropertyShape::data(
+                    JsOwnPropertySource::ArgumentsExotic,
+                    property.writable,
+                    property.configurable,
+                    property.enumerable,
+                ))
             }
-        }
-
-        if let Some(array_ptr) = checked_array_ptr(target) {
-            let array = unsafe { &*array_ptr.as_ptr() };
-            if key == "length" {
-                let (writable, configurable, enumerable) =
-                    self.property_attributes_from_descriptor_metadata(target, key, (true, false, false));
-                let _ = array;
-                return Some(JsOwnPropertyShape::data(
-                    JsOwnPropertySource::ArrayExotic,
-                    writable,
-                    configurable,
-                    enumerable,
-                ));
-            }
-            if let Some(index) = parse_js_array_index_name(key) {
-                if array.get(index).is_some() {
-                    let (writable, configurable, enumerable) = self
-                        .property_attributes_from_descriptor_metadata(target, key, (true, true, true));
+            JsExoticAdapterKind::Array => {
+                let array_ptr = checked_array_ptr(target)?;
+                let array = unsafe { &*array_ptr.as_ptr() };
+                if key == "length" {
+                    let (writable, configurable, enumerable) =
+                        self.property_attributes_from_descriptor_metadata(
+                            target,
+                            key,
+                            (true, false, false),
+                        );
+                    let _ = array;
                     return Some(JsOwnPropertyShape::data(
                         JsOwnPropertySource::ArrayExotic,
                         writable,
@@ -6431,37 +6425,206 @@ impl<'a> Interpreter<'a> {
                         enumerable,
                     ));
                 }
+                if let Some(index) = parse_js_array_index_name(key) {
+                    if array.get(index).is_some() {
+                        let (writable, configurable, enumerable) =
+                            self.property_attributes_from_descriptor_metadata(
+                                target,
+                                key,
+                                (true, true, true),
+                            );
+                        return Some(JsOwnPropertyShape::data(
+                            JsOwnPropertySource::ArrayExotic,
+                            writable,
+                            configurable,
+                            enumerable,
+                        ));
+                    }
+                }
+                if self.metadata_data_property_value(target, key).is_some() {
+                    let (writable, configurable, enumerable) =
+                        self.property_attributes_from_descriptor_metadata(
+                            target,
+                            key,
+                            (true, true, true),
+                        );
+                    return Some(JsOwnPropertyShape::data(
+                        JsOwnPropertySource::Metadata,
+                        writable,
+                        configurable,
+                        enumerable,
+                    ));
+                }
+                None
             }
-            if self.metadata_data_property_value(target, key).is_some() {
-                let (writable, configurable, enumerable) = self
-                    .property_attributes_from_descriptor_metadata(target, key, (true, true, true));
-                return Some(JsOwnPropertyShape::data(
-                    JsOwnPropertySource::Metadata,
-                    writable,
-                    configurable,
-                    enumerable,
-                ));
+            JsExoticAdapterKind::TypedArray => {
+                if key == "length"
+                    || matches!(key, "buffer" | "byteOffset" | "byteLength")
+                    || self.typed_array_index_property_flags(target, key).is_some()
+                {
+                    let default = if self.typed_array_index_property_flags(target, key).is_some() {
+                        (true, true, true)
+                    } else {
+                        (false, false, false)
+                    };
+                    let (writable, configurable, enumerable) =
+                        self.property_attributes_from_descriptor_metadata(target, key, default);
+                    return Some(JsOwnPropertyShape::data(
+                        JsOwnPropertySource::TypedArrayExotic,
+                        writable,
+                        configurable,
+                        enumerable,
+                    ));
+                }
+                None
             }
         }
+    }
 
-        if self.is_typed_array_like_value(target) {
-            if key == "length"
-                || matches!(key, "buffer" | "byteOffset" | "byteLength")
-                || self.typed_array_index_property_flags(target, key).is_some()
-            {
-                let default = if self.typed_array_index_property_flags(target, key).is_some() {
-                    (true, true, true)
+    fn exotic_own_property_record_with_context(
+        &mut self,
+        kind: JsExoticAdapterKind,
+        target: Value,
+        key: &str,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<JsOwnPropertyRecord>, VmError> {
+        let Some(shape) = self.exotic_own_property_shape(kind, target, key) else {
+            return Ok(None);
+        };
+        let record = match (kind, shape.kind) {
+            (JsExoticAdapterKind::Arguments, JsOwnPropertyKind::PoisonedAccessor) => {
+                JsOwnPropertyRecord::accessor(shape, None, None)
+            }
+            (JsExoticAdapterKind::Arguments, JsOwnPropertyKind::Data) => {
+                JsOwnPropertyRecord::data(
+                    shape,
+                    self.arguments_exotic_get(target, key)?.unwrap_or(Value::undefined()),
+                )
+            }
+            (JsExoticAdapterKind::Array, JsOwnPropertyKind::Data) => {
+                let value = if let Some(array_ptr) = checked_array_ptr(target) {
+                    let array = unsafe { &*array_ptr.as_ptr() };
+                    if key == "length" {
+                        if array.len() <= i32::MAX as usize {
+                            Value::i32(array.len() as i32)
+                        } else {
+                            Value::f64(array.len() as f64)
+                        }
+                    } else if let Some(index) = parse_js_array_index_name(key) {
+                        array.get(index).unwrap_or(Value::undefined())
+                    } else {
+                        self.metadata_data_property_value(target, key)
+                            .unwrap_or(Value::undefined())
+                    }
                 } else {
-                    (false, false, false)
+                    Value::undefined()
                 };
-                let (writable, configurable, enumerable) =
-                    self.property_attributes_from_descriptor_metadata(target, key, default);
-                return Some(JsOwnPropertyShape::data(
-                    JsOwnPropertySource::TypedArrayExotic,
-                    writable,
-                    configurable,
-                    enumerable,
-                ));
+                JsOwnPropertyRecord::data(shape, value)
+            }
+            (JsExoticAdapterKind::TypedArray, JsOwnPropertyKind::Data) => JsOwnPropertyRecord::data(
+                shape,
+                self.typed_array_own_property_value_with_context(
+                    target,
+                    key,
+                    caller_task,
+                    caller_module,
+                )?
+                .unwrap_or(Value::undefined()),
+            ),
+            _ => return Ok(None),
+        };
+        Ok(Some(record))
+    }
+
+    fn exotic_set_property_on_receiver_with_context(
+        &mut self,
+        kind: JsExoticAdapterKind,
+        receiver: Value,
+        key: &str,
+        value: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<bool>, VmError> {
+        match kind {
+            JsExoticAdapterKind::Arguments => self.arguments_exotic_set(receiver, key, value),
+            JsExoticAdapterKind::Array => {
+                let Some(array_ptr) = checked_array_ptr(receiver) else {
+                    return Ok(None);
+                };
+                if key == "length" {
+                    return self
+                        .set_array_length_via_array_set_length(
+                            receiver,
+                            value,
+                            caller_task,
+                            caller_module,
+                        )
+                        .map(Some);
+                }
+                if let Some(index) = parse_js_array_index_name(key) {
+                    let array = unsafe { &mut *array_ptr.as_ptr() };
+                    if !self.is_js_value_extensible(receiver) && array.get(index).is_none() {
+                        return Ok(Some(false));
+                    }
+                    array.set(index, value).map_err(VmError::RuntimeError)?;
+                    return Ok(Some(true));
+                }
+                Ok(None)
+            }
+            JsExoticAdapterKind::TypedArray => {
+                let Some(index) = parse_js_array_index_name(key) else {
+                    return Ok(None);
+                };
+                self.typed_array_set_index_value_with_context(
+                    receiver,
+                    index,
+                    value,
+                    caller_task,
+                    caller_module,
+                )
+            }
+        }
+    }
+
+    fn exotic_delete_own_property(
+        &mut self,
+        kind: JsExoticAdapterKind,
+        target: Value,
+        key: &str,
+    ) -> Result<Option<bool>, VmError> {
+        match kind {
+            JsExoticAdapterKind::Arguments => Ok(self.arguments_exotic_delete(target, key)),
+            JsExoticAdapterKind::Array => {
+                let Some(array_ptr) = checked_array_ptr(target) else {
+                    return Ok(None);
+                };
+                if key == "length" {
+                    return Ok(Some(false));
+                }
+                let Some(index) = parse_js_array_index_name(key) else {
+                    return Ok(None);
+                };
+                let array = unsafe { &mut *array_ptr.as_ptr() };
+                let _ = array.delete_index(index);
+                let mut metadata = self.metadata.lock();
+                let _ =
+                    metadata.delete_metadata_property(NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY, target, key);
+                Ok(Some(true))
+            }
+            JsExoticAdapterKind::TypedArray => {
+                if self.typed_array_index_property_flags(target, key).is_some() {
+                    return Ok(Some(false));
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    fn resolve_own_property_shape(&self, target: Value, key: &str) -> Option<JsOwnPropertyShape> {
+        if let Some(kind) = self.exotic_adapter_kind(target) {
+            if let Some(shape) = self.exotic_own_property_shape(kind, target, key) {
+                return Some(shape);
             }
         }
 
@@ -6574,49 +6737,23 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<JsOwnPropertyRecord>, VmError> {
+        if let Some(kind) = self.exotic_adapter_kind(target) {
+            if let Some(record) = self.exotic_own_property_record_with_context(
+                kind,
+                target,
+                key,
+                caller_task,
+                caller_module,
+            )? {
+                return Ok(Some(record));
+            }
+        }
+
         let Some(shape) = self.resolve_own_property_shape(target, key) else {
             return Ok(None);
         };
 
         let record = match (shape.source, shape.kind) {
-            (JsOwnPropertySource::ArgumentsExotic, JsOwnPropertyKind::PoisonedAccessor) => {
-                JsOwnPropertyRecord::accessor(shape, None, None)
-            }
-            (JsOwnPropertySource::ArgumentsExotic, JsOwnPropertyKind::Data) => {
-                let value = self.arguments_exotic_get(target, key)?.unwrap_or(Value::undefined());
-                JsOwnPropertyRecord::data(shape, value)
-            }
-            (JsOwnPropertySource::ArrayExotic, JsOwnPropertyKind::Data) => {
-                let value = if let Some(array_ptr) = checked_array_ptr(target) {
-                    let array = unsafe { &*array_ptr.as_ptr() };
-                    if key == "length" {
-                        if array.len() <= i32::MAX as usize {
-                            Value::i32(array.len() as i32)
-                        } else {
-                            Value::f64(array.len() as f64)
-                        }
-                    } else if let Some(index) = parse_js_array_index_name(key) {
-                        array.get(index).unwrap_or(Value::undefined())
-                    } else {
-                        self.metadata_data_property_value(target, key)
-                            .unwrap_or(Value::undefined())
-                    }
-                } else {
-                    Value::undefined()
-                };
-                JsOwnPropertyRecord::data(shape, value)
-            }
-            (JsOwnPropertySource::TypedArrayExotic, JsOwnPropertyKind::Data) => {
-                let value = self
-                    .typed_array_own_property_value_with_context(
-                        target,
-                        key,
-                        caller_task,
-                        caller_module,
-                    )?
-                    .unwrap_or(Value::undefined());
-                JsOwnPropertyRecord::data(shape, value)
-            }
             (JsOwnPropertySource::Ordinary, JsOwnPropertyKind::Data) => {
                 let value = match self.ordinary_own_property(target, key) {
                     Some(OrdinaryOwnProperty::Data { value, .. }) => value,
@@ -8586,6 +8723,12 @@ impl<'a> Interpreter<'a> {
         collector.finish()
     }
 
+    fn ordinary_dynamic_own_property_keys(&self, target: Value) -> Vec<String> {
+        let mut collector = OrderedOwnKeyCollector::default();
+        self.ordinary_dynamic_property_names(target, &mut collector);
+        collector.finish()
+    }
+
     fn callable_virtual_own_property_names(&self, target: Value) -> Vec<String> {
         let mut collector = OrderedOwnKeyCollector::default();
         for key in ["length", "name", "prototype"] {
@@ -8602,67 +8745,75 @@ impl<'a> Interpreter<'a> {
             .get_property_keys_for_metadata(target, NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY)
     }
 
-    fn arguments_exotic_own_property_names(&self, target: Value) -> Vec<String> {
-        let Some(obj_ptr) = checked_object_ptr(target) else {
-            return Vec::new();
-        };
-        let obj = unsafe { &*obj_ptr.as_ptr() };
-        let Some(arguments) = obj.arguments.as_deref() else {
-            return Vec::new();
-        };
+    fn append_exotic_own_property_names(
+        &self,
+        kind: JsExoticAdapterKind,
+        target: Value,
+        collector: &mut OrderedOwnKeyCollector,
+    ) {
+        match kind {
+            JsExoticAdapterKind::Arguments => {
+                let Some(obj_ptr) = checked_object_ptr(target) else {
+                    return;
+                };
+                let obj = unsafe { &*obj_ptr.as_ptr() };
+                let Some(arguments) = obj.arguments.as_deref() else {
+                    return;
+                };
 
-        let mut collector = OrderedOwnKeyCollector::default();
+                for (index, property) in arguments.indexed.iter().enumerate() {
+                    if !property.deleted {
+                        collector.push(index.to_string());
+                    }
+                }
+                if arguments.length.is_some() {
+                    collector.push("length".to_string());
+                }
+                if arguments.strict_poison || arguments.callee.is_some() {
+                    collector.push("callee".to_string());
+                }
+                collector.extend(self.ordinary_dynamic_own_property_keys(target));
+                collector.extend(self.metadata_backed_property_names(target));
+            }
+            JsExoticAdapterKind::Array => {
+                let Some(array_ptr) = checked_array_ptr(target) else {
+                    return;
+                };
+                let array = unsafe { &*array_ptr.as_ptr() };
 
-        for (index, property) in arguments.indexed.iter().enumerate() {
-            if !property.deleted {
-                collector.push(index.to_string());
+                for index in 0..array.len() {
+                    if array.get(index).is_some() {
+                        collector.push(index.to_string());
+                    }
+                }
+
+                collector.push("length".to_string());
+                collector.extend(self.metadata_backed_property_names(target));
+            }
+            JsExoticAdapterKind::TypedArray => {
+                let Some(length) = self.typed_array_live_length_direct(target) else {
+                    return;
+                };
+
+                for index in 0..length {
+                    collector.push(index.to_string());
+                }
+
+                collector.extend(self.ordinary_dynamic_own_property_keys(target));
+                collector.extend(self.metadata_backed_property_names(target));
             }
         }
-        if arguments.length.is_some() {
-            collector.push("length".to_string());
-        }
-        if arguments.strict_poison || arguments.callee.is_some() {
-            collector.push("callee".to_string());
-        }
-        collector.extend(self.ordinary_named_own_property_keys(target));
-        collector.finish()
-    }
-
-    fn array_own_property_names(&self, target: Value) -> Vec<String> {
-        let Some(array_ptr) = checked_array_ptr(target) else {
-            return Vec::new();
-        };
-        let array = unsafe { &*array_ptr.as_ptr() };
-
-        let mut collector = OrderedOwnKeyCollector::default();
-
-        for index in 0..array.len() {
-            if array.get(index).is_none() {
-                continue;
-            }
-            collector.push(index.to_string());
-        }
-
-        collector.push("length".to_string());
-        collector.extend(self.metadata_backed_property_names(target));
-        collector.finish()
     }
 
     pub(in crate::vm::interpreter) fn js_own_property_names(&self, target: Value) -> Vec<String> {
-        if checked_array_ptr(target).is_some() {
-            return self.array_own_property_names(target);
-        }
-        if checked_object_ptr(target)
-            .and_then(|obj_ptr| unsafe { obj_ptr.as_ref() }.arguments.as_deref())
-            .is_some()
-        {
-            return self.arguments_exotic_own_property_names(target);
-        }
-
         let mut collector = OrderedOwnKeyCollector::default();
-        collector.extend(self.ordinary_named_own_property_keys(target));
-        collector.extend(self.metadata_backed_property_names(target));
-        collector.extend(self.callable_virtual_own_property_names(target));
+        if let Some(kind) = self.exotic_adapter_kind(target) {
+            self.append_exotic_own_property_names(kind, target, &mut collector);
+        } else {
+            collector.extend(self.ordinary_named_own_property_keys(target));
+            collector.extend(self.metadata_backed_property_names(target));
+            collector.extend(self.callable_virtual_own_property_names(target));
+        }
 
         if let Some(global_obj) = self.builtin_global_value("globalThis") {
             if global_obj.raw() == target.raw() {
@@ -8675,7 +8826,11 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        collector.finish()
+        collector
+            .finish()
+            .into_iter()
+            .filter(|name| Self::is_public_string_property_name(name))
+            .collect()
     }
 
     fn alloc_plain_object(&self) -> Result<Value, VmError> {
@@ -8724,10 +8879,7 @@ impl<'a> Interpreter<'a> {
         if self.fixed_property_deleted(target, key) {
             return Ok(None);
         }
-        let typed_array_value = parse_js_array_index_name(key)
-            .and_then(|index| self.typed_array_index_value_direct(target, index));
-        let exotic_value =
-            typed_array_value.or_else(|| self.get_own_js_property_value_by_name(target, key));
+        let exotic_value = self.get_own_js_property_value_by_name(target, key);
         let callable_value = self
             .callable_virtual_property_value(target, key)
             .or_else(|| self.materialize_constructor_static_method(target, key));

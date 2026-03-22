@@ -2987,6 +2987,46 @@ fn test_node_compat_get_own_property_names_orders_indices_before_strings() {
 }
 
 #[test]
+fn test_node_compat_typed_array_own_names_hide_internal_state() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let ta = new Uint8Array([1, 2]);
+            let seen = [];
+            for (let k in ta) seen.push(k);
+            return JSON.stringify([
+                Object.getOwnPropertyNames(ta),
+                Object.keys(ta),
+                seen
+            ]);
+        }
+    "#,
+        "[[\"0\",\"1\"],[\"0\",\"1\"],[\"0\",\"1\"]]",
+    );
+}
+
+#[test]
+fn test_node_compat_arguments_own_names_exclude_symbol_iterator_string() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            function probe(a, b) {
+                let seen = [];
+                for (let k in arguments) seen.push(k);
+                return JSON.stringify([
+                    Object.getOwnPropertyNames(arguments),
+                    Object.keys(arguments),
+                    seen
+                ]);
+            }
+            return probe(1, 2);
+        }
+    "#,
+        "[[\"0\",\"1\",\"length\",\"callee\"],[\"0\",\"1\"],[\"0\",\"1\"]]",
+    );
+}
+
+#[test]
 fn test_node_compat_reflect_set_uses_inherited_setter_on_receiver() {
     expect_string_runtime_node_compat(
         r#"
