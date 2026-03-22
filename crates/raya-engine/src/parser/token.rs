@@ -6,6 +6,23 @@
 use crate::parser::interner::Symbol;
 use std::fmt;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct LexedToken {
+    pub token: Token,
+    pub span: Span,
+    pub line_break_before: bool,
+}
+
+impl LexedToken {
+    pub fn new(token: Token, span: Span, line_break_before: bool) -> Self {
+        Self {
+            token,
+            span,
+            line_break_before,
+        }
+    }
+}
+
 /// A token in the Raya programming language.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -177,7 +194,7 @@ pub enum Token {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TemplatePart {
     String(Symbol), // Interned string part
-    Expression(Vec<(Token, Span)>),
+    Expression(Vec<LexedToken>),
 }
 
 /// Source location information for a token.

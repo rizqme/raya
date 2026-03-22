@@ -217,7 +217,7 @@ pub fn extract_call_type_guard(expr: &Expression, interner: &Interner) -> Option
     }
 
     // Extract variable name from argument
-    let var_name = match &call_expr.arguments[0] {
+    let var_name = match call_expr.argument_expression(0)? {
         Expression::Identifier(ident) => interner.resolve(ident.name).to_string(),
         _ => return None,
     };

@@ -452,7 +452,7 @@ pub fn walk_expression<V: Visitor>(visitor: &mut V, expr: &Expression) {
         Expression::AsyncCall(async_call) => {
             visitor.visit_expression(&async_call.callee);
             for arg in &async_call.arguments {
-                visitor.visit_expression(arg);
+                visitor.visit_expression(arg.expression());
             }
         }
         Expression::Member(member) => visitor.visit_member_expression(member),
@@ -463,7 +463,7 @@ pub fn walk_expression<V: Visitor>(visitor: &mut V, expr: &Expression) {
         Expression::New(new_expr) => {
             visitor.visit_expression(&new_expr.callee);
             for arg in &new_expr.arguments {
-                visitor.visit_expression(arg);
+                visitor.visit_expression(arg.expression());
             }
         }
         Expression::Arrow(arrow) => visitor.visit_arrow_function(arrow),
@@ -517,7 +517,7 @@ pub fn walk_call_expression<V: Visitor>(visitor: &mut V, expr: &CallExpression) 
         }
     }
     for arg in &expr.arguments {
-        visitor.visit_expression(arg);
+        visitor.visit_expression(arg.expression());
     }
 }
 
@@ -744,7 +744,11 @@ pub fn walk_pattern<V: Visitor>(visitor: &mut V, pattern: &Pattern) {
         }
         Pattern::Object(obj) => {
             for prop in &obj.properties {
-                visitor.visit_identifier(&prop.key);
+                match &prop.key {
+                    PropertyKey::Identifier(id) => visitor.visit_identifier(id),
+                    PropertyKey::StringLiteral(_) | PropertyKey::IntLiteral(_) => {}
+                    PropertyKey::Computed(expr) => visitor.visit_expression(expr),
+                }
                 visitor.visit_pattern(&prop.value);
                 if let Some(default) = &prop.default {
                     visitor.visit_expression(default);

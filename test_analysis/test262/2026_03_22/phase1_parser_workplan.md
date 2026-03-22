@@ -22,9 +22,11 @@ Add parser-context helpers and shared token-boundary queries:
   - replace the current ad hoc booleans/counters with a compact parser context struct
 
 Status now:
-- first ASI helper landed:
+- lexer-backed token trivia landed through `LexedToken`:
   - `has_line_terminator_before_current`
+  - `has_line_terminator_before_peek`
   - `can_insert_semicolon_before_current`
+- newline-sensitive parser decisions no longer depend on span-line approximation
 
 ### `crates/raya-engine/src/parser/parser/stmt.rs`
 
@@ -49,6 +51,10 @@ Status now:
   - `yield`
 - class member heads now treat `static` and `async` contextually instead of as
   unconditional modifiers
+- runtime parameter parsing now enforces the same basic rest rules as function
+  types: one rest parameter maximum, and it must be last
+- `yield*` now parses as delegated yield only when `*` stays on the same line as
+  `yield`; newline-separated `yield` and `*` correctly stop at ASI instead
 
 ### `crates/raya-engine/src/parser/parser/expr.rs`
 
@@ -75,6 +81,16 @@ Status now:
   `++/--` remains in the token stream for the next parse step
 - object methods now share one parsing path for ordinary, async, and generator
   heads, including TS-style type parameters and return annotations
+- arrow parameter parsing now rejects duplicate rest parameters and non-final
+  rest parameters instead of accepting them and drifting into later phases
+- parenthesized destructuring vs grouped-expression parsing now goes through an
+  explicit speculative arrow helper instead of the older eager `{` / `[` heuristic
+- parenthesized object/array expressions now backtrack out of the arrow-parameter
+  path instead of being eagerly misclassified as destructuring params
+- call/new/async-call arguments now use a first-class `CallArgument` AST with
+  explicit spread nodes instead of pretending every argument is a plain expression
+- spread in call and `new` argument lists now parses through the shared argument
+  path instead of remaining a parser gap
 
 ### `crates/raya-engine/src/parser/parser/pattern.rs`
 
@@ -88,6 +104,13 @@ Reason:
 - current test262 failures around `...` are spread across expression, statement, and
   class-method cases because the grammar is duplicated in too many places
 
+Status now:
+- object destructuring accepts string, numeric, and computed property keys
+- pattern keys now share the object-literal `PropertyKey` model instead of a
+  destructuring-only identifier shortcut
+- object-pattern shorthand stays restricted to identifier keys, so `{ [k] }`
+  still correctly requires an explicit `: value` binding form
+
 ### `crates/raya-engine/src/parser/parser/types.rs`
 
 Audit type-argument speculation and TS-specific syntax boundaries:
@@ -100,15 +123,15 @@ Reason:
 ### `crates/raya-engine/src/parser/lexer.rs`
 
 Still needed:
-- carry explicit trivia metadata for tokens instead of relying on span-line approximation
-- line terminator tracking should eventually be lexed, not inferred from token start lines
+- longer-term lexer/parser context cleanup after the first explicit trivia pass
 
 Why:
-- the current helper is a good first cut for ASI, but multi-line tokens/comments need
-  real inter-token trivia bits for full correctness
+- the explicit trivia bit is now in place, but parser context itself is still
+  spread across several helpers/counters rather than one compact state object
 
 ## Recommended Implementation Order
 
+Phase 1 completion order as landed:
 1. finish ASI-sensitive statement rules
 2. finish postfix/call/member no-line-terminator handling
 3. unify class-element head parsing
@@ -128,16 +151,27 @@ Use:
 
 ## Immediate Next Code Changes
 
-After the initial ASI patch, the next parser changes should be:
-- support `function*`, generator methods, and class generator elements without falling
-  into ordinary method-name parsing
-- support spread in call/new argument lists where `DotDotDot` is still rejected
-- audit labeled statement parsing around ASI edge cases in `test/language/asi`
+Phase 1 parser work is now complete enough to stop doing grammar-only cleanup and
+move to the next structural layer:
+- early-error legality and binder pass improvements
+- arguments object / activation-record semantics
+- descriptor kernel fidelity
+- iterator/runtime protocol cleanup
 
 ## Phase 1 Notes
 
-The current ASI/postfix implementation is intentionally a bridge:
-- newline boundaries are still inferred from token spans rather than explicit lexer
-  trivia
-- that is good enough to unblock the first `asi` and postfix hang cluster
-- the final Phase 1 target is still to move line terminator knowledge into lexer output
+What Phase 1 now covers:
+- ASI-sensitive statement parsing
+- postfix/no-line-terminator handling
+- generator and async-generator method heads
+- delegated `yield*`
+- rest-parameter legality
+- grouped-vs-arrow ambiguity cleanup
+- first-class spread arguments in call/new syntax
+- object-pattern computed keys
+- lexer-carried inter-token newline trivia
+
+What is intentionally deferred beyond Phase 1:
+- compact parser-context rearchitecture
+- parser/checker diagnostic normalization for early syntax failures
+- runtime semantics work needed for the broader Test262 language failures

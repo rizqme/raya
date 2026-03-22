@@ -4,7 +4,7 @@ use super::expr::keyword_as_property_name;
 use super::{ParseError, ParseErrorKind, Parser};
 use crate::parser::ast::*;
 use crate::parser::interner::Symbol;
-use crate::parser::token::Token;
+use crate::parser::token::{LexedToken, Token};
 
 /// Parse a type annotation.
 /// This is the entry point for parsing any type expression.
@@ -487,18 +487,27 @@ fn consume_type_argument_closer(parser: &mut Parser) -> Result<(), ParseError> {
         Token::GreaterGreater => {
             // Split `>>` into `>` + `>` so nested generic closers parse correctly.
             let span = parser.current_span();
-            parser.tokens[parser.pos].0 = Token::Greater;
-            parser.tokens.insert(parser.pos + 1, (Token::Greater, span));
+            let line_break_before = parser.tokens[parser.pos].line_break_before;
+            parser.tokens[parser.pos].token = Token::Greater;
+            parser
+                .tokens
+                .insert(parser.pos + 1, LexedToken::new(Token::Greater, span, false));
+            parser.tokens[parser.pos].line_break_before = line_break_before;
             parser.advance_without_return();
             Ok(())
         }
         Token::GreaterGreaterGreater => {
             // Split `>>>` into `>` + `>>`; the remaining `>>` can be split by the next closer.
             let span = parser.current_span();
-            parser.tokens[parser.pos].0 = Token::Greater;
+            let line_break_before = parser.tokens[parser.pos].line_break_before;
+            parser.tokens[parser.pos].token = Token::Greater;
             parser
                 .tokens
-                .insert(parser.pos + 1, (Token::GreaterGreater, span));
+                .insert(
+                    parser.pos + 1,
+                    LexedToken::new(Token::GreaterGreater, span, false),
+                );
+            parser.tokens[parser.pos].line_break_before = line_break_before;
             parser.advance_without_return();
             Ok(())
         }

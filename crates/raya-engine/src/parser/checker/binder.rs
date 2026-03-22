@@ -2379,8 +2379,22 @@ impl<'a> Binder<'a> {
             Pattern::Object(obj_pat) => {
                 // Extract property types from object type annotation
                 for prop in &obj_pat.properties {
-                    let prop_name = self.resolve(prop.key.name);
-                    let prop_ty = self.object_property_type_for_pattern(ty, &prop_name);
+                    let prop_ty = match &prop.key {
+                        crate::parser::ast::PropertyKey::Identifier(id) => {
+                            let prop_name = self.resolve(id.name);
+                            self.object_property_type_for_pattern(ty, &prop_name)
+                        }
+                        crate::parser::ast::PropertyKey::StringLiteral(lit) => {
+                            let prop_name = self.resolve(lit.value);
+                            self.object_property_type_for_pattern(ty, &prop_name)
+                        }
+                        crate::parser::ast::PropertyKey::IntLiteral(lit) => {
+                            self.object_property_type_for_pattern(ty, &lit.value.to_string())
+                        }
+                        crate::parser::ast::PropertyKey::Computed(_) => {
+                            self.inference_fallback_type()
+                        }
+                    };
                     self.bind_pattern_names_in_scope(
                         &prop.value,
                         prop_ty,
@@ -2480,14 +2494,14 @@ impl<'a> Binder<'a> {
                     || call
                         .arguments
                         .iter()
-                        .any(|arg| self.expression_uses_linker_dep_binding(arg))
+                        .any(|arg| self.expression_uses_linker_dep_binding(arg.expression()))
             }
             Expression::AsyncCall(call) => {
                 self.expression_uses_linker_dep_binding(&call.callee)
                     || call
                         .arguments
                         .iter()
-                        .any(|arg| self.expression_uses_linker_dep_binding(arg))
+                        .any(|arg| self.expression_uses_linker_dep_binding(arg.expression()))
             }
             Expression::Member(member) => self.expression_uses_linker_dep_binding(&member.object),
             Expression::Index(index) => {
@@ -2499,7 +2513,7 @@ impl<'a> Binder<'a> {
                     || new_expr
                         .arguments
                         .iter()
-                        .any(|arg| self.expression_uses_linker_dep_binding(arg))
+                        .any(|arg| self.expression_uses_linker_dep_binding(arg.expression()))
             }
             Expression::Arrow(arrow) => match &arrow.body {
                 crate::parser::ast::ArrowBody::Expression(expr) => {

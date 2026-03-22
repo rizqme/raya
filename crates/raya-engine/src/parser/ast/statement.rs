@@ -617,6 +617,7 @@ pub struct ReturnStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct YieldStatement {
     pub value: Option<Expression>,
+    pub is_delegate: bool,
     pub span: Span,
 }
 

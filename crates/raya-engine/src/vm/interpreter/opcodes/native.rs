@@ -8254,6 +8254,49 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_CONSTRUCT_APPLY_HELPER => {
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "spread construction requires (type handle, args array)"
+                                    .to_string(),
+                            ));
+                        }
+
+                        let apply_args = match self.collect_apply_arguments(args[1], task, module) {
+                            Ok(values) => values,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+
+                        if self.callable_native_alias_id(args[0])
+                            == Some(crate::compiler::native_id::FUNCTION_CONSTRUCTOR_HELPER)
+                        {
+                            let value =
+                                match self.alloc_dynamic_js_function(&apply_args, task, module) {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                            if let Err(error) = stack.push(value) {
+                                return OpcodeResult::Error(error);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+
+                        let value = match self.construct_value_with_new_target(
+                            args[0],
+                            args[0],
+                            &apply_args,
+                            task,
+                            module,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::OBJECT_INSTANCE_OF_DYNAMIC_CLASS => {
                         if args.len() != 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(

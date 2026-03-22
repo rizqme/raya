@@ -69,6 +69,8 @@ pub const OBJECT_JS_TO_INTEGER_OR_INFINITY: u16 = 0x001E;
 pub const TRY_GET_GLOBAL: u16 = 0x001F;
 /// ES `key in obj` — checks HasProperty on prototype chain.
 pub const OBJECT_HAS_PROPERTY: u16 = 0x0020;
+/// construct(typeHandle, argsArray) for constructor calls with spread arguments.
+pub const OBJECT_CONSTRUCT_APPLY_HELPER: u16 = 0x0021;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -573,6 +575,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_PREVENT_EXTENSIONS => "Object.preventExtensions",
         OBJECT_BIND_SCRIPT_GLOBAL => "Object.bindScriptGlobal",
         OBJECT_DESCRIPTOR_NEW => "Object.descriptorNew",
+        OBJECT_CONSTRUCT_APPLY_HELPER => "Object.constructApply",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",

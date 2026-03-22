@@ -357,6 +357,125 @@ impl<'a> Lowerer<'a> {
         });
     }
 
+    fn emit_js_apply_helper(
+        &mut self,
+        dest: Register,
+        receiver: Register,
+        closure: Register,
+        args_array: Register,
+    ) {
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest),
+            native_id: crate::compiler::native_id::FUNCTION_CALL_HELPER,
+            args: vec![closure, receiver, args_array],
+        });
+    }
+
+    fn lower_call_argument_values(&mut self, args: &[ast::CallArgument]) -> Vec<Register> {
+        args.iter()
+            .map(|arg| self.lower_expr(arg.expression()))
+            .collect()
+    }
+
+    fn lower_call_argument_array(&mut self, args: &[ast::CallArgument]) -> Register {
+        let args_array = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
+        let zero = self.emit_i32_const(0);
+        self.emit(IrInstr::NewArray {
+            dest: args_array.clone(),
+            len: zero,
+            elem_ty: TypeId::new(UNKNOWN_TYPE_ID),
+        });
+
+        for arg in args {
+            match arg {
+                ast::CallArgument::Expression(expr) => {
+                    let value = self.lower_expr(expr);
+                    self.emit(IrInstr::ArrayPush {
+                        array: args_array.clone(),
+                        element: value,
+                    });
+                }
+                ast::CallArgument::Spread(expr) => {
+                    let src_arr = self.lower_expr(expr);
+                    let len = self.alloc_register(TypeId::new(INT_TYPE_ID));
+                    self.emit(IrInstr::ArrayLen {
+                        dest: len.clone(),
+                        array: src_arr.clone(),
+                    });
+                    let i = self.emit_i32_const(0);
+
+                    let header = self.alloc_block();
+                    let body = self.alloc_block();
+                    let exit = self.alloc_block();
+
+                    self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
+
+                    self.current_function_mut()
+                        .add_block(crate::ir::BasicBlock::with_label(
+                            header,
+                            "callspread.hdr",
+                        ));
+                    self.current_block = header;
+                    let cond = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+                    self.emit(IrInstr::BinaryOp {
+                        dest: cond.clone(),
+                        op: BinaryOp::Less,
+                        left: i.clone(),
+                        right: len.clone(),
+                    });
+                    self.set_terminator(crate::compiler::ir::Terminator::Branch {
+                        cond,
+                        then_block: body,
+                        else_block: exit,
+                    });
+
+                    self.current_function_mut()
+                        .add_block(crate::ir::BasicBlock::with_label(
+                            body,
+                            "callspread.body",
+                        ));
+                    self.current_block = body;
+                    let elem = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+                    self.emit(IrInstr::LoadElement {
+                        dest: elem.clone(),
+                        array: src_arr.clone(),
+                        index: i.clone(),
+                    });
+                    self.emit(IrInstr::ArrayPush {
+                        array: args_array.clone(),
+                        element: elem,
+                    });
+                    let one = self.emit_i32_const(1);
+                    self.emit(IrInstr::BinaryOp {
+                        dest: i.clone(),
+                        op: BinaryOp::Add,
+                        left: i.clone(),
+                        right: one,
+                    });
+                    self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
+
+                    self.current_function_mut()
+                        .add_block(crate::ir::BasicBlock::with_label(
+                            exit,
+                            "callspread.exit",
+                        ));
+                    self.current_block = exit;
+                }
+            }
+        }
+
+        args_array
+    }
+
+    fn lower_undefined_literal(&mut self) -> Register {
+        let dest = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Constant(IrConstant::Undefined),
+        });
+        dest
+    }
+
     fn emit_js_bound_closure_helper(&mut self, closure: Register, receiver: Register) -> Register {
         let bound = self.alloc_register(closure.ty);
         self.emit(IrInstr::NativeCall {
@@ -1740,8 +1859,12 @@ impl<'a> Lowerer<'a> {
             return self.lower_optional_call(call, full_expr);
         }
 
+        if call.has_spread_arguments() {
+            return self.lower_call_with_spread(call, full_expr);
+        }
+
         // Lower arguments first
-        let args: Vec<Register> = call.arguments.iter().map(|a| self.lower_expr(a)).collect();
+        let args = self.lower_call_argument_values(&call.arguments);
 
         // Prefer checker return type; if absent, derive from callee call signature.
         let mut call_ty = self.get_expr_type(full_expr);
@@ -1965,15 +2088,17 @@ impl<'a> Lowerer<'a> {
             //   - StringLiteral: symbolic name → ModuleNativeCall (stdlib)
             //   - IntLiteral/Identifier: numeric ID → NativeCall (engine-internal)
             if name == "__NATIVE_CALL" {
-                if let Some(first_arg) = call.arguments.first() {
+                if let Some(first_arg) = call.argument_expression(0) {
                     // Check for string literal first → ModuleNativeCall
                     if let Expression::StringLiteral(lit) = first_arg {
                         let fn_name = self.interner.resolve(lit.value);
                         let local_idx = self.resolve_native_name(fn_name);
 
-                        let native_args: Vec<Register> = call.arguments[1..]
+                        let native_args: Vec<Register> = call
+                            .arguments
                             .iter()
-                            .map(|a| self.lower_expr(a))
+                            .skip(1)
+                            .map(|a| self.lower_expr(a.expression()))
                             .collect();
 
                         self.emit(IrInstr::ModuleNativeCall {
@@ -2017,9 +2142,11 @@ impl<'a> Lowerer<'a> {
                     };
 
                     // Lower remaining arguments (skip the native_id)
-                    let native_args: Vec<Register> = call.arguments[1..]
+                    let native_args: Vec<Register> = call
+                        .arguments
                         .iter()
-                        .map(|a| self.lower_expr(a))
+                        .skip(1)
+                        .map(|a| self.lower_expr(a.expression()))
                         .collect();
 
                     self.emit(IrInstr::NativeCall {
@@ -2035,8 +2162,8 @@ impl<'a> Lowerer<'a> {
 
             // Handle __OPCODE_CHANNEL_NEW intrinsic: __OPCODE_CHANNEL_NEW(capacity)
             if name == "__OPCODE_CHANNEL_NEW" {
-                let capacity = if !call.arguments.is_empty() {
-                    self.lower_expr(&call.arguments[0])
+                let capacity = if let Some(first_arg) = call.argument_expression(0) {
+                    self.lower_expr(first_arg)
                 } else {
                     let zero_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                     self.emit(IrInstr::Assign {
@@ -2060,8 +2187,8 @@ impl<'a> Lowerer<'a> {
 
             // Handle __OPCODE_MUTEX_LOCK intrinsic: acquires mutex lock (blocking)
             if name == "__OPCODE_MUTEX_LOCK" {
-                if !call.arguments.is_empty() {
-                    let mutex = self.lower_expr(&call.arguments[0]);
+                if let Some(arg) = call.argument_expression(0) {
+                    let mutex = self.lower_expr(arg);
                     self.emit(IrInstr::MutexLock { mutex });
                 }
                 return dest;
@@ -2069,8 +2196,8 @@ impl<'a> Lowerer<'a> {
 
             // Handle __OPCODE_MUTEX_UNLOCK intrinsic: releases mutex lock
             if name == "__OPCODE_MUTEX_UNLOCK" {
-                if !call.arguments.is_empty() {
-                    let mutex = self.lower_expr(&call.arguments[0]);
+                if let Some(arg) = call.argument_expression(0) {
+                    let mutex = self.lower_expr(arg);
                     self.emit(IrInstr::MutexUnlock { mutex });
                 }
                 return dest;
@@ -2078,8 +2205,8 @@ impl<'a> Lowerer<'a> {
 
             // Handle __OPCODE_TASK_CANCEL intrinsic: cancels a running task
             if name == "__OPCODE_TASK_CANCEL" {
-                if !call.arguments.is_empty() {
-                    let task = self.lower_expr(&call.arguments[0]);
+                if let Some(arg) = call.argument_expression(0) {
+                    let task = self.lower_expr(arg);
                     self.emit(IrInstr::TaskCancel { task });
                 }
                 return dest;
@@ -2093,8 +2220,8 @@ impl<'a> Lowerer<'a> {
 
             // Handle __OPCODE_SLEEP intrinsic: sleeps for specified milliseconds
             if name == "__OPCODE_SLEEP" {
-                if !call.arguments.is_empty() {
-                    let duration_ms = self.lower_expr(&call.arguments[0]);
+                if let Some(arg) = call.argument_expression(0) {
+                    let duration_ms = self.lower_expr(arg);
                     self.emit(IrInstr::Sleep { duration_ms });
                 }
                 return dest;
@@ -2102,8 +2229,8 @@ impl<'a> Lowerer<'a> {
 
             // Handle __OPCODE_ARRAY_LEN intrinsic: gets array length
             if name == "__OPCODE_ARRAY_LEN" {
-                if !call.arguments.is_empty() {
-                    let array = self.lower_expr(&call.arguments[0]);
+                if let Some(arg) = call.argument_expression(0) {
+                    let array = self.lower_expr(arg);
                     self.emit(IrInstr::ArrayLen {
                         dest: dest.clone(),
                         array,
@@ -2114,9 +2241,11 @@ impl<'a> Lowerer<'a> {
 
             // Handle __OPCODE_ARRAY_PUSH intrinsic: pushes element to array
             if name == "__OPCODE_ARRAY_PUSH" {
-                if call.arguments.len() >= 2 {
-                    let array = self.lower_expr(&call.arguments[0]);
-                    let element = self.lower_expr(&call.arguments[1]);
+                if let (Some(array_arg), Some(element_arg)) =
+                    (call.argument_expression(0), call.argument_expression(1))
+                {
+                    let array = self.lower_expr(array_arg);
+                    let element = self.lower_expr(element_arg);
                     self.emit(IrInstr::ArrayPush { array, element });
                 }
                 return dest;
@@ -2124,8 +2253,8 @@ impl<'a> Lowerer<'a> {
 
             // Handle __OPCODE_ARRAY_POP intrinsic: pops element from array
             if name == "__OPCODE_ARRAY_POP" {
-                if !call.arguments.is_empty() {
-                    let array = self.lower_expr(&call.arguments[0]);
+                if let Some(arg) = call.argument_expression(0) {
+                    let array = self.lower_expr(arg);
                     self.emit(IrInstr::ArrayPop {
                         dest: dest.clone(),
                         array,
@@ -3899,9 +4028,14 @@ impl<'a> Lowerer<'a> {
                             // Special handling: string methods with RegExp argument
                             let first_arg_is_regexp = if !args.is_empty() {
                                 let reg_ty = self.normalize_type_for_dispatch(args[0].ty.as_u32());
-                                let checker_ty = self.normalize_type_for_dispatch(
-                                    self.get_expr_type(&call.arguments[0]).as_u32(),
-                                );
+                                let checker_ty = call
+                                    .argument_expression(0)
+                                    .map(|arg| {
+                                        self.normalize_type_for_dispatch(
+                                            self.get_expr_type(arg).as_u32(),
+                                        )
+                                    })
+                                    .unwrap_or(reg_ty);
                                 reg_ty == REGEXP_TYPE_ID || checker_ty == REGEXP_TYPE_ID
                             } else {
                                 false
@@ -4169,6 +4303,65 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
+    fn lower_call_with_spread(
+        &mut self,
+        call: &ast::CallExpression,
+        full_expr: &Expression,
+    ) -> Register {
+        let mut call_ty = self.get_expr_type(full_expr);
+        if call_ty.as_u32() == UNRESOLVED_TYPE_ID {
+            let callee_ty = self.get_expr_type(&call.callee);
+            if let Some(return_ty) = self.first_callable_return_type(callee_ty) {
+                call_ty = return_ty;
+            }
+        }
+        let dest = self.alloc_register(call_ty);
+        let args_array = self.lower_call_argument_array(&call.arguments);
+
+        match &*call.callee {
+            Expression::Member(member) => {
+                let receiver = self.lower_expr(&member.object);
+                let closure = self.lower_expr(&call.callee);
+                self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
+            }
+            Expression::Index(index) => {
+                let receiver = self.lower_expr(&index.object);
+                let key = self.lower_expr(&index.index);
+                let closure_ty = self.get_expr_type(&call.callee);
+                let closure = self.alloc_register(if closure_ty.as_u32() == UNRESOLVED_TYPE_ID {
+                    UNRESOLVED
+                } else {
+                    closure_ty
+                });
+                if self.index_uses_dynamic_keyed_access_for_expr(
+                    self.get_expr_type(&index.object),
+                    &index.index,
+                ) {
+                    self.emit(IrInstr::DynGetKeyed {
+                        dest: closure.clone(),
+                        object: receiver.clone(),
+                        key,
+                    });
+                } else {
+                    self.emit(IrInstr::LoadElement {
+                        dest: closure.clone(),
+                        array: receiver.clone(),
+                        index: key,
+                    });
+                }
+                self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
+            }
+            _ => {
+                let closure = self.lower_expr(&call.callee);
+                let receiver = self.lower_undefined_literal();
+                self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
+            }
+        }
+
+        self.propagate_type_projection_to_register(call_ty, &dest);
+        dest
+    }
+
     fn lower_optional_call(
         &mut self,
         call: &ast::CallExpression,
@@ -4228,18 +4421,24 @@ impl<'a> Lowerer<'a> {
                     "opt.call.index.invoke",
                 ));
             self.current_block = call_block;
-            let args: Vec<Register> = call.arguments.iter().map(|a| self.lower_expr(a)).collect();
             let call_result = self.alloc_register(dest.ty);
-            if self.type_id_is_async_callable(callee.ty) {
-                let bound = self.emit_js_bound_closure_helper(callee, receiver);
-                self.emit(IrInstr::SpawnClosure {
-                    dest: call_result.clone(),
-                    closure: bound,
-                    args,
-                });
-            } else {
-                self.emit_js_member_call_helper(call_result.clone(), receiver, callee, args);
+            if call.has_spread_arguments() {
+                let args_array = self.lower_call_argument_array(&call.arguments);
+                self.emit_js_apply_helper(call_result.clone(), receiver, callee, args_array);
                 self.propagate_type_projection_to_register(call_ty, &call_result);
+            } else {
+                let args = self.lower_call_argument_values(&call.arguments);
+                if self.type_id_is_async_callable(callee.ty) {
+                    let bound = self.emit_js_bound_closure_helper(callee, receiver);
+                    self.emit(IrInstr::SpawnClosure {
+                        dest: call_result.clone(),
+                        closure: bound,
+                        args,
+                    });
+                } else {
+                    self.emit_js_member_call_helper(call_result.clone(), receiver, callee, args);
+                    self.propagate_type_projection_to_register(call_ty, &call_result);
+                }
             }
             let call_exit = self.current_block;
             self.set_terminator(Terminator::Jump(merge_block));
@@ -4284,21 +4483,28 @@ impl<'a> Lowerer<'a> {
                 "opt.call.invoke",
             ));
         self.current_block = call_block;
-        let args: Vec<Register> = call.arguments.iter().map(|a| self.lower_expr(a)).collect();
         let call_result = self.alloc_register(dest.ty);
-        if self.type_id_is_async_callable(self.get_expr_type(&call.callee)) {
-            self.emit(IrInstr::SpawnClosure {
-                dest: call_result.clone(),
-                closure: callee,
-                args,
-            });
-        } else {
-            self.emit(IrInstr::CallClosure {
-                dest: Some(call_result.clone()),
-                closure: callee,
-                args,
-            });
+        if call.has_spread_arguments() {
+            let args_array = self.lower_call_argument_array(&call.arguments);
+            let receiver = self.lower_undefined_literal();
+            self.emit_js_apply_helper(call_result.clone(), receiver, callee, args_array);
             self.propagate_type_projection_to_register(call_ty, &call_result);
+        } else {
+            let args = self.lower_call_argument_values(&call.arguments);
+            if self.type_id_is_async_callable(self.get_expr_type(&call.callee)) {
+                self.emit(IrInstr::SpawnClosure {
+                    dest: call_result.clone(),
+                    closure: callee,
+                    args,
+                });
+            } else {
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(call_result.clone()),
+                    closure: callee,
+                    args,
+                });
+                self.propagate_type_projection_to_register(call_ty, &call_result);
+            }
         }
         let call_exit = self.current_block;
         self.set_terminator(Terminator::Jump(merge_block));
@@ -8550,6 +8756,29 @@ impl<'a> Lowerer<'a> {
         // concrete class/type path assigns a precise type.
         let dest = self.alloc_register(UNRESOLVED);
 
+        if new_expr.has_spread_arguments() {
+            let ctor_value = if let Expression::Identifier(ident) = &*new_expr.callee {
+                if let Some(&nominal_type_id) = self
+                    .class_map
+                    .get(&ident.name)
+                    .or_else(|| self.variable_class_map.get(&ident.name))
+                {
+                    self.load_class_value_for_nominal_type(nominal_type_id)
+                } else {
+                    self.lower_expr(&new_expr.callee)
+                }
+            } else {
+                self.lower_expr(&new_expr.callee)
+            };
+            let args_array = self.lower_call_argument_array(&new_expr.arguments);
+            self.emit(IrInstr::NativeCall {
+                dest: Some(dest.clone()),
+                native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_APPLY_HELPER,
+                args: vec![ctor_value, args_array],
+            });
+            return dest;
+        }
+
         if let Expression::Identifier(ident) = &*new_expr.callee {
             // Handle built-in primitive constructors
             let name = self.interner.resolve(ident.name);
@@ -8574,7 +8803,7 @@ impl<'a> Lowerer<'a> {
                     || self.variable_class_map.contains_key(&ident.name);
                 if !has_channel_class {
                     let channel_dest = self.alloc_register(TypeId::new(CHANNEL_TYPE_ID));
-                    let capacity = if let Some(first_arg) = new_expr.arguments.first() {
+                    let capacity = if let Some(first_arg) = new_expr.argument_expression(0) {
                         self.lower_expr(first_arg)
                     } else {
                         self.emit_i32_const(0)
@@ -8626,7 +8855,7 @@ impl<'a> Lowerer<'a> {
                 let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
                 native_args.push(ctor_value);
                 for arg in &new_expr.arguments {
-                    native_args.push(self.lower_expr(arg));
+                    native_args.push(self.lower_expr(arg.expression()));
                 }
                 self.emit(IrInstr::NativeCall {
                     dest: Some(ctor_dest.clone()),
@@ -8684,7 +8913,7 @@ impl<'a> Lowerer<'a> {
 
                     // Add provided arguments
                     for arg in &new_expr.arguments {
-                        args.push(self.lower_expr(arg));
+                        args.push(self.lower_expr(arg.expression()));
                     }
 
                     // Fill in default values for missing arguments
@@ -8719,7 +8948,7 @@ impl<'a> Lowerer<'a> {
                 let ctor_dest = self.alloc_register(self.default_js_function_type());
                 let mut args = Vec::with_capacity(new_expr.arguments.len());
                 for arg in &new_expr.arguments {
-                    args.push(self.lower_expr(arg));
+                    args.push(self.lower_expr(arg.expression()));
                 }
                 self.emit(IrInstr::NativeCall {
                     dest: Some(ctor_dest.clone()),
@@ -8758,7 +8987,7 @@ impl<'a> Lowerer<'a> {
                 let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
                 native_args.push(nominal_type_id);
                 for arg in &new_expr.arguments {
-                    native_args.push(self.lower_expr(arg));
+                    native_args.push(self.lower_expr(arg.expression()));
                 }
                 self.emit(IrInstr::NativeCall {
                     dest: Some(ctor_dest.clone()),
@@ -8779,7 +9008,7 @@ impl<'a> Lowerer<'a> {
                 let ctor_dest = self.alloc_register(ctor_ty);
                 let mut args = Vec::with_capacity(new_expr.arguments.len());
                 for arg in &new_expr.arguments {
-                    args.push(self.lower_expr(arg));
+                    args.push(self.lower_expr(arg.expression()));
                 }
                 self.emit(IrInstr::NativeCall {
                     dest: Some(ctor_dest.clone()),
@@ -8821,7 +9050,7 @@ impl<'a> Lowerer<'a> {
                 let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
                 native_args.push(nominal_type_id);
                 for arg in &new_expr.arguments {
-                    native_args.push(self.lower_expr(arg));
+                    native_args.push(self.lower_expr(arg.expression()));
                 }
                 self.emit(IrInstr::NativeCall {
                     dest: Some(ctor_dest.clone()),
@@ -8838,7 +9067,7 @@ impl<'a> Lowerer<'a> {
             let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
             native_args.push(ctor_value);
             for arg in &new_expr.arguments {
-                native_args.push(self.lower_expr(arg));
+                native_args.push(self.lower_expr(arg.expression()));
             }
             self.emit(IrInstr::NativeCall {
                 dest: Some(ctor_dest.clone()),
@@ -8997,11 +9226,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_async_call(&mut self, async_call: &ast::AsyncCallExpression) -> Register {
         // Lower arguments first
-        let args: Vec<Register> = async_call
-            .arguments
-            .iter()
-            .map(|a| self.lower_expr(a))
-            .collect();
+        let args = self.lower_call_argument_values(&async_call.arguments);
 
         // Destination for the Task handle - use proper Task type
         let task_ty = self

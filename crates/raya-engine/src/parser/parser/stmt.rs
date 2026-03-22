@@ -321,6 +321,7 @@ fn parse_function_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
 pub(super) fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, ParseError> {
     let mut params = Vec::new();
     let mut guard = super::guards::LoopGuard::new("function_parameters");
+    let mut seen_rest = false;
 
     while !parser.check(&Token::RightParen) && !parser.at_eof() {
         guard.check()?;
@@ -333,6 +334,21 @@ pub(super) fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Param
         } else {
             false
         };
+
+        if is_rest {
+            if seen_rest {
+                return Err(ParseError::invalid_syntax(
+                    "Duplicate rest parameter",
+                    start_span,
+                ));
+            }
+            seen_rest = true;
+        } else if seen_rest {
+            return Err(ParseError::invalid_syntax(
+                "Rest parameter must be last",
+                start_span,
+            ));
+        }
 
         // Parse parameter decorators (@Inject, @Validate, etc.)
         let decorators = parse_decorators(parser)?;
@@ -964,6 +980,14 @@ fn parse_yield_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
     parser.expect(Token::Yield)?;
 
+    let is_delegate = if !parser.has_line_terminator_before_current() && parser.check(&Token::Star)
+    {
+        parser.advance();
+        true
+    } else {
+        false
+    };
+
     // Optional yield value
     let value = if parser.can_insert_semicolon_before_current()
         || parser.has_line_terminator_before_current()
@@ -984,7 +1008,11 @@ fn parse_yield_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
         start_span
     };
 
-    Ok(Statement::Yield(YieldStatement { value, span }))
+    Ok(Statement::Yield(YieldStatement {
+        value,
+        is_delegate,
+        span,
+    }))
 }
 
 /// Parse an identifier token into an Identifier AST node
@@ -1540,10 +1568,8 @@ fn class_member_async_modifier(parser: &Parser) -> bool {
         return false;
     }
 
-    if let Some(next_span) = parser.peek_span() {
-        if next_span.line > parser.current_span().line {
-            return false;
-        }
+    if parser.has_line_terminator_before_peek() {
+        return false;
     }
 
     match parser.peek() {
@@ -1883,7 +1909,13 @@ fn parse_decorator(parser: &mut Parser) -> Result<Decorator, ParseError> {
         if !parser.check(&Token::RightParen) {
             loop {
                 guard.check()?;
-                arguments.push(super::expr::parse_assignment_expression(parser)?);
+                let argument = if parser.check(&Token::DotDotDot) {
+                    parser.advance();
+                    CallArgument::Spread(super::expr::parse_assignment_expression(parser)?)
+                } else {
+                    CallArgument::Expression(super::expr::parse_assignment_expression(parser)?)
+                };
+                arguments.push(argument);
                 if parser.check(&Token::Comma) {
                     parser.advance();
                 } else {
@@ -2580,6 +2612,171 @@ const value = {
         };
         assert!(fourth.is_async);
         assert!(fourth.is_generator);
+    }
+
+    #[test]
+    fn test_function_rest_parameter_must_be_last() {
+        let parser = Parser::new("function foo(...args, last) {}").expect("should lex");
+        let err = match parser.parse() {
+            Ok(_) => panic!("should reject non-final rest"),
+            Err(err) => err,
+        };
+        assert!(
+            err.iter()
+                .any(|e| e.message.contains("Rest parameter must be last")),
+            "expected rest-last parse error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_function_duplicate_rest_parameter_is_rejected() {
+        let parser = Parser::new("function foo(...args, ...more) {}").expect("should lex");
+        let err = match parser.parse() {
+            Ok(_) => panic!("should reject duplicate rest"),
+            Err(err) => err,
+        };
+        assert!(
+            err.iter()
+                .any(|e| e.message.contains("Duplicate rest parameter")),
+            "expected duplicate-rest parse error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_method_rest_parameter_must_be_last() {
+        let parser = Parser::new("class Foo { method(...args, last) {} }").expect("should lex");
+        let err = match parser.parse() {
+            Ok(_) => panic!("should reject non-final rest method param"),
+            Err(err) => err,
+        };
+        assert!(
+            err.iter()
+                .any(|e| e.message.contains("Rest parameter must be last")),
+            "expected rest-last parse error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_arrow_rest_parameter_must_be_last() {
+        let parser = Parser::new("const fn1 = (...args, last) => last;").expect("should lex");
+        let err = match parser.parse() {
+            Ok(_) => panic!("should reject non-final rest arrow param"),
+            Err(err) => err,
+        };
+        assert!(
+            err.iter()
+                .any(|e| e.message.contains("Rest parameter must be last")),
+            "expected rest-last parse error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_yield_star_sets_delegate_flag() {
+        let module = parse("function* gen() { yield* other; }");
+        let crate::parser::ast::Statement::FunctionDecl(func) = &module.statements[0] else {
+            panic!("Expected function declaration");
+        };
+        let crate::parser::ast::Statement::Yield(yld) = &func.body.statements[0] else {
+            panic!("Expected yield statement");
+        };
+
+        assert!(yld.is_delegate);
+        assert!(yld.value.is_some());
+    }
+
+    #[test]
+    fn test_plain_yield_is_not_delegate() {
+        let module = parse("function* gen() { yield other; }");
+        let crate::parser::ast::Statement::FunctionDecl(func) = &module.statements[0] else {
+            panic!("Expected function declaration");
+        };
+        let crate::parser::ast::Statement::Yield(yld) = &func.body.statements[0] else {
+            panic!("Expected yield statement");
+        };
+
+        assert!(!yld.is_delegate);
+        assert!(yld.value.is_some());
+    }
+
+    #[test]
+    fn test_yield_line_terminator_does_not_form_delegate() {
+        let parser = Parser::new("function* gen() { yield\n*other; }").expect("should lex");
+        let err = match parser.parse() {
+            Ok(_) => panic!("newline after yield should not parse as delegated yield"),
+            Err(err) => err,
+        };
+        assert!(
+            !err.is_empty(),
+            "expected parse error after newline-separated yield and star"
+        );
+    }
+
+    #[test]
+    fn test_object_pattern_accepts_string_and_numeric_keys() {
+        let parser = Parser::new(r#"const { "name": alias, 0: zero } = value;"#).expect("should lex");
+        let (module, interner) = parser.parse().expect("should parse");
+        let crate::parser::ast::Statement::VariableDecl(decl) = &module.statements[0] else {
+            panic!("Expected variable declaration");
+        };
+        let crate::parser::ast::Pattern::Object(pattern) = &decl.pattern else {
+            panic!("Expected object pattern");
+        };
+
+        assert_eq!(pattern.properties.len(), 2);
+        match &pattern.properties[0].key {
+            crate::parser::ast::PropertyKey::StringLiteral(lit) => {
+                assert_eq!(interner.resolve(lit.value), "name");
+            }
+            other => panic!("Expected string literal key, got {other:?}"),
+        }
+        match &pattern.properties[1].key {
+            crate::parser::ast::PropertyKey::IntLiteral(lit) => {
+                assert_eq!(lit.value, 0);
+            }
+            other => panic!("Expected int literal key, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_object_pattern_accepts_computed_keys() {
+        let parser = Parser::new(r#"const { [key]: value } = source;"#).expect("should lex");
+        let (module, _) = parser.parse().expect("should parse");
+        let crate::parser::ast::Statement::VariableDecl(decl) = &module.statements[0] else {
+            panic!("Expected variable declaration");
+        };
+        let crate::parser::ast::Pattern::Object(pattern) = &decl.pattern else {
+            panic!("Expected object pattern");
+        };
+
+        assert_eq!(pattern.properties.len(), 1);
+        assert!(matches!(
+            pattern.properties[0].key,
+            crate::parser::ast::PropertyKey::Computed(_)
+        ));
+    }
+
+    #[test]
+    fn test_parenthesized_object_literal_is_not_treated_as_arrow_params() {
+        let module = parse(r#"const value = ({ async foo(): number { return 1; } });"#);
+        let crate::parser::ast::Statement::VariableDecl(decl) = &module.statements[0] else {
+            panic!("Expected variable declaration");
+        };
+        let Some(crate::parser::ast::Expression::Object(object)) = &decl.initializer else {
+            panic!("Expected object initializer");
+        };
+        assert_eq!(object.properties.len(), 1);
+    }
+
+    #[test]
+    fn test_parenthesized_array_literal_is_not_treated_as_arrow_params() {
+        let module = parse("const value = ([1, 2, 3]);");
+        let crate::parser::ast::Statement::VariableDecl(decl) = &module.statements[0] else {
+            panic!("Expected variable declaration");
+        };
+        let Some(crate::parser::ast::Expression::Array(array)) = &decl.initializer else {
+            panic!("Expected array initializer");
+        };
+        assert_eq!(array.elements.len(), 3);
     }
 
     #[test]

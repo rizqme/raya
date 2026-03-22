@@ -417,7 +417,7 @@ pub struct ConditionalExpression {
 pub struct CallExpression {
     pub callee: Box<Expression>,
     pub type_args: Option<Vec<TypeAnnotation>>,
-    pub arguments: Vec<Expression>,
+    pub arguments: Vec<CallArgument>,
     pub optional: bool, // fn?.()
     pub span: Span,
 }
@@ -429,7 +429,7 @@ pub struct CallExpression {
 pub struct AsyncCallExpression {
     pub callee: Box<Expression>,
     pub type_args: Option<Vec<TypeAnnotation>>,
-    pub arguments: Vec<Expression>,
+    pub arguments: Vec<CallArgument>,
     pub span: Span,
 }
 
@@ -456,8 +456,62 @@ pub struct IndexExpression {
 pub struct NewExpression {
     pub callee: Box<Expression>,
     pub type_args: Option<Vec<TypeAnnotation>>,
-    pub arguments: Vec<Expression>,
+    pub arguments: Vec<CallArgument>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CallArgument {
+    Expression(Expression),
+    Spread(Expression),
+}
+
+impl CallArgument {
+    pub fn expression(&self) -> &Expression {
+        match self {
+            Self::Expression(expr) | Self::Spread(expr) => expr,
+        }
+    }
+
+    pub fn span(&self) -> &Span {
+        self.expression().span()
+    }
+
+    pub fn is_spread(&self) -> bool {
+        matches!(self, Self::Spread(_))
+    }
+}
+
+impl CallExpression {
+    pub fn has_spread_arguments(&self) -> bool {
+        self.arguments.iter().any(CallArgument::is_spread)
+    }
+
+    pub fn argument_expression(&self, index: usize) -> Option<&Expression> {
+        match self.arguments.get(index) {
+            Some(CallArgument::Expression(expr)) => Some(expr),
+            _ => None,
+        }
+    }
+}
+
+impl AsyncCallExpression {
+    pub fn has_spread_arguments(&self) -> bool {
+        self.arguments.iter().any(CallArgument::is_spread)
+    }
+}
+
+impl NewExpression {
+    pub fn has_spread_arguments(&self) -> bool {
+        self.arguments.iter().any(CallArgument::is_spread)
+    }
+
+    pub fn argument_expression(&self, index: usize) -> Option<&Expression> {
+        match self.arguments.get(index) {
+            Some(CallArgument::Expression(expr)) => Some(expr),
+            _ => None,
+        }
+    }
 }
 
 /// Arrow function: (x) => x + 1

@@ -1342,42 +1342,8 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
                 });
             }
 
-            // Use lookahead to determine if this is arrow function parameters or expression
-            // Arrow params: (x: type, y) => ... or (x, y): type => ...
-            // Expression: (x + y), (x), etc.
-            if looks_like_arrow_params(parser) {
-                // Parse as arrow function parameters
-                let params = try_parse_arrow_params(parser)?;
-                parser.expect(Token::RightParen)?;
-
-                // Check for return type annotation
-                let return_type = if parser.check(&Token::Colon) {
-                    parser.advance(); // consume :
-                    Some(super::types::parse_type_annotation(parser)?)
-                } else {
-                    None
-                };
-
-                // Must have arrow
-                if parser.check(&Token::Arrow) {
-                    parser.advance();
-                    return parse_arrow_function_body_with_type(
-                        parser,
-                        params,
-                        return_type,
-                        start_span,
-                    );
-                }
-
-                return Err(ParseError {
-                    kind: ParseErrorKind::UnexpectedToken {
-                        expected: vec![Token::Arrow],
-                        found: parser.current().clone(),
-                    },
-                    span: parser.current_span(),
-                    message: "Expected '=>' after parameter list".to_string(),
-                    suggestion: None,
-                });
+            if let Some(arrow) = try_parse_parenthesized_arrow_function(parser, start_span)? {
+                return Ok(arrow);
             }
 
             // Parse as regular expression (parentheses just group, don't wrap)
@@ -1478,14 +1444,85 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
     }
 }
 
+fn try_parse_parenthesized_arrow_function(
+    parser: &mut Parser,
+    start_span: Span,
+) -> Result<Option<Expression>, ParseError> {
+    let ambiguous_destructuring = matches!(parser.current(), Token::LeftBrace | Token::LeftBracket);
+    if !ambiguous_destructuring && !looks_like_arrow_params(parser) {
+        return Ok(None);
+    }
+
+    let checkpoint = parser.checkpoint();
+
+    let params = match try_parse_arrow_params(parser) {
+        Ok(params) => params,
+        Err(err) => {
+            parser.restore(checkpoint);
+            if ambiguous_destructuring {
+                return Ok(None);
+            }
+            return Err(err);
+        }
+    };
+
+    if let Err(err) = parser.expect(Token::RightParen) {
+        parser.restore(checkpoint);
+        if ambiguous_destructuring {
+            return Ok(None);
+        }
+        return Err(err);
+    }
+
+    let return_type = if parser.check(&Token::Colon) {
+        parser.advance();
+        match super::types::parse_type_annotation(parser) {
+            Ok(ty) => Some(ty),
+            Err(err) => {
+                parser.restore(checkpoint);
+                if ambiguous_destructuring {
+                    return Ok(None);
+                }
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
+
+    if !parser.check(&Token::Arrow) {
+        parser.restore(checkpoint);
+        if ambiguous_destructuring {
+            return Ok(None);
+        }
+        return Err(ParseError {
+            kind: ParseErrorKind::UnexpectedToken {
+                expected: vec![Token::Arrow],
+                found: parser.current().clone(),
+            },
+            span: parser.current_span(),
+            message: "Expected '=>' after parameter list".to_string(),
+            suggestion: None,
+        });
+    }
+
+    parser.advance();
+    parse_arrow_function_body_with_type(parser, params, return_type, start_span).map(Some)
+}
+
 /// Parse function call arguments.
-fn parse_arguments(parser: &mut Parser) -> Result<Vec<Expression>, ParseError> {
+fn parse_arguments(parser: &mut Parser) -> Result<Vec<CallArgument>, ParseError> {
     let mut arguments = Vec::with_capacity(4); // Most calls have < 4 arguments
     let mut guard = super::guards::LoopGuard::new("call_arguments");
 
     while !parser.check(&Token::RightParen) && !parser.at_eof() {
         guard.check()?;
-        let arg = parse_assignment_expression(parser)?;
+        let arg = if parser.check(&Token::DotDotDot) {
+            parser.advance();
+            CallArgument::Spread(parse_assignment_expression(parser)?)
+        } else {
+            CallArgument::Expression(parse_assignment_expression(parser)?)
+        };
         arguments.push(arg);
 
         if !parser.check(&Token::RightParen) {
@@ -1500,7 +1537,7 @@ fn parse_arguments(parser: &mut Parser) -> Result<Vec<Expression>, ParseError> {
     Ok(arguments)
 }
 
-fn parse_object_property_key(
+pub(super) fn parse_object_property_key(
     parser: &mut Parser,
     start_span: Span,
 ) -> Result<PropertyKey, ParseError> {
@@ -1550,10 +1587,8 @@ fn object_property_async_modifier(parser: &Parser) -> bool {
         return false;
     }
 
-    if let Some(next_span) = parser.peek_span() {
-        if next_span.line > parser.current_span().line {
-            return false;
-        }
+    if parser.has_line_terminator_before_peek() {
+        return false;
     }
 
     match parser.peek() {
@@ -1802,16 +1837,6 @@ fn parse_arrow_function_body_with_type(
 /// Destructuring patterns: { ... } or [ ... ] as parameters
 /// Expression pattern: identifier followed by operators (+, -, *, /, etc.)
 fn looks_like_arrow_params(parser: &Parser) -> bool {
-    // Object destructuring: { x, y }: Type or { x, y },
-    if parser.check(&Token::LeftBrace) {
-        return true;
-    }
-
-    // Array destructuring: [a, b]: Type or [a, b],
-    if parser.check(&Token::LeftBracket) {
-        return true;
-    }
-
     // Check for rest parameter first: ...identifier / ...{...} / ...[...]
     if parser.check(&Token::DotDotDot) {
         match parser.peek() {
@@ -1908,6 +1933,7 @@ fn parse_function_expression(
 fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseError> {
     let mut params = Vec::with_capacity(4);
     let mut guard = super::guards::LoopGuard::new("arrow_params");
+    let mut seen_rest = false;
 
     while !parser.check(&Token::RightParen) && !parser.at_eof() {
         guard.check()?;
@@ -1933,6 +1959,21 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
             pattern
         };
         let is_rest = rest_syntax || is_rest_pattern;
+
+        if is_rest {
+            if seen_rest {
+                return Err(ParseError::invalid_syntax(
+                    "Duplicate rest parameter",
+                    start_span,
+                ));
+            }
+            seen_rest = true;
+        } else if seen_rest {
+            return Err(ParseError::invalid_syntax(
+                "Rest parameter must be last",
+                start_span,
+            ));
+        }
 
         // Parse optional marker (param?: Type)
         // Rest parameters cannot be optional
@@ -2008,6 +2049,7 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
 pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>, ParseError> {
     let mut params = Vec::with_capacity(4); // Most functions have < 4 parameters
     let mut guard = super::guards::LoopGuard::new("function_parameters");
+    let mut seen_rest = false;
 
     while !parser.check(&Token::RightParen) && !parser.at_eof() {
         guard.check()?;
@@ -2020,6 +2062,21 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
         } else {
             false
         };
+
+        if is_rest {
+            if seen_rest {
+                return Err(ParseError::invalid_syntax(
+                    "Duplicate rest parameter",
+                    start_span,
+                ));
+            }
+            seen_rest = true;
+        } else if seen_rest {
+            return Err(ParseError::invalid_syntax(
+                "Rest parameter must be last",
+                start_span,
+            ));
+        }
 
         // Parse parameter decorators (@Inject, @Validate, etc.)
         let decorators = super::stmt::parse_decorators(parser)?;

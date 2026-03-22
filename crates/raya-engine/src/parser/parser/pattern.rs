@@ -3,6 +3,7 @@
 use super::{ParseError, Parser};
 use crate::parser::ast::{
     ArrayPattern, Identifier, ObjectPattern, ObjectPatternProperty, Pattern, PatternElement,
+    PropertyKey,
     RestPattern,
 };
 use crate::parser::interner::Symbol;
@@ -172,11 +173,7 @@ fn parse_object_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
         }
 
         // Parse key
-        let key = if parser.check_identifier_like() {
-            parser.expect_identifier_like()?
-        } else {
-            return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
-        };
+        let key = super::expr::parse_object_property_key(parser, prop_start)?;
 
         // Check for renaming: { x: y }
         let value = if parser.check(&Token::Colon) {
@@ -184,9 +181,15 @@ fn parse_object_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
             parse_pattern(parser)?
         } else {
             // Shorthand: { x } is equivalent to { x: x }
+            let PropertyKey::Identifier(identifier) = &key else {
+                return Err(ParseError::invalid_syntax(
+                    "Only identifier property names can use object-pattern shorthand",
+                    prop_start,
+                ));
+            };
             Pattern::Identifier(Identifier {
-                name: key.name,
-                span: key.span,
+                name: identifier.name,
+                span: identifier.span,
             })
         };
 

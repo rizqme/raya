@@ -78,7 +78,7 @@ pub struct PatternElement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjectPatternProperty {
     /// Property key
-    pub key: Identifier,
+    pub key: PropertyKey,
     /// Binding pattern (can be renamed)
     pub value: Pattern,
     /// Default value

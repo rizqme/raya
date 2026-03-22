@@ -17,7 +17,7 @@ use crate::parser::ast::*;
 use crate::parser::interner::Interner;
 use crate::parser::interner::Symbol;
 use crate::parser::lexer::Lexer;
-use crate::parser::token::{Span, Token};
+use crate::parser::token::{LexedToken, Span, Token};
 
 pub use error::{ParseError, ParseErrorKind};
 
@@ -27,7 +27,7 @@ pub use error::{ParseError, ParseErrorKind};
 /// for handling ambiguous constructs like arrow functions vs parenthesized expressions.
 pub struct Parser {
     /// Pre-tokenized input
-    tokens: Vec<(Token, Span)>,
+    tokens: Vec<LexedToken>,
 
     /// String interner for resolving symbols
     interner: Interner,
@@ -61,18 +61,18 @@ impl Parser {
         let (mut tokens, interner) = lexer.tokenize()?;
 
         // Add EOF token if not present
-        if tokens.is_empty() || !matches!(tokens.last().unwrap().0, Token::Eof) {
-            let eof_span = if let Some((_, last_span)) = tokens.last() {
+        if tokens.is_empty() || !matches!(tokens.last().unwrap().token, Token::Eof) {
+            let eof_span = if let Some(last) = tokens.last() {
                 Span::new(
-                    last_span.end,
-                    last_span.end,
-                    last_span.line,
-                    last_span.column,
+                    last.span.end,
+                    last.span.end,
+                    last.span.line,
+                    last.span.column,
                 )
             } else {
                 Span::new(0, 0, 1, 1)
             };
-            tokens.push((Token::Eof, eof_span));
+            tokens.push(LexedToken::new(Token::Eof, eof_span, false));
         }
 
         Ok(Self {
@@ -89,20 +89,20 @@ impl Parser {
     ///
     /// This is used internally for parsing template literal expressions
     /// where we already have tokens from the lexer.
-    pub(crate) fn from_tokens(mut tokens: Vec<(Token, Span)>, interner: Interner) -> Self {
+    pub(crate) fn from_tokens(mut tokens: Vec<LexedToken>, interner: Interner) -> Self {
         // Add EOF token if not present
-        if tokens.is_empty() || !matches!(tokens.last().unwrap().0, Token::Eof) {
-            let eof_span = if let Some((_, last_span)) = tokens.last() {
+        if tokens.is_empty() || !matches!(tokens.last().unwrap().token, Token::Eof) {
+            let eof_span = if let Some(last) = tokens.last() {
                 Span::new(
-                    last_span.end,
-                    last_span.end,
-                    last_span.line,
-                    last_span.column,
+                    last.span.end,
+                    last.span.end,
+                    last.span.line,
+                    last.span.column,
                 )
             } else {
                 Span::new(0, 0, 1, 1)
             };
-            tokens.push((Token::Eof, eof_span));
+            tokens.push(LexedToken::new(Token::Eof, eof_span, false));
         }
 
         Self {
@@ -183,27 +183,24 @@ impl Parser {
     /// Get the current token.
     #[inline(always)]
     pub fn current(&self) -> &Token {
-        &self.tokens[self.pos].0
+        &self.tokens[self.pos].token
     }
 
     /// Get the current token's span.
     #[inline(always)]
     pub fn current_span(&self) -> Span {
-        self.tokens[self.pos].1
+        self.tokens[self.pos].span
     }
 
     /// Returns true when the current token is separated from the previous token by
     /// at least one line terminator in the original source.
     ///
-    /// This is an approximation based on token start lines. It is sufficient for
-    /// ASI-sensitive constructs like `return`, `break`, `continue`, `yield`, and
-    /// postfix `++/--` until the parser is upgraded to carry explicit trivia bits.
     #[inline]
     pub(crate) fn has_line_terminator_before_current(&self) -> bool {
         if self.pos == 0 {
             return false;
         }
-        self.tokens[self.pos].1.line > self.tokens[self.pos - 1].1.line
+        self.tokens[self.pos].line_break_before
     }
 
     #[inline]
@@ -214,19 +211,26 @@ impl Parser {
     /// Peek at the next token (lookahead).
     #[inline(always)]
     pub fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.pos + 1).map(|(tok, _)| tok)
+        self.tokens.get(self.pos + 1).map(|token| &token.token)
     }
 
     /// Peek at the next token's span.
     #[inline]
     pub fn peek_span(&self) -> Option<Span> {
-        self.tokens.get(self.pos + 1).map(|(_, span)| *span)
+        self.tokens.get(self.pos + 1).map(|token| token.span)
+    }
+
+    #[inline]
+    pub(crate) fn has_line_terminator_before_peek(&self) -> bool {
+        self.tokens
+            .get(self.pos + 1)
+            .is_some_and(|token| token.line_break_before)
     }
 
     /// Peek two tokens ahead (lookahead 2).
     #[inline(always)]
     pub fn peek2(&self) -> Option<&Token> {
-        self.tokens.get(self.pos + 2).map(|(tok, _)| tok)
+        self.tokens.get(self.pos + 2).map(|token| &token.token)
     }
 
     /// Advance to the next token, returning the current token.
@@ -234,7 +238,7 @@ impl Parser {
     /// Note: This clones the token. Consider using current() + advance_without_return() if you don't need the value.
     #[inline]
     pub fn advance(&mut self) -> Token {
-        let tok = self.tokens[self.pos].0.clone();
+        let tok = self.tokens[self.pos].token.clone();
         if self.pos < self.tokens.len() - 1 {
             self.pos += 1;
         }
@@ -619,6 +623,17 @@ mod tests {
     }
 
     #[test]
+    fn test_detects_line_terminator_through_block_comment() {
+        let source = "return /*\n*/ 42;";
+        let mut parser = Parser::new(source).unwrap();
+
+        assert!(matches!(parser.current(), Token::Return));
+        parser.advance();
+        assert!(matches!(parser.current(), Token::IntLiteral(42)));
+        assert!(parser.has_line_terminator_before_current());
+    }
+
+    #[test]
     fn test_postfix_operator_respects_line_terminator() {
         use crate::parser::ast::Expression;
 
@@ -666,5 +681,87 @@ mod tests {
                 std::mem::discriminant(other)
             ),
         }
+    }
+
+    #[test]
+    fn test_parenthesized_object_expression_stays_grouped() {
+        use crate::parser::ast::Expression;
+
+        let mut parser = Parser::new("({ a: 1 })").unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        match expr {
+            Expression::Object(_) => {}
+            other => panic!("Expected object expression, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parenthesized_array_expression_stays_grouped() {
+        use crate::parser::ast::Expression;
+
+        let mut parser = Parser::new("([1, 2])").unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        match expr {
+            Expression::Array(_) => {}
+            other => panic!("Expected array expression, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_destructured_object_arrow_still_parses() {
+        use crate::parser::ast::Expression;
+
+        let mut parser = Parser::new("({ a }) => a").unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        match expr {
+            Expression::Arrow(_) => {}
+            other => panic!("Expected arrow function, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_destructured_array_arrow_still_parses() {
+        use crate::parser::ast::Expression;
+
+        let mut parser = Parser::new("([a]) => a").unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        match expr {
+            Expression::Arrow(_) => {}
+            other => panic!("Expected arrow function, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_call_expression_tracks_spread_arguments() {
+        use crate::parser::ast::{CallArgument, Expression};
+
+        let mut parser = Parser::new("fn(a, ...rest, b)").unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        let Expression::Call(call) = expr else {
+            panic!("Expected call expression");
+        };
+        assert_eq!(call.arguments.len(), 3);
+        assert!(matches!(call.arguments[0], CallArgument::Expression(_)));
+        assert!(matches!(call.arguments[1], CallArgument::Spread(_)));
+        assert!(matches!(call.arguments[2], CallArgument::Expression(_)));
+    }
+
+    #[test]
+    fn test_new_expression_tracks_spread_arguments() {
+        use crate::parser::ast::{CallArgument, Expression};
+
+        let mut parser = Parser::new("new Foo(...args)").unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        let Expression::New(new_expr) = expr else {
+            panic!("Expected new expression");
+        };
+        assert_eq!(new_expr.arguments.len(), 1);
+        assert!(matches!(new_expr.arguments[0], CallArgument::Spread(_)));
     }
 }

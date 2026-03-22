@@ -4,7 +4,7 @@
 //! It converts source code into a stream of tokens with precise source location information.
 
 use crate::parser::interner::Interner;
-use crate::parser::token::{Span, TemplatePart, Token};
+use crate::parser::token::{LexedToken, Span, TemplatePart, Token};
 use logos::Logos;
 
 /// Logos-based token enum for lexing.
@@ -601,7 +601,7 @@ fn unescape_string(s: &str) -> String {
 /// Main lexer structure.
 pub struct Lexer<'a> {
     source: &'a str,
-    tokens: Vec<(Token, Span)>,
+    tokens: Vec<LexedToken>,
     errors: Vec<LexError>,
     interner: Interner,
 }
@@ -650,10 +650,11 @@ impl<'a> Lexer<'a> {
 
     // Compound return carries token stream + interner together; splitting would add indirection.
     #[allow(clippy::type_complexity)]
-    pub fn tokenize(mut self) -> Result<(Vec<(Token, Span)>, Interner), Vec<LexError>> {
+    pub fn tokenize(mut self) -> Result<(Vec<LexedToken>, Interner), Vec<LexError>> {
         let mut pos = 0;
         let mut line = 1u32;
         let mut column = 1u32;
+        let mut line_break_before = false;
 
         while pos < self.source.len() {
             // Skip whitespace and comments manually before checking for template literal
@@ -671,6 +672,7 @@ impl<'a> Lexer<'a> {
                         line += 1;
                         column = 1;
                         pos += 1;
+                        line_break_before = true;
                     }
                     b'/' if pos + 1 < bytes.len() => {
                         // Check for comments
@@ -704,6 +706,7 @@ impl<'a> Lexer<'a> {
                                     if bytes[pos] == b'\n' {
                                         line += 1;
                                         column = 1;
+                                        line_break_before = true;
                                     } else {
                                         column += 1;
                                     }
@@ -731,7 +734,12 @@ impl<'a> Lexer<'a> {
                 match self.lex_template(pos) {
                     Ok((template, end_pos)) => {
                         self.tokens
-                            .push((Token::TemplateLiteral(template), start_span));
+                            .push(LexedToken::new(
+                                Token::TemplateLiteral(template),
+                                start_span,
+                                line_break_before,
+                            ));
+                        line_break_before = false;
 
                         // Update line/column for consumed template
                         for c in self.source[pos..end_pos].chars() {
@@ -779,14 +787,14 @@ impl<'a> Lexer<'a> {
                 let jsx_closing_tag_slash = self
                     .tokens
                     .last()
-                    .map_or(false, |(tok, _)| matches!(tok, Token::Less))
+                    .map_or(false, |tok| matches!(tok.token, Token::Less))
                     && (pos + 1 < self.source.len()
                         && (self.source.as_bytes()[pos + 1].is_ascii_alphabetic()
                             || self.source.as_bytes()[pos + 1] == b'>'));
 
-                let is_division = self.tokens.last().map_or(false, |(tok, _)| {
+                let is_division = self.tokens.last().map_or(false, |tok| {
                     matches!(
-                        tok,
+                        tok.token,
                         Token::Identifier(_)
                             | Token::IntLiteral(_)
                             | Token::FloatLiteral(_)
@@ -851,8 +859,12 @@ impl<'a> Lexer<'a> {
                         let pattern_sym = self.interner.intern(pattern);
                         let flags_sym = self.interner.intern(flags);
                         let span = Span::new(start, pos, line, column);
-                        self.tokens
-                            .push((Token::RegexLiteral(pattern_sym, flags_sym), span));
+                        self.tokens.push(LexedToken::new(
+                            Token::RegexLiteral(pattern_sym, flags_sym),
+                            span,
+                            line_break_before,
+                        ));
+                        line_break_before = false;
 
                         // Update column for the consumed regex
                         column += (pos - start) as u32;
@@ -876,7 +888,9 @@ impl<'a> Lexer<'a> {
                 match token_result {
                     Ok(logos_token) => {
                         let token = self.convert_token(logos_token);
-                        self.tokens.push((token, span));
+                        self.tokens
+                            .push(LexedToken::new(token, span, line_break_before));
+                        line_break_before = false;
                     }
                     Err(_) => {
                         let char = self.source[abs_start..].chars().next().unwrap_or('\0');
@@ -903,7 +917,8 @@ impl<'a> Lexer<'a> {
 
         // Add EOF token
         let eof_span = Span::new(self.source.len(), self.source.len(), line, column);
-        self.tokens.push((Token::Eof, eof_span));
+        self.tokens
+            .push(LexedToken::new(Token::Eof, eof_span, line_break_before));
 
         if self.errors.is_empty() {
             Ok((self.tokens, self.interner))
@@ -1207,7 +1222,7 @@ impl<'a> Lexer<'a> {
                             // Remove EOF token from the end
                             let tokens_without_eof: Vec<_> = tokens
                                 .into_iter()
-                                .filter(|(t, _)| !matches!(t, Token::Eof))
+                                .filter(|token| !matches!(token.token, Token::Eof))
                                 .collect();
                             parts.push(TemplatePart::Expression(tokens_without_eof));
                         }
@@ -1337,10 +1352,10 @@ mod tests {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().expect("should lex");
         assert_eq!(tokens.len(), 2); // Annotation + EOF
-        if let Token::Annotation(sym) = &tokens[0].0 {
+        if let Token::Annotation(sym) = &tokens[0].token {
             assert_eq!(interner.resolve(*sym), "json");
         } else {
-            panic!("Expected Annotation token, got {:?}", tokens[0].0);
+            panic!("Expected Annotation token, got {:?}", tokens[0].token);
         }
     }
 
@@ -1350,10 +1365,10 @@ mod tests {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().expect("should lex");
         assert_eq!(tokens.len(), 2); // Annotation + EOF
-        if let Token::Annotation(sym) = &tokens[0].0 {
+        if let Token::Annotation(sym) = &tokens[0].token {
             assert_eq!(interner.resolve(*sym), "json user_name");
         } else {
-            panic!("Expected Annotation token, got {:?}", tokens[0].0);
+            panic!("Expected Annotation token, got {:?}", tokens[0].token);
         }
     }
 
@@ -1363,10 +1378,10 @@ mod tests {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().expect("should lex");
         assert_eq!(tokens.len(), 2); // Annotation + EOF
-        if let Token::Annotation(sym) = &tokens[0].0 {
+        if let Token::Annotation(sym) = &tokens[0].token {
             assert_eq!(interner.resolve(*sym), "json age,omitempty");
         } else {
-            panic!("Expected Annotation token, got {:?}", tokens[0].0);
+            panic!("Expected Annotation token, got {:?}", tokens[0].token);
         }
     }
 
@@ -1376,10 +1391,10 @@ mod tests {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().expect("should lex");
         assert_eq!(tokens.len(), 2); // Annotation + EOF
-        if let Token::Annotation(sym) = &tokens[0].0 {
+        if let Token::Annotation(sym) = &tokens[0].token {
             assert_eq!(interner.resolve(*sym), "json -");
         } else {
-            panic!("Expected Annotation token, got {:?}", tokens[0].0);
+            panic!("Expected Annotation token, got {:?}", tokens[0].token);
         }
     }
 
@@ -1398,8 +1413,8 @@ class User {
         // Find annotation tokens
         let annotations: Vec<_> = tokens
             .iter()
-            .filter_map(|(t, _)| {
-                if let Token::Annotation(sym) = t {
+            .filter_map(|token| {
+                if let Token::Annotation(sym) = &token.token {
                     Some(interner.resolve(*sym).to_string())
                 } else {
                     None
@@ -1421,14 +1436,14 @@ class User {
         // Should not have any Annotation tokens
         let has_annotation = tokens
             .iter()
-            .any(|(t, _)| matches!(t, Token::Annotation(_)));
+            .any(|token| matches!(token.token, Token::Annotation(_)));
         assert!(
             !has_annotation,
             "Regular comments should not produce Annotation tokens"
         );
 
         // Should have the let statement tokens
-        assert!(tokens.iter().any(|(t, _)| matches!(t, Token::Let)));
+        assert!(tokens.iter().any(|token| matches!(token.token, Token::Let)));
     }
 
     #[test]
@@ -1440,7 +1455,7 @@ class User {
         // Should not have any Annotation tokens (single @ is not an annotation)
         let has_annotation = tokens
             .iter()
-            .any(|(t, _)| matches!(t, Token::Annotation(_)));
+            .any(|token| matches!(token.token, Token::Annotation(_)));
         assert!(
             !has_annotation,
             "//@... should not produce Annotation tokens"

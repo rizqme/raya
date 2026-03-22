@@ -1376,16 +1376,30 @@ impl<'a> Lowerer<'a> {
                 });
 
                 for property in &obj_pat.properties {
-                    let prop_name = self.interner.resolve(property.key.name).to_string();
-                    let inferred_field_ty = self
-                        .object_property_type_from_value_type(value_reg.ty, &prop_name)
+                    let static_prop_name = match &property.key {
+                        ast::PropertyKey::Identifier(id) => {
+                            Some(self.interner.resolve(id.name).to_string())
+                        }
+                        ast::PropertyKey::StringLiteral(lit) => {
+                            Some(self.interner.resolve(lit.value).to_string())
+                        }
+                        ast::PropertyKey::IntLiteral(lit) => Some(lit.value.to_string()),
+                        ast::PropertyKey::Computed(_) => None,
+                    };
+                    let inferred_field_ty = static_prop_name
+                        .as_ref()
+                        .and_then(|prop_name| {
+                            self.object_property_type_from_value_type(value_reg.ty, prop_name)
+                        })
                         .unwrap_or(TypeId::new(0));
 
-                    let field_reg = if let Some(ref layout) = field_layout {
+                    let field_reg = if let (Some(layout), Some(prop_name)) =
+                        (field_layout.as_ref(), static_prop_name.as_ref())
+                    {
                         // Statically known layout: use direct field slot when present.
                         let Some(field_index) = layout
                             .iter()
-                            .find(|(name, _)| name == &prop_name)
+                            .find(|(name, _)| name == prop_name)
                             .map(|(_, idx)| *idx as u16)
                         else {
                             if let Some(default_expr) = &property.default {
@@ -1431,17 +1445,48 @@ impl<'a> Lowerer<'a> {
                         }
                         loaded
                     } else {
-                        // Dynamic layout: read by property name instead of positional slot fallback.
-                        let key_reg = self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
-                        self.emit(IrInstr::Assign {
-                            dest: key_reg.clone(),
-                            value: IrValue::Constant(IrConstant::String(prop_name.clone())),
-                        });
+                        // Dynamic layout or computed key: read through keyed property access.
+                        let key_reg = match &property.key {
+                            ast::PropertyKey::Identifier(id) => {
+                                let key_reg =
+                                    self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
+                                self.emit(IrInstr::Assign {
+                                    dest: key_reg.clone(),
+                                    value: IrValue::Constant(IrConstant::String(
+                                        self.interner.resolve(id.name).to_string(),
+                                    )),
+                                });
+                                key_reg
+                            }
+                            ast::PropertyKey::StringLiteral(lit) => {
+                                let key_reg =
+                                    self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
+                                self.emit(IrInstr::Assign {
+                                    dest: key_reg.clone(),
+                                    value: IrValue::Constant(IrConstant::String(
+                                        self.interner.resolve(lit.value).to_string(),
+                                    )),
+                                });
+                                key_reg
+                            }
+                            ast::PropertyKey::IntLiteral(lit) => {
+                                let key_reg =
+                                    self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
+                                self.emit(IrInstr::Assign {
+                                    dest: key_reg.clone(),
+                                    value: IrValue::Constant(IrConstant::String(
+                                        lit.value.to_string(),
+                                    )),
+                                });
+                                key_reg
+                            }
+                            ast::PropertyKey::Computed(expr) => self.lower_expr(expr),
+                        };
                         let loaded = self.alloc_register(inferred_field_ty);
-                        self.emit(IrInstr::NativeCall {
-                            dest: Some(loaded.clone()),
-                            native_id: crate::compiler::native_id::REFLECT_GET,
-                            args: vec![value_reg.clone(), key_reg],
+                        self.emit(IrInstr::DynGetKeyed {
+                            dest: loaded.clone(),
+                            object: value_reg.clone(),
+                            key: key_reg,
                         });
                         loaded
                     };
@@ -1792,7 +1837,7 @@ impl<'a> Lowerer<'a> {
     fn find_return_alias_for_callee(
         &self,
         callee: &ast::Expression,
-        _args: &[ast::Expression],
+        _args: &[ast::CallArgument],
     ) -> Option<String> {
         let class_name_from_id = |nominal_type_id: crate::compiler::ir::NominalTypeId| {
             self.class_map.iter().find_map(|(&sym, &cid)| {

@@ -1381,8 +1381,23 @@ impl<'a> TypeChecker<'a> {
             }
             Pattern::Object(obj_pat) => {
                 for prop in &obj_pat.properties {
-                    let prop_name = self.resolve(prop.key.name);
-                    let prop_ty = self.destructure_object_property_type(value_ty, &prop_name);
+                    let prop_ty = match &prop.key {
+                        crate::parser::ast::PropertyKey::Identifier(id) => {
+                            let prop_name = self.resolve(id.name);
+                            self.destructure_object_property_type(value_ty, &prop_name)
+                        }
+                        crate::parser::ast::PropertyKey::StringLiteral(lit) => {
+                            let prop_name = self.resolve(lit.value);
+                            self.destructure_object_property_type(value_ty, &prop_name)
+                        }
+                        crate::parser::ast::PropertyKey::IntLiteral(lit) => {
+                            self.destructure_object_property_type(value_ty, &lit.value.to_string())
+                        }
+                        crate::parser::ast::PropertyKey::Computed(expr) => {
+                            self.check_expr(expr);
+                            Some(self.inference_fallback_type())
+                        }
+                    };
                     // If there's a default expression, use its type when property is missing
                     let final_ty = if let Some(ref default_expr) = prop.default {
                         let default_ty = self.check_expr(default_expr);
@@ -2181,13 +2196,13 @@ impl<'a> TypeChecker<'a> {
             Expression::Call(c) => {
                 self.collect_this_assignments_expr(&c.callee, assigned);
                 for a in &c.arguments {
-                    self.collect_this_assignments_expr(a, assigned);
+                    self.collect_this_assignments_expr(a.expression(), assigned);
                 }
             }
             Expression::AsyncCall(c) => {
                 self.collect_this_assignments_expr(&c.callee, assigned);
                 for a in &c.arguments {
-                    self.collect_this_assignments_expr(a, assigned);
+                    self.collect_this_assignments_expr(a.expression(), assigned);
                 }
             }
             Expression::Member(m) => self.collect_this_assignments_expr(&m.object, assigned),
@@ -3416,7 +3431,7 @@ impl<'a> TypeChecker<'a> {
         // super(...) constructor call
         if let Expression::Super(_) = call.callee.as_ref() {
             for arg in &call.arguments {
-                self.check_expr(arg);
+                self.check_expr(arg.expression());
             }
 
             if self.in_constructor {
@@ -3448,14 +3463,14 @@ impl<'a> TypeChecker<'a> {
                 let arg_types: Vec<(TypeId, crate::parser::Span)> = call
                     .arguments
                     .iter()
-                    .map(|arg| (self.check_expr(arg), *arg.span()))
+                    .map(|arg| (self.check_expr(arg.expression()), *arg.span()))
                     .collect();
                 return self.get_opcode_intrinsic_type(opcode_name, call, &arg_types);
             }
             if let Some(intrinsic_ty) = self.try_check_intrinsic(call) {
                 // Still type-check the arguments for error detection
                 for arg in &call.arguments {
-                    self.check_expr(arg);
+                    self.check_expr(arg.expression());
                 }
                 return intrinsic_ty;
             }
@@ -3496,7 +3511,7 @@ impl<'a> TypeChecker<'a> {
             // Treating these as ordinary method calls leaks direct-call return
             // types across rebound receivers and miscompiles later property access.
             for arg in &call.arguments {
-                self.check_expr(arg);
+                self.check_expr(arg.expression());
             }
             return self.inference_fallback_type();
         }
@@ -3517,7 +3532,7 @@ impl<'a> TypeChecker<'a> {
         let arg_types: Vec<(TypeId, crate::parser::Span)> = call
             .arguments
             .iter()
-            .map(|arg| (self.check_expr(arg), *arg.span()))
+            .map(|arg| (self.check_expr(arg.expression()), *arg.span()))
             .collect();
 
         // Clone the function type to avoid borrow checker issues. Structural
@@ -3566,6 +3581,7 @@ impl<'a> TypeChecker<'a> {
                 };
 
                 if self.enforce_call_arity()
+                    && !call.has_spread_arguments()
                     && (arg_types.len() > max_params || arg_types.len() < min_params)
                 {
                     self.push_error_soft(CheckError::ArgumentCountMismatch {
@@ -3799,7 +3815,7 @@ impl<'a> TypeChecker<'a> {
             _ => {
                 if self.allows_dynamic_any() && self.type_is_dynamic_anyish(target_ty) {
                     for arg in &call.arguments {
-                        self.check_expr(arg);
+                        self.check_expr(arg.expression());
                     }
                     return Some(self.type_ctx.any_type());
                 }
@@ -3812,7 +3828,7 @@ impl<'a> TypeChecker<'a> {
         let arg_types: Vec<(TypeId, crate::parser::Span)> = call
             .arguments
             .iter()
-            .map(|arg| (self.check_expr(arg), *arg.span()))
+            .map(|arg| (self.check_expr(arg.expression()), *arg.span()))
             .collect();
         let expected_this_ty = self.infer_helper_expected_this_type(&member.object);
         let debug_helper = std::env::var_os("RAYA_DEBUG_HELPER_CALL").is_some();
@@ -4172,7 +4188,7 @@ impl<'a> TypeChecker<'a> {
             Expression::Call(call) => {
                 self.collect_free_vars_expr(&call.callee, collector);
                 for arg in &call.arguments {
-                    self.collect_free_vars_expr(arg, collector);
+                    self.collect_free_vars_expr(arg.expression(), collector);
                 }
             }
             Expression::Member(member) => {
@@ -5210,7 +5226,7 @@ impl<'a> TypeChecker<'a> {
 
             if self.is_js_mode() && name == "Function" {
                 for arg in &new_expr.arguments {
-                    self.check_expr(arg);
+                    self.check_expr(arg.expression());
                 }
                 let any_ty = self.type_ctx.any_type();
                 return self.type_ctx.function_type(vec![], any_ty, false);
@@ -5274,7 +5290,7 @@ impl<'a> TypeChecker<'a> {
             if let Some(ty) = builtin_type {
                 // Check constructor arguments
                 for arg in &new_expr.arguments {
-                    self.check_expr(arg);
+                    self.check_expr(arg.expression());
                 }
                 return ty;
             }
@@ -5316,7 +5332,7 @@ impl<'a> TypeChecker<'a> {
 
                     // Check constructor arguments (for now, just check them)
                     for arg in &new_expr.arguments {
-                        self.check_expr(arg);
+                        self.check_expr(arg.expression());
                     }
 
                     // If the class has type parameters and we have type arguments,
@@ -5347,7 +5363,7 @@ impl<'a> TypeChecker<'a> {
                     let constructor_ty = self.get_var_type(&name);
                     // Support class aliases (e.g., const B = A; new B()) for imported or helper-bound constructors.
                     for arg in &new_expr.arguments {
-                        self.check_expr(arg);
+                        self.check_expr(arg.expression());
                     }
                     if let Some(ty) = constructor_ty {
                         if let Some(return_ty) = self.first_construct_signature_return_type(ty) {
@@ -5428,13 +5444,14 @@ impl<'a> TypeChecker<'a> {
             let arg_types: Vec<(TypeId, crate::parser::Span)> = new_expr
                 .arguments
                 .iter()
-                .map(|arg| (self.check_expr(arg), *arg.span()))
+                .map(|arg| (self.check_expr(arg.expression()), *arg.span()))
                 .collect();
             if self.is_js_mode() {
                 return self.type_ctx.unknown_type();
             }
             let (min_params, max_params) = self.compute_fn_arity_bounds(&func);
             if self.enforce_call_arity()
+                && !new_expr.has_spread_arguments()
                 && (arg_types.len() < min_params || arg_types.len() > max_params)
             {
                 self.push_error_soft(CheckError::ArgumentCountMismatch {
@@ -5454,7 +5471,7 @@ impl<'a> TypeChecker<'a> {
 
         if self.is_js_mode() {
             for arg in &new_expr.arguments {
-                self.check_expr(arg);
+                self.check_expr(arg.expression());
             }
             return self.type_ctx.unknown_type();
         }
@@ -5468,7 +5485,7 @@ impl<'a> TypeChecker<'a> {
 
         // Check arguments even if we can't determine the class
         for arg in &new_expr.arguments {
-            self.check_expr(arg);
+            self.check_expr(arg.expression());
         }
         self.type_ctx.unknown_type()
     }
@@ -5727,7 +5744,7 @@ impl<'a> TypeChecker<'a> {
     fn check_async_call(&mut self, async_call: &crate::parser::ast::AsyncCallExpression) -> TypeId {
         // Check all arguments
         for arg in &async_call.arguments {
-            self.check_expr(arg);
+            self.check_expr(arg.expression());
         }
 
         // Get the callee's return type
