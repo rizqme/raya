@@ -1845,6 +1845,7 @@ mod tests {
             visible_length: 0,
             is_strict_js: false,
             uses_builtin_this_coercion: false,
+            js_arguments_mapping: Vec::new(),
             local_count: 1,
             code: writer.into_bytes(),
         });
@@ -1997,6 +1998,7 @@ mod tests {
             visible_length: 1,
             is_strict_js: false,
             uses_builtin_this_coercion: false,
+            js_arguments_mapping: Vec::new(),
             local_count: 2,
             code: writer.into_bytes(),
         });

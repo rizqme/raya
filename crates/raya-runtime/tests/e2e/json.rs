@@ -186,10 +186,13 @@ fn test_json_parse_array_in_object() {
 #[test]
 fn test_json_parse_null_object_property_access() {
     // Accessing a property on null follows JS semantics and throws.
-    expect_runtime_error(r#"
+    expect_runtime_error(
+        r#"
         let data = JSON.parse('null');
         return data.anything;
-    "#, "Cannot read properties of null");
+    "#,
+        "Cannot read properties of null",
+    );
 }
 
 #[test]

@@ -2713,7 +2713,8 @@ const value = {
 
     #[test]
     fn test_object_pattern_accepts_string_and_numeric_keys() {
-        let parser = Parser::new(r#"const { "name": alias, 0: zero } = value;"#).expect("should lex");
+        let parser =
+            Parser::new(r#"const { "name": alias, 0: zero } = value;"#).expect("should lex");
         let (module, interner) = parser.parse().expect("should parse");
         let crate::parser::ast::Statement::VariableDecl(decl) = &module.statements[0] else {
             panic!("Expected variable declaration");

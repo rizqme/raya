@@ -19,8 +19,8 @@ use crate::parser::ast::{
     ExportDecl, Expression, ImportSpecifier, Module as AstModule, Pattern, Statement,
 };
 use crate::parser::checker::{
-    check_early_errors, Binder, CheckerPolicy, ScopeId, ScopeKind, Symbol, SymbolFlags,
-    SymbolKind, TypeChecker, TypeSystemMode,
+    check_early_errors, Binder, CheckerPolicy, ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind,
+    TypeChecker, TypeSystemMode,
 };
 use crate::parser::{Interner, Parser, Span, TypeContext};
 
@@ -923,7 +923,11 @@ impl ModuleCompiler {
         check_early_errors(&ast, &interner, self.checker_mode).map_err(|e| {
             ModuleCompileError::ParseError {
                 path: path.clone(),
-                message: e.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
+                message: e
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
             }
         })?;
         if debug_stages {

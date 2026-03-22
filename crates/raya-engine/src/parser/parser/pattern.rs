@@ -3,8 +3,7 @@
 use super::{ParseError, Parser};
 use crate::parser::ast::{
     ArrayPattern, Identifier, ObjectPattern, ObjectPatternProperty, Pattern, PatternElement,
-    PropertyKey,
-    RestPattern,
+    PropertyKey, RestPattern,
 };
 use crate::parser::interner::Symbol;
 use crate::parser::token::Token;

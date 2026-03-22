@@ -854,8 +854,10 @@ impl<'a> Interpreter<'a> {
                     }
                     if let Some(has_trap) = self.get_field_value_by_name(proxy.handler, "has") {
                         if !has_trap.is_undefined() && !has_trap.is_null() {
-                            let key_ptr =
-                                self.gc.lock().allocate(RayaString::new(property_key.clone()));
+                            let key_ptr = self
+                                .gc
+                                .lock()
+                                .allocate(RayaString::new(property_key.clone()));
                             let key_value = unsafe {
                                 Value::from_ptr(
                                     std::ptr::NonNull::new(key_ptr.as_ptr())

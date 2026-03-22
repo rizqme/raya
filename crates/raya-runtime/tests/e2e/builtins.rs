@@ -2708,6 +2708,154 @@ fn test_node_compat_arrow_inherits_outer_arguments_object() {
 }
 
 #[test]
+fn test_node_compat_arguments_object_define_property_disconnects_mapping() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function(a) {
+                Object.defineProperty(arguments, "0", {
+                    configurable: false,
+                    enumerable: false,
+                    writable: false
+                });
+                a = 2;
+                let desc = Object.getOwnPropertyDescriptor(arguments, "0");
+                return JSON.stringify([
+                    desc.value,
+                    desc.writable,
+                    desc.enumerable,
+                    desc.configurable,
+                    arguments[0],
+                    a
+                ]);
+            };
+            return probe(1);
+        }
+    "#,
+        "[1,false,false,false,1,2]",
+    );
+}
+
+#[test]
+fn test_node_compat_arguments_object_has_symbol_iterator() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function() {
+                "use strict";
+                let desc = Object.getOwnPropertyDescriptor(arguments, Symbol.iterator);
+                return JSON.stringify([
+                    desc !== undefined,
+                    desc.writable,
+                    desc.enumerable,
+                    desc.configurable,
+                    arguments[Symbol.iterator] === [][Symbol.iterator]
+                ]);
+            };
+            return probe();
+        }
+    "#,
+        "[true,true,false,true,true]",
+    );
+}
+
+#[test]
+fn test_node_compat_delete_arguments_binding_returns_false() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function() {
+                return JSON.stringify([delete arguments, typeof arguments]);
+            };
+            return probe();
+        }
+    "#,
+        "[false,\"object\"]",
+    );
+}
+
+#[test]
+fn test_node_compat_arguments_caller_is_absent() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function() {
+                return JSON.stringify([
+                    Object.getOwnPropertyDescriptor(arguments, "caller") === undefined,
+                    arguments.hasOwnProperty("caller")
+                ]);
+            };
+            return probe();
+        }
+    "#,
+        "[true,false]",
+    );
+}
+
+#[test]
+fn test_node_compat_arguments_callee_descriptor_hides_accessor_fields_in_sloppy_mode() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function() {
+                let desc = Object.getOwnPropertyDescriptor(arguments, "callee");
+                return JSON.stringify([
+                    desc.writable,
+                    desc.enumerable,
+                    desc.configurable,
+                    desc.hasOwnProperty("get"),
+                    desc.hasOwnProperty("set")
+                ]);
+            };
+            return probe();
+        }
+    "#,
+        "[true,false,true,false,false]",
+    );
+}
+
+#[test]
+fn test_node_compat_descriptor_objects_hide_absent_fields_in_reflection() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function() {
+                let desc = Object.getOwnPropertyDescriptor(arguments, "callee");
+                return JSON.stringify([
+                    Object.getOwnPropertyDescriptor(desc, "get") === undefined,
+                    Object.getOwnPropertyDescriptor(desc, "set") === undefined,
+                    Object.getOwnPropertyDescriptor(desc, "value") !== undefined
+                ]);
+            };
+            return probe();
+        }
+    "#,
+        "[true,true,true]",
+    );
+}
+
+#[test]
+fn test_node_compat_top_level_strict_functions_inherit_arguments_poisoning() {
+    expect_string_runtime_node_compat(
+        r#"
+        "use strict";
+        function main(): string {
+            let probe = function() {
+                try {
+                    let value = arguments.callee;
+                    return JSON.stringify(["NO_THROW", value === undefined]);
+                } catch (e) {
+                    return JSON.stringify([e.constructor === TypeError, e.name]);
+                }
+            };
+            return probe();
+        }
+    "#,
+        "[true,\"TypeError\"]",
+    );
+}
+
+#[test]
 fn test_node_compat_weakmap_basic_object_key_roundtrip() {
     expect_i32_runtime_node_compat(
         r#"

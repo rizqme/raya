@@ -367,7 +367,10 @@ impl<'a> EarlyErrorPass<'a> {
         result
     }
 
-    fn lookup_decl(entries: &[(Symbol, crate::parser::Span)], name: Symbol) -> Option<crate::parser::Span> {
+    fn lookup_decl(
+        entries: &[(Symbol, crate::parser::Span)],
+        name: Symbol,
+    ) -> Option<crate::parser::Span> {
         entries
             .iter()
             .find_map(|(symbol, span)| (*symbol == name).then_some(*span))
@@ -385,11 +388,15 @@ impl<'a> EarlyErrorPass<'a> {
     }
 
     fn declare_param_identifier(&mut self, ident: &Identifier) {
-        self.current_scope_mut().params.push((ident.name, ident.span));
+        self.current_scope_mut()
+            .params
+            .push((ident.name, ident.span));
     }
 
     fn declare_catch_identifier(&mut self, ident: &Identifier) {
-        self.current_scope_mut().catch_params.push((ident.name, ident.span));
+        self.current_scope_mut()
+            .catch_params
+            .push((ident.name, ident.span));
     }
 
     fn current_scope_is_function_body(&self) -> bool {
@@ -402,7 +409,11 @@ impl<'a> EarlyErrorPass<'a> {
 
         if Self::lookup_decl(&current.lexical, ident.name).is_some() {
             self.error(
-                format!("Duplicate {} binding '{}'", label, self.interner.resolve(ident.name)),
+                format!(
+                    "Duplicate {} binding '{}'",
+                    label,
+                    self.interner.resolve(ident.name)
+                ),
                 ident.span,
             );
             return;
@@ -470,7 +481,9 @@ impl<'a> EarlyErrorPass<'a> {
             return;
         }
 
-        self.current_scope_mut().lexical.push((ident.name, ident.span));
+        self.current_scope_mut()
+            .lexical
+            .push((ident.name, ident.span));
     }
 
     fn declare_var_identifier(&mut self, ident: &Identifier) {
@@ -523,7 +536,10 @@ impl<'a> EarlyErrorPass<'a> {
     }
 
     fn has_label(&self, name: Symbol) -> bool {
-        self.label_stack.iter().rev().any(|label| label.name == name)
+        self.label_stack
+            .iter()
+            .rev()
+            .any(|label| label.name == name)
     }
 
     fn has_iteration_label(&self, name: Symbol) -> bool {
@@ -537,7 +553,10 @@ impl<'a> EarlyErrorPass<'a> {
         match stmt {
             Statement::VariableDecl(decl) => self.check_var_decl(decl),
             Statement::FunctionDecl(func) => {
-                if matches!(self.current_scope().kind, ScopeKind::Block | ScopeKind::Catch) {
+                if matches!(
+                    self.current_scope().kind,
+                    ScopeKind::Block | ScopeKind::Catch
+                ) {
                     self.declare_lexical_identifier(&func.name, "function");
                 } else {
                     self.declare_var_identifier(&func.name);
@@ -650,7 +669,9 @@ impl<'a> EarlyErrorPass<'a> {
     }
 
     fn check_block(&mut self, block: &BlockStatement) {
-        self.push_scope(ScopeKind::Block, |this| this.check_block_statements(&block.statements));
+        self.push_scope(ScopeKind::Block, |this| {
+            this.check_block_statements(&block.statements)
+        });
     }
 
     fn check_block_statements(&mut self, statements: &[Statement]) {
@@ -711,11 +732,7 @@ impl<'a> EarlyErrorPass<'a> {
     fn check_function_expr(&mut self, func: &FunctionExpression) {
         let body_has_use_strict =
             Self::directive_prologue_is_strict(&func.body.statements, self.interner);
-        let lexical = if func.is_method {
-            self.current_lexical()
-        } else {
-            LexicalContext::default()
-        };
+        let lexical = self.current_lexical();
         let body_strict = lexical.strict || body_has_use_strict;
         if let Some(name) = &func.name {
             if body_strict {
@@ -795,96 +812,97 @@ impl<'a> EarlyErrorPass<'a> {
         self.push_scope(ScopeKind::Class, |this| {
             for member in &class.members {
                 match member {
-                ClassMember::Field(field) => {
-                    if let Some(initializer) = &field.initializer {
-                        this.push_lexical(
-                            LexicalContext {
-                                super_property_allowed: has_super_class,
-                                super_call_allowed: false,
-                                strict: true,
-                            },
-                            |this| this.check_expr(initializer),
-                        );
+                    ClassMember::Field(field) => {
+                        if let Some(initializer) = &field.initializer {
+                            this.push_lexical(
+                                LexicalContext {
+                                    super_property_allowed: has_super_class,
+                                    super_call_allowed: false,
+                                    strict: true,
+                                },
+                                |this| this.check_expr(initializer),
+                            );
+                        }
                     }
-                }
-                ClassMember::Method(method) => {
-                    match method.kind {
-                        MethodKind::Getter if !method.params.is_empty() => this.error(
-                            "Getter must not declare parameters",
-                            method.span,
-                        ),
-                        MethodKind::Setter if method.params.len() != 1 => this.error(
-                            "Setter must declare exactly one parameter",
-                            method.span,
-                        ),
-                        _ => {}
+                    ClassMember::Method(method) => {
+                        match method.kind {
+                            MethodKind::Getter if !method.params.is_empty() => {
+                                this.error("Getter must not declare parameters", method.span)
+                            }
+                            MethodKind::Setter if method.params.len() != 1 => {
+                                this.error("Setter must declare exactly one parameter", method.span)
+                            }
+                            _ => {}
+                        }
+                        this.check_parameter_list(&method.params, true, false, method.span);
+                        if let Some(body) = &method.body {
+                            this.push_function(
+                                method.is_async,
+                                method.is_generator,
+                                LexicalContext {
+                                    super_property_allowed: has_super_class,
+                                    super_call_allowed: false,
+                                    strict: true,
+                                },
+                                |this| {
+                                    this.push_scope(ScopeKind::Parameter, |this| {
+                                        for param in &method.params {
+                                            this.declare_pattern_with(
+                                                &param.pattern,
+                                                |pass, ident| {
+                                                    pass.declare_param_identifier(ident);
+                                                },
+                                            );
+                                        }
+                                        this.push_scope(ScopeKind::FunctionBody, |this| {
+                                            this.check_block_statements(&body.statements);
+                                        });
+                                    });
+                                },
+                            );
+                        }
                     }
-                    this.check_parameter_list(&method.params, true, false, method.span);
-                    if let Some(body) = &method.body {
+                    ClassMember::Constructor(ctor) => {
+                        constructor_count += 1;
+                        if constructor_count > 1 {
+                            this.error("Class must not declare multiple constructors", ctor.span);
+                        }
+                        this.check_parameter_list(&ctor.params, true, false, ctor.span);
                         this.push_function(
-                            method.is_async,
-                            method.is_generator,
+                            false,
+                            false,
                             LexicalContext {
                                 super_property_allowed: has_super_class,
-                                super_call_allowed: false,
+                                super_call_allowed: has_super_class,
                                 strict: true,
                             },
                             |this| {
                                 this.push_scope(ScopeKind::Parameter, |this| {
-                                    for param in &method.params {
+                                    for param in &ctor.params {
                                         this.declare_pattern_with(&param.pattern, |pass, ident| {
                                             pass.declare_param_identifier(ident);
                                         });
                                     }
                                     this.push_scope(ScopeKind::FunctionBody, |this| {
-                                        this.check_block_statements(&body.statements);
+                                        this.check_block_statements(&ctor.body.statements);
                                     });
                                 });
                             },
                         );
                     }
-                }
-                ClassMember::Constructor(ctor) => {
-                    constructor_count += 1;
-                    if constructor_count > 1 {
-                        this.error("Class must not declare multiple constructors", ctor.span);
-                    }
-                    this.check_parameter_list(&ctor.params, true, false, ctor.span);
-                    this.push_function(
-                        false,
-                        false,
+                    ClassMember::StaticBlock(block) => this.push_lexical(
                         LexicalContext {
                             super_property_allowed: has_super_class,
-                            super_call_allowed: has_super_class,
+                            super_call_allowed: false,
                             strict: true,
                         },
                         |this| {
-                            this.push_scope(ScopeKind::Parameter, |this| {
-                                for param in &ctor.params {
-                                    this.declare_pattern_with(&param.pattern, |pass, ident| {
-                                        pass.declare_param_identifier(ident);
-                                    });
-                                }
-                                this.push_scope(ScopeKind::FunctionBody, |this| {
-                                    this.check_block_statements(&ctor.body.statements);
-                                });
+                            this.push_scope(ScopeKind::StaticBlock, |this| {
+                                this.check_block_statements(&block.statements);
                             });
                         },
-                    );
+                    ),
                 }
-                ClassMember::StaticBlock(block) => this.push_lexical(
-                    LexicalContext {
-                        super_property_allowed: has_super_class,
-                        super_call_allowed: false,
-                        strict: true,
-                    },
-                    |this| {
-                        this.push_scope(ScopeKind::StaticBlock, |this| {
-                            this.check_block_statements(&block.statements);
-                        });
-                    },
-                ),
-            }
             }
         });
     }
@@ -1053,9 +1071,7 @@ impl<'a> EarlyErrorPass<'a> {
 
     fn is_valid_assignment_target(expr: &Expression) -> bool {
         match expr {
-            Expression::Identifier(_)
-            | Expression::Member(_)
-            | Expression::Index(_) => true,
+            Expression::Identifier(_) | Expression::Member(_) | Expression::Index(_) => true,
             Expression::Parenthesized(paren) => Self::is_valid_assignment_target(&paren.expression),
             Expression::Array(array) => array.elements.iter().flatten().all(|elem| match elem {
                 ArrayElement::Expression(expr) | ArrayElement::Spread(expr) => {
@@ -1064,7 +1080,9 @@ impl<'a> EarlyErrorPass<'a> {
             }),
             Expression::Object(obj) => obj.properties.iter().all(|prop| match prop {
                 ObjectProperty::Property(prop) => Self::is_valid_assignment_target(&prop.value),
-                ObjectProperty::Spread(spread) => Self::is_valid_assignment_target(&spread.argument),
+                ObjectProperty::Spread(spread) => {
+                    Self::is_valid_assignment_target(&spread.argument)
+                }
             }),
             _ => false,
         }
@@ -1325,7 +1343,9 @@ mod tests {
         let (module, interner) = parse_module("return 1;");
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
             .expect_err("expected early error");
-        assert!(errors[0].message.contains("Return statement outside of function"));
+        assert!(errors[0]
+            .message
+            .contains("Return statement outside of function"));
     }
 
     #[test]
@@ -1368,7 +1388,8 @@ mod tests {
 
     #[test]
     fn test_labeled_break_and_continue_in_loop_are_allowed() {
-        let (module, interner) = parse_module("outer: while (true) { continue outer; break outer; }");
+        let (module, interner) =
+            parse_module("outer: while (true) { continue outer; break outer; }");
         check_early_errors(&module, &interner, TypeSystemMode::Ts).expect("should pass");
     }
 
@@ -1390,7 +1411,8 @@ mod tests {
 
     #[test]
     fn test_super_call_outside_derived_constructor_is_early_error() {
-        let (module, interner) = parse_module("class Base {} class Child extends Base { method() { super(); } }");
+        let (module, interner) =
+            parse_module("class Base {} class Child extends Base { method() { super(); } }");
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
             .expect_err("expected early error");
         assert!(errors[0]
@@ -1435,7 +1457,8 @@ mod tests {
 
     #[test]
     fn test_getter_with_parameter_is_early_error() {
-        let (module, interner) = parse_module("class Example { get value(x: number) { return x; } }");
+        let (module, interner) =
+            parse_module("class Example { get value(x: number) { return x; } }");
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
             .expect_err("expected early error");
         assert!(errors[0]
@@ -1465,8 +1488,19 @@ mod tests {
 
     #[test]
     fn test_use_strict_forbids_assignment_to_arguments() {
-        let (module, interner) =
-            parse_module("function f() { \"use strict\"; arguments = 1; }");
+        let (module, interner) = parse_module("function f() { \"use strict\"; arguments = 1; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("Assignment to 'arguments' is not allowed in strict mode")));
+    }
+
+    #[test]
+    fn test_strict_function_expression_inherits_strictness_for_arguments_assignment() {
+        let (module, interner) = parse_module(
+            "\"use strict\"; (function named() { arguments = 1; })();",
+        );
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
             .expect_err("expected early error");
         assert!(errors.iter().any(|error| error
@@ -1489,9 +1523,9 @@ mod tests {
         let (module, interner) = parse_module("function f(a = 1) { \"use strict\"; }");
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
             .expect_err("expected early error");
-        assert!(errors.iter().any(|error| error
-            .message
-            .contains("Illegal 'use strict' directive in function with non-simple parameter list")));
+        assert!(errors.iter().any(|error| error.message.contains(
+            "Illegal 'use strict' directive in function with non-simple parameter list"
+        )));
     }
 
     #[test]
@@ -1519,7 +1553,9 @@ mod tests {
         let (module, interner) = parse_module("let x = 1; let x = 2;");
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
             .expect_err("expected early error");
-        assert!(errors.iter().any(|error| error.message.contains("Duplicate variable binding 'x'")));
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("Duplicate variable binding 'x'")));
     }
 
     #[test]
@@ -1537,9 +1573,9 @@ mod tests {
         let (module, interner) = parse_module("function f(a) { let a = 1; }");
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
             .expect_err("expected early error");
-        assert!(errors.iter().any(|error| error
-            .message
-            .contains("conflicts with parameter")));
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("conflicts with parameter")));
     }
 
     #[test]
@@ -1553,8 +1589,8 @@ mod tests {
         let (module, interner) = parse_module("try {} catch (err) { let err = 1; }");
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
             .expect_err("expected early error");
-        assert!(errors.iter().any(|error| error
-            .message
-            .contains("conflicts with catch parameter")));
+        assert!(errors
+            .iter()
+            .any(|error| error.message.contains("conflicts with catch parameter")));
     }
 }

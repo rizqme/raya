@@ -2569,7 +2569,8 @@ impl<'a> Lowerer<'a> {
             initial_value: current_value,
         });
         self.local_registers.insert(local_idx, refcell_reg.clone());
-        self.refcell_registers.insert(local_idx, refcell_reg.clone());
+        self.refcell_registers
+            .insert(local_idx, refcell_reg.clone());
         self.refcell_inner_types.insert(local_idx, value_ty);
         self.emit(IrInstr::StoreLocal {
             index: local_idx,
@@ -3352,12 +3353,12 @@ impl<'a> Lowerer<'a> {
             }
 
             // Extract parameter name from pattern
-                if let Pattern::Identifier(ident) = &param.pattern {
-                    let local_idx = self.allocate_local(ident.name);
-                    self.local_registers.insert(local_idx, reg.clone());
-                    param_local_indices.push(Some(local_idx));
+            if let Pattern::Identifier(ident) = &param.pattern {
+                let local_idx = self.allocate_local(ident.name);
+                self.local_registers.insert(local_idx, reg.clone());
+                param_local_indices.push(Some(local_idx));
 
-                    // Track class type for parameters with class type annotations
+                // Track class type for parameters with class type annotations
                 // so method calls can be statically resolved
                 if let Some(type_ann) = &param.type_annotation {
                     let nominal_type_id = self.resolve_param_nominal_type_from_annotation(

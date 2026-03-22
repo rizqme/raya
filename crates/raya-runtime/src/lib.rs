@@ -954,7 +954,9 @@ impl Runtime {
             BuiltinMode::RayaStrict => declaration_builtin_global_exports(
                 BuiltinSurfaceMode::RayaStrict,
             )
-            .map_err(|error| RuntimeError::TypeCheck(format!("builtin declaration exports: {error}")))?,
+            .map_err(|error| {
+                RuntimeError::TypeCheck(format!("builtin declaration exports: {error}"))
+            })?,
             BuiltinMode::NodeCompat => {
                 let module_name = "__raya_builtin__/node_compat";
                 let mut merged = ModuleExports::new(

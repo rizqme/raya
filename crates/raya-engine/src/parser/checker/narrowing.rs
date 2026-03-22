@@ -215,8 +215,7 @@ fn is_number_like_type(ty: &Type) -> bool {
     use crate::parser::types::PrimitiveType;
     matches!(
         ty,
-        Type::Primitive(PrimitiveType::Number | PrimitiveType::Int)
-            | Type::NumberLiteral(_)
+        Type::Primitive(PrimitiveType::Number | PrimitiveType::Int) | Type::NumberLiteral(_)
     )
 }
 

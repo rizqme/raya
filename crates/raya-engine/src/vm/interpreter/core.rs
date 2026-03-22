@@ -2352,6 +2352,9 @@ impl<'a> Interpreter<'a> {
                             VmError::TypeError(message) => {
                                 self.alloc_builtin_error_value("TypeError", message)
                             }
+                            VmError::SyntaxError(message) => {
+                                self.alloc_builtin_error_value("SyntaxError", message)
+                            }
                             VmError::RangeError(message) => {
                                 self.alloc_builtin_error_value("RangeError", message)
                             }
@@ -2442,7 +2445,7 @@ impl<'a> Interpreter<'a> {
                             task.set_current_func_id(current_func_id);
                             task.set_current_locals_base(locals_base);
                             task.set_current_arg_count(current_arg_count);
-                                                                 // Continue searching in parent frame
+                            // Continue searching in parent frame
                         } else {
                             // No more frames — unhandled exception
                             break;
@@ -2504,17 +2507,15 @@ impl<'a> Interpreter<'a> {
             | Opcode::GetArgCount
             | Opcode::LoadArgLocal
             | Opcode::LoadGlobal
-            | Opcode::StoreGlobal => {
-                self.exec_variable_ops(
-                    stack,
-                    ip,
-                    code,
-                    module,
-                    locals_base,
-                    opcode,
-                    current_arg_count,
-                )
-            }
+            | Opcode::StoreGlobal => self.exec_variable_ops(
+                stack,
+                ip,
+                code,
+                module,
+                locals_base,
+                opcode,
+                current_arg_count,
+            ),
 
             // =========================================================
             // Integer and Float Arithmetic

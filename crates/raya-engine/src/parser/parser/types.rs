@@ -501,12 +501,10 @@ fn consume_type_argument_closer(parser: &mut Parser) -> Result<(), ParseError> {
             let span = parser.current_span();
             let line_break_before = parser.tokens[parser.pos].line_break_before;
             parser.tokens[parser.pos].token = Token::Greater;
-            parser
-                .tokens
-                .insert(
-                    parser.pos + 1,
-                    LexedToken::new(Token::GreaterGreater, span, false),
-                );
+            parser.tokens.insert(
+                parser.pos + 1,
+                LexedToken::new(Token::GreaterGreater, span, false),
+            );
             parser.tokens[parser.pos].line_break_before = line_break_before;
             parser.advance_without_return();
             Ok(())

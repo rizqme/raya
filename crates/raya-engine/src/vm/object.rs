@@ -416,6 +416,44 @@ pub struct CallableData {
     pub module: Option<Arc<crate::compiler::Module>>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ArgumentsIndexedProperty {
+    pub writable: bool,
+    pub enumerable: bool,
+    pub configurable: bool,
+    pub deleted: bool,
+}
+
+impl ArgumentsIndexedProperty {
+    pub fn mapped_default() -> Self {
+        Self {
+            writable: true,
+            enumerable: true,
+            configurable: true,
+            deleted: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ArgumentsDataProperty {
+    pub value: Value,
+    pub writable: bool,
+    pub enumerable: bool,
+    pub configurable: bool,
+}
+
+impl ArgumentsDataProperty {
+    pub fn new(value: Value, writable: bool, enumerable: bool, configurable: bool) -> Self {
+        Self {
+            value,
+            writable,
+            enumerable,
+            configurable,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ArgumentsObjectData {
     /// Snapshot of actual argument values as passed by the caller.
@@ -423,10 +461,12 @@ pub struct ArgumentsObjectData {
     /// Mapping from arguments index to parameter RefCell pointer.
     /// `None` means the index is unmapped.
     pub mapped_refcells: Vec<Option<Value>>,
-    /// Indices deleted from the arguments object.
-    pub deleted: Vec<bool>,
-    /// Current `callee` value for non-strict arguments objects.
-    pub callee: Value,
+    /// Indexed property state for each initial argument.
+    pub indexed: Vec<ArgumentsIndexedProperty>,
+    /// Live `length` data property. `None` means it has been deleted.
+    pub length: Option<ArgumentsDataProperty>,
+    /// Current `callee` data property for non-strict arguments objects.
+    pub callee: Option<ArgumentsDataProperty>,
     /// Whether `callee`/`caller` must throw instead of exposing a value.
     pub strict_poison: bool,
 }

@@ -317,12 +317,9 @@ impl<'a> GenericContext<'a> {
     }
 
     fn should_recurse_into_substitution(&self, ty: TypeId) -> Result<bool, TypeError> {
-        let ty_data = self
-            .type_ctx
-            .get(ty)
-            .ok_or_else(|| TypeError::Generic {
-                message: format!("Invalid type ID: {:?}", ty),
-            })?;
+        let ty_data = self.type_ctx.get(ty).ok_or_else(|| TypeError::Generic {
+            message: format!("Invalid type ID: {:?}", ty),
+        })?;
 
         Ok(matches!(ty_data, Type::TypeVar(_))
             || matches!(

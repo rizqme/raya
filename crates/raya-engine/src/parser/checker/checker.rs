@@ -5338,14 +5338,11 @@ impl<'a> TypeChecker<'a> {
                     // If the class has type parameters and we have type arguments,
                     // create an instantiated class type with type vars substituted
                     if !resolved_type_args.is_empty() {
-                        if let Some(class) = self
-                            .resolve_class_type(symbol.ty)
-                            .or_else(|| {
-                                self.type_ctx
-                                    .lookup_named_type(&name)
-                                    .and_then(|ty| self.resolve_class_type(ty))
-                            })
-                        {
+                        if let Some(class) = self.resolve_class_type(symbol.ty).or_else(|| {
+                            self.type_ctx
+                                .lookup_named_type(&name)
+                                .and_then(|ty| self.resolve_class_type(ty))
+                        }) {
                             if class.type_params.len() == resolved_type_args.len() {
                                 let instantiated =
                                     self.instantiate_class_type(&class, &resolved_type_args);
@@ -5974,7 +5971,9 @@ impl<'a> TypeChecker<'a> {
                     _ => {}
                 }
             }
-            let resolved_symbol = self.symbols.resolve_from_scope(&class_name, self.current_scope);
+            let resolved_symbol = self
+                .symbols
+                .resolve_from_scope(&class_name, self.current_scope);
             let static_class_symbol_ty = resolved_symbol
                 .filter(|symbol| symbol.kind == SymbolKind::Class)
                 .map(|symbol| symbol.ty)
@@ -6850,7 +6849,9 @@ impl<'a> TypeChecker<'a> {
                 let ty = class_type_param_ids
                     .iter()
                     .zip(type_args.iter())
-                    .find_map(|(param_ty, &arg_ty)| param_ty.filter(|ty| *ty == method.ty).map(|_| arg_ty))
+                    .find_map(|(param_ty, &arg_ty)| {
+                        param_ty.filter(|ty| *ty == method.ty).map(|_| arg_ty)
+                    })
                     .unwrap_or_else(|| gen_ctx.apply_substitution(method.ty).unwrap_or(method.ty));
                 MethodSignature {
                     name: method.name.clone(),
@@ -6983,8 +6984,7 @@ impl<'a> TypeChecker<'a> {
             Type::Generic(generic) => {
                 let base_class = self.resolve_class_type(generic.base)?;
                 if !generic.type_args.is_empty() && !base_class.type_params.is_empty() {
-                    let instantiated =
-                        self.instantiate_class_type(&base_class, &generic.type_args);
+                    let instantiated = self.instantiate_class_type(&base_class, &generic.type_args);
                     match self.type_ctx.get(instantiated).cloned() {
                         Some(Type::Class(inst)) => Some(inst),
                         _ => Some(base_class),
@@ -8461,14 +8461,11 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
 
-                            if let Some(class) = self
-                                .resolve_class_type(symbol.ty)
-                                .or_else(|| {
-                                    self.type_ctx
-                                        .lookup_named_type(&name)
-                                        .and_then(|ty| self.resolve_class_type(ty))
-                                })
-                            {
+                            if let Some(class) = self.resolve_class_type(symbol.ty).or_else(|| {
+                                self.type_ctx
+                                    .lookup_named_type(&name)
+                                    .and_then(|ty| self.resolve_class_type(ty))
+                            }) {
                                 if class.type_params.len() == resolved_args.len() {
                                     return self.instantiate_class_type(&class, &resolved_args);
                                 }

@@ -411,10 +411,7 @@ impl<'a> Lowerer<'a> {
                     self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
 
                     self.current_function_mut()
-                        .add_block(crate::ir::BasicBlock::with_label(
-                            header,
-                            "callspread.hdr",
-                        ));
+                        .add_block(crate::ir::BasicBlock::with_label(header, "callspread.hdr"));
                     self.current_block = header;
                     let cond = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
                     self.emit(IrInstr::BinaryOp {
@@ -430,10 +427,7 @@ impl<'a> Lowerer<'a> {
                     });
 
                     self.current_function_mut()
-                        .add_block(crate::ir::BasicBlock::with_label(
-                            body,
-                            "callspread.body",
-                        ));
+                        .add_block(crate::ir::BasicBlock::with_label(body, "callspread.body"));
                     self.current_block = body;
                     let elem = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
                     self.emit(IrInstr::LoadElement {
@@ -455,10 +449,7 @@ impl<'a> Lowerer<'a> {
                     self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
 
                     self.current_function_mut()
-                        .add_block(crate::ir::BasicBlock::with_label(
-                            exit,
-                            "callspread.exit",
-                        ));
+                        .add_block(crate::ir::BasicBlock::with_label(exit, "callspread.exit"));
                     self.current_block = exit;
                 }
             }
@@ -1602,6 +1593,34 @@ impl<'a> Lowerer<'a> {
             });
             return dest;
         }
+        if let Expression::Identifier(ident) = &*unary.operand {
+            let name = self.interner.resolve(ident.name);
+            let resolved_locally = self.local_map.contains_key(&ident.name)
+                || self.constant_map.contains_key(&ident.name)
+                || self.function_map.contains_key(&ident.name)
+                || self.class_map.contains_key(&ident.name)
+                || self
+                    .captures
+                    .iter()
+                    .any(|capture| capture.symbol == ident.name)
+                || self
+                    .ancestor_variables
+                    .as_ref()
+                    .is_some_and(|ancestors| ancestors.contains_key(&ident.name))
+                || self.module_var_globals.contains_key(&ident.name)
+                || self
+                    .current_method_env_globals
+                    .as_ref()
+                    .is_some_and(|bindings| bindings.contains_key(&ident.name))
+                || self.ambient_builtin_globals.contains(name)
+                || matches!(name, "Infinity" | "NaN" | "undefined" | "arguments");
+            let dest = self.alloc_register(bool_ty);
+            self.emit(IrInstr::Assign {
+                dest: dest.clone(),
+                value: IrValue::Constant(IrConstant::Boolean(!resolved_locally)),
+            });
+            return dest;
+        }
         let _operand = self.lower_expr(&unary.operand);
         let dest = self.alloc_register(bool_ty);
         self.emit(IrInstr::Assign {
@@ -1915,6 +1934,33 @@ impl<'a> Lowerer<'a> {
         if let Expression::Identifier(ident) = &*call.callee {
             // Check for builtin functions/intrinsics first
             let name = self.interner.resolve(ident.name);
+
+            let identifier_resolved_locally = self.local_map.contains_key(&ident.name)
+                || self.constant_map.contains_key(&ident.name)
+                || self.function_map.contains_key(&ident.name)
+                || self.class_map.contains_key(&ident.name)
+                || self
+                    .captures
+                    .iter()
+                    .any(|capture| capture.symbol == ident.name)
+                || self
+                    .ancestor_variables
+                    .as_ref()
+                    .is_some_and(|ancestors| ancestors.contains_key(&ident.name))
+                || self.module_var_globals.contains_key(&ident.name)
+                || self
+                    .current_method_env_globals
+                    .as_ref()
+                    .is_some_and(|bindings| bindings.contains_key(&ident.name));
+
+            if self.js_this_binding_compat && name == "eval" && !identifier_resolved_locally {
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id: crate::compiler::native_id::FUNCTION_EVAL_HELPER,
+                    args,
+                });
+                return dest;
+            }
 
             if self.js_this_binding_compat && Self::js_builtin_call_uses_construct(name) {
                 let synthetic_new = ast::NewExpression {
@@ -3320,17 +3366,15 @@ impl<'a> Lowerer<'a> {
                     .is_some();
 
             if checker_member_shape_call {
-                match self.checker_validated_member_call_kind(
-                    checker_member_ty,
-                    method_name,
-                ) {
+                match self.checker_validated_member_call_kind(checker_member_ty, method_name) {
                     Some(CheckerValidatedMemberCallKind::Method) => {
-                        if let Some((shape_id, slot)) = self
-                            .structural_shape_id_from_type(checker_member_ty)
-                            .zip(self.structural_slot_index_from_type(
-                                checker_member_ty,
-                                method_name,
-                            ))
+                        if let Some((shape_id, slot)) =
+                            self.structural_shape_id_from_type(checker_member_ty).zip(
+                                self.structural_slot_index_from_type(
+                                    checker_member_ty,
+                                    method_name,
+                                ),
+                            )
                         {
                             let object = self.lower_expr(&member.object);
                             self.emit_structural_slot_registration_for_type(
@@ -3704,26 +3748,31 @@ impl<'a> Lowerer<'a> {
                     UNRESOLVED_TYPE_ID
                 }
             };
-            let late_bound_ctor_dispatch_id = if let Expression::Identifier(obj_ident) =
-                &*member.object
-            {
-                self.late_bound_object_ctor_map
-                    .get(&obj_ident.name)
-                    .copied()
-                    .or_else(|| self.constructor_value_ctor_map.get(&obj_ident.name).copied())
-                    .and_then(|ctor_symbol| {
-                        let ctor_name = self.interner.resolve(ctor_symbol);
-                        self.type_registry
-                            .has_builtin_dispatch_type(ctor_name)
-                            .then_some(ctor_name)
-                    })
-                    .and_then(|ctor_name| self.type_ctx.lookup_named_type(ctor_name))
-                    .map(|ctor_ty| self.normalize_type_for_dispatch(ctor_ty.as_u32()))
-            } else {
-                None
-            };
+            let late_bound_ctor_dispatch_id =
+                if let Expression::Identifier(obj_ident) = &*member.object {
+                    self.late_bound_object_ctor_map
+                        .get(&obj_ident.name)
+                        .copied()
+                        .or_else(|| {
+                            self.constructor_value_ctor_map
+                                .get(&obj_ident.name)
+                                .copied()
+                        })
+                        .and_then(|ctor_symbol| {
+                            let ctor_name = self.interner.resolve(ctor_symbol);
+                            self.type_registry
+                                .has_builtin_dispatch_type(ctor_name)
+                                .then_some(ctor_name)
+                        })
+                        .and_then(|ctor_name| self.type_ctx.lookup_named_type(ctor_name))
+                        .map(|ctor_ty| self.normalize_type_for_dispatch(ctor_ty.as_u32()))
+                } else {
+                    None
+                };
             let late_bound_ctor_has_dispatch = late_bound_ctor_dispatch_id.is_some_and(|type_id| {
-                self.type_registry.lookup_method(type_id, method_name).is_some()
+                self.type_registry
+                    .lookup_method(type_id, method_name)
+                    .is_some()
                     || (args.is_empty()
                         && self
                             .type_registry
@@ -3821,7 +3870,11 @@ impl<'a> Lowerer<'a> {
                         .late_bound_object_ctor_map
                         .get(&obj_ident.name)
                         .copied()
-                        .or_else(|| self.constructor_value_ctor_map.get(&obj_ident.name).copied())
+                        .or_else(|| {
+                            self.constructor_value_ctor_map
+                                .get(&obj_ident.name)
+                                .copied()
+                        })
                     {
                         let ctor_name = self.interner.resolve(ctor_symbol);
                         if super::class_methods::build_class_method_ir(ctor_name, method_name)
@@ -5271,9 +5324,7 @@ impl<'a> Lowerer<'a> {
         match expr {
             Expression::IntLiteral(lit) => lit.value < u32::MAX as i64,
             Expression::FloatLiteral(lit) => {
-                lit.value.is_finite()
-                    && lit.value.fract() == 0.0
-                    && lit.value < u32::MAX as f64
+                lit.value.is_finite() && lit.value.fract() == 0.0 && lit.value < u32::MAX as f64
             }
             Expression::Unary(unary) if matches!(unary.operator, ast::UnaryOperator::Minus) => {
                 match unary.operand.as_ref() {
@@ -10330,10 +10381,12 @@ impl<'a> Lowerer<'a> {
                 Type::Reference(reference) => self
                     .type_ctx
                     .lookup_named_type(&reference.name)
-                    .is_some_and(|resolved| self.type_requires_runtime_shape_cast_validation(resolved)),
-                Type::TypeVar(tv) => tv
-                    .constraint
-                    .is_some_and(|constraint| self.type_requires_runtime_shape_cast_validation(constraint)),
+                    .is_some_and(|resolved| {
+                        self.type_requires_runtime_shape_cast_validation(resolved)
+                    }),
+                Type::TypeVar(tv) => tv.constraint.is_some_and(|constraint| {
+                    self.type_requires_runtime_shape_cast_validation(constraint)
+                }),
                 Type::Union(union) => union
                     .members
                     .iter()
@@ -10825,7 +10878,11 @@ impl<'a> Lowerer<'a> {
 
         match self.type_ctx.get(ty_id) {
             Some(Type::Class(class_ty)) => {
-                if class_ty.methods.iter().any(|method| method.name == member_name) {
+                if class_ty
+                    .methods
+                    .iter()
+                    .any(|method| method.name == member_name)
+                {
                     Some(CheckerValidatedMemberCallKind::Method)
                 } else if class_ty
                     .properties
@@ -10841,9 +10898,9 @@ impl<'a> Lowerer<'a> {
                 .type_ctx
                 .lookup_named_type(&type_ref.name)
                 .and_then(|named| self.checker_validated_member_call_kind(named, member_name)),
-            Some(Type::TypeVar(tv)) => tv
-                .constraint
-                .and_then(|constraint| self.checker_validated_member_call_kind(constraint, member_name)),
+            Some(Type::TypeVar(tv)) => tv.constraint.and_then(|constraint| {
+                self.checker_validated_member_call_kind(constraint, member_name)
+            }),
             Some(Type::Union(union)) => union
                 .members
                 .iter()

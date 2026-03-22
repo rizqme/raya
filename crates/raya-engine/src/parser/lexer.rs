@@ -733,12 +733,11 @@ impl<'a> Lexer<'a> {
 
                 match self.lex_template(pos) {
                     Ok((template, end_pos)) => {
-                        self.tokens
-                            .push(LexedToken::new(
-                                Token::TemplateLiteral(template),
-                                start_span,
-                                line_break_before,
-                            ));
+                        self.tokens.push(LexedToken::new(
+                            Token::TemplateLiteral(template),
+                            start_span,
+                            line_break_before,
+                        ));
                         line_break_before = false;
 
                         // Update line/column for consumed template

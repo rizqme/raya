@@ -99,6 +99,10 @@ pub enum VmError {
     #[error("Type error: {0}")]
     TypeError(String),
 
+    /// Syntax error
+    #[error("Syntax error: {0}")]
+    SyntaxError(String),
+
     /// Range error
     #[error("Range error: {0}")]
     RangeError(String),

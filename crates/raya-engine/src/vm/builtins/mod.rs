@@ -289,31 +289,32 @@ fn builtin_property_descriptor(
             has_getter: true,
             has_setter: false,
         },
-        (class_name, "message" | "name" | "stack" | "cause" | "code" | "errno" | "syscall"
-        | "path")
-            if matches!(
-                class_name,
-                "Error"
-                    | "TypeError"
-                    | "RangeError"
-                    | "ReferenceError"
-                    | "SyntaxError"
-                    | "URIError"
-                    | "EvalError"
-                    | "InternalError"
-                    | "AggregateError"
-                    | "SuppressedError"
-                    | "ChannelClosedError"
-                    | "AssertionError"
-            ) =>
+        (
+            class_name,
+            "message" | "name" | "stack" | "cause" | "code" | "errno" | "syscall" | "path",
+        ) if matches!(
+            class_name,
+            "Error"
+                | "TypeError"
+                | "RangeError"
+                | "ReferenceError"
+                | "SyntaxError"
+                | "URIError"
+                | "EvalError"
+                | "InternalError"
+                | "AggregateError"
+                | "SuppressedError"
+                | "ChannelClosedError"
+                | "AssertionError"
+        ) =>
         {
             BuiltinPropertyDescriptor {
-            writable: Some(true),
-            enumerable: Some(false),
-            configurable: Some(true),
-            has_getter: false,
-            has_setter: false,
-        }
+                writable: Some(true),
+                enumerable: Some(false),
+                configurable: Some(true),
+                has_getter: false,
+                has_setter: false,
+            }
         }
         ("AggregateError", "errors") => BuiltinPropertyDescriptor {
             writable: Some(true),

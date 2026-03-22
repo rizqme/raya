@@ -17,9 +17,10 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    layout_id_from_ordered_names, ArgumentsObjectData, Array, Buffer, CallableKind,
-    ChannelObject, Class, DateObject, DynProp, ExoticKind, LayoutId, MapObject, Object,
-    RayaString, RefCell, RegExpObject, SetObject, SlotMeta, TypeHandle,
+    layout_id_from_ordered_names, ArgumentsDataProperty, ArgumentsIndexedProperty,
+    ArgumentsObjectData, Array, Buffer, CallableKind, ChannelObject, Class, DateObject, DynProp,
+    ExoticKind, LayoutId, MapObject, Object, RayaString, RefCell, RegExpObject, SetObject,
+    SlotMeta, TypeHandle,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -84,6 +85,20 @@ impl Default for JsPropertyDescriptorRecord {
             set: Value::undefined(),
         }
     }
+}
+
+impl JsPropertyDescriptorRecord {
+    fn is_accessor(self) -> bool {
+        self.has_get || self.has_set
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ArgumentsDataDescriptorState {
+    value: Value,
+    writable: bool,
+    enumerable: bool,
+    configurable: bool,
 }
 
 fn value_as_string(arg: Value) -> Result<String, VmError> {
@@ -336,6 +351,14 @@ impl<'a> Interpreter<'a> {
         let constructor_value = self.builtin_global_value(class_name);
         if let Some(constructor) = constructor_value {
             self.set_constructed_object_prototype_from_constructor(object_value, constructor);
+            let _ = self.define_data_property_on_target(
+                object_value,
+                "constructor",
+                constructor,
+                true,
+                false,
+                true,
+            );
         }
 
         // Set nominal_type_id so `instanceof` works in all modes (not just JS prototype chain)
@@ -367,39 +390,16 @@ impl<'a> Interpreter<'a> {
 
     fn builtin_error_layout_fields(class_name: &str) -> Option<&'static [&'static str]> {
         const ERROR_FIELDS: &[&str] = &[
-            "message",
-            "name",
-            "stack",
-            "cause",
-            "code",
-            "errno",
-            "syscall",
-            "path",
+            "message", "name", "stack", "cause", "code", "errno", "syscall", "path",
         ];
         const AGGREGATE_ERROR_FIELDS: &[&str] = &[
-            "message",
-            "name",
-            "stack",
-            "cause",
-            "code",
-            "errno",
-            "syscall",
-            "path",
-            "errors",
+            "message", "name", "stack", "cause", "code", "errno", "syscall", "path", "errors",
         ];
 
         match class_name {
-            "Error"
-            | "TypeError"
-            | "RangeError"
-            | "ReferenceError"
-            | "SyntaxError"
-            | "URIError"
-            | "EvalError"
-            | "InternalError"
-            | "SuppressedError"
-            | "ChannelClosedError"
-            | "AssertionError" => Some(ERROR_FIELDS),
+            "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError"
+            | "URIError" | "EvalError" | "InternalError" | "SuppressedError"
+            | "ChannelClosedError" | "AssertionError" => Some(ERROR_FIELDS),
             "AggregateError" => Some(AGGREGATE_ERROR_FIELDS),
             _ => None,
         }
@@ -407,7 +407,11 @@ impl<'a> Interpreter<'a> {
 
     fn ensure_builtin_error_class_layout(&self, class_name: &str) -> Option<usize> {
         let required_fields = Self::builtin_error_layout_fields(class_name)?;
-        let id = self.classes.read().get_class_by_name(class_name).map(|class| class.id)?;
+        let id = self
+            .classes
+            .read()
+            .get_class_by_name(class_name)
+            .map(|class| class.id)?;
 
         if self
             .nominal_allocation(id)
@@ -444,12 +448,8 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<(), VmError> {
-        const INHERITED_SURFACE_NAMES: &[&str] = &[
-            "equals",
-            "hashCode",
-            "isPrototypeOf",
-            "valueOf",
-        ];
+        const INHERITED_SURFACE_NAMES: &[&str] =
+            &["equals", "hashCode", "isPrototypeOf", "valueOf"];
         let Some(obj_ptr) = checked_object_ptr(object_value) else {
             return Ok(());
         };
@@ -484,10 +484,8 @@ impl<'a> Interpreter<'a> {
             };
             let obj = unsafe { &mut *obj_ptr.as_ptr() };
             let key_id = self.intern_prop_key(property_name);
-            obj.ensure_dyn_props().insert(
-                key_id,
-                DynProp::data_with_attrs(value, true, false, true),
-            );
+            obj.ensure_dyn_props()
+                .insert(key_id, DynProp::data_with_attrs(value, true, false, true));
         }
 
         Ok(())
@@ -801,7 +799,13 @@ impl<'a> Interpreter<'a> {
         module: &Module,
     ) -> Result<Value, VmError> {
         if !self.is_js_object_value(receiver) {
-            return self.construct_value_with_new_target(constructor, new_target, args, task, module);
+            return self.construct_value_with_new_target(
+                constructor,
+                new_target,
+                args,
+                task,
+                module,
+            );
         }
 
         if !self.callable_is_constructible(constructor) {
@@ -2658,7 +2662,7 @@ impl<'a> Interpreter<'a> {
         }
 
         let callee = if function.is_strict_js {
-            Value::undefined()
+            None
         } else {
             let closure = Object::new_closure_with_module(
                 current_func_id,
@@ -2666,15 +2670,32 @@ impl<'a> Interpreter<'a> {
                 Arc::new(module.clone()),
             );
             let closure_ptr = self.gc.lock().allocate(closure);
-            unsafe { Value::from_ptr(NonNull::new(closure_ptr.as_ptr()).expect("closure ptr")) }
+            Some(ArgumentsDataProperty::new(
+                unsafe {
+                    Value::from_ptr(NonNull::new(closure_ptr.as_ptr()).expect("closure ptr"))
+                },
+                true,
+                false,
+                true,
+            ))
         };
 
         let mut object = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
         object.header.exotic_kind = ExoticKind::Arguments;
         object.arguments = Some(Box::new(ArgumentsObjectData {
-            deleted: vec![false; user_arg_count],
             values,
             mapped_refcells,
+            indexed: vec![ArgumentsIndexedProperty::mapped_default(); user_arg_count],
+            length: Some(ArgumentsDataProperty::new(
+                if user_arg_count <= i32::MAX as usize {
+                    Value::i32(user_arg_count as i32)
+                } else {
+                    Value::f64(user_arg_count as f64)
+                },
+                true,
+                false,
+                true,
+            )),
             callee,
             strict_poison: function.is_strict_js,
         }));
@@ -2684,7 +2705,447 @@ impl<'a> Interpreter<'a> {
             }
         }
         let object_ptr = self.gc.lock().allocate(object);
-        Ok(unsafe { Value::from_ptr(NonNull::new(object_ptr.as_ptr()).expect("arguments ptr")) })
+        let arguments_value =
+            unsafe { Value::from_ptr(NonNull::new(object_ptr.as_ptr()).expect("arguments ptr")) };
+
+        if let Some(array_ctor) = self.builtin_global_value("Array") {
+            if let Some(array_prototype) = self.constructor_prototype_value(array_ctor) {
+                if let Some(iterator) = self
+                    .get_field_value_by_name(array_prototype, "Symbol.iterator")
+                    .or_else(|| self.get_field_value_by_name(array_prototype, "values"))
+                {
+                    let _ = self.define_data_property_on_target(
+                        arguments_value,
+                        "Symbol.iterator",
+                        iterator,
+                        true,
+                        false,
+                        true,
+                    );
+                }
+            }
+        }
+
+        Ok(arguments_value)
+    }
+
+    fn arguments_descriptor_record(&self, descriptor: Value) -> JsPropertyDescriptorRecord {
+        let mut record = JsPropertyDescriptorRecord::default();
+        if self.descriptor_field_present(descriptor, "value") {
+            record.has_value = true;
+            record.value = self
+                .get_field_value_by_name(descriptor, "value")
+                .unwrap_or(Value::undefined());
+        }
+        if self.descriptor_field_present(descriptor, "writable") {
+            record.has_writable = true;
+            record.writable = self.descriptor_flag(descriptor, "writable", false);
+        }
+        if self.descriptor_field_present(descriptor, "enumerable") {
+            record.has_enumerable = true;
+            record.enumerable = self.descriptor_flag(descriptor, "enumerable", false);
+        }
+        if self.descriptor_field_present(descriptor, "configurable") {
+            record.has_configurable = true;
+            record.configurable = self.descriptor_flag(descriptor, "configurable", false);
+        }
+        if self.descriptor_field_present(descriptor, "get") {
+            record.has_get = true;
+            record.get = self
+                .get_field_value_by_name(descriptor, "get")
+                .unwrap_or(Value::undefined());
+        }
+        if self.descriptor_field_present(descriptor, "set") {
+            record.has_set = true;
+            record.set = self
+                .get_field_value_by_name(descriptor, "set")
+                .unwrap_or(Value::undefined());
+        }
+        record
+    }
+
+    fn arguments_exotic_index_value(
+        &self,
+        arguments: &ArgumentsObjectData,
+        index: usize,
+    ) -> Option<Value> {
+        let property = arguments.indexed.get(index)?;
+        if property.deleted {
+            return None;
+        }
+        if let Some(Some(refcell_value)) = arguments.mapped_refcells.get(index) {
+            if let Some(refcell_ptr) = unsafe { refcell_value.as_ptr::<RefCell>() } {
+                let refcell = unsafe { &*refcell_ptr.as_ptr() };
+                return Some(refcell.get());
+            }
+        }
+        arguments.values.get(index).copied()
+    }
+
+    fn arguments_exotic_disconnect_index_mapping(
+        &self,
+        arguments: &mut ArgumentsObjectData,
+        index: usize,
+        current_value: Value,
+    ) {
+        if let Some(mapped) = arguments.mapped_refcells.get_mut(index) {
+            *mapped = None;
+        }
+        if let Some(value_slot) = arguments.values.get_mut(index) {
+            *value_slot = current_value;
+        }
+    }
+
+    fn validate_existing_data_descriptor(
+        &self,
+        key: &str,
+        current: ArgumentsDataDescriptorState,
+        record: JsPropertyDescriptorRecord,
+    ) -> Result<(), VmError> {
+        if !current.configurable {
+            if record.has_configurable && record.configurable {
+                return Err(VmError::TypeError(format!(
+                    "Cannot redefine non-configurable property '{}'",
+                    key
+                )));
+            }
+            if record.has_enumerable && record.enumerable != current.enumerable {
+                return Err(VmError::TypeError(format!(
+                    "Cannot redefine non-configurable property '{}'",
+                    key
+                )));
+            }
+        }
+        if !current.writable {
+            if record.has_writable && record.writable {
+                return Err(VmError::TypeError(format!(
+                    "Cannot redefine non-writable property '{}'",
+                    key
+                )));
+            }
+            if record.has_value && !value_same_value(record.value, current.value) {
+                return Err(VmError::TypeError(format!(
+                    "Cannot redefine non-writable property '{}'",
+                    key
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn arguments_exotic_define_own_property(
+        &mut self,
+        target: Value,
+        key: &str,
+        descriptor: Value,
+    ) -> Result<Option<()>, VmError> {
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return Ok(None);
+        };
+        let record = self.arguments_descriptor_record(descriptor);
+
+        if key == "length" {
+            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+            let Some(arguments) = obj.arguments.as_deref_mut() else {
+                return Ok(None);
+            };
+            let Some(length) = arguments.length.as_mut() else {
+                return Ok(None);
+            };
+            if record.is_accessor() {
+                return Err(VmError::TypeError(
+                    "Invalid property descriptor for 'length': cannot mix accessors and value"
+                        .to_string(),
+                ));
+            }
+            self.validate_existing_data_descriptor(
+                key,
+                ArgumentsDataDescriptorState {
+                    value: length.value,
+                    writable: length.writable,
+                    enumerable: length.enumerable,
+                    configurable: length.configurable,
+                },
+                record,
+            )?;
+            if record.has_value {
+                length.value = record.value;
+            }
+            if record.has_writable {
+                length.writable = record.writable;
+            }
+            if record.has_enumerable {
+                length.enumerable = record.enumerable;
+            }
+            if record.has_configurable {
+                length.configurable = record.configurable;
+            }
+            return Ok(Some(()));
+        }
+
+        if key == "callee" {
+            let mut install_accessor = None;
+            {
+                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                let Some(arguments) = obj.arguments.as_deref_mut() else {
+                    return Ok(None);
+                };
+                if arguments.strict_poison {
+                    let only_same_shape = (!record.has_configurable || !record.configurable)
+                        && (!record.has_enumerable || !record.enumerable)
+                        && !record.has_value
+                        && !record.has_writable;
+                    if !only_same_shape {
+                        return Err(VmError::TypeError(
+                            "Cannot redefine non-configurable property 'callee'".to_string(),
+                        ));
+                    }
+                    return Ok(Some(()));
+                }
+                if record.is_accessor() {
+                    if arguments.callee.is_none() {
+                        return Ok(None);
+                    }
+                    arguments.callee = None;
+                    install_accessor = Some((
+                        record.get,
+                        record.set,
+                        record.enumerable,
+                        record.configurable,
+                    ));
+                } else {
+                    let Some(callee) = arguments.callee.as_mut() else {
+                        return Ok(None);
+                    };
+                    self.validate_existing_data_descriptor(
+                        key,
+                        ArgumentsDataDescriptorState {
+                            value: callee.value,
+                            writable: callee.writable,
+                            enumerable: callee.enumerable,
+                            configurable: callee.configurable,
+                        },
+                        record,
+                    )?;
+                    if record.has_value {
+                        callee.value = record.value;
+                    }
+                    if record.has_writable {
+                        callee.writable = record.writable;
+                    }
+                    if record.has_enumerable {
+                        callee.enumerable = record.enumerable;
+                    }
+                    if record.has_configurable {
+                        callee.configurable = record.configurable;
+                    }
+                }
+            }
+            if let Some((get, set, enumerable, configurable)) = install_accessor {
+                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                let prop_key = self.intern_prop_key(key);
+                obj.ensure_dyn_props().insert(
+                    prop_key,
+                    DynProp::accessor(get, set, enumerable, configurable),
+                );
+            }
+            return Ok(Some(()));
+        }
+
+        let Some(index) = parse_js_array_index_name(key) else {
+            return Ok(None);
+        };
+        let mut install_accessor = None;
+        {
+            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+            let Some(arguments) = obj.arguments.as_deref_mut() else {
+                return Ok(None);
+            };
+            let Some(property) = arguments.indexed.get(index).copied() else {
+                return Ok(None);
+            };
+            if property.deleted {
+                return Ok(None);
+            }
+
+            let current_value = self
+                .arguments_exotic_index_value(arguments, index)
+                .unwrap_or(Value::undefined());
+            if record.is_accessor() {
+                self.validate_existing_data_descriptor(
+                    key,
+                    ArgumentsDataDescriptorState {
+                        value: current_value,
+                        writable: property.writable,
+                        enumerable: property.enumerable,
+                        configurable: property.configurable,
+                    },
+                    record,
+                )?;
+                self.arguments_exotic_disconnect_index_mapping(arguments, index, current_value);
+                if let Some(index_state) = arguments.indexed.get_mut(index) {
+                    index_state.deleted = true;
+                }
+                install_accessor = Some((
+                    record.get,
+                    record.set,
+                    record.enumerable,
+                    record.configurable,
+                ));
+            } else {
+                self.validate_existing_data_descriptor(
+                    key,
+                    ArgumentsDataDescriptorState {
+                        value: current_value,
+                        writable: property.writable,
+                        enumerable: property.enumerable,
+                        configurable: property.configurable,
+                    },
+                    record,
+                )?;
+
+                let next_value = if record.has_value {
+                    record.value
+                } else {
+                    current_value
+                };
+                let disconnect_mapping = record.has_writable && !record.writable;
+
+                if let Some(index_state) = arguments.indexed.get_mut(index) {
+                    if record.has_writable {
+                        index_state.writable = record.writable;
+                    }
+                    if record.has_enumerable {
+                        index_state.enumerable = record.enumerable;
+                    }
+                    if record.has_configurable {
+                        index_state.configurable = record.configurable;
+                    }
+                }
+
+                if let Some(value_slot) = arguments.values.get_mut(index) {
+                    *value_slot = next_value;
+                }
+                if disconnect_mapping {
+                    self.arguments_exotic_disconnect_index_mapping(arguments, index, next_value);
+                } else if let Some(Some(refcell_value)) = arguments.mapped_refcells.get(index) {
+                    if let Some(refcell_ptr) = unsafe { refcell_value.as_ptr::<RefCell>() } {
+                        let refcell = unsafe { &mut *refcell_ptr.as_ptr() };
+                        refcell.set(next_value);
+                    }
+                }
+            }
+        }
+
+        if let Some((get, set, enumerable, configurable)) = install_accessor {
+            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+            let prop_key = self.intern_prop_key(key);
+            obj.ensure_dyn_props().insert(
+                prop_key,
+                DynProp::accessor(get, set, enumerable, configurable),
+            );
+        }
+
+        Ok(Some(()))
+    }
+
+    fn synthesize_arguments_exotic_descriptor(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return Ok(None);
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let Some(arguments) = obj.arguments.as_deref() else {
+            return Ok(None);
+        };
+
+        let descriptor = self.alloc_object_descriptor()?;
+
+        if key == "length" {
+            let Some(length) = arguments.length.as_ref() else {
+                return Ok(None);
+            };
+            self.set_internal_descriptor_field(descriptor, "value", length.value)?;
+            self.set_internal_descriptor_field(
+                descriptor,
+                "writable",
+                Value::bool(length.writable),
+            )?;
+            self.set_internal_descriptor_field(
+                descriptor,
+                "enumerable",
+                Value::bool(length.enumerable),
+            )?;
+            self.set_internal_descriptor_field(
+                descriptor,
+                "configurable",
+                Value::bool(length.configurable),
+            )?;
+            return Ok(Some(descriptor));
+        }
+
+        if key == "callee" {
+            if arguments.strict_poison {
+                self.set_internal_descriptor_field(descriptor, "get", Value::undefined())?;
+                self.set_internal_descriptor_field(descriptor, "set", Value::undefined())?;
+                self.set_internal_descriptor_field(descriptor, "enumerable", Value::bool(false))?;
+                self.set_internal_descriptor_field(descriptor, "configurable", Value::bool(false))?;
+                return Ok(Some(descriptor));
+            }
+            let Some(callee) = arguments.callee.as_ref() else {
+                return Ok(None);
+            };
+            self.set_internal_descriptor_field(descriptor, "value", callee.value)?;
+            self.set_internal_descriptor_field(
+                descriptor,
+                "writable",
+                Value::bool(callee.writable),
+            )?;
+            self.set_internal_descriptor_field(
+                descriptor,
+                "enumerable",
+                Value::bool(callee.enumerable),
+            )?;
+            self.set_internal_descriptor_field(
+                descriptor,
+                "configurable",
+                Value::bool(callee.configurable),
+            )?;
+            return Ok(Some(descriptor));
+        }
+
+        if key == "caller" {
+            return Ok(None);
+        }
+
+        let Some(index) = parse_js_array_index_name(key) else {
+            return Ok(None);
+        };
+        let Some(property) = arguments.indexed.get(index) else {
+            return Ok(None);
+        };
+        if property.deleted {
+            return Ok(None);
+        }
+        let value = self
+            .arguments_exotic_index_value(arguments, index)
+            .unwrap_or(Value::undefined());
+        self.set_internal_descriptor_field(descriptor, "value", value)?;
+        self.set_internal_descriptor_field(descriptor, "writable", Value::bool(property.writable))?;
+        self.set_internal_descriptor_field(
+            descriptor,
+            "enumerable",
+            Value::bool(property.enumerable),
+        )?;
+        self.set_internal_descriptor_field(
+            descriptor,
+            "configurable",
+            Value::bool(property.configurable),
+        )?;
+        Ok(Some(descriptor))
     }
 
     fn arguments_exotic_get(&self, target: Value, key: &str) -> Result<Option<Value>, VmError> {
@@ -2697,40 +3158,25 @@ impl<'a> Interpreter<'a> {
         };
 
         if key == "length" {
-            let len = arguments.values.len();
-            return Ok(Some(if len <= i32::MAX as usize {
-                Value::i32(len as i32)
-            } else {
-                Value::f64(len as f64)
-            }));
+            return Ok(arguments.length.as_ref().map(|length| length.value));
         }
-        if matches!(key, "callee" | "caller") {
+        if key == "callee" {
             if arguments.strict_poison {
                 return Err(VmError::TypeError(format!(
                     "'{}' is not accessible on strict mode arguments objects",
                     key
                 )));
             }
-            if key == "callee" {
-                return Ok(Some(arguments.callee));
-            }
-            return Ok(Some(Value::undefined()));
+            return Ok(arguments.callee.as_ref().map(|callee| callee.value));
+        }
+        if key == "caller" {
+            return Ok(None);
         }
 
         let Some(index) = parse_js_array_index_name(key) else {
             return Ok(None);
         };
-        if index >= arguments.values.len() || arguments.deleted.get(index).copied().unwrap_or(false)
-        {
-            return Ok(None);
-        }
-        if let Some(Some(refcell_value)) = arguments.mapped_refcells.get(index) {
-            if let Some(refcell_ptr) = unsafe { refcell_value.as_ptr::<RefCell>() } {
-                let refcell = unsafe { &*refcell_ptr.as_ptr() };
-                return Ok(Some(refcell.get()));
-            }
-        }
-        Ok(arguments.values.get(index).copied())
+        Ok(self.arguments_exotic_index_value(arguments, index))
     }
 
     fn arguments_exotic_set(
@@ -2748,41 +3194,57 @@ impl<'a> Interpreter<'a> {
         };
 
         if key == "length" {
+            let Some(length) = arguments.length.as_mut() else {
+                return Ok(None);
+            };
+            if !length.writable {
+                return Ok(Some(false));
+            }
+            length.value = value;
             return Ok(Some(true));
         }
-        if matches!(key, "callee" | "caller") {
+        if key == "callee" {
             if arguments.strict_poison {
                 return Err(VmError::TypeError(format!(
                     "'{}' is not writable on strict mode arguments objects",
                     key
                 )));
             }
-            if key == "callee" {
-                arguments.callee = value;
+            let Some(callee) = arguments.callee.as_mut() else {
+                return Ok(None);
+            };
+            if !callee.writable {
+                return Ok(Some(false));
             }
+            callee.value = value;
             return Ok(Some(true));
+        }
+        if key == "caller" {
+            return Ok(None);
         }
 
         let Some(index) = parse_js_array_index_name(key) else {
             return Ok(None);
         };
-        if index >= arguments.values.len() {
+        let Some(index_state) = arguments.indexed.get(index).copied() else {
+            return Ok(None);
+        };
+        if index_state.deleted {
             return Ok(None);
         }
-
-        if let Some(slot) = arguments.deleted.get_mut(index) {
-            *slot = false;
+        if !index_state.writable {
+            return Ok(Some(false));
         }
-        arguments.values[index] = value;
+
+        if let Some(slot) = arguments.values.get_mut(index) {
+            *slot = value;
+        }
         if let Some(Some(refcell_value)) = arguments.mapped_refcells.get(index) {
             if let Some(refcell_ptr) = unsafe { refcell_value.as_ptr::<RefCell>() } {
                 let refcell = unsafe { &mut *refcell_ptr.as_ptr() };
                 refcell.set(value);
                 return Ok(Some(true));
             }
-        }
-        if let Some(mapped) = arguments.mapped_refcells.get_mut(index) {
-            *mapped = None;
         }
         Ok(Some(true))
     }
@@ -2793,25 +3255,43 @@ impl<'a> Interpreter<'a> {
         let arguments = obj.arguments.as_deref_mut()?;
 
         if key == "length" {
-            return Some(false);
-        }
-        if let Some(index) = parse_js_array_index_name(key) {
-            if index >= arguments.values.len() {
+            let length = arguments.length.as_ref()?;
+            if !length.configurable {
                 return Some(false);
             }
-            if let Some(slot) = arguments.deleted.get_mut(index) {
-                *slot = true;
+            arguments.length = None;
+            return Some(true);
+        }
+        if let Some(index) = parse_js_array_index_name(key) {
+            let property = arguments.indexed.get(index)?;
+            if property.deleted {
+                return None;
             }
-            if let Some(mapped) = arguments.mapped_refcells.get_mut(index) {
-                *mapped = None;
+            if !property.configurable {
+                return Some(false);
+            }
+            let current_value = self
+                .arguments_exotic_index_value(arguments, index)
+                .unwrap_or(Value::undefined());
+            self.arguments_exotic_disconnect_index_mapping(arguments, index, current_value);
+            if let Some(slot) = arguments.indexed.get_mut(index) {
+                slot.deleted = true;
             }
             return Some(true);
         }
-        if matches!(key, "callee" | "caller") {
+        if key == "callee" {
             if arguments.strict_poison {
                 return Some(false);
             }
+            let callee = arguments.callee.as_ref()?;
+            if !callee.configurable {
+                return Some(false);
+            }
+            arguments.callee = None;
             return Some(true);
+        }
+        if key == "caller" {
+            return None;
         }
         None
     }
@@ -2826,17 +3306,29 @@ impl<'a> Interpreter<'a> {
         let arguments = obj.arguments.as_deref()?;
 
         if key == "length" {
-            return Some((true, false, true));
+            let length = arguments.length.as_ref()?;
+            return Some((length.writable, length.configurable, length.enumerable));
         }
-        if matches!(key, "callee" | "caller") {
-            return Some((!arguments.strict_poison, false, !arguments.strict_poison));
+        if key == "callee" {
+            if arguments.strict_poison {
+                return Some((false, false, false));
+            }
+            let callee = arguments.callee.as_ref()?;
+            return Some((callee.writable, callee.configurable, callee.enumerable));
         }
-        let index = parse_js_array_index_name(key)?;
-        if index >= arguments.values.len() || arguments.deleted.get(index).copied().unwrap_or(false)
-        {
+        if key == "caller" {
             return None;
         }
-        Some((true, true, true))
+        let index = parse_js_array_index_name(key)?;
+        let property = arguments.indexed.get(index)?;
+        if property.deleted {
+            return None;
+        }
+        Some((
+            property.writable,
+            property.configurable,
+            property.enumerable,
+        ))
     }
 
     pub(in crate::vm::interpreter) fn builtin_global_value(&self, name: &str) -> Option<Value> {
@@ -4689,21 +5181,23 @@ impl<'a> Interpreter<'a> {
         module_identity_prefix: &str,
         error_context: &str,
     ) -> Result<Arc<Module>, VmError> {
+        let dynamic_compile_syntax_error = |stage: &str, error: String| {
+            VmError::SyntaxError(format!("{error_context} {stage}: {error}"))
+        };
         let debug_dynamic_function = std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok();
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:start source={:?}", source);
         }
-        let parser = Parser::new(&source).map_err(|error| {
-            VmError::RuntimeError(format!("{} lexer error: {:?}", error_context, error))
-        })?;
+        let parser = Parser::new(&source)
+            .map_err(|error| dynamic_compile_syntax_error("lexer error", format!("{error:?}")))?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:parsed-lexer");
         }
-        let (ast, interner) = parser.parse().map_err(|error| {
-            VmError::RuntimeError(format!("{} parse error: {:?}", error_context, error))
-        })?;
+        let (ast, interner) = parser
+            .parse()
+            .map_err(|error| dynamic_compile_syntax_error("parse error", format!("{error:?}")))?;
         check_early_errors(&ast, &interner, TypeSystemMode::Js).map_err(|error| {
-            VmError::RuntimeError(format!("{} parse error: {:?}", error_context, error))
+            dynamic_compile_syntax_error("parse error", format!("{error:?}"))
         })?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:parsed-ast");
@@ -4721,7 +5215,7 @@ impl<'a> Interpreter<'a> {
         }
 
         let mut symbols = binder.bind_module(&ast).map_err(|error| {
-            VmError::RuntimeError(format!("{} bind error: {:?}", error_context, error))
+            dynamic_compile_syntax_error("bind error", format!("{error:?}"))
         })?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:bound");
@@ -4731,7 +5225,7 @@ impl<'a> Interpreter<'a> {
             .with_mode(TypeSystemMode::Js)
             .with_policy(policy);
         let check_result = checker.check_module(&ast).map_err(|error| {
-            VmError::RuntimeError(format!("{} type error: {:?}", error_context, error))
+            dynamic_compile_syntax_error("type error", format!("{error:?}"))
         })?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:checked");
@@ -4856,7 +5350,13 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Value, VmError> {
-        let wrapped = format!("function __eval__() {{\n{source}\n}}\n");
+        let inherited_strict_prefix = module
+            .functions
+            .get(task.current_func_id())
+            .filter(|function| function.is_strict_js)
+            .map(|_| "\"use strict\";\n")
+            .unwrap_or("");
+        let wrapped = format!("function __eval__() {{\n{inherited_strict_prefix}{source}\n}}\n");
         let function_module =
             self.compile_dynamic_js_module_source(&wrapped, "__eval__", "Dynamic eval")?;
         let closure_val = self.alloc_dynamic_js_closure(
@@ -5026,6 +5526,15 @@ impl<'a> Interpreter<'a> {
         }
         let obj_ptr = checked_object_ptr(obj_val)?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
+        if self.is_descriptor_object(obj_val)
+            && matches!(
+                field_name,
+                "value" | "writable" | "configurable" | "enumerable" | "get" | "set"
+            )
+            && !self.descriptor_field_present(obj_val, field_name)
+        {
+            return None;
+        }
         let debug_field_lookup = std::env::var("RAYA_DEBUG_FIELD_LOOKUP").is_ok();
         if debug_field_lookup {
             eprintln!(
@@ -6434,9 +6943,23 @@ impl<'a> Interpreter<'a> {
             return None;
         }
 
+        if let Ok(Some(descriptor)) = self.synthesize_arguments_exotic_descriptor(target, key) {
+            return Some(descriptor);
+        }
+
         // Property kernel is the single source of truth
         let obj_ptr = checked_object_ptr(target)?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
+
+        if self.is_descriptor_object(target)
+            && matches!(
+                key,
+                "value" | "writable" | "configurable" | "enumerable" | "get" | "set"
+            )
+            && !self.descriptor_field_present(target, key)
+        {
+            return None;
+        }
 
         // Check fixed slots via shape — any own property in a slot has a descriptor
         if let Some(slot_idx) = self.shape_resolve_key(obj.header.layout_id, key) {
@@ -6886,6 +7409,10 @@ impl<'a> Interpreter<'a> {
                 caller_task,
                 caller_module,
             );
+        }
+
+        if let Some(()) = self.arguments_exotic_define_own_property(target, key, descriptor)? {
+            return Ok(());
         }
 
         if let Some(existing) = self.get_descriptor_metadata(target, key) {
@@ -7404,6 +7931,15 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> Result<Option<Value>, VmError> {
+        if self.is_descriptor_object(target)
+            && matches!(
+                key,
+                "value" | "writable" | "configurable" | "enumerable" | "get" | "set"
+            )
+            && !self.descriptor_field_present(target, key)
+        {
+            return Ok(None);
+        }
         if self.fixed_property_deleted(target, key) {
             return Ok(None);
         }
@@ -8128,14 +8664,15 @@ impl<'a> Interpreter<'a> {
                                     .to_string(),
                             ));
                         }
-                        let value = match self.construct_value_with_existing_receiver_and_new_target(
-                            args[0],
-                            args[1],
-                            args[2],
-                            &args[3..],
-                            task,
-                            module,
-                        ) {
+                        let value = match self
+                            .construct_value_with_existing_receiver_and_new_target(
+                                args[0],
+                                args[1],
+                                args[2],
+                                &args[3..],
+                                task,
+                                module,
+                            ) {
                             Ok(value) => value,
                             Err(error) => return OpcodeResult::Error(error),
                         };
@@ -10031,6 +10568,20 @@ impl<'a> Interpreter<'a> {
                                 break 'kernel None;
                             };
                             let obj = unsafe { &*obj_ptr.as_ptr() };
+                            if self.is_descriptor_object(target)
+                                && matches!(
+                                    key.as_str(),
+                                    "value"
+                                        | "writable"
+                                        | "configurable"
+                                        | "enumerable"
+                                        | "get"
+                                        | "set"
+                                )
+                                && !self.descriptor_field_present(target, &key)
+                            {
+                                break 'kernel None;
+                            }
                             let key_id = self.intern_prop_key(&key);
                             // Check dyn_props
                             if let Some(prop) = obj.dyn_props().and_then(|dp| dp.get(key_id)) {

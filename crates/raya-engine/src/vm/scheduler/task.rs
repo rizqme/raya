@@ -1694,7 +1694,6 @@ mod tests {
                 is_closure: false,
                 return_action: ReturnAction::PushReturnValue,
                 arg_count: 0,
-                args: Vec::new(),
             },
             ExecutionFrame {
                 module: module.clone(),
@@ -1704,7 +1703,6 @@ mod tests {
                 is_closure: true,
                 return_action: ReturnAction::Discard,
                 arg_count: 0,
-                args: Vec::new(),
             },
         ];
         task.save_execution_frames(frames);
@@ -1810,7 +1808,6 @@ mod tests {
             is_closure: false,
             return_action: ReturnAction::PushReturnValue,
             arg_count: 0,
-            args: Vec::new(),
         }]);
 
         // Serialize
