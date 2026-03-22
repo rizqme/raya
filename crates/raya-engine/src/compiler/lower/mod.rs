@@ -1519,6 +1519,19 @@ impl<'a> Lowerer<'a> {
         Some(array_reg)
     }
 
+    pub(super) fn emit_function_return(&mut self, value: Option<Register>) {
+        let return_value = if value.is_none() {
+            self.load_generator_yield_array()
+        } else {
+            value
+        };
+        self.set_terminator(Terminator::Return(return_value));
+    }
+
+    pub(super) fn emit_fallthrough_return(&mut self) {
+        self.emit_function_return(None);
+    }
+
     /// Try to evaluate an expression as a compile-time constant
     /// Returns Some(ConstantValue) if the expression is a literal, None otherwise
     fn try_eval_constant(&self, expr: &Expression) -> Option<ConstantValue> {
@@ -3544,7 +3557,7 @@ impl<'a> Lowerer<'a> {
 
         // Ensure the function ends with a return
         if !self.current_block_is_terminated() {
-            self.set_terminator(Terminator::Return(None));
+            self.emit_fallthrough_return();
         }
 
         // Restore function depth
@@ -3615,7 +3628,7 @@ impl<'a> Lowerer<'a> {
 
         // Ensure the function ends with a return
         if !self.current_block_is_terminated() {
-            self.set_terminator(Terminator::Return(None));
+            self.emit_fallthrough_return();
         }
 
         self.generator_yield_array_local = None;
@@ -4205,7 +4218,7 @@ impl<'a> Lowerer<'a> {
 
                     // Ensure the function ends with a return
                     if !self.current_block_is_terminated() {
-                        self.set_terminator(Terminator::Return(None));
+                        self.emit_fallthrough_return();
                     }
 
                     // Get the function ID and add to pending methods

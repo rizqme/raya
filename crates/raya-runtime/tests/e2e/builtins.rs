@@ -2647,6 +2647,35 @@ fn test_node_compat_array_spread_uses_symbol_iterator_protocol() {
 }
 
 #[test]
+fn test_node_compat_array_destructuring_uses_symbol_iterator_protocol() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let iterable = {
+                [Symbol.iterator]() {
+                    return {
+                        i: 0,
+                        next() {
+                            if (this.i < 3) {
+                                let value = this.i;
+                                this.i = this.i + 1;
+                                return { value, done: false };
+                            }
+                            return { done: true };
+                        }
+                    };
+                }
+            };
+            let [a, b, ...rest] = iterable;
+            return JSON.stringify([a, b, rest]);
+        }
+        main()
+    "#,
+        "[0,1,[2]]",
+    );
+}
+
+#[test]
 fn test_node_compat_function_constructor_unimplemented_behavior_error_code() {
     expect_string_runtime_node_compat(
         r#"

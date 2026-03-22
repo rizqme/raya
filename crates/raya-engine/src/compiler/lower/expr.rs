@@ -415,7 +415,11 @@ impl<'a> Lowerer<'a> {
         });
     }
 
-    fn emit_iterator_append_to_array_helper(&mut self, target_array: Register, iterable: Register) {
+    pub(super) fn emit_iterator_append_to_array_helper(
+        &mut self,
+        target_array: Register,
+        iterable: Register,
+    ) {
         self.emit(IrInstr::NativeCall {
             dest: None,
             native_id: crate::compiler::native_id::OBJECT_ITERATOR_APPEND_TO_ARRAY,
@@ -7796,7 +7800,7 @@ impl<'a> Lowerer<'a> {
             self.lower_stmt(stmt);
         }
         if !self.current_block_is_terminated() {
-            self.set_terminator(crate::ir::Terminator::Return(None));
+            self.emit_fallthrough_return();
         }
 
         let captured_vars: Vec<_> = self.captures.clone();
@@ -8340,7 +8344,7 @@ impl<'a> Lowerer<'a> {
                 }
                 // Ensure the function ends with a return
                 if !self.current_block_is_terminated() {
-                    self.set_terminator(crate::ir::Terminator::Return(None));
+                    self.emit_fallthrough_return();
                 }
             }
         }

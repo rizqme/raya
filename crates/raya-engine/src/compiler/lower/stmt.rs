@@ -951,125 +951,118 @@ impl<'a> Lowerer<'a> {
                     .get(&value_reg.id)
                     .cloned()
                     .or_else(|| self.array_element_object_layout_from_type(value_reg.ty));
+                let iterator_reg = self.emit_iterator_get_helper(value_reg.clone());
                 for (i, elem_opt) in array_pat.elements.iter().enumerate() {
-                    if let Some(elem) = elem_opt {
-                        if let Some(default_expr) = &elem.default {
-                            // With default: check bounds first, use default if OOB or null
-                            let idx_reg = self.emit_i32_const(i as i32);
-                            let len_reg = self.alloc_register(TypeId::new(0));
-                            self.emit(IrInstr::ArrayLen {
-                                dest: len_reg.clone(),
-                                array: value_reg.clone(),
-                            });
+                    let step_result = self.emit_iterator_step_helper(iterator_reg.clone());
 
-                            let in_bounds = self.alloc_register(TypeId::new(2));
-                            self.emit(IrInstr::BinaryOp {
-                                dest: in_bounds.clone(),
-                                op: BinaryOp::Less,
-                                left: idx_reg.clone(),
-                                right: len_reg,
-                            });
+                    if elem_opt.is_none() {
+                        continue;
+                    }
 
-                            let load_block = self.alloc_block();
-                            let default_block = self.alloc_block();
-                            let merge_block = self.alloc_block();
-                            let final_val = self.alloc_register(TypeId::new(0));
+                    let elem = elem_opt.as_ref().expect("checked some");
+                    if let Some(default_expr) = &elem.default {
+                        let value_block = self.alloc_block();
+                        let default_block = self.alloc_block();
+                        let merge_block = self.alloc_block();
+                        let final_val = self.alloc_register(TypeId::new(0));
 
-                            self.set_terminator(Terminator::Branch {
-                                cond: in_bounds,
-                                then_block: load_block,
-                                else_block: default_block,
-                            });
+                        self.set_terminator(Terminator::BranchIfNull {
+                            value: step_result.clone(),
+                            null_block: default_block,
+                            not_null_block: value_block,
+                        });
 
-                            // In-bounds path: load element, then check for null
-                            self.current_function_mut().add_block(
-                                crate::ir::BasicBlock::with_label(load_block, "destr.load"),
-                            );
-                            self.current_block = load_block;
-                            let elem_reg = self.alloc_register(TypeId::new(0));
-                            self.emit(IrInstr::LoadElement {
-                                dest: elem_reg.clone(),
-                                array: value_reg.clone(),
-                                index: idx_reg,
-                            });
+                        self.current_function_mut().add_block(
+                            crate::ir::BasicBlock::with_label(value_block, "destr.iter.value"),
+                        );
+                        self.current_block = value_block;
+                        let elem_reg = self.emit_iterator_value_helper(step_result);
+                        let not_null_block = self.alloc_block();
+                        self.set_terminator(Terminator::BranchIfNull {
+                            value: elem_reg.clone(),
+                            null_block: default_block,
+                            not_null_block,
+                        });
 
-                            // Also check if the loaded value is null
-                            let not_null_block = self.alloc_block();
-                            self.set_terminator(Terminator::BranchIfNull {
-                                value: elem_reg.clone(),
-                                null_block: default_block,
-                                not_null_block,
-                            });
+                        self.current_function_mut().add_block(
+                            crate::ir::BasicBlock::with_label(not_null_block, "destr.iter.hasval"),
+                        );
+                        self.current_block = not_null_block;
+                        self.emit(IrInstr::Assign {
+                            dest: final_val.clone(),
+                            value: IrValue::Register(elem_reg),
+                        });
+                        self.set_terminator(Terminator::Jump(merge_block));
 
-                            self.current_function_mut().add_block(
-                                crate::ir::BasicBlock::with_label(not_null_block, "destr.hasval"),
-                            );
-                            self.current_block = not_null_block;
-                            self.emit(IrInstr::Assign {
-                                dest: final_val.clone(),
-                                value: IrValue::Register(elem_reg),
-                            });
-                            self.set_terminator(Terminator::Jump(merge_block));
+                        self.current_function_mut().add_block(
+                            crate::ir::BasicBlock::with_label(default_block, "destr.iter.default"),
+                        );
+                        self.current_block = default_block;
+                        let default_val = self.lower_expr(default_expr);
+                        self.emit(IrInstr::Assign {
+                            dest: final_val.clone(),
+                            value: IrValue::Register(default_val),
+                        });
+                        self.set_terminator(Terminator::Jump(merge_block));
 
-                            // Default path: evaluate default expression
-                            self.current_function_mut().add_block(
-                                crate::ir::BasicBlock::with_label(default_block, "destr.default"),
-                            );
-                            self.current_block = default_block;
-                            let default_val = self.lower_expr(default_expr);
-                            self.emit(IrInstr::Assign {
-                                dest: final_val.clone(),
-                                value: IrValue::Register(default_val),
-                            });
-                            self.set_terminator(Terminator::Jump(merge_block));
+                        self.current_function_mut().add_block(
+                            crate::ir::BasicBlock::with_label(merge_block, "destr.iter.merge"),
+                        );
+                        self.current_block = merge_block;
+                        self.bind_pattern(&elem.pattern, final_val);
+                    } else {
+                        let value_block = self.alloc_block();
+                        let done_block = self.alloc_block();
+                        let merge_block = self.alloc_block();
+                        let final_val = self.alloc_register(TypeId::new(0));
 
-                            // Merge
-                            self.current_function_mut().add_block(
-                                crate::ir::BasicBlock::with_label(merge_block, "destr.merge"),
-                            );
-                            self.current_block = merge_block;
+                        self.set_terminator(Terminator::BranchIfNull {
+                            value: step_result.clone(),
+                            null_block: done_block,
+                            not_null_block: value_block,
+                        });
 
-                            self.bind_pattern(&elem.pattern, final_val);
-                        } else {
-                            // No default: just load element directly
-                            let idx_reg = self.emit_i32_const(i as i32);
-                            let elem_reg = self.alloc_register(TypeId::new(0));
-                            self.emit(IrInstr::LoadElement {
-                                dest: elem_reg.clone(),
-                                array: value_reg.clone(),
-                                index: idx_reg,
-                            });
-                            if let Some(layout) = &element_layout_hint {
-                                self.register_object_fields
-                                    .insert(elem_reg.id, layout.clone());
-                            }
-                            self.bind_pattern(&elem.pattern, elem_reg);
+                        self.current_function_mut().add_block(
+                            crate::ir::BasicBlock::with_label(value_block, "destr.iter.load"),
+                        );
+                        self.current_block = value_block;
+                        let elem_reg = self.emit_iterator_value_helper(step_result);
+                        self.emit(IrInstr::Assign {
+                            dest: final_val.clone(),
+                            value: IrValue::Register(elem_reg),
+                        });
+                        self.set_terminator(Terminator::Jump(merge_block));
+
+                        self.current_function_mut().add_block(
+                            crate::ir::BasicBlock::with_label(done_block, "destr.iter.done"),
+                        );
+                        self.current_block = done_block;
+                        self.emit(IrInstr::Assign {
+                            dest: final_val.clone(),
+                            value: IrValue::Constant(crate::ir::IrConstant::Undefined),
+                        });
+                        self.set_terminator(Terminator::Jump(merge_block));
+
+                        self.current_function_mut().add_block(
+                            crate::ir::BasicBlock::with_label(merge_block, "destr.iter.bound"),
+                        );
+                        self.current_block = merge_block;
+                        if let Some(layout) = &element_layout_hint {
+                            self.register_object_fields
+                                .insert(final_val.id, layout.clone());
                         }
+                        self.bind_pattern(&elem.pattern, final_val);
                     }
                 }
 
-                // Handle rest pattern: ...rest = arr.slice(elements.len())
+                // Handle rest pattern by draining the remaining iterator values.
                 if let Some(rest_pat) = &array_pat.rest {
-                    let start_idx = self.emit_i32_const(array_pat.elements.len() as i32);
-                    let len_reg = self.alloc_register(TypeId::new(0));
-                    self.emit(IrInstr::ArrayLen {
-                        dest: len_reg.clone(),
-                        array: value_reg.clone(),
-                    });
-
-                    // Build rest array: for i in start..len { rest.push(arr[i]) }
                     let zero = self.emit_i32_const(0);
                     let rest_arr = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
                     self.emit(IrInstr::NewArray {
                         dest: rest_arr.clone(),
                         len: zero,
                         elem_ty: TypeId::new(0),
-                    });
-
-                    let i = self.alloc_register(TypeId::new(0));
-                    self.emit(IrInstr::Assign {
-                        dest: i.clone(),
-                        value: IrValue::Register(start_idx),
                     });
 
                     let header = self.alloc_block();
@@ -1081,38 +1074,20 @@ impl<'a> Lowerer<'a> {
                     self.current_function_mut()
                         .add_block(crate::ir::BasicBlock::with_label(header, "rest.hdr"));
                     self.current_block = header;
-                    let cond = self.alloc_register(TypeId::new(2));
-                    self.emit(IrInstr::BinaryOp {
-                        dest: cond.clone(),
-                        op: BinaryOp::Less,
-                        left: i.clone(),
-                        right: len_reg,
-                    });
-                    self.set_terminator(Terminator::Branch {
-                        cond,
-                        then_block: body,
-                        else_block: exit,
+                    let step_result = self.emit_iterator_step_helper(iterator_reg.clone());
+                    self.set_terminator(Terminator::BranchIfNull {
+                        value: step_result.clone(),
+                        null_block: exit,
+                        not_null_block: body,
                     });
 
                     self.current_function_mut()
                         .add_block(crate::ir::BasicBlock::with_label(body, "rest.body"));
                     self.current_block = body;
-                    let elem = self.alloc_register(TypeId::new(0));
-                    self.emit(IrInstr::LoadElement {
-                        dest: elem.clone(),
-                        array: value_reg.clone(),
-                        index: i.clone(),
-                    });
+                    let elem = self.emit_iterator_value_helper(step_result);
                     self.emit(IrInstr::ArrayPush {
                         array: rest_arr.clone(),
                         element: elem,
-                    });
-                    let one = self.emit_i32_const(1);
-                    self.emit(IrInstr::BinaryOp {
-                        dest: i.clone(),
-                        op: BinaryOp::Add,
-                        left: i.clone(),
-                        right: one,
                     });
                     self.set_terminator(Terminator::Jump(header));
 
@@ -2633,21 +2608,35 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        if self.generator_yield_array_local.is_some() && value.is_none() {
-            let result = self
-                .load_generator_yield_array()
-                .unwrap_or_else(|| self.alloc_register(TypeId::new(ARRAY_TYPE_ID)));
-            self.set_terminator(Terminator::Return(Some(result)));
-            return;
-        }
-
-        self.set_terminator(Terminator::Return(value));
+        self.emit_function_return(value);
     }
 
     fn lower_yield(&mut self, yld: &ast::YieldStatement) {
         if self.generator_yield_array_local.is_some() {
-            if let Some(value) = &yld.value {
-                let _ = self.lower_expr(value);
+            let Some(yield_array) = self.load_generator_yield_array() else {
+                return;
+            };
+
+            if yld.is_delegate {
+                if let Some(value) = &yld.value {
+                    let iterable = self.lower_expr(value);
+                    self.emit_iterator_append_to_array_helper(yield_array, iterable);
+                }
+            } else {
+                let yielded = if let Some(value) = &yld.value {
+                    self.lower_expr(value)
+                } else {
+                    let undefined = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+                    self.emit(IrInstr::Assign {
+                        dest: undefined.clone(),
+                        value: IrValue::Constant(IrConstant::Undefined),
+                    });
+                    undefined
+                };
+                self.emit(IrInstr::ArrayPush {
+                    array: yield_array,
+                    element: yielded,
+                });
             }
             return;
         }

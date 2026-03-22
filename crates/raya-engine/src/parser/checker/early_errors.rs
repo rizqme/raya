@@ -9,6 +9,21 @@ use crate::parser::ast::*;
 use crate::parser::{Interner, ParseError, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EarlyErrorOptions {
+    pub mode: TypeSystemMode,
+    pub allow_top_level_return: bool,
+}
+
+impl EarlyErrorOptions {
+    pub fn for_mode(mode: TypeSystemMode) -> Self {
+        Self {
+            mode,
+            allow_top_level_return: !matches!(mode, TypeSystemMode::Js),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FunctionContext {
     is_async: bool,
     is_generator: bool,
@@ -65,7 +80,15 @@ pub fn check_early_errors(
     interner: &Interner,
     mode: TypeSystemMode,
 ) -> Result<(), Vec<ParseError>> {
-    let mut pass = EarlyErrorPass::new(interner, mode);
+    check_early_errors_with_options(module, interner, EarlyErrorOptions::for_mode(mode))
+}
+
+pub fn check_early_errors_with_options(
+    module: &Module,
+    interner: &Interner,
+    options: EarlyErrorOptions,
+) -> Result<(), Vec<ParseError>> {
+    let mut pass = EarlyErrorPass::new(interner, options);
     pass.check_module(module);
     if pass.errors.is_empty() {
         Ok(())
@@ -78,6 +101,7 @@ struct EarlyErrorPass<'a> {
     interner: &'a Interner,
     #[allow(dead_code)]
     mode: TypeSystemMode,
+    allow_top_level_return: bool,
     errors: Vec<ParseError>,
     function_stack: Vec<FunctionContext>,
     lexical_stack: Vec<LexicalContext>,
@@ -88,10 +112,11 @@ struct EarlyErrorPass<'a> {
 }
 
 impl<'a> EarlyErrorPass<'a> {
-    fn new(interner: &'a Interner, mode: TypeSystemMode) -> Self {
+    fn new(interner: &'a Interner, options: EarlyErrorOptions) -> Self {
         Self {
             interner,
-            mode,
+            mode: options.mode,
+            allow_top_level_return: options.allow_top_level_return,
             errors: Vec::new(),
             function_stack: Vec::new(),
             lexical_stack: vec![LexicalContext::default()],
@@ -997,7 +1022,7 @@ impl<'a> EarlyErrorPass<'a> {
     }
 
     fn check_return(&mut self, ret: &ReturnStatement) {
-        if self.current_function().is_none() {
+        if self.current_function().is_none() && !self.allow_top_level_return {
             self.error("Return statement outside of function", ret.span);
         }
         if let Some(value) = &ret.value {
@@ -1329,7 +1354,7 @@ fn this_check_var_decl(pass: &mut EarlyErrorPass<'_>, decl: &VariableDecl) {
 
 #[cfg(test)]
 mod tests {
-    use super::check_early_errors;
+    use super::{check_early_errors, check_early_errors_with_options, EarlyErrorOptions};
     use crate::parser::checker::TypeSystemMode;
     use crate::parser::Parser;
 
@@ -1341,7 +1366,30 @@ mod tests {
     #[test]
     fn test_return_outside_function_is_early_error() {
         let (module, interner) = parse_module("return 1;");
-        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+        let errors = check_early_errors_with_options(
+            &module,
+            &interner,
+            EarlyErrorOptions {
+                mode: TypeSystemMode::Ts,
+                allow_top_level_return: false,
+            },
+        )
+            .expect_err("expected early error");
+        assert!(errors[0]
+            .message
+            .contains("Return statement outside of function"));
+    }
+
+    #[test]
+    fn test_top_level_return_allowed_in_raya_entry_mode() {
+        let (module, interner) = parse_module("return 1;");
+        check_early_errors(&module, &interner, TypeSystemMode::Raya).expect("should pass");
+    }
+
+    #[test]
+    fn test_top_level_return_rejected_in_js_mode() {
+        let (module, interner) = parse_module("return 1;");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
             .expect_err("expected early error");
         assert!(errors[0]
             .message

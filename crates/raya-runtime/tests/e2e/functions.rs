@@ -98,6 +98,35 @@ fn test_generator_with_loop_and_multiple_yields() {
     );
 }
 
+#[test]
+fn test_generator_fallthrough_returns_collected_yields() {
+    expect_i32_runtime(
+        "function* gen(): number[] {
+             yield 4;
+             yield 2;
+         }
+         function main(): number {
+             let values = gen();
+             return values.length * 100 + values[0] * 10 + values[1];
+         }",
+        242,
+    );
+}
+
+#[test]
+fn test_generator_delegate_yield_collects_values() {
+    expect_i32_runtime(
+        "function* gen(): number[] {
+             yield* [1, 2, 3];
+         }
+         function main(): number {
+             let values = gen();
+             return values.length * 100 + values[0] * 10 + values[2];
+         }",
+        313,
+    );
+}
+
 // ============================================================================
 // Function Calls in Expressions
 // ============================================================================
