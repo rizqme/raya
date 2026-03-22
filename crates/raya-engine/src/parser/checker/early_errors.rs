@@ -18,12 +18,46 @@ struct FunctionContext {
 struct LexicalContext {
     super_property_allowed: bool,
     super_call_allowed: bool,
+    strict: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LabelContext {
     name: Symbol,
     is_iteration_target: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeKind {
+    Module,
+    Function,
+    Parameter,
+    FunctionBody,
+    Block,
+    Catch,
+    Class,
+    StaticBlock,
+}
+
+#[derive(Debug, Clone)]
+struct ScopeFrame {
+    kind: ScopeKind,
+    lexical: Vec<(Symbol, crate::parser::Span)>,
+    vars: Vec<(Symbol, crate::parser::Span)>,
+    params: Vec<(Symbol, crate::parser::Span)>,
+    catch_params: Vec<(Symbol, crate::parser::Span)>,
+}
+
+impl Default for ScopeFrame {
+    fn default() -> Self {
+        Self {
+            kind: ScopeKind::Block,
+            lexical: Vec::new(),
+            vars: Vec::new(),
+            params: Vec::new(),
+            catch_params: Vec::new(),
+        }
+    }
 }
 
 pub fn check_early_errors(
@@ -48,6 +82,7 @@ struct EarlyErrorPass<'a> {
     function_stack: Vec<FunctionContext>,
     lexical_stack: Vec<LexicalContext>,
     label_stack: Vec<LabelContext>,
+    scope_stack: Vec<ScopeFrame>,
     loop_depth: usize,
     breakable_depth: usize,
 }
@@ -61,12 +96,19 @@ impl<'a> EarlyErrorPass<'a> {
             function_stack: Vec::new(),
             lexical_stack: vec![LexicalContext::default()],
             label_stack: Vec::new(),
+            scope_stack: vec![ScopeFrame {
+                kind: ScopeKind::Module,
+                ..ScopeFrame::default()
+            }],
             loop_depth: 0,
             breakable_depth: 0,
         }
     }
 
     fn check_module(&mut self, module: &Module) {
+        if let Some(root) = self.lexical_stack.first_mut() {
+            root.strict = Self::directive_prologue_is_strict(&module.statements, self.interner);
+        }
         for stmt in &module.statements {
             self.check_stmt(stmt);
         }
@@ -78,6 +120,10 @@ impl<'a> EarlyErrorPass<'a> {
 
     fn current_lexical(&self) -> LexicalContext {
         self.lexical_stack.last().copied().unwrap_or_default()
+    }
+
+    fn current_strict(&self) -> bool {
+        self.current_lexical().strict
     }
 
     fn push_function<T>(
@@ -95,11 +141,16 @@ impl<'a> EarlyErrorPass<'a> {
             is_generator,
         });
         self.lexical_stack.push(lexical);
+        self.scope_stack.push(ScopeFrame {
+            kind: ScopeKind::Function,
+            ..ScopeFrame::default()
+        });
         self.loop_depth = 0;
         self.breakable_depth = 0;
         let result = f(self);
         self.function_stack.pop();
         self.lexical_stack.pop();
+        self.scope_stack.pop();
         self.loop_depth = saved_loop_depth;
         self.breakable_depth = saved_breakable_depth;
         self.label_stack.truncate(saved_label_len);
@@ -149,6 +200,317 @@ impl<'a> EarlyErrorPass<'a> {
         self.errors.push(ParseError::invalid_syntax(message, span));
     }
 
+    fn is_use_strict_directive(stmt: &Statement, interner: &Interner) -> bool {
+        matches!(
+            stmt,
+            Statement::Expression(ExpressionStatement {
+                expression: Expression::StringLiteral(StringLiteral { value, .. }),
+                ..
+            }) if interner.resolve(*value) == "use strict"
+        )
+    }
+
+    fn directive_prologue_is_strict(statements: &[Statement], interner: &Interner) -> bool {
+        for stmt in statements {
+            match stmt {
+                Statement::Expression(ExpressionStatement {
+                    expression: Expression::StringLiteral(_),
+                    ..
+                }) => {
+                    if Self::is_use_strict_directive(stmt, interner) {
+                        return true;
+                    }
+                }
+                _ => break,
+            }
+        }
+        false
+    }
+
+    fn is_restricted_strict_binding_name(&self, ident: &Identifier) -> bool {
+        matches!(self.interner.resolve(ident.name), "eval" | "arguments")
+    }
+
+    fn check_strict_binding_name(&mut self, ident: &Identifier) {
+        if self.is_restricted_strict_binding_name(ident) {
+            self.error(
+                format!(
+                    "Binding name '{}' is not allowed in strict mode",
+                    self.interner.resolve(ident.name)
+                ),
+                ident.span,
+            );
+        }
+    }
+
+    fn collect_bound_identifiers<'b>(pattern: &'b Pattern, out: &mut Vec<&'b Identifier>) {
+        match pattern {
+            Pattern::Identifier(id) => out.push(id),
+            Pattern::Array(array) => {
+                for elem in array.elements.iter().flatten() {
+                    Self::collect_bound_identifiers(&elem.pattern, out);
+                }
+                if let Some(rest) = &array.rest {
+                    Self::collect_bound_identifiers(rest, out);
+                }
+            }
+            Pattern::Object(obj) => {
+                for prop in &obj.properties {
+                    Self::collect_bound_identifiers(&prop.value, out);
+                }
+                if let Some(rest) = &obj.rest {
+                    out.push(rest);
+                }
+            }
+            Pattern::Rest(rest) => Self::collect_bound_identifiers(&rest.argument, out),
+        }
+    }
+
+    fn check_pattern_bindings(&mut self, pattern: &Pattern, strict: bool, check_duplicates: bool) {
+        let mut bound = Vec::new();
+        Self::collect_bound_identifiers(pattern, &mut bound);
+        let mut seen = Vec::new();
+        for ident in bound {
+            if strict {
+                self.check_strict_binding_name(ident);
+            }
+            if check_duplicates && seen.contains(&ident.name) {
+                self.error(
+                    format!(
+                        "Duplicate binding '{}' in pattern",
+                        self.interner.resolve(ident.name)
+                    ),
+                    ident.span,
+                );
+            } else {
+                seen.push(ident.name);
+            }
+        }
+    }
+
+    fn is_simple_parameter(param: &Parameter) -> bool {
+        matches!(param.pattern, Pattern::Identifier(_))
+            && !param.is_rest
+            && param.default_value.is_none()
+    }
+
+    fn is_simple_parameter_list(params: &[Parameter]) -> bool {
+        params.iter().all(Self::is_simple_parameter)
+    }
+
+    fn check_parameter_list(
+        &mut self,
+        params: &[Parameter],
+        binding_strict: bool,
+        body_has_use_strict: bool,
+        span: crate::parser::Span,
+    ) {
+        let simple = Self::is_simple_parameter_list(params);
+        if body_has_use_strict && !simple {
+            self.error(
+                "Illegal 'use strict' directive in function with non-simple parameter list",
+                span,
+            );
+        }
+
+        let check_duplicates = binding_strict || !simple;
+        let mut seen = Vec::new();
+        for param in params {
+            self.check_pattern_bindings(&param.pattern, binding_strict, false);
+            self.check_pattern(&param.pattern);
+
+            let mut names = Vec::new();
+            Self::collect_bound_identifiers(&param.pattern, &mut names);
+            for ident in names {
+                if check_duplicates && seen.contains(&ident.name) {
+                    self.error(
+                        format!(
+                            "Duplicate parameter name '{}' is not allowed here",
+                            self.interner.resolve(ident.name)
+                        ),
+                        ident.span,
+                    );
+                } else {
+                    seen.push(ident.name);
+                }
+            }
+
+            if let Some(default) = &param.default_value {
+                self.check_expr(default);
+            }
+        }
+    }
+
+    fn current_scope_index(&self) -> usize {
+        self.scope_stack.len() - 1
+    }
+
+    fn current_scope(&self) -> &ScopeFrame {
+        self.scope_stack
+            .last()
+            .expect("scope stack should never be empty")
+    }
+
+    fn current_scope_mut(&mut self) -> &mut ScopeFrame {
+        self.scope_stack
+            .last_mut()
+            .expect("scope stack should never be empty")
+    }
+
+    fn push_scope<T>(&mut self, kind: ScopeKind, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.scope_stack.push(ScopeFrame {
+            kind,
+            ..ScopeFrame::default()
+        });
+        let result = f(self);
+        self.scope_stack.pop();
+        result
+    }
+
+    fn lookup_decl(entries: &[(Symbol, crate::parser::Span)], name: Symbol) -> Option<crate::parser::Span> {
+        entries
+            .iter()
+            .find_map(|(symbol, span)| (*symbol == name).then_some(*span))
+    }
+
+    fn nearest_hoist_scope_index(&self) -> usize {
+        self.scope_stack
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(idx, scope)| {
+                matches!(scope.kind, ScopeKind::Module | ScopeKind::Function).then_some(idx)
+            })
+            .unwrap_or(0)
+    }
+
+    fn declare_param_identifier(&mut self, ident: &Identifier) {
+        self.current_scope_mut().params.push((ident.name, ident.span));
+    }
+
+    fn declare_catch_identifier(&mut self, ident: &Identifier) {
+        self.current_scope_mut().catch_params.push((ident.name, ident.span));
+    }
+
+    fn current_scope_is_function_body(&self) -> bool {
+        self.current_scope().kind == ScopeKind::FunctionBody
+    }
+
+    fn declare_lexical_identifier(&mut self, ident: &Identifier, label: &str) {
+        let current_idx = self.current_scope_index();
+        let current = &self.scope_stack[current_idx];
+
+        if Self::lookup_decl(&current.lexical, ident.name).is_some() {
+            self.error(
+                format!("Duplicate {} binding '{}'", label, self.interner.resolve(ident.name)),
+                ident.span,
+            );
+            return;
+        }
+
+        if current.kind == ScopeKind::Catch
+            && Self::lookup_decl(&current.catch_params, ident.name).is_some()
+        {
+            self.error(
+                format!(
+                    "Duplicate {} binding '{}' conflicts with catch parameter",
+                    label,
+                    self.interner.resolve(ident.name)
+                ),
+                ident.span,
+            );
+            return;
+        }
+
+        if self.current_scope_is_function_body() {
+            if let Some(parameter_scope) = self.scope_stack.get(current_idx.saturating_sub(1)) {
+                if parameter_scope.kind == ScopeKind::Parameter
+                    && Self::lookup_decl(&parameter_scope.params, ident.name).is_some()
+                {
+                    self.error(
+                        format!(
+                            "Duplicate {} binding '{}' conflicts with parameter",
+                            label,
+                            self.interner.resolve(ident.name)
+                        ),
+                        ident.span,
+                    );
+                    return;
+                }
+            }
+
+            if let Some(function_scope) = self.scope_stack.get(current_idx.saturating_sub(2)) {
+                if function_scope.kind == ScopeKind::Function
+                    && Self::lookup_decl(&function_scope.vars, ident.name).is_some()
+                {
+                    self.error(
+                        format!(
+                            "Duplicate {} binding '{}' conflicts with var/function declaration",
+                            label,
+                            self.interner.resolve(ident.name)
+                        ),
+                        ident.span,
+                    );
+                    return;
+                }
+            }
+        }
+
+        if current.kind == ScopeKind::Module
+            && Self::lookup_decl(&current.vars, ident.name).is_some()
+        {
+            self.error(
+                format!(
+                    "Duplicate {} binding '{}' conflicts with var/function declaration",
+                    label,
+                    self.interner.resolve(ident.name)
+                ),
+                ident.span,
+            );
+            return;
+        }
+
+        self.current_scope_mut().lexical.push((ident.name, ident.span));
+    }
+
+    fn declare_var_identifier(&mut self, ident: &Identifier) {
+        let hoist_idx = self.nearest_hoist_scope_index();
+        for scope in self.scope_stack.iter().skip(hoist_idx) {
+            if scope.kind == ScopeKind::Parameter {
+                continue;
+            }
+            if Self::lookup_decl(&scope.lexical, ident.name).is_some()
+                || Self::lookup_decl(&scope.catch_params, ident.name).is_some()
+            {
+                self.error(
+                    format!(
+                        "Var binding '{}' conflicts with lexical declaration",
+                        self.interner.resolve(ident.name)
+                    ),
+                    ident.span,
+                );
+                return;
+            }
+        }
+
+        let hoist_scope = &mut self.scope_stack[hoist_idx];
+        if Self::lookup_decl(&hoist_scope.vars, ident.name).is_none() {
+            hoist_scope.vars.push((ident.name, ident.span));
+        }
+    }
+
+    fn declare_pattern_with(
+        &mut self,
+        pattern: &Pattern,
+        mut record: impl FnMut(&mut Self, &Identifier),
+    ) {
+        let mut bound = Vec::new();
+        Self::collect_bound_identifiers(pattern, &mut bound);
+        for ident in bound {
+            record(self, ident);
+        }
+    }
+
     fn is_iteration_statement(stmt: &Statement) -> bool {
         matches!(
             stmt,
@@ -174,9 +536,20 @@ impl<'a> EarlyErrorPass<'a> {
     fn check_stmt(&mut self, stmt: &Statement) {
         match stmt {
             Statement::VariableDecl(decl) => self.check_var_decl(decl),
-            Statement::FunctionDecl(func) => self.check_function_decl(func),
-            Statement::ClassDecl(class) => self.check_class_decl(class),
-            Statement::TypeAliasDecl(_) | Statement::ImportDecl(_) | Statement::Empty(_) => {}
+            Statement::FunctionDecl(func) => {
+                if matches!(self.current_scope().kind, ScopeKind::Block | ScopeKind::Catch) {
+                    self.declare_lexical_identifier(&func.name, "function");
+                } else {
+                    self.declare_var_identifier(&func.name);
+                }
+                self.check_function_decl(func);
+            }
+            Statement::ClassDecl(class) => {
+                self.declare_lexical_identifier(&class.name, "class");
+                self.check_class_decl(class);
+            }
+            Statement::TypeAliasDecl(_) | Statement::Empty(_) => {}
+            Statement::ImportDecl(import) => self.check_import_decl(import),
             Statement::ExportDecl(export) => self.check_export_decl(export),
             Statement::Expression(expr) => self.check_expr(&expr.expression),
             Statement::If(if_stmt) => {
@@ -242,10 +615,16 @@ impl<'a> EarlyErrorPass<'a> {
             Statement::Try(try_stmt) => {
                 self.check_block(&try_stmt.body);
                 if let Some(catch) = &try_stmt.catch_clause {
-                    if let Some(param) = &catch.param {
-                        self.check_pattern(param);
-                    }
-                    self.check_block(&catch.body);
+                    self.push_scope(ScopeKind::Catch, |this| {
+                        if let Some(param) = &catch.param {
+                            this.check_pattern_bindings(param, this.current_strict(), true);
+                            this.declare_pattern_with(param, |pass, ident| {
+                                pass.declare_catch_identifier(ident);
+                            });
+                            this.check_pattern(param);
+                        }
+                        this.check_block_statements(&catch.body.statements);
+                    });
                 }
                 if let Some(finally) = &try_stmt.finally_clause {
                     self.check_block(finally);
@@ -271,47 +650,137 @@ impl<'a> EarlyErrorPass<'a> {
     }
 
     fn check_block(&mut self, block: &BlockStatement) {
-        for stmt in &block.statements {
+        self.push_scope(ScopeKind::Block, |this| this.check_block_statements(&block.statements));
+    }
+
+    fn check_block_statements(&mut self, statements: &[Statement]) {
+        for stmt in statements {
             self.check_stmt(stmt);
         }
     }
 
+    fn check_import_decl(&mut self, import: &ImportDecl) {
+        for specifier in &import.specifiers {
+            match specifier {
+                ImportSpecifier::Named { alias, name } => {
+                    self.declare_lexical_identifier(alias.as_ref().unwrap_or(name), "import");
+                }
+                ImportSpecifier::Namespace(name) | ImportSpecifier::Default(name) => {
+                    self.declare_lexical_identifier(name, "import");
+                }
+            }
+        }
+    }
+
     fn check_function_decl(&mut self, func: &FunctionDecl) {
-        for param in &func.params {
-            self.check_parameter(param);
+        let body_has_use_strict =
+            Self::directive_prologue_is_strict(&func.body.statements, self.interner);
+        let body_strict = self.current_strict() || body_has_use_strict;
+        if body_strict {
+            self.check_strict_binding_name(&func.name);
         }
         self.push_function(
             func.is_async,
             func.is_generator,
-            LexicalContext::default(),
-            |this| this.check_block(&func.body),
+            LexicalContext {
+                strict: body_strict,
+                ..LexicalContext::default()
+            },
+            |this| {
+                this.push_scope(ScopeKind::Parameter, |this| {
+                    this.check_parameter_list(
+                        &func.params,
+                        body_strict,
+                        body_has_use_strict,
+                        func.span,
+                    );
+                    for param in &func.params {
+                        this.declare_pattern_with(&param.pattern, |pass, ident| {
+                            pass.declare_param_identifier(ident);
+                        });
+                    }
+
+                    this.push_scope(ScopeKind::FunctionBody, |this| {
+                        this.check_block_statements(&func.body.statements);
+                    });
+                });
+            },
         );
     }
 
     fn check_function_expr(&mut self, func: &FunctionExpression) {
-        for param in &func.params {
-            self.check_parameter(param);
-        }
+        let body_has_use_strict =
+            Self::directive_prologue_is_strict(&func.body.statements, self.interner);
         let lexical = if func.is_method {
             self.current_lexical()
         } else {
             LexicalContext::default()
         };
+        let body_strict = lexical.strict || body_has_use_strict;
+        if let Some(name) = &func.name {
+            if body_strict {
+                self.check_strict_binding_name(name);
+            }
+        }
         self.push_function(func.is_async, func.is_generator, lexical, |this| {
-            this.check_block(&func.body);
+            if let Some(current) = this.lexical_stack.last_mut() {
+                current.strict = body_strict;
+            }
+            this.push_scope(ScopeKind::Parameter, |this| {
+                this.check_parameter_list(
+                    &func.params,
+                    body_strict,
+                    body_has_use_strict,
+                    func.span,
+                );
+                for param in &func.params {
+                    this.declare_pattern_with(&param.pattern, |pass, ident| {
+                        pass.declare_param_identifier(ident);
+                    });
+                }
+
+                this.push_scope(ScopeKind::FunctionBody, |this| {
+                    this.check_block_statements(&func.body.statements);
+                });
+            });
         });
     }
 
     fn check_arrow_function(&mut self, arrow: &ArrowFunction) {
-        for param in &arrow.params {
-            self.check_parameter(param);
-        }
-        self.push_function(arrow.is_async, false, self.current_lexical(), |this| {
-            match &arrow.body {
-                ArrowBody::Expression(expr) => this.check_expr(expr),
-                ArrowBody::Block(block) => this.check_block(block),
+        let body_has_use_strict = match &arrow.body {
+            ArrowBody::Block(block) => {
+                Self::directive_prologue_is_strict(&block.statements, self.interner)
             }
-        });
+            ArrowBody::Expression(_) => false,
+        };
+        let body_strict = self.current_strict() || body_has_use_strict;
+        self.check_parameter_list(&arrow.params, body_strict, body_has_use_strict, arrow.span);
+        self.push_function(
+            arrow.is_async,
+            false,
+            LexicalContext {
+                strict: body_strict,
+                ..self.current_lexical()
+            },
+            |this| {
+                this.push_scope(ScopeKind::Parameter, |this| {
+                    for param in &arrow.params {
+                        this.declare_pattern_with(&param.pattern, |pass, ident| {
+                            pass.declare_param_identifier(ident);
+                        });
+                    }
+
+                    match &arrow.body {
+                        ArrowBody::Expression(expr) => this.check_expr(expr),
+                        ArrowBody::Block(block) => {
+                            this.push_scope(ScopeKind::FunctionBody, |this| {
+                                this.check_block_statements(&block.statements);
+                            });
+                        }
+                    }
+                });
+            },
+        );
     }
 
     fn check_class_decl(&mut self, class: &ClassDecl) {
@@ -323,14 +792,16 @@ impl<'a> EarlyErrorPass<'a> {
         for implement in &class.implements {
             self.check_type_annotation_exprs(implement);
         }
-        for member in &class.members {
-            match member {
+        self.push_scope(ScopeKind::Class, |this| {
+            for member in &class.members {
+                match member {
                 ClassMember::Field(field) => {
                     if let Some(initializer) = &field.initializer {
-                        self.push_lexical(
+                        this.push_lexical(
                             LexicalContext {
                                 super_property_allowed: has_super_class,
                                 super_call_allowed: false,
+                                strict: true,
                             },
                             |this| this.check_expr(initializer),
                         );
@@ -338,61 +809,98 @@ impl<'a> EarlyErrorPass<'a> {
                 }
                 ClassMember::Method(method) => {
                     match method.kind {
-                        MethodKind::Getter if !method.params.is_empty() => self.error(
+                        MethodKind::Getter if !method.params.is_empty() => this.error(
                             "Getter must not declare parameters",
                             method.span,
                         ),
-                        MethodKind::Setter if method.params.len() != 1 => self.error(
+                        MethodKind::Setter if method.params.len() != 1 => this.error(
                             "Setter must declare exactly one parameter",
                             method.span,
                         ),
                         _ => {}
                     }
-                    for param in &method.params {
-                        self.check_parameter(param);
-                    }
+                    this.check_parameter_list(&method.params, true, false, method.span);
                     if let Some(body) = &method.body {
-                        self.push_function(
+                        this.push_function(
                             method.is_async,
                             method.is_generator,
                             LexicalContext {
                                 super_property_allowed: has_super_class,
                                 super_call_allowed: false,
+                                strict: true,
                             },
-                            |this| this.check_block(body),
+                            |this| {
+                                this.push_scope(ScopeKind::Parameter, |this| {
+                                    for param in &method.params {
+                                        this.declare_pattern_with(&param.pattern, |pass, ident| {
+                                            pass.declare_param_identifier(ident);
+                                        });
+                                    }
+                                    this.push_scope(ScopeKind::FunctionBody, |this| {
+                                        this.check_block_statements(&body.statements);
+                                    });
+                                });
+                            },
                         );
                     }
                 }
                 ClassMember::Constructor(ctor) => {
                     constructor_count += 1;
                     if constructor_count > 1 {
-                        self.error("Class must not declare multiple constructors", ctor.span);
+                        this.error("Class must not declare multiple constructors", ctor.span);
                     }
-                    for param in &ctor.params {
-                        self.check_parameter(param);
-                    }
-                    self.push_function(
+                    this.check_parameter_list(&ctor.params, true, false, ctor.span);
+                    this.push_function(
                         false,
                         false,
                         LexicalContext {
                             super_property_allowed: has_super_class,
                             super_call_allowed: has_super_class,
+                            strict: true,
                         },
-                        |this| this.check_block(&ctor.body),
+                        |this| {
+                            this.push_scope(ScopeKind::Parameter, |this| {
+                                for param in &ctor.params {
+                                    this.declare_pattern_with(&param.pattern, |pass, ident| {
+                                        pass.declare_param_identifier(ident);
+                                    });
+                                }
+                                this.push_scope(ScopeKind::FunctionBody, |this| {
+                                    this.check_block_statements(&ctor.body.statements);
+                                });
+                            });
+                        },
                     );
                 }
-                ClassMember::StaticBlock(block) => self.push_lexical(
+                ClassMember::StaticBlock(block) => this.push_lexical(
                     LexicalContext {
                         super_property_allowed: has_super_class,
                         super_call_allowed: false,
+                        strict: true,
                     },
-                    |this| this.check_block(block),
+                    |this| {
+                        this.push_scope(ScopeKind::StaticBlock, |this| {
+                            this.check_block_statements(&block.statements);
+                        });
+                    },
                 ),
             }
-        }
+            }
+        });
     }
 
     fn check_var_decl(&mut self, decl: &VariableDecl) {
+        self.check_pattern_bindings(&decl.pattern, self.current_strict(), true);
+        match decl.kind {
+            VariableKind::Var => self.declare_pattern_with(&decl.pattern, |pass, ident| {
+                pass.declare_var_identifier(ident);
+            }),
+            VariableKind::Let | VariableKind::Const => {
+                self.declare_pattern_with(&decl.pattern, |pass, ident| {
+                    pass.declare_lexical_identifier(ident, "variable");
+                })
+            }
+        }
         self.check_pattern(&decl.pattern);
         if let Some(init) = &decl.initializer {
             self.check_expr(init);
@@ -402,14 +910,10 @@ impl<'a> EarlyErrorPass<'a> {
     fn check_for_left(&mut self, left: &ForOfLeft) {
         match left {
             ForOfLeft::VariableDecl(decl) => self.check_var_decl(decl),
-            ForOfLeft::Pattern(pattern) => self.check_pattern(pattern),
-        }
-    }
-
-    fn check_parameter(&mut self, param: &Parameter) {
-        self.check_pattern(&param.pattern);
-        if let Some(default) = &param.default_value {
-            self.check_expr(default);
+            ForOfLeft::Pattern(pattern) => {
+                self.check_pattern_bindings(pattern, self.current_strict(), true);
+                self.check_pattern(pattern);
+            }
         }
     }
 
@@ -499,6 +1003,17 @@ impl<'a> EarlyErrorPass<'a> {
         }
 
         match expr {
+            Expression::Identifier(ident) => {
+                if self.current_strict() && self.is_restricted_strict_binding_name(ident) {
+                    self.error(
+                        format!(
+                            "Assignment to '{}' is not allowed in strict mode",
+                            self.interner.resolve(ident.name)
+                        ),
+                        ident.span,
+                    );
+                }
+            }
             Expression::Parenthesized(paren) => self.check_assignment_target(&paren.expression),
             Expression::Array(array) => {
                 for (index, elem) in array.elements.iter().flatten().enumerate() {
@@ -551,6 +1066,16 @@ impl<'a> EarlyErrorPass<'a> {
                 ObjectProperty::Property(prop) => Self::is_valid_assignment_target(&prop.value),
                 ObjectProperty::Spread(spread) => Self::is_valid_assignment_target(&spread.argument),
             }),
+            _ => false,
+        }
+    }
+
+    fn is_unqualified_identifier_reference(expr: &Expression) -> bool {
+        match expr {
+            Expression::Identifier(_) => true,
+            Expression::Parenthesized(paren) => {
+                Self::is_unqualified_identifier_reference(&paren.expression)
+            }
             _ => false,
         }
     }
@@ -611,6 +1136,15 @@ impl<'a> EarlyErrorPass<'a> {
                 }
             }
             Expression::Unary(unary) => {
+                if unary.operator == UnaryOperator::Delete
+                    && self.current_strict()
+                    && Self::is_unqualified_identifier_reference(&unary.operand)
+                {
+                    self.error(
+                        "Deleting an unqualified identifier is not allowed in strict mode",
+                        unary.span,
+                    );
+                }
                 if matches!(
                     unary.operator,
                     UnaryOperator::PrefixIncrement
@@ -917,5 +1451,110 @@ mod tests {
         assert!(errors[0]
             .message
             .contains("Setter must declare exactly one parameter"));
+    }
+
+    #[test]
+    fn test_use_strict_forbids_eval_binding() {
+        let (module, interner) = parse_module("\"use strict\"; let eval = 1;");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors[0]
+            .message
+            .contains("Binding name 'eval' is not allowed in strict mode"));
+    }
+
+    #[test]
+    fn test_use_strict_forbids_assignment_to_arguments() {
+        let (module, interner) =
+            parse_module("function f() { \"use strict\"; arguments = 1; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("Assignment to 'arguments' is not allowed in strict mode")));
+    }
+
+    #[test]
+    fn test_use_strict_forbids_duplicate_parameter_names() {
+        let (module, interner) = parse_module("function f(a, a) { \"use strict\"; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("Duplicate parameter name 'a' is not allowed here")));
+    }
+
+    #[test]
+    fn test_use_strict_forbids_non_simple_parameter_list() {
+        let (module, interner) = parse_module("function f(a = 1) { \"use strict\"; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("Illegal 'use strict' directive in function with non-simple parameter list")));
+    }
+
+    #[test]
+    fn test_strict_delete_identifier_is_early_error() {
+        let (module, interner) = parse_module("function f(x) { \"use strict\"; delete x; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("Deleting an unqualified identifier is not allowed in strict mode")));
+    }
+
+    #[test]
+    fn test_class_methods_are_strict_for_parameter_names() {
+        let (module, interner) = parse_module("class Example { method(arguments) {} }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("Binding name 'arguments' is not allowed in strict mode")));
+    }
+
+    #[test]
+    fn test_duplicate_let_is_early_error() {
+        let (module, interner) = parse_module("let x = 1; let x = 2;");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error.message.contains("Duplicate variable binding 'x'")));
+    }
+
+    #[test]
+    fn test_var_let_collision_across_block_is_early_error() {
+        let (module, interner) = parse_module("let x = 1; { var x = 2; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("Var binding 'x' conflicts with lexical declaration")));
+    }
+
+    #[test]
+    fn test_function_body_let_conflicts_with_parameter() {
+        let (module, interner) = parse_module("function f(a) { let a = 1; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("conflicts with parameter")));
+    }
+
+    #[test]
+    fn test_nested_block_let_can_shadow_parameter() {
+        let (module, interner) = parse_module("function f(a) { { let a = 1; } }");
+        check_early_errors(&module, &interner, TypeSystemMode::Ts).expect("should pass");
+    }
+
+    #[test]
+    fn test_catch_binding_conflict_is_early_error() {
+        let (module, interner) = parse_module("try {} catch (err) { let err = 1; }");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
+            .expect_err("expected early error");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("conflicts with catch parameter")));
     }
 }
