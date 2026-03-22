@@ -94,8 +94,14 @@ impl<'a> GenericContext<'a> {
                     if sub == ty {
                         return Ok(ty);
                     }
-                    // Recursively apply substitutions
-                    return self.apply_substitution(sub);
+                    // Type arguments are already resolved in their own context.
+                    // Keep concrete substituted values intact so we don't
+                    // accidentally substitute through nested generic scopes.
+                    return if self.should_recurse_into_substitution(sub)? {
+                        self.apply_substitution(sub)
+                    } else {
+                        Ok(sub)
+                    };
                 }
                 Ok(ty)
             }
@@ -268,6 +274,19 @@ impl<'a> GenericContext<'a> {
             }
 
             Type::Reference(reference) => {
+                if reference.type_args.is_none() {
+                    if let Some(substitution) = self.substitutions.get(&reference.name) {
+                        let sub = *substitution;
+                        if sub == ty {
+                            return Ok(ty);
+                        }
+                        return if self.should_recurse_into_substitution(sub)? {
+                            self.apply_substitution(sub)
+                        } else {
+                            Ok(sub)
+                        };
+                    }
+                }
                 let Some(args) = reference.type_args else {
                     return Ok(ty);
                 };
@@ -295,6 +314,23 @@ impl<'a> GenericContext<'a> {
             // Other types don't contain type variables
             _ => Ok(ty),
         }
+    }
+
+    fn should_recurse_into_substitution(&self, ty: TypeId) -> Result<bool, TypeError> {
+        let ty_data = self
+            .type_ctx
+            .get(ty)
+            .ok_or_else(|| TypeError::Generic {
+                message: format!("Invalid type ID: {:?}", ty),
+            })?;
+
+        Ok(matches!(ty_data, Type::TypeVar(_))
+            || matches!(
+                ty_data,
+                Type::Reference(reference)
+                    if reference.type_args.is_none()
+                        && self.substitutions.contains_key(&reference.name)
+            ))
     }
 
     fn resolve_keyof(&mut self, target: TypeId) -> Option<TypeId> {
@@ -758,7 +794,7 @@ impl<'a> GenericContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::types::ty::TypeVar;
+    use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, TypeVar};
 
     #[test]
     fn test_type_var_substitution() {
@@ -1009,6 +1045,49 @@ mod tests {
             }
             _ => panic!("Expected function type"),
         }
+    }
+
+    #[test]
+    fn test_substitution_keeps_concrete_class_argument_intact() {
+        let mut ctx = TypeContext::new();
+        let int_ty = ctx.int_type();
+        let void_ty = ctx.void_type();
+
+        let t_var = ctx.intern(Type::TypeVar(TypeVar {
+            name: "T".to_string(),
+            constraint: None,
+            default: None,
+        }));
+
+        let ctor_ty = ctx.function_type(vec![t_var], void_ty, false);
+        let concrete_class = ctx.intern(Type::Class(ClassType {
+            name: "Box".to_string(),
+            type_params: vec![],
+            properties: vec![PropertySignature {
+                name: "value".to_string(),
+                ty: int_ty,
+                optional: false,
+                readonly: false,
+                visibility: crate::parser::ast::Visibility::Public,
+            }],
+            methods: vec![MethodSignature {
+                name: "constructor".to_string(),
+                ty: ctor_ty,
+                type_params: vec![],
+                visibility: crate::parser::ast::Visibility::Public,
+            }],
+            static_properties: vec![],
+            static_methods: vec![],
+            extends: None,
+            implements: vec![],
+            is_abstract: false,
+        }));
+
+        let mut gen_ctx = GenericContext::new(&mut ctx);
+        gen_ctx.add_substitution("T".to_string(), concrete_class);
+
+        let result = gen_ctx.apply_substitution(t_var).unwrap();
+        assert_eq!(result, concrete_class);
     }
 
     #[test]

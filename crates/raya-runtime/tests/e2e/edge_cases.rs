@@ -1650,7 +1650,7 @@ fn test_typeof_null() {
     expect_bool(
         "
         let x: number | null = null;
-        return typeof x == \"null\";
+        return typeof x == \"object\";
     ",
         true,
     );

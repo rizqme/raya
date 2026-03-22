@@ -180,6 +180,7 @@ class Error {
     public message: string;
     public name: string;
     public stack: string;
+    public cause: ErrorLike | null;
     public code: string;
     public errno: number;
     public syscall: string;
@@ -191,6 +192,7 @@ class Error {
         }
         this.name = "Error";
         this.stack = "";
+        this.cause = null;
         this.code = "";
         this.errno = 0;
         this.syscall = "";
@@ -257,9 +259,12 @@ class InternalError extends Error {
 }
 
 class AggregateError extends Error {
+    public errors: any[];
+
     constructor(errors: any, message: any = undefined, options: Object | null = null) {
         super(message, options);
         this.name = "AggregateError";
+        this.errors = [];
         defineNonEnumerableDataProperty(this, "errors", iterableToList(errors));
     }
 }

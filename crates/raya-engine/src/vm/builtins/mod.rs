@@ -289,20 +289,32 @@ fn builtin_property_descriptor(
             has_getter: true,
             has_setter: false,
         },
-        ("Error", "message")
-        | ("Error", "name")
-        | ("Error", "stack")
-        | ("Error", "cause")
-        | ("Error", "code")
-        | ("Error", "errno")
-        | ("Error", "syscall")
-        | ("Error", "path") => BuiltinPropertyDescriptor {
+        (class_name, "message" | "name" | "stack" | "cause" | "code" | "errno" | "syscall"
+        | "path")
+            if matches!(
+                class_name,
+                "Error"
+                    | "TypeError"
+                    | "RangeError"
+                    | "ReferenceError"
+                    | "SyntaxError"
+                    | "URIError"
+                    | "EvalError"
+                    | "InternalError"
+                    | "AggregateError"
+                    | "SuppressedError"
+                    | "ChannelClosedError"
+                    | "AssertionError"
+            ) =>
+        {
+            BuiltinPropertyDescriptor {
             writable: Some(true),
             enumerable: Some(false),
             configurable: Some(true),
             has_getter: false,
             has_setter: false,
-        },
+        }
+        }
         ("AggregateError", "errors") => BuiltinPropertyDescriptor {
             writable: Some(true),
             enumerable: Some(false),
@@ -1545,6 +1557,70 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                         is_static: false,
                     },
                     PropertySig {
+                        name: "stack",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "cause",
+                        ty: "unknown",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "code",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errno",
+                        ty: "number",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "syscall",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "path",
+                        ty: "string",
+                        is_static: false,
+                    },
+                ],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: Some(&[("message", "string"), ("options", "Object")]),
+            },
+            ClassSig {
+                name: "TypeError",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "message",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "stack",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "cause",
+                        ty: "unknown",
+                        is_static: false,
+                    },
+                    PropertySig {
                         name: "code",
                         ty: "string",
                         is_static: false,
@@ -1575,30 +1651,6 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 constructor: Some(&[("message", "string")]),
             },
             ClassSig {
-                name: "TypeError",
-                type_params: &[],
-                properties: &[
-                    PropertySig {
-                        name: "message",
-                        ty: "string",
-                        is_static: false,
-                    },
-                    PropertySig {
-                        name: "name",
-                        ty: "string",
-                        is_static: false,
-                    },
-                ],
-                methods: &[MethodSig {
-                    name: "toString",
-                    params: &[],
-                    min_params: 0,
-                    return_type: "string",
-                    is_static: false,
-                }],
-                constructor: Some(&[("message", "string")]),
-            },
-            ClassSig {
                 name: "RangeError",
                 type_params: &[],
                 properties: &[
@@ -1609,6 +1661,36 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     },
                     PropertySig {
                         name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "stack",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "cause",
+                        ty: "unknown",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "code",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errno",
+                        ty: "number",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "syscall",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "path",
                         ty: "string",
                         is_static: false,
                     },
@@ -1636,6 +1718,36 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                         ty: "string",
                         is_static: false,
                     },
+                    PropertySig {
+                        name: "stack",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "cause",
+                        ty: "unknown",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "code",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errno",
+                        ty: "number",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "syscall",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "path",
+                        ty: "string",
+                        is_static: false,
+                    },
                 ],
                 methods: &[MethodSig {
                     name: "toString",
@@ -1657,6 +1769,36 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     },
                     PropertySig {
                         name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "stack",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "cause",
+                        ty: "unknown",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "code",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errno",
+                        ty: "number",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "syscall",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "path",
                         ty: "string",
                         is_static: false,
                     },
@@ -1684,6 +1826,36 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                         ty: "string",
                         is_static: false,
                     },
+                    PropertySig {
+                        name: "stack",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "cause",
+                        ty: "unknown",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "code",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errno",
+                        ty: "number",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "syscall",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "path",
+                        ty: "string",
+                        is_static: false,
+                    },
                 ],
                 methods: &[MethodSig {
                     name: "toString",
@@ -1705,6 +1877,36 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     },
                     PropertySig {
                         name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "stack",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "cause",
+                        ty: "unknown",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "code",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errno",
+                        ty: "number",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "syscall",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "path",
                         ty: "string",
                         is_static: false,
                     },
@@ -1732,6 +1934,41 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                         ty: "string",
                         is_static: false,
                     },
+                    PropertySig {
+                        name: "stack",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "cause",
+                        ty: "unknown",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "code",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errno",
+                        ty: "number",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "syscall",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "path",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errors",
+                        ty: "Array<Error>",
+                        is_static: false,
+                    },
                 ],
                 methods: &[MethodSig {
                     name: "toString",
@@ -1740,7 +1977,11 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     return_type: "string",
                     is_static: false,
                 }],
-                constructor: Some(&[("errors", "Array<Error>"), ("message", "string")]),
+                constructor: Some(&[
+                    ("errors", "Array<Error>"),
+                    ("message", "string"),
+                    ("options", "Object"),
+                ]),
             },
             ClassSig {
                 name: "ChannelClosedError",

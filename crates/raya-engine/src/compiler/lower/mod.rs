@@ -4435,7 +4435,8 @@ impl<'a> Lowerer<'a> {
             });
             if let Some(parent_constructor) = parent_constructor {
                 let new_target = self.load_class_value_for_nominal_type(nominal_type_id);
-                let mut native_args = Vec::with_capacity(forwarded_args.len() + 1);
+                let mut native_args = Vec::with_capacity(forwarded_args.len() + 2);
+                native_args.push(this_reg.clone());
                 native_args.push(parent_constructor);
                 native_args.push(new_target);
                 native_args.extend(forwarded_args.into_iter().skip(1));
@@ -4673,70 +4674,82 @@ impl<'a> Lowerer<'a> {
         self.local_registers.insert(rest_local_idx, array_reg);
     }
 
-    /// Emit null-check and default-value assignment for function parameters with defaults.
+    /// Emit missing-argument normalization and default-value assignment for parameters.
     /// Must be called after entry block creation and parameter registration,
     /// before lowering the function body.
     fn emit_default_params(&mut self, params: &[ast::Parameter]) {
         for param in params {
-            if let Some(ref default_expr) = param.default_value {
-                if let Pattern::Identifier(ident) = &param.pattern {
-                    if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                        // Load the parameter value
-                        let param_reg = self.alloc_register(UNRESOLVED);
-                        self.emit(IrInstr::LoadLocal {
-                            dest: param_reg.clone(),
-                            index: local_idx,
-                        });
-
-                        let default_block = self.alloc_block();
-                        let continue_block = self.alloc_block();
-
-                        if self.js_this_binding_compat {
-                            let undefined_reg = self.alloc_register(UNRESOLVED);
-                            self.emit(IrInstr::Assign {
-                                dest: undefined_reg.clone(),
-                                value: IrValue::Constant(IrConstant::Undefined),
-                            });
-                            let is_undefined = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
-                            self.emit(IrInstr::BinaryOp {
-                                dest: is_undefined.clone(),
-                                op: BinaryOp::StrictEqual,
-                                left: param_reg,
-                                right: undefined_reg,
-                            });
-                            self.set_terminator(Terminator::Branch {
-                                cond: is_undefined,
-                                then_block: default_block,
-                                else_block: continue_block,
-                            });
-                        } else {
-                            // Raya/TS legacy lowering still treats null as "missing" here.
-                            self.set_terminator(Terminator::BranchIfNull {
-                                value: param_reg,
-                                null_block: default_block,
-                                not_null_block: continue_block,
-                            });
-                        }
-
-                        // Default block: evaluate default expression and store
-                        self.current_function_mut()
-                            .add_block(BasicBlock::with_label(default_block, "param.default"));
-                        self.current_block = default_block;
-                        let default_val = self.lower_expr(default_expr);
-                        self.emit(IrInstr::StoreLocal {
-                            index: local_idx,
-                            value: default_val.clone(),
-                        });
-                        self.local_registers.insert(local_idx, default_val);
-                        self.set_terminator(Terminator::Jump(continue_block));
-
-                        // Continue block
-                        self.current_function_mut()
-                            .add_block(BasicBlock::with_label(continue_block, "param.cont"));
-                        self.current_block = continue_block;
-                    }
-                }
+            let Pattern::Identifier(ident) = &param.pattern else {
+                continue;
+            };
+            let Some(&local_idx) = self.local_map.get(&ident.name) else {
+                continue;
+            };
+            if param.default_value.is_none() && !(param.optional && !self.js_this_binding_compat) {
+                continue;
             }
+
+            let param_reg = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::LoadLocal {
+                dest: param_reg.clone(),
+                index: local_idx,
+            });
+
+            let missing_block = self.alloc_block();
+            let continue_block = self.alloc_block();
+            let null_check_block = self.alloc_block();
+
+            let undefined_reg = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Assign {
+                dest: undefined_reg.clone(),
+                value: IrValue::Constant(IrConstant::Undefined),
+            });
+            let is_undefined = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+            self.emit(IrInstr::BinaryOp {
+                dest: is_undefined.clone(),
+                op: BinaryOp::StrictEqual,
+                left: param_reg.clone(),
+                right: undefined_reg,
+            });
+            self.set_terminator(Terminator::Branch {
+                cond: is_undefined,
+                then_block: missing_block,
+                else_block: null_check_block,
+            });
+
+            self.current_function_mut()
+                .add_block(BasicBlock::with_label(null_check_block, "param.nullcheck"));
+            self.current_block = null_check_block;
+            self.set_terminator(Terminator::BranchIfNull {
+                value: param_reg,
+                null_block: missing_block,
+                not_null_block: continue_block,
+            });
+
+            self.current_function_mut()
+                .add_block(BasicBlock::with_label(missing_block, "param.missing"));
+            self.current_block = missing_block;
+
+            let replacement = if let Some(default_expr) = &param.default_value {
+                self.lower_expr(default_expr)
+            } else {
+                let null_reg = self.alloc_register(TypeId::new(NULL_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: null_reg.clone(),
+                    value: IrValue::Constant(IrConstant::Null),
+                });
+                null_reg
+            };
+            self.emit(IrInstr::StoreLocal {
+                index: local_idx,
+                value: replacement.clone(),
+            });
+            self.local_registers.insert(local_idx, replacement);
+            self.set_terminator(Terminator::Jump(continue_block));
+
+            self.current_function_mut()
+                .add_block(BasicBlock::with_label(continue_block, "param.cont"));
+            self.current_block = continue_block;
         }
     }
 
@@ -5370,6 +5383,12 @@ impl<'a> Lowerer<'a> {
                 // Check active type parameter substitutions first (during generic specialization)
                 if let Some(&concrete_ty) = self.type_param_substitutions.get(name) {
                     return concrete_ty;
+                }
+                if name == "Task" {
+                    return self
+                        .type_ctx
+                        .lookup_named_type(crate::parser::TypeContext::PROMISE_TYPE_NAME)
+                        .unwrap_or(UNRESOLVED);
                 }
                 self.type_ctx.lookup_named_type(name).unwrap_or(UNRESOLVED)
             }

@@ -47,12 +47,14 @@ class FsPromises {
         return __NATIVE_CALL<string[]>("fs.readDir", path);
     }
 
-    async stat(path: string): Promise<Stats> {
+    async stat(pathOrSelf: string | unknown, maybePath?: string): Promise<Stats> {
+        const path: string = maybePath != null ? maybePath : pathOrSelf as string;
         const s: number[] = __NATIVE_CALL<number[]>("fs.stat", path);
         return new Stats(s);
     }
 
-    async lstat(path: string): Promise<Stats> {
+    async lstat(pathOrSelf: string | unknown, maybePath?: string): Promise<Stats> {
+        const path: string = maybePath != null ? maybePath : pathOrSelf as string;
         const s: number[] = __NATIVE_CALL<number[]>("fs.stat", path);
         return new Stats(s);
     }
@@ -126,6 +128,120 @@ class FsPromises {
     }
 }
 
-const fsp = new FsPromises();
+async function readFile(path: string, encoding?: string): Promise<string> {
+    return __NATIVE_CALL<string>("fs.readTextFile", path);
+}
+
+async function writeFile(path: string, data: string): Promise<void> {
+    __NATIVE_CALL("fs.writeTextFile", path, data);
+}
+
+async function appendFile(path: string, data: string): Promise<void> {
+    __NATIVE_CALL("fs.appendFile", path, data);
+}
+
+async function readdir(path: string): Promise<string[]> {
+    return __NATIVE_CALL<string[]>("fs.readDir", path);
+}
+
+async function stat(path: string): Promise<Stats> {
+    const s: number[] = __NATIVE_CALL<number[]>("fs.stat", path);
+    return new Stats(s);
+}
+
+async function lstat(path: string): Promise<Stats> {
+    const s: number[] = __NATIVE_CALL<number[]>("fs.stat", path);
+    return new Stats(s);
+}
+
+async function mkdir(path: string, recursive?: boolean): Promise<void> {
+    if (recursive == true) {
+        __NATIVE_CALL("fs.mkdirRecursive", path);
+    } else {
+        __NATIVE_CALL("fs.mkdir", path);
+    }
+}
+
+async function rm(path: string, recursive?: boolean): Promise<void> {
+    if (recursive == true) {
+        __NATIVE_CALL("fs.rmdir", path);
+    } else {
+        __NATIVE_CALL("fs.remove", path);
+    }
+}
+
+async function rmdir(path: string): Promise<void> {
+    __NATIVE_CALL("fs.rmdir", path);
+}
+
+async function unlink(path: string): Promise<void> {
+    __NATIVE_CALL("fs.remove", path);
+}
+
+async function rename(oldPath: string, newPath: string): Promise<void> {
+    __NATIVE_CALL("fs.rename", oldPath, newPath);
+}
+
+async function copyFile(src: string, dest: string): Promise<void> {
+    __NATIVE_CALL("fs.copy", src, dest);
+}
+
+async function realpath(path: string): Promise<string> {
+    return __NATIVE_CALL<string>("fs.realpath", path);
+}
+
+async function readlink(path: string): Promise<string> {
+    return __NATIVE_CALL<string>("fs.readlink", path);
+}
+
+async function symlink(target: string, path: string): Promise<void> {
+    __NATIVE_CALL("fs.symlink", target, path);
+}
+
+async function chmod(path: string, mode: number): Promise<void> {
+    __NATIVE_CALL("fs.chmod", path, mode);
+}
+
+async function access(path: string): Promise<void> {
+    if (!__NATIVE_CALL<boolean>("fs.exists", path)) {
+        throw new Error("ENOENT: no such file or directory: " + path);
+    }
+}
+
+async function mkdtemp(prefix: string): Promise<string> {
+    return __NATIVE_CALL<string>("fs.tempFile", prefix);
+}
+
+async function truncate(path: string, len?: number): Promise<void> {
+    const length = len != null ? len : 0;
+    if (length == 0) {
+        __NATIVE_CALL("fs.writeTextFile", path, "");
+    } else {
+        const content = __NATIVE_CALL<string>("fs.readTextFile", path);
+        __NATIVE_CALL("fs.writeTextFile", path, content.slice(0, length));
+    }
+}
+
+const fsp = {
+    readFile,
+    writeFile,
+    appendFile,
+    readdir,
+    stat,
+    lstat,
+    mkdir,
+    rm,
+    rmdir,
+    unlink,
+    rename,
+    copyFile,
+    realpath,
+    readlink,
+    symlink,
+    chmod,
+    access,
+    mkdtemp,
+    truncate,
+};
 export { Stats };
 export default fsp;

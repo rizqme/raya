@@ -45,34 +45,26 @@ class DiagChannel {
 }
 
 class DiagnosticsChannel {
-    _channels: DiagChannel[];
-    _channelNames: string[];
-
-    constructor() {
-        this._channels = [];
-        this._channelNames = [];
-    }
-
     channel(name: string): DiagChannel {
         // Return existing or create new
         let i = 0;
-        while (i < this._channelNames.length) {
-            if (this._channelNames[i] == name) {
-                return this._channels[i];
+        while (i < _channelNames.length) {
+            if (_channelNames[i] == name) {
+                return _channels[i];
             }
             i = i + 1;
         }
         const ch = new DiagChannel(name);
-        this._channelNames.push(name);
-        this._channels.push(ch);
+        _channelNames.push(name);
+        _channels.push(ch);
         return ch;
     }
 
     hasSubscribers(name: string): boolean {
         let i = 0;
-        while (i < this._channelNames.length) {
-            if (this._channelNames[i] == name) {
-                return this._channels[i].hasSubscribers();
+        while (i < _channelNames.length) {
+            if (_channelNames[i] == name) {
+                return _channels[i].hasSubscribers();
             }
             i = i + 1;
         }
@@ -80,6 +72,8 @@ class DiagnosticsChannel {
     }
 }
 
+const _channels: DiagChannel[] = [];
+const _channelNames: string[] = [];
 const diagnosticsChannel = new DiagnosticsChannel();
 export { DiagChannel };
 export default diagnosticsChannel;

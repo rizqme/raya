@@ -135,8 +135,20 @@ impl<'a> Interpreter<'a> {
         }
         drop(classes);
 
-        let bm = Object::new_bound_method(receiver, func_id, method_module);
-        let gc_ptr = self.gc.lock().allocate(bm);
+        let callable = if method_module
+            .as_ref()
+            .and_then(|module| module.functions.get(func_id))
+            .is_some_and(|function| function.uses_js_this_slot)
+        {
+            if let Some(module) = method_module {
+                Object::new_closure_with_module(func_id, Vec::new(), module)
+            } else {
+                Object::new_closure(func_id, Vec::new())
+            }
+        } else {
+            Object::new_bound_method(receiver, func_id, method_module)
+        };
+        let gc_ptr = self.gc.lock().allocate(callable);
         Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
     }
 
@@ -330,6 +342,10 @@ impl<'a> Interpreter<'a> {
         if from_metadata.is_some() {
             return from_metadata;
         }
+        let from_legacy = Self::legacy_field_index_for_layout(field_name, obj.field_count());
+        if from_legacy.is_some() {
+            return from_legacy;
+        }
         self.structural_field_slot_index_for_object(obj, field_name)
     }
 
@@ -361,6 +377,10 @@ impl<'a> Interpreter<'a> {
                             .and_then(|index| {
                                 (index < obj.field_count())
                                     .then_some(StructuralSlotBinding::Field(index))
+                            })
+                            .or_else(|| {
+                                Self::legacy_field_index_for_layout(name, obj.field_count())
+                                    .map(StructuralSlotBinding::Field)
                             })
                             .or_else(|| {
                                 self.structural_field_slot_index_for_object(obj, name)

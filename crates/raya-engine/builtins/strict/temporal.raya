@@ -29,24 +29,24 @@ class TemporalPlainDate {
     year: number;
     month: number;
     day: number;
+    toString: () => string;
 
     constructor(year: number, month: number, day: number) {
         this.year = year;
         this.month = month;
         this.day = day;
-    }
-
-    toString(): string {
-        let y = this.year.toString();
-        let m = this.month.toString();
-        let d = this.day.toString();
-        if (this.month < 10) {
-            m = "0" + m;
-        }
-        if (this.day < 10) {
-            d = "0" + d;
-        }
-        return y + "-" + m + "-" + d;
+        this.toString = (): string => {
+            let y = this.year.toString();
+            let m = this.month.toString();
+            let d = this.day.toString();
+            if (this.month < 10) {
+                m = "0" + m;
+            }
+            if (this.day < 10) {
+                d = "0" + d;
+            }
+            return y + "-" + m + "-" + d;
+        };
     }
 }
 
@@ -55,37 +55,37 @@ class TemporalPlainTime {
     minute: number;
     second: number;
     millisecond: number;
+    toString: () => string;
 
     constructor(hour: number, minute: number, second: number, millisecond: number) {
         this.hour = hour;
         this.minute = minute;
         this.second = second;
         this.millisecond = millisecond;
-    }
+        this.toString = (): string => {
+            let h = this.hour.toString();
+            let m = this.minute.toString();
+            let s = this.second.toString();
+            let ms = this.millisecond.toString();
 
-    toString(): string {
-        let h = this.hour.toString();
-        let m = this.minute.toString();
-        let s = this.second.toString();
-        let ms = this.millisecond.toString();
+            if (this.hour < 10) {
+                h = "0" + h;
+            }
+            if (this.minute < 10) {
+                m = "0" + m;
+            }
+            if (this.second < 10) {
+                s = "0" + s;
+            }
 
-        if (this.hour < 10) {
-            h = "0" + h;
-        }
-        if (this.minute < 10) {
-            m = "0" + m;
-        }
-        if (this.second < 10) {
-            s = "0" + s;
-        }
+            if (this.millisecond < 10) {
+                ms = "00" + ms;
+            } else if (this.millisecond < 100) {
+                ms = "0" + ms;
+            }
 
-        if (this.millisecond < 10) {
-            ms = "00" + ms;
-        } else if (this.millisecond < 100) {
-            ms = "0" + ms;
-        }
-
-        return h + ":" + m + ":" + s + "." + ms;
+            return h + ":" + m + ":" + s + "." + ms;
+        };
     }
 }
 
@@ -109,11 +109,49 @@ class Temporal {
     }
 
     static PlainDate(year: number, month: number, day: number): TemporalPlainDate {
-        return new TemporalPlainDate(year, month, day);
+        let result = new TemporalPlainDate(year, month, day);
+        result["toString"] = (): string => {
+            let y = year.toString();
+            let m = month.toString();
+            let d = day.toString();
+            if (month < 10) {
+                m = "0" + m;
+            }
+            if (day < 10) {
+                d = "0" + d;
+            }
+            return y + "-" + m + "-" + d;
+        };
+        return result;
     }
 
     static PlainTime(hour: number, minute: number, second: number, millisecond: number): TemporalPlainTime {
-        return new TemporalPlainTime(hour, minute, second, millisecond);
+        let result = new TemporalPlainTime(hour, minute, second, millisecond);
+        result["toString"] = (): string => {
+            let h = hour.toString();
+            let m = minute.toString();
+            let s = second.toString();
+            let ms = millisecond.toString();
+
+            if (hour < 10) {
+                h = "0" + h;
+            }
+            if (minute < 10) {
+                m = "0" + m;
+            }
+            if (second < 10) {
+                s = "0" + s;
+            }
+
+            if (millisecond < 10) {
+                ms = "00" + ms;
+            } else if (millisecond < 100) {
+                ms = "0" + ms;
+            }
+
+            return h + ":" + m + ":" + s + "." + ms;
+        };
+        return result;
     }
 
     static ZonedDateTime(epochMilliseconds: number, timeZone: string): TemporalZonedDateTime {

@@ -1454,6 +1454,7 @@ impl<'a> TypeChecker<'a> {
             Some(Type::TypeVar(tv)) => tv.constraint.and_then(|constraint_ty| {
                 self.destructure_object_property_type(constraint_ty, prop_name)
             }),
+            Some(Type::Any) | Some(Type::JSObject) => Some(self.type_ctx.any_type()),
             Some(Type::Union(union)) => {
                 let mut member_types = Vec::new();
                 for member in union.members {
@@ -2421,11 +2422,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_truthy_condition_type(&mut self, cond_ty: TypeId, span: Span) {
-        if self.is_js_mode() {
-            return;
-        }
-        let bool_ty = self.type_ctx.boolean_type();
-        self.check_assignable(cond_ty, bool_ty, span);
+        let _ = (cond_ty, span);
     }
 
     /// Check if statement
@@ -2922,8 +2919,9 @@ impl<'a> TypeChecker<'a> {
                             self.type_ctx.jsobject_type()
                         }
                     }
-                    // Destructuring catch params need to accept arbitrary thrown values.
-                    _ => self.inference_fallback_type(),
+                    // Destructuring catch params are inherently dynamic. Bind them
+                    // through `any` so property extraction remains usable in strict mode.
+                    _ => self.type_ctx.any_type(),
                 };
 
                 // Register types for all variables bound in the pattern
@@ -2989,7 +2987,15 @@ impl<'a> TypeChecker<'a> {
             Expression::In(in_expr) => {
                 self.check_expr(&in_expr.property);
                 self.check_expr(&in_expr.object);
-                self.type_ctx.boolean_type()
+                if self.is_js_mode() {
+                    self.type_ctx.boolean_type()
+                } else {
+                    self.fallback_type(
+                        in_expr.span,
+                        FallbackReason::RecoverableUnsupportedExpr,
+                        "unsupported operator 'in'",
+                    )
+                }
             }
             Expression::TypeCast(cast) => self.check_type_cast(cast),
             Expression::RegexLiteral(_) => self.type_ctx.regexp_type(),
@@ -3378,6 +3384,35 @@ impl<'a> TypeChecker<'a> {
 
     /// Check function call
     fn check_call(&mut self, call: &CallExpression) -> TypeId {
+        if let Expression::Member(member) = call.callee.as_ref() {
+            if call.arguments.is_empty() {
+                if let Expression::Identifier(ident) = member.object.as_ref() {
+                    let object_name = self.resolve(ident.name);
+                    let property_name = self.resolve(member.property.name);
+                    if object_name == "Symbol"
+                        && matches!(
+                            property_name.as_str(),
+                            "iterator"
+                                | "toStringTag"
+                                | "match"
+                                | "matchAll"
+                                | "replace"
+                                | "search"
+                                | "split"
+                                | "species"
+                                | "hasInstance"
+                                | "isConcatSpreadable"
+                                | "asyncIterator"
+                                | "toPrimitive"
+                                | "unscopables"
+                        )
+                    {
+                        return self.check_expr(&call.callee);
+                    }
+                }
+            }
+        }
+
         // super(...) constructor call
         if let Expression::Super(_) = call.callee.as_ref() {
             for arg in &call.arguments {
@@ -4777,9 +4812,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Index access is inherently dynamic — return `any` so the result is usable
-        // in call expressions, member access, etc. without triggering strict-mode errors.
-        self.type_ctx.any_type()
+        self.fallback_type(
+            index.span,
+            FallbackReason::RecoverableUnsupportedExpr,
+            "index-access",
+        )
     }
 
     fn expr_is_es_array_index_key(&self, expr: &Expression) -> bool {
@@ -5285,11 +5322,18 @@ impl<'a> TypeChecker<'a> {
                     // If the class has type parameters and we have type arguments,
                     // create an instantiated class type with type vars substituted
                     if !resolved_type_args.is_empty() {
-                        if let Some(crate::parser::types::Type::Class(class)) =
-                            self.type_ctx.get(symbol.ty).cloned()
+                        if let Some(class) = self
+                            .resolve_class_type(symbol.ty)
+                            .or_else(|| {
+                                self.type_ctx
+                                    .lookup_named_type(&name)
+                                    .and_then(|ty| self.resolve_class_type(ty))
+                            })
                         {
                             if class.type_params.len() == resolved_type_args.len() {
-                                return self.instantiate_class_type(&class, &resolved_type_args);
+                                let instantiated =
+                                    self.instantiate_class_type(&class, &resolved_type_args);
+                                return instantiated;
                             }
                         }
                     }
@@ -6029,7 +6073,7 @@ impl<'a> TypeChecker<'a> {
         } else {
             self.type_ctx.get(lookup_object_ty).cloned()
         };
-        let obj_type = match obj_type {
+        let mut obj_type = match obj_type {
             Some(crate::parser::types::Type::Reference(type_ref)) => {
                 // Resolve through symbols first (scope-aware shadowing), then named types.
                 let resolved_named_ty = self
@@ -6059,6 +6103,20 @@ impl<'a> TypeChecker<'a> {
             }
             other => other,
         };
+
+        if let Some(crate::parser::types::Type::Generic(generic)) = obj_type.clone() {
+            obj_type = match self.type_ctx.get(generic.base).cloned() {
+                Some(crate::parser::types::Type::Class(class_ty))
+                    if !generic.type_args.is_empty() && !class_ty.type_params.is_empty() =>
+                {
+                    let instantiated_ty =
+                        self.instantiate_class_type(&class_ty, &generic.type_args);
+                    self.type_ctx.get(instantiated_ty).cloned()
+                }
+                Some(resolved) => Some(resolved),
+                None => Some(crate::parser::types::Type::Generic(generic)),
+            };
+        }
 
         // Check for built-in array methods
         if let Some(crate::parser::types::Type::Array(arr)) = &obj_type {
@@ -6216,7 +6274,14 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Check for class properties and methods (including inherited ones)
-        if let Some(crate::parser::types::Type::Class(class)) = &obj_type {
+        if let Some(class) = match &obj_type {
+            Some(crate::parser::types::Type::Class(class)) => Some(class.clone()),
+            Some(crate::parser::types::Type::Generic(_))
+            | Some(crate::parser::types::Type::Reference(_)) => {
+                self.resolve_class_type(lookup_object_ty)
+            }
+            _ => None,
+        } {
             // If this is a placeholder class type (empty methods), look up the symbol to get the full type
             let actual_class = if class.methods.is_empty() && class.properties.is_empty() {
                 // Look up class by name in symbol table
@@ -6236,7 +6301,7 @@ impl<'a> TypeChecker<'a> {
                 None
             };
 
-            let class_to_use = actual_class.as_ref().unwrap_or(class);
+            let class_to_use = actual_class.as_ref().unwrap_or(&class);
 
             // Look up the member in the class hierarchy (including parent classes)
             if let Some((ty, vis, owner_name)) =
@@ -6726,6 +6791,12 @@ impl<'a> TypeChecker<'a> {
         use crate::parser::types::ty::{MethodSignature, PropertySignature};
         use crate::parser::types::GenericContext;
 
+        let class_type_param_ids: Vec<Option<TypeId>> = class
+            .type_params
+            .iter()
+            .map(|param_name| self.type_ctx.lookup_named_type(param_name))
+            .collect();
+
         // Build substitution map: type_param_name → concrete type
         let mut gen_ctx = GenericContext::new(self.type_ctx);
         for (param_name, &arg_ty) in class.type_params.iter().zip(type_args.iter()) {
@@ -6737,7 +6808,13 @@ impl<'a> TypeChecker<'a> {
             .properties
             .iter()
             .map(|prop| {
-                let ty = gen_ctx.apply_substitution(prop.ty).unwrap_or(prop.ty);
+                let ty = class_type_param_ids
+                    .iter()
+                    .zip(type_args.iter())
+                    .find_map(|(param_ty, &arg_ty)| {
+                        param_ty.filter(|ty| *ty == prop.ty).map(|_| arg_ty)
+                    })
+                    .unwrap_or_else(|| gen_ctx.apply_substitution(prop.ty).unwrap_or(prop.ty));
                 PropertySignature {
                     name: prop.name.clone(),
                     ty,
@@ -6753,7 +6830,11 @@ impl<'a> TypeChecker<'a> {
             .methods
             .iter()
             .map(|method| {
-                let ty = gen_ctx.apply_substitution(method.ty).unwrap_or(method.ty);
+                let ty = class_type_param_ids
+                    .iter()
+                    .zip(type_args.iter())
+                    .find_map(|(param_ty, &arg_ty)| param_ty.filter(|ty| *ty == method.ty).map(|_| arg_ty))
+                    .unwrap_or_else(|| gen_ctx.apply_substitution(method.ty).unwrap_or(method.ty));
                 MethodSignature {
                     name: method.name.clone(),
                     ty,
@@ -6882,17 +6963,19 @@ impl<'a> TypeChecker<'a> {
                     Some(named_class)
                 }
             }
-            Type::Generic(generic) => match self.type_ctx.get(generic.base).cloned() {
-                Some(Type::Class(class_ty)) if !generic.type_args.is_empty() => {
-                    let instantiated = self.instantiate_class_type(&class_ty, &generic.type_args);
+            Type::Generic(generic) => {
+                let base_class = self.resolve_class_type(generic.base)?;
+                if !generic.type_args.is_empty() && !base_class.type_params.is_empty() {
+                    let instantiated =
+                        self.instantiate_class_type(&base_class, &generic.type_args);
                     match self.type_ctx.get(instantiated).cloned() {
                         Some(Type::Class(inst)) => Some(inst),
-                        _ => Some(class_ty),
+                        _ => Some(base_class),
                     }
+                } else {
+                    Some(base_class)
                 }
-                Some(Type::Class(class_ty)) => Some(class_ty),
-                _ => None,
-            },
+            }
             _ => None,
         }
     }
@@ -8203,8 +8286,8 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
 
-                // Handle Promise<T>/Promise<T> for async functions
-                if name == TC::PROMISE_TYPE_NAME {
+                // Handle Promise<T> and legacy Task<T> alias for async functions.
+                if name == TC::PROMISE_TYPE_NAME || name == "Task" {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() == 1 {
                             let result_ty = self.resolve_type_annotation(&type_args[0]);
@@ -8361,8 +8444,13 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
 
-                            if let Some(crate::parser::types::Type::Class(class)) =
-                                self.type_ctx.get(symbol.ty).cloned()
+                            if let Some(class) = self
+                                .resolve_class_type(symbol.ty)
+                                .or_else(|| {
+                                    self.type_ctx
+                                        .lookup_named_type(&name)
+                                        .and_then(|ty| self.resolve_class_type(ty))
+                                })
                             {
                                 if class.type_params.len() == resolved_args.len() {
                                     return self.instantiate_class_type(&class, &resolved_args);

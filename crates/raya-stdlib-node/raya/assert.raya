@@ -65,7 +65,12 @@ class Assert {
     }
 
     deepEqual(actual: unknown, expected: unknown, message?: string): void {
-        this.deepStrictEqual(actual, expected, message);
+        const actualStr = JSON.stringify(actual);
+        const expectedStr = JSON.stringify(expected);
+        if (actualStr != expectedStr) {
+            const msg = message != null ? message : "deep equal failed";
+            throw new NodeAssertionError(msg, actualStr, expectedStr, "deepEqual");
+        }
     }
 
     throws(fn: () => void, message?: string): void {

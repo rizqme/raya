@@ -84,11 +84,14 @@ class ChildProcessModule {
     }
 
     execFileSync(file: string, args: string[]): string {
-        const result = this.spawnSync(file, args);
-        if (result.status != 0) {
-            throw new Error("Command failed: " + file + "\n" + result.stderr);
+        const child = this.spawn(file, args);
+        const status = child.wait();
+        const out = child.stdout();
+        const err = child.stderr();
+        if (status != 0) {
+            throw new Error("Command failed: " + file + "\n" + err);
         }
-        return result.stdout;
+        return out;
     }
 
     spawn(command: string, args?: string[]): ChildProcess {
@@ -102,12 +105,13 @@ class ChildProcessModule {
     }
 
     spawnSync(command: string, args?: string[]): SpawnSyncResult {
-        let child: ChildProcess;
+        let h: number;
         if (args != null) {
-            child = this.spawn(command, args);
+            h = __NATIVE_CALL<number>("process.spawnWithArgs", command, args);
         } else {
-            child = this.spawn(command);
+            h = __NATIVE_CALL<number>("process.spawn", command);
         }
+        const child = new ChildProcess(h);
         const status = child.wait();
         const out = child.stdout();
         const err = child.stderr();

@@ -411,7 +411,7 @@ fn test_nested_destructuring_captured() {
 fn test_typeof_narrowing_string_int_union() {
     expect_i32(
         "function process(x: string | int): int {
-             if (typeof x === \"int\") {
+             if (typeof x === \"number\") {
                  return x + 1;
              } else {
                  return x.length;
@@ -441,7 +441,7 @@ fn test_typeof_narrowing_string_branch() {
 fn test_typeof_narrowing_with_early_return() {
     expect_i32(
         "function toInt(x: string | int): int {
-             if (typeof x === \"int\") {
+             if (typeof x === \"number\") {
                  return x;
              }
              return x.length;
@@ -455,7 +455,7 @@ fn test_typeof_narrowing_with_early_return() {
 fn test_typeof_narrowing_three_types() {
     expect_i32(
         "function classify(x: string | int | boolean): int {
-             if (typeof x === \"int\") {
+             if (typeof x === \"number\") {
                  return x;
              } else if (typeof x === \"string\") {
                  return x.length;

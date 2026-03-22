@@ -327,7 +327,7 @@ fn test_narrowing_in_nested_ifs() {
 fn test_typeof_narrowing_preserves_after_assignment() {
     expect_i32(
         "function process(x: string | int): int {
-             if (typeof x === \"int\") {
+             if (typeof x === \"number\") {
                  let doubled = x * 2;
                  return doubled;
              }

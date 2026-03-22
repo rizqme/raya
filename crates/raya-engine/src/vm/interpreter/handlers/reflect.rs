@@ -746,11 +746,11 @@ impl<'a> Interpreter<'a> {
                         "get requires 2 arguments (target, propertyKey)".to_string(),
                     ));
                 }
-                let target = args[0];
-                let receiver = args.get(2).copied().unwrap_or(target);
                 let property_key = get_property_key(args[1], "Reflect.set")?;
+                let target = self.proxy_wrapper_proxy_value(args[0]).unwrap_or(args[0]);
+                let receiver = args.get(2).copied().unwrap_or(target);
 
-                if !self.is_js_object_value(target) {
+                if !self.is_js_object_value(target) && self.unwrapped_proxy_like(target).is_none() {
                     return Err(VmError::TypeError(
                         "get: target must be an object".to_string(),
                     ));
@@ -819,8 +819,8 @@ impl<'a> Interpreter<'a> {
                         "set requires 3 arguments (target, propertyKey, value)".to_string(),
                     ));
                 }
-                let target = args[0];
                 let property_key = get_property_key(args[1], "Reflect.has")?;
+                let target = self.proxy_wrapper_proxy_value(args[0]).unwrap_or(args[0]);
                 let value = args[2];
 
                 if !target.is_ptr() {
@@ -845,10 +845,50 @@ impl<'a> Interpreter<'a> {
                         "has requires 2 arguments (target, propertyKey)".to_string(),
                     ));
                 }
-                let target = args[0];
                 let property_key = get_property_key(args[1], "Reflect.getFieldInfo")?;
+                let target = self.proxy_wrapper_proxy_value(args[0]).unwrap_or(args[0]);
 
-                Value::bool(self.reflect_has_property(target, &property_key))
+                if let Some(proxy) = crate::vm::reflect::try_unwrap_proxy(target) {
+                    if proxy.handler.is_null() {
+                        return Err(VmError::TypeError("Proxy has been revoked".to_string()));
+                    }
+                    if let Some(has_trap) = self.get_field_value_by_name(proxy.handler, "has") {
+                        if !has_trap.is_undefined() && !has_trap.is_null() {
+                            let key_ptr =
+                                self.gc.lock().allocate(RayaString::new(property_key.clone()));
+                            let key_value = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_ptr.as_ptr())
+                                        .expect("proxy key ptr"),
+                                )
+                            };
+                            self.ephemeral_gc_roots.write().push(key_value);
+                            let trap_args = [proxy.target, key_value];
+                            let result = self.invoke_callable_sync_with_this(
+                                has_trap,
+                                Some(proxy.handler),
+                                &trap_args,
+                                task,
+                                module,
+                            );
+                            let mut ephemeral = self.ephemeral_gc_roots.write();
+                            if let Some(index) = ephemeral
+                                .iter()
+                                .rposition(|candidate| *candidate == key_value)
+                            {
+                                ephemeral.swap_remove(index);
+                            }
+                            let value = result?;
+                            Value::bool(value.is_truthy())
+                        } else {
+                            Value::bool(self.reflect_has_property(target, &property_key))
+                        }
+                    } else {
+                        Value::bool(self.reflect_has_property(target, &property_key))
+                    }
+                } else {
+                    Value::bool(self.reflect_has_property(target, &property_key))
+                }
             }
 
             reflect::GET_FIELD_NAMES => {

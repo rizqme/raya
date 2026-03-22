@@ -318,7 +318,7 @@ fn test_error_method_on_wrong_type() {
     expect_compile_error(
         "let x: int = 42;
          return x.toUpperCase();",
-        "NotCallable",
+        "UnsupportedExpressionTypingPath",
     );
 }
 

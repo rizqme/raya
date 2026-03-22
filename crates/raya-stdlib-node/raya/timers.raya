@@ -3,19 +3,11 @@
 // Implements setTimeout/setInterval/setImmediate via async + native sleep.
 
 class Timers {
-    _nextId: number;
-    _cancelled: boolean[];
-
-    constructor() {
-        this._nextId = 1;
-        this._cancelled = [false];
-    }
-
     setTimeout(callback: () => void, delayMs: number): number {
-        const id = this._nextId;
-        this._nextId = this._nextId + 1;
-        while (this._cancelled.length <= id) { this._cancelled.push(false); }
-        const cancelled = this._cancelled;
+        const id = _nextId;
+        _nextId = _nextId + 1;
+        while (_cancelled.length <= id) { _cancelled.push(false); }
+        const cancelled = _cancelled;
         async {
             __NATIVE_CALL("time.sleep", delayMs);
             if (!cancelled[id]) {
@@ -26,16 +18,16 @@ class Timers {
     }
 
     clearTimeout(id: number): void {
-        if (id > 0 && id < this._cancelled.length) {
-            this._cancelled[id] = true;
+        if (id > 0 && id < _cancelled.length) {
+            _cancelled[id] = true;
         }
     }
 
     setInterval(callback: () => void, delayMs: number): number {
-        const id = this._nextId;
-        this._nextId = this._nextId + 1;
-        while (this._cancelled.length <= id) { this._cancelled.push(false); }
-        const cancelled = this._cancelled;
+        const id = _nextId;
+        _nextId = _nextId + 1;
+        while (_cancelled.length <= id) { _cancelled.push(false); }
+        const cancelled = _cancelled;
         async {
             while (!cancelled[id]) {
                 __NATIVE_CALL("time.sleep", delayMs);
@@ -48,16 +40,16 @@ class Timers {
     }
 
     clearInterval(id: number): void {
-        if (id > 0 && id < this._cancelled.length) {
-            this._cancelled[id] = true;
+        if (id > 0 && id < _cancelled.length) {
+            _cancelled[id] = true;
         }
     }
 
     setImmediate(callback: () => void): number {
-        const id = this._nextId;
-        this._nextId = this._nextId + 1;
-        while (this._cancelled.length <= id) { this._cancelled.push(false); }
-        const cancelled = this._cancelled;
+        const id = _nextId;
+        _nextId = _nextId + 1;
+        while (_cancelled.length <= id) { _cancelled.push(false); }
+        const cancelled = _cancelled;
         async {
             if (!cancelled[id]) {
                 callback();
@@ -67,11 +59,13 @@ class Timers {
     }
 
     clearImmediate(id: number): void {
-        if (id > 0 && id < this._cancelled.length) {
-            this._cancelled[id] = true;
+        if (id > 0 && id < _cancelled.length) {
+            _cancelled[id] = true;
         }
     }
 }
 
+let _nextId = 1;
+let _cancelled: boolean[] = [false];
 const timers = new Timers();
 export default timers;

@@ -19,8 +19,8 @@ class Symbol {
         return "Symbol(" + this.key + ")";
     }
 
-    valueOf(): Symbol {
-        return this;
+    valueOf(): string {
+        return this.key;
     }
 
     static for(key: string): Symbol {

@@ -3822,8 +3822,8 @@ impl<'a> Binder<'a> {
                     });
                 }
 
-                // Handle Promise<T> (and legacy Task<T> alias) for async functions
-                if name == TC::PROMISE_TYPE_NAME {
+                // Handle Promise<T> and legacy Task<T> alias for async functions.
+                if name == TC::PROMISE_TYPE_NAME || name == "Task" {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.is_empty() {
                             let unknown = self.type_ctx.unknown_type();

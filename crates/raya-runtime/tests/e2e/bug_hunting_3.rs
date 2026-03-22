@@ -760,7 +760,7 @@ fn test_void_function_return_value_errors() {
 
 // ============================================================================
 // 16. Typeof in Switch Statement
-//     switch (typeof x) { case "int": ... }
+//     switch (typeof x) { case "number": ... }
 // ============================================================================
 
 #[test]
@@ -768,7 +768,7 @@ fn test_typeof_switch() {
     expect_i32(
         "function process(x: int | string): int {
              switch (typeof x) {
-                 case \"int\": return x;
+                 case \"number\": return x;
                  case \"string\": return x.length;
              }
          }
@@ -782,7 +782,7 @@ fn test_typeof_switch_string_branch() {
     expect_i32(
         "function process(x: int | string): int {
              switch (typeof x) {
-                 case \"int\": return x;
+                 case \"number\": return x;
                  case \"string\": return x.length;
              }
          }

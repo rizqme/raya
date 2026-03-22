@@ -54,6 +54,7 @@ pub(crate) const BUILTIN_PRIMITIVE_SOURCES: &[(&str, &str)] = &[
     ("number", include_str!("../../builtins/strict/number.raya")),
     ("Array", include_str!("../../builtins/strict/array.raya")),
     ("RegExp", include_str!("../../builtins/strict/regexp.raya")),
+    ("Set", include_str!("../../builtins/strict/set.raya")),
     (
         "Promise",
         include_str!("../../builtins/strict/promise.raya"),
@@ -389,6 +390,18 @@ impl TypeRegistry {
             "finally".to_string(),
             DispatchAction::ClassMethod("Promise".to_string(), "finally".to_string()),
         );
+
+        if let Some(set_ty) = type_ctx.lookup_named_type("Set") {
+            let meths = self.method_dispatch.entry(set_ty.as_u32()).or_default();
+            meths.insert(
+                "keys".to_string(),
+                DispatchAction::ClassMethod("Set".to_string(), "keys".to_string()),
+            );
+            meths.insert(
+                "entries".to_string(),
+                DispatchAction::ClassMethod("Set".to_string(), "entries".to_string()),
+            );
+        }
     }
 
     /// Scan a `//@@builtin_primitive` `.raya` source and populate dispatch tables.
@@ -550,6 +563,9 @@ impl TypeRegistry {
             if let Some(action) = self.array_methods.get(name) {
                 return Some(action.clone());
             }
+            if let Some(native_id) = crate::vm::builtin::lookup_builtin_method("Array", name) {
+                return Some(DispatchAction::NativeCall(native_id));
+            }
         }
         None
     }
@@ -608,7 +624,13 @@ impl TypeRegistry {
     /// Look up the return TypeId for a native method ID.
     /// Used for return type propagation after CallMethodExact.
     pub fn lookup_return_type(&self, native_id: u16) -> Option<u32> {
-        self.method_return_types.get(&native_id).copied()
+        self.method_return_types
+            .get(&native_id)
+            .copied()
+            .or_else(|| match native_id {
+                crate::vm::builtin::array::CONCAT => Some(TypeContext::ARRAY_TYPE_ID),
+                _ => None,
+            })
     }
 
     /// Check if a type is a `//@@builtin_primitive`.

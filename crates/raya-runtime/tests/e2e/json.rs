@@ -127,12 +127,12 @@ fn test_json_parse_object_property_access_null() {
 
 #[test]
 fn test_json_parse_object_missing_property() {
-    // Accessing a property that doesn't exist returns null
+    // Missing properties behave like JS property access and surface undefined.
     let source = r#"
         let data = JSON.parse('{"name":"Alice"}');
-        return data.missing;
+        return typeof data.missing == "undefined";
     "#;
-    expect_null(source);
+    expect_bool(source, true);
 }
 
 #[test]
@@ -185,12 +185,11 @@ fn test_json_parse_array_in_object() {
 
 #[test]
 fn test_json_parse_null_object_property_access() {
-    // Accessing property on null JSON value returns null
-    let source = r#"
+    // Accessing a property on null follows JS semantics and throws.
+    expect_runtime_error(r#"
         let data = JSON.parse('null');
         return data.anything;
-    "#;
-    expect_null(source);
+    "#, "Cannot read properties of null");
 }
 
 #[test]

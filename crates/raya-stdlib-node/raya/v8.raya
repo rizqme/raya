@@ -31,7 +31,9 @@ class V8 {
 
     getHeapSpaceStatistics(): HeapStatistics[] {
         // Return a single space representing the whole heap
-        return [this.getHeapStatistics()];
+        const heapUsed = __NATIVE_CALL<number>("process.heapUsed");
+        const heapTotal = __NATIVE_CALL<number>("process.heapTotal");
+        return [new HeapStatistics(heapUsed, heapTotal)];
     }
 }
 

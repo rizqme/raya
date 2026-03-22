@@ -143,7 +143,7 @@ fn apply_typeof_guard(
     // Map type name to TypeId
     let target_ty = match type_name {
         "string" => ctx.string_type(),
-        "number" => ctx.number_type(),
+        "number" => return narrow_by_predicate(ctx, ty, negated, is_number_like_type),
         "boolean" => ctx.boolean_type(),
         "function" => return narrow_by_predicate(ctx, ty, negated, is_function_type),
         "object" => return narrow_by_predicate(ctx, ty, negated, is_object_like_type),
@@ -211,6 +211,15 @@ fn is_function_type(ty: &Type) -> bool {
     matches!(ty, Type::Function(_))
 }
 
+fn is_number_like_type(ty: &Type) -> bool {
+    use crate::parser::types::PrimitiveType;
+    matches!(
+        ty,
+        Type::Primitive(PrimitiveType::Number | PrimitiveType::Int)
+            | Type::NumberLiteral(_)
+    )
+}
+
 fn is_object_like_type(ty: &Type) -> bool {
     use crate::parser::types::PrimitiveType;
     match ty {
@@ -244,7 +253,29 @@ fn apply_typeof_guard_bare_union(
 
     // Map type name to PrimitiveType
     let target_prim = match type_name {
-        "number" => PrimitiveType::Number,
+        "number" => {
+            let union = match ctx.get(union_ty) {
+                Some(Type::Union(u)) if u.is_bare => u.clone(),
+                _ => return Some(union_ty),
+            };
+
+            let narrowed: Vec<TypeId> = union
+                .members
+                .iter()
+                .copied()
+                .filter(|&member| ctx.get(member).is_some_and(is_number_like_type))
+                .collect();
+
+            return if negated {
+                remove_numeric_from_bare_union(ctx, union_ty)
+            } else if narrowed.is_empty() {
+                Some(ctx.never_type())
+            } else if narrowed.len() == 1 {
+                Some(narrowed[0])
+            } else {
+                Some(ctx.union_type(narrowed))
+            };
+        }
         "string" => PrimitiveType::String,
         "boolean" => PrimitiveType::Boolean,
         _ => return Some(union_ty), // Unknown type name, no narrowing
@@ -256,6 +287,28 @@ fn apply_typeof_guard_bare_union(
     } else {
         // typeof x === "string" - narrow to string
         Some(ctx.intern(Type::Primitive(target_prim)))
+    }
+}
+
+fn remove_numeric_from_bare_union(ctx: &mut TypeContext, union_id: TypeId) -> Option<TypeId> {
+    let union = match ctx.get(union_id) {
+        Some(Type::Union(u)) if u.is_bare => u.clone(),
+        _ => return Some(union_id),
+    };
+
+    let remaining: Vec<TypeId> = union
+        .members
+        .iter()
+        .filter(|&&member| !ctx.get(member).is_some_and(is_number_like_type))
+        .copied()
+        .collect();
+
+    if remaining.is_empty() {
+        Some(ctx.never_type())
+    } else if remaining.len() == 1 {
+        Some(remaining[0])
+    } else {
+        Some(ctx.union_type(remaining))
     }
 }
 

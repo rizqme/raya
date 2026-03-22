@@ -30,7 +30,7 @@ function __typedArrayIntegerElementValue(value: any): int {
 }
 
 function __typedArrayFloat32StoredValue(value: any): int {
-    let numeric = typedArrayJsToNumber(value);
+    let numeric = typedArrayJsToIntegerOrInfinity(value);
     if (numeric != numeric) {
         return __FLOAT32_NAN_SENTINEL;
     }
@@ -57,7 +57,7 @@ function __typedArrayDecodeFloat32StoredValue(raw: int): number {
 }
 
 function __typedArrayFloat16StoredValue(value: any): int {
-    let numeric = typedArrayJsToNumber(value);
+    let numeric = typedArrayJsToIntegerOrInfinity(value);
     if (numeric != numeric) {
         return __FLOAT16_NAN_SENTINEL;
     }
@@ -288,7 +288,7 @@ function __typedArrayIsArrayBufferSource(source: any): boolean {
         return true;
     }
     let dynSource = source as any;
-    return dynSource.resize != null || dynSource.maxByteLength != null;
+    return dynSource.asArrayBuffer != null || dynSource.resize != null || dynSource.maxByteLength != null;
 }
 
 function __typedArraySourceValues(source: any): any[] {

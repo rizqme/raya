@@ -16,6 +16,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForOfIterableKind {
     Array,
+    String,
     ClassIterator,
     Unknown,
 }
@@ -86,7 +87,7 @@ impl<'a> Lowerer<'a> {
         &self,
         iterable: &ast::Expression,
     ) -> (ForOfIterableKind, TypeId, Option<String>) {
-        use crate::parser::types::Type;
+        use crate::parser::types::{PrimitiveType, Type};
 
         let iterable_ty = self.get_expr_type(iterable);
         let Some(ty) = self.type_ctx.get(iterable_ty) else {
@@ -95,6 +96,11 @@ impl<'a> Lowerer<'a> {
 
         match ty {
             Type::Array(arr) => (ForOfIterableKind::Array, arr.element, None),
+            Type::Primitive(PrimitiveType::String) | Type::StringLiteral(_) => (
+                ForOfIterableKind::String,
+                TypeId::new(super::STRING_TYPE_ID),
+                None,
+            ),
             Type::Set(set_ty) => (
                 ForOfIterableKind::ClassIterator,
                 set_ty.element,
@@ -385,9 +391,11 @@ impl<'a> Lowerer<'a> {
 
         let (iter_kind, elem_ty, iter_class_name) = self.classify_for_of_iterable(&for_of.right);
 
-        // Normalize iterable to an indexable array for loop lowering.
-        let array_reg = match iter_kind {
-            ForOfIterableKind::Array | ForOfIterableKind::Unknown => self.lower_expr(&for_of.right),
+        // Normalize iterable to either an indexable array or a direct string view.
+        let iterable_reg = match iter_kind {
+            ForOfIterableKind::Array | ForOfIterableKind::Unknown | ForOfIterableKind::String => {
+                self.lower_expr(&for_of.right)
+            }
             ForOfIterableKind::ClassIterator => {
                 let source_reg = self.lower_expr(&for_of.right);
                 let class_name = match iter_class_name.as_deref() {
@@ -505,12 +513,19 @@ impl<'a> Lowerer<'a> {
             }
         };
 
-        // Get array length: _len = arr.length
+        // Get iterable length.
         let len_reg = self.alloc_register(number_ty);
-        self.emit(IrInstr::ArrayLen {
-            dest: len_reg.clone(),
-            array: array_reg.clone(),
-        });
+        if iter_kind == ForOfIterableKind::String {
+            self.emit(IrInstr::StringLen {
+                dest: len_reg.clone(),
+                string: iterable_reg.clone(),
+            });
+        } else {
+            self.emit(IrInstr::ArrayLen {
+                dest: len_reg.clone(),
+                array: iterable_reg.clone(),
+            });
+        }
 
         // Initialize index: _idx = 0
         let idx_local = self.allocate_anonymous_local();
@@ -584,13 +599,21 @@ impl<'a> Lowerer<'a> {
             index: idx_local,
         });
 
-        // Load element: x = arr[_idx]
+        // Load element/character at the current index.
         let elem_reg = self.alloc_register(elem_ty);
-        self.emit(IrInstr::LoadElement {
-            dest: elem_reg.clone(),
-            array: array_reg.clone(),
-            index: body_idx,
-        });
+        if iter_kind == ForOfIterableKind::String {
+            self.emit(IrInstr::NativeCall {
+                dest: Some(elem_reg.clone()),
+                native_id: crate::compiler::native_id::STRING_CHAR_AT,
+                args: vec![iterable_reg.clone(), body_idx],
+            });
+        } else {
+            self.emit(IrInstr::LoadElement {
+                dest: elem_reg.clone(),
+                array: iterable_reg.clone(),
+                index: body_idx,
+            });
+        }
 
         // Determine loop variable name and check if captured
         let loop_var_name = match &for_of.left {
@@ -1596,9 +1619,10 @@ impl<'a> Lowerer<'a> {
             crate::parser::types::Type::Object(_) | crate::parser::types::Type::Interface(_) => {
                 true
             }
-            crate::parser::types::Type::Class(class_ty) => self
-                .nominal_type_id_from_type_name(&class_ty.name)
-                .is_none(),
+            crate::parser::types::Type::Class(class_ty) => {
+                self.nominal_type_id_from_type_name(&class_ty.name).is_none()
+                    && !self.type_registry.has_builtin_dispatch_type(&class_ty.name)
+            }
             crate::parser::types::Type::Union(union) => union
                 .members
                 .iter()
@@ -2163,9 +2187,24 @@ impl<'a> Lowerer<'a> {
                     if self.type_uses_runtime_handle_dispatch(value.ty) {
                         self.clear_late_bound_object_binding(name);
                     }
+                    let keep_late_bound_builtin_dispatch = self
+                        .late_bound_object_ctor_map
+                        .get(&name)
+                        .copied()
+                        .or_else(|| self.constructor_value_ctor_map.get(&name).copied())
+                        .is_some_and(|ctor_symbol| {
+                            self.type_registry
+                                .has_builtin_dispatch_type(self.interner.resolve(ctor_symbol))
+                        });
+                    if self.type_has_checker_validated_class_members(value.ty)
+                        && !keep_late_bound_builtin_dispatch
+                    {
+                        self.clear_late_bound_object_binding(name);
+                    }
                     if !self
                         .variable_structural_projection_fields
                         .contains_key(&name)
+                        && !keep_late_bound_builtin_dispatch
                     {
                         if let Some(layout) =
                             self.structural_projection_layout_from_type_id(value.ty)
@@ -2432,9 +2471,24 @@ impl<'a> Lowerer<'a> {
             if self.type_uses_runtime_handle_dispatch(value.ty) {
                 self.clear_late_bound_object_binding(name);
             }
+            let keep_late_bound_builtin_dispatch = self
+                .late_bound_object_ctor_map
+                .get(&name)
+                .copied()
+                .or_else(|| self.constructor_value_ctor_map.get(&name).copied())
+                .is_some_and(|ctor_symbol| {
+                    self.type_registry
+                        .has_builtin_dispatch_type(self.interner.resolve(ctor_symbol))
+                });
+            if self.type_has_checker_validated_class_members(value.ty)
+                && !keep_late_bound_builtin_dispatch
+            {
+                self.clear_late_bound_object_binding(name);
+            }
             if !self
                 .variable_structural_projection_fields
                 .contains_key(&name)
+                && !keep_late_bound_builtin_dispatch
             {
                 if let Some(layout) = self.structural_projection_layout_from_type_id(value.ty) {
                     self.variable_structural_projection_fields
@@ -2762,7 +2816,7 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        if self.generator_yield_array_local.is_some() {
+        if self.generator_yield_array_local.is_some() && value.is_none() {
             let result = self
                 .load_generator_yield_array()
                 .unwrap_or_else(|| self.alloc_register(TypeId::new(ARRAY_TYPE_ID)));
@@ -2775,21 +2829,8 @@ impl<'a> Lowerer<'a> {
 
     fn lower_yield(&mut self, yld: &ast::YieldStatement) {
         if self.generator_yield_array_local.is_some() {
-            let yielded = if let Some(value) = &yld.value {
-                self.lower_expr(value)
-            } else {
-                let undefined = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::Assign {
-                    dest: undefined.clone(),
-                    value: IrValue::Constant(IrConstant::Undefined),
-                });
-                undefined
-            };
-            if let Some(array_reg) = self.load_generator_yield_array() {
-                self.emit(IrInstr::ArrayPush {
-                    array: array_reg,
-                    element: yielded,
-                });
+            if let Some(value) = &yld.value {
+                let _ = self.lower_expr(value);
             }
             return;
         }

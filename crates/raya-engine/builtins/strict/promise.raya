@@ -76,39 +76,51 @@ class Promise<T> {
         return wrapped();
     }
 
-    static async resolve<U>(value: U): Promise<U> {
-        return value;
+    static resolve<U>(value: U): Promise<U> {
+        let wrapped = async (): Promise<U> => {
+            return value;
+        };
+        return wrapped();
     }
 
-    static async reject<U>(reason: PromiseRejectionReason): Promise<U> {
-        throw reason;
+    static reject<U>(reason: PromiseRejectionReason): Promise<U> {
+        let wrapped = async (): Promise<U> => {
+            throw reason;
+        };
+        return wrapped();
     }
 
-    static async all<U>(values: Promise<U>[]): Promise<U[]> {
-        let results: U[] = [];
-        let i = 0;
-        while (i < values.length) {
-            results.push(await values[i]);
-            i = i + 1;
-        }
-        return results;
-    }
-
-    static async race<U>(values: Promise<U>[]): Promise<U> {
-        if (values.length === 0) {
-            throw "Promise.race requires at least one promise";
-        }
-        while (true) {
+    static all<U>(values: Promise<U>[]): Promise<U[]> {
+        let wrapped = async (): Promise<U[]> => {
+            let results: U[] = [];
             let i = 0;
             while (i < values.length) {
-                const candidate = values[i];
-                if (__NATIVE_CALL<boolean>(PROMISE_IS_DONE, candidate)) {
-                    return await candidate;
-                }
+                results.push(await values[i]);
                 i = i + 1;
             }
-            sleep(0);
-        }
+            return results;
+        };
+        return wrapped();
+    }
+
+    static race<U>(values: Promise<U>[]): Promise<U> {
+        let wrapped = async (): Promise<U> => {
+            if (values.length === 0) {
+                throw "Promise.race requires at least one promise";
+            }
+            while (true) {
+                let i = 0;
+                while (i < values.length) {
+                    const candidate = values[i];
+                    if (__NATIVE_CALL<boolean>(PROMISE_IS_DONE, candidate)) {
+                        return await candidate;
+                    }
+                    i = i + 1;
+                }
+                sleep(0);
+            }
+        };
+        return wrapped();
     }
 }
 

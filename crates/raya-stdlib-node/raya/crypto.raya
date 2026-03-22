@@ -62,7 +62,8 @@ class NodeCrypto {
         return new Hmac(algorithm, key);
     }
 
-    randomBytes(size: number): Buffer {
+    randomBytes(sizeOrSelf: number | unknown, maybeSize?: number): Buffer {
+        const size: number = Number(maybeSize != null ? maybeSize : sizeOrSelf);
         return __NATIVE_CALL<Buffer>("crypto.randomBytes", size);
     }
 
@@ -70,7 +71,9 @@ class NodeCrypto {
         return __NATIVE_CALL<string>("crypto.randomUUID");
     }
 
-    randomInt(min: number, max: number): number {
+    randomInt(minOrSelf: number | unknown, maxOrMin: number, maybeMax?: number): number {
+        const min: number = Number(maybeMax != null ? maxOrMin : minOrSelf);
+        const max: number = Number(maybeMax != null ? maybeMax : maxOrMin);
         return __NATIVE_CALL<number>("crypto.randomInt", min, max);
     }
 
@@ -109,6 +112,85 @@ class NodeCrypto {
     generateKey(bits: number): Buffer { return __NATIVE_CALL<Buffer>("crypto.generateKey", bits); }
 }
 
-const crypto = new NodeCrypto();
+function createHash(algorithm: string): Hash {
+    return new Hash(algorithm);
+}
+
+function createHmac(algorithm: string, key: string): Hmac {
+    return new Hmac(algorithm, key);
+}
+
+function randomBytes(sizeOrSelf: number | unknown, maybeSize?: number): Buffer {
+    const size: number = Number(maybeSize != null ? maybeSize : sizeOrSelf);
+    return __NATIVE_CALL<Buffer>("crypto.randomBytes", size);
+}
+
+function randomUUID(): string {
+    return __NATIVE_CALL<string>("crypto.randomUUID");
+}
+
+function randomInt(minOrSelf: number | unknown, maxOrMin: number, maybeMax?: number): number {
+    const min: number = Number(maybeMax != null ? maxOrMin : minOrSelf);
+    const max: number = Number(maybeMax != null ? maybeMax : maxOrMin);
+    return __NATIVE_CALL<number>("crypto.randomInt", min, max);
+}
+
+function timingSafeEqual(a: Buffer, b: Buffer): boolean {
+    return __NATIVE_CALL<boolean>("crypto.timingSafeEqual", a, b);
+}
+
+function pbkdf2Sync(password: string, salt: Buffer, iterations: number, keylen: number, digest: string): Buffer {
+    return __NATIVE_CALL<Buffer>("crypto.pbkdf2", password, salt, iterations, keylen, digest);
+}
+
+function generateKeyPairSync(algorithm: string): string[] {
+    return __NATIVE_CALL<string[]>("crypto.generateKeyPair", algorithm);
+}
+
+function getHashes(): string[] {
+    return ["sha1", "sha256", "sha384", "sha512", "md5"];
+}
+
+function getCiphers(): string[] {
+    return ["aes-256-gcm"];
+}
+
+function hash(algorithm: string, data: string): string { return __NATIVE_CALL<string>("crypto.hash", algorithm, data); }
+function hmac(algorithm: string, key: string, data: string): string { return __NATIVE_CALL<string>("crypto.hmac", algorithm, key, data); }
+function encrypt(key: Buffer, plaintext: Buffer): Buffer { return __NATIVE_CALL<Buffer>("crypto.encrypt", key, plaintext); }
+function decrypt(key: Buffer, ciphertext: Buffer): Buffer { return __NATIVE_CALL<Buffer>("crypto.decrypt", key, ciphertext); }
+function sign(algorithm: string, privateKey: Buffer, data: Buffer): Buffer { return __NATIVE_CALL<Buffer>("crypto.sign", algorithm, privateKey, data); }
+function verify(algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer): boolean { return __NATIVE_CALL<boolean>("crypto.verify", algorithm, publicKey, data, signature); }
+function toHex(data: Buffer): string { return __NATIVE_CALL<string>("crypto.toHex", data); }
+function fromHex(hex: string): Buffer { return __NATIVE_CALL<Buffer>("crypto.fromHex", hex); }
+function toBase64(data: Buffer): string { return __NATIVE_CALL<string>("crypto.toBase64", data); }
+function fromBase64(b64: string): Buffer { return __NATIVE_CALL<Buffer>("crypto.fromBase64", b64); }
+function hkdf(hashAlg: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer { return __NATIVE_CALL<Buffer>("crypto.hkdf", hashAlg, ikm, salt, info, length); }
+function generateKey(bits: number): Buffer { return __NATIVE_CALL<Buffer>("crypto.generateKey", bits); }
+
+const crypto = {
+    createHash,
+    createHmac,
+    randomBytes,
+    randomUUID,
+    randomInt,
+    timingSafeEqual,
+    pbkdf2Sync,
+    generateKeyPairSync,
+    getHashes,
+    getCiphers,
+    hash,
+    hmac,
+    encrypt,
+    decrypt,
+    sign,
+    verify,
+    toHex,
+    fromHex,
+    toBase64,
+    fromBase64,
+    hkdf,
+    generateKey,
+};
 export { Hash, Hmac };
 export default crypto;

@@ -53,11 +53,13 @@ class Set<T> {
     }
 
     // Node-compatible alias: Set.prototype.keys is the same as values
+    //@@class_method
     keys(): T[] {
         return this.values();
     }
 
     // Node-compatible shape: entries are [value, value] pairs
+    //@@class_method
     entries(): [T, T][] {
         let vals = this.values();
         let result: [T, T][] = [];
