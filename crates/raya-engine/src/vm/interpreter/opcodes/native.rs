@@ -34,7 +34,8 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-const NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY: &str = "__dynamic_value_property";
+pub(crate) const NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY: &str = "__dynamic_value_property";
+pub(crate) const NON_OBJECT_DESCRIPTOR_METADATA_KEY: &str = "__dynamic_descriptor_property";
 const CALLABLE_VIRTUAL_VALUE_METADATA_KEY: &str = "__callable_virtual_value";
 const OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY: &str = "__object_prototype_override__";
 const OBJECT_EXTENSIBLE_METADATA_KEY: &str = "__object_extensible__";
@@ -2680,11 +2681,17 @@ impl<'a> Interpreter<'a> {
 
         let dynamic_value_removed = {
             let mut metadata = self.metadata.lock();
-            metadata.delete_metadata_property(
+            let value_removed = metadata.delete_metadata_property(
                 NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY,
                 target,
                 &key_name,
-            )
+            );
+            let descriptor_removed = metadata.delete_metadata_property(
+                NON_OBJECT_DESCRIPTOR_METADATA_KEY,
+                target,
+                &key_name,
+            );
+            value_removed || descriptor_removed
         };
 
         if removed || dynamic_value_removed {
@@ -2936,6 +2943,173 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
+    fn validate_existing_property_descriptor(
+        &self,
+        key: &str,
+        current: OrdinaryOwnProperty,
+        record: JsPropertyDescriptorRecord,
+    ) -> Result<(), VmError> {
+        match current {
+            OrdinaryOwnProperty::Data {
+                value,
+                writable,
+                enumerable,
+                configurable,
+            } => {
+                if !configurable {
+                    if record.has_configurable && record.configurable {
+                        return Err(VmError::TypeError(format!(
+                            "Cannot redefine non-configurable property '{}'",
+                            key
+                        )));
+                    }
+                    if record.has_enumerable && record.enumerable != enumerable {
+                        return Err(VmError::TypeError(format!(
+                            "Cannot redefine non-configurable property '{}'",
+                            key
+                        )));
+                    }
+                    if record.is_accessor() {
+                        return Err(VmError::TypeError(format!(
+                            "Cannot redefine non-configurable property '{}'",
+                            key
+                        )));
+                    }
+                }
+                if !writable {
+                    if record.has_writable && record.writable {
+                        return Err(VmError::TypeError(format!(
+                            "Cannot redefine non-writable property '{}'",
+                            key
+                        )));
+                    }
+                    if record.has_value && !value_same_value(record.value, value) {
+                        return Err(VmError::TypeError(format!(
+                            "Cannot redefine non-writable property '{}'",
+                            key
+                        )));
+                    }
+                }
+            }
+            OrdinaryOwnProperty::Accessor {
+                get,
+                set,
+                enumerable,
+                configurable,
+            } => {
+                if !configurable {
+                    if record.has_configurable && record.configurable {
+                        return Err(VmError::TypeError(format!(
+                            "Cannot redefine non-configurable property '{}'",
+                            key
+                        )));
+                    }
+                    if record.has_enumerable && record.enumerable != enumerable {
+                        return Err(VmError::TypeError(format!(
+                            "Cannot redefine non-configurable property '{}'",
+                            key
+                        )));
+                    }
+                    if record.is_data() {
+                        return Err(VmError::TypeError(format!(
+                            "Cannot redefine non-configurable property '{}'",
+                            key
+                        )));
+                    }
+                    if record.has_get && !value_same_value(record.get, get) {
+                        return Err(VmError::TypeError(format!(
+                            "Cannot redefine non-configurable property '{}'",
+                            key
+                        )));
+                    }
+                    if record.has_set && !value_same_value(record.set, set) {
+                        return Err(VmError::TypeError(format!(
+                            "Cannot redefine non-configurable property '{}'",
+                            key
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn ordinary_own_property_from_descriptor_value(
+        &self,
+        descriptor: Value,
+    ) -> Option<OrdinaryOwnProperty> {
+        let record = self.descriptor_record_from_descriptor(descriptor);
+        if record.is_accessor() {
+            Some(OrdinaryOwnProperty::Accessor {
+                get: if record.has_get {
+                    record.get
+                } else {
+                    Value::undefined()
+                },
+                set: if record.has_set {
+                    record.set
+                } else {
+                    Value::undefined()
+                },
+                enumerable: if record.has_enumerable {
+                    record.enumerable
+                } else {
+                    false
+                },
+                configurable: if record.has_configurable {
+                    record.configurable
+                } else {
+                    false
+                },
+            })
+        } else if record.is_data() {
+            Some(OrdinaryOwnProperty::Data {
+                value: if record.has_value {
+                    record.value
+                } else {
+                    Value::undefined()
+                },
+                writable: if record.has_writable {
+                    record.writable
+                } else {
+                    false
+                },
+                enumerable: if record.has_enumerable {
+                    record.enumerable
+                } else {
+                    false
+                },
+                configurable: if record.has_configurable {
+                    record.configurable
+                } else {
+                    false
+                },
+            })
+        } else {
+            None
+        }
+    }
+
+    fn shape_from_ordinary_property(
+        &self,
+        source: JsOwnPropertySource,
+        property: OrdinaryOwnProperty,
+    ) -> JsOwnPropertyShape {
+        match property {
+            OrdinaryOwnProperty::Data {
+                writable,
+                enumerable,
+                configurable,
+                ..
+            } => JsOwnPropertyShape::data(source, writable, configurable, enumerable),
+            OrdinaryOwnProperty::Accessor {
+                enumerable,
+                configurable,
+                ..
+            } => JsOwnPropertyShape::accessor(source, configurable, enumerable),
+        }
+    }
+
     fn arguments_exotic_define_own_property(
         &mut self,
         target: Value,
@@ -3149,6 +3323,151 @@ impl<'a> Interpreter<'a> {
             );
         }
 
+        Ok(Some(()))
+    }
+
+    fn array_exotic_current_own_property(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<OrdinaryOwnProperty> {
+        if let Some(descriptor) = self.metadata_descriptor_property(target, key) {
+            let mut property = self.ordinary_own_property_from_descriptor_value(descriptor)?;
+            if let OrdinaryOwnProperty::Data { value, .. } = &mut property {
+                if key == "length" {
+                    if let Some(array_ptr) = checked_array_ptr(target) {
+                        let array = unsafe { &*array_ptr.as_ptr() };
+                        *value = if array.len() <= i32::MAX as usize {
+                            Value::i32(array.len() as i32)
+                        } else {
+                            Value::f64(array.len() as f64)
+                        };
+                    }
+                } else if let Some(index) = parse_js_array_index_name(key) {
+                    if let Some(array_ptr) = checked_array_ptr(target) {
+                        let array = unsafe { &*array_ptr.as_ptr() };
+                        *value = array.get(index).unwrap_or(Value::undefined());
+                    }
+                } else if let Some(current) = self.metadata_data_property_value(target, key) {
+                    *value = current;
+                }
+            }
+            return Some(property);
+        }
+
+        let array_ptr = checked_array_ptr(target)?;
+        let array = unsafe { &*array_ptr.as_ptr() };
+
+        if key == "length" {
+            return Some(OrdinaryOwnProperty::Data {
+                value: if array.len() <= i32::MAX as usize {
+                    Value::i32(array.len() as i32)
+                } else {
+                    Value::f64(array.len() as f64)
+                },
+                writable: self.is_field_writable(target, "length"),
+                enumerable: false,
+                configurable: false,
+            });
+        }
+
+        if let Some(index) = parse_js_array_index_name(key) {
+            let value = array.get(index)?;
+            return Some(OrdinaryOwnProperty::Data {
+                value,
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            });
+        }
+
+        let value = self.metadata_data_property_value(target, key)?;
+        let (writable, configurable, enumerable) =
+            self.property_attributes_from_descriptor_metadata(target, key, (true, true, true));
+        Some(OrdinaryOwnProperty::Data {
+            value,
+            writable,
+            enumerable,
+            configurable,
+        })
+    }
+
+    fn array_exotic_define_own_property_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        descriptor: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<()>, VmError> {
+        let Some(array_ptr) = checked_array_ptr(target) else {
+            return Ok(None);
+        };
+
+        if key == "length" {
+            self.apply_array_length_descriptor_with_context(
+                target,
+                descriptor,
+                caller_task,
+                caller_module,
+            )?;
+            return Ok(Some(()));
+        }
+
+        let record = self.descriptor_record_from_descriptor(descriptor);
+        let current = self.array_exotic_current_own_property(target, key);
+        if let Some(current_property) = current {
+            self.validate_existing_property_descriptor(key, current_property, record)?;
+        } else if !self.is_js_value_extensible(target) {
+            return Err(VmError::TypeError(format!(
+                "Cannot define property '{}': object is not extensible",
+                key
+            )));
+        }
+
+        if let Some(index) = parse_js_array_index_name(key) {
+            let array = unsafe { &mut *array_ptr.as_ptr() };
+            if index >= array.length {
+                array.resize_holey(index + 1);
+            }
+        }
+
+        let next = self.apply_descriptor_record_to_ordinary_property(current, record);
+        match next {
+            OrdinaryOwnProperty::Accessor { .. } => {
+                if let Some(index) = parse_js_array_index_name(key) {
+                    let array = unsafe { &mut *array_ptr.as_ptr() };
+                    let _ = array.delete_index(index);
+                } else {
+                    let mut metadata = self.metadata.lock();
+                    let _ = metadata.delete_metadata_property(
+                        NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY,
+                        target,
+                        key,
+                    );
+                }
+                let descriptor_value = self.synthesize_descriptor_from_ordinary_own_property(next)?;
+                self.set_descriptor_metadata(target, key, descriptor_value);
+            }
+            OrdinaryOwnProperty::Data { value, .. } => {
+                if let Some(index) = parse_js_array_index_name(key) {
+                    let array = unsafe { &mut *array_ptr.as_ptr() };
+                    array.set(index, value).map_err(VmError::RuntimeError)?;
+                } else {
+                    self.metadata.lock().define_metadata_property(
+                        NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
+                        value,
+                        target,
+                        key.to_string(),
+                    );
+                }
+                let descriptor_value = self.synthesize_descriptor_from_ordinary_own_property(next)?;
+                self.set_descriptor_metadata(target, key, descriptor_value);
+            }
+        }
+
+        self.set_callable_virtual_property_deleted(target, key, false);
+        self.set_fixed_property_deleted(target, key, false);
         Ok(Some(()))
     }
 
@@ -5610,6 +5929,12 @@ impl<'a> Interpreter<'a> {
                 JsExoticAdapterKind::Array => {
                     if let Some(array_ptr) = checked_array_ptr(target) {
                         let array = unsafe { &*array_ptr.as_ptr() };
+                        if let Some(property) = self.array_exotic_current_own_property(target, key) {
+                            if let OrdinaryOwnProperty::Data { value, .. } = property {
+                                return Some(value);
+                            }
+                            return None;
+                        }
                         if key == "length" {
                             let len = array.len();
                             return Some(if len <= i32::MAX as usize {
@@ -6410,6 +6735,14 @@ impl<'a> Interpreter<'a> {
             JsExoticAdapterKind::Array => {
                 let array_ptr = checked_array_ptr(target)?;
                 let array = unsafe { &*array_ptr.as_ptr() };
+                if let Some(descriptor) = self.metadata_descriptor_property(target, key) {
+                    if let Some(property) = self.ordinary_own_property_from_descriptor_value(descriptor)
+                    {
+                        return Some(
+                            self.shape_from_ordinary_property(JsOwnPropertySource::ArrayExotic, property)
+                        );
+                    }
+                }
                 if key == "length" {
                     let (writable, configurable, enumerable) =
                         self.property_attributes_from_descriptor_metadata(
@@ -6503,24 +6836,49 @@ impl<'a> Interpreter<'a> {
                 )
             }
             (JsExoticAdapterKind::Array, JsOwnPropertyKind::Data) => {
-                let value = if let Some(array_ptr) = checked_array_ptr(target) {
-                    let array = unsafe { &*array_ptr.as_ptr() };
-                    if key == "length" {
-                        if array.len() <= i32::MAX as usize {
-                            Value::i32(array.len() as i32)
-                        } else {
-                            Value::f64(array.len() as f64)
+                if let Some(descriptor) = self.metadata_descriptor_property(target, key) {
+                    if let Some(property) = self.array_exotic_current_own_property(target, key) {
+                        match property {
+                            OrdinaryOwnProperty::Data { value, .. } => {
+                                JsOwnPropertyRecord::data(shape, value)
+                            }
+                            OrdinaryOwnProperty::Accessor { get, set, .. } => {
+                                return Ok(Some(JsOwnPropertyRecord::accessor(shape, Some(get), Some(set))));
+                            }
                         }
-                    } else if let Some(index) = parse_js_array_index_name(key) {
-                        array.get(index).unwrap_or(Value::undefined())
                     } else {
-                        self.metadata_data_property_value(target, key)
-                            .unwrap_or(Value::undefined())
+                        let _ = descriptor;
+                        JsOwnPropertyRecord::data(shape, Value::undefined())
                     }
                 } else {
-                    Value::undefined()
+                    let value = if let Some(array_ptr) = checked_array_ptr(target) {
+                        let array = unsafe { &*array_ptr.as_ptr() };
+                        if key == "length" {
+                            if array.len() <= i32::MAX as usize {
+                                Value::i32(array.len() as i32)
+                            } else {
+                                Value::f64(array.len() as f64)
+                            }
+                        } else if let Some(index) = parse_js_array_index_name(key) {
+                            array.get(index).unwrap_or(Value::undefined())
+                        } else {
+                            self.metadata_data_property_value(target, key)
+                                .unwrap_or(Value::undefined())
+                        }
+                    } else {
+                        Value::undefined()
+                    };
+                    JsOwnPropertyRecord::data(shape, value)
+                }
+            }
+            (JsExoticAdapterKind::Array, JsOwnPropertyKind::Accessor) => {
+                let Some(property) = self.array_exotic_current_own_property(target, key) else {
+                    return Ok(None);
                 };
-                JsOwnPropertyRecord::data(shape, value)
+                let OrdinaryOwnProperty::Accessor { get, set, .. } = property else {
+                    return Ok(None);
+                };
+                JsOwnPropertyRecord::accessor(shape, Some(get), Some(set))
             }
             (JsExoticAdapterKind::TypedArray, JsOwnPropertyKind::Data) => JsOwnPropertyRecord::data(
                 shape,
@@ -6610,6 +6968,8 @@ impl<'a> Interpreter<'a> {
                 let mut metadata = self.metadata.lock();
                 let _ =
                     metadata.delete_metadata_property(NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY, target, key);
+                let _ =
+                    metadata.delete_metadata_property(NON_OBJECT_DESCRIPTOR_METADATA_KEY, target, key);
                 Ok(Some(true))
             }
             JsExoticAdapterKind::TypedArray => {
@@ -7298,7 +7658,12 @@ impl<'a> Interpreter<'a> {
     fn set_descriptor_metadata(&self, target: Value, key: &str, descriptor: Value) {
         // Write to property kernel only (single source of truth)
         let Some(obj_ptr) = checked_object_ptr(target) else {
-            // Non-object targets: no-op
+            self.metadata.lock().define_metadata_property(
+                NON_OBJECT_DESCRIPTOR_METADATA_KEY.to_string(),
+                descriptor,
+                target,
+                key.to_string(),
+            );
             return;
         };
         let obj = unsafe { &mut *obj_ptr.as_ptr() };
@@ -7337,6 +7702,22 @@ impl<'a> Interpreter<'a> {
         };
 
         obj.ensure_dyn_props().insert(key_id, prop);
+    }
+
+    fn metadata_descriptor_property(&self, target: Value, key: &str) -> Option<Value> {
+        let metadata = self.metadata.lock();
+        metadata.get_metadata_property(NON_OBJECT_DESCRIPTOR_METADATA_KEY, target, key)
+    }
+
+    fn delete_metadata_descriptor_property(&self, target: Value, key: &str) {
+        let mut metadata = self.metadata.lock();
+        let _ = metadata.delete_metadata_property(NON_OBJECT_DESCRIPTOR_METADATA_KEY, target, key);
+    }
+
+    fn metadata_descriptor_property_names(&self, target: Value) -> Vec<String> {
+        self.metadata
+            .lock()
+            .get_property_keys_for_metadata(target, NON_OBJECT_DESCRIPTOR_METADATA_KEY)
     }
 
     pub(in crate::vm::interpreter) fn define_data_property_on_target(
@@ -7545,6 +7926,10 @@ impl<'a> Interpreter<'a> {
             return Some(descriptor);
         }
 
+        if let Some(descriptor) = self.metadata_descriptor_property(target, key) {
+            return Some(descriptor);
+        }
+
         if let Some(property) = self.ordinary_own_property(target, key) {
             return self
                 .synthesize_descriptor_from_ordinary_own_property(property)
@@ -7652,19 +8037,47 @@ impl<'a> Interpreter<'a> {
         false
     }
 
-    fn apply_descriptor_to_target(
+    fn validate_descriptor_for_definition(
+        &self,
+        key: &str,
+        descriptor: Value,
+    ) -> Result<JsPropertyDescriptorRecord, VmError> {
+        let record = self.descriptor_record_from_descriptor(descriptor);
+
+        if record.has_get {
+            let getter_val = record.get;
+            if !getter_val.is_undefined() && !Self::is_callable_value(getter_val) {
+                return Err(VmError::TypeError(format!(
+                    "Getter for property '{}' must be callable",
+                    key
+                )));
+            }
+        }
+        if record.has_set {
+            let setter_val = record.set;
+            if !setter_val.is_undefined() && !Self::is_callable_value(setter_val) {
+                return Err(VmError::TypeError(format!(
+                    "Setter for property '{}' must be callable",
+                    key
+                )));
+            }
+        }
+        if record.is_accessor() && record.has_value {
+            return Err(VmError::TypeError(format!(
+                "Invalid property descriptor for '{}': cannot mix accessors and value",
+                key
+            )));
+        }
+
+        Ok(record)
+    }
+
+    fn apply_generic_descriptor_to_target(
         &self,
         target: Value,
         key: &str,
         descriptor: Value,
     ) -> Result<(), VmError> {
-        if !descriptor.is_ptr() {
-            return Err(VmError::TypeError(
-                "Object property descriptor must be an object".to_string(),
-            ));
-        }
-
-        // Block redefinition if previous descriptor was marked non-configurable.
         if let Some(existing) = self.get_descriptor_metadata(target, key) {
             if !self.descriptor_flag(existing, "configurable", true) {
                 return Err(VmError::TypeError(format!(
@@ -7679,63 +8092,7 @@ impl<'a> Interpreter<'a> {
             )));
         }
 
-        let has_getter = self.descriptor_field_present(descriptor, "get");
-        let getter = if has_getter {
-            self.get_field_value_by_name(descriptor, "get")
-        } else {
-            None
-        };
-        let has_setter = self.descriptor_field_present(descriptor, "set");
-        let setter = if has_setter {
-            self.get_field_value_by_name(descriptor, "set")
-        } else {
-            None
-        };
-        let has_accessor = has_getter || has_setter;
-        let has_value = self.descriptor_field_present(descriptor, "value");
-        let value_field = if has_value {
-            self.get_field_value_by_name(descriptor, "value")
-        } else {
-            None
-        };
-
-        if has_getter {
-            let getter_val = getter.unwrap_or(Value::undefined());
-            if !getter_val.is_undefined() && !Self::is_callable_value(getter_val) {
-                return Err(VmError::TypeError(format!(
-                    "Getter for property '{}' must be callable",
-                    key
-                )));
-            }
-        }
-        if has_setter {
-            let setter_val = setter.unwrap_or(Value::undefined());
-            if !setter_val.is_undefined() && !Self::is_callable_value(setter_val) {
-                return Err(VmError::TypeError(format!(
-                    "Setter for property '{}' must be callable",
-                    key
-                )));
-            }
-        }
-        if has_accessor && has_value {
-            return Err(VmError::TypeError(format!(
-                "Invalid property descriptor for '{}': cannot mix accessors and value",
-                key
-            )));
-        }
-
-        // Accessor definitions on array index properties still participate in
-        // the array's logical length, even when no concrete element value is stored.
-        if let Some(index) = parse_js_array_index_name(key) {
-            if let Some(array_ptr) = checked_array_ptr(target) {
-                let array = unsafe { &mut *array_ptr.as_ptr() };
-                if index >= array.length {
-                    array.length = index + 1;
-                }
-            }
-        }
-
-        let record = self.descriptor_record_from_descriptor(descriptor);
+        let record = self.validate_descriptor_for_definition(key, descriptor)?;
         if self.apply_ordinary_descriptor_record(target, key, record)? {
             if record.has_value
                 && self
@@ -7748,58 +8105,88 @@ impl<'a> Interpreter<'a> {
             return Ok(());
         }
 
-        // Apply data descriptor value directly to the target field if provided.
-        if let Some(value) = value_field {
-            if self.set_builtin_global_property(target, key, value) {
+        if record.has_value {
+            if self.set_builtin_global_property(target, key, record.value) {
                 if self
                     .callable_virtual_property_descriptor(target, key)
                     .is_some()
                 {
-                    self.set_cached_callable_virtual_property_value(target, key, value);
+                    self.set_cached_callable_virtual_property_value(target, key, record.value);
                 }
                 self.set_callable_virtual_property_deleted(target, key, false);
                 self.set_fixed_property_deleted(target, key, false);
                 return Ok(());
             }
-            if let Some(array_ptr) = checked_array_ptr(target) {
-                if key == "length" {
-                    self.set_array_length_value(target, value)?;
-                } else if let Some(index) = parse_js_array_index_name(key) {
-                    let array = unsafe { &mut *array_ptr.as_ptr() };
-                    if !self.is_js_value_extensible(target) && array.get(index).is_none() {
-                        return Err(VmError::TypeError(format!(
-                            "Cannot define property '{}': object is not extensible",
-                            key
-                        )));
-                    }
-                    array.set(index, value).map_err(VmError::RuntimeError)?;
-                } else {
-                    self.metadata.lock().define_metadata_property(
-                        NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
-                        value,
-                        target,
-                        key.to_string(),
-                    );
-                }
-            } else {
-                self.metadata.lock().define_metadata_property(
-                    NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
-                    value,
-                    target,
-                    key.to_string(),
-                );
-            }
+
+            self.metadata.lock().define_metadata_property(
+                NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
+                record.value,
+                target,
+                key.to_string(),
+            );
             if self
                 .callable_virtual_property_descriptor(target, key)
                 .is_some()
             {
-                self.set_cached_callable_virtual_property_value(target, key, value);
+                self.set_cached_callable_virtual_property_value(target, key, record.value);
             }
         }
 
         self.set_callable_virtual_property_deleted(target, key, false);
         self.set_fixed_property_deleted(target, key, false);
         Ok(())
+    }
+
+    fn apply_descriptor_to_target(
+        &self,
+        target: Value,
+        key: &str,
+        descriptor: Value,
+    ) -> Result<(), VmError> {
+        if !descriptor.is_ptr() {
+            return Err(VmError::TypeError(
+                "Object property descriptor must be an object".to_string(),
+            ));
+        }
+        self.apply_generic_descriptor_to_target(target, key, descriptor)
+    }
+
+    fn exotic_define_own_property_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        descriptor: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<()>, VmError> {
+        if let Some(()) = self.array_exotic_define_own_property_with_context(
+            target,
+            key,
+            descriptor,
+            caller_task,
+            caller_module,
+        )? {
+            return Ok(Some(()));
+        }
+
+        if self
+            .typed_array_define_indexed_property(
+                target,
+                key,
+                descriptor,
+                caller_task,
+                caller_module,
+            )?
+            .is_some()
+        {
+            return Ok(Some(()));
+        }
+
+        if let Some(()) = self.arguments_exotic_define_own_property(target, key, descriptor)? {
+            return Ok(Some(()));
+        }
+
+        Ok(None)
     }
 
     fn apply_descriptor_to_target_with_context(
@@ -7886,171 +8273,17 @@ impl<'a> Interpreter<'a> {
             caller_module,
         )?;
 
-        if self
-            .typed_array_define_indexed_property(
-                target,
-                key,
-                descriptor,
-                caller_task,
-                caller_module,
-            )?
-            .is_some()
-        {
+        if let Some(()) = self.exotic_define_own_property_with_context(
+            target,
+            key,
+            descriptor,
+            caller_task,
+            caller_module,
+        )? {
             return Ok(());
         }
 
-        if checked_array_ptr(target).is_some() && key == "length" {
-            return self.apply_array_length_descriptor_with_context(
-                target,
-                descriptor,
-                caller_task,
-                caller_module,
-            );
-        }
-
-        if let Some(()) = self.arguments_exotic_define_own_property(target, key, descriptor)? {
-            return Ok(());
-        }
-
-        if let Some(existing) = self.get_descriptor_metadata(target, key) {
-            if !self.descriptor_flag(existing, "configurable", true) {
-                return Err(VmError::TypeError(format!(
-                    "Cannot redefine non-configurable property '{}'",
-                    key
-                )));
-            }
-        } else if !self.has_own_js_property(target, key) && !self.is_js_value_extensible(target) {
-            return Err(VmError::TypeError(format!(
-                "Cannot define property '{}': object is not extensible",
-                key
-            )));
-        }
-
-        let has_getter = self.descriptor_field_present(descriptor, "get");
-        let getter = if has_getter {
-            self.get_field_value_by_name(descriptor, "get")
-        } else {
-            None
-        };
-        let has_setter = self.descriptor_field_present(descriptor, "set");
-        let setter = if has_setter {
-            self.get_field_value_by_name(descriptor, "set")
-        } else {
-            None
-        };
-        let has_accessor = has_getter || has_setter;
-        let has_value = self.descriptor_field_present(descriptor, "value");
-        let value_field = if has_value {
-            self.get_field_value_by_name(descriptor, "value")
-        } else {
-            None
-        };
-
-        if has_getter {
-            let getter_val = getter.unwrap_or(Value::undefined());
-            if !getter_val.is_undefined() && !Self::is_callable_value(getter_val) {
-                return Err(VmError::TypeError(format!(
-                    "Getter for property '{}' must be callable",
-                    key
-                )));
-            }
-        }
-        if has_setter {
-            let setter_val = setter.unwrap_or(Value::undefined());
-            if !setter_val.is_undefined() && !Self::is_callable_value(setter_val) {
-                return Err(VmError::TypeError(format!(
-                    "Setter for property '{}' must be callable",
-                    key
-                )));
-            }
-        }
-        if has_accessor && has_value {
-            return Err(VmError::TypeError(format!(
-                "Invalid property descriptor for '{}': cannot mix accessors and value",
-                key
-            )));
-        }
-
-        // Accessor definitions on array index properties still participate in
-        // the array's logical length, even when no concrete element value is stored.
-        if let Some(index) = parse_js_array_index_name(key) {
-            if let Some(array_ptr) = checked_array_ptr(target) {
-                let array = unsafe { &mut *array_ptr.as_ptr() };
-                if index >= array.length {
-                    array.length = index + 1;
-                }
-            }
-        }
-
-        let record = self.descriptor_record_from_descriptor(descriptor);
-        if self.apply_ordinary_descriptor_record(target, key, record)? {
-            if record.has_value
-                && self
-                    .callable_virtual_property_descriptor(target, key)
-                    .is_some()
-            {
-                self.set_cached_callable_virtual_property_value(target, key, record.value);
-            }
-            self.set_callable_virtual_property_deleted(target, key, false);
-            return Ok(());
-        }
-
-        if let Some(value) = value_field {
-            if self.set_builtin_global_property(target, key, value) {
-                if self
-                    .callable_virtual_property_descriptor(target, key)
-                    .is_some()
-                {
-                    self.set_cached_callable_virtual_property_value(target, key, value);
-                }
-                self.set_callable_virtual_property_deleted(target, key, false);
-                self.set_fixed_property_deleted(target, key, false);
-                return Ok(());
-            }
-            if let Some(array_ptr) = checked_array_ptr(target) {
-                if key == "length" {
-                    self.set_array_length_value_with_context(
-                        target,
-                        value,
-                        caller_task,
-                        caller_module,
-                    )?;
-                } else if let Some(index) = parse_js_array_index_name(key) {
-                    let array = unsafe { &mut *array_ptr.as_ptr() };
-                    if !self.is_js_value_extensible(target) && array.get(index).is_none() {
-                        return Err(VmError::TypeError(format!(
-                            "Cannot define property '{}': object is not extensible",
-                            key
-                        )));
-                    }
-                    array.set(index, value).map_err(VmError::RuntimeError)?;
-                } else {
-                    self.metadata.lock().define_metadata_property(
-                        NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
-                        value,
-                        target,
-                        key.to_string(),
-                    );
-                }
-            } else {
-                self.metadata.lock().define_metadata_property(
-                    NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
-                    value,
-                    target,
-                    key.to_string(),
-                );
-            }
-            if self
-                .callable_virtual_property_descriptor(target, key)
-                .is_some()
-            {
-                self.set_cached_callable_virtual_property_value(target, key, value);
-            }
-        }
-
-        self.set_callable_virtual_property_deleted(target, key, false);
-        self.set_fixed_property_deleted(target, key, false);
-        Ok(())
+        self.apply_generic_descriptor_to_target(target, key, descriptor)
     }
 
     fn channel_from_handle_arg(&self, value: Value) -> Result<(u64, &ChannelObject), VmError> {
@@ -8789,6 +9022,7 @@ impl<'a> Interpreter<'a> {
 
                 collector.push("length".to_string());
                 collector.extend(self.metadata_backed_property_names(target));
+                collector.extend(self.metadata_descriptor_property_names(target));
             }
             JsExoticAdapterKind::TypedArray => {
                 let Some(length) = self.typed_array_live_length_direct(target) else {

@@ -1244,26 +1244,8 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                     JSView::Arr(ptr) => {
-                        let arr = unsafe { &*ptr };
-                        if let Some(index) = array_index {
-                            if let Some(value) = arr.get(index) {
-                                value
-                            } else if let Some(key_str) = key_str.as_deref() {
-                                self.prototype_chain_property_value_with_protocol_alias(
-                                    obj_val, key_str,
-                                )
-                                .unwrap_or(Value::undefined())
-                            } else {
-                                Value::undefined()
-                            }
-                        } else if key_str.as_deref() == Some("length") {
-                            let len = arr.len();
-                            if len <= i32::MAX as usize {
-                                Value::i32(len as i32)
-                            } else {
-                                Value::f64(len as f64)
-                            }
-                        } else if let Some(key_str) = key_str.as_deref() {
+                        let _arr = unsafe { &*ptr };
+                        if let Some(key_str) = key_str.as_deref() {
                             if let Some(value) = match self
                                 .get_property_value_via_js_semantics_with_context(
                                     obj_val, key_str, task, module,
@@ -1295,6 +1277,8 @@ impl<'a> Interpreter<'a> {
                             } else {
                                 Value::undefined()
                             }
+                        } else if let Some(index) = array_index {
+                            _arr.get(index).unwrap_or(Value::undefined())
                         } else {
                             Value::undefined()
                         }

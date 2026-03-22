@@ -538,9 +538,31 @@ impl<'a> Interpreter<'a> {
             .unwrap_or(true)
     }
 
-    pub(crate) fn sync_descriptor_value(&self, _obj_val: Value, _field_name: &str, _value: Value) {
-        // No-op: the property kernel (DynProp/SlotMeta) is written directly by
-        // the caller. No secondary descriptor object needs syncing.
+    pub(crate) fn sync_descriptor_value(&self, obj_val: Value, field_name: &str, value: Value) {
+        let descriptor = {
+            let metadata = self.metadata.lock();
+            metadata.get_metadata_property(
+                super::native::NON_OBJECT_DESCRIPTOR_METADATA_KEY,
+                obj_val,
+                field_name,
+            )
+        };
+        let Some(descriptor) = descriptor else {
+            return;
+        };
+        if self.descriptor_field_present(descriptor, "get")
+            || self.descriptor_field_present(descriptor, "set")
+        {
+            return;
+        }
+        let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() }) else {
+            return;
+        };
+        let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
+        if let Some(field_index) = self.get_field_index_for_value(descriptor, "value") {
+            let _ = descriptor_obj.set_field(field_index, value);
+        }
+        self.set_descriptor_field_present(descriptor, "value", true);
     }
 
     pub(crate) fn descriptor_data_value(&self, obj_val: Value, field_name: &str) -> Option<Value> {

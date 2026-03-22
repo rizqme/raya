@@ -3027,6 +3027,39 @@ fn test_node_compat_arguments_own_names_exclude_symbol_iterator_string() {
 }
 
 #[test]
+fn test_node_compat_array_length_define_property_locks_writable_flag() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let a = [1, 2, 3];
+            Object.defineProperty(a, "length", { value: 1, writable: false });
+            let d = Object.getOwnPropertyDescriptor(a, "length");
+            return JSON.stringify([a.length, a[1], d.writable]);
+        }
+    "#,
+        "[1,null,false]",
+    );
+}
+
+#[test]
+fn test_node_compat_array_index_accessor_define_property_creates_real_property() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let a = [];
+            Object.defineProperty(a, "2", {
+                get: function() { return 9; },
+                configurable: true
+            });
+            let d = Object.getOwnPropertyDescriptor(a, "2");
+            return JSON.stringify([a.length, a[2], d.get !== undefined, d.set === undefined]);
+        }
+    "#,
+        "[3,9,true,true]",
+    );
+}
+
+#[test]
 fn test_node_compat_reflect_set_uses_inherited_setter_on_receiver() {
     expect_string_runtime_node_compat(
         r#"
