@@ -37,6 +37,7 @@ const NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY: &str = "__dynamic_value_property";
 const CALLABLE_VIRTUAL_VALUE_METADATA_KEY: &str = "__callable_virtual_value";
 const OBJECT_PROTOTYPE_OVERRIDE_METADATA_KEY: &str = "__object_prototype_override__";
 const OBJECT_EXTENSIBLE_METADATA_KEY: &str = "__object_extensible__";
+const FIELD_PRESENT_MASK_KEY: &str = "__field_present_mask__";
 static DYNAMIC_JS_FUNCTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Map descriptor field names to bit positions for the presence bitmask.
@@ -91,6 +92,10 @@ impl JsPropertyDescriptorRecord {
     fn is_accessor(self) -> bool {
         self.has_get || self.has_set
     }
+
+    fn is_data(self) -> bool {
+        self.has_value || self.has_writable
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -99,6 +104,22 @@ struct ArgumentsDataDescriptorState {
     writable: bool,
     enumerable: bool,
     configurable: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::vm::interpreter::opcodes) enum OrdinaryOwnProperty {
+    Data {
+        value: Value,
+        writable: bool,
+        enumerable: bool,
+        configurable: bool,
+    },
+    Accessor {
+        get: Value,
+        set: Value,
+        enumerable: bool,
+        configurable: bool,
+    },
 }
 
 fn value_as_string(arg: Value) -> Result<String, VmError> {
@@ -339,6 +360,7 @@ impl<'a> Interpreter<'a> {
             "errors".to_string(),
         ];
         let layout_id = layout_id_from_ordered_names(&member_names);
+        self.register_structural_layout_shape(layout_id, &member_names);
         let object_ptr = self
             .gc
             .lock()
@@ -1391,10 +1413,8 @@ impl<'a> Interpreter<'a> {
     }
 
     fn has_own_js_property(&self, target: Value, key: &str) -> bool {
-        self.get_descriptor_metadata(target, key).is_some()
-            || self
-                .get_own_js_property_value_by_name(target, key)
-                .is_some()
+        self.ordinary_own_property(target, key).is_some()
+            || self.get_descriptor_metadata(target, key).is_some()
             || self
                 .callable_virtual_property_descriptor(target, key)
                 .is_some()
@@ -4024,8 +4044,8 @@ impl<'a> Interpreter<'a> {
             return Ok(false);
         }
 
-        let has_own_property = self.get_descriptor_metadata(target, key).is_some()
-            || self.get_own_field_value_by_name(target, key).is_some()
+        let has_own_property = self.ordinary_own_property(target, key).is_some()
+            || self.get_descriptor_metadata(target, key).is_some()
             || self
                 .callable_virtual_property_descriptor(target, key)
                 .is_some();
@@ -5196,9 +5216,8 @@ impl<'a> Interpreter<'a> {
         let (ast, interner) = parser
             .parse()
             .map_err(|error| dynamic_compile_syntax_error("parse error", format!("{error:?}")))?;
-        check_early_errors(&ast, &interner, TypeSystemMode::Js).map_err(|error| {
-            dynamic_compile_syntax_error("parse error", format!("{error:?}"))
-        })?;
+        check_early_errors(&ast, &interner, TypeSystemMode::Js)
+            .map_err(|error| dynamic_compile_syntax_error("parse error", format!("{error:?}")))?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:parsed-ast");
         }
@@ -5214,9 +5233,9 @@ impl<'a> Interpreter<'a> {
             eprintln!("[dynamic-fn] compile:builtin-sigs");
         }
 
-        let mut symbols = binder.bind_module(&ast).map_err(|error| {
-            dynamic_compile_syntax_error("bind error", format!("{error:?}"))
-        })?;
+        let mut symbols = binder
+            .bind_module(&ast)
+            .map_err(|error| dynamic_compile_syntax_error("bind error", format!("{error:?}")))?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:bound");
         }
@@ -5224,9 +5243,9 @@ impl<'a> Interpreter<'a> {
         let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
             .with_mode(TypeSystemMode::Js)
             .with_policy(policy);
-        let check_result = checker.check_module(&ast).map_err(|error| {
-            dynamic_compile_syntax_error("type error", format!("{error:?}"))
-        })?;
+        let check_result = checker
+            .check_module(&ast)
+            .map_err(|error| dynamic_compile_syntax_error("type error", format!("{error:?}")))?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:checked");
         }
@@ -5609,7 +5628,10 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        self.get_own_field_value_by_name(target, key)
+        match self.ordinary_own_property(target, key) {
+            Some(OrdinaryOwnProperty::Data { value, .. }) => Some(value),
+            Some(OrdinaryOwnProperty::Accessor { .. }) | None => None,
+        }
     }
 
     fn is_typed_array_like_value(&self, target: Value) -> bool {
@@ -6260,7 +6282,20 @@ impl<'a> Interpreter<'a> {
                 return Some((true, true, true));
             }
         }
-        None
+        match self.ordinary_own_property(target, key) {
+            Some(OrdinaryOwnProperty::Data {
+                writable,
+                configurable,
+                enumerable,
+                ..
+            }) => Some((writable, configurable, enumerable)),
+            Some(OrdinaryOwnProperty::Accessor {
+                configurable,
+                enumerable,
+                ..
+            }) => Some((false, configurable, enumerable)),
+            None => None,
+        }
     }
 
     fn get_field_value_on_target_by_name(&self, obj_val: Value, field_name: &str) -> Option<Value> {
@@ -6349,12 +6384,10 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> bool {
-        self.get_descriptor_metadata(target, key).is_some()
+        self.ordinary_own_property(target, key).is_some()
+            || self.get_descriptor_metadata(target, key).is_some()
             || self.builtin_global_property_value(target, key).is_some()
             || self.typed_array_index_property_flags(target, key).is_some()
-            || self
-                .get_own_js_property_value_by_name(target, key)
-                .is_some()
             || self.has_class_vtable_method(target, key)
             || crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key)
                 .is_some()
@@ -6938,18 +6971,14 @@ impl<'a> Interpreter<'a> {
         )
     }
 
-    fn get_descriptor_metadata(&self, target: Value, key: &str) -> Option<Value> {
+    pub(in crate::vm::interpreter::opcodes) fn ordinary_own_property(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<OrdinaryOwnProperty> {
         if self.fixed_property_deleted(target, key) {
             return None;
         }
-
-        if let Ok(Some(descriptor)) = self.synthesize_arguments_exotic_descriptor(target, key) {
-            return Some(descriptor);
-        }
-
-        // Property kernel is the single source of truth
-        let obj_ptr = checked_object_ptr(target)?;
-        let obj = unsafe { &*obj_ptr.as_ptr() };
 
         if self.is_descriptor_object(target)
             && matches!(
@@ -6961,22 +6990,108 @@ impl<'a> Interpreter<'a> {
             return None;
         }
 
-        // Check fixed slots via shape — any own property in a slot has a descriptor
-        if let Some(slot_idx) = self.shape_resolve_key(obj.header.layout_id, key) {
+        let obj_ptr = checked_object_ptr(target)?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+
+        if let Some(slot_idx) = self.get_field_index_for_value(target, key) {
             if let Some(meta) = obj.slot_meta.get(slot_idx) {
-                let value = obj
-                    .fields
-                    .get(slot_idx)
-                    .copied()
-                    .unwrap_or(Value::undefined());
-                return self.synthesize_descriptor_from_slot_meta(meta, value).ok();
+                if let Some(accessor) = meta.accessor.as_ref() {
+                    return Some(OrdinaryOwnProperty::Accessor {
+                        get: accessor.get,
+                        set: accessor.set,
+                        enumerable: meta.enumerable,
+                        configurable: meta.configurable,
+                    });
+                }
+                return Some(OrdinaryOwnProperty::Data {
+                    value: obj
+                        .fields
+                        .get(slot_idx)
+                        .copied()
+                        .unwrap_or(Value::undefined()),
+                    writable: meta.writable,
+                    enumerable: meta.enumerable,
+                    configurable: meta.configurable,
+                });
             }
         }
 
-        // Check dyn_props
         let key_id = self.intern_prop_key(key);
-        if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
-            return self.synthesize_descriptor_from_dyn_prop(prop).ok();
+        let prop = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id))?;
+        if prop.is_accessor {
+            return Some(OrdinaryOwnProperty::Accessor {
+                get: prop.get,
+                set: prop.set,
+                enumerable: prop.enumerable,
+                configurable: prop.configurable,
+            });
+        }
+
+        Some(OrdinaryOwnProperty::Data {
+            value: prop.value,
+            writable: prop.writable,
+            enumerable: prop.enumerable,
+            configurable: prop.configurable,
+        })
+    }
+
+    fn synthesize_descriptor_from_ordinary_own_property(
+        &self,
+        property: OrdinaryOwnProperty,
+    ) -> Result<Value, VmError> {
+        let descriptor = self.alloc_object_descriptor()?;
+        match property {
+            OrdinaryOwnProperty::Data {
+                value,
+                writable,
+                enumerable,
+                configurable,
+            } => {
+                self.set_internal_descriptor_field(descriptor, "value", value)?;
+                self.set_internal_descriptor_field(descriptor, "writable", Value::bool(writable))?;
+                self.set_internal_descriptor_field(
+                    descriptor,
+                    "enumerable",
+                    Value::bool(enumerable),
+                )?;
+                self.set_internal_descriptor_field(
+                    descriptor,
+                    "configurable",
+                    Value::bool(configurable),
+                )?;
+            }
+            OrdinaryOwnProperty::Accessor {
+                get,
+                set,
+                enumerable,
+                configurable,
+            } => {
+                self.set_internal_descriptor_field(descriptor, "get", get)?;
+                self.set_internal_descriptor_field(descriptor, "set", set)?;
+                self.set_internal_descriptor_field(
+                    descriptor,
+                    "enumerable",
+                    Value::bool(enumerable),
+                )?;
+                self.set_internal_descriptor_field(
+                    descriptor,
+                    "configurable",
+                    Value::bool(configurable),
+                )?;
+            }
+        }
+        Ok(descriptor)
+    }
+
+    fn get_descriptor_metadata(&self, target: Value, key: &str) -> Option<Value> {
+        if let Ok(Some(descriptor)) = self.synthesize_arguments_exotic_descriptor(target, key) {
+            return Some(descriptor);
+        }
+
+        if let Some(property) = self.ordinary_own_property(target, key) {
+            return self
+                .synthesize_descriptor_from_ordinary_own_property(property)
+                .ok();
         }
 
         None
@@ -6999,7 +7114,7 @@ impl<'a> Interpreter<'a> {
             return false;
         };
         let obj = unsafe { &*obj_ptr.as_ptr() };
-        let mask_key = self.intern_prop_key("__field_present_mask__");
+        let mask_key = self.intern_prop_key(FIELD_PRESENT_MASK_KEY);
         obj.dyn_props
             .as_deref()
             .and_then(|dp| dp.get(mask_key))
@@ -7022,7 +7137,7 @@ impl<'a> Interpreter<'a> {
             return false;
         };
         let obj = unsafe { &*obj_ptr.as_ptr() };
-        let mask_key = self.intern_prop_key("__field_present_mask__");
+        let mask_key = self.intern_prop_key(FIELD_PRESENT_MASK_KEY);
         let current_mask = obj
             .dyn_props
             .as_deref()
@@ -7046,7 +7161,7 @@ impl<'a> Interpreter<'a> {
             return;
         };
         let obj = unsafe { &mut *obj_ptr.as_ptr() };
-        let mask_key = self.intern_prop_key("__field_present_mask__");
+        let mask_key = self.intern_prop_key(FIELD_PRESENT_MASK_KEY);
         let current_mask = obj
             .dyn_props
             .as_deref()
@@ -7202,6 +7317,19 @@ impl<'a> Interpreter<'a> {
             }
         }
 
+        let record = self.descriptor_record_from_descriptor(descriptor);
+        if self.apply_ordinary_descriptor_record(target, key, record)? {
+            if record.has_value
+                && self
+                    .callable_virtual_property_descriptor(target, key)
+                    .is_some()
+            {
+                self.set_cached_callable_virtual_property_value(target, key, record.value);
+            }
+            self.set_callable_virtual_property_deleted(target, key, false);
+            return Ok(());
+        }
+
         // Apply data descriptor value directly to the target field if provided.
         if let Some(value) = value_field {
             if self.set_builtin_global_property(target, key, value) {
@@ -7235,32 +7363,6 @@ impl<'a> Interpreter<'a> {
                         key.to_string(),
                     );
                 }
-            } else if let Some(obj_ptr) = checked_object_ptr(target) {
-                let obj = unsafe { &mut *obj_ptr.as_ptr() };
-                let w = self.descriptor_flag(descriptor, "writable", true);
-                let e = self.descriptor_flag(descriptor, "enumerable", true);
-                let c = self.descriptor_flag(descriptor, "configurable", true);
-                if let Some(field_index) = self.get_field_index_for_value(target, key) {
-                    obj.set_field(field_index, value)
-                        .map_err(VmError::RuntimeError)?;
-                    if let Some(meta) = obj.slot_meta.get_mut(field_index) {
-                        meta.writable = w;
-                        meta.enumerable = e;
-                        meta.configurable = c;
-                    }
-                } else {
-                    let prop_key = self.intern_prop_key(key);
-                    obj.ensure_dyn_props()
-                        .insert(prop_key, DynProp::data_with_attrs(value, w, e, c));
-                }
-            } else if let Some(co_ptr) = checked_callable_ptr(target) {
-                let w = self.descriptor_flag(descriptor, "writable", true);
-                let e = self.descriptor_flag(descriptor, "enumerable", true);
-                let c = self.descriptor_flag(descriptor, "configurable", true);
-                let prop_key = self.intern_prop_key(key);
-                let co = unsafe { &mut *co_ptr.as_ptr() };
-                co.ensure_dyn_props()
-                    .insert(prop_key, DynProp::data_with_attrs(value, w, e, c));
             } else {
                 self.metadata.lock().define_metadata_property(
                     NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
@@ -7274,29 +7376,6 @@ impl<'a> Interpreter<'a> {
                 .is_some()
             {
                 self.set_cached_callable_virtual_property_value(target, key, value);
-            }
-        }
-
-        // Property kernel: write accessor descriptors into DynProp
-        if has_accessor {
-            if let Some(obj_ptr) = checked_object_ptr(target) {
-                let obj = unsafe { &mut *obj_ptr.as_ptr() };
-                let e = self.descriptor_flag(descriptor, "enumerable", false);
-                let c = self.descriptor_flag(descriptor, "configurable", false);
-                let get_val = getter.unwrap_or(Value::undefined());
-                let set_val = setter.unwrap_or(Value::undefined());
-                let prop_key = self.intern_prop_key(key);
-                obj.ensure_dyn_props()
-                    .insert(prop_key, DynProp::accessor(get_val, set_val, e, c));
-            } else if let Some(co_ptr) = checked_callable_ptr(target) {
-                let e = self.descriptor_flag(descriptor, "enumerable", false);
-                let c = self.descriptor_flag(descriptor, "configurable", false);
-                let get_val = getter.unwrap_or(Value::undefined());
-                let set_val = setter.unwrap_or(Value::undefined());
-                let prop_key = self.intern_prop_key(key);
-                let co = unsafe { &mut *co_ptr.as_ptr() };
-                co.ensure_dyn_props()
-                    .insert(prop_key, DynProp::accessor(get_val, set_val, e, c));
             }
         }
 
@@ -7485,6 +7564,19 @@ impl<'a> Interpreter<'a> {
             }
         }
 
+        let record = self.descriptor_record_from_descriptor(descriptor);
+        if self.apply_ordinary_descriptor_record(target, key, record)? {
+            if record.has_value
+                && self
+                    .callable_virtual_property_descriptor(target, key)
+                    .is_some()
+            {
+                self.set_cached_callable_virtual_property_value(target, key, record.value);
+            }
+            self.set_callable_virtual_property_deleted(target, key, false);
+            return Ok(());
+        }
+
         if let Some(value) = value_field {
             if self.set_builtin_global_property(target, key, value) {
                 if self
@@ -7522,33 +7614,6 @@ impl<'a> Interpreter<'a> {
                         key.to_string(),
                     );
                 }
-            } else if let Some(obj_ptr) = checked_object_ptr(target) {
-                let obj = unsafe { &mut *obj_ptr.as_ptr() };
-                let w = self.descriptor_flag(descriptor, "writable", true);
-                let e = self.descriptor_flag(descriptor, "enumerable", true);
-                let c = self.descriptor_flag(descriptor, "configurable", true);
-                if let Some(field_index) = self.get_field_index_for_value(target, key) {
-                    obj.set_field(field_index, value)
-                        .map_err(VmError::RuntimeError)?;
-                    // Mirror descriptor attributes into slot_meta
-                    if let Some(meta) = obj.slot_meta.get_mut(field_index) {
-                        meta.writable = w;
-                        meta.enumerable = e;
-                        meta.configurable = c;
-                    }
-                } else {
-                    let prop_key = self.intern_prop_key(key);
-                    obj.ensure_dyn_props()
-                        .insert(prop_key, DynProp::data_with_attrs(value, w, e, c));
-                }
-            } else if let Some(co_ptr) = checked_callable_ptr(target) {
-                let w = self.descriptor_flag(descriptor, "writable", true);
-                let e = self.descriptor_flag(descriptor, "enumerable", true);
-                let c = self.descriptor_flag(descriptor, "configurable", true);
-                let prop_key = self.intern_prop_key(key);
-                let co = unsafe { &mut *co_ptr.as_ptr() };
-                co.ensure_dyn_props()
-                    .insert(prop_key, DynProp::data_with_attrs(value, w, e, c));
             } else {
                 self.metadata.lock().define_metadata_property(
                     NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
@@ -7562,29 +7627,6 @@ impl<'a> Interpreter<'a> {
                 .is_some()
             {
                 self.set_cached_callable_virtual_property_value(target, key, value);
-            }
-        }
-
-        // Property kernel: write accessor descriptors into DynProp
-        if has_accessor {
-            if let Some(obj_ptr) = checked_object_ptr(target) {
-                let obj = unsafe { &mut *obj_ptr.as_ptr() };
-                let e = self.descriptor_flag(descriptor, "enumerable", false);
-                let c = self.descriptor_flag(descriptor, "configurable", false);
-                let get_val = getter.unwrap_or(Value::undefined());
-                let set_val = setter.unwrap_or(Value::undefined());
-                let prop_key = self.intern_prop_key(key);
-                obj.ensure_dyn_props()
-                    .insert(prop_key, DynProp::accessor(get_val, set_val, e, c));
-            } else if let Some(co_ptr) = checked_callable_ptr(target) {
-                let e = self.descriptor_flag(descriptor, "enumerable", false);
-                let c = self.descriptor_flag(descriptor, "configurable", false);
-                let get_val = getter.unwrap_or(Value::undefined());
-                let set_val = setter.unwrap_or(Value::undefined());
-                let prop_key = self.intern_prop_key(key);
-                let co = unsafe { &mut *co_ptr.as_ptr() };
-                co.ensure_dyn_props()
-                    .insert(prop_key, DynProp::accessor(get_val, set_val, e, c));
             }
         }
 
@@ -7888,13 +7930,394 @@ impl<'a> Interpreter<'a> {
             obj.set_field(5, Value::undefined())
                 .map_err(VmError::RuntimeError)?;
         }
-        let mask_key = self.intern_prop_key("__field_present_mask__");
+        let mask_key = self.intern_prop_key(FIELD_PRESENT_MASK_KEY);
         obj.ensure_dyn_props()
             .insert(mask_key, DynProp::data(Value::i32(0)));
         let obj_ptr = self.gc.lock().allocate(obj);
         let descriptor =
             unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) };
         Ok(descriptor)
+    }
+
+    fn descriptor_record_from_descriptor(&self, descriptor: Value) -> JsPropertyDescriptorRecord {
+        let mut record = JsPropertyDescriptorRecord::default();
+
+        for field_name in [
+            "enumerable",
+            "configurable",
+            "value",
+            "writable",
+            "get",
+            "set",
+        ] {
+            if !self.descriptor_field_present(descriptor, field_name) {
+                continue;
+            }
+            let value = self
+                .get_field_value_by_name(descriptor, field_name)
+                .unwrap_or(Value::undefined());
+            match field_name {
+                "enumerable" => {
+                    record.has_enumerable = true;
+                    record.enumerable = value.is_truthy();
+                }
+                "configurable" => {
+                    record.has_configurable = true;
+                    record.configurable = value.is_truthy();
+                }
+                "value" => {
+                    record.has_value = true;
+                    record.value = value;
+                }
+                "writable" => {
+                    record.has_writable = true;
+                    record.writable = value.is_truthy();
+                }
+                "get" => {
+                    record.has_get = true;
+                    record.get = value;
+                }
+                "set" => {
+                    record.has_set = true;
+                    record.set = value;
+                }
+                _ => {}
+            }
+        }
+
+        record
+    }
+
+    fn apply_descriptor_record_to_ordinary_property(
+        &self,
+        current: Option<OrdinaryOwnProperty>,
+        record: JsPropertyDescriptorRecord,
+    ) -> OrdinaryOwnProperty {
+        let descriptor_is_accessor = record.is_accessor();
+        let descriptor_is_data = record.is_data();
+
+        match current {
+            Some(OrdinaryOwnProperty::Data {
+                value,
+                writable,
+                enumerable,
+                configurable,
+            }) => {
+                if descriptor_is_accessor {
+                    OrdinaryOwnProperty::Accessor {
+                        get: if record.has_get {
+                            record.get
+                        } else {
+                            Value::undefined()
+                        },
+                        set: if record.has_set {
+                            record.set
+                        } else {
+                            Value::undefined()
+                        },
+                        enumerable: if record.has_enumerable {
+                            record.enumerable
+                        } else {
+                            enumerable
+                        },
+                        configurable: if record.has_configurable {
+                            record.configurable
+                        } else {
+                            configurable
+                        },
+                    }
+                } else {
+                    OrdinaryOwnProperty::Data {
+                        value: if record.has_value {
+                            record.value
+                        } else {
+                            value
+                        },
+                        writable: if record.has_writable {
+                            record.writable
+                        } else {
+                            writable
+                        },
+                        enumerable: if record.has_enumerable {
+                            record.enumerable
+                        } else {
+                            enumerable
+                        },
+                        configurable: if record.has_configurable {
+                            record.configurable
+                        } else {
+                            configurable
+                        },
+                    }
+                }
+            }
+            Some(OrdinaryOwnProperty::Accessor {
+                get,
+                set,
+                enumerable,
+                configurable,
+            }) => {
+                if descriptor_is_data {
+                    OrdinaryOwnProperty::Data {
+                        value: if record.has_value {
+                            record.value
+                        } else {
+                            Value::undefined()
+                        },
+                        writable: if record.has_writable {
+                            record.writable
+                        } else {
+                            false
+                        },
+                        enumerable: if record.has_enumerable {
+                            record.enumerable
+                        } else {
+                            enumerable
+                        },
+                        configurable: if record.has_configurable {
+                            record.configurable
+                        } else {
+                            configurable
+                        },
+                    }
+                } else {
+                    OrdinaryOwnProperty::Accessor {
+                        get: if record.has_get { record.get } else { get },
+                        set: if record.has_set { record.set } else { set },
+                        enumerable: if record.has_enumerable {
+                            record.enumerable
+                        } else {
+                            enumerable
+                        },
+                        configurable: if record.has_configurable {
+                            record.configurable
+                        } else {
+                            configurable
+                        },
+                    }
+                }
+            }
+            None => {
+                if descriptor_is_accessor {
+                    OrdinaryOwnProperty::Accessor {
+                        get: if record.has_get {
+                            record.get
+                        } else {
+                            Value::undefined()
+                        },
+                        set: if record.has_set {
+                            record.set
+                        } else {
+                            Value::undefined()
+                        },
+                        enumerable: if record.has_enumerable {
+                            record.enumerable
+                        } else {
+                            false
+                        },
+                        configurable: if record.has_configurable {
+                            record.configurable
+                        } else {
+                            false
+                        },
+                    }
+                } else {
+                    OrdinaryOwnProperty::Data {
+                        value: if record.has_value {
+                            record.value
+                        } else {
+                            Value::undefined()
+                        },
+                        writable: if record.has_writable {
+                            record.writable
+                        } else {
+                            false
+                        },
+                        enumerable: if record.has_enumerable {
+                            record.enumerable
+                        } else {
+                            false
+                        },
+                        configurable: if record.has_configurable {
+                            record.configurable
+                        } else {
+                            false
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+    fn write_ordinary_own_property(
+        &self,
+        target: Value,
+        key: &str,
+        property: OrdinaryOwnProperty,
+    ) -> Result<bool, VmError> {
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return Ok(false);
+        };
+        let obj = unsafe { &mut *obj_ptr.as_ptr() };
+
+        if let Some(field_index) = self.get_field_index_for_value(target, key) {
+            match property {
+                OrdinaryOwnProperty::Data {
+                    value,
+                    writable,
+                    enumerable,
+                    configurable,
+                } => {
+                    obj.set_field(field_index, value)
+                        .map_err(VmError::RuntimeError)?;
+                    if let Some(meta) = obj.slot_meta.get_mut(field_index) {
+                        meta.writable = writable;
+                        meta.enumerable = enumerable;
+                        meta.configurable = configurable;
+                        meta.accessor = None;
+                    }
+                }
+                OrdinaryOwnProperty::Accessor {
+                    get,
+                    set,
+                    enumerable,
+                    configurable,
+                } => {
+                    obj.set_field(field_index, Value::undefined())
+                        .map_err(VmError::RuntimeError)?;
+                    if let Some(meta) = obj.slot_meta.get_mut(field_index) {
+                        meta.writable = false;
+                        meta.enumerable = enumerable;
+                        meta.configurable = configurable;
+                        meta.accessor =
+                            Some(Box::new(crate::vm::object::AccessorPair { get, set }));
+                    }
+                }
+            }
+            self.set_fixed_property_deleted(target, key, false);
+            if self.is_descriptor_object(target)
+                && matches!(
+                    key,
+                    "value" | "writable" | "configurable" | "enumerable" | "get" | "set"
+                )
+            {
+                self.set_descriptor_field_present(target, key, true);
+            }
+            return Ok(true);
+        }
+
+        let key_id = self.intern_prop_key(key);
+        let dyn_prop = match property {
+            OrdinaryOwnProperty::Data {
+                value,
+                writable,
+                enumerable,
+                configurable,
+            } => DynProp::data_with_attrs(value, writable, enumerable, configurable),
+            OrdinaryOwnProperty::Accessor {
+                get,
+                set,
+                enumerable,
+                configurable,
+            } => DynProp::accessor(get, set, enumerable, configurable),
+        };
+        obj.ensure_dyn_props().insert(key_id, dyn_prop);
+        self.set_fixed_property_deleted(target, key, false);
+        Ok(true)
+    }
+
+    fn apply_ordinary_descriptor_record(
+        &self,
+        target: Value,
+        key: &str,
+        record: JsPropertyDescriptorRecord,
+    ) -> Result<bool, VmError> {
+        if checked_object_ptr(target).is_none() {
+            return Ok(false);
+        }
+        let current = self.ordinary_own_property(target, key);
+        let next = self.apply_descriptor_record_to_ordinary_property(current, record);
+        self.write_ordinary_own_property(target, key, next)
+    }
+
+    fn is_internal_ordinary_kernel_key(key: &str) -> bool {
+        key == FIELD_PRESENT_MASK_KEY
+    }
+
+    pub(in crate::vm::interpreter) fn ordinary_own_property_names(
+        &self,
+        target: Value,
+    ) -> Vec<String> {
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return Vec::new();
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+
+        let mut names = Vec::new();
+        let mut push_name = |name: String| {
+            if name.is_empty()
+                || Self::is_internal_ordinary_kernel_key(&name)
+                || names.iter().any(|existing| existing == &name)
+            {
+                return;
+            }
+            names.push(name);
+        };
+
+        let layout_names = if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
+            let class_metadata = self.class_metadata.read();
+            class_metadata
+                .get(nominal_type_id)
+                .map(|meta| meta.field_names.clone())
+                .filter(|field_names| !field_names.is_empty())
+                .or_else(|| self.layout_field_names_for_object(obj))
+        } else {
+            self.layout_field_names_for_object(obj)
+        };
+
+        if let Some(layout_names) = layout_names {
+            for name in layout_names {
+                if self.ordinary_own_property(target, &name).is_some() {
+                    push_name(name);
+                }
+            }
+        } else {
+            for index in 0..obj.field_count() {
+                push_name(format!("field_{}", index));
+            }
+        }
+
+        if let Some(dp) = obj.dyn_props() {
+            for key_id in dp.keys_in_order() {
+                let Some(name) = self.prop_key_name(key_id) else {
+                    continue;
+                };
+                if self.ordinary_own_property(target, &name).is_some() {
+                    push_name(name);
+                }
+            }
+        }
+
+        names
+    }
+
+    pub(in crate::vm::interpreter) fn js_own_property_names(&self, target: Value) -> Vec<String> {
+        let mut names = self.ordinary_own_property_names(target);
+
+        if let Some(global_obj) = self.builtin_global_value("globalThis") {
+            if global_obj.raw() == target.raw() {
+                for name in self.builtin_global_slots.read().keys() {
+                    if self.fixed_property_deleted(target, name)
+                        || names.iter().any(|existing| existing == name)
+                    {
+                        continue;
+                    }
+                    names.push(name.clone());
+                }
+            }
+        }
+
+        names
     }
 
     fn alloc_plain_object(&self) -> Result<Value, VmError> {
@@ -10560,69 +10983,20 @@ impl<'a> Interpreter<'a> {
                                     .to_string(),
                             ));
                         };
-                        // Property kernel fast path: check DynProp / SlotMeta first
-                        let kernel_descriptor = 'kernel: {
-                            let obj_ptr = if let Some(p) = checked_object_ptr(target) {
-                                p
-                            } else {
-                                break 'kernel None;
-                            };
-                            let obj = unsafe { &*obj_ptr.as_ptr() };
-                            if self.is_descriptor_object(target)
-                                && matches!(
-                                    key.as_str(),
-                                    "value"
-                                        | "writable"
-                                        | "configurable"
-                                        | "enumerable"
-                                        | "get"
-                                        | "set"
-                                )
-                                && !self.descriptor_field_present(target, &key)
-                            {
-                                break 'kernel None;
-                            }
-                            let key_id = self.intern_prop_key(&key);
-                            // Check dyn_props
-                            if let Some(prop) = obj.dyn_props().and_then(|dp| dp.get(key_id)) {
-                                match self.synthesize_descriptor_from_dyn_prop(prop) {
-                                    Ok(desc) => break 'kernel Some(desc),
-                                    Err(error) => return OpcodeResult::Error(error),
-                                }
-                            }
-                            // Check slot_meta for fixed slots
-                            if let Some(slot_idx) = self.get_field_index_for_value(target, &key) {
-                                if let Some(meta) = obj.slot_meta.get(slot_idx) {
-                                    let slot_value =
-                                        obj.get_field(slot_idx).unwrap_or(Value::undefined());
-                                    match self
-                                        .synthesize_descriptor_from_slot_meta(meta, slot_value)
-                                    {
-                                        Ok(desc) => break 'kernel Some(desc),
-                                        Err(error) => return OpcodeResult::Error(error),
-                                    }
-                                }
-                            }
-                            None
-                        };
-                        let value = if let Some(desc) = kernel_descriptor {
-                            desc
-                        } else {
-                            match self.get_descriptor_metadata(target, &key) {
-                                Some(descriptor) => descriptor,
-                                None => {
-                                    match self.synthesize_accessor_property_descriptor(target, &key)
-                                    {
-                                        Ok(Some(descriptor)) => descriptor,
-                                        Ok(None) => match self
-                                            .synthesize_data_property_descriptor(target, &key)
+                        let value = match self.get_descriptor_metadata(target, &key) {
+                            Some(descriptor) => descriptor,
+                            None => {
+                                match self.synthesize_accessor_property_descriptor(target, &key) {
+                                    Ok(Some(descriptor)) => descriptor,
+                                    Ok(None) => {
+                                        match self.synthesize_data_property_descriptor(target, &key)
                                         {
                                             Ok(Some(descriptor)) => descriptor,
                                             Ok(None) => Value::undefined(),
                                             Err(error) => return OpcodeResult::Error(error),
-                                        },
-                                        Err(error) => return OpcodeResult::Error(error),
+                                        }
                                     }
+                                    Err(error) => return OpcodeResult::Error(error),
                                 }
                             }
                         };

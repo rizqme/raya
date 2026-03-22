@@ -2835,6 +2835,77 @@ fn test_node_compat_descriptor_objects_hide_absent_fields_in_reflection() {
 }
 
 #[test]
+fn test_node_compat_descriptor_objects_hide_absent_and_internal_names() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function() {
+                let desc = Object.getOwnPropertyDescriptor(arguments, "callee");
+                let names = Object.getOwnPropertyNames(desc);
+                return JSON.stringify(names);
+            };
+            return probe();
+        }
+    "#,
+        "[\"value\",\"writable\",\"configurable\",\"enumerable\"]",
+    );
+}
+
+#[test]
+fn test_node_compat_define_property_updates_existing_field_enumerability() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let o = { a: 1, b: 2 };
+            Object.defineProperty(o, "b", { enumerable: false });
+            let desc = Object.getOwnPropertyDescriptor(o, "b");
+            return JSON.stringify([
+                Object.keys(o),
+                Object.getOwnPropertyNames(o),
+                o.propertyIsEnumerable("a"),
+                o.propertyIsEnumerable("b"),
+                desc.enumerable
+            ]);
+        }
+    "#,
+        "[[\"a\"],[\"a\",\"b\"],true,false,false]",
+    );
+}
+
+#[test]
+fn test_node_compat_non_configurable_accessor_redefinition_preserves_descriptor() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let getter = function() { return 1; };
+            let o = {};
+            Object.defineProperty(o, "x", {
+                get: getter,
+                enumerable: true,
+                configurable: false
+            });
+            try {
+                Object.defineProperty(o, "x", {
+                    set: function(v) {}
+                });
+                return "NO_THROW";
+            } catch (e) {
+                let d = Object.getOwnPropertyDescriptor(o, "x");
+                return JSON.stringify([
+                    e.name,
+                    d.get === getter,
+                    d.set === undefined,
+                    d.enumerable,
+                    d.configurable
+                ]);
+            }
+        }
+    "#,
+        "[\"TypeError\",true,true,true,false]",
+    );
+}
+
+#[test]
 fn test_node_compat_top_level_strict_functions_inherit_arguments_poisoning() {
     expect_string_runtime_node_compat(
         r#"

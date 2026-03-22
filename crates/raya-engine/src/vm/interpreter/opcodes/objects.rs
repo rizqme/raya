@@ -526,20 +526,11 @@ impl<'a> Interpreter<'a> {
     }
 
     pub(crate) fn is_field_writable(&self, obj_val: Value, field_name: &str) -> bool {
-        // Property kernel: check SlotMeta and DynProp first
-        if let Some(obj_ptr) = checked_object_ptr(obj_val) {
-            let obj = unsafe { &*obj_ptr.as_ptr() };
-            // Check fixed slots via shape
-            if let Some(slot_idx) = self.shape_resolve_key(obj.header.layout_id, field_name) {
-                if let Some(meta) = obj.slot_meta.get(slot_idx) {
-                    return meta.writable;
-                }
-            }
-            // Check dyn_props
-            let key_id = self.intern_prop_key(field_name);
-            if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
-                return prop.writable;
-            }
+        if let Some(property) = self.ordinary_own_property(obj_val, field_name) {
+            return match property {
+                super::native::OrdinaryOwnProperty::Data { writable, .. } => writable,
+                super::native::OrdinaryOwnProperty::Accessor { .. } => false,
+            };
         }
         // Fallback: callable virtual property descriptor
         self.callable_virtual_property_descriptor(obj_val, field_name)
@@ -553,24 +544,10 @@ impl<'a> Interpreter<'a> {
     }
 
     pub(crate) fn descriptor_data_value(&self, obj_val: Value, field_name: &str) -> Option<Value> {
-        // Property kernel: read from SlotMeta/DynProp
-        if let Some(obj_ptr) = checked_object_ptr(obj_val) {
-            let obj = unsafe { &*obj_ptr.as_ptr() };
-            // Check fixed slots
-            if let Some(slot_idx) = self.shape_resolve_key(obj.header.layout_id, field_name) {
-                if let Some(meta) = obj.slot_meta.get(slot_idx) {
-                    if meta.accessor.is_none() {
-                        return obj.fields.get(slot_idx).copied();
-                    }
-                }
-            }
-            // Check dyn_props
-            let key_id = self.intern_prop_key(field_name);
-            if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
-                if !prop.is_accessor {
-                    return Some(prop.value);
-                }
-            }
+        if let Some(super::native::OrdinaryOwnProperty::Data { value, .. }) =
+            self.ordinary_own_property(obj_val, field_name)
+        {
+            return Some(value);
         }
         None
     }
@@ -581,39 +558,16 @@ impl<'a> Interpreter<'a> {
         field_name: &str,
         accessor_name: &str,
     ) -> Option<Value> {
-        // Property kernel: check SlotMeta and DynProp for accessor get/set
-        if let Some(obj_ptr) = checked_object_ptr(obj_val) {
-            let obj = unsafe { &*obj_ptr.as_ptr() };
-            // Check fixed slots
-            if let Some(slot_idx) = self.shape_resolve_key(obj.header.layout_id, field_name) {
-                if let Some(meta) = obj.slot_meta.get(slot_idx) {
-                    if let Some(ref accessor) = meta.accessor {
-                        let val = match accessor_name {
-                            "get" => accessor.get,
-                            "set" => accessor.set,
-                            _ => return None,
-                        };
-                        if !val.is_undefined() {
-                            return Some(val);
-                        }
-                        return None;
-                    }
-                }
-            }
-            // Check dyn_props
-            let key_id = self.intern_prop_key(field_name);
-            if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
-                if prop.is_accessor {
-                    let val = match accessor_name {
-                        "get" => prop.get,
-                        "set" => prop.set,
-                        _ => return None,
-                    };
-                    if !val.is_undefined() {
-                        return Some(val);
-                    }
-                    return None;
-                }
+        if let Some(super::native::OrdinaryOwnProperty::Accessor { get, set, .. }) =
+            self.ordinary_own_property(obj_val, field_name)
+        {
+            let val = match accessor_name {
+                "get" => get,
+                "set" => set,
+                _ => return None,
+            };
+            if !val.is_undefined() {
+                return Some(val);
             }
         }
         // Fallback: callable virtual accessor

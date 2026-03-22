@@ -44,67 +44,8 @@ impl<'a> Interpreter<'a> {
         unsafe { value.as_ptr::<Object>() }
     }
 
-    fn reflect_object_field_names(&self, obj: &Object) -> Vec<String> {
-        let obj_value = unsafe {
-            Value::from_ptr(NonNull::new(obj as *const Object as *mut Object).expect("object ptr"))
-        };
-        let mut field_names = if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
-            let class_metadata = self.class_metadata.read();
-            class_metadata
-                .get(nominal_type_id)
-                .map(|meta| {
-                    meta.field_names
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, name)| !name.is_empty())
-                        .filter(|(_, name)| !self.fixed_property_deleted(obj_value, name))
-                        .map(|(index, name)| {
-                            let _ = index;
-                            name.clone()
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .filter(|names| !names.is_empty())
-                .unwrap_or_else(|| {
-                    self.layout_field_names_for_object(obj).unwrap_or_else(|| {
-                        (0..obj.field_count())
-                            .map(|index| format!("field_{}", index))
-                            .collect::<Vec<_>>()
-                    })
-                })
-        } else {
-            self.layout_field_names_for_object(obj).unwrap_or_else(|| {
-                (0..obj.field_count())
-                    .map(|index| format!("field_{}", index))
-                    .collect::<Vec<_>>()
-            })
-        };
-
-        if let Some(dp) = obj.dyn_props() {
-            for key in dp.keys_in_order() {
-                let Some(name) = self.prop_key_name(key) else {
-                    continue;
-                };
-                if !field_names.iter().any(|existing| existing == &name) {
-                    field_names.push(name);
-                }
-            }
-        }
-
-        if let Some(global_obj) = self.builtin_global_value("globalThis") {
-            if global_obj.raw() == obj_value.raw() {
-                for name in self.builtin_global_slots.read().keys() {
-                    if self.fixed_property_deleted(obj_value, name) {
-                        continue;
-                    }
-                    if !field_names.iter().any(|existing| existing == name) {
-                        field_names.push(name.clone());
-                    }
-                }
-            }
-        }
-
-        field_names
+    fn reflect_object_field_names(&self, target: Value, _obj: &Object) -> Vec<String> {
+        self.js_own_property_names(target)
     }
 
     fn own_enumerable_property_names(&self, target: Value) -> Vec<String> {
@@ -128,7 +69,7 @@ impl<'a> Interpreter<'a> {
 
         if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
             let obj = unsafe { obj_ptr.as_ref() };
-            let field_names = self.reflect_object_field_names(obj);
+            let field_names = self.reflect_object_field_names(target, obj);
             if debug {
                 eprintln!(
                     "[forin] own_enum: target={:#x} field_names={:?} field_count={} layout_id={}",
@@ -399,7 +340,7 @@ impl<'a> Interpreter<'a> {
         let obj = unsafe { ptr.as_ref() };
         (
             self.reflect_object_class_name(obj),
-            self.reflect_object_field_names(obj),
+            self.reflect_object_field_names(value, obj),
         )
     }
 
@@ -905,7 +846,7 @@ impl<'a> Interpreter<'a> {
                 let field_names = Self::reflect_object_ptr(target)
                     .map(|ptr| {
                         let obj = unsafe { ptr.as_ref() };
-                        self.reflect_object_field_names(obj)
+                        self.reflect_object_field_names(target, obj)
                     })
                     .unwrap_or_default();
 
@@ -1021,7 +962,7 @@ impl<'a> Interpreter<'a> {
                                 }
                             } else {
                                 let field_values = self
-                                    .reflect_object_field_names(obj)
+                                    .reflect_object_field_names(target, obj)
                                     .into_iter()
                                     .filter_map(|name| {
                                         self.reflect_property_value(target, &name).map(|value| {
@@ -1050,7 +991,7 @@ impl<'a> Interpreter<'a> {
                             }
                         } else {
                             let field_values = self
-                                .reflect_object_field_names(obj)
+                                .reflect_object_field_names(target, obj)
                                 .into_iter()
                                 .filter_map(|name| {
                                     self.reflect_property_value(target, &name).map(|value| {
@@ -1077,7 +1018,7 @@ impl<'a> Interpreter<'a> {
                         }
                     } else {
                         let field_values = self
-                            .reflect_object_field_names(obj)
+                            .reflect_object_field_names(target, obj)
                             .into_iter()
                             .filter_map(|name| {
                                 self.reflect_property_value(target, &name).map(|value| {
@@ -2993,7 +2934,7 @@ impl<'a> Interpreter<'a> {
             }
 
             let mut fields = Vec::new();
-            for name in self.reflect_object_field_names(obj) {
+            for name in self.reflect_object_field_names(value, obj) {
                 if let Some(field_val) = self.reflect_property_value(value, &name) {
                     let val_str = self.inspect_value(field_val, depth + 1, max_depth)?;
                     fields.push(format!("{}: {}", name, val_str));
@@ -3153,7 +3094,7 @@ impl<'a> Interpreter<'a> {
         if let Some(ptr) = Self::reflect_object_ptr(value) {
             let obj = unsafe { ptr.as_ref() };
             let mut fields = Vec::new();
-            for name in self.reflect_object_field_names(obj) {
+            for name in self.reflect_object_field_names(value, obj) {
                 if let Some(field_val) = self.reflect_property_value(value, &name) {
                     let val_json = self.value_to_json(field_val, visited)?;
                     fields.push(format!("\"{}\":{}", name, val_json));
