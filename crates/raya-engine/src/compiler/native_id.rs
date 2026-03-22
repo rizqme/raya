@@ -71,6 +71,8 @@ pub const TRY_GET_GLOBAL: u16 = 0x001F;
 pub const OBJECT_HAS_PROPERTY: u16 = 0x0020;
 /// construct(typeHandle, argsArray) for constructor calls with spread arguments.
 pub const OBJECT_CONSTRUCT_APPLY_HELPER: u16 = 0x0021;
+/// Materialize the current activation's `arguments` object.
+pub const OBJECT_GET_ARGUMENTS_OBJECT: u16 = 0x0022;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -576,6 +578,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_BIND_SCRIPT_GLOBAL => "Object.bindScriptGlobal",
         OBJECT_DESCRIPTOR_NEW => "Object.descriptorNew",
         OBJECT_CONSTRUCT_APPLY_HELPER => "Object.constructApply",
+        OBJECT_GET_ARGUMENTS_OBJECT => "Object.getArgumentsObject",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",

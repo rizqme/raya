@@ -56,6 +56,7 @@ impl FunctionContext {
         visible_length: u8,
         is_strict_js: bool,
         uses_builtin_this_coercion: bool,
+        js_arguments_mapping: Vec<u16>,
     ) -> Self {
         Self {
             builder: {
@@ -66,6 +67,7 @@ impl FunctionContext {
                 builder.set_visible_length(visible_length);
                 builder.set_is_strict_js(is_strict_js);
                 builder.set_uses_builtin_this_coercion(uses_builtin_this_coercion);
+                builder.set_js_arguments_mapping(js_arguments_mapping);
                 builder
             },
             register_slots: FxHashMap::default(),
@@ -402,6 +404,7 @@ impl IrCodeGenerator {
             func.visible_length as u8,
             func.is_strict_js,
             func.uses_builtin_this_coercion,
+            func.js_arguments_mapping.clone(),
         );
 
         // Pre-allocate slots for parameters

@@ -2629,6 +2629,85 @@ fn test_node_compat_eval_unimplemented_behavior_error_code() {
 }
 
 #[test]
+fn test_node_compat_arguments_object_is_stable_within_activation() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function(a) {
+                return JSON.stringify([arguments === arguments, arguments.length]);
+            };
+            return probe(7);
+        }
+    "#,
+        "[true,1]",
+    );
+}
+
+#[test]
+fn test_node_compat_arguments_object_sloppy_mapping_tracks_param_assignment() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function(a) {
+                a = 9;
+                return JSON.stringify([a, arguments[0], arguments.length]);
+            };
+            return probe(7);
+        }
+    "#,
+        "[9,9,1]",
+    );
+}
+
+#[test]
+fn test_node_compat_arguments_object_sloppy_mapping_tracks_arguments_write() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function(a) {
+                arguments[0] = 9;
+                return JSON.stringify([a, arguments[0], arguments.length]);
+            };
+            return probe(7);
+        }
+    "#,
+        "[9,9,1]",
+    );
+}
+
+#[test]
+fn test_node_compat_arguments_object_strict_mode_is_unmapped() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function(a) {
+                "use strict";
+                a = 9;
+                return JSON.stringify([a, arguments[0], arguments.length]);
+            };
+            return probe(7);
+        }
+    "#,
+        "[9,7,1]",
+    );
+}
+
+#[test]
+fn test_node_compat_arrow_inherits_outer_arguments_object() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let probe = function(a) {
+                return (() => JSON.stringify([arguments[0], arguments === arguments]))();
+            };
+            return probe(7);
+        }
+    "#,
+        "[7,true]",
+    );
+}
+
+#[test]
 fn test_node_compat_weakmap_basic_object_key_roundtrip() {
     expect_i32_runtime_node_compat(
         r#"

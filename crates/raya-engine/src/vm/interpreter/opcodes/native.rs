@@ -17,9 +17,9 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    layout_id_from_ordered_names, Array, Buffer, CallableKind, ChannelObject, Class, DateObject,
-    DynProp, LayoutId, MapObject, Object, RayaString, RegExpObject, SetObject, SlotMeta,
-    TypeHandle,
+    layout_id_from_ordered_names, ArgumentsObjectData, Array, Buffer, CallableKind,
+    ChannelObject, Class, DateObject, DynProp, ExoticKind, LayoutId, MapObject, Object,
+    RayaString, RefCell, RegExpObject, SetObject, SlotMeta, TypeHandle,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -2520,6 +2520,10 @@ impl<'a> Interpreter<'a> {
             return Ok(true);
         };
 
+        if let Some(result) = self.arguments_exotic_delete(target, &key_name) {
+            return Ok(result);
+        }
+
         if !target.is_ptr() {
             return Ok(true);
         }
@@ -2612,6 +2616,227 @@ impl<'a> Interpreter<'a> {
         }
 
         Ok(false)
+    }
+
+    fn make_arguments_object(
+        &mut self,
+        stack: &Stack,
+        module: &Module,
+        task: &Arc<Task>,
+    ) -> Result<Value, VmError> {
+        let current_func_id = task.current_func_id();
+        let locals_base = task.current_locals_base();
+        let current_arg_count = task.current_arg_count();
+        let function = module.functions.get(current_func_id).ok_or_else(|| {
+            VmError::RuntimeError(format!(
+                "Object.getArgumentsObject could not resolve function {}",
+                current_func_id
+            ))
+        })?;
+
+        let user_arg_offset = usize::from(function.uses_js_this_slot);
+        let user_arg_count = current_arg_count.saturating_sub(user_arg_offset);
+        let mut values = Vec::with_capacity(user_arg_count);
+        for index in 0..user_arg_count {
+            values.push(
+                stack
+                    .peek_at(locals_base + user_arg_offset + index)
+                    .unwrap_or(Value::undefined()),
+            );
+        }
+
+        let mut mapped_refcells = vec![None; user_arg_count];
+        for (index, &local_idx) in function.js_arguments_mapping.iter().enumerate() {
+            if index >= user_arg_count || local_idx == u16::MAX {
+                continue;
+            }
+            mapped_refcells[index] = Some(
+                stack
+                    .peek_at(locals_base + local_idx as usize)
+                    .unwrap_or(Value::undefined()),
+            );
+        }
+
+        let callee = if function.is_strict_js {
+            Value::undefined()
+        } else {
+            let closure = Object::new_closure_with_module(
+                current_func_id,
+                Vec::new(),
+                Arc::new(module.clone()),
+            );
+            let closure_ptr = self.gc.lock().allocate(closure);
+            unsafe { Value::from_ptr(NonNull::new(closure_ptr.as_ptr()).expect("closure ptr")) }
+        };
+
+        let mut object = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
+        object.header.exotic_kind = ExoticKind::Arguments;
+        object.arguments = Some(Box::new(ArgumentsObjectData {
+            deleted: vec![false; user_arg_count],
+            values,
+            mapped_refcells,
+            callee,
+            strict_poison: function.is_strict_js,
+        }));
+        if let Some(object_ctor) = self.builtin_global_value("Object") {
+            if let Some(prototype) = self.constructor_prototype_value(object_ctor) {
+                object.prototype = prototype;
+            }
+        }
+        let object_ptr = self.gc.lock().allocate(object);
+        Ok(unsafe { Value::from_ptr(NonNull::new(object_ptr.as_ptr()).expect("arguments ptr")) })
+    }
+
+    fn arguments_exotic_get(&self, target: Value, key: &str) -> Result<Option<Value>, VmError> {
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return Ok(None);
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let Some(arguments) = obj.arguments.as_deref() else {
+            return Ok(None);
+        };
+
+        if key == "length" {
+            let len = arguments.values.len();
+            return Ok(Some(if len <= i32::MAX as usize {
+                Value::i32(len as i32)
+            } else {
+                Value::f64(len as f64)
+            }));
+        }
+        if matches!(key, "callee" | "caller") {
+            if arguments.strict_poison {
+                return Err(VmError::TypeError(format!(
+                    "'{}' is not accessible on strict mode arguments objects",
+                    key
+                )));
+            }
+            if key == "callee" {
+                return Ok(Some(arguments.callee));
+            }
+            return Ok(Some(Value::undefined()));
+        }
+
+        let Some(index) = parse_js_array_index_name(key) else {
+            return Ok(None);
+        };
+        if index >= arguments.values.len() || arguments.deleted.get(index).copied().unwrap_or(false)
+        {
+            return Ok(None);
+        }
+        if let Some(Some(refcell_value)) = arguments.mapped_refcells.get(index) {
+            if let Some(refcell_ptr) = unsafe { refcell_value.as_ptr::<RefCell>() } {
+                let refcell = unsafe { &*refcell_ptr.as_ptr() };
+                return Ok(Some(refcell.get()));
+            }
+        }
+        Ok(arguments.values.get(index).copied())
+    }
+
+    fn arguments_exotic_set(
+        &mut self,
+        target: Value,
+        key: &str,
+        value: Value,
+    ) -> Result<Option<bool>, VmError> {
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return Ok(None);
+        };
+        let obj = unsafe { &mut *obj_ptr.as_ptr() };
+        let Some(arguments) = obj.arguments.as_deref_mut() else {
+            return Ok(None);
+        };
+
+        if key == "length" {
+            return Ok(Some(true));
+        }
+        if matches!(key, "callee" | "caller") {
+            if arguments.strict_poison {
+                return Err(VmError::TypeError(format!(
+                    "'{}' is not writable on strict mode arguments objects",
+                    key
+                )));
+            }
+            if key == "callee" {
+                arguments.callee = value;
+            }
+            return Ok(Some(true));
+        }
+
+        let Some(index) = parse_js_array_index_name(key) else {
+            return Ok(None);
+        };
+        if index >= arguments.values.len() {
+            return Ok(None);
+        }
+
+        if let Some(slot) = arguments.deleted.get_mut(index) {
+            *slot = false;
+        }
+        arguments.values[index] = value;
+        if let Some(Some(refcell_value)) = arguments.mapped_refcells.get(index) {
+            if let Some(refcell_ptr) = unsafe { refcell_value.as_ptr::<RefCell>() } {
+                let refcell = unsafe { &mut *refcell_ptr.as_ptr() };
+                refcell.set(value);
+                return Ok(Some(true));
+            }
+        }
+        if let Some(mapped) = arguments.mapped_refcells.get_mut(index) {
+            *mapped = None;
+        }
+        Ok(Some(true))
+    }
+
+    fn arguments_exotic_delete(&mut self, target: Value, key: &str) -> Option<bool> {
+        let obj_ptr = checked_object_ptr(target)?;
+        let obj = unsafe { &mut *obj_ptr.as_ptr() };
+        let arguments = obj.arguments.as_deref_mut()?;
+
+        if key == "length" {
+            return Some(false);
+        }
+        if let Some(index) = parse_js_array_index_name(key) {
+            if index >= arguments.values.len() {
+                return Some(false);
+            }
+            if let Some(slot) = arguments.deleted.get_mut(index) {
+                *slot = true;
+            }
+            if let Some(mapped) = arguments.mapped_refcells.get_mut(index) {
+                *mapped = None;
+            }
+            return Some(true);
+        }
+        if matches!(key, "callee" | "caller") {
+            if arguments.strict_poison {
+                return Some(false);
+            }
+            return Some(true);
+        }
+        None
+    }
+
+    fn arguments_exotic_property_flags(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<(bool, bool, bool)> {
+        let obj_ptr = checked_object_ptr(target)?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let arguments = obj.arguments.as_deref()?;
+
+        if key == "length" {
+            return Some((true, false, true));
+        }
+        if matches!(key, "callee" | "caller") {
+            return Some((!arguments.strict_poison, false, !arguments.strict_poison));
+        }
+        let index = parse_js_array_index_name(key)?;
+        if index >= arguments.values.len() || arguments.deleted.get(index).copied().unwrap_or(false)
+        {
+            return None;
+        }
+        Some((true, true, true))
     }
 
     pub(in crate::vm::interpreter) fn builtin_global_value(&self, name: &str) -> Option<Value> {
@@ -3261,6 +3486,10 @@ impl<'a> Interpreter<'a> {
                 caller_task,
                 caller_module,
             );
+        }
+
+        if let Some(result) = self.arguments_exotic_set(target, key, value)? {
+            return Ok(result);
         }
 
         if target.raw() == receiver.raw() {
@@ -4828,6 +5057,10 @@ impl<'a> Interpreter<'a> {
     }
 
     fn get_own_js_property_value_by_name(&self, target: Value, key: &str) -> Option<Value> {
+        if let Ok(Some(value)) = self.arguments_exotic_get(target, key) {
+            return Some(value);
+        }
+
         if let Some(array_ptr) = checked_array_ptr(target) {
             let array = unsafe { &*array_ptr.as_ptr() };
             if key == "length" {
@@ -5501,6 +5734,9 @@ impl<'a> Interpreter<'a> {
     }
 
     fn own_js_property_flags(&self, target: Value, key: &str) -> Option<(bool, bool, bool)> {
+        if let Some(flags) = self.arguments_exotic_property_flags(target, key) {
+            return Some(flags);
+        }
         if let Some(flags) = self.ambient_builtin_global_property_flags(target, key) {
             return Some(flags);
         }
@@ -5709,6 +5945,10 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
+        if let Some(value) = self.arguments_exotic_get(target, key)? {
+            return Ok(Some(value));
+        }
+
         if let Some(value) =
             self.try_proxy_like_get_property(target, key, caller_task, caller_module)?
         {
@@ -9923,6 +10163,16 @@ impl<'a> Interpreter<'a> {
                         let target = args[0];
                         self.set_js_value_extensible(target, false);
                         if let Err(e) = stack.push(target) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_GET_ARGUMENTS_OBJECT => {
+                        let arguments = match self.make_arguments_object(stack, module, task) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(e) = stack.push(arguments) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

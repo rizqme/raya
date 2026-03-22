@@ -43,6 +43,9 @@ pub struct IrFunction {
     pub is_strict_js: bool,
     /// Whether JS `this` should box primitives but preserve nullish receivers.
     pub uses_builtin_this_coercion: bool,
+    /// Sloppy-mode `arguments` index -> local slot mapping.
+    /// `u16::MAX` means the index is unmapped.
+    pub js_arguments_mapping: Vec<u16>,
 }
 
 impl IrFunction {
@@ -65,6 +68,7 @@ impl IrFunction {
             visible_length,
             is_strict_js: false,
             uses_builtin_this_coercion: false,
+            js_arguments_mapping: Vec::new(),
         }
     }
 

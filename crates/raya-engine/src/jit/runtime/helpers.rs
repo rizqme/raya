@@ -526,6 +526,9 @@ struct JitTaskStateSnapshot {
     call_frame_count: usize,
     closure_count: usize,
     held_mutex_count: usize,
+    current_func_id: usize,
+    current_locals_base: usize,
+    current_arg_count: usize,
     current_exception: Option<Value>,
     caught_exception: Option<Value>,
 }
@@ -536,6 +539,9 @@ fn jit_snapshot_task_state(task: &Task) -> JitTaskStateSnapshot {
         call_frame_count: task.call_frame_count(),
         closure_count: task.closure_count(),
         held_mutex_count: task.held_mutex_count(),
+        current_func_id: task.current_func_id(),
+        current_locals_base: task.current_locals_base(),
+        current_arg_count: task.current_arg_count(),
         current_exception: task.current_exception(),
         caught_exception: task.caught_exception(),
     }
@@ -607,6 +613,9 @@ fn jit_restore_task_state(
         let _ = task.pop_closure();
     }
     jit_rollback_mutexes(bridge, task, snapshot);
+    task.set_current_func_id(snapshot.current_func_id);
+    task.set_current_locals_base(snapshot.current_locals_base);
+    task.set_current_arg_count(snapshot.current_arg_count);
 
     let current_exception = if preserve_current_exception {
         task.current_exception().or(snapshot.current_exception)
@@ -739,9 +748,6 @@ fn jit_execute_sync_frame(
     }
 
     let mut locals_base = stack.depth().saturating_sub(initial_arg_count);
-    let mut current_args: Vec<Value> = (0..initial_arg_count)
-        .filter_map(|i| stack.peek_at(locals_base + i).ok())
-        .collect();
     let local_count = module
         .functions
         .get(current_func_id)
@@ -753,6 +759,9 @@ fn jit_execute_sync_frame(
             finish_nested_call!(JitNestedCallResult::Exception, true);
         }
     }
+    task.set_current_func_id(current_func_id);
+    task.set_current_locals_base(locals_base);
+    task.set_current_arg_count(current_arg_count);
 
     loop {
         let code = &module.functions[current_func_id].code;
@@ -783,8 +792,10 @@ fn jit_execute_sync_frame(
                 locals_base = frame.locals_base;
                 current_is_closure = frame.is_closure;
                 current_return_action = frame.return_action;
-                current_args = frame.args;
-                current_arg_count = current_args.len();
+                current_arg_count = frame.arg_count;
+                task.set_current_func_id(current_func_id);
+                task.set_current_locals_base(locals_base);
+                task.set_current_arg_count(current_arg_count);
                 continue;
             }
             finish_nested_call!(
@@ -818,7 +829,7 @@ fn jit_execute_sync_frame(
             opcode,
             locals_base,
             frame_depth,
-            &current_args,
+            current_arg_count,
         ) {
             crate::vm::interpreter::OpcodeResult::Continue => {}
             crate::vm::interpreter::OpcodeResult::Return(return_value) => {
@@ -845,8 +856,10 @@ fn jit_execute_sync_frame(
                     locals_base = frame.locals_base;
                     current_is_closure = frame.is_closure;
                     current_return_action = frame.return_action;
-                    current_args = frame.args;
-                    current_arg_count = current_args.len();
+                    current_arg_count = frame.arg_count;
+                    task.set_current_func_id(current_func_id);
+                    task.set_current_locals_base(locals_base);
+                    task.set_current_arg_count(current_arg_count);
                 } else {
                     finish_nested_call!(
                         match current_return_action {
@@ -892,7 +905,6 @@ fn jit_execute_sync_frame(
                     is_closure: current_is_closure,
                     return_action: current_return_action,
                     arg_count: current_arg_count,
-                    args: current_args.clone(),
                 });
                 task.push_call_frame(func_id);
                 if let Some(cv) = closure_val {
@@ -915,12 +927,12 @@ fn jit_execute_sync_frame(
                 module = callee_module;
                 current_func_id = func_id;
                 ip = 0;
-                current_args = (0..arg_count)
-                    .filter_map(|i| stack.peek_at(locals_base + i).ok())
-                    .collect();
                 current_arg_count = arg_count;
                 current_is_closure = is_closure;
                 current_return_action = return_action;
+                task.set_current_func_id(current_func_id);
+                task.set_current_locals_base(locals_base);
+                task.set_current_arg_count(current_arg_count);
             }
             crate::vm::interpreter::OpcodeResult::Error(error) => {
                 if !task.has_exception() {
@@ -974,8 +986,10 @@ fn jit_execute_sync_frame(
                         locals_base = frame.locals_base;
                         current_is_closure = frame.is_closure;
                         current_return_action = frame.return_action;
-                        current_args = frame.args;
-                        current_arg_count = current_args.len();
+                        current_arg_count = frame.arg_count;
+                        task.set_current_func_id(current_func_id);
+                        task.set_current_locals_base(locals_base);
+                        task.set_current_arg_count(current_arg_count);
                     } else {
                         break;
                     }

@@ -83,6 +83,73 @@ impl<'a> Visitor for ArrowBodyVarRefCollector<'a> {
     }
 }
 
+struct ArgumentsUseCollector<'a> {
+    interner: &'a Interner,
+    found: Option<Symbol>,
+}
+
+impl<'a> Visitor for ArgumentsUseCollector<'a> {
+    fn visit_identifier(&mut self, id: &ast::Identifier) {
+        if self.found.is_none() && self.interner.resolve(id.name) == "arguments" {
+            self.found = Some(id.name);
+        }
+    }
+
+    fn visit_function_decl(&mut self, _decl: &ast::FunctionDecl) {}
+
+    fn visit_function_expression(&mut self, _func: &ast::FunctionExpression) {}
+
+    fn visit_class_decl(&mut self, _decl: &ast::ClassDecl) {}
+
+    fn visit_arrow_function(&mut self, func: &ast::ArrowFunction) {
+        if self.found.is_some() || scope_binds_arguments_in_params(&func.params, self.interner) {
+            return;
+        }
+
+        for param in &func.params {
+            if let Some(default_expr) = &param.default_value {
+                self.visit_expression(default_expr);
+                if self.found.is_some() {
+                    return;
+                }
+            }
+        }
+
+        match &func.body {
+            ast::ArrowBody::Expression(expr) => self.visit_expression(expr),
+            ast::ArrowBody::Block(block) => {
+                if scope_binds_arguments_in_statements(&block.statements, self.interner) {
+                    return;
+                }
+                for stmt in &block.statements {
+                    self.visit_statement(stmt);
+                    if self.found.is_some() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn scope_binds_arguments_in_params(params: &[ast::Parameter], interner: &Interner) -> bool {
+    let mut names = FxHashSet::default();
+    for param in params {
+        collect_pattern_names(&param.pattern, &mut names);
+    }
+    names
+        .iter()
+        .any(|&symbol| interner.resolve(symbol) == "arguments")
+}
+
+fn scope_binds_arguments_in_statements(stmts: &[ast::Statement], interner: &Interner) -> bool {
+    let mut locals = FxHashSet::default();
+    collect_block_local_names(stmts, &mut locals);
+    locals
+        .iter()
+        .any(|&symbol| interner.resolve(symbol) == "arguments")
+}
+
 /// Builds a fallback index for expression types keyed by source span.
 ///
 /// The primary `expr_types` map is pointer-based (AST node identity). Some
@@ -494,6 +561,8 @@ pub struct Lowerer<'a> {
     this_ancestor_info: Option<AncestorThisInfo>,
     /// Capture index of `this` if it was captured (for LoadCaptured)
     this_captured_idx: Option<u16>,
+    /// Synthetic local slot for JS `arguments` in the current executable.
+    js_arguments_local: Option<u16>,
     /// Method name to function ID mapping (for method calls)
     method_map: FxHashMap<(NominalTypeId, Symbol), FunctionId>,
     /// Method name to vtable slot index (for virtual dispatch)
@@ -1253,6 +1322,7 @@ impl<'a> Lowerer<'a> {
             constructor_return_this: None,
             this_ancestor_info: None,
             this_captured_idx: None,
+            js_arguments_local: None,
             method_map: FxHashMap::default(),
             method_slot_map: FxHashMap::default(),
             static_method_map: FxHashMap::default(),
@@ -2417,6 +2487,169 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn find_js_arguments_symbol(
+        &self,
+        params: &[ast::Parameter],
+        body: &ast::BlockStatement,
+    ) -> Option<Symbol> {
+        if scope_binds_arguments_in_params(params, self.interner)
+            || scope_binds_arguments_in_statements(&body.statements, self.interner)
+        {
+            return None;
+        }
+
+        let mut collector = ArgumentsUseCollector {
+            interner: self.interner,
+            found: None,
+        };
+        for param in params {
+            if let Some(default_expr) = &param.default_value {
+                collector.visit_expression(default_expr);
+                if collector.found.is_some() {
+                    return collector.found;
+                }
+            }
+        }
+        for stmt in &body.statements {
+            collector.visit_statement(stmt);
+            if collector.found.is_some() {
+                return collector.found;
+            }
+        }
+        collector.found
+    }
+
+    fn compute_js_arguments_mapping(
+        &self,
+        params: &[ast::Parameter],
+        param_local_indices: &[Option<u16>],
+        is_strict_js: bool,
+    ) -> Vec<u16> {
+        let simple_params = !is_strict_js
+            && params.iter().all(|param| {
+                !param.is_rest
+                    && param.default_value.is_none()
+                    && !param.optional
+                    && matches!(param.pattern, Pattern::Identifier(_))
+            });
+        if !simple_params {
+            return Vec::new();
+        }
+
+        let mut mapping = vec![u16::MAX; params.len()];
+        let mut seen = FxHashSet::default();
+        for (index, param) in params.iter().enumerate().rev() {
+            let Pattern::Identifier(ident) = &param.pattern else {
+                continue;
+            };
+            if !seen.insert(ident.name) {
+                continue;
+            }
+            if let Some(local_idx) = param_local_indices.get(index).and_then(|slot| *slot) {
+                mapping[index] = local_idx;
+            }
+        }
+        mapping
+    }
+
+    fn emit_refcell_wrap_for_local(&mut self, local_idx: u16, value_ty: TypeId) {
+        if self.refcell_registers.contains_key(&local_idx) {
+            return;
+        }
+
+        let current_value = self.alloc_register(value_ty);
+        self.emit(IrInstr::LoadLocal {
+            dest: current_value.clone(),
+            index: local_idx,
+        });
+
+        let refcell_reg = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::NewRefCell {
+            dest: refcell_reg.clone(),
+            initial_value: current_value,
+        });
+        self.local_registers.insert(local_idx, refcell_reg.clone());
+        self.refcell_registers.insert(local_idx, refcell_reg.clone());
+        self.refcell_inner_types.insert(local_idx, value_ty);
+        self.emit(IrInstr::StoreLocal {
+            index: local_idx,
+            value: refcell_reg,
+        });
+    }
+
+    fn emit_js_arguments_prologue(
+        &mut self,
+        arguments_symbol: Option<Symbol>,
+        params: &[ast::Parameter],
+        param_local_indices: &[Option<u16>],
+        is_strict_js: bool,
+    ) {
+        self.js_arguments_local = None;
+
+        let Some(arguments_symbol) = arguments_symbol else {
+            self.current_function_mut().js_arguments_mapping.clear();
+            return;
+        };
+
+        let mapping = self.compute_js_arguments_mapping(params, param_local_indices, is_strict_js);
+        self.current_function_mut().js_arguments_mapping = mapping.clone();
+
+        for (index, maybe_local_idx) in param_local_indices.iter().enumerate() {
+            let Some(local_idx) = *maybe_local_idx else {
+                continue;
+            };
+            let needs_refcell = mapping.get(index).copied().unwrap_or(u16::MAX) != u16::MAX
+                || matches!(
+                    &params[index].pattern,
+                    Pattern::Identifier(ident) if self.refcell_vars.contains(&ident.name)
+                );
+            if !needs_refcell {
+                continue;
+            }
+            let value_ty = self
+                .local_registers
+                .get(&local_idx)
+                .map(|reg| reg.ty)
+                .unwrap_or(UNRESOLVED);
+            self.emit_refcell_wrap_for_local(local_idx, value_ty);
+        }
+
+        let arguments_local = self.allocate_local(arguments_symbol);
+        self.js_arguments_local = Some(arguments_local);
+
+        let arguments_reg = self.alloc_register(TypeId::new(JSON_OBJECT_TYPE_ID));
+        self.emit(IrInstr::NativeCall {
+            dest: Some(arguments_reg.clone()),
+            native_id: crate::compiler::native_id::OBJECT_GET_ARGUMENTS_OBJECT,
+            args: vec![],
+        });
+
+        if self.refcell_vars.contains(&arguments_symbol) {
+            let refcell_reg = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::NewRefCell {
+                dest: refcell_reg.clone(),
+                initial_value: arguments_reg.clone(),
+            });
+            self.local_registers
+                .insert(arguments_local, refcell_reg.clone());
+            self.refcell_registers
+                .insert(arguments_local, refcell_reg.clone());
+            self.refcell_inner_types
+                .insert(arguments_local, arguments_reg.ty);
+            self.emit(IrInstr::StoreLocal {
+                index: arguments_local,
+                value: refcell_reg,
+            });
+        } else {
+            self.local_registers
+                .insert(arguments_local, arguments_reg.clone());
+            self.emit(IrInstr::StoreLocal {
+                index: arguments_local,
+                value: arguments_reg,
+            });
+        }
+    }
+
     /// Collect all local variable names declared in statements
     fn collect_local_names(&self, stmts: &[ast::Statement]) -> FxHashSet<Symbol> {
         let mut locals = FxHashSet::default();
@@ -3023,6 +3256,7 @@ impl<'a> Lowerer<'a> {
         self.captures.clear();
         self.next_capture_slot = 0;
         self.this_captured_idx = None;
+        self.js_arguments_local = None;
         // closure_locals maps local-slot indices to async func IDs.  It is
         // strictly per-function: stale entries from a previously-lowered
         // function (e.g. std:math init code registering `wrapped` at slot 2)
@@ -3036,6 +3270,10 @@ impl<'a> Lowerer<'a> {
             collect_pattern_names(&param.pattern, &mut locals);
         }
         locals.extend(self.collect_local_names(&func.body.statements));
+        let arguments_symbol = self.find_js_arguments_symbol(&func.params, &func.body);
+        if let Some(arguments_symbol) = arguments_symbol {
+            locals.insert(arguments_symbol);
+        }
         self.scan_for_captured_vars(&func.body.statements, &func.params, &locals);
 
         // Get function name
@@ -3050,6 +3288,7 @@ impl<'a> Lowerer<'a> {
         // Track parameters with destructuring patterns for later binding
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
         let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
+        let mut param_local_indices = Vec::with_capacity(func.params.len());
         let function_type_params = func.type_params.as_deref();
 
         if has_js_this_slot {
@@ -3113,11 +3352,12 @@ impl<'a> Lowerer<'a> {
             }
 
             // Extract parameter name from pattern
-            if let Pattern::Identifier(ident) = &param.pattern {
-                let local_idx = self.allocate_local(ident.name);
-                self.local_registers.insert(local_idx, reg.clone());
+                if let Pattern::Identifier(ident) = &param.pattern {
+                    let local_idx = self.allocate_local(ident.name);
+                    self.local_registers.insert(local_idx, reg.clone());
+                    param_local_indices.push(Some(local_idx));
 
-                // Track class type for parameters with class type annotations
+                    // Track class type for parameters with class type annotations
                 // so method calls can be statically resolved
                 if let Some(type_ann) = &param.type_annotation {
                     let nominal_type_id = self.resolve_param_nominal_type_from_annotation(
@@ -3169,6 +3409,7 @@ impl<'a> Lowerer<'a> {
                 }
             } else {
                 // Destructuring pattern: track for later binding after entry block
+                param_local_indices.push(None);
                 destructure_params.push((decl_param_idx, &param.pattern, reg.clone()));
             }
             params.push(reg);
@@ -3277,6 +3518,13 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        self.emit_js_arguments_prologue(
+            arguments_symbol,
+            &func.params,
+            &param_local_indices,
+            is_strict_js,
+        );
+
         // Emit rest array collection code if present
         if let Some((rest_name, rest_ty)) = rest_param_info {
             self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
@@ -3326,6 +3574,7 @@ impl<'a> Lowerer<'a> {
         self.this_register = None;
         self.this_ancestor_info = None;
         self.this_captured_idx = None;
+        self.js_arguments_local = None;
         self.pending_constructor_prologue = None;
         self.current_method_env_globals = None;
         self.pending_class_method_env_globals = None;
@@ -3611,6 +3860,7 @@ impl<'a> Lowerer<'a> {
                     self.captures.clear();
                     self.next_capture_slot = 0;
                     self.this_captured_idx = None;
+                    self.js_arguments_local = None;
                     self.closure_locals.clear();
                     self.current_method_env_globals = class_method_env_globals.clone();
 
@@ -3677,6 +3927,7 @@ impl<'a> Lowerer<'a> {
                     // Add explicit parameters (excluding rest parameters)
                     let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
                     let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
+                    let mut param_local_indices = Vec::with_capacity(method.params.len());
                     let method_type_params = method.type_params.as_deref();
                     let class_type_params = class.type_params.as_deref();
 
@@ -3748,6 +3999,7 @@ impl<'a> Lowerer<'a> {
                         if let Pattern::Identifier(ident) = &param.pattern {
                             let local_idx = self.allocate_local(ident.name);
                             self.local_registers.insert(local_idx, reg.clone());
+                            param_local_indices.push(Some(local_idx));
 
                             // Track class type for parameters with class type annotations
                             if let Some(type_ann) = &param.type_annotation {
@@ -3812,6 +4064,7 @@ impl<'a> Lowerer<'a> {
                             }
                         } else {
                             // Destructuring pattern: track for later binding after entry block
+                            param_local_indices.push(None);
                             destructure_params.push((decl_param_idx, &param.pattern, reg.clone()));
                         }
                         params.push(reg);
@@ -3864,6 +4117,23 @@ impl<'a> Lowerer<'a> {
                     self.current_function = Some(ir_func);
                     let saved_js_strict_context = self.js_strict_context;
                     self.js_strict_context = true;
+                    let arguments_symbol = self.find_js_arguments_symbol(&method.params, body);
+
+                    {
+                        let mut method_locals = FxHashSet::default();
+                        for param in &method.params {
+                            collect_pattern_names(&param.pattern, &mut method_locals);
+                        }
+                        method_locals.extend(self.collect_local_names(&body.statements));
+                        if let Some(arguments_symbol) = arguments_symbol {
+                            method_locals.insert(arguments_symbol);
+                        }
+                        self.scan_for_captured_vars(
+                            &body.statements,
+                            &method.params,
+                            &method_locals,
+                        );
+                    }
 
                     // Create entry block
                     let entry_block = self.alloc_block();
@@ -3909,23 +4179,16 @@ impl<'a> Lowerer<'a> {
                         }
                     }
 
+                    self.emit_js_arguments_prologue(
+                        arguments_symbol,
+                        &method.params,
+                        &param_local_indices,
+                        true,
+                    );
+
                     // Emit rest array collection code if present
                     if let Some((rest_name, rest_ty)) = rest_param_info {
                         self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
-                    }
-
-                    // Pre-scan method body for captured variables
-                    {
-                        let mut method_locals = FxHashSet::default();
-                        for param in &method.params {
-                            collect_pattern_names(&param.pattern, &mut method_locals);
-                        }
-                        method_locals.extend(self.collect_local_names(&body.statements));
-                        self.scan_for_captured_vars(
-                            &body.statements,
-                            &method.params,
-                            &method_locals,
-                        );
                     }
 
                     // Emit null-check + default-value for parameters with defaults
@@ -4019,6 +4282,7 @@ impl<'a> Lowerer<'a> {
                 self.captures.clear();
                 self.next_capture_slot = 0;
                 self.this_captured_idx = None;
+                self.js_arguments_local = None;
                 self.closure_locals.clear();
                 self.current_method_env_globals = class_method_env_globals.clone();
 
@@ -4045,6 +4309,7 @@ impl<'a> Lowerer<'a> {
                 // Add explicit parameters from constructor
                 let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
                 let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
+                let mut param_local_indices = Vec::with_capacity(ctor.params.len());
                 let class_type_params = class.type_params.as_deref();
 
                 for (decl_param_idx, param) in ctor.params.iter().enumerate() {
@@ -4088,6 +4353,7 @@ impl<'a> Lowerer<'a> {
                     if let Pattern::Identifier(ident) = &param.pattern {
                         let local_idx = self.allocate_local(ident.name);
                         self.local_registers.insert(local_idx, reg.clone());
+                        param_local_indices.push(Some(local_idx));
                         if let Some(type_ann) = &param.type_annotation {
                             let param_nominal_type_id = self
                                 .resolve_param_nominal_type_from_annotation(
@@ -4146,6 +4412,7 @@ impl<'a> Lowerer<'a> {
                         }
                     } else {
                         // Destructuring pattern: track for later binding after entry block
+                        param_local_indices.push(None);
                         destructure_params.push((decl_param_idx, &param.pattern, reg.clone()));
                     }
                     params.push(reg);
@@ -4191,6 +4458,19 @@ impl<'a> Lowerer<'a> {
                 self.current_function = Some(ir_func);
                 let saved_js_strict_context = self.js_strict_context;
                 self.js_strict_context = true;
+                let arguments_symbol = self.find_js_arguments_symbol(&ctor.params, &ctor.body);
+
+                {
+                    let mut ctor_locals = FxHashSet::default();
+                    for param in &ctor.params {
+                        collect_pattern_names(&param.pattern, &mut ctor_locals);
+                    }
+                    ctor_locals.extend(self.collect_local_names(&ctor.body.statements));
+                    if let Some(arguments_symbol) = arguments_symbol {
+                        ctor_locals.insert(arguments_symbol);
+                    }
+                    self.scan_for_captured_vars(&ctor.body.statements, &ctor.params, &ctor_locals);
+                }
 
                 // Create entry block
                 let entry_block = self.alloc_block();
@@ -4235,15 +4515,12 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
-                // Pre-scan constructor body for captured variables
-                {
-                    let mut ctor_locals = FxHashSet::default();
-                    for param in &ctor.params {
-                        collect_pattern_names(&param.pattern, &mut ctor_locals);
-                    }
-                    ctor_locals.extend(self.collect_local_names(&ctor.body.statements));
-                    self.scan_for_captured_vars(&ctor.body.statements, &ctor.params, &ctor_locals);
-                }
+                self.emit_js_arguments_prologue(
+                    arguments_symbol,
+                    &ctor.params,
+                    &param_local_indices,
+                    true,
+                );
 
                 // Emit null-check + default-value for constructor parameters with defaults
                 self.emit_default_params(&ctor.params);

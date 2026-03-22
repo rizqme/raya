@@ -1537,7 +1537,6 @@ impl<'a> Interpreter<'a> {
         let mut ip = task.ip();
         let mut code: &[u8] = &module.functions[current_func_id].code;
         let mut locals_base = task.current_locals_base();
-        let mut current_args = Vec::new(); // Track current function's arguments for JS `arguments`/rest access
         let mut current_arg_count = 0usize; // Track current function's arg count (for rest parameters)
 
         // Check if we're resuming from suspension.
@@ -1610,8 +1609,10 @@ impl<'a> Interpreter<'a> {
                     code = &module.functions[frame.func_id].code;
                     ip = frame.ip;
                     locals_base = frame.locals_base;
-                    current_args = frame.args;
                     current_arg_count = frame.arg_count;
+                    task.set_current_func_id(current_func_id);
+                    task.set_current_locals_base(locals_base);
+                    task.set_current_arg_count(current_arg_count);
                 } else {
                     break;
                 }
@@ -1633,7 +1634,6 @@ impl<'a> Interpreter<'a> {
 
             let initial_args = task.take_initial_args();
             current_arg_count = initial_args.len();
-            current_args = initial_args.clone();
             let initial_slot_count = entry_local_count.max(current_arg_count);
 
             for local_index in 0..initial_slot_count {
@@ -1654,6 +1654,9 @@ impl<'a> Interpreter<'a> {
                     }
                 }
             }
+            task.set_current_func_id(current_func_id);
+            task.set_current_locals_base(locals_base);
+            task.set_current_arg_count(current_arg_count);
         }
 
         // Macro to save all frame state before leaving run()
@@ -1662,6 +1665,7 @@ impl<'a> Interpreter<'a> {
                 task.set_ip(ip);
                 task.set_current_func_id(current_func_id);
                 task.set_current_locals_base(locals_base);
+                task.set_current_arg_count(current_arg_count);
                 task.set_current_module(module.clone());
                 task.save_execution_frames(frames);
             };
@@ -1706,8 +1710,7 @@ impl<'a> Interpreter<'a> {
                     code = &module.functions[frame.func_id].code;
                     ip = frame.ip;
                     locals_base = frame.locals_base;
-                    current_args = frame.args;
-                    current_arg_count = current_args.len();
+                    current_arg_count = frame.arg_count;
 
                     // Push appropriate value onto caller's stack
                     if !matches!(frame.return_action, ReturnAction::Discard) {
@@ -1923,7 +1926,7 @@ impl<'a> Interpreter<'a> {
                 opcode,
                 locals_base,
                 frames.len(),
-                &current_args,
+                current_arg_count,
             ) {
                 OpcodeResult::Continue => {
                     // Continue to next instruction
@@ -2215,7 +2218,6 @@ impl<'a> Interpreter<'a> {
                         is_closure,
                         return_action,
                         arg_count: current_arg_count, // Save caller's arg count
-                        args: current_args.clone(),
                     });
 
                     // Push call frame for stack traces
@@ -2298,12 +2300,10 @@ impl<'a> Interpreter<'a> {
                     }
                     self.profiler_func_id = current_func_id;
                     code = &module.functions[func_id].code;
-                    current_args = stack_guard
-                        .iter_values()
-                        .skip(locals_base)
-                        .take(arg_count)
-                        .collect();
                     current_arg_count = arg_count; // Set current arg count to callee's arg count
+                    task.set_current_func_id(current_func_id);
+                    task.set_current_locals_base(locals_base);
+                    task.set_current_arg_count(current_arg_count);
                     if std::env::var("RAYA_DEBUG_ARGS_ENTRY").is_ok() {
                         let func_name = module
                             .functions
@@ -2312,8 +2312,8 @@ impl<'a> Interpreter<'a> {
                             .unwrap_or("<unknown>");
                         if func_name.ends_with("::fill") {
                             eprintln!(
-                                "[args-entry] {} arg_count={} locals_base={} args={:?}",
-                                func_name, current_arg_count, locals_base, current_args
+                                "[args-entry] {} arg_count={} locals_base={}",
+                                func_name, current_arg_count, locals_base
                             );
                         }
                     }
@@ -2438,8 +2438,10 @@ impl<'a> Interpreter<'a> {
                             code = &module.functions[frame.func_id].code;
                             ip = frame.ip;
                             locals_base = frame.locals_base;
-                            current_args = frame.args;
                             current_arg_count = frame.arg_count; // Restore caller's arg count
+                            task.set_current_func_id(current_func_id);
+                            task.set_current_locals_base(locals_base);
+                            task.set_current_arg_count(current_arg_count);
                                                                  // Continue searching in parent frame
                         } else {
                             // No more frames — unhandled exception
@@ -2469,7 +2471,7 @@ impl<'a> Interpreter<'a> {
         opcode: Opcode,
         locals_base: usize,
         frame_depth: usize,
-        current_args: &[Value], // Current function's runtime arguments
+        current_arg_count: usize,
     ) -> OpcodeResult {
         match opcode {
             // =========================================================
@@ -2503,7 +2505,15 @@ impl<'a> Interpreter<'a> {
             | Opcode::LoadArgLocal
             | Opcode::LoadGlobal
             | Opcode::StoreGlobal => {
-                self.exec_variable_ops(stack, ip, code, module, locals_base, opcode, current_args)
+                self.exec_variable_ops(
+                    stack,
+                    ip,
+                    code,
+                    module,
+                    locals_base,
+                    opcode,
+                    current_arg_count,
+                )
             }
 
             // =========================================================

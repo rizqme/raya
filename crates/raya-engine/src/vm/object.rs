@@ -357,6 +357,8 @@ pub enum ExoticKind {
     TypedArray = 2,
     /// ES String exotic: integer index reads return characters.
     StringObject = 3,
+    /// ES Arguments exotic: integer indices may alias parameter bindings.
+    Arguments = 4,
 }
 
 impl Default for ExoticKind {
@@ -414,6 +416,21 @@ pub struct CallableData {
     pub module: Option<Arc<crate::compiler::Module>>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ArgumentsObjectData {
+    /// Snapshot of actual argument values as passed by the caller.
+    pub values: Vec<Value>,
+    /// Mapping from arguments index to parameter RefCell pointer.
+    /// `None` means the index is unmapped.
+    pub mapped_refcells: Vec<Option<Value>>,
+    /// Indices deleted from the arguments object.
+    pub deleted: Vec<bool>,
+    /// Current `callee` value for non-strict arguments objects.
+    pub callee: Value,
+    /// Whether `callee`/`caller` must throw instead of exposing a value.
+    pub strict_poison: bool,
+}
+
 /// Object instance (heap-allocated)
 #[derive(Debug, Clone)]
 pub struct Object {
@@ -429,6 +446,8 @@ pub struct Object {
     pub prototype: Value,
     /// Callable extension. None for plain objects, Some for functions.
     pub callable: Option<Box<CallableData>>,
+    /// Optional arguments-exotic payload.
+    pub arguments: Option<Box<ArgumentsObjectData>>,
 }
 
 impl Object {
@@ -445,6 +464,7 @@ impl Object {
             dyn_props: None,
             prototype: Value::null(),
             callable: None,
+            arguments: None,
         }
     }
 
@@ -457,6 +477,7 @@ impl Object {
             dyn_props: None,
             prototype: Value::null(),
             callable: None,
+            arguments: None,
         }
     }
 

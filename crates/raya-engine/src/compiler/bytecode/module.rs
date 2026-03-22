@@ -652,6 +652,9 @@ pub struct Function {
     pub is_strict_js: bool,
     /// Whether JS `this` should box primitives but preserve nullish receivers.
     pub uses_builtin_this_coercion: bool,
+    /// Sloppy-mode `arguments` index -> local slot mapping.
+    /// `u16::MAX` means the index is unmapped.
+    pub js_arguments_mapping: Vec<u16>,
     /// Number of local variables
     pub local_count: usize,
     /// Bytecode instructions
@@ -673,6 +676,10 @@ impl Function {
         writer.emit_u32(self.visible_length as u32);
         writer.emit_u8(u8::from(self.is_strict_js));
         writer.emit_u8(u8::from(self.uses_builtin_this_coercion));
+        writer.emit_u32(self.js_arguments_mapping.len() as u32);
+        for &slot in &self.js_arguments_mapping {
+            writer.emit_u16(slot);
+        }
         writer.emit_u32(self.local_count as u32);
 
         // Write code length and code
@@ -693,6 +700,11 @@ impl Function {
         let visible_length = reader.read_u32()? as usize;
         let is_strict_js = reader.read_u8()? != 0;
         let uses_builtin_this_coercion = reader.read_u8()? != 0;
+        let js_arguments_mapping_len = reader.read_u32()? as usize;
+        let mut js_arguments_mapping = Vec::with_capacity(js_arguments_mapping_len);
+        for _ in 0..js_arguments_mapping_len {
+            js_arguments_mapping.push(reader.read_u16()?);
+        }
         let local_count = reader.read_u32()? as usize;
 
         // Read code
@@ -708,6 +720,7 @@ impl Function {
             visible_length,
             is_strict_js,
             uses_builtin_this_coercion,
+            js_arguments_mapping,
             local_count,
             code,
         })

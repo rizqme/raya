@@ -220,6 +220,9 @@ pub struct Task {
     /// Current locals base offset in the stack
     current_locals_base: AtomicUsize,
 
+    /// Current runtime argument count for the active activation.
+    current_arg_count: AtomicUsize,
+
     // -- Grouped Mutexes (parking_lot::Mutex — ~8 bytes each) --
     /// Lifecycle and scheduling state
     lifecycle: ParkingMutex<LifecycleState>,
@@ -277,6 +280,7 @@ impl Task {
             cancelled: AtomicBool::new(false),
             current_func_id: AtomicUsize::new(function_id),
             current_locals_base: AtomicUsize::new(0),
+            current_arg_count: AtomicUsize::new(0),
 
             lifecycle: ParkingMutex::new(LifecycleState {
                 state: TaskState::Created,
@@ -419,6 +423,16 @@ impl Task {
     /// Set the current locals base offset
     pub fn set_current_locals_base(&self, base: usize) {
         self.current_locals_base.store(base, Ordering::Relaxed);
+    }
+
+    /// Get the current activation's runtime argument count.
+    pub fn current_arg_count(&self) -> usize {
+        self.current_arg_count.load(Ordering::Relaxed)
+    }
+
+    /// Set the current activation's runtime argument count.
+    pub fn set_current_arg_count(&self, count: usize) {
+        self.current_arg_count.store(count, Ordering::Relaxed);
     }
 
     // =========================================================================
@@ -1200,7 +1214,6 @@ impl Task {
                 is_closure: false,
                 return_action: super::super::interpreter::execution::ReturnAction::PushReturnValue,
                 arg_count: 0, // Not available in serialized format (only needed for rest params)
-                args: Vec::new(),
             })
             .collect();
 
@@ -1230,6 +1243,7 @@ impl Task {
             .unwrap_or(serialized.function_index);
 
         let current_locals_base = execution_frames.last().map(|f| f.locals_base).unwrap_or(0);
+        let current_arg_count = execution_frames.last().map(|f| f.arg_count).unwrap_or(0);
 
         Self {
             id: serialized.task_id,
@@ -1244,6 +1258,7 @@ impl Task {
             cancelled: AtomicBool::new(false),
             current_func_id: AtomicUsize::new(current_func_id),
             current_locals_base: AtomicUsize::new(current_locals_base),
+            current_arg_count: AtomicUsize::new(current_arg_count),
 
             lifecycle: ParkingMutex::new(LifecycleState {
                 state: serialized.state,

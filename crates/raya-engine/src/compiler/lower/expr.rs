@@ -542,129 +542,12 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_js_arguments_object(&mut self) -> Register {
-        let element_ty = TypeId::new(UNKNOWN_TYPE_ID);
-        let object_ty = TypeId::new(JSON_OBJECT_TYPE_ID);
-        let skips_js_this = self
-            .current_function
-            .as_ref()
-            .map(|function| function.uses_js_this_slot)
-            .unwrap_or(false);
-
-        let arg_count_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
-        self.emit(IrInstr::LoadArgCount {
-            dest: arg_count_reg.clone(),
+        let object_reg = self.alloc_register(TypeId::new(JSON_OBJECT_TYPE_ID));
+        self.emit(IrInstr::NativeCall {
+            dest: Some(object_reg.clone()),
+            native_id: crate::compiler::native_id::OBJECT_GET_ARGUMENTS_OBJECT,
+            args: vec![],
         });
-        if skips_js_this {
-            let one_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
-            self.emit(IrInstr::Assign {
-                dest: one_reg.clone(),
-                value: IrValue::Constant(IrConstant::I32(1)),
-            });
-            self.emit(IrInstr::BinaryOp {
-                dest: arg_count_reg.clone(),
-                op: BinaryOp::Sub,
-                left: arg_count_reg.clone(),
-                right: one_reg,
-            });
-        }
-
-        let object_reg = self.alloc_register(object_ty);
-        let type_index = self.structural_layout_id_from_ordered_names(&[]);
-        self.emit(IrInstr::ObjectLiteral {
-            dest: object_reg.clone(),
-            type_index,
-            fields: vec![],
-        });
-
-        let loop_idx_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
-        let cond_block = self.alloc_block();
-        let body_block = self.alloc_block();
-        let exit_block = self.alloc_block();
-
-        self.emit(IrInstr::Assign {
-            dest: loop_idx_reg.clone(),
-            value: IrValue::Constant(IrConstant::I32(0)),
-        });
-        self.set_terminator(Terminator::Jump(cond_block));
-
-        self.current_function_mut()
-            .add_block(crate::compiler::ir::BasicBlock::with_label(
-                cond_block,
-                "arguments.cond",
-            ));
-        self.current_block = cond_block;
-
-        let cond_reg = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
-        self.emit(IrInstr::BinaryOp {
-            dest: cond_reg.clone(),
-            op: BinaryOp::Less,
-            left: loop_idx_reg.clone(),
-            right: arg_count_reg.clone(),
-        });
-        self.set_terminator(Terminator::Branch {
-            cond: cond_reg,
-            then_block: body_block,
-            else_block: exit_block,
-        });
-
-        self.current_function_mut()
-            .add_block(crate::compiler::ir::BasicBlock::with_label(
-                body_block,
-                "arguments.body",
-            ));
-        self.current_block = body_block;
-
-        let source_index_reg = if skips_js_this {
-            let one_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
-            self.emit(IrInstr::Assign {
-                dest: one_reg.clone(),
-                value: IrValue::Constant(IrConstant::I32(1)),
-            });
-            let source_index_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
-            self.emit(IrInstr::BinaryOp {
-                dest: source_index_reg.clone(),
-                op: BinaryOp::Add,
-                left: loop_idx_reg.clone(),
-                right: one_reg,
-            });
-            source_index_reg
-        } else {
-            loop_idx_reg.clone()
-        };
-
-        let arg_val_reg = self.alloc_register(element_ty);
-        self.emit(IrInstr::LoadArgLocal {
-            dest: arg_val_reg.clone(),
-            index: source_index_reg,
-        });
-        self.emit(IrInstr::DynSetKeyed {
-            object: object_reg.clone(),
-            key: loop_idx_reg.clone(),
-            value: arg_val_reg,
-        });
-
-        let one_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
-        self.emit(IrInstr::Assign {
-            dest: one_reg.clone(),
-            value: IrValue::Constant(IrConstant::I32(1)),
-        });
-        self.emit(IrInstr::BinaryOp {
-            dest: loop_idx_reg.clone(),
-            op: BinaryOp::Add,
-            left: loop_idx_reg,
-            right: one_reg,
-        });
-        self.set_terminator(Terminator::Jump(cond_block));
-
-        self.current_function_mut()
-            .add_block(crate::compiler::ir::BasicBlock::with_label(
-                exit_block,
-                "arguments.exit",
-            ));
-        self.current_block = exit_block;
-
-        self.emit_dyn_set_named(object_reg.clone(), "length", arg_count_reg);
-
         object_reg
     }
 
@@ -1310,6 +1193,34 @@ impl<'a> Lowerer<'a> {
         }
 
         if name == "arguments" {
+            if let Some(local_idx) = self.js_arguments_local {
+                if self.refcell_registers.contains_key(&local_idx) {
+                    let inner_ty = self
+                        .refcell_inner_types
+                        .get(&local_idx)
+                        .copied()
+                        .unwrap_or(TypeId::new(JSON_OBJECT_TYPE_ID));
+                    let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                    self.emit(IrInstr::LoadLocal {
+                        dest: refcell_reg.clone(),
+                        index: local_idx,
+                    });
+                    let dest = self.alloc_register(inner_ty);
+                    self.emit(IrInstr::LoadRefCell {
+                        dest: dest.clone(),
+                        refcell: refcell_reg,
+                    });
+                    return dest;
+                }
+
+                let dest = self.alloc_register(TypeId::new(JSON_OBJECT_TYPE_ID));
+                self.emit(IrInstr::LoadLocal {
+                    dest: dest.clone(),
+                    index: local_idx,
+                });
+                return dest;
+            }
+
             return self.lower_js_arguments_object();
         }
 
@@ -7652,6 +7563,7 @@ impl<'a> Lowerer<'a> {
         let saved_pending_constructor_prologue = self.pending_constructor_prologue.take();
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
+        let saved_js_arguments_local = self.js_arguments_local.take();
         let saved_generator_yield_array_local = self.generator_yield_array_local.take();
         let saved_closure_locals = std::mem::take(&mut self.closure_locals);
 
@@ -7691,6 +7603,7 @@ impl<'a> Lowerer<'a> {
         self.next_capture_slot = 0;
         self.this_ancestor_info = None;
         self.this_captured_idx = None;
+        self.js_arguments_local = None;
 
         self.next_register = 0;
         self.next_block = 0;
@@ -7723,6 +7636,7 @@ impl<'a> Lowerer<'a> {
         let mut rest_param_info = None;
         let mut fixed_param_count = js_this_slots;
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
+        let mut param_local_indices = Vec::with_capacity(func.params.len());
 
         if has_js_this_slot {
             let this_reg = self.alloc_register(UNRESOLVED);
@@ -7765,6 +7679,7 @@ impl<'a> Lowerer<'a> {
             if let ast::Pattern::Identifier(ident) = &param.pattern {
                 let local_idx = self.allocate_local(ident.name);
                 self.local_registers.insert(local_idx, reg.clone());
+                param_local_indices.push(Some(local_idx));
                 self.callable_symbol_hints.remove(&ident.name);
 
                 if let Some(type_ann) = &param.type_annotation {
@@ -7778,6 +7693,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             } else {
+                param_local_indices.push(None);
                 destructure_params.push((decl_param_idx, &param.pattern, reg.clone()));
             }
             params.push(reg);
@@ -7822,6 +7738,10 @@ impl<'a> Lowerer<'a> {
             super::collect_pattern_names(&param.pattern, &mut closure_locals);
         }
         closure_locals.extend(self.collect_local_names(&func.body.statements));
+        let arguments_symbol = self.find_js_arguments_symbol(&func.params, &func.body);
+        if let Some(arguments_symbol) = arguments_symbol {
+            closure_locals.insert(arguments_symbol);
+        }
         self.prepare_executable_body_declarations(&func.body.statements, None);
         self.scan_for_captured_vars(&func.body.statements, &func.params, &closure_locals);
 
@@ -7870,6 +7790,13 @@ impl<'a> Lowerer<'a> {
             }
             self.bind_pattern(pattern, value_reg);
         }
+
+        self.emit_js_arguments_prologue(
+            arguments_symbol,
+            &func.params,
+            &param_local_indices,
+            is_strict_js,
+        );
 
         if let Some((rest_name, rest_ty)) = rest_param_info {
             self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
@@ -7925,6 +7852,7 @@ impl<'a> Lowerer<'a> {
         self.pending_constructor_prologue = saved_pending_constructor_prologue;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
+        self.js_arguments_local = saved_js_arguments_local;
         self.generator_yield_array_local = saved_generator_yield_array_local;
         self.closure_locals = saved_closure_locals;
         self.function_depth = saved_function_depth;
@@ -8119,6 +8047,7 @@ impl<'a> Lowerer<'a> {
         let saved_pending_constructor_prologue = self.pending_constructor_prologue.take();
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
+        let saved_js_arguments_local = self.js_arguments_local.take();
         let saved_generator_yield_array_local = self.generator_yield_array_local.take();
         // closure_locals maps local-slot indices to async func IDs; it is
         // per-scope, so it must be cleared on entry and restored on exit to
@@ -8186,6 +8115,7 @@ impl<'a> Lowerer<'a> {
             None
         };
         self.this_captured_idx = None;
+        self.js_arguments_local = None;
 
         // Reset per-function state
         self.next_register = 0;
@@ -8476,6 +8406,7 @@ impl<'a> Lowerer<'a> {
         self.pending_constructor_prologue = saved_pending_constructor_prologue;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
+        self.js_arguments_local = saved_js_arguments_local;
         self.generator_yield_array_local = saved_generator_yield_array_local;
         self.closure_locals = saved_closure_locals;
         self.function_depth = saved_function_depth;
