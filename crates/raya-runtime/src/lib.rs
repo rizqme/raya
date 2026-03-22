@@ -56,6 +56,7 @@ use raya_engine::aot::{
     RegisteredAotClone, RegisteredAotFunctionEntry,
 };
 use raya_engine::compiler::module::{
+    builtin_global_exports as declaration_builtin_global_exports, BuiltinSurfaceMode,
     ExportedSymbol, LateLinkRequirement, LateLinkSymbolRequirement, ModuleExports,
 };
 use raya_engine::compiler::{
@@ -949,53 +950,57 @@ impl Runtime {
     pub(crate) fn builtin_global_exports_for_mode(
         mode: BuiltinMode,
     ) -> Result<ModuleExports, RuntimeError> {
-        let module_name = match mode {
-            BuiltinMode::RayaStrict => "__raya_builtin__/strict",
-            BuiltinMode::NodeCompat => "__raya_builtin__/node_compat",
-        };
-        let mut merged = ModuleExports::new(
-            Path::new(module_name).to_path_buf(),
-            module_name.to_string(),
-        );
+        let mut merged = match mode {
+            BuiltinMode::RayaStrict => declaration_builtin_global_exports(
+                BuiltinSurfaceMode::RayaStrict,
+            )
+            .map_err(|error| RuntimeError::TypeCheck(format!("builtin declaration exports: {error}")))?,
+            BuiltinMode::NodeCompat => {
+                let module_name = "__raya_builtin__/node_compat";
+                let mut merged = ModuleExports::new(
+                    Path::new(module_name).to_path_buf(),
+                    module_name.to_string(),
+                );
 
-        for module in Self::compiled_builtin_runtime_modules(mode)? {
-            for export in module.exports {
-                let Some(type_signature) = export.type_signature.clone() else {
-                    continue;
-                };
-                let export_name = export.name.clone();
-                let kind = match export.symbol_type {
-                    SymbolType::Function => SymbolKind::Function,
-                    SymbolType::Class => SymbolKind::Class,
-                    SymbolType::Constant => SymbolKind::Variable,
-                };
-                merged.add_symbol(raya_engine::compiler::module::ExportedSymbol {
-                    name: export_name.clone(),
-                    local_name: export_name.clone(),
-                    kind,
-                    ty: raya_engine::parser::types::TypeId::new(
-                        raya_engine::TypeContext::UNKNOWN_TYPE_ID,
-                    ),
-                    is_const: !matches!(kind, SymbolKind::Function),
-                    is_async: false,
-                    module_name: merged.module_name.clone(),
-                    module_id: module_id_from_name(&merged.module_name),
-                    symbol_id: symbol_id_from_name(
-                        &merged.module_name,
-                        SymbolScope::Module,
-                        &export_name,
-                    ),
-                    signature_hash: export.signature_hash,
-                    type_signature,
-                    scope: export.scope,
-                });
+                for module in Self::compiled_builtin_runtime_modules(mode)? {
+                    for export in module.exports {
+                        let Some(type_signature) = export.type_signature.clone() else {
+                            continue;
+                        };
+                        let export_name = export.name.clone();
+                        let kind = match export.symbol_type {
+                            SymbolType::Function => SymbolKind::Function,
+                            SymbolType::Class => SymbolKind::Class,
+                            SymbolType::Constant => SymbolKind::Variable,
+                        };
+                        merged.add_symbol(raya_engine::compiler::module::ExportedSymbol {
+                            name: export_name.clone(),
+                            local_name: export_name.clone(),
+                            kind,
+                            ty: raya_engine::parser::types::TypeId::new(
+                                raya_engine::TypeContext::UNKNOWN_TYPE_ID,
+                            ),
+                            is_const: !matches!(kind, SymbolKind::Function),
+                            is_async: false,
+                            module_name: merged.module_name.clone(),
+                            module_id: module_id_from_name(&merged.module_name),
+                            symbol_id: symbol_id_from_name(
+                                &merged.module_name,
+                                SymbolScope::Module,
+                                &export_name,
+                            ),
+                            signature_hash: export.signature_hash,
+                            type_signature,
+                            scope: export.scope,
+                        });
+                    }
+                }
+
+                merged
             }
-        }
+        };
 
         for name in Self::runtime_only_ambient_builtin_names(mode) {
-            if merged.has(&name) {
-                continue;
-            }
             merged.add_symbol(raya_engine::compiler::module::ExportedSymbol {
                 name: name.clone(),
                 local_name: name.clone(),
@@ -1008,7 +1013,7 @@ impl Runtime {
                 module_name: merged.module_name.clone(),
                 module_id: module_id_from_name(&merged.module_name),
                 symbol_id: symbol_id_from_name(&merged.module_name, SymbolScope::Module, &name),
-                signature_hash: 0,
+                signature_hash: signature_hash("EventEmitter"),
                 type_signature: "EventEmitter".to_string(),
                 scope: SymbolScope::Module,
             });
@@ -1242,7 +1247,8 @@ impl Runtime {
                         return Ok(value);
                     }
                 }
-                let closure = Object::new_closure_with_module(export.index, Vec::new(), module.clone());
+                let closure =
+                    Object::new_closure_with_module(export.index, Vec::new(), module.clone());
                 let gc_ptr = vm.shared_state().gc.lock().allocate(closure);
                 Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
             }

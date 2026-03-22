@@ -41,8 +41,9 @@ fn execute_bytecode(code: Vec<u8>) -> Value {
         param_count: 0,
         local_count: 4, // Reserve locals for most tests
         code,
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();

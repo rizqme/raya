@@ -196,9 +196,24 @@ impl<'a> Lowerer<'a> {
             .filter(|ty| ty.as_u32() != UNRESOLVED_TYPE_ID)
     }
 
+    pub(super) fn type_uses_runtime_handle_dispatch(&self, ty: TypeId) -> bool {
+        matches!(ty.as_u32(), MUTEX_TYPE_ID | CHANNEL_TYPE_ID)
+    }
+
     fn effective_identifier_value_type(&self, ident: &ast::Identifier, fallback: TypeId) -> TypeId {
-        self.narrowed_identifier_type_hint(ident)
-            .unwrap_or(fallback)
+        let Some(narrowed) = self.narrowed_identifier_type_hint(ident) else {
+            return fallback;
+        };
+
+        if fallback.as_u32() != UNRESOLVED_TYPE_ID
+            && fallback != narrowed
+            && self.type_uses_runtime_handle_dispatch(fallback)
+            && self.type_has_construct_signature(narrowed)
+        {
+            return fallback;
+        }
+
+        narrowed
     }
 
     fn projection_layout_u16_from_type_id(&self, ty: TypeId) -> Option<Vec<(String, u16)>> {
@@ -235,27 +250,36 @@ impl<'a> Lowerer<'a> {
         object_expr: &Expression,
     ) -> Option<Vec<(String, u16)>> {
         match object_expr {
-            Expression::Identifier(ident) => self
-                .variable_structural_projection_fields
-                .get(&ident.name)
-                .map(|layout| {
-                    layout
-                        .iter()
-                        .filter_map(|(field_name, field_idx)| {
-                            u16::try_from(*field_idx)
-                                .ok()
-                                .map(|slot| (field_name.clone(), slot))
-                        })
-                        .collect()
-                })
-                .or_else(|| {
-                    self.variable_object_type_aliases
-                        .get(&ident.name)
-                        .and_then(|alias| self.projected_structural_layout_from_alias_name(alias))
-                })
-                .or_else(|| {
-                    self.projection_layout_u16_from_type_id(self.get_expr_type(object_expr))
-                }),
+            Expression::Identifier(ident) => {
+                if self.variable_class_map.contains_key(&ident.name)
+                    || self.late_bound_object_vars.contains(&ident.name)
+                    || self.constructor_value_ctor_map.contains_key(&ident.name)
+                {
+                    return None;
+                }
+                self.variable_structural_projection_fields
+                    .get(&ident.name)
+                    .map(|layout| {
+                        layout
+                            .iter()
+                            .filter_map(|(field_name, field_idx)| {
+                                u16::try_from(*field_idx)
+                                    .ok()
+                                    .map(|slot| (field_name.clone(), slot))
+                            })
+                            .collect()
+                    })
+                    .or_else(|| {
+                        self.variable_object_type_aliases
+                            .get(&ident.name)
+                            .and_then(|alias| {
+                                self.projected_structural_layout_from_alias_name(alias)
+                            })
+                    })
+                    .or_else(|| {
+                        self.projection_layout_u16_from_type_id(self.get_expr_type(object_expr))
+                    })
+            }
             Expression::TypeCast(cast) => {
                 if self
                     .try_extract_class_from_type(&cast.target_type)
@@ -3564,13 +3588,16 @@ impl<'a> Lowerer<'a> {
                 // type as a class with declared methods — these are imported class
                 // instances from std/dependency modules that the lowerer cannot resolve
                 // statically but the checker has validated.
-                let checker_validated = {
+                let checker_validated = if let Expression::Identifier(obj_ident) = &*member.object {
+                    self.constructor_value_ctor_map
+                        .contains_key(&obj_ident.name)
+                        || {
+                            let obj_ty = self.get_expr_type(&member.object);
+                            self.type_has_checker_validated_class_members(obj_ty)
+                        }
+                } else {
                     let obj_ty = self.get_expr_type(&member.object);
-                    matches!(
-                        self.type_ctx.get(obj_ty),
-                        Some(crate::parser::types::ty::Type::Class(c))
-                            if !c.methods.is_empty() || !c.properties.is_empty()
-                    )
+                    self.type_has_checker_validated_class_members(obj_ty)
                 };
                 if !self.allow_unresolved_runtime_fallback && !checker_validated {
                     self.errors
@@ -4706,11 +4733,7 @@ impl<'a> Lowerer<'a> {
         if nominal_type_id.is_none() && receiver_requires_late_bound {
             let checker_validated = {
                 let obj_ty = self.get_expr_type(&member.object);
-                matches!(
-                    self.type_ctx.get(obj_ty),
-                    Some(crate::parser::types::ty::Type::Class(c))
-                        if !c.methods.is_empty() || !c.properties.is_empty()
-                )
+                self.type_has_checker_validated_class_members(obj_ty)
             };
             if !self.allow_unresolved_runtime_fallback && !checker_validated {
                 self.errors
@@ -5408,7 +5431,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn resolve_concrete_class_type_for_runtime_slots(
+    pub(super) fn resolve_concrete_class_type_for_runtime_slots(
         &self,
         ty_id: TypeId,
         visited: &mut FxHashSet<TypeId>,
@@ -6568,19 +6591,11 @@ impl<'a> Lowerer<'a> {
                             self.get_expr_type(&index.object),
                             &index.index,
                         ) {
-                            if self.js_this_binding_compat {
-                                self.emit(IrInstr::NativeCall {
-                                    dest: None,
-                                    native_id: crate::compiler::native_id::REFLECT_SET,
-                                    args: vec![object, idx, rhs],
-                                });
-                            } else {
-                                self.emit(IrInstr::DynSetKeyed {
-                                    object,
-                                    key: idx,
-                                    value: rhs,
-                                });
-                            }
+                            self.emit(IrInstr::DynSetKeyed {
+                                object,
+                                key: idx,
+                                value: rhs,
+                            });
                         } else {
                             self.emit(IrInstr::StoreElement {
                                 array: object,
@@ -7052,19 +7067,11 @@ impl<'a> Lowerer<'a> {
                         self.get_expr_type(&index.object),
                         &index.index,
                     ) {
-                        if self.js_this_binding_compat {
-                            self.emit(IrInstr::NativeCall {
-                                dest: None,
-                                native_id: crate::compiler::native_id::REFLECT_SET,
-                                args: vec![object, idx, value.clone()],
-                            });
-                        } else {
-                            self.emit(IrInstr::DynSetKeyed {
-                                object,
-                                key: idx,
-                                value: value.clone(),
-                            });
-                        }
+                        self.emit(IrInstr::DynSetKeyed {
+                            object,
+                            key: idx,
+                            value: value.clone(),
+                        });
                     } else {
                         self.emit(IrInstr::StoreElement {
                             array: object,
@@ -7812,11 +7819,41 @@ impl<'a> Lowerer<'a> {
                 // Shadowing is by symbol name; ensure arrow params override outer callable hints.
                 self.callable_symbol_hints.remove(&ident.name);
 
-                // Track class type for parameters with class type annotations
-                // so method calls can be statically resolved
                 if let Some(type_ann) = &param.type_annotation {
-                    if let Some(nominal_type_id) = self.try_extract_class_from_type(type_ann) {
+                    let nominal_type_id =
+                        self.resolve_param_nominal_type_from_annotation(type_ann, None, None);
+                    let runtime_bound_ctor = nominal_type_id
+                        .is_none()
+                        .then(|| self.runtime_bound_constructor_from_type_annotation(type_ann))
+                        .flatten();
+                    if nominal_type_id.is_none() && runtime_bound_ctor.is_none() {
+                        let expected_ty =
+                            self.resolve_param_type_from_annotation(type_ann, None, None);
+                        if let Some(layout) =
+                            self.structural_projection_layout_from_type_id(expected_ty)
+                        {
+                            self.variable_structural_projection_fields
+                                .insert(ident.name, layout);
+                            self.variable_class_map.remove(&ident.name);
+                        } else {
+                            self.variable_structural_projection_fields
+                                .remove(&ident.name);
+                            self.variable_class_map.remove(&ident.name);
+                        }
+                    } else {
+                        self.variable_structural_projection_fields
+                            .remove(&ident.name);
+                    }
+                    if let Some(nominal_type_id) = nominal_type_id {
                         self.variable_class_map.insert(ident.name, nominal_type_id);
+                        self.clear_late_bound_object_binding(ident.name);
+                    } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
+                        self.variable_class_map.remove(&ident.name);
+                        self.variable_structural_projection_fields
+                            .remove(&ident.name);
+                        self.mark_late_bound_object_binding(ident.name, ctor_symbol, ctor_type);
+                    } else {
+                        self.clear_late_bound_object_binding(ident.name);
                     }
                     self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                     if self.type_annotation_is_callable(type_ann) {
@@ -8234,7 +8271,10 @@ impl<'a> Lowerer<'a> {
                     || self.function_map.contains_key(&ident.name)
                     || self.class_map.contains_key(&ident.name)
                     || self.captures.iter().any(|c| c.symbol == ident.name)
-                    || self.ancestor_variables.as_ref().is_some_and(|av| av.contains_key(&ident.name))
+                    || self
+                        .ancestor_variables
+                        .as_ref()
+                        .is_some_and(|av| av.contains_key(&ident.name))
                     || self.module_var_globals.contains_key(&ident.name)
                     || self.ambient_builtin_globals.contains(name)
                     || matches!(name, "Infinity" | "NaN" | "undefined" | "arguments");
@@ -8278,6 +8318,19 @@ impl<'a> Lowerer<'a> {
         if let Expression::Identifier(ident) = &*new_expr.callee {
             // Handle built-in primitive constructors
             let name = self.interner.resolve(ident.name);
+            if name == "Object" && new_expr.arguments.is_empty() && new_expr.type_args.is_none() {
+                let object_ty = self
+                    .type_ctx
+                    .lookup_named_type("Object")
+                    .unwrap_or(TypeId::new(UNRESOLVED_TYPE_ID));
+                let object_dest = self.alloc_register(object_ty);
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(object_dest.clone()),
+                    native_id: crate::compiler::native_id::OBJECT_NEW,
+                    args: vec![],
+                });
+                return object_dest;
+            }
             if name == TC::CHANNEL_TYPE_NAME {
                 // When the Channel class definition is unavailable, lower directly to opcode IR.
                 // If the Channel class exists in this module, use normal class
@@ -9048,6 +9101,7 @@ impl<'a> Lowerer<'a> {
     /// Lower type cast expression: expr as TypeName
     fn lower_type_cast(&mut self, cast: &ast::TypeCastExpression) -> Register {
         let mut target_ty = self.resolve_type_annotation(&cast.target_type);
+        let source_ty = self.get_expr_type(&cast.object);
         if target_ty == UNRESOLVED {
             if let ast::Type::Reference(type_ref) = &cast.target_type.ty {
                 let name = self.interner.resolve(type_ref.name.name);
@@ -9148,29 +9202,47 @@ impl<'a> Lowerer<'a> {
                 .resolve_runtime_cast_kind_mask(&cast.target_type)
                 .is_none_or(|mask| mask == CAST_KIND_OBJECT)
         {
-            if let Some(shape_id) = self.structural_shape_id_from_type(target_ty) {
+            if self.type_requires_runtime_shape_cast_validation(source_ty) {
+                if let Some(shape_id) = self.structural_shape_id_from_type(target_ty) {
+                    if let Some(layout) = self.structural_slot_layout_from_type(target_ty) {
+                        let names = layout.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
+                        self.emit_structural_shape_name_registration_for_ordered_names(names);
+                    }
+                    self.emit(IrInstr::CastShape {
+                        dest: dest.clone(),
+                        object,
+                        shape_id,
+                    });
+                } else if let Some(object_min_fields_encoded) =
+                    self.resolve_runtime_object_min_fields_cast_target(&cast.target_type)
+                {
+                    self.emit(IrInstr::CastObjectMinFields {
+                        dest: dest.clone(),
+                        object,
+                        required_fields: object_min_fields_encoded & 0x1FFF,
+                    });
+                } else if let Some(kind_mask) =
+                    self.resolve_runtime_cast_kind_mask(&cast.target_type)
+                {
+                    self.emit(IrInstr::CastKindMask {
+                        dest: dest.clone(),
+                        object,
+                        expected_kind_mask: kind_mask,
+                    });
+                } else {
+                    self.emit(IrInstr::Assign {
+                        dest: dest.clone(),
+                        value: IrValue::Register(object),
+                    });
+                }
+            } else if self.structural_shape_id_from_type(target_ty).is_some() {
                 if let Some(layout) = self.structural_slot_layout_from_type(target_ty) {
                     let names = layout.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
                     self.emit_structural_shape_name_registration_for_ordered_names(names);
                 }
-                self.emit(IrInstr::CastShape {
+                self.emit(IrInstr::Assign {
                     dest: dest.clone(),
-                    object,
-                    shape_id,
-                });
-            } else if let Some(object_min_fields_encoded) =
-                self.resolve_runtime_object_min_fields_cast_target(&cast.target_type)
-            {
-                self.emit(IrInstr::CastObjectMinFields {
-                    dest: dest.clone(),
-                    object,
-                    required_fields: object_min_fields_encoded & 0x1FFF,
-                });
-            } else if let Some(kind_mask) = self.resolve_runtime_cast_kind_mask(&cast.target_type) {
-                self.emit(IrInstr::CastKindMask {
-                    dest: dest.clone(),
-                    object,
-                    expected_kind_mask: kind_mask,
+                    value: IrValue::Register(object),
                 });
             } else {
                 self.emit(IrInstr::Assign {
@@ -9842,6 +9914,33 @@ impl<'a> Lowerer<'a> {
             .is_some_and(|ty| matches!(ty, Type::Any | Type::Unknown))
     }
 
+    fn type_requires_runtime_shape_cast_validation(&self, ty_id: TypeId) -> bool {
+        use crate::parser::types::ty::Type;
+
+        match ty_id.as_u32() {
+            UNRESOLVED_TYPE_ID | UNKNOWN_TYPE_ID | JSON_TYPE_ID | JSON_OBJECT_TYPE_ID => true,
+            _ => self.type_ctx.get(ty_id).is_some_and(|ty| match ty {
+                Type::Any | Type::Unknown | Type::JSObject | Type::Json | Type::Never => true,
+                Type::Reference(reference) => self
+                    .type_ctx
+                    .lookup_named_type(&reference.name)
+                    .is_some_and(|resolved| self.type_requires_runtime_shape_cast_validation(resolved)),
+                Type::TypeVar(tv) => tv
+                    .constraint
+                    .is_some_and(|constraint| self.type_requires_runtime_shape_cast_validation(constraint)),
+                Type::Union(union) => union
+                    .members
+                    .iter()
+                    .copied()
+                    .any(|member| self.type_requires_runtime_shape_cast_validation(member)),
+                Type::Generic(generic) => {
+                    self.type_requires_runtime_shape_cast_validation(generic.base)
+                }
+                _ => false,
+            }),
+        }
+    }
+
     fn type_is_runtime_dynamic_dispatch(&self, ty_id: TypeId) -> bool {
         use crate::parser::types::ty::Type;
 
@@ -10280,6 +10379,32 @@ impl<'a> Lowerer<'a> {
                 .any(|member| self.class_type_has_async_method(member, method_name)),
             Some(Type::Generic(generic)) => {
                 self.class_type_has_async_method(generic.base, method_name)
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn type_has_checker_validated_class_members(&self, ty_id: TypeId) -> bool {
+        use crate::parser::types::ty::Type;
+
+        match self.type_ctx.get(ty_id) {
+            Some(Type::Class(class_ty)) => {
+                !class_ty.methods.is_empty() || !class_ty.properties.is_empty()
+            }
+            Some(Type::Reference(type_ref)) => self
+                .type_ctx
+                .lookup_named_type(&type_ref.name)
+                .is_some_and(|named| self.type_has_checker_validated_class_members(named)),
+            Some(Type::TypeVar(tv)) => tv.constraint.is_some_and(|constraint| {
+                self.type_has_checker_validated_class_members(constraint)
+            }),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.type_has_checker_validated_class_members(member)),
+            Some(Type::Generic(generic)) => {
+                self.type_has_checker_validated_class_members(generic.base)
             }
             _ => false,
         }
@@ -11149,9 +11274,10 @@ mod tests {
             Lowerer::new(&type_ctx, &interner).with_unresolved_runtime_fallback(false);
         let ir = lowerer.lower_module(&module);
 
-        let has_unresolved_error = lowerer.errors().iter().any(|err| {
-            err.to_string().contains("unresolved member call")
-        });
+        let has_unresolved_error = lowerer
+            .errors()
+            .iter()
+            .any(|err| err.to_string().contains("unresolved member call"));
         assert!(
             has_unresolved_error,
             "expected unresolved member call error, got: {:?}",
@@ -11185,9 +11311,10 @@ mod tests {
             Lowerer::new(&type_ctx, &interner).with_unresolved_runtime_fallback(false);
         let ir = lowerer.lower_module(&module);
 
-        let has_unresolved_error = lowerer.errors().iter().any(|err| {
-            err.to_string().contains("unresolved member property")
-        });
+        let has_unresolved_error = lowerer
+            .errors()
+            .iter()
+            .any(|err| err.to_string().contains("unresolved member property"));
         assert!(
             has_unresolved_error,
             "expected unresolved member property error, got: {:?}",

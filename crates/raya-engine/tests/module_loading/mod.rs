@@ -19,8 +19,9 @@ fn create_test_module(name: &str) -> Module {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(func);
 
     module
@@ -261,8 +262,9 @@ fn test_e2e_load_then_execute_simple() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = load_and_execute(&module).unwrap();
     assert_eq!(result, Value::i32(42));
@@ -292,8 +294,9 @@ fn test_e2e_load_then_execute_arithmetic() {
             Opcode::Imul as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = load_and_execute(&module).unwrap();
     assert_eq!(result, Value::i32(56));
@@ -335,8 +338,9 @@ fn test_e2e_load_then_execute_with_locals() {
             Opcode::Isub as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = load_and_execute(&module).unwrap();
     assert_eq!(result, Value::i32(77));
@@ -359,8 +363,9 @@ fn test_e2e_load_then_execute_with_string_constant() {
             ((idx >> 8) & 0xFF) as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = load_and_execute(&module).unwrap();
     // The returned value should be a pointer to a RayaString; check it's non-null and truthy
@@ -392,8 +397,9 @@ fn test_e2e_load_then_execute_multi_function_call() {
             Opcode::Iadd as u8, // x + 10
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     // Function 1: main
     module.functions.push(Function {
@@ -415,8 +421,9 @@ fn test_e2e_load_then_execute_multi_function_call() {
             0, // arg_count = 1, u16 LE
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = load_and_execute(&module).unwrap();
     assert_eq!(result, Value::i32(42));
@@ -434,8 +441,9 @@ fn test_registry_tracks_loaded_module() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let bytes = module.encode();
     let mut vm = Vm::new();
@@ -465,8 +473,9 @@ fn test_registry_tracks_multiple_modules() {
                 0,
                 Opcode::Return as u8,
             ],
-        
-        ..Default::default()});
+
+            ..Default::default()
+        });
         let bytes = module.encode();
         vm.load_rbin_bytes(&bytes).unwrap();
     }
@@ -490,8 +499,9 @@ fn test_registry_deduplicates_same_module() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let bytes = module.encode();
     let mut vm = Vm::new();
@@ -525,8 +535,9 @@ fn test_e2e_load_module_with_class() {
         field_count: 2,
         parent_id: None,
         methods: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     // A simple main function
     module.functions.push(Function {
@@ -534,8 +545,9 @@ fn test_e2e_load_module_with_class() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let bytes = module.encode();
     let mut vm = Vm::new();
@@ -561,8 +573,9 @@ fn test_e2e_load_module_with_class_hierarchy() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 1, 0, 0, 0, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     // Function 1: override_method (for child)
     module.functions.push(Function {
@@ -570,8 +583,9 @@ fn test_e2e_load_module_with_class_hierarchy() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 2, 0, 0, 0, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     // Function 2: main
     module.functions.push(Function {
@@ -579,8 +593,9 @@ fn test_e2e_load_module_with_class_hierarchy() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     // Class 0: Base (1 field, 1 method)
     module.classes.push(ClassDef {
@@ -592,8 +607,9 @@ fn test_e2e_load_module_with_class_hierarchy() {
             function_id: 0,
             slot: 0,
         }],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     // Class 1: Child extends Base (2 fields, overrides greet)
     module.classes.push(ClassDef {
@@ -605,8 +621,9 @@ fn test_e2e_load_module_with_class_hierarchy() {
             function_id: 1,
             slot: 0, // same vtable slot as parent
         }],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let bytes = module.encode();
     let mut vm = Vm::new();
@@ -645,8 +662,9 @@ fn test_load_rbin_file() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 99, 0, 0, 0, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     // Write to temp file
     let dir = std::env::temp_dir();
@@ -694,15 +712,17 @@ fn test_e2e_exports_survive_encode_decode() {
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     module.functions.push(Function {
         name: "main".to_string(),
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     module.exports.push(Export {
         name: "add".to_string(),
@@ -744,8 +764,9 @@ fn test_e2e_imports_survive_encode_decode() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let module_id = module_id_from_name("math");
     let symbol_id = test_symbol_id(module_id, "sqrt", 0);
@@ -789,8 +810,9 @@ fn test_e2e_constant_pool_survives_encode_decode() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let bytes = module.encode();
     let decoded = Module::decode(&bytes).expect("Decode should succeed");
@@ -816,8 +838,9 @@ fn test_e2e_snapshot_with_loaded_module() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     // VM1: execute (which registers internally), then snapshot
     let mut vm1 = Vm::new();
@@ -846,8 +869,9 @@ fn test_e2e_snapshot_file_round_trip_with_module() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 7, 0, 0, 0, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     let bytes = module.encode();
 
     let mut vm1 = Vm::new();
@@ -878,8 +902,9 @@ fn test_e2e_execute_module_without_main() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let mut vm = Vm::new();
     let result = vm.execute(&module);
@@ -898,8 +923,9 @@ fn test_e2e_version_preserved_in_encode_decode() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let bytes = module.encode();
     let decoded = Module::decode(&bytes).unwrap();
@@ -917,8 +943,9 @@ fn test_e2e_checksum_differs_for_different_modules() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 1, 0, 0, 0, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let mut m2 = Module::new("mod_b".to_string());
     m2.functions.push(Function {
@@ -926,8 +953,9 @@ fn test_e2e_checksum_differs_for_different_modules() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 2, 0, 0, 0, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let bytes1 = m1.encode();
     let bytes2 = m2.encode();

@@ -3,8 +3,8 @@
 //! Provides structured error types with source locations for reporting
 //! type checking and name binding errors.
 
-use crate::parser::Span;
 use crate::parser::types::TypeId;
+use crate::parser::Span;
 use thiserror::Error;
 
 /// Errors that can occur during name binding
@@ -146,6 +146,19 @@ pub enum CheckError {
         /// Type name
         ty: String,
         /// Location of property access
+        span: Span,
+    },
+
+    /// JS mode forbids dot-writes to undeclared fields on typed objects unless explicitly cast.
+    #[error(
+        "JsTypedDotMonkeypatchForbidden: dot write to undeclared property '{property}' on type '{ty}' requires an explicit any cast"
+    )]
+    JsTypedDotMonkeypatchForbidden {
+        /// Property name
+        property: String,
+        /// Type name
+        ty: String,
+        /// Location of assignment
         span: Span,
     },
 
@@ -464,7 +477,8 @@ impl CheckError {
             | CheckError::StrictPropertyInitialization { .. }
             | CheckError::InvalidDecorator { .. }
             | CheckError::DecoratorSignatureMismatch { .. }
-            | CheckError::DecoratorReturnMismatch { .. } => false,
+            | CheckError::DecoratorReturnMismatch { .. }
+            | CheckError::JsTypedDotMonkeypatchForbidden { .. } => false,
         }
     }
 
@@ -477,6 +491,7 @@ impl CheckError {
             CheckError::ArgumentCountMismatch { span, .. } => *span,
             CheckError::NonExhaustiveMatch { span, .. } => *span,
             CheckError::PropertyNotFound { span, .. } => *span,
+            CheckError::JsTypedDotMonkeypatchForbidden { span, .. } => *span,
             CheckError::ReturnTypeMismatch { span, .. } => *span,
             CheckError::InvalidBinaryOp { span, .. } => *span,
             CheckError::InvalidUnaryOp { span, .. } => *span,

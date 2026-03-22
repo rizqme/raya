@@ -692,7 +692,10 @@ mod tests {
         let mut object = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
         {
             let dyn_props = object.ensure_dyn_props();
-            dyn_props.insert(name_key, crate::vm::object::DynProp::data(make_string(&mut gc, "Alice")));
+            dyn_props.insert(
+                name_key,
+                crate::vm::object::DynProp::data(make_string(&mut gc, "Alice")),
+            );
             dyn_props.insert(age_key, crate::vm::object::DynProp::data(Value::f64(30.0)));
         }
         let object_ptr = gc.allocate(object);

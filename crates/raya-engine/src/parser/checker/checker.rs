@@ -4846,9 +4846,13 @@ impl<'a> TypeChecker<'a> {
                     .symbols
                     .resolve_from_scope(&type_ref.name, self.current_scope)
                     .is_some_and(|s| {
-                        if s.kind != SymbolKind::Class { return false; }
+                        if s.kind != SymbolKind::Class {
+                            return false;
+                        }
                         match self.type_ctx.get(s.ty) {
-                            Some(Type::Class(c)) => !c.properties.is_empty() || !c.methods.is_empty(),
+                            Some(Type::Class(c)) => {
+                                !c.properties.is_empty() || !c.methods.is_empty()
+                            }
                             _ => false,
                         }
                     });
@@ -4888,15 +4892,23 @@ impl<'a> TypeChecker<'a> {
         match obj_data {
             Type::Json => Some(self.type_ctx.json_type()),
             Type::Array(arr) => {
-                if !self.expr_is_es_array_index_key(index_expr) {
-                    if let Some(key) = self.string_key_from_index_expr(index_expr) {
-                        if let Some(prop_ty) = self.get_array_method_type(&key, arr.element) {
-                            return Some(prop_ty);
-                        }
-                    }
-                    return self.js_dynamic_index_value_type();
+                if self.expr_is_es_array_index_key(index_expr) {
+                    return Some(arr.element);
                 }
-                Some(arr.element)
+                if let Some(key) = self.string_key_from_index_expr(index_expr) {
+                    if let Some(prop_ty) = self.get_array_method_type(&key, arr.element) {
+                        return Some(prop_ty);
+                    }
+                }
+                if matches!(
+                    self.type_ctx.get(index_ty),
+                    Some(Type::Primitive(PrimitiveType::Number | PrimitiveType::Int))
+                        | Some(Type::NumberLiteral(_))
+                ) {
+                    Some(arr.element)
+                } else {
+                    self.js_dynamic_index_value_type()
+                }
             }
             Type::Tuple(tuple_ty) => {
                 if !self.expr_is_es_array_index_key(index_expr) {
@@ -4931,13 +4943,8 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Type::Primitive(PrimitiveType::String) | Type::StringLiteral(_) => {
-                if !self.expr_is_es_array_index_key(index_expr) {
-                    if let Some(key) = self.string_key_from_index_expr(index_expr) {
-                        if let Some(prop_ty) = self.get_string_method_type(&key) {
-                            return Some(prop_ty);
-                        }
-                    }
-                    return self.js_dynamic_index_value_type();
+                if self.expr_is_es_array_index_key(index_expr) {
+                    return Some(self.type_ctx.string_type());
                 }
                 if matches!(
                     self.type_ctx.get(index_ty),
@@ -4946,7 +4953,12 @@ impl<'a> TypeChecker<'a> {
                 ) {
                     Some(self.type_ctx.string_type())
                 } else {
-                    None
+                    if let Some(key) = self.string_key_from_index_expr(index_expr) {
+                        if let Some(prop_ty) = self.get_string_method_type(&key) {
+                            return Some(prop_ty);
+                        }
+                    }
+                    self.js_dynamic_index_value_type()
                 }
             }
             Type::Object(obj) => {
@@ -5901,13 +5913,12 @@ impl<'a> TypeChecker<'a> {
                     _ => {}
                 }
             }
-            let static_class_symbol_ty = self
-                .symbols
-                .resolve_from_scope(&class_name, self.current_scope)
+            let resolved_symbol = self.symbols.resolve_from_scope(&class_name, self.current_scope);
+            let static_class_symbol_ty = resolved_symbol
                 .filter(|symbol| symbol.kind == SymbolKind::Class)
                 .map(|symbol| symbol.ty)
                 .or_else(|| {
-                    if self.is_js_mode() {
+                    if resolved_symbol.is_none() || self.is_js_mode() {
                         self.type_ctx.lookup_named_type(&class_name)
                     } else {
                         None
@@ -5968,6 +5979,16 @@ impl<'a> TypeChecker<'a> {
                             _ => {}
                         }
                     }
+                    for prop in &class.static_properties {
+                        if prop.name == property_name {
+                            return prop.ty;
+                        }
+                    }
+                    for method in &class.static_methods {
+                        if method.name == property_name {
+                            return method.ty;
+                        }
+                    }
                     if property_name == "prototype" {
                         if self.is_js_mode() {
                             return if self.allows_dynamic_any() {
@@ -5983,16 +6004,6 @@ impl<'a> TypeChecker<'a> {
                     }
                     if property_name == "length" {
                         return self.type_ctx.number_type();
-                    }
-                    for prop in &class.static_properties {
-                        if prop.name == property_name {
-                            return prop.ty;
-                        }
-                    }
-                    for method in &class.static_methods {
-                        if method.name == property_name {
-                            return method.ty;
-                        }
                     }
                     if self.is_js_mode() {
                         return if self.allows_dynamic_any() {
@@ -6273,6 +6284,15 @@ impl<'a> TypeChecker<'a> {
                             } else {
                                 self.type_ctx.jsobject_of(object_ty)
                             };
+                        }
+                        if self.is_js_mode() {
+                            self.errors
+                                .push(CheckError::JsTypedDotMonkeypatchForbidden {
+                                    property: property_name.clone(),
+                                    ty: format!("class {}", class_to_use.name),
+                                    span: member.span,
+                                });
+                            return self.type_ctx.unknown_type();
                         }
                         // Fall through to hard error for typed class dot-writes
                     } else {
@@ -7957,7 +7977,7 @@ impl<'a> TypeChecker<'a> {
             let lhs_object_ty = self.check_expr(&member.object);
             if self.type_is_dynamic_anyish(lhs_object_ty)
                 || self.is_explicit_any_cast_expr(&member.object)
-                || self.is_js_mode()
+                || (self.is_js_mode() && self.type_uses_dynamic_js_member_fallback(lhs_object_ty))
             {
                 self.widen_identifier_with_monkeypatch_field(&member.object, &field_name, right_ty);
             }
@@ -7994,19 +8014,6 @@ impl<'a> TypeChecker<'a> {
                 .unwrap_or((self.current_scope.0, name.clone()));
             let inferred_current = self.inferred_var_types.get(&inferred_key).copied();
             let null_ty = self.type_ctx.null_type();
-            let debug_js_assign = std::env::var("RAYA_DEBUG_JS_ASSIGN").is_ok();
-            if debug_js_assign {
-                eprintln!(
-                    "[js-assign] name={} scope={} symbol_ty={} inferred_current={:?} right_ty={} is_dynamic_seed={} const={}",
-                    name,
-                    inferred_key.0,
-                    self.format_type(symbol_ty),
-                    inferred_current.map(|ty| self.format_type(ty)),
-                    self.format_type(right_ty),
-                    is_dynamic_seed,
-                    is_const
-                );
-            }
 
             // Variable has no explicit annotation (binder stores dynamic seed type).
             if is_dynamic_seed && !is_const {
@@ -8030,14 +8037,6 @@ impl<'a> TypeChecker<'a> {
                             AssignabilityContext::with_strict_mode(self.type_ctx, true);
                         if !strict_assign_ctx.is_assignable(right_ty, inferred_ty) {
                             let widened = self.join_inferred_types(inferred_ty, right_ty);
-                            if debug_js_assign {
-                                eprintln!(
-                                    "[js-assign] widening name={} from {} to {}",
-                                    name,
-                                    self.format_type(inferred_ty),
-                                    self.format_type(widened)
-                                );
-                            }
                             self.inferred_var_types
                                 .insert(inferred_key.clone(), widened);
                             target_ty = widened;
@@ -8340,12 +8339,14 @@ impl<'a> TypeChecker<'a> {
                                     self.symbols.generic_type_alias_params(&name)
                                 {
                                     if param_names.len() != resolved_args.len() {
-                                        self.push_error_soft(CheckError::InvalidTypeReferenceArity {
-                                            name: name.clone(),
-                                            expected: param_names.len(),
-                                            actual: resolved_args.len(),
-                                            span: type_ref.name.span,
-                                        });
+                                        self.push_error_soft(
+                                            CheckError::InvalidTypeReferenceArity {
+                                                name: name.clone(),
+                                                expected: param_names.len(),
+                                                actual: resolved_args.len(),
+                                                span: type_ref.name.span,
+                                            },
+                                        );
                                         return self.fallback_type(
                                             type_ref.name.span,
                                             FallbackReason::RecoverableUnsupportedExpr,

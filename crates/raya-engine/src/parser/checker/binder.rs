@@ -2768,7 +2768,10 @@ impl<'a> Binder<'a> {
             if existing.kind == SymbolKind::Function && !existing.flags.is_imported {
                 self.symbols.replace_in_scope(parent_scope_id, symbol);
             } else {
-                if let Err(err) = self.symbols.define_in_scope(parent_scope_id, symbol.clone()) {
+                if let Err(err) = self
+                    .symbols
+                    .define_in_scope(parent_scope_id, symbol.clone())
+                {
                     if self.is_js_mode() {
                         self.symbols.replace_in_scope(parent_scope_id, symbol);
                     } else {
@@ -2781,7 +2784,10 @@ impl<'a> Binder<'a> {
                 }
             }
         } else {
-            if let Err(err) = self.symbols.define_in_scope(parent_scope_id, symbol.clone()) {
+            if let Err(err) = self
+                .symbols
+                .define_in_scope(parent_scope_id, symbol.clone())
+            {
                 if self.is_js_mode() {
                     self.symbols.replace_in_scope(parent_scope_id, symbol);
                 } else {

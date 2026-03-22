@@ -50,12 +50,27 @@ pub(in crate::vm::interpreter) fn value_to_f64(v: Value) -> Result<f64, VmError>
             Ok(f64::INFINITY)
         } else if trimmed == "-Infinity" {
             Ok(f64::NEG_INFINITY)
-        } else if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
-            Ok(u64::from_str_radix(hex, 16).map(|n| n as f64).unwrap_or(f64::NAN))
-        } else if let Some(bin) = trimmed.strip_prefix("0b").or_else(|| trimmed.strip_prefix("0B")) {
-            Ok(u64::from_str_radix(bin, 2).map(|n| n as f64).unwrap_or(f64::NAN))
-        } else if let Some(oct) = trimmed.strip_prefix("0o").or_else(|| trimmed.strip_prefix("0O")) {
-            Ok(u64::from_str_radix(oct, 8).map(|n| n as f64).unwrap_or(f64::NAN))
+        } else if let Some(hex) = trimmed
+            .strip_prefix("0x")
+            .or_else(|| trimmed.strip_prefix("0X"))
+        {
+            Ok(u64::from_str_radix(hex, 16)
+                .map(|n| n as f64)
+                .unwrap_or(f64::NAN))
+        } else if let Some(bin) = trimmed
+            .strip_prefix("0b")
+            .or_else(|| trimmed.strip_prefix("0B"))
+        {
+            Ok(u64::from_str_radix(bin, 2)
+                .map(|n| n as f64)
+                .unwrap_or(f64::NAN))
+        } else if let Some(oct) = trimmed
+            .strip_prefix("0o")
+            .or_else(|| trimmed.strip_prefix("0O"))
+        {
+            Ok(u64::from_str_radix(oct, 8)
+                .map(|n| n as f64)
+                .unwrap_or(f64::NAN))
         } else {
             Ok(trimmed.parse::<f64>().unwrap_or(f64::NAN))
         }
@@ -883,7 +898,11 @@ impl<'a> Interpreter<'a> {
             if header.type_id() == std::any::TypeId::of::<Object>() {
                 let co = unsafe { &*callable.as_ptr::<Object>().unwrap().as_ptr() };
                 if let Some(ref callable_data) = co.callable {
-                    if let CallableKind::BoundNative { native_id, receiver } = &callable_data.kind {
+                    if let CallableKind::BoundNative {
+                        native_id,
+                        receiver,
+                    } = &callable_data.kind
+                    {
                         self.exec_bound_native_method_call(
                             &mut stack,
                             *receiver,
@@ -903,7 +922,9 @@ impl<'a> Interpreter<'a> {
                             &scratch_task,
                         )? {
                             Some(result) => result,
-                            None => return Err(VmError::TypeError("Value is not callable".to_string())),
+                            None => {
+                                return Err(VmError::TypeError("Value is not callable".to_string()))
+                            }
                         }
                     }
                 } else {
@@ -917,7 +938,9 @@ impl<'a> Interpreter<'a> {
                         &scratch_task,
                     )? {
                         Some(result) => result,
-                        None => return Err(VmError::TypeError("Value is not callable".to_string())),
+                        None => {
+                            return Err(VmError::TypeError("Value is not callable".to_string()))
+                        }
                     }
                 }
             } else {
@@ -1040,7 +1063,11 @@ impl<'a> Interpreter<'a> {
 
     /// Resolve a property key string to a fixed-slot index via the object's layout.
     /// This is the runtime equivalent of what LoadFieldShape does at compile time.
-    pub(in crate::vm::interpreter) fn shape_resolve_key(&self, layout_id: crate::vm::object::LayoutId, key: &str) -> Option<usize> {
+    pub(in crate::vm::interpreter) fn shape_resolve_key(
+        &self,
+        layout_id: crate::vm::object::LayoutId,
+        key: &str,
+    ) -> Option<usize> {
         // Try layout registry (covers both nominal and structural registered layouts)
         {
             let layouts = self.layouts.read();
@@ -2286,10 +2313,7 @@ impl<'a> Interpreter<'a> {
                         if func_name.ends_with("::fill") {
                             eprintln!(
                                 "[args-entry] {} arg_count={} locals_base={} args={:?}",
-                                func_name,
-                                current_arg_count,
-                                locals_base,
-                                current_args
+                                func_name, current_arg_count, locals_base, current_args
                             );
                         }
                     }

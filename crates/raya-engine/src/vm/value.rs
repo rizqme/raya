@@ -419,7 +419,9 @@ impl Value {
 
     /// Check if value is a heap-allocated string (RayaString).
     pub fn is_string(&self) -> bool {
-        if !self.is_ptr() { return false; }
+        if !self.is_ptr() {
+            return false;
+        }
         let ptr = match unsafe { self.as_ptr::<u8>() } {
             Some(p) => p,
             None => return false,
@@ -430,7 +432,9 @@ impl Value {
 
     /// Check if value is a heap-allocated array.
     pub fn is_array(&self) -> bool {
-        if !self.is_ptr() { return false; }
+        if !self.is_ptr() {
+            return false;
+        }
         let ptr = match unsafe { self.as_ptr::<u8>() } {
             Some(p) => p,
             None => return false,
@@ -441,7 +445,9 @@ impl Value {
 
     /// Check if value is a heap-allocated object (not string, not array).
     pub fn is_object(&self) -> bool {
-        if !self.is_ptr() { return false; }
+        if !self.is_ptr() {
+            return false;
+        }
         let ptr = match unsafe { self.as_ptr::<u8>() } {
             Some(p) => p,
             None => return false,
@@ -452,9 +458,12 @@ impl Value {
 
     /// Extract RayaString pointer if this is a string value.
     pub fn as_string(&self) -> Option<std::ptr::NonNull<crate::vm::object::RayaString>> {
-        if !self.is_ptr() { return None; }
+        if !self.is_ptr() {
+            return None;
+        }
         let ptr = unsafe { self.as_ptr::<crate::vm::object::RayaString>() }?;
-        let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr() as *const u8) };
+        let header =
+            unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr() as *const u8) };
         if header.type_id() != std::any::TypeId::of::<crate::vm::object::RayaString>() {
             return None;
         }
@@ -463,9 +472,12 @@ impl Value {
 
     /// Extract array ref if this is an Array.
     pub fn as_array(&self) -> Option<std::ptr::NonNull<crate::vm::object::Array>> {
-        if !self.is_ptr() { return None; }
+        if !self.is_ptr() {
+            return None;
+        }
         let ptr = unsafe { self.as_ptr::<crate::vm::object::Array>() }?;
-        let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr() as *const u8) };
+        let header =
+            unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr() as *const u8) };
         if header.type_id() != std::any::TypeId::of::<crate::vm::object::Array>() {
             return None;
         }
@@ -481,12 +493,15 @@ impl Value {
     /// Checks shape-based fields (via global layout registry) and dynamic properties.
     /// Returns undefined if not found or not an object.
     pub fn get_property(&self, key: &str) -> Value {
-        if !self.is_ptr() { return Value::undefined(); }
+        if !self.is_ptr() {
+            return Value::undefined();
+        }
         let ptr = match unsafe { self.as_ptr::<crate::vm::object::Object>() } {
             Some(p) => p,
             None => return Value::undefined(),
         };
-        let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr() as *const u8) };
+        let header =
+            unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(ptr.as_ptr() as *const u8) };
         if header.type_id() != std::any::TypeId::of::<crate::vm::object::Object>() {
             return Value::undefined();
         }
@@ -602,7 +617,11 @@ impl fmt::Display for Value {
             if v.is_nan() {
                 write!(f, "NaN")
             } else if v.is_infinite() {
-                if v.is_sign_positive() { write!(f, "Infinity") } else { write!(f, "-Infinity") }
+                if v.is_sign_positive() {
+                    write!(f, "Infinity")
+                } else {
+                    write!(f, "-Infinity")
+                }
             } else {
                 write!(f, "{}", v)
             }

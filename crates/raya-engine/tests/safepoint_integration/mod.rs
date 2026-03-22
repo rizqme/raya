@@ -43,8 +43,9 @@ fn test_safepoint_no_pause() {
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let mut vm = Vm::new();
     let result = vm.execute(&module).unwrap();
@@ -77,8 +78,9 @@ fn test_safepoint_polls_during_execution() {
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = vm.execute(&module).unwrap();
     assert_eq!(result, Value::i32(5));
@@ -128,8 +130,9 @@ fn test_safepoint_on_allocation() {
             0,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = vm.execute(&module).unwrap();
     assert_eq!(result, Value::i32(42));
@@ -170,8 +173,9 @@ fn test_safepoint_on_array_allocation() {
             Opcode::ArrayLen as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = vm.execute(&module).unwrap();
     assert_eq!(result, Value::i32(5));
@@ -226,8 +230,9 @@ fn test_safepoint_pause_and_resume() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     // Execute without pause - should work fine
     let result = vm.execute(&module).unwrap();
@@ -254,8 +259,9 @@ fn test_statistics_tracking() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     vm.execute(&module).unwrap();
 
@@ -323,8 +329,9 @@ fn test_loop_back_edge_safepoints() {
             Opcode::Isub as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = vm.execute(&module).unwrap();
     assert_eq!(result, Value::i32(4));
@@ -353,8 +360,9 @@ fn test_safepoint_on_object_literal() {
         param_count: 0,
         local_count: 0,
         code,
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = vm.execute(&module).unwrap();
     assert_eq!(result, Value::i32(10));
@@ -410,8 +418,9 @@ fn test_safepoint_on_array_literal() {
             Opcode::LoadElem as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = vm.execute(&module).unwrap();
     assert_eq!(result, Value::i32(20));
@@ -510,8 +519,9 @@ fn test_safepoint_at_all_allocation_types() {
         param_count: 0,
         local_count: 4,
         code,
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = vm.execute(&module).unwrap();
     assert_eq!(result, Value::i32(42));
@@ -554,8 +564,9 @@ fn test_safepoint_integration_with_gc() {
             0,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let result = vm.execute(&module).unwrap();
     assert_eq!(result, Value::i32(1));

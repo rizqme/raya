@@ -147,7 +147,13 @@ fn apply_typeof_guard(
         "boolean" => ctx.boolean_type(),
         "function" => return narrow_by_predicate(ctx, ty, negated, is_function_type),
         "object" => return narrow_by_predicate(ctx, ty, negated, is_object_like_type),
-        "undefined" => return if negated { Some(ty) } else { Some(ctx.null_type()) },
+        "undefined" => {
+            return if negated {
+                Some(ty)
+            } else {
+                Some(ctx.null_type())
+            }
+        }
         _ => return Some(ty), // Unknown type name, no narrowing
     };
 

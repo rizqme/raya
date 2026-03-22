@@ -85,11 +85,31 @@ fn test_parse_and_access_array() {
     assert_eq!(arr.len(), 5, "Array should have 5 elements");
 
     // Test array indexing
-    assert_eq!(arr.get(0).unwrap().as_number(), Some(10.0), "arr[0] should be 10");
-    assert_eq!(arr.get(1).unwrap().as_number(), Some(20.0), "arr[1] should be 20");
-    assert_eq!(arr.get(2).unwrap().as_number(), Some(30.0), "arr[2] should be 30");
-    assert_eq!(arr.get(3).unwrap().as_number(), Some(40.0), "arr[3] should be 40");
-    assert_eq!(arr.get(4).unwrap().as_number(), Some(50.0), "arr[4] should be 50");
+    assert_eq!(
+        arr.get(0).unwrap().as_number(),
+        Some(10.0),
+        "arr[0] should be 10"
+    );
+    assert_eq!(
+        arr.get(1).unwrap().as_number(),
+        Some(20.0),
+        "arr[1] should be 20"
+    );
+    assert_eq!(
+        arr.get(2).unwrap().as_number(),
+        Some(30.0),
+        "arr[2] should be 30"
+    );
+    assert_eq!(
+        arr.get(3).unwrap().as_number(),
+        Some(40.0),
+        "arr[3] should be 40"
+    );
+    assert_eq!(
+        arr.get(4).unwrap().as_number(),
+        Some(50.0),
+        "arr[4] should be 50"
+    );
 }
 
 #[test]

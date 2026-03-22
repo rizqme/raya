@@ -22,8 +22,9 @@ fn create_module_with_code(code: Vec<u8>) -> Module {
         param_count: 0,
         local_count: 3, // Increased to 3 for tests that need more locals
         code,
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     module
 }
 

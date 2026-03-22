@@ -43,7 +43,11 @@ impl<'a> Interpreter<'a> {
                         if f.is_nan() {
                             "NaN".to_string()
                         } else if f.is_infinite() {
-                            if f.is_sign_positive() { "Infinity".to_string() } else { "-Infinity".to_string() }
+                            if f.is_sign_positive() {
+                                "Infinity".to_string()
+                            } else {
+                                "-Infinity".to_string()
+                            }
                         } else if f.fract() == 0.0 && f.abs() < 1e15 {
                             (f as i64).to_string()
                         } else {
@@ -214,7 +218,11 @@ impl<'a> Interpreter<'a> {
                     if f.is_nan() {
                         "NaN".to_string()
                     } else if f.is_infinite() {
-                        if f.is_sign_positive() { "Infinity".to_string() } else { "-Infinity".to_string() }
+                        if f.is_sign_positive() {
+                            "Infinity".to_string()
+                        } else {
+                            "-Infinity".to_string()
+                        }
                     } else if f.fract() == 0.0 && f.abs() < 1e15 {
                         (f as i64).to_string()
                     } else {

@@ -347,7 +347,6 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
 
         // Debugger has no operands
         Opcode::Debugger => 0,
-
     }
 }
 
@@ -543,7 +542,6 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
 
         // BindMethod: pop object, push bound_method
         Opcode::BindMethod => (1, 1),
-
     }
 }
 

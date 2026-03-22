@@ -104,7 +104,7 @@ fn parse_array_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
         // Check for default value: pattern = expr
         let default = if parser.check(&Token::Equal) {
             parser.advance();
-            Some(super::expr::parse_expression(parser)?)
+            Some(super::expr::parse_assignment_expression(parser)?)
         } else {
             None
         };
@@ -193,7 +193,7 @@ fn parse_object_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
         // Check for default value: { x = 10 } or { x: y = 10 }
         let default = if parser.check(&Token::Equal) {
             parser.advance();
-            Some(super::expr::parse_expression(parser)?)
+            Some(super::expr::parse_assignment_expression(parser)?)
         } else {
             None
         };

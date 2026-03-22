@@ -15,9 +15,7 @@ use crate::vm::interpreter::{
 };
 use crate::vm::native_handler::NativeHandler;
 use crate::vm::native_registry::ResolvedNatives;
-use crate::vm::object::{
-    global_layout_names, DynProp, Object, RayaString,
-};
+use crate::vm::object::{global_layout_names, DynProp, Object, RayaString};
 use crate::vm::reflect::ClassMetadataRegistry;
 use crate::vm::scheduler::IoSubmission;
 use crate::vm::scheduler::{Task, TaskId};
@@ -234,8 +232,7 @@ fn jit_build_shape_slot_map_for_object(
         }
         let key = unsafe { &*bridge.prop_keys }.write().intern(name);
         object.dyn_props().and_then(|dp| {
-            dp
-                .contains_key(key)
+            dp.contains_key(key)
                 .then_some(StructuralSlotBinding::Dynamic(key))
         })
     };

@@ -101,7 +101,9 @@ impl<'a> Interpreter<'a> {
                             let mut method_args = Vec::with_capacity(args.len() + 1);
                             method_args.push(*receiver);
                             method_args.extend(args);
-                            let target_module = obj.callable_module().unwrap_or_else(|| task.current_module());
+                            let target_module = obj
+                                .callable_module()
+                                .unwrap_or_else(|| task.current_module());
                             Arc::new(Task::with_args(
                                 *func_id,
                                 target_module,
@@ -112,7 +114,9 @@ impl<'a> Interpreter<'a> {
                         CallableKind::Closure { func_id } => {
                             // Don't prepend captures to args - the closure body uses LoadCaptured
                             // which reads from the Closure object via task.current_closure()
-                            let target_module = obj.callable_module().unwrap_or_else(|| task.current_module());
+                            let target_module = obj
+                                .callable_module()
+                                .unwrap_or_else(|| task.current_module());
                             let new_task = Arc::new(Task::with_args(
                                 *func_id,
                                 target_module,

@@ -1,6 +1,7 @@
 //! Type operation opcode handlers: nominal checks/casts, generic casts, dynamic keyed access,
 //! and static/runtime type helpers.
 
+use super::native::{checked_callable_ptr, checked_object_ptr};
 use crate::compiler::native_id;
 use crate::compiler::type_registry::TypeRegistry;
 use crate::compiler::{Module, Opcode};
@@ -10,10 +11,9 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::{Interpreter, ReturnAction};
 use crate::vm::object::{
-    layout_id_from_ordered_names, Array, CallableKind, DynProp,
-    ChannelObject, MapObject, Object, RayaString, RegExpObject, SetObject, TypeHandle,
+    layout_id_from_ordered_names, Array, CallableKind, ChannelObject, DynProp, MapObject, Object,
+    RayaString, RegExpObject, SetObject, TypeHandle,
 };
-use super::native::{checked_object_ptr, checked_callable_ptr};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -376,12 +376,20 @@ impl<'a> Interpreter<'a> {
                         let classes = self.classes.read();
                         let class = classes.get_class(ntid)?;
                         let module = class.module.as_ref()?;
-                        module.classes.iter()
+                        module
+                            .classes
+                            .iter()
                             .find(|cd| cd.name == class.name)
-                            .and_then(|cd| cd.methods.iter().find_map(|m| {
-                                let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
-                                if m.name == key || plain == key { Some(m.slot) } else { None }
-                            }))
+                            .and_then(|cd| {
+                                cd.methods.iter().find_map(|m| {
+                                    let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
+                                    if m.name == key || plain == key {
+                                        Some(m.slot)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
                     })
             }) {
                 if let Ok(value) = self.bound_method_value_for_slot(target, method_slot) {
@@ -393,9 +401,8 @@ impl<'a> Interpreter<'a> {
         if let Some(native_id) = builtin_handle_native_method_id(target, key) {
             let method = Object::new_bound_native(target, native_id);
             let method_ptr = self.gc.lock().allocate(method);
-            let val = unsafe {
-                Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap())
-            };
+            let val =
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) };
             return Some(val);
         }
         // Protocol aliases
@@ -1158,7 +1165,11 @@ impl<'a> Interpreter<'a> {
 
                 // ES spec: TypeError when accessing properties on null or undefined
                 if obj_val.is_null() || obj_val.is_undefined() {
-                    let type_name = if obj_val.is_null() { "null" } else { "undefined" };
+                    let type_name = if obj_val.is_null() {
+                        "null"
+                    } else {
+                        "undefined"
+                    };
                     let key_display = key_str.as_deref().unwrap_or("<computed>");
                     return OpcodeResult::Error(VmError::TypeError(format!(
                         "Cannot read properties of {} (reading '{}')",
@@ -1313,12 +1324,19 @@ impl<'a> Interpreter<'a> {
                         // Accessor descriptor check (existing descriptor_accessor path)
                         if let Some(getter) = self.descriptor_accessor(actual_obj, key_str, "get") {
                             match self.callable_frame_for_value(
-                                getter, stack, &[], None, ReturnAction::PushReturnValue, module, task,
+                                getter,
+                                stack,
+                                &[],
+                                None,
+                                ReturnAction::PushReturnValue,
+                                module,
+                                task,
                             ) {
                                 Ok(Some(frame)) => return frame,
                                 Ok(None) => {
                                     return OpcodeResult::Error(VmError::TypeError(format!(
-                                        "Property '{}' getter is not callable", key_str
+                                        "Property '{}' getter is not callable",
+                                        key_str
                                     )));
                                 }
                                 Err(e) => return OpcodeResult::Error(e),
@@ -1326,7 +1344,9 @@ impl<'a> Interpreter<'a> {
                         }
 
                         // 1. Shape lookup: resolve key -> slot index via layout
-                        if let Some(slot_idx) = self.shape_resolve_key(obj.header.layout_id, key_str) {
+                        if let Some(slot_idx) =
+                            self.shape_resolve_key(obj.header.layout_id, key_str)
+                        {
                             if slot_idx < obj.fields.len() {
                                 // Check accessor in slot_meta
                                 if let Some(meta) = obj.slot_meta.get(slot_idx) {
@@ -1346,32 +1366,40 @@ impl<'a> Interpreter<'a> {
                             }
                         }
                         // 2. Method slot lookup (class vtable)
-                        else if let Some(method_slot) = obj.nominal_type_id_usize().and_then(|nominal_type_id| {
-                            let class_metadata = self.class_metadata.read();
-                            class_metadata
-                                .get(nominal_type_id)
-                                .and_then(|meta| meta.get_method_index(key_str))
-                                .or_else(|| {
-                                    drop(class_metadata);
-                                    let classes = self.classes.read();
-                                    let class = classes.get_class(nominal_type_id)?;
-                                    let module = class.module.as_ref()?;
-                                    module
-                                        .classes
-                                        .iter()
-                                        .find(|class_def| class_def.name == class.name)
-                                        .and_then(|class_def| {
-                                            class_def.methods.iter().find_map(|method| {
-                                                let plain_name = method.name.rsplit("::").next().unwrap_or(method.name.as_str());
-                                                if method.name == key_str || plain_name == key_str {
-                                                    Some(method.slot)
-                                                } else {
-                                                    None
-                                                }
+                        else if let Some(method_slot) =
+                            obj.nominal_type_id_usize().and_then(|nominal_type_id| {
+                                let class_metadata = self.class_metadata.read();
+                                class_metadata
+                                    .get(nominal_type_id)
+                                    .and_then(|meta| meta.get_method_index(key_str))
+                                    .or_else(|| {
+                                        drop(class_metadata);
+                                        let classes = self.classes.read();
+                                        let class = classes.get_class(nominal_type_id)?;
+                                        let module = class.module.as_ref()?;
+                                        module
+                                            .classes
+                                            .iter()
+                                            .find(|class_def| class_def.name == class.name)
+                                            .and_then(|class_def| {
+                                                class_def.methods.iter().find_map(|method| {
+                                                    let plain_name = method
+                                                        .name
+                                                        .rsplit("::")
+                                                        .next()
+                                                        .unwrap_or(method.name.as_str());
+                                                    if method.name == key_str
+                                                        || plain_name == key_str
+                                                    {
+                                                        Some(method.slot)
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
                                             })
-                                        })
-                                })
-                        }) {
+                                    })
+                            })
+                        {
                             match self.bound_method_value_for_slot(obj_val, method_slot) {
                                 Ok(value) => value,
                                 Err(_) => Value::undefined(),
@@ -1380,7 +1408,9 @@ impl<'a> Interpreter<'a> {
                         // 3. Dynamic fallback: check dyn_props
                         else {
                             let key_id = self.intern_prop_key(key_str);
-                            if let Some(prop) = obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id)) {
+                            if let Some(prop) =
+                                obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id))
+                            {
                                 if prop.is_accessor {
                                     // Accessor in dyn_props — invoke getter (later)
                                     Value::undefined()
@@ -1420,7 +1450,8 @@ impl<'a> Interpreter<'a> {
                                         if let Some(native_id) =
                                             builtin_handle_native_method_id(obj_val, key_str)
                                         {
-                                            let method = Object::new_bound_native(obj_val, native_id);
+                                            let method =
+                                                Object::new_bound_native(obj_val, native_id);
                                             let method_ptr = self.gc.lock().allocate(method);
                                             unsafe {
                                                 Value::from_ptr(
@@ -1476,7 +1507,11 @@ impl<'a> Interpreter<'a> {
 
                 // ES spec: TypeError when setting properties on null or undefined
                 if obj_val.is_null() || obj_val.is_undefined() {
-                    let type_name = if obj_val.is_null() { "null" } else { "undefined" };
+                    let type_name = if obj_val.is_null() {
+                        "null"
+                    } else {
+                        "undefined"
+                    };
                     let key_display = key_str.as_deref().unwrap_or("<computed>");
                     return OpcodeResult::Error(VmError::TypeError(format!(
                         "Cannot set properties of {} (setting '{}')",
@@ -1622,82 +1657,25 @@ impl<'a> Interpreter<'a> {
                                 "DynSetKeyed target must be an object".to_string(),
                             ));
                         };
-                        if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
-                            eprintln!(
-                                "[dyn-set] target={:#x} key={} callable={}",
-                                obj_val.raw(),
-                                key_str,
-                                Self::is_callable_value(obj_val)
-                            );
-                        }
-                        if !Self::is_callable_value(obj_val) {
+                        if !obj_val.is_ptr() {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "DynSetKeyed target must be an object".to_string(),
                             ));
                         }
-                        if let Some((writable, _, _)) =
-                            self.callable_virtual_property_descriptor(obj_val, key_str)
-                        {
-                            if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
-                                eprintln!(
-                                    "[dyn-set] target={:#x} key={} virtual-desc writable={}",
-                                    obj_val.raw(),
-                                    key_str,
-                                    writable
-                                );
-                            }
-                            if !writable {
-                                if let Err(e) = stack.push(value) {
-                                    return OpcodeResult::Error(e);
-                                }
-                                return OpcodeResult::Continue;
-                            }
-                        }
-                        if let Some(setter) = self.descriptor_accessor(obj_val, key_str, "set") {
-                            match self.callable_frame_for_value(
-                                setter,
-                                stack,
-                                &[value],
-                                Some(obj_val),
-                                ReturnAction::Discard,
-                                module,
-                                task,
-                            ) {
-                                Ok(Some(frame)) => return frame,
-                                Ok(None) => {
-                                    return OpcodeResult::Error(VmError::TypeError(format!(
-                                        "Property '{}' setter is not callable",
-                                        key_str
-                                    )));
-                                }
-                                Err(e) => return OpcodeResult::Error(e),
-                            }
-                        }
-                        if self.descriptor_accessor(obj_val, key_str, "get").is_some()
-                            && !self.is_field_writable(obj_val, key_str)
-                        {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot set property '{}' which has only a getter",
-                                key_str
-                            )));
-                        }
-                        if !self.is_field_writable(obj_val, key_str) {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot assign to non-writable property '{}'",
-                                key_str
-                            )));
-                        }
-                        if let Err(error) = self.define_data_property_on_target(
-                            obj_val, key_str, value, true, true, true,
+                        match self.set_property_value_via_js_semantics(
+                            obj_val, key_str, value, obj_val, task, module,
                         ) {
-                            return OpcodeResult::Error(error);
+                            Ok(true) => {}
+                            Ok(false) => {
+                                return OpcodeResult::Error(VmError::TypeError(format!(
+                                    "Cannot assign to non-writable property '{}'",
+                                    key_str
+                                )));
+                            }
+                            Err(error) => return OpcodeResult::Error(error),
                         }
-                        if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
-                            eprintln!(
-                                "[dyn-set] target={:#x} key={} define-data:done",
-                                obj_val.raw(),
-                                key_str
-                            );
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
                         }
                     }
                 }
@@ -1837,8 +1815,12 @@ impl<'a> Interpreter<'a> {
                     "object" // ES spec: typeof null === "object"
                 } else if value.is_bool() {
                     "boolean"
-                } else if value.is_i32() || value.is_f64() || value.is_f32()
-                    || value.is_u32() || value.is_i64() || value.is_u64()
+                } else if value.is_i32()
+                    || value.is_f64()
+                    || value.is_f32()
+                    || value.is_u32()
+                    || value.is_i64()
+                    || value.is_u64()
                 {
                     "number"
                 } else if self.callable_function_info(value).is_some() {
@@ -1851,8 +1833,7 @@ impl<'a> Interpreter<'a> {
                     let header = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
                     if header.type_id() == std::any::TypeId::of::<RayaString>() {
                         "string"
-                    } else if header.type_id() == std::any::TypeId::of::<TypeHandle>()
-                    {
+                    } else if header.type_id() == std::any::TypeId::of::<TypeHandle>() {
                         "function"
                     } else if header.type_id() == std::any::TypeId::of::<Object>() {
                         if let Some(obj_ptr) = unsafe { value.as_ptr::<Object>() } {

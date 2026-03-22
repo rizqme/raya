@@ -635,8 +635,7 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 let search_str = self.js_function_argument_to_string(args[0], task, module)?;
-                let replacement_str =
-                    self.js_function_argument_to_string(args[1], task, module)?;
+                let replacement_str = self.js_function_argument_to_string(args[1], task, module)?;
                 let result = s.replacen(&search_str, &replacement_str, 1);
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);

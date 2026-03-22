@@ -1,4 +1,4 @@
-import { HttpServer } from "std:http";
+import { HttpRequest, HttpServer } from "std:http";
 import env from "std:env";
 import fs from "std:fs";
 import path from "std:path";
@@ -27,37 +27,40 @@ const addr = server.localAddr();
 markReady(root, addr);
 logger.info(`server listening on ${addr}`);
 
-while (true) {
-    const req = server.accept();
-    AppCommon.appendRequestLog(root, req);
+async function runServer(): Promise<void> {
+    await server.serve(async (req: HttpRequest, srv: HttpServer): Promise<void> => {
+        AppCommon.appendRequestLog(root, req);
 
-    if (req.path() == "/shutdown") {
-        server.respondWithHeaders(req._handle, 200, ["Content-Type", "text/plain"], "bye");
-        server.close();
-        break;
-    }
-
-    if (req.path() == "/health") {
-        const body = AppCommon.computeHealth(root);
-        server.respondWithHeaders(req._handle, 200, ["Content-Type", "text/plain"], body);
-        continue;
-    }
-
-    if (req.path() == "/diag") {
-        const body = AppCommon.computeDiagnostics(root, req.query());
-        server.respondWithHeaders(req._handle, 200, ["Content-Type", "application/json"], body);
-        continue;
-    }
-
-    if (req.path() == "/echo") {
-        if (req.method() == "POST") {
-            const body = AppCommon.computeEcho(req);
-            server.respondWithHeaders(req._handle, 201, ["Content-Type", "application/json"], body);
-        } else {
-            server.respondWithHeaders(req._handle, 405, ["Content-Type", "text/plain"], "method-not-allowed");
+        if (req.path() == "/shutdown") {
+            srv.respondWithHeaders(req._handle, 200, ["Content-Type", "text/plain"], "bye");
+            srv.close();
+            return;
         }
-        continue;
-    }
 
-    server.respondWithHeaders(req._handle, 404, ["Content-Type", "text/plain"], "not-found");
+        if (req.path() == "/health") {
+            const body = AppCommon.computeHealth(root);
+            srv.respondWithHeaders(req._handle, 200, ["Content-Type", "text/plain"], body);
+            return;
+        }
+
+        if (req.path() == "/diag") {
+            const body = AppCommon.computeDiagnostics(root, req.query());
+            srv.respondWithHeaders(req._handle, 200, ["Content-Type", "application/json"], body);
+            return;
+        }
+
+        if (req.path() == "/echo") {
+            if (req.method() == "POST") {
+                const body = AppCommon.computeEcho(req);
+                srv.respondWithHeaders(req._handle, 201, ["Content-Type", "application/json"], body);
+            } else {
+                srv.respondWithHeaders(req._handle, 405, ["Content-Type", "text/plain"], "method-not-allowed");
+            }
+            return;
+        }
+
+        srv.respondWithHeaders(req._handle, 404, ["Content-Type", "text/plain"], "not-found");
+    });
 }
+
+await runServer();

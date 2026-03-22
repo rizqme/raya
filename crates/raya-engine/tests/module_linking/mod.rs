@@ -25,8 +25,9 @@ fn create_module(name: &str) -> Module {
             mono_debug_map: vec![],
             structural_shapes: vec![],
             structural_layouts: vec![],
-        
-        ..Default::default()},
+
+            ..Default::default()
+        },
         exports: vec![],
         imports: vec![],
         checksum: [0; 32],
@@ -99,8 +100,9 @@ fn test_link_simple_import() {
         param_count: 1,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     logging.exports.push(make_export("logging", "info", 0));
 
     linker.add_module(Arc::new(logging)).unwrap();
@@ -125,8 +127,9 @@ fn test_link_with_version_specifier() {
         param_count: 0,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     utils.exports.push(make_export("utils", "helper", 0));
 
     linker.add_module(Arc::new(utils)).unwrap();
@@ -149,8 +152,9 @@ fn test_link_scoped_package() {
         param_count: 0,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     org_package
         .exports
         .push(make_export("@org/package", "doWork", 0));
@@ -199,15 +203,17 @@ fn test_link_multiple_imports() {
         param_count: 2,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     utils.functions.push(Function {
         name: "multiply".to_string(),
         param_count: 2,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     utils.exports.push(make_export("utils", "add", 0));
     utils.exports.push(make_export("utils", "multiply", 1));
 
@@ -234,8 +240,9 @@ fn test_link_with_alias() {
         param_count: 1,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     utils.exports.push(make_export("utils", "log", 0));
 
     linker.add_module(Arc::new(utils)).unwrap();
@@ -259,15 +266,17 @@ fn test_link_prefers_symbol_id_over_name() {
         param_count: 0,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     dup.functions.push(Function {
         name: "f1".to_string(),
         param_count: 0,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     let module_id = module_id_from_name("dup_mod");
     let symbol_id_0 = test_symbol_id(module_id, "dup", 0);
     let symbol_id_1 = test_symbol_id(module_id, "dup", 1);
@@ -322,8 +331,9 @@ fn test_link_type_symbol_mismatch() {
         param_count: 0,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     let module_id = module_id_from_name("typed");
     let symbol_id = test_symbol_id(module_id, "value", 0);
     typed.exports.push(Export {
@@ -370,8 +380,9 @@ fn test_link_type_hash_diff_but_structurally_assignable() {
         param_count: 0,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     let module_id = module_id_from_name("typed");
     let symbol_id = test_symbol_id(module_id, "value", 0);
     typed.exports.push(Export {
@@ -411,8 +422,9 @@ fn test_link_scope_mismatch() {
         param_count: 0,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let module_id = module_id_from_name("scoped");
     let symbol_id = test_symbol_id(module_id, "global_like", 0);
@@ -454,15 +466,17 @@ fn test_add_module_rejects_duplicate_symbol_ids() {
         param_count: 0,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
     module.functions.push(Function {
         name: "f1".to_string(),
         param_count: 0,
         local_count: 0,
         code: vec![],
-    
-    ..Default::default()});
+
+        ..Default::default()
+    });
 
     let module_id = module_id_from_name("dup_ids");
     let symbol_id = test_symbol_id(module_id, "same", 0);

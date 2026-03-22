@@ -133,8 +133,7 @@ impl<'a> Interpreter<'a> {
 
         if Self::ptr_is_raya_string(left_primitive) && Self::ptr_is_raya_string(right_primitive) {
             let left_ptr = unsafe { left_primitive.as_ptr::<RayaString>() }.expect("string ptr");
-            let right_ptr =
-                unsafe { right_primitive.as_ptr::<RayaString>() }.expect("string ptr");
+            let right_ptr = unsafe { right_primitive.as_ptr::<RayaString>() }.expect("string ptr");
             let left_str = unsafe { &*left_ptr.as_ptr() };
             let right_str = unsafe { &*right_ptr.as_ptr() };
             return Ok(Some(left_str.data < right_str.data));
@@ -167,10 +166,12 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<bool, VmError> {
-        Ok(match self.js_abstract_relational_compare(right, left, false, task, module)? {
-            Some(value) => !value,
-            None => false,
-        })
+        Ok(
+            match self.js_abstract_relational_compare(right, left, false, task, module)? {
+                Some(value) => !value,
+                None => false,
+            },
+        )
     }
 
     fn js_greater_than(
@@ -192,10 +193,12 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<bool, VmError> {
-        Ok(match self.js_abstract_relational_compare(left, right, true, task, module)? {
-            Some(value) => !value,
-            None => false,
-        })
+        Ok(
+            match self.js_abstract_relational_compare(left, right, true, task, module)? {
+                Some(value) => !value,
+                None => false,
+            },
+        )
     }
 
     pub(in crate::vm::interpreter) fn exec_comparison_ops(

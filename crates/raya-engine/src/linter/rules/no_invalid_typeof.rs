@@ -20,7 +20,13 @@ static META: RuleMeta = RuleMeta {
 
 /// Valid strings that the `typeof` operator can return (ES spec).
 const VALID_TYPEOF_RESULTS: &[&str] = &[
-    "number", "string", "boolean", "function", "object", "undefined", "symbol",
+    "number",
+    "string",
+    "boolean",
+    "function",
+    "object",
+    "undefined",
+    "symbol",
 ];
 
 impl LintRule for NoInvalidTypeof {
@@ -116,15 +122,24 @@ fn suggest_replacement(value: &str) -> (Option<String>, Option<String>) {
     match value {
         "int" => (
             Some("\"number\"".to_string()),
-            Some("Did you mean \"number\"? typeof always returns \"number\" for numeric values.".to_string()),
+            Some(
+                "Did you mean \"number\"? typeof always returns \"number\" for numeric values."
+                    .to_string(),
+            ),
         ),
         "float" => (
             Some("\"number\"".to_string()),
-            Some("Did you mean \"number\"? typeof always returns \"number\" for numeric values.".to_string()),
+            Some(
+                "Did you mean \"number\"? typeof always returns \"number\" for numeric values."
+                    .to_string(),
+            ),
         ),
         "null" => (
             Some("\"object\"".to_string()),
-            Some("typeof null === \"object\" per ES spec. Use `x === null` to check for null.".to_string()),
+            Some(
+                "typeof null === \"object\" per ES spec. Use `x === null` to check for null."
+                    .to_string(),
+            ),
         ),
         "bigint" => (None, Some("Raya has no bigint type".to_string())),
         _ => (None, None),

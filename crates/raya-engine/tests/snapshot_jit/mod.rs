@@ -36,8 +36,9 @@ fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module 
             param_count,
             local_count,
             code,
-        
-        ..Default::default()}],
+
+            ..Default::default()
+        }],
         classes: vec![],
         metadata: Metadata {
             name: "test_module".to_string(),
@@ -47,8 +48,9 @@ fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module 
             mono_debug_map: vec![],
             structural_shapes: vec![],
             structural_layouts: vec![],
-        
-        ..Default::default()},
+
+            ..Default::default()
+        },
         exports: vec![],
         imports: vec![],
         checksum: [0; 32],

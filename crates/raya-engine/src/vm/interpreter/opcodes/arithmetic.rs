@@ -13,12 +13,7 @@ impl<'a> Interpreter<'a> {
     /// Unlike the free `value_to_f64`, this can invoke valueOf/Symbol.toPrimitive
     /// on heap objects.
     #[inline]
-    fn to_number(
-        &mut self,
-        v: Value,
-        task: &Arc<Task>,
-        module: &Module,
-    ) -> Result<f64, VmError> {
+    fn to_number(&mut self, v: Value, task: &Arc<Task>, module: &Module) -> Result<f64, VmError> {
         // Fast path: primitives don't need ToPrimitive
         if v.as_f64().is_some()
             || v.as_i32().is_some()

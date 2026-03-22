@@ -178,6 +178,13 @@ impl Diagnostic {
             .with_code(error_code(error))
             .with_primary_label(file_id, *span, "property not found"),
 
+            JsTypedDotMonkeypatchForbidden { property, ty, span } => Diagnostic::error(format!(
+                "Dot write to '{}' on typed '{}' requires an explicit any cast",
+                property, ty
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "typed dot monkeypatch is not allowed"),
+
             NonExhaustiveMatch { missing, span } => {
                 let mut diag = Diagnostic::error("Match is not exhaustive")
                     .with_code(error_code(error))
@@ -623,6 +630,7 @@ pub fn error_code(error: &CheckError) -> ErrorCode {
         NotCallable { .. } => ErrorCode("E2004"),
         ArgumentCountMismatch { .. } => ErrorCode("E2005"),
         PropertyNotFound { .. } => ErrorCode("E2006"),
+        JsTypedDotMonkeypatchForbidden { .. } => ErrorCode("E2031"),
         NonExhaustiveMatch { .. } => ErrorCode("E2007"),
         ReturnTypeMismatch { .. } => ErrorCode("E2008"),
         InvalidBinaryOp { .. } => ErrorCode("E2009"),

@@ -372,7 +372,12 @@ impl GarbageCollector {
                             crate::vm::object::CallableKind::BoundNative { receiver, .. } => {
                                 self.mark_value(*receiver);
                             }
-                            crate::vm::object::CallableKind::Bound { target, this_arg, bound_args, .. } => {
+                            crate::vm::object::CallableKind::Bound {
+                                target,
+                                this_arg,
+                                bound_args,
+                                ..
+                            } => {
                                 self.mark_value(*target);
                                 self.mark_value(*this_arg);
                                 for &arg in bound_args {

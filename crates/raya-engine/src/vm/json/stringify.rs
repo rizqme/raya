@@ -128,7 +128,10 @@ where
                         if fixed_names.iter().any(|fixed| fixed == &name) {
                             continue;
                         }
-                        let val = dyn_props.get(key).map(|p| p.value).unwrap_or(Value::undefined());
+                        let val = dyn_props
+                            .get(key)
+                            .map(|p| p.value)
+                            .unwrap_or(Value::undefined());
                         if !first {
                             output.push(',');
                         }

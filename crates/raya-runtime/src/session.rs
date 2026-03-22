@@ -19,8 +19,7 @@ use std::any::TypeId;
 
 use raya_engine::vm::gc::{header_ptr_from_value_ptr, GcHeader};
 use raya_engine::vm::object::{
-    Array, Buffer, ChannelObject, DateObject, MapObject, RegExpObject,
-    SetObject,
+    Array, Buffer, ChannelObject, DateObject, MapObject, RegExpObject, SetObject,
 };
 use raya_engine::vm::{Object, RayaString, Value, Vm, VmError};
 

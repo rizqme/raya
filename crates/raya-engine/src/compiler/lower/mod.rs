@@ -1981,20 +1981,25 @@ impl<'a> Lowerer<'a> {
                                 if let ast::Expression::Identifier(nominal_type_ident) =
                                     &*new_expr.callee
                                 {
-                                    let nominal_type_id = self
-                                        .class_map
-                                        .get(&nominal_type_ident.name)
-                                        .copied()
+                                    let ctor_ty = self
+                                        .get_expr_type(&new_expr.callee)
+                                        .as_u32()
+                                        .ne(&UNRESOLVED_TYPE_ID)
+                                        .then(|| self.get_expr_type(&new_expr.callee))
                                         .or_else(|| {
-                                            self.variable_class_map
-                                                .get(&nominal_type_ident.name)
-                                                .copied()
-                                        })
-                                        .or_else(|| {
-                                            self.nominal_type_id_from_type_name(
+                                            self.type_ctx.lookup_named_type(
                                                 self.interner.resolve(nominal_type_ident.name),
                                             )
                                         });
+                                    let nominal_type_id = self
+                                        .resolve_runtime_bound_new_nominal_type(
+                                            nominal_type_ident.name,
+                                            ctor_ty,
+                                            self.get_expr_type(init)
+                                                .as_u32()
+                                                .ne(&UNRESOLVED_TYPE_ID)
+                                                .then(|| self.get_expr_type(init)),
+                                        );
                                     if let Some(nominal_type_id) = nominal_type_id {
                                         self.variable_class_map.insert(name, nominal_type_id);
                                         self.clear_late_bound_object_binding(name);
@@ -2013,16 +2018,6 @@ impl<'a> Lowerer<'a> {
                                             self.interner.resolve(nominal_type_ident.name),
                                         )
                                     {
-                                        let ctor_ty = self
-                                            .get_expr_type(&new_expr.callee)
-                                            .as_u32()
-                                            .ne(&UNRESOLVED_TYPE_ID)
-                                            .then(|| self.get_expr_type(&new_expr.callee))
-                                            .or_else(|| {
-                                                self.type_ctx.lookup_named_type(
-                                                    self.interner.resolve(nominal_type_ident.name),
-                                                )
-                                            });
                                         self.mark_late_bound_object_binding(
                                             name,
                                             nominal_type_ident.name,
@@ -3095,7 +3090,11 @@ impl<'a> Lowerer<'a> {
                     function_type_params,
                     None,
                 );
-                if nominal_type_id.is_none() {
+                let runtime_bound_ctor = nominal_type_id
+                    .is_none()
+                    .then(|| self.runtime_bound_constructor_from_type_annotation(type_ann))
+                    .flatten();
+                if nominal_type_id.is_none() && runtime_bound_ctor.is_none() {
                     let expected_ty = self.resolve_param_type_from_annotation(
                         type_ann,
                         function_type_params,
@@ -3126,7 +3125,11 @@ impl<'a> Lowerer<'a> {
                         function_type_params,
                         None,
                     );
-                    if nominal_type_id.is_none() {
+                    let runtime_bound_ctor = nominal_type_id
+                        .is_none()
+                        .then(|| self.runtime_bound_constructor_from_type_annotation(type_ann))
+                        .flatten();
+                    if nominal_type_id.is_none() && runtime_bound_ctor.is_none() {
                         let expected_ty = self.resolve_param_type_from_annotation(
                             type_ann,
                             function_type_params,
@@ -3149,6 +3152,14 @@ impl<'a> Lowerer<'a> {
                     }
                     if let Some(nominal_type_id) = nominal_type_id {
                         self.variable_class_map.insert(ident.name, nominal_type_id);
+                        self.clear_late_bound_object_binding(ident.name);
+                    } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
+                        self.variable_class_map.remove(&ident.name);
+                        self.variable_structural_projection_fields
+                            .remove(&ident.name);
+                        self.mark_late_bound_object_binding(ident.name, ctor_symbol, ctor_type);
+                    } else {
+                        self.clear_late_bound_object_binding(ident.name);
                     }
                     self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                     if self.type_annotation_is_callable(type_ann) {
@@ -3710,7 +3721,13 @@ impl<'a> Lowerer<'a> {
                                 method_type_params,
                                 class_type_params,
                             );
-                            if nominal_type_id.is_none() {
+                            let runtime_bound_ctor = nominal_type_id
+                                .is_none()
+                                .then(|| {
+                                    self.runtime_bound_constructor_from_type_annotation(type_ann)
+                                })
+                                .flatten();
+                            if nominal_type_id.is_none() && runtime_bound_ctor.is_none() {
                                 let expected_ty = self.resolve_param_type_from_annotation(
                                     type_ann,
                                     method_type_params,
@@ -3740,7 +3757,15 @@ impl<'a> Lowerer<'a> {
                                         method_type_params,
                                         class_type_params,
                                     );
-                                if param_nominal_type_id.is_none() {
+                                let runtime_bound_ctor = param_nominal_type_id
+                                    .is_none()
+                                    .then(|| {
+                                        self.runtime_bound_constructor_from_type_annotation(
+                                            type_ann,
+                                        )
+                                    })
+                                    .flatten();
+                                if param_nominal_type_id.is_none() && runtime_bound_ctor.is_none() {
                                     let expected_ty = self.resolve_param_type_from_annotation(
                                         type_ann,
                                         method_type_params,
@@ -3764,6 +3789,18 @@ impl<'a> Lowerer<'a> {
                                 if let Some(param_nominal_type_id) = param_nominal_type_id {
                                     self.variable_class_map
                                         .insert(ident.name, param_nominal_type_id);
+                                    self.clear_late_bound_object_binding(ident.name);
+                                } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
+                                    self.variable_class_map.remove(&ident.name);
+                                    self.variable_structural_projection_fields
+                                        .remove(&ident.name);
+                                    self.mark_late_bound_object_binding(
+                                        ident.name,
+                                        ctor_symbol,
+                                        ctor_type,
+                                    );
+                                } else {
+                                    self.clear_late_bound_object_binding(ident.name);
                                 }
                                 self.register_variable_type_hints_from_annotation(
                                     ident.name, type_ann,
@@ -4026,7 +4063,11 @@ impl<'a> Lowerer<'a> {
                                 class_type_params,
                                 None,
                             );
-                        if param_nominal_type_id.is_none() {
+                        let runtime_bound_ctor = param_nominal_type_id
+                            .is_none()
+                            .then(|| self.runtime_bound_constructor_from_type_annotation(type_ann))
+                            .flatten();
+                        if param_nominal_type_id.is_none() && runtime_bound_ctor.is_none() {
                             let expected_ty = self.resolve_param_type_from_annotation(
                                 type_ann,
                                 class_type_params,
@@ -4054,7 +4095,13 @@ impl<'a> Lowerer<'a> {
                                     class_type_params,
                                     None,
                                 );
-                            if param_nominal_type_id.is_none() {
+                            let runtime_bound_ctor = param_nominal_type_id
+                                .is_none()
+                                .then(|| {
+                                    self.runtime_bound_constructor_from_type_annotation(type_ann)
+                                })
+                                .flatten();
+                            if param_nominal_type_id.is_none() && runtime_bound_ctor.is_none() {
                                 let expected_ty = self.resolve_param_type_from_annotation(
                                     type_ann,
                                     class_type_params,
@@ -4078,6 +4125,18 @@ impl<'a> Lowerer<'a> {
                             if let Some(param_nominal_type_id) = param_nominal_type_id {
                                 self.variable_class_map
                                     .insert(ident.name, param_nominal_type_id);
+                                self.clear_late_bound_object_binding(ident.name);
+                            } else if let Some((ctor_symbol, ctor_type)) = runtime_bound_ctor {
+                                self.variable_class_map.remove(&ident.name);
+                                self.variable_structural_projection_fields
+                                    .remove(&ident.name);
+                                self.mark_late_bound_object_binding(
+                                    ident.name,
+                                    ctor_symbol,
+                                    ctor_type,
+                                );
+                            } else {
+                                self.clear_late_bound_object_binding(ident.name);
                             }
                             self.register_variable_type_hints_from_annotation(ident.name, type_ann);
                             if self.type_annotation_is_callable(type_ann) {
@@ -5519,7 +5578,7 @@ impl<'a> Lowerer<'a> {
     /// Extract a NominalTypeId from a type annotation, handling both direct class references
     /// and nullable unions (e.g., `Node | null` → Node's NominalTypeId).
     fn try_extract_class_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<NominalTypeId> {
-        match &type_ann.ty {
+        let direct = match &type_ann.ty {
             ast::Type::Reference(type_ref) => {
                 self.nominal_type_id_from_type_name(self.interner.resolve(type_ref.name.name))
             }
@@ -5542,7 +5601,28 @@ impl<'a> Lowerer<'a> {
                 nominal_type_id
             }
             _ => None,
+        };
+
+        if direct.is_some() {
+            return direct;
         }
+
+        let resolved = self.resolve_type_annotation(type_ann);
+        if resolved != UNRESOLVED {
+            if let Some(class_id) = self.nominal_type_id_from_type_id(resolved) {
+                return Some(class_id);
+            }
+            let mut visited = FxHashSet::default();
+            if let Some(class_ty) =
+                self.resolve_concrete_class_type_for_runtime_slots(resolved, &mut visited)
+            {
+                if let Some(class_id) = self.nominal_type_id_from_type_id(class_ty) {
+                    return Some(class_id);
+                }
+            }
+        }
+
+        None
     }
 
     /// Extract a class name from a type annotation without requiring the class to
@@ -5625,6 +5705,47 @@ impl<'a> Lowerer<'a> {
         }
 
         None
+    }
+
+    fn resolve_runtime_bound_new_nominal_type(
+        &self,
+        constructor_symbol: Symbol,
+        constructor_type: Option<TypeId>,
+        instance_type: Option<TypeId>,
+    ) -> Option<NominalTypeId> {
+        instance_type
+            .and_then(|ty| {
+                self.nominal_type_id_from_type_id(ty).or_else(|| {
+                    let mut visited = FxHashSet::default();
+                    self.resolve_concrete_class_type_for_runtime_slots(ty, &mut visited)
+                        .and_then(|class_ty| self.nominal_type_id_from_type_id(class_ty))
+                })
+            })
+            .or_else(|| self.class_map.get(&constructor_symbol).copied())
+            .or_else(|| self.variable_class_map.get(&constructor_symbol).copied())
+            .or_else(|| {
+                self.nominal_type_id_from_type_name(self.interner.resolve(constructor_symbol))
+            })
+            .or_else(|| {
+                constructor_type.and_then(|ty| {
+                    self.nominal_type_id_from_type_id(ty).or_else(|| {
+                        let mut visited = FxHashSet::default();
+                        self.resolve_concrete_class_type_for_runtime_slots(ty, &mut visited)
+                            .and_then(|class_ty| self.nominal_type_id_from_type_id(class_ty))
+                    })
+                })
+            })
+            .or_else(|| {
+                self.type_ctx
+                    .lookup_named_type(self.interner.resolve(constructor_symbol))
+                    .and_then(|ty| {
+                        self.nominal_type_id_from_type_id(ty).or_else(|| {
+                            let mut visited = FxHashSet::default();
+                            self.resolve_concrete_class_type_for_runtime_slots(ty, &mut visited)
+                                .and_then(|class_ty| self.nominal_type_id_from_type_id(class_ty))
+                        })
+                    })
+            })
     }
 
     fn populate_alias_object_class_map(
@@ -6129,6 +6250,65 @@ impl<'a> Lowerer<'a> {
             .and_then(|ty| self.nominal_type_id_from_type_id(ty))
     }
 
+    fn runtime_bound_constructor_from_type_annotation(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+    ) -> Option<(Symbol, Option<TypeId>)> {
+        let type_ref = match &type_ann.ty {
+            ast::Type::Reference(type_ref) => Some(type_ref),
+            ast::Type::Parenthesized(inner) => {
+                return self.runtime_bound_constructor_from_type_annotation(inner);
+            }
+            ast::Type::Union(union_type) => {
+                let mut found: Option<&ast::TypeReference> = None;
+                for member in &union_type.types {
+                    match &member.ty {
+                        ast::Type::Primitive(ast::PrimitiveType::Null) => {}
+                        ast::Type::Reference(type_ref) => match found {
+                            None => found = Some(type_ref),
+                            Some(existing) if existing.name.name == type_ref.name.name => {}
+                            Some(_) => return None,
+                        },
+                        _ => return None,
+                    }
+                }
+                found
+            }
+            _ => None,
+        }?;
+
+        let ctor_symbol = type_ref.name.name;
+        let ctor_name = self.interner.resolve(ctor_symbol);
+        if !self.import_bindings.contains(&ctor_symbol)
+            && !self.ambient_builtin_globals.contains(ctor_name)
+        {
+            return None;
+        }
+        if matches!(
+            ctor_name,
+            TypeContext::MUTEX_TYPE_NAME | TypeContext::CHANNEL_TYPE_NAME
+        ) {
+            return None;
+        }
+        if self
+            .type_ctx
+            .lookup_named_type(ctor_name)
+            .is_some_and(|ty| self.type_uses_runtime_handle_dispatch(ty))
+        {
+            return None;
+        }
+
+        let resolved = self.resolve_structural_slot_type_from_annotation(type_ann);
+        let resolved = (resolved != UNRESOLVED).then_some(resolved);
+        if resolved.is_some_and(|ty| self.type_has_checker_validated_class_members(ty)) {
+            return None;
+        }
+        if resolved.is_some_and(|ty| self.type_uses_runtime_handle_dispatch(ty)) {
+            return None;
+        }
+        Some((ctor_symbol, resolved))
+    }
+
     fn try_extract_object_alias_name_from_type(
         &self,
         type_ann: &ast::TypeAnnotation,
@@ -6251,14 +6431,15 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn identifier_requires_late_bound_dispatch(&self, name: Symbol) -> bool {
-        if self.late_bound_object_vars.contains(&name) {
+        if self.late_bound_object_vars.contains(&name)
+            || self.constructor_value_ctor_map.contains_key(&name)
+        {
             return true;
         }
 
         if self
             .variable_structural_projection_fields
             .contains_key(&name)
-            || self.constructor_value_ctor_map.contains_key(&name)
         {
             return false;
         }

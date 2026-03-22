@@ -2037,16 +2037,23 @@ impl<'a> Lowerer<'a> {
                     // Always override stale mappings from previous scopes/methods.
                     if let ast::Expression::New(new_expr) = init {
                         if let ast::Expression::Identifier(ident) = &*new_expr.callee {
-                            let nominal_type_id = self
-                                .class_map
-                                .get(&ident.name)
-                                .copied()
-                                .or_else(|| self.variable_class_map.get(&ident.name).copied())
+                            let ctor_ty = self
+                                .get_expr_type(&new_expr.callee)
+                                .as_u32()
+                                .ne(&UNRESOLVED_TYPE_ID)
+                                .then(|| self.get_expr_type(&new_expr.callee))
                                 .or_else(|| {
-                                    self.nominal_type_id_from_type_name(
-                                        self.interner.resolve(ident.name),
-                                    )
+                                    self.type_ctx
+                                        .lookup_named_type(self.interner.resolve(ident.name))
                                 });
+                            let nominal_type_id = self.resolve_runtime_bound_new_nominal_type(
+                                ident.name,
+                                ctor_ty,
+                                self.get_expr_type(init)
+                                    .as_u32()
+                                    .ne(&UNRESOLVED_TYPE_ID)
+                                    .then(|| self.get_expr_type(init)),
+                            );
                             if let Some(nominal_type_id) = nominal_type_id {
                                 self.variable_class_map.insert(name, nominal_type_id);
                                 self.clear_late_bound_object_binding(name);
@@ -2055,15 +2062,6 @@ impl<'a> Lowerer<'a> {
                                     .ambient_builtin_globals
                                     .contains(self.interner.resolve(ident.name))
                             {
-                                let ctor_ty = self
-                                    .get_expr_type(&new_expr.callee)
-                                    .as_u32()
-                                    .ne(&UNRESOLVED_TYPE_ID)
-                                    .then(|| self.get_expr_type(&new_expr.callee))
-                                    .or_else(|| {
-                                        self.type_ctx
-                                            .lookup_named_type(self.interner.resolve(ident.name))
-                                    });
                                 self.mark_late_bound_object_binding(name, ident.name, ctor_ty);
                             }
                         }
@@ -2156,13 +2154,14 @@ impl<'a> Lowerer<'a> {
                     // This is critical for imported/default-exported factories where
                     // pre-lowering AST inference may miss the concrete class, but
                     // the checker/lowered register type is already precise.
-                    if !self.variable_class_map.contains_key(&name)
-                        && !self.late_bound_object_vars.contains(&name)
-                    {
+                    if !self.variable_class_map.contains_key(&name) {
                         if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(value.ty) {
                             self.variable_class_map.insert(name, nominal_type_id);
                             self.clear_late_bound_object_binding(name);
                         }
+                    }
+                    if self.type_uses_runtime_handle_dispatch(value.ty) {
+                        self.clear_late_bound_object_binding(name);
                     }
                     if !self
                         .variable_structural_projection_fields
@@ -2313,14 +2312,23 @@ impl<'a> Lowerer<'a> {
             // Always override stale mappings from previous scopes/methods.
             if let ast::Expression::New(new_expr) = init {
                 if let ast::Expression::Identifier(ident) = &*new_expr.callee {
-                    let nominal_type_id = self
-                        .class_map
-                        .get(&ident.name)
-                        .copied()
-                        .or_else(|| self.variable_class_map.get(&ident.name).copied())
+                    let ctor_ty = self
+                        .get_expr_type(&new_expr.callee)
+                        .as_u32()
+                        .ne(&UNRESOLVED_TYPE_ID)
+                        .then(|| self.get_expr_type(&new_expr.callee))
                         .or_else(|| {
-                            self.nominal_type_id_from_type_name(self.interner.resolve(ident.name))
+                            self.type_ctx
+                                .lookup_named_type(self.interner.resolve(ident.name))
                         });
+                    let nominal_type_id = self.resolve_runtime_bound_new_nominal_type(
+                        ident.name,
+                        ctor_ty,
+                        self.get_expr_type(init)
+                            .as_u32()
+                            .ne(&UNRESOLVED_TYPE_ID)
+                            .then(|| self.get_expr_type(init)),
+                    );
                     if let Some(nominal_type_id) = nominal_type_id {
                         self.variable_class_map.insert(name, nominal_type_id);
                         self.clear_late_bound_object_binding(name);
@@ -2329,15 +2337,6 @@ impl<'a> Lowerer<'a> {
                             .ambient_builtin_globals
                             .contains(self.interner.resolve(ident.name))
                     {
-                        let ctor_ty = self
-                            .get_expr_type(&new_expr.callee)
-                            .as_u32()
-                            .ne(&UNRESOLVED_TYPE_ID)
-                            .then(|| self.get_expr_type(&new_expr.callee))
-                            .or_else(|| {
-                                self.type_ctx
-                                    .lookup_named_type(self.interner.resolve(ident.name))
-                            });
                         self.mark_late_bound_object_binding(name, ident.name, ctor_ty);
                     }
                 }
@@ -2424,13 +2423,14 @@ impl<'a> Lowerer<'a> {
             // Fallback class capture from lowered value type.
             // Helps preserve receiver typing for chained calls on values returned
             // from imports/factories when AST-only inference was inconclusive.
-            if !self.variable_class_map.contains_key(&name)
-                && !self.late_bound_object_vars.contains(&name)
-            {
+            if !self.variable_class_map.contains_key(&name) {
                 if let Some(nominal_type_id) = self.nominal_type_id_from_type_id(value.ty) {
                     self.variable_class_map.insert(name, nominal_type_id);
                     self.clear_late_bound_object_binding(name);
                 }
+            }
+            if self.type_uses_runtime_handle_dispatch(value.ty) {
+                self.clear_late_bound_object_binding(name);
             }
             if !self
                 .variable_structural_projection_fields

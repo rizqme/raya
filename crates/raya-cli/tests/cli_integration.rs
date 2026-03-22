@@ -647,10 +647,7 @@ fn test_session_node_compat_uses_runtime_builtin_hydration() {
     let value = session
         .eval(r#"try { eval("1+1"); return "NO_ERR"; } catch (e) { return e.code; }"#)
         .expect("session eval should succeed");
-    assert_eq!(
-        session.format_value(&value),
-        "\"NO_ERR\""
-    );
+    assert_eq!(session.format_value(&value), "\"NO_ERR\"");
 }
 
 #[test]

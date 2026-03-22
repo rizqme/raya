@@ -15,9 +15,9 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    layout_id_from_ordered_names, Array, CallableKind, DynProp, Buffer,
-    ChannelObject, Class, DateObject, LayoutId, MapObject, Object, RayaString,
-    RegExpObject, SetObject, SlotMeta, TypeHandle,
+    layout_id_from_ordered_names, Array, Buffer, CallableKind, ChannelObject, Class, DateObject,
+    DynProp, LayoutId, MapObject, Object, RayaString, RegExpObject, SetObject, SlotMeta,
+    TypeHandle,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -157,9 +157,7 @@ pub(in crate::vm::interpreter) fn checked_array_ptr(value: Value) -> Option<NonN
 }
 
 /// Check if value is a callable Object (has callable data) and return pointer.
-pub(in crate::vm::interpreter) fn checked_callable_ptr(
-    value: Value,
-) -> Option<NonNull<Object>> {
+pub(in crate::vm::interpreter) fn checked_callable_ptr(value: Value) -> Option<NonNull<Object>> {
     let obj_ptr = checked_object_ptr(value)?;
     let obj = unsafe { &*obj_ptr.as_ptr() };
     if obj.is_callable() {
@@ -344,9 +342,9 @@ impl<'a> Interpreter<'a> {
         let message_value = self.alloc_string_value(message);
         let obj = unsafe { &mut *object_ptr.as_ptr() };
         let _ = obj.set_field(0, message_value); // slot 0 = "message"
-        let _ = obj.set_field(1, name_value);    // slot 1 = "name"
-        // slot 2 = "constructor" — set to the builtin constructor global so
-        // `caught_error.constructor === TypeError` works in JS test harnesses.
+        let _ = obj.set_field(1, name_value); // slot 1 = "name"
+                                              // slot 2 = "constructor" — set to the builtin constructor global so
+                                              // `caught_error.constructor === TypeError` works in JS test harnesses.
         if let Some(ctor) = constructor_value {
             let _ = obj.set_field(2, ctor);
         }
@@ -494,7 +492,10 @@ impl<'a> Interpreter<'a> {
             if header.type_id() == std::any::TypeId::of::<Object>() {
                 let co = unsafe { &*constructor.as_ptr::<Object>().unwrap().as_ptr() };
                 if let Some(ref callable) = co.callable {
-                    if let CallableKind::Bound { target, bound_args, .. } = &callable.kind {
+                    if let CallableKind::Bound {
+                        target, bound_args, ..
+                    } = &callable.kind
+                    {
                         let mut combined_args = bound_args.clone();
                         combined_args.extend_from_slice(args);
                         let adjusted_new_target = if constructor.raw() == new_target.raw() {
@@ -712,26 +713,22 @@ impl<'a> Interpreter<'a> {
                     .map(Some)
             }
             // Error constructors: calling without `new` behaves as `new`
-            "Error" | "TypeError" | "RangeError" | "ReferenceError"
-            | "SyntaxError" | "URIError" | "EvalError" | "AggregateError" => {
-                self.construct_value_with_new_target(callable, callable, args, task, module)
-                    .map(Some)
-            }
+            "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError"
+            | "URIError" | "EvalError" | "AggregateError" => self
+                .construct_value_with_new_target(callable, callable, args, task, module)
+                .map(Some),
             // RegExp(pattern, flags) without `new` behaves as `new`
-            "RegExp" => {
-                self.construct_value_with_new_target(callable, callable, args, task, module)
-                    .map(Some)
-            }
+            "RegExp" => self
+                .construct_value_with_new_target(callable, callable, args, task, module)
+                .map(Some),
             // Collections: calling without `new` should throw TypeError per spec,
             // but many test262 patterns use `.call()` so we delegate to construct.
-            "Map" | "Set" | "WeakMap" | "WeakSet" | "Promise"
-            | "ArrayBuffer" | "DataView"
-            | "Int8Array" | "Uint8Array" | "Int16Array" | "Uint16Array"
-            | "Int32Array" | "Uint32Array" | "Float32Array" | "Float64Array"
-            | "BigInt64Array" | "BigUint64Array" | "Uint8ClampedArray" => {
-                self.construct_value_with_new_target(callable, callable, args, task, module)
-                    .map(Some)
-            }
+            "Map" | "Set" | "WeakMap" | "WeakSet" | "Promise" | "ArrayBuffer" | "DataView"
+            | "Int8Array" | "Uint8Array" | "Int16Array" | "Uint16Array" | "Int32Array"
+            | "Uint32Array" | "Float32Array" | "Float64Array" | "BigInt64Array"
+            | "BigUint64Array" | "Uint8ClampedArray" => self
+                .construct_value_with_new_target(callable, callable, args, task, module)
+                .map(Some),
             "Function" => {
                 // Function() as a function call creates a new function
                 self.construct_value_with_new_target(callable, callable, args, task, module)
@@ -859,7 +856,9 @@ impl<'a> Interpreter<'a> {
 
                 if let Some(dp) = obj.dyn_props() {
                     for key in dp.keys_in_order() {
-                        let Some(prop) = dp.get(key) else { continue; };
+                        let Some(prop) = dp.get(key) else {
+                            continue;
+                        };
                         let Some(name) = self.prop_key_name(key) else {
                             continue;
                         };
@@ -938,14 +937,41 @@ impl<'a> Interpreter<'a> {
         // All standard built-in constructors that JS code may call as functions
         // (via `Constructor(value)` or `Function.prototype.call(Constructor, ...)`).
         static CALLABLE_CONSTRUCTORS: &[&str] = &[
-            "Object", "Array", "Date", "Number", "String", "Boolean",
-            "Error", "TypeError", "RangeError", "ReferenceError",
-            "SyntaxError", "URIError", "EvalError", "AggregateError",
-            "Function", "RegExp", "Map", "Set", "WeakMap", "WeakSet",
-            "Promise", "Symbol", "ArrayBuffer", "DataView",
-            "Int8Array", "Uint8Array", "Int16Array", "Uint16Array",
-            "Int32Array", "Uint32Array", "Float32Array", "Float64Array",
-            "BigInt64Array", "BigUint64Array", "Uint8ClampedArray",
+            "Object",
+            "Array",
+            "Date",
+            "Number",
+            "String",
+            "Boolean",
+            "Error",
+            "TypeError",
+            "RangeError",
+            "ReferenceError",
+            "SyntaxError",
+            "URIError",
+            "EvalError",
+            "AggregateError",
+            "Function",
+            "RegExp",
+            "Map",
+            "Set",
+            "WeakMap",
+            "WeakSet",
+            "Promise",
+            "Symbol",
+            "ArrayBuffer",
+            "DataView",
+            "Int8Array",
+            "Uint8Array",
+            "Int16Array",
+            "Uint16Array",
+            "Int32Array",
+            "Uint32Array",
+            "Float32Array",
+            "Float64Array",
+            "BigInt64Array",
+            "BigUint64Array",
+            "Uint8ClampedArray",
         ];
         for &name in CALLABLE_CONSTRUCTORS {
             if self
@@ -1699,7 +1725,11 @@ impl<'a> Interpreter<'a> {
                     };
                     return Some((visible_name, arity));
                 }
-                CallableKind::Bound { visible_name, visible_length, .. } => {
+                CallableKind::Bound {
+                    visible_name,
+                    visible_length,
+                    ..
+                } => {
                     let length = if let Some(v) = visible_length.as_i32() {
                         v.max(0) as usize
                     } else if let Some(v) = visible_length.as_i64() {
@@ -1841,8 +1871,13 @@ impl<'a> Interpreter<'a> {
             if let Some(ref cd) = co.callable {
                 match &cd.kind {
                     CallableKind::Closure { func_id } => {
-                        let Some(module) = co.callable_module() else { return false; };
-                        return module.functions.get(*func_id).is_some_and(|f| f.is_constructible);
+                        let Some(module) = co.callable_module() else {
+                            return false;
+                        };
+                        return module
+                            .functions
+                            .get(*func_id)
+                            .is_some_and(|f| f.is_constructible);
                     }
                     CallableKind::Bound { target: t, .. } => {
                         return self.callable_is_constructible(*t);
@@ -1875,8 +1910,13 @@ impl<'a> Interpreter<'a> {
             if let Some(ref cd) = co.callable {
                 match &cd.kind {
                     CallableKind::Closure { func_id } => {
-                        let Some(module) = co.callable_module() else { return false; };
-                        return module.functions.get(*func_id).is_some_and(|f| f.is_constructible || f.is_generator);
+                        let Some(module) = co.callable_module() else {
+                            return false;
+                        };
+                        return module
+                            .functions
+                            .get(*func_id)
+                            .is_some_and(|f| f.is_constructible || f.is_generator);
                     }
                     CallableKind::Bound { target: t, .. } => {
                         return self.callable_exposes_default_prototype(*t);
@@ -1908,9 +1948,15 @@ impl<'a> Interpreter<'a> {
             let co = unsafe { &*co_ptr.as_ptr() };
             if let Some(ref cd) = co.callable {
                 match &cd.kind {
-                    CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
-                        let Some(module) = co.callable_module() else { return false; };
-                        return module.functions.get(*func_id).is_some_and(|f| f.is_strict_js);
+                    CallableKind::Closure { func_id }
+                    | CallableKind::BoundMethod { func_id, .. } => {
+                        let Some(module) = co.callable_module() else {
+                            return false;
+                        };
+                        return module
+                            .functions
+                            .get(*func_id)
+                            .is_some_and(|f| f.is_strict_js);
                     }
                     CallableKind::Bound { target: t, .. } => {
                         return self.callable_is_strict_js(*t);
@@ -1944,9 +1990,14 @@ impl<'a> Interpreter<'a> {
             let co = unsafe { &*co_ptr.as_ptr() };
             if let Some(ref cd) = co.callable {
                 match &cd.kind {
-                    CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
-                        let Some(module) = co.callable_module() else { return false; };
-                        return module.functions.get(*func_id)
+                    CallableKind::Closure { func_id }
+                    | CallableKind::BoundMethod { func_id, .. } => {
+                        let Some(module) = co.callable_module() else {
+                            return false;
+                        };
+                        return module
+                            .functions
+                            .get(*func_id)
                             .is_some_and(|function| function.uses_builtin_this_coercion);
                     }
                     CallableKind::Bound { target: t, .. } => {
@@ -2054,9 +2105,16 @@ impl<'a> Interpreter<'a> {
             let co = unsafe { &*callable.as_ptr::<Object>().unwrap().as_ptr() };
             if let Some(ref cd) = co.callable {
                 match &cd.kind {
-                    CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
-                        let Some(module) = co.callable_module() else { return false; };
-                        return module.functions.get(*func_id).map(|f| f.uses_js_this_slot).unwrap_or(false);
+                    CallableKind::Closure { func_id }
+                    | CallableKind::BoundMethod { func_id, .. } => {
+                        let Some(module) = co.callable_module() else {
+                            return false;
+                        };
+                        return module
+                            .functions
+                            .get(*func_id)
+                            .map(|f| f.uses_js_this_slot)
+                            .unwrap_or(false);
                     }
                     CallableKind::BoundNative { native_id, .. } => {
                         return self.native_callable_uses_receiver(*native_id);
@@ -2089,7 +2147,14 @@ impl<'a> Interpreter<'a> {
             caller_module,
             bound_args.len(),
         )?;
-        let bound = Object::new_bound_function(target, this_arg, bound_args, visible_name, visible_length, rebind_call_helper);
+        let bound = Object::new_bound_function(
+            target,
+            this_arg,
+            bound_args,
+            visible_name,
+            visible_length,
+            rebind_call_helper,
+        );
         let bound_ptr = self.gc.lock().allocate(bound);
         Ok(unsafe {
             Value::from_ptr(std::ptr::NonNull::new(bound_ptr.as_ptr()).expect("bound function ptr"))
@@ -3114,9 +3179,10 @@ impl<'a> Interpreter<'a> {
 
         if let Some(class_obj_ptr) = checked_object_ptr(class_value) {
             let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
-            class_obj
-                .ensure_dyn_props()
-                .insert(self.intern_prop_key("prototype"), DynProp::data(prototype_val));
+            class_obj.ensure_dyn_props().insert(
+                self.intern_prop_key("prototype"),
+                DynProp::data(prototype_val),
+            );
         }
         if debug_dynamic_function {
             eprintln!("[generic-fn-proto] target={:#x} done", class_value.raw());
@@ -3451,7 +3517,8 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<usize, VmError> {
-        let number = self.js_to_integer_or_infinity_with_context(value, caller_task, caller_module)?;
+        let number =
+            self.js_to_integer_or_infinity_with_context(value, caller_task, caller_module)?;
         if number.is_nan() || number <= 0.0 {
             return Ok(0);
         }
@@ -3467,7 +3534,8 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<i32, VmError> {
-        let number = self.js_to_integer_or_infinity_with_context(value, caller_task, caller_module)?;
+        let number =
+            self.js_to_integer_or_infinity_with_context(value, caller_task, caller_module)?;
         if number.is_nan() {
             return Ok(0);
         }
@@ -3889,8 +3957,12 @@ impl<'a> Interpreter<'a> {
                 if let Some(ntid) = self.constructor_nominal_type_id(constructor) {
                     proto_obj.header.nominal_type_id = Some(ntid as u32);
                     if std::env::var("RAYA_DEBUG_PROTO_FIXUP").is_ok() {
-                        eprintln!("[proto-fixup] set nominal_type_id={} on proto={:#x} from ctor={:#x}",
-                            ntid, prototype.raw(), constructor.raw());
+                        eprintln!(
+                            "[proto-fixup] set nominal_type_id={} on proto={:#x} from ctor={:#x}",
+                            ntid,
+                            prototype.raw(),
+                            constructor.raw()
+                        );
                     }
                 }
             }
@@ -3953,7 +4025,12 @@ impl<'a> Interpreter<'a> {
                 }
             }
             if let Some(ref cd) = co.callable {
-                if let CallableKind::Bound { visible_name, visible_length, .. } = &cd.kind {
+                if let CallableKind::Bound {
+                    visible_name,
+                    visible_length,
+                    ..
+                } = &cd.kind
+                {
                     return match key {
                         "name" => {
                             let ptr = self
@@ -4587,7 +4664,10 @@ impl<'a> Interpreter<'a> {
         }
         let class_name = self.typed_array_runtime_class_name(target)?;
         let bytes_per_element = self.typed_array_bytes_per_element(&class_name);
-        Some(self.typed_array_raw_length_direct(target, bytes_per_element).max(0) as usize)
+        Some(
+            self.typed_array_raw_length_direct(target, bytes_per_element)
+                .max(0) as usize,
+        )
     }
 
     fn typed_array_live_length_with_context(
@@ -4962,8 +5042,7 @@ impl<'a> Interpreter<'a> {
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
         let debug_typed_array = std::env::var("RAYA_DEBUG_TYPED_ARRAY_PROP").is_ok();
-        let wants_accessor =
-            matches!(key, "buffer" | "byteOffset" | "byteLength" | "length");
+        let wants_accessor = matches!(key, "buffer" | "byteOffset" | "byteLength" | "length");
         if !wants_accessor && parse_js_array_index_name(key).is_none() {
             return Ok(None);
         }
@@ -5150,7 +5229,11 @@ impl<'a> Interpreter<'a> {
         let obj = unsafe { &*obj_ptr.as_ptr() };
         obj.nominal_type_id_usize().is_some_and(|ntid| {
             let class_metadata = self.class_metadata.read();
-            if class_metadata.get(ntid).and_then(|m| m.get_method_index(key)).is_some() {
+            if class_metadata
+                .get(ntid)
+                .and_then(|m| m.get_method_index(key))
+                .is_some()
+            {
                 return true;
             }
             drop(class_metadata);
@@ -5158,10 +5241,11 @@ impl<'a> Interpreter<'a> {
             classes.get_class(ntid).is_some_and(|class| {
                 class.module.as_ref().is_some_and(|module| {
                     module.classes.iter().any(|cd| {
-                        cd.name == class.name && cd.methods.iter().any(|m| {
-                            let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
-                            m.name == key || plain == key
-                        })
+                        cd.name == class.name
+                            && cd.methods.iter().any(|m| {
+                                let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
+                                m.name == key || plain == key
+                            })
                     })
                 })
             })
@@ -5278,15 +5362,13 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
-        if let Some(value) =
-            self.descriptor_property_value_with_context(
-                target,
-                key,
-                receiver,
-                caller_task,
-                caller_module,
-            )?
-        {
+        if let Some(value) = self.descriptor_property_value_with_context(
+            target,
+            key,
+            receiver,
+            caller_task,
+            caller_module,
+        )? {
             return Ok(Some(value));
         }
 
@@ -5324,12 +5406,20 @@ impl<'a> Interpreter<'a> {
                         let classes = self.classes.read();
                         let class = classes.get_class(ntid)?;
                         let module = class.module.as_ref()?;
-                        module.classes.iter()
+                        module
+                            .classes
+                            .iter()
                             .find(|cd| cd.name == class.name)
-                            .and_then(|cd| cd.methods.iter().find_map(|m| {
-                                let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
-                                if m.name == key || plain == key { Some(m.slot) } else { None }
-                            }))
+                            .and_then(|cd| {
+                                cd.methods.iter().find_map(|m| {
+                                    let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
+                                    if m.name == key || plain == key {
+                                        Some(m.slot)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
                     })
             }) {
                 if let Ok(value) = self.bound_method_value_for_slot(target, method_slot) {
@@ -5339,10 +5429,13 @@ impl<'a> Interpreter<'a> {
         }
 
         // Builtin native method lookup
-        if let Some(native_id) = crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key) {
+        if let Some(native_id) =
+            crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key)
+        {
             let method = Object::new_bound_native(target, native_id);
             let method_ptr = self.gc.lock().allocate(method);
-            let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) };
+            let val =
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) };
             return Ok(Some(val));
         }
 
@@ -5395,13 +5488,15 @@ impl<'a> Interpreter<'a> {
         let mut seen = vec![target.raw()];
 
         while let Some(candidate) = current {
-            if let Some(value) = self.get_own_property_value_on_receiver_via_js_semantics_with_context(
-                candidate,
-                key,
-                receiver,
-                caller_task,
-                caller_module,
-            )? {
+            if let Some(value) = self
+                .get_own_property_value_on_receiver_via_js_semantics_with_context(
+                    candidate,
+                    key,
+                    receiver,
+                    caller_task,
+                    caller_module,
+                )?
+            {
                 return Ok(Some(value));
             }
 
@@ -5758,9 +5853,7 @@ impl<'a> Interpreter<'a> {
                     .get(slot_idx)
                     .copied()
                     .unwrap_or(Value::undefined());
-                return self
-                    .synthesize_descriptor_from_slot_meta(meta, value)
-                    .ok();
+                return self.synthesize_descriptor_from_slot_meta(meta, value).ok();
             }
         }
 
@@ -5786,17 +5879,15 @@ impl<'a> Interpreter<'a> {
     }
 
     fn is_descriptor_object(&self, value: Value) -> bool {
-        // Check if the value has descriptor-like fields
-        self.get_own_field_value_by_name(value, "value").is_some()
-            || self.get_own_field_value_by_name(value, "writable").is_some()
-            || self.get_own_field_value_by_name(value, "get").is_some()
-            || self.get_own_field_value_by_name(value, "set").is_some()
-            || self
-                .get_own_field_value_by_name(value, "enumerable")
-                .is_some()
-            || self
-                .get_own_field_value_by_name(value, "configurable")
-                .is_some()
+        let Some(obj_ptr) = checked_object_ptr(value) else {
+            return false;
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let mask_key = self.intern_prop_key("__field_present_mask__");
+        obj.dyn_props
+            .as_deref()
+            .and_then(|dp| dp.get(mask_key))
+            .is_some()
     }
 
     pub(in crate::vm::interpreter) fn descriptor_field_present(
@@ -5828,11 +5919,32 @@ impl<'a> Interpreter<'a> {
 
     pub(in crate::vm::interpreter) fn set_descriptor_field_present(
         &self,
-        _descriptor: Value,
-        _field_name: &str,
-        _present: bool,
+        descriptor: Value,
+        field_name: &str,
+        present: bool,
     ) {
-        // No-op: property kernel tracks presence via DynProp existence
+        if !self.is_descriptor_object(descriptor) {
+            return;
+        }
+        let Some(obj_ptr) = checked_object_ptr(descriptor) else {
+            return;
+        };
+        let obj = unsafe { &mut *obj_ptr.as_ptr() };
+        let mask_key = self.intern_prop_key("__field_present_mask__");
+        let current_mask = obj
+            .dyn_props
+            .as_deref()
+            .and_then(|dp| dp.get(mask_key))
+            .and_then(|prop| prop.value.as_i32())
+            .unwrap_or(0) as u32;
+        let bit = descriptor_field_bit(field_name);
+        let next_mask = if present {
+            current_mask | bit
+        } else {
+            current_mask & !bit
+        };
+        obj.ensure_dyn_props()
+            .insert(mask_key, DynProp::data(Value::i32(next_mask as i32)));
     }
 
     pub(in crate::vm::interpreter) fn is_property_enumerable(
@@ -5854,9 +5966,13 @@ impl<'a> Interpreter<'a> {
         }
 
         // Check explicit per-property flags (set by the property kernel).
-        if let Some((writable, configurable, enumerable)) = self.own_js_property_flags(target, key) {
+        if let Some((writable, configurable, enumerable)) = self.own_js_property_flags(target, key)
+        {
             if std::env::var("RAYA_DEBUG_FORIN_ENUM").is_ok() {
-                eprintln!("[enum-flags] key='{}' w={} c={} e={}", key, writable, configurable, enumerable);
+                eprintln!(
+                    "[enum-flags] key='{}' w={} c={} e={}",
+                    key, writable, configurable, enumerable
+                );
             }
             return enumerable;
         }
@@ -6652,6 +6768,9 @@ impl<'a> Interpreter<'a> {
             obj.set_field(5, Value::undefined())
                 .map_err(VmError::RuntimeError)?;
         }
+        let mask_key = self.intern_prop_key("__field_present_mask__");
+        obj.ensure_dyn_props()
+            .insert(mask_key, DynProp::data(Value::i32(0)));
         let obj_ptr = self.gc.lock().allocate(obj);
         let descriptor =
             unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) };
@@ -6846,10 +6965,7 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Synthesize a descriptor object from a `DynProp` stored in the property kernel.
-    fn synthesize_descriptor_from_dyn_prop(
-        &self,
-        prop: &DynProp,
-    ) -> Result<Value, VmError> {
+    fn synthesize_descriptor_from_dyn_prop(&self, prop: &DynProp) -> Result<Value, VmError> {
         let descriptor = self.alloc_object_descriptor()?;
         let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() }) else {
             return Err(VmError::RuntimeError(
@@ -6865,11 +6981,13 @@ impl<'a> Interpreter<'a> {
                     .set_field(idx, prop.get)
                     .map_err(VmError::RuntimeError)?;
             }
+            self.set_descriptor_field_present(descriptor, "get", true);
             if let Some(idx) = self.get_field_index_for_value(descriptor, "set") {
                 descriptor_obj
                     .set_field(idx, prop.set)
                     .map_err(VmError::RuntimeError)?;
             }
+            self.set_descriptor_field_present(descriptor, "set", true);
             // value and writable are undefined for accessor descriptors
             if let Some(idx) = self.get_field_index_for_value(descriptor, "value") {
                 descriptor_obj
@@ -6888,11 +7006,13 @@ impl<'a> Interpreter<'a> {
                     .set_field(idx, prop.value)
                     .map_err(VmError::RuntimeError)?;
             }
+            self.set_descriptor_field_present(descriptor, "value", true);
             if let Some(idx) = self.get_field_index_for_value(descriptor, "writable") {
                 descriptor_obj
                     .set_field(idx, Value::bool(prop.writable))
                     .map_err(VmError::RuntimeError)?;
             }
+            self.set_descriptor_field_present(descriptor, "writable", true);
         }
 
         if let Some(idx) = self.get_field_index_for_value(descriptor, "enumerable") {
@@ -6900,11 +7020,13 @@ impl<'a> Interpreter<'a> {
                 .set_field(idx, Value::bool(prop.enumerable))
                 .map_err(VmError::RuntimeError)?;
         }
+        self.set_descriptor_field_present(descriptor, "enumerable", true);
         if let Some(idx) = self.get_field_index_for_value(descriptor, "configurable") {
             descriptor_obj
                 .set_field(idx, Value::bool(prop.configurable))
                 .map_err(VmError::RuntimeError)?;
         }
+        self.set_descriptor_field_present(descriptor, "configurable", true);
 
         Ok(descriptor)
     }
@@ -6930,11 +7052,13 @@ impl<'a> Interpreter<'a> {
                     .set_field(idx, accessor.get)
                     .map_err(VmError::RuntimeError)?;
             }
+            self.set_descriptor_field_present(descriptor, "get", true);
             if let Some(idx) = self.get_field_index_for_value(descriptor, "set") {
                 descriptor_obj
                     .set_field(idx, accessor.set)
                     .map_err(VmError::RuntimeError)?;
             }
+            self.set_descriptor_field_present(descriptor, "set", true);
             if let Some(idx) = self.get_field_index_for_value(descriptor, "value") {
                 descriptor_obj
                     .set_field(idx, Value::undefined())
@@ -6952,11 +7076,13 @@ impl<'a> Interpreter<'a> {
                     .set_field(idx, value)
                     .map_err(VmError::RuntimeError)?;
             }
+            self.set_descriptor_field_present(descriptor, "value", true);
             if let Some(idx) = self.get_field_index_for_value(descriptor, "writable") {
                 descriptor_obj
                     .set_field(idx, Value::bool(meta.writable))
                     .map_err(VmError::RuntimeError)?;
             }
+            self.set_descriptor_field_present(descriptor, "writable", true);
         }
 
         if let Some(idx) = self.get_field_index_for_value(descriptor, "enumerable") {
@@ -6964,11 +7090,13 @@ impl<'a> Interpreter<'a> {
                 .set_field(idx, Value::bool(meta.enumerable))
                 .map_err(VmError::RuntimeError)?;
         }
+        self.set_descriptor_field_present(descriptor, "enumerable", true);
         if let Some(idx) = self.get_field_index_for_value(descriptor, "configurable") {
             descriptor_obj
                 .set_field(idx, Value::bool(meta.configurable))
                 .map_err(VmError::RuntimeError)?;
         }
+        self.set_descriptor_field_present(descriptor, "configurable", true);
 
         Ok(descriptor)
     }
@@ -7226,8 +7354,7 @@ impl<'a> Interpreter<'a> {
                         // Checks builtin_global_slots, then globalThis properties.
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
-                                "tryGetGlobal expects exactly one string argument"
-                                    .to_string(),
+                                "tryGetGlobal expects exactly one string argument".to_string(),
                             ));
                         }
                         let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
@@ -7242,12 +7369,7 @@ impl<'a> Interpreter<'a> {
                             .read()
                             .get(name.data.as_str())
                             .copied()
-                            .and_then(|slot| {
-                                self.globals_by_index
-                                    .read()
-                                    .get(slot)
-                                    .copied()
-                            });
+                            .and_then(|slot| self.globals_by_index.read().get(slot).copied());
                         let result = if let Some(v) = value {
                             v
                         } else if let Some(gt) = self.builtin_global_value("globalThis") {
@@ -7537,24 +7659,45 @@ impl<'a> Interpreter<'a> {
                         let target_callable = args[0];
                         if !self.js_call_target_supported(target_callable) {
                             if std::env::var("RAYA_DEBUG_CALL_HELPER").is_ok() {
-                                let type_info = if target_callable.is_null() { "null" }
-                                    else if target_callable.is_undefined() { "undefined" }
-                                    else if target_callable.is_i32() { "i32" }
-                                    else if target_callable.is_f64() { "f64" }
-                                    else if target_callable.is_bool() { "bool" }
-                                    else if target_callable.is_ptr() {
-                                        let ptr = unsafe { target_callable.as_ptr::<u8>().unwrap() };
-                                        let hdr = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
-                                        if hdr.type_id() == std::any::TypeId::of::<Object>() {
-                                            let obj = unsafe { &*target_callable.as_ptr::<Object>().unwrap().as_ptr() };
-                                            if obj.is_callable() { "Object(callable)" } else { "Object" }
+                                let type_info = if target_callable.is_null() {
+                                    "null"
+                                } else if target_callable.is_undefined() {
+                                    "undefined"
+                                } else if target_callable.is_i32() {
+                                    "i32"
+                                } else if target_callable.is_f64() {
+                                    "f64"
+                                } else if target_callable.is_bool() {
+                                    "bool"
+                                } else if target_callable.is_ptr() {
+                                    let ptr = unsafe { target_callable.as_ptr::<u8>().unwrap() };
+                                    let hdr = unsafe { &*header_ptr_from_value_ptr(ptr.as_ptr()) };
+                                    if hdr.type_id() == std::any::TypeId::of::<Object>() {
+                                        let obj = unsafe {
+                                            &*target_callable.as_ptr::<Object>().unwrap().as_ptr()
+                                        };
+                                        if obj.is_callable() {
+                                            "Object(callable)"
+                                        } else {
+                                            "Object"
                                         }
-                                        else if hdr.type_id() == std::any::TypeId::of::<RayaString>() { "String" }
-                                        else if hdr.type_id() == std::any::TypeId::of::<Array>() { "Array" }
-                                        else { "ptr(other)" }
-                                    } else { "unknown" };
-                                eprintln!("[CALL_HELPER] target not callable: raw={:#x} type={} nargs={}",
-                                    target_callable.raw(), type_info, args.len());
+                                    } else if hdr.type_id() == std::any::TypeId::of::<RayaString>()
+                                    {
+                                        "String"
+                                    } else if hdr.type_id() == std::any::TypeId::of::<Array>() {
+                                        "Array"
+                                    } else {
+                                        "ptr(other)"
+                                    }
+                                } else {
+                                    "unknown"
+                                };
+                                eprintln!(
+                                    "[CALL_HELPER] target not callable: raw={:#x} type={} nargs={}",
+                                    target_callable.raw(),
+                                    type_info,
+                                    args.len()
+                                );
                             }
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Function.prototype.call target is not callable".to_string(),
@@ -7616,19 +7759,22 @@ impl<'a> Interpreter<'a> {
                                     match &cd.kind {
                                         CallableKind::BoundNative { native_id, .. } => {
                                             return self.exec_bound_native_method_call(
-                                                stack,
-                                                this_arg,
-                                                *native_id,
-                                                apply_args,
-                                                module,
+                                                stack, this_arg, *native_id, apply_args, module,
                                                 task,
                                             );
                                         }
                                         CallableKind::BoundMethod { func_id, .. } => {
-                                            let receiver = if self.callable_uses_js_this_slot(target_callable) {
-                                                match self.js_this_value_for_callable(target_callable, Some(this_arg)) {
+                                            let receiver = if self
+                                                .callable_uses_js_this_slot(target_callable)
+                                            {
+                                                match self.js_this_value_for_callable(
+                                                    target_callable,
+                                                    Some(this_arg),
+                                                ) {
                                                     Ok(value) => value,
-                                                    Err(error) => return OpcodeResult::Error(error),
+                                                    Err(error) => {
+                                                        return OpcodeResult::Error(error)
+                                                    }
                                                 }
                                             } else {
                                                 this_arg
@@ -9231,8 +9377,11 @@ impl<'a> Interpreter<'a> {
                         };
                         // Property kernel fast path: check DynProp / SlotMeta first
                         let kernel_descriptor = 'kernel: {
-                            let obj_ptr =
-                                if let Some(p) = checked_object_ptr(target) { p } else { break 'kernel None };
+                            let obj_ptr = if let Some(p) = checked_object_ptr(target) {
+                                p
+                            } else {
+                                break 'kernel None;
+                            };
                             let obj = unsafe { &*obj_ptr.as_ptr() };
                             let key_id = self.intern_prop_key(&key);
                             // Check dyn_props
@@ -9243,16 +9392,13 @@ impl<'a> Interpreter<'a> {
                                 }
                             }
                             // Check slot_meta for fixed slots
-                            if let Some(slot_idx) =
-                                self.get_field_index_for_value(target, &key)
-                            {
+                            if let Some(slot_idx) = self.get_field_index_for_value(target, &key) {
                                 if let Some(meta) = obj.slot_meta.get(slot_idx) {
-                                    let slot_value = obj
-                                        .get_field(slot_idx)
-                                        .unwrap_or(Value::undefined());
-                                    match self.synthesize_descriptor_from_slot_meta(
-                                        meta, slot_value,
-                                    ) {
+                                    let slot_value =
+                                        obj.get_field(slot_idx).unwrap_or(Value::undefined());
+                                    match self
+                                        .synthesize_descriptor_from_slot_meta(meta, slot_value)
+                                    {
                                         Ok(desc) => break 'kernel Some(desc),
                                         Err(error) => return OpcodeResult::Error(error),
                                     }
@@ -9266,8 +9412,7 @@ impl<'a> Interpreter<'a> {
                             match self.get_descriptor_metadata(target, &key) {
                                 Some(descriptor) => descriptor,
                                 None => {
-                                    match self
-                                        .synthesize_accessor_property_descriptor(target, &key)
+                                    match self.synthesize_accessor_property_descriptor(target, &key)
                                     {
                                         Ok(Some(descriptor)) => descriptor,
                                         Ok(None) => match self

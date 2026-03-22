@@ -121,7 +121,10 @@ fn build_builtin_global_exports(
             .or_insert(name.1);
     }
 
-    let checker_mode = crate::parser::checker::TypeSystemMode::Js;
+    let checker_mode = match mode {
+        BuiltinSurfaceMode::RayaStrict => crate::parser::checker::TypeSystemMode::Ts,
+        BuiltinSurfaceMode::NodeCompat => crate::parser::checker::TypeSystemMode::Js,
+    };
     let checker_policy = CheckerPolicy::for_mode(checker_mode);
     let mut shared_type_ctx = TypeContext::new();
 

@@ -1,6 +1,7 @@
 //! Object opcode handlers: nominal allocation, field access, structural field access,
 //! object literals, and method binding
 
+use super::native::checked_object_ptr;
 use crate::compiler::Module;
 use crate::compiler::Opcode;
 use crate::vm::gc::header_ptr_from_value_ptr;
@@ -9,10 +10,7 @@ use crate::vm::interpreter::shared_state::{
     ShapeAdapter, StructuralAdapterKey, StructuralSlotBinding,
 };
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{
-    Array, CallableKind, DynProp, Object, RayaString,
-};
-use super::native::checked_object_ptr;
+use crate::vm::object::{Array, CallableKind, DynProp, Object, RayaString};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -181,7 +179,10 @@ impl<'a> Interpreter<'a> {
                             return_action,
                         }));
                     }
-                    CallableKind::BoundNative { native_id, receiver } => {
+                    CallableKind::BoundNative {
+                        native_id,
+                        receiver,
+                    } => {
                         let recv = explicit_this.unwrap_or(*receiver);
                         return Ok(Some(self.exec_bound_native_method_call(
                             stack,
@@ -192,13 +193,20 @@ impl<'a> Interpreter<'a> {
                             task,
                         )));
                     }
-                    CallableKind::Bound { target, this_arg, bound_args, rebind_call_helper, .. } => {
+                    CallableKind::Bound {
+                        target,
+                        this_arg,
+                        bound_args,
+                        rebind_call_helper,
+                        ..
+                    } => {
                         let mut combined_args = bound_args.clone();
                         combined_args.extend_from_slice(args);
 
                         if *rebind_call_helper {
                             let target_callable = *this_arg;
-                            let this_a = combined_args.first().copied().unwrap_or(Value::undefined());
+                            let this_a =
+                                combined_args.first().copied().unwrap_or(Value::undefined());
                             let rest_args = if combined_args.len() > 1 {
                                 combined_args[1..].to_vec()
                             } else {
@@ -229,7 +237,8 @@ impl<'a> Interpreter<'a> {
                         let closure_module = co.callable_module();
                         let mut arg_count = args.len();
                         if self.callable_uses_js_this_slot(callable) {
-                            stack.push(self.js_this_value_for_callable(callable, explicit_this)?)?;
+                            stack
+                                .push(self.js_this_value_for_callable(callable, explicit_this)?)?;
                             arg_count += 1;
                         }
                         for arg in args {
@@ -332,8 +341,7 @@ impl<'a> Interpreter<'a> {
         let dynamic_binding_for = |name: &str| -> Option<StructuralSlotBinding> {
             let key = self.intern_prop_key(name);
             obj.dyn_props().and_then(|dp| {
-                dp
-                    .contains_key(key)
+                dp.contains_key(key)
                     .then_some(StructuralSlotBinding::Dynamic(key))
             })
         };
@@ -1179,7 +1187,8 @@ impl<'a> Interpreter<'a> {
 
                 let mut obj = Object::new_structural(layout_id, field_count);
                 // Set [[Prototype]] to Object.prototype for JS object literals
-                if let Some(object_proto) = self.builtin_global_value("Object")
+                if let Some(object_proto) = self
+                    .builtin_global_value("Object")
                     .and_then(|ctor| self.object_constructor_prototype_value(ctor))
                 {
                     obj.prototype = object_proto;

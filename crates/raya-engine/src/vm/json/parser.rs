@@ -427,7 +427,10 @@ impl<'a> Parser<'a> {
             {
                 let dyn_props = obj.ensure_dyn_props();
                 for (key, value) in entries {
-                    dyn_props.insert(intern_prop_key(&key), crate::vm::object::DynProp::data(value));
+                    dyn_props.insert(
+                        intern_prop_key(&key),
+                        crate::vm::object::DynProp::data(value),
+                    );
                 }
             }
             let obj_ptr = self.gc.allocate(obj);

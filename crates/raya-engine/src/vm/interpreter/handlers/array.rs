@@ -1350,8 +1350,8 @@ impl<'a> Interpreter<'a> {
                     if args[2].is_undefined() {
                         len
                     } else {
-                    let relative_end =
-                        self.array_integer_argument_with_context(args[2], task, module)?;
+                        let relative_end =
+                            self.array_integer_argument_with_context(args[2], task, module)?;
                         if relative_end == i64::MIN {
                             0
                         } else if relative_end < 0 {

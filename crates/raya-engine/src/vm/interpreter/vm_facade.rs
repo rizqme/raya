@@ -6,10 +6,7 @@ use crate::compiler::bytecode::Opcode;
 use crate::compiler::Module;
 use crate::vm::{
     gc::{GarbageCollector, GcHeader},
-    object::{
-        Array, CallableKind, ChannelObject, Object, Proxy, RayaString,
-        RefCell,
-    },
+    object::{Array, CallableKind, ChannelObject, Object, Proxy, RayaString, RefCell},
     scheduler::{Scheduler, Task, TaskState},
     snapshot::{
         HeapSnapshot, ObjectId, SerializedDynEntry, SerializedHeapEntry, SerializedValue,
@@ -86,20 +83,18 @@ fn serialize_heap(
             // Check if this is a callable object — serialize as callable variant
             if let Some(ref callable) = object.callable {
                 match &callable.kind {
-                    CallableKind::Closure { func_id } => {
-                        SerializedHeapEntry::Closure {
-                            object_id,
-                            func_id: *func_id,
-                            captures: callable
-                                .captures
-                                .iter()
-                                .copied()
-                                .map(|value| SerializedValue::from_live(value, pointer_map))
-                                .collect::<std::io::Result<Vec<_>>>()
-                                .map_err(|e| VmError::IoError(e.to_string()))?,
-                            module_checksum: callable.module.as_ref().map(|module| module.checksum),
-                        }
-                    }
+                    CallableKind::Closure { func_id } => SerializedHeapEntry::Closure {
+                        object_id,
+                        func_id: *func_id,
+                        captures: callable
+                            .captures
+                            .iter()
+                            .copied()
+                            .map(|value| SerializedValue::from_live(value, pointer_map))
+                            .collect::<std::io::Result<Vec<_>>>()
+                            .map_err(|e| VmError::IoError(e.to_string()))?,
+                        module_checksum: callable.module.as_ref().map(|module| module.checksum),
+                    },
                     CallableKind::BoundMethod { func_id, receiver } => {
                         SerializedHeapEntry::BoundMethod {
                             object_id,
@@ -109,14 +104,15 @@ fn serialize_heap(
                             module_checksum: callable.module.as_ref().map(|module| module.checksum),
                         }
                     }
-                    CallableKind::BoundNative { native_id, receiver } => {
-                        SerializedHeapEntry::BoundNativeMethod {
-                            object_id,
-                            receiver: SerializedValue::from_live(*receiver, pointer_map)
-                                .map_err(|e| VmError::IoError(e.to_string()))?,
-                            native_id: *native_id,
-                        }
-                    }
+                    CallableKind::BoundNative {
+                        native_id,
+                        receiver,
+                    } => SerializedHeapEntry::BoundNativeMethod {
+                        object_id,
+                        receiver: SerializedValue::from_live(*receiver, pointer_map)
+                            .map_err(|e| VmError::IoError(e.to_string()))?,
+                        native_id: *native_id,
+                    },
                     CallableKind::Bound { .. } => {
                         // BoundFunction not yet serialized; skip
                         continue;
@@ -129,12 +125,15 @@ fn serialize_heap(
                         dp.keys_in_order()
                             .filter_map(|key| {
                                 let prop = dp.get(key)?;
-                                let name = shared.prop_key_name(key).ok_or_else(|| {
-                                    VmError::RuntimeError(format!(
-                                        "snapshot missing dynamic property key name for id {}",
-                                        key
-                                    ))
-                                }).ok()?;
+                                let name = shared
+                                    .prop_key_name(key)
+                                    .ok_or_else(|| {
+                                        VmError::RuntimeError(format!(
+                                            "snapshot missing dynamic property key name for id {}",
+                                            key
+                                        ))
+                                    })
+                                    .ok()?;
                                 Some(Ok(SerializedDynEntry {
                                     key: name,
                                     value: SerializedValue::from_live(prop.value, pointer_map)
@@ -274,7 +273,11 @@ fn restore_heap_snapshot(
                     .as_ref()
                     .and_then(|checksum| module_registry.get_by_checksum(checksum).cloned());
                 let callable = if let Some(m) = module {
-                    Object::new_closure_with_module(*func_id, vec![Value::null(); captures.len()], m)
+                    Object::new_closure_with_module(
+                        *func_id,
+                        vec![Value::null(); captures.len()],
+                        m,
+                    )
                 } else {
                     Object::new_closure(*func_id, vec![Value::null(); captures.len()])
                 };
@@ -342,10 +345,12 @@ fn restore_heap_snapshot(
                         let key = shared.intern_prop_key(&entry.key);
                         dp.insert(
                             key,
-                            crate::vm::object::DynProp::data(entry
-                                .value
-                                .to_live(&values)
-                                .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?),
+                            crate::vm::object::DynProp::data(
+                                entry
+                                    .value
+                                    .to_live(&values)
+                                    .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?,
+                            ),
                         );
                     }
                 }
@@ -386,8 +391,15 @@ fn restore_heap_snapshot(
             } => {
                 let ptr = unsafe { value.as_ptr::<Object>() }.unwrap();
                 let obj = unsafe { &mut *ptr.as_ptr() };
-                let callable = obj.callable.as_mut().expect("callable data for bound method");
-                if let CallableKind::BoundMethod { receiver: ref mut recv, .. } = callable.kind {
+                let callable = obj
+                    .callable
+                    .as_mut()
+                    .expect("callable data for bound method");
+                if let CallableKind::BoundMethod {
+                    receiver: ref mut recv,
+                    ..
+                } = callable.kind
+                {
                     *recv = receiver
                         .to_live(&values)
                         .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;
@@ -399,8 +411,15 @@ fn restore_heap_snapshot(
             SerializedHeapEntry::BoundNativeMethod { receiver, .. } => {
                 let ptr = unsafe { value.as_ptr::<Object>() }.unwrap();
                 let obj = unsafe { &mut *ptr.as_ptr() };
-                let callable = obj.callable.as_mut().expect("callable data for bound native");
-                if let CallableKind::BoundNative { receiver: ref mut recv, .. } = callable.kind {
+                let callable = obj
+                    .callable
+                    .as_mut()
+                    .expect("callable data for bound native");
+                if let CallableKind::BoundNative {
+                    receiver: ref mut recv,
+                    ..
+                } = callable.kind
+                {
                     *recv = receiver
                         .to_live(&values)
                         .map_err(|e: std::io::Error| VmError::IoError(e.to_string()))?;

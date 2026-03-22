@@ -6,9 +6,7 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{
-    Array, CallableKind, Object, RayaString,
-};
+use crate::vm::object::{Array, CallableKind, Object, RayaString};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;

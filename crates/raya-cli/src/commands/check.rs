@@ -262,6 +262,7 @@ fn adjust_check_error_spans(err: &mut CheckError, offset: usize) {
         | CheckError::ArgumentCountMismatch { span, .. }
         | CheckError::NonExhaustiveMatch { span, .. }
         | CheckError::PropertyNotFound { span, .. }
+        | CheckError::JsTypedDotMonkeypatchForbidden { span, .. }
         | CheckError::ReturnTypeMismatch { span, .. }
         | CheckError::InvalidBinaryOp { span, .. }
         | CheckError::InvalidUnaryOp { span, .. }

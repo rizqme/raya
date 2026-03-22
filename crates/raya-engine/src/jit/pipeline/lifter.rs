@@ -1808,7 +1808,6 @@ fn lift_instruction(
         Opcode::BindMethod => {
             // Falls back to interpreter — bound method creation requires GC allocation
         }
-
     }
 
     Ok(())

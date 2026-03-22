@@ -4,10 +4,7 @@ use crate::compiler::Module;
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{
-    layout_id_from_ordered_names, Array, DynProp, Object, Proxy,
-    RayaString,
-};
+use crate::vm::object::{layout_id_from_ordered_names, Array, DynProp, Object, Proxy, RayaString};
 use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
@@ -133,20 +130,31 @@ impl<'a> Interpreter<'a> {
             let obj = unsafe { obj_ptr.as_ref() };
             let field_names = self.reflect_object_field_names(obj);
             if debug {
-                eprintln!("[forin] own_enum: target={:#x} field_names={:?} field_count={} layout_id={}",
-                    target.raw(), field_names, obj.field_count(), obj.layout_id());
+                eprintln!(
+                    "[forin] own_enum: target={:#x} field_names={:?} field_count={} layout_id={}",
+                    target.raw(),
+                    field_names,
+                    obj.field_count(),
+                    obj.layout_id()
+                );
             }
             for name in field_names {
                 let enumerable = self.is_property_enumerable(target, &name);
                 if debug {
-                    eprintln!("[forin] own_enum: name='{}' enumerable={}", name, enumerable);
+                    eprintln!(
+                        "[forin] own_enum: name='{}' enumerable={}",
+                        name, enumerable
+                    );
                 }
                 if enumerable {
                     names.push(name);
                 }
             }
         } else if debug {
-            eprintln!("[forin] own_enum: target={:#x} is NOT an object ptr", target.raw());
+            eprintln!(
+                "[forin] own_enum: target={:#x} is NOT an object ptr",
+                target.raw()
+            );
         }
 
         names
@@ -748,13 +756,15 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
 
-                if let Some(value) = self.get_property_value_on_receiver_via_js_semantics_with_context(
-                    target,
-                    &property_key,
-                    receiver,
-                    task,
-                    module,
-                )? {
+                if let Some(value) = self
+                    .get_property_value_on_receiver_via_js_semantics_with_context(
+                        target,
+                        &property_key,
+                        receiver,
+                        task,
+                        module,
+                    )?
+                {
                     value
                 } else {
                     if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
@@ -2054,7 +2064,11 @@ impl<'a> Interpreter<'a> {
 
                 let keys = self.enumerable_property_names_for_iteration(target);
                 if std::env::var("RAYA_DEBUG_FORIN").is_ok() {
-                    eprintln!("[forin] getEnumerableKeys: target={:#x} keys={:?}", target.raw(), keys);
+                    eprintln!(
+                        "[forin] getEnumerableKeys: target={:#x} keys={:?}",
+                        target.raw(),
+                        keys
+                    );
                 }
                 let mut arr = Array::new(0, 0);
                 for name in keys {

@@ -41,7 +41,8 @@ impl<'a> Interpreter<'a> {
                 }
                 captures.reverse();
 
-                let closure = Object::new_closure_with_module(func_index, captures, Arc::new(module.clone()));
+                let closure =
+                    Object::new_closure_with_module(func_index, captures, Arc::new(module.clone()));
                 let gc_ptr = self.gc.lock().allocate(closure);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };

@@ -83,7 +83,10 @@ impl<'a> Interpreter<'a> {
             }
         }
         let key = self.intern_prop_key(field_name);
-        object.dyn_props().and_then(|dp| dp.get(key)).map(|p| p.value)
+        object
+            .dyn_props()
+            .and_then(|dp| dp.get(key))
+            .map(|p| p.value)
     }
 
     pub(in crate::vm::interpreter) fn has_object_named_field(

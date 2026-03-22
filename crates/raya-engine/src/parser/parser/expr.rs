@@ -1539,7 +1539,7 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
 
     if parser.check(&Token::DotDotDot) {
         parser.advance();
-        let argument = parse_expression(parser)?;
+        let argument = parse_assignment_expression(parser)?;
         let span = parser.combine_spans(&start_span, &parser.current_span());
         return Ok(ObjectProperty::Spread(SpreadProperty { argument, span }));
     }

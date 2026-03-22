@@ -539,7 +539,9 @@ impl SharedVmState {
                         globals[module_slot] = value;
                     }
                     drop(globals);
-                    self.builtin_global_slots.write().insert(export.name.clone(), module_slot);
+                    self.builtin_global_slots
+                        .write()
+                        .insert(export.name.clone(), module_slot);
                 } else {
                     self.set_builtin_global(export.name.clone(), value);
                 }
@@ -1263,8 +1265,11 @@ impl SharedVmState {
             // If a class with this name already exists and the new module has
             // MORE functions, update the existing class's module reference.
             if let Some(existing) = classes.get_class_by_name(&class_def.name) {
-                let existing_func_count = existing.module.as_ref()
-                    .map(|m| m.functions.len()).unwrap_or(0);
+                let existing_func_count = existing
+                    .module
+                    .as_ref()
+                    .map(|m| m.functions.len())
+                    .unwrap_or(0);
                 let new_func_count = module.functions.len();
                 if std::env::var("RAYA_DEBUG_CLASS_MODULE_UPDATE").is_ok() {
                     eprintln!("[class-module-update] class={} existing_id={} existing_funcs={} new_funcs={} will_update={}",

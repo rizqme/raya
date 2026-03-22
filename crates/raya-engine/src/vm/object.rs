@@ -49,15 +49,27 @@ pub struct SlotMeta {
 
 impl SlotMeta {
     pub fn data_default() -> Self {
-        Self { writable: true, enumerable: true, configurable: true, accessor: None }
+        Self {
+            writable: true,
+            enumerable: true,
+            configurable: true,
+            accessor: None,
+        }
     }
     pub fn read_only() -> Self {
-        Self { writable: false, enumerable: true, configurable: false, accessor: None }
+        Self {
+            writable: false,
+            enumerable: true,
+            configurable: false,
+            accessor: None,
+        }
     }
 }
 
 impl Default for SlotMeta {
-    fn default() -> Self { Self::data_default() }
+    fn default() -> Self {
+        Self::data_default()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -72,21 +84,31 @@ pub struct SlotMetaTable {
 
 impl SlotMetaTable {
     pub fn new(entries: Vec<SlotMeta>) -> Self {
-        Self { inner: Arc::new(SlotMetaInner { entries }) }
+        Self {
+            inner: Arc::new(SlotMetaInner { entries }),
+        }
     }
     pub fn with_count(count: usize) -> Self {
         Self::new(vec![SlotMeta::data_default(); count])
     }
-    pub fn entries(&self) -> &[SlotMeta] { &self.inner.entries }
-    pub fn get(&self, index: usize) -> Option<&SlotMeta> { self.inner.entries.get(index) }
+    pub fn entries(&self) -> &[SlotMeta] {
+        &self.inner.entries
+    }
+    pub fn get(&self, index: usize) -> Option<&SlotMeta> {
+        self.inner.entries.get(index)
+    }
     pub fn get_mut(&mut self, index: usize) -> Option<&mut SlotMeta> {
         Arc::make_mut(&mut self.inner).entries.get_mut(index)
     }
     pub fn push(&mut self, meta: SlotMeta) {
         Arc::make_mut(&mut self.inner).entries.push(meta);
     }
-    pub fn len(&self) -> usize { self.inner.entries.len() }
-    pub fn is_empty(&self) -> bool { self.inner.entries.is_empty() }
+    pub fn len(&self) -> usize {
+        self.inner.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.inner.entries.is_empty()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -102,13 +124,42 @@ pub struct DynProp {
 
 impl DynProp {
     pub fn data(value: Value) -> Self {
-        Self { value, get: Value::undefined(), set: Value::undefined(), writable: true, enumerable: true, configurable: true, is_accessor: false }
+        Self {
+            value,
+            get: Value::undefined(),
+            set: Value::undefined(),
+            writable: true,
+            enumerable: true,
+            configurable: true,
+            is_accessor: false,
+        }
     }
-    pub fn data_with_attrs(value: Value, writable: bool, enumerable: bool, configurable: bool) -> Self {
-        Self { value, get: Value::undefined(), set: Value::undefined(), writable, enumerable, configurable, is_accessor: false }
+    pub fn data_with_attrs(
+        value: Value,
+        writable: bool,
+        enumerable: bool,
+        configurable: bool,
+    ) -> Self {
+        Self {
+            value,
+            get: Value::undefined(),
+            set: Value::undefined(),
+            writable,
+            enumerable,
+            configurable,
+            is_accessor: false,
+        }
     }
     pub fn accessor(get: Value, set: Value, enumerable: bool, configurable: bool) -> Self {
-        Self { value: Value::undefined(), get, set, writable: false, enumerable, configurable, is_accessor: true }
+        Self {
+            value: Value::undefined(),
+            get,
+            set,
+            writable: false,
+            enumerable,
+            configurable,
+            is_accessor: true,
+        }
     }
 }
 
@@ -119,24 +170,50 @@ pub struct DynProps {
 }
 
 impl DynProps {
-    pub fn new() -> Self { Self { map: FxHashMap::default(), order: Vec::new() } }
-    pub fn get(&self, key: PropKeyId) -> Option<&DynProp> { self.map.get(&key) }
-    pub fn get_mut(&mut self, key: PropKeyId) -> Option<&mut DynProp> { self.map.get_mut(&key) }
+    pub fn new() -> Self {
+        Self {
+            map: FxHashMap::default(),
+            order: Vec::new(),
+        }
+    }
+    pub fn get(&self, key: PropKeyId) -> Option<&DynProp> {
+        self.map.get(&key)
+    }
+    pub fn get_mut(&mut self, key: PropKeyId) -> Option<&mut DynProp> {
+        self.map.get_mut(&key)
+    }
     pub fn insert(&mut self, key: PropKeyId, prop: DynProp) {
-        if !self.map.contains_key(&key) { self.order.push(key); }
+        if !self.map.contains_key(&key) {
+            self.order.push(key);
+        }
         self.map.insert(key, prop);
     }
     pub fn remove(&mut self, key: PropKeyId) -> Option<DynProp> {
-        if let Some(prop) = self.map.remove(&key) { self.order.retain(|&k| k != key); Some(prop) } else { None }
+        if let Some(prop) = self.map.remove(&key) {
+            self.order.retain(|&k| k != key);
+            Some(prop)
+        } else {
+            None
+        }
     }
-    pub fn contains_key(&self, key: PropKeyId) -> bool { self.map.contains_key(&key) }
-    pub fn keys_in_order(&self) -> impl Iterator<Item = PropKeyId> + '_ { self.order.iter().copied() }
-    pub fn len(&self) -> usize { self.map.len() }
-    pub fn is_empty(&self) -> bool { self.map.is_empty() }
+    pub fn contains_key(&self, key: PropKeyId) -> bool {
+        self.map.contains_key(&key)
+    }
+    pub fn keys_in_order(&self) -> impl Iterator<Item = PropKeyId> + '_ {
+        self.order.iter().copied()
+    }
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
 }
 
 impl Default for DynProps {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -150,21 +227,52 @@ pub struct DescriptorRecord {
 }
 
 impl DescriptorRecord {
-    pub fn is_accessor_descriptor(&self) -> bool { self.get.is_some() || self.set.is_some() }
-    pub fn is_data_descriptor(&self) -> bool { self.value.is_some() || self.writable.is_some() }
+    pub fn is_accessor_descriptor(&self) -> bool {
+        self.get.is_some() || self.set.is_some()
+    }
+    pub fn is_data_descriptor(&self) -> bool {
+        self.value.is_some() || self.writable.is_some()
+    }
 }
 
 #[derive(Debug)]
 pub enum OwnPropRef<'a> {
-    Slot { index: usize, meta: &'a SlotMeta, value: &'a Value },
-    Dyn { prop: &'a DynProp },
+    Slot {
+        index: usize,
+        meta: &'a SlotMeta,
+        value: &'a Value,
+    },
+    Dyn {
+        prop: &'a DynProp,
+    },
 }
 
 impl<'a> OwnPropRef<'a> {
-    pub fn writable(&self) -> bool { match self { Self::Slot { meta, .. } => meta.writable, Self::Dyn { prop } => prop.writable } }
-    pub fn enumerable(&self) -> bool { match self { Self::Slot { meta, .. } => meta.enumerable, Self::Dyn { prop } => prop.enumerable } }
-    pub fn configurable(&self) -> bool { match self { Self::Slot { meta, .. } => meta.configurable, Self::Dyn { prop } => prop.configurable } }
-    pub fn data_value(&self) -> Value { match self { Self::Slot { value, meta, .. } if meta.accessor.is_none() => **value, Self::Dyn { prop } if !prop.is_accessor => prop.value, _ => Value::undefined() } }
+    pub fn writable(&self) -> bool {
+        match self {
+            Self::Slot { meta, .. } => meta.writable,
+            Self::Dyn { prop } => prop.writable,
+        }
+    }
+    pub fn enumerable(&self) -> bool {
+        match self {
+            Self::Slot { meta, .. } => meta.enumerable,
+            Self::Dyn { prop } => prop.enumerable,
+        }
+    }
+    pub fn configurable(&self) -> bool {
+        match self {
+            Self::Slot { meta, .. } => meta.configurable,
+            Self::Dyn { prop } => prop.configurable,
+        }
+    }
+    pub fn data_value(&self) -> Value {
+        match self {
+            Self::Slot { value, meta, .. } if meta.accessor.is_none() => **value,
+            Self::Dyn { prop } if !prop.is_accessor => prop.value,
+            _ => Value::undefined(),
+        }
+    }
 }
 
 /// Runtime handle for nominal type constructors crossing module boundaries.
@@ -185,8 +293,14 @@ static NEXT_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
 /// Process-local fallback registry for structural layout names used outside a live VM.
 static GLOBAL_LAYOUT_NAMES: LazyLock<RwLock<FxHashMap<LayoutId, Vec<String>>>> =
     LazyLock::new(|| RwLock::new(FxHashMap::default()));
-pub const OBJECT_DESCRIPTOR_LAYOUT_FIELDS: &[&str] =
-    &["value", "writable", "configurable", "enumerable", "get", "set"];
+pub const OBJECT_DESCRIPTOR_LAYOUT_FIELDS: &[&str] = &[
+    "value",
+    "writable",
+    "configurable",
+    "enumerable",
+    "get",
+    "set",
+];
 pub const BUFFER_LAYOUT_FIELDS: &[&str] = &["bufferPtr", "length"];
 
 /// Generate a new unique object ID
@@ -246,7 +360,9 @@ pub enum ExoticKind {
 }
 
 impl Default for ExoticKind {
-    fn default() -> Self { Self::None }
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 /// Immutable identity header for runtime objects.
@@ -429,18 +545,26 @@ impl Object {
     }
 
     #[inline]
-    pub fn dyn_props(&self) -> Option<&DynProps> { self.dyn_props.as_deref() }
+    pub fn dyn_props(&self) -> Option<&DynProps> {
+        self.dyn_props.as_deref()
+    }
 
     #[inline]
-    pub fn dyn_props_mut(&mut self) -> Option<&mut DynProps> { self.dyn_props.as_deref_mut() }
+    pub fn dyn_props_mut(&mut self) -> Option<&mut DynProps> {
+        self.dyn_props.as_deref_mut()
+    }
 
     pub fn ensure_dyn_props(&mut self) -> &mut DynProps {
         self.set_flag(OBJECT_FLAG_HAS_DYN_MAP);
-        self.dyn_props.get_or_insert_with(|| Box::new(DynProps::new()))
+        self.dyn_props
+            .get_or_insert_with(|| Box::new(DynProps::new()))
     }
 
     pub fn js_get_own_dyn(&self, key: PropKeyId) -> Option<OwnPropRef<'_>> {
-        self.dyn_props.as_deref()?.get(key).map(|prop| OwnPropRef::Dyn { prop })
+        self.dyn_props
+            .as_deref()?
+            .get(key)
+            .map(|prop| OwnPropRef::Dyn { prop })
     }
     pub fn js_get_own_slot(&self, index: usize) -> Option<OwnPropRef<'_>> {
         let meta = self.slot_meta.get(index)?;
@@ -448,7 +572,10 @@ impl Object {
         Some(OwnPropRef::Slot { index, meta, value })
     }
     pub fn js_own_dyn_keys(&self) -> Vec<PropKeyId> {
-        self.dyn_props.as_deref().map(|dp| dp.keys_in_order().collect()).unwrap_or_default()
+        self.dyn_props
+            .as_deref()
+            .map(|dp| dp.keys_in_order().collect())
+            .unwrap_or_default()
     }
 
     /// Get a field value by index
@@ -507,7 +634,9 @@ impl Object {
     /// Get the function ID if this is a Closure or BoundMethod callable.
     pub fn callable_func_id(&self) -> Option<usize> {
         match &self.callable.as_ref()?.kind {
-            CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => Some(*func_id),
+            CallableKind::Closure { func_id } | CallableKind::BoundMethod { func_id, .. } => {
+                Some(*func_id)
+            }
             _ => None,
         }
     }
@@ -515,7 +644,8 @@ impl Object {
     /// Get the receiver if this is a BoundMethod or BoundNative callable.
     pub fn callable_receiver(&self) -> Option<Value> {
         match &self.callable.as_ref()?.kind {
-            CallableKind::BoundMethod { receiver, .. } | CallableKind::BoundNative { receiver, .. } => Some(*receiver),
+            CallableKind::BoundMethod { receiver, .. }
+            | CallableKind::BoundNative { receiver, .. } => Some(*receiver),
             _ => None,
         }
     }
@@ -535,7 +665,10 @@ impl Object {
 
     /// Get captured variable values from the callable extension.
     pub fn callable_captures(&self) -> &[Value] {
-        self.callable.as_ref().map(|c| c.captures.as_slice()).unwrap_or(&[])
+        self.callable
+            .as_ref()
+            .map(|c| c.captures.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Get a captured variable by index from the callable extension.
@@ -545,7 +678,10 @@ impl Object {
 
     /// Set a captured variable by index in the callable extension.
     pub fn callable_set_captured(&mut self, index: usize, value: Value) -> Result<(), String> {
-        let callable = self.callable.as_mut().ok_or_else(|| "Not a callable object".to_string())?;
+        let callable = self
+            .callable
+            .as_mut()
+            .ok_or_else(|| "Not a callable object".to_string())?;
         if index < callable.captures.len() {
             callable.captures[index] = value;
             Ok(())
@@ -556,7 +692,10 @@ impl Object {
 
     /// Get number of captured variables in the callable extension.
     pub fn callable_capture_count(&self) -> usize {
-        self.callable.as_ref().map(|c| c.captures.len()).unwrap_or(0)
+        self.callable
+            .as_ref()
+            .map(|c| c.captures.len())
+            .unwrap_or(0)
     }
 
     // ========================================================================
@@ -575,7 +714,11 @@ impl Object {
     }
 
     /// Create a closure object with an explicit module binding.
-    pub fn new_closure_with_module(func_id: usize, captures: Vec<Value>, module: Arc<crate::compiler::Module>) -> Self {
+    pub fn new_closure_with_module(
+        func_id: usize,
+        captures: Vec<Value>,
+        module: Arc<crate::compiler::Module>,
+    ) -> Self {
         let mut obj = Self::new_structural(1, 0);
         obj.callable = Some(Box::new(CallableData {
             kind: CallableKind::Closure { func_id },
@@ -586,7 +729,11 @@ impl Object {
     }
 
     /// Create a bound method object.
-    pub fn new_bound_method(receiver: Value, func_id: usize, module: Option<Arc<crate::compiler::Module>>) -> Self {
+    pub fn new_bound_method(
+        receiver: Value,
+        func_id: usize,
+        module: Option<Arc<crate::compiler::Module>>,
+    ) -> Self {
         let mut obj = Self::new_structural(1, 0);
         obj.callable = Some(Box::new(CallableData {
             kind: CallableKind::BoundMethod { func_id, receiver },
@@ -600,7 +747,10 @@ impl Object {
     pub fn new_bound_native(receiver: Value, native_id: u16) -> Self {
         let mut obj = Self::new_structural(1, 0);
         obj.callable = Some(Box::new(CallableData {
-            kind: CallableKind::BoundNative { native_id, receiver },
+            kind: CallableKind::BoundNative {
+                native_id,
+                receiver,
+            },
             captures: Vec::new(),
             module: None,
         }));
@@ -608,10 +758,24 @@ impl Object {
     }
 
     /// Create a bound function object (JS-style Function.prototype.bind result).
-    pub fn new_bound_function(target: Value, this_arg: Value, bound_args: Vec<Value>, visible_name: String, visible_length: Value, rebind_call_helper: bool) -> Self {
+    pub fn new_bound_function(
+        target: Value,
+        this_arg: Value,
+        bound_args: Vec<Value>,
+        visible_name: String,
+        visible_length: Value,
+        rebind_call_helper: bool,
+    ) -> Self {
         let mut obj = Self::new_structural(1, 0);
         obj.callable = Some(Box::new(CallableData {
-            kind: CallableKind::Bound { target, this_arg, bound_args, visible_name, visible_length, rebind_call_helper },
+            kind: CallableKind::Bound {
+                target,
+                this_arg,
+                bound_args,
+                visible_name,
+                visible_length,
+                rebind_call_helper,
+            },
             captures: Vec::new(),
             module: None,
         }));
@@ -659,7 +823,9 @@ impl Class {
             static_fields: Vec::new(),
             constructor_id: None,
             module: None,
-            slot_meta_template: Arc::new(SlotMetaInner { entries: vec![SlotMeta::data_default(); field_count] }),
+            slot_meta_template: Arc::new(SlotMetaInner {
+                entries: vec![SlotMeta::data_default(); field_count],
+            }),
             prototype_value: None,
         }
     }
@@ -675,7 +841,9 @@ impl Class {
             static_fields: Vec::new(),
             constructor_id: None,
             module: None,
-            slot_meta_template: Arc::new(SlotMetaInner { entries: vec![SlotMeta::data_default(); field_count] }),
+            slot_meta_template: Arc::new(SlotMetaInner {
+                entries: vec![SlotMeta::data_default(); field_count],
+            }),
             prototype_value: None,
         }
     }
@@ -696,7 +864,9 @@ impl Class {
             static_fields: vec![Value::null(); static_field_count],
             constructor_id: None,
             module: None,
-            slot_meta_template: Arc::new(SlotMetaInner { entries: vec![SlotMeta::data_default(); field_count] }),
+            slot_meta_template: Arc::new(SlotMetaInner {
+                entries: vec![SlotMeta::data_default(); field_count],
+            }),
             prototype_value: None,
         }
     }
@@ -1063,7 +1233,6 @@ pub enum CallableKind {
     },
 }
 
-
 /// RefCell - A heap-allocated mutable cell for capture-by-reference semantics
 ///
 /// When a variable is captured by a closure AND modified (either in the closure
@@ -1158,12 +1327,9 @@ impl RayaString {
             return cached - 1;
         }
         let h = self.compute_hash();
-        self.hash_plus_one.compare_exchange(
-            0,
-            h.wrapping_add(1),
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ).ok();
+        self.hash_plus_one
+            .compare_exchange(0, h.wrapping_add(1), Ordering::AcqRel, Ordering::Acquire)
+            .ok();
         h
     }
 
@@ -1258,7 +1424,7 @@ impl PartialEq for HashableValue {
                 (Some(a), Some(b)) => a == b,
                 _ => self.0 == other.0,
             },
-            _ => false,                        // One is string, one is not
+            _ => false, // One is string, one is not
         }
     }
 }

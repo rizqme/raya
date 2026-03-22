@@ -92,8 +92,16 @@ fn compile_builtin_mode(
     mode: BuiltinInventoryMode,
     builtins_root: &Path,
 ) -> Result<CompiledBuiltinMode, String> {
-    let checker_mode = TypeSystemMode::Js;
-    let checker_policy = CheckerPolicy::for_mode(checker_mode);
+    let contract_checker_mode = match mode {
+        // Use TS semantics for the strict builtin declaration surface so we
+        // preserve non-JS arity/min-parameter information without rejecting
+        // internal `any` annotations used by some builtin stubs.
+        BuiltinInventoryMode::RayaStrict => TypeSystemMode::Ts,
+        BuiltinInventoryMode::NodeCompat => TypeSystemMode::Js,
+    };
+    let contract_checker_policy = CheckerPolicy::for_mode(contract_checker_mode);
+    let compiler_checker_mode = TypeSystemMode::Js;
+    let compiler_checker_policy = CheckerPolicy::for_mode(compiler_checker_mode);
     let mut parsed_units = Vec::new();
 
     for logical_path in builtin_logical_paths(mode) {
@@ -166,8 +174,8 @@ fn compile_builtin_mode(
     let mut shared_type_ctx = TypeContext::new();
     for unit in &parsed_units {
         let mut binder = Binder::new(&mut shared_type_ctx, &unit.interner)
-            .with_mode(checker_mode)
-            .with_policy(checker_policy);
+            .with_mode(contract_checker_mode)
+            .with_policy(contract_checker_policy);
         binder.register_builtins(&[]);
         let mut ambient_symbols = provisional_symbols.clone();
         for local_name in &unit.local_names {
@@ -195,8 +203,8 @@ fn compile_builtin_mode(
     for unit in &parsed_units {
         let mut contract_type_ctx = shared_type_ctx.clone();
         let mut binder = Binder::new(&mut contract_type_ctx, &unit.interner)
-            .with_mode(checker_mode)
-            .with_policy(checker_policy);
+            .with_mode(contract_checker_mode)
+            .with_policy(contract_checker_policy);
         binder.register_builtins(&[]);
         let mut ambient_symbols = provisional_symbols.clone();
         for local_name in &unit.local_names {
@@ -212,6 +220,12 @@ fn compile_builtin_mode(
         })?;
 
         for local_name in &unit.local_names {
+            if local_name == "EventEmitter" {
+                // Keep the ambient EventEmitter surface sourced from the binder's
+                // synthetic generic declaration. Exported class signatures do not
+                // currently preserve class type parameters across hydration.
+                continue;
+            }
             let Some(symbol) = symbols.resolve(local_name) else {
                 continue;
             };
@@ -267,8 +281,8 @@ fn compile_builtin_mode(
         BuiltinInventoryMode::NodeCompat => BuiltinSurfaceMode::NodeCompat,
     };
     let mut compiler = BinaryModuleCompiler::new(builtins_root.to_path_buf())
-        .with_checker_mode(checker_mode)
-        .with_checker_policy(checker_policy)
+        .with_checker_mode(compiler_checker_mode)
+        .with_checker_policy(compiler_checker_policy)
         .with_builtin_surface_mode(builtin_surface_mode)
         .with_builtin_globals_override(ambient_contract);
 
@@ -296,15 +310,6 @@ fn compile_builtin_mode(
                 mode
             )
         })?;
-    println!("cargo:warning=[builtin-compile] mode={mode:?} compiled {} modules", compiled.len());
-    for module in &compiled {
-        let func_count = module.bytecode.functions.len();
-        let static_funcs: Vec<_> = module.bytecode.functions.iter()
-            .filter(|f| f.name.contains("::static::"))
-            .map(|f| f.name.as_str())
-            .collect();
-        println!("cargo:warning=[builtin-compile] {} funcs={} statics={:?}", module.path.display(), func_count, static_funcs);
-    }
     let compiled_by_path = compiled
         .into_iter()
         .map(|module| (module.path, module.bytecode))

@@ -1,126 +1,81 @@
-# Test Failures — 2026-03-21
+# Test Failures - 2026-03-21
 
-## FIXED Issues
+## Commands run
 
-### Issue 1: JIT integration tests — UnsupportedVersion (9 tests) ✓
+```sh
+cargo test --workspace
+```
 
-**Tests:** `jit_integration::vm_enable_jit_executes`, `vm_enable_jit_with_config`, `vm_adaptive_jit_creates_module_profile`, `vm_adaptive_jit_disabled_no_profile`, `vm_adaptive_jit_starts_background_compiler`, `jit_hints_encode_decode_roundtrip`, `jit_hints_absent_when_no_flag`, `background_prewarm_non_blocking`, `prewarm_candidates_submitted_to_background`
+- This full run stalled in `raya-engine` and never completed.
+- Log: `/tmp/raya-full-tests-20260321.log`
 
-**Error:** `UnsupportedVersion(1)` / `"Unsupported version: 1 (current: 10)"`
+```sh
+cargo test --workspace -- --skip expression_tests::test_parse_object_literal_with_spread --skip ir_comprehensive::objects::test_object_spread_lowers_to_field_copy --skip milestone_2_9_test::test_array_destructuring_with_defaults --skip milestone_2_9_test::test_complex_object_with_all_features --skip milestone_2_9_test::test_object_destructuring_with_defaults --skip milestone_2_9_test::test_object_spread
+```
 
-**Root cause:** Test helpers hardcoded `version: 1`, but bytecode format is now version 10.
+- This second run completed.
+- Log: `/tmp/raya-full-tests-20260321-skip6.log`
+- Result: all remaining tests passed except 7 `cli_http_e2e` failures.
 
-**Fix:** Replaced all 7 occurrences of `version: 1` with `version: VERSION` (imported from `raya_engine::compiler::bytecode::VERSION`).
+## Current failing set
 
-**File:** `crates/raya-engine/tests/jit_integration.rs`
+### Stuck / hanging tests (6)
 
----
+1. `expression_tests::test_parse_object_literal_with_spread`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-engine/tests/expression_tests/mod.rs:282`
+2. `ir_comprehensive::objects::test_object_spread_lowers_to_field_copy`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-engine/tests/ir_comprehensive/mod.rs:920`
+3. `milestone_2_9_test::test_array_destructuring_with_defaults`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-engine/tests/milestone_2_9_test/mod.rs:41`
+4. `milestone_2_9_test::test_object_destructuring_with_defaults`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-engine/tests/milestone_2_9_test/mod.rs:87`
+5. `milestone_2_9_test::test_object_spread`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-engine/tests/milestone_2_9_test/mod.rs:222`
+6. `milestone_2_9_test::test_complex_object_with_all_features`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-engine/tests/milestone_2_9_test/mod.rs:305`
 
-### Issue 2: JSON GC nested structures test — invalid JSON (1 test) ✓
+### Failing HTTP E2E tests (7)
 
-**Test:** `json_integration::test_json_gc_nested_structures`
+1. `cli_http_e2e::e2e_cli_http_diag_contract`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-examples/tests/cli_http_e2e/mod.rs:393`
+2. `cli_http_e2e::e2e_cli_http_echo_and_not_found_contracts`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-examples/tests/cli_http_e2e/mod.rs:427`
+3. `cli_http_e2e::e2e_cli_http_echo_method_not_allowed_contract`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-examples/tests/cli_http_e2e/mod.rs:515`
+4. `cli_http_e2e::e2e_cli_http_health_contract_and_artifacts`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-examples/tests/cli_http_e2e/mod.rs:488`
+5. `cli_http_e2e::e2e_cli_http_route_sequence_contracts`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-examples/tests/cli_http_e2e/mod.rs:332`
+6. `cli_http_e2e::e2e_cli_http_server_readiness_smoke`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-examples/tests/cli_http_e2e/mod.rs:319`
+7. `cli_http_e2e::e2e_cli_http_stress_workflow`
+   Source: `/Users/rizqme/Workspace/raya/crates/raya-examples/tests/cli_http_e2e/mod.rs:231`
 
-**Root cause:** Test builds nested JSON with mismatched braces (40 closing vs 20 opening).
+## Cluster summary
 
-**Fix:** Changed `json.push_str("}}");` to `json.push_str("}");`.
+### Cluster 1: spread / destructuring parser-or-compiler hangs
 
-**File:** `crates/raya-engine/tests/json_integration.rs`
+- `raya eval` reproduces timeouts for:
+  - `let base = { x: 1, y: 2 }; let merged = { a: 0, ...base, y: 3 }; merged`
+  - `let [x = 10, y = 20] = arr; x`
+  - `let { x = 0, y = 0 } = partial; x`
+  - `let obj = { ...defaults, name: "test", [computedKey]: value, nested: { ...nestedDefaults, x: 1 }, ...overrides }; obj`
+- All of those timed out after 8 seconds with no output.
+- Because parser-only tests and IR-lowering tests are both affected, the issue is probably in the front end around spread / destructuring-default parsing, with the compiler never reaching assertion time.
 
----
+### Cluster 2: HTTP fixture server crashes on first request
 
-### Issue 3: Closure this-arg displacement — array callbacks return NaN/undefined (~74+ tests) ✓
+- Fresh `raya eval` fetches against `/health`, `/diag?mode=contract`, `/echo` (GET and POST), `/missing`, and `/shutdown` all fail from the client side with:
+  - `fetch.request: Invalid HTTP status line`
+- The matching server process exits immediately after the first request with:
+  - `Type error: Expected Object receiver for shape method call, got UnknownGcType`
+- The shared server-side hot path is:
+  - `/Users/rizqme/Workspace/raya/crates/raya-examples/fixtures/webapp/src/server.raya`
+  - `/Users/rizqme/Workspace/raya/crates/raya-examples/fixtures/webapp/src/app/common.raya`
+  - `/Users/rizqme/Workspace/raya/crates/raya-stdlib-posix/raya/http.raya`
+- Inference: `HttpRequest` method dispatch (`req.path()`, `req.method()`, `req.query()`, `req.body()`, `req.header()`) is producing a runtime shape mismatch, so the server crashes before it can send a valid HTTP status line.
 
-**Tests:** All array callback method tests (map, filter, reduce, find, forEach, some, every, sort, etc.), plus async concurrency tests (4), plus many classes_types runtime tests.
+## Detailed analysis files
 
-**Error:** `arr.map((x: number) => x * 2)` returns `[NaN, NaN, NaN]` instead of `[2, 4, 6]`
-
-**Root cause:** In `callable_frame_for_value` (Closure path), when `explicit_this` was `Some(...)` but the closure didn't use `js_this_slot`, the code still pushed `this` as the first stack arg, displacing actual parameters. The callback received `undefined` in slot 0 instead of the array element.
-
-**Fix:** Removed the `else if let Some(this_arg) = explicit_this` branch from the Closure path. Only push `this` when the closure actually uses `js_this_slot`.
-
-**File:** `crates/raya-engine/src/vm/interpreter/opcodes/objects.rs`
-
----
-
-### Issue 4: Strict mode rejects imported class instance member calls (~80+ tests) ✓
-
-**Tests:** All `std:io`, `std:crypto`, `std:fs`, `std:env`, `std:runtime` method calls, plus most runtime VM introspection tests.
-
-**Error:** `"strict mode forbids runtime late-bound fallback for member call 'io.writeln(...)'"` and `"strict mode forbids unresolved runtime fallback op 'DynGetProp'"`
-
-**Root cause:** The lowerer rejects late-bound dispatch in Raya strict mode. Imported class instances (IoNamespace, CryptoNamespace, etc.) have no local nominal type ID or type registry entry, so the lowerer can't resolve their methods statically. Two separate checks blocked this: (1) the lowerer's own member-call check, and (2) a post-lowering IR scan for forbidden ops.
-
-**Fix:**
-1. In the lowerer's member-call and member-property checks, added `checker_validated` exemption: if the checker has typed the object as a class with declared methods/properties, allow late-bound dispatch even in strict mode.
-2. In the post-lowering IR scan, narrowed the forbidden ops to only `DynSetProp` (writes). `DynGetProp` and `LateBoundMember` are legitimate for imported class instances.
-
-**Files:**
-- `crates/raya-engine/src/compiler/lower/expr.rs` (2 changes)
-- `crates/raya-engine/src/compiler/mod.rs` (1 change)
-
----
-
-## REMAINING Issues (not fixed — deep architectural)
-
-### Category A: Error class shape mismatch (9 exception tests)
-
-**Error:** `"Cannot cast object(layout_id=8) to structural shape: missing required slot 1"`
-
-**Root cause:** Error objects constructed by `throw new Error(...)` don't match the structural shape the compiler generates for the `Error` type. Also, `instanceof Error` returns false for caught errors. This is a deep issue with how Error objects are typed/laid-out at runtime.
-
-**Tests:** All `integration_exceptions` tests that use `catch (e) { (e as Error).message }`
-
-### Category B: Promise/builtin shape mismatch (37 builtin tests)
-
-**Error:** `"Expected Object receiver for shape field access, got UnknownGcType"` (Promise tests) and various TypedArray/Iterator failures.
-
-**Root cause:** Promise.resolve(), TypedArrays, Iterators, and other builtins have shape/type mismatches between the compiler's expectations and the runtime object layout.
-
-### Category C: std:args module type errors (17 language_core tests)
-
-**Error:** `"UnknownNotActionable: cannot use unknown in operation 'binary' without narrowing"`
-
-**Root cause:** The `__raya_std__/args.raya` module source uses `unknown` types internally that the strict Raya checker rejects. Needs proper type annotations in the args module.
-
-### Category D: Array.concat not in type registry (3 tests)
-
-**Error:** `"unresolved member call 'concat()' on type id 17: no class or registry dispatch path"`
-
-**Root cause:** `Array.concat()` method is not registered in the type registry. Needs to be added.
-
-### Category E: Class inheritance chain issues (4 tests)
-
-Deep inheritance (3+ levels), super chain, instanceof checks fail. Related to how class nominal types are linked across inheritance hierarchies.
-
-### Category F: Truthiness narrowing (2 tests)
-
-Null falsy and string narrowing don't work correctly in the checker.
-
-### Category G: Node-compat specific (5 integration + 1 classes_types)
-
-DefineProperty, getter/setter tests, method extraction. These are node-compat features still in development.
-
-### Category H: Stuck tests (compile hangs)
-
-~180 tests in language_core (syntax_edge_cases, decorators, spread), ~30 in system_io (json tests), and a few in engine (milestone_2_9, ir_comprehensive, expression_tests) hang indefinitely during compilation. These are likely infinite loops in the parser/compiler for certain syntax patterns.
-
----
-
-## Summary
-
-| Suite | Before | After | Fixed |
-|---|---|---|---|
-| Engine lib | 1294 pass | 1294 pass | — |
-| Engine integration | 808 pass, 10 fail | 818 pass, 0 fail | 10 |
-| Runtime lib | 159 pass, 7 fail | 160 pass, 6 fail | 1 |
-| Async concurrency | 165 pass, 4 fail | 169 pass, 0 fail | 4 |
-| Classes/types | 353 pass, 82 fail | 427 pass, 8 fail | 74 |
-| Exceptions | 22 pass, 9 fail | 22 pass, 9 fail | — |
-| Builtins | 158 pass, 37 fail | 158 pass, 37 fail | — |
-| Language core* | ~640 pass, ~64 fail | 673 pass, 31 fail | ~33 |
-| System IO* | ~230 pass, ~37 fail | 263 pass, 4 fail | ~33 |
-| Integration | 2 pass, 5 fail | 2 pass, 5 fail | — |
-
-*Stuck tests excluded from both counts
-
-**Total tests fixed: ~155+**
+- Index: `/Users/rizqme/Workspace/raya/test_analysis/2026-03-21/README.md`
+- One file per failing or stuck test lives under `/Users/rizqme/Workspace/raya/test_analysis/2026-03-21/`

@@ -100,14 +100,16 @@ fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module 
             param_count,
             local_count,
             code,
-        
-        ..Default::default()}],
+
+            ..Default::default()
+        }],
         classes: vec![],
         metadata: Metadata {
             name: "test_module".to_string(),
             source_file: None,
-        
-        ..Default::default()},
+
+            ..Default::default()
+        },
         exports: vec![],
         imports: vec![],
         checksum: [0; 32],
@@ -130,14 +132,16 @@ fn make_vm_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Modu
             param_count,
             local_count,
             code,
-        
-        ..Default::default()}],
+
+            ..Default::default()
+        }],
         classes: vec![],
         metadata: Metadata {
             name: "test_module".to_string(),
             source_file: None,
-        
-        ..Default::default()},
+
+            ..Default::default()
+        },
         exports: vec![],
         imports: vec![],
         checksum: [0; 32],
@@ -188,7 +192,11 @@ fn jit_compile_and_call(func: &JitFunction) -> u64 {
 }
 
 /// Same as jit_compile_and_call but with a pre-allocated locals buffer.
-fn jit_compile_and_call_with_locals(func: &JitFunction, locals: &mut [u64], bytecode_module: Option<&raya_engine::compiler::bytecode::Module>) -> u64 {
+fn jit_compile_and_call_with_locals(
+    func: &JitFunction,
+    locals: &mut [u64],
+    bytecode_module: Option<&raya_engine::compiler::bytecode::Module>,
+) -> u64 {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
     flag_builder.set("is_pic", "false").unwrap();
@@ -239,7 +247,16 @@ fn jit_compile_and_call_with_locals(func: &JitFunction, locals: &mut [u64], byte
     let local_count = locals.len() as u32;
 
     let mut exit_info = raya_engine::jit::runtime::trampoline::JitExitInfo::default();
-    unsafe { jit_fn(ptr::null(), 0, locals_ptr, local_count, ptr::null_mut(), &mut exit_info) }
+    unsafe {
+        jit_fn(
+            ptr::null(),
+            0,
+            locals_ptr,
+            local_count,
+            ptr::null_mut(),
+            &mut exit_info,
+        )
+    }
 }
 
 /// Run bytecode through the full pipeline (lift → optimize → compile) then execute.
@@ -1307,22 +1324,25 @@ fn engine_prewarm_selects_hot() {
                 param_count: 0,
                 local_count: 0,
                 code: trivial_code,
-            
-            ..Default::default()},
+
+                ..Default::default()
+            },
             Function {
                 name: "heavy_math".to_string(),
                 param_count: 0,
                 local_count: 0,
                 code: heavy_code,
-            
-            ..Default::default()},
+
+                ..Default::default()
+            },
         ],
         classes: vec![],
         metadata: Metadata {
             name: "prewarm_test".to_string(),
             source_file: None,
-        
-        ..Default::default()},
+
+            ..Default::default()
+        },
         exports: vec![],
         imports: vec![],
         checksum: [0; 32],
@@ -1557,14 +1577,16 @@ fn background_compiler_processes_request() {
             param_count: 0,
             local_count: 0,
             code: func_code,
-        
-        ..Default::default()}],
+
+            ..Default::default()
+        }],
         classes: vec![],
         metadata: Metadata {
             name: "bg_test".to_string(),
             source_file: None,
-        
-        ..Default::default()},
+
+            ..Default::default()
+        },
         exports: vec![],
         imports: vec![],
         checksum: [1; 32],
@@ -1633,22 +1655,25 @@ fn jit_hints_encode_decode_roundtrip() {
                 param_count: 0,
                 local_count: 0,
                 code: vec![Opcode::Return as u8],
-            
-            ..Default::default()},
+
+                ..Default::default()
+            },
             Function {
                 name: "cold_func".to_string(),
                 param_count: 0,
                 local_count: 0,
                 code: vec![Opcode::Return as u8],
-            
-            ..Default::default()},
+
+                ..Default::default()
+            },
         ],
         classes: vec![],
         metadata: Metadata {
             name: "hints_test".to_string(),
             source_file: None,
-        
-        ..Default::default()},
+
+            ..Default::default()
+        },
         exports: vec![],
         imports: vec![],
         checksum: [0; 32],
@@ -1699,14 +1724,16 @@ fn jit_hints_absent_when_no_flag() {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::Return as u8],
-        
-        ..Default::default()}],
+
+            ..Default::default()
+        }],
         classes: vec![],
         metadata: Metadata {
             name: "no_hints".to_string(),
             source_file: None,
-        
-        ..Default::default()},
+
+            ..Default::default()
+        },
         exports: vec![],
         imports: vec![],
         checksum: [0; 32],
@@ -1787,14 +1814,16 @@ fn prewarm_candidates_submitted_to_background() {
             param_count: 0,
             local_count: 0,
             code: heavy_code,
-        
-        ..Default::default()}],
+
+            ..Default::default()
+        }],
         classes: vec![],
         metadata: Metadata {
             name: "prewarm_bg_test".to_string(),
             source_file: None,
-        
-        ..Default::default()},
+
+            ..Default::default()
+        },
         exports: vec![],
         imports: vec![],
         checksum: [0; 32],

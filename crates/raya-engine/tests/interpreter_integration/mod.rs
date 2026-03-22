@@ -38,8 +38,9 @@ fn test_simple_arithmetic() {
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -86,8 +87,9 @@ fn test_local_variables() {
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -136,8 +138,9 @@ fn test_conditional_branch() {
             0,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -174,8 +177,9 @@ fn test_subtraction_and_multiplication() {
             Opcode::Imul as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -233,8 +237,9 @@ fn test_division_and_modulo() {
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -280,8 +285,9 @@ fn test_comparison_operations() {
             Opcode::And as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -362,8 +368,9 @@ fn test_simple_loop() {
         param_count: 0,
         local_count: 2, // local 0: sum, local 1: i
         code,
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -409,8 +416,9 @@ fn test_equality_operations() {
             Opcode::And as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -439,8 +447,9 @@ fn test_boolean_operations() {
             Opcode::And as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
@@ -481,8 +490,9 @@ fn test_float_arithmetic() {
             Opcode::Fadd as u8,
             Opcode::Return as u8,
         ],
-    
-    ..Default::default()};
+
+        ..Default::default()
+    };
     module.functions.push(main_fn);
 
     let mut vm = Vm::new();
