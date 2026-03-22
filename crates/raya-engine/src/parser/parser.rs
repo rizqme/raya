@@ -192,6 +192,25 @@ impl Parser {
         self.tokens[self.pos].1
     }
 
+    /// Returns true when the current token is separated from the previous token by
+    /// at least one line terminator in the original source.
+    ///
+    /// This is an approximation based on token start lines. It is sufficient for
+    /// ASI-sensitive constructs like `return`, `break`, `continue`, `yield`, and
+    /// postfix `++/--` until the parser is upgraded to carry explicit trivia bits.
+    #[inline]
+    pub(crate) fn has_line_terminator_before_current(&self) -> bool {
+        if self.pos == 0 {
+            return false;
+        }
+        self.tokens[self.pos].1.line > self.tokens[self.pos - 1].1.line
+    }
+
+    #[inline]
+    pub(crate) fn can_insert_semicolon_before_current(&self) -> bool {
+        self.at_eof() || self.check(&Token::Semicolon) || self.check(&Token::RightBrace)
+    }
+
     /// Peek at the next token (lookahead).
     #[inline(always)]
     pub fn peek(&self) -> Option<&Token> {
@@ -583,6 +602,67 @@ mod tests {
             },
             other => panic!(
                 "Expected Expression statement, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+
+    #[test]
+    fn test_detects_line_terminator_between_tokens() {
+        let source = "return\n42;";
+        let mut parser = Parser::new(source).unwrap();
+
+        assert!(matches!(parser.current(), Token::Return));
+        parser.advance();
+        assert!(matches!(parser.current(), Token::IntLiteral(42)));
+        assert!(parser.has_line_terminator_before_current());
+    }
+
+    #[test]
+    fn test_postfix_operator_respects_line_terminator() {
+        use crate::parser::ast::Expression;
+
+        let source = "x\n++";
+        let mut parser = Parser::new(source).unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        match expr {
+            Expression::Identifier(_) => {}
+            other => panic!("Expected identifier expression, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_postfix_line_terminator_splits_statements() {
+        use crate::parser::ast::{Expression, Statement, UnaryOperator};
+
+        let source = "x\n++y;";
+        let parser = Parser::new(source).unwrap();
+        let (module, _) = parser.parse().unwrap();
+
+        assert_eq!(module.statements.len(), 2);
+
+        match &module.statements[0] {
+            Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+                Expression::Identifier(_) => {}
+                other => panic!("Expected identifier expression, got {:?}", other),
+            },
+            other => panic!(
+                "Expected first statement to be expression, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+
+        match &module.statements[1] {
+            Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+                Expression::Unary(unary) => {
+                    assert_eq!(unary.operator, UnaryOperator::PrefixIncrement);
+                    assert!(matches!(&*unary.operand, Expression::Identifier(_)));
+                }
+                other => panic!("Expected prefix increment expression, got {:?}", other),
+            },
+            other => panic!(
+                "Expected second statement to be expression, got {:?}",
                 std::mem::discriminant(other)
             ),
         }

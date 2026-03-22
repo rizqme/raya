@@ -1,7 +1,7 @@
 //! Statement parsing
 
 use super::expr::keyword_as_property_name;
-use super::{ParseError, Parser};
+use super::{ParseError, ParseErrorKind, Parser};
 use crate::parser::ast::*;
 use crate::parser::interner::Symbol;
 use crate::parser::token::{Span, Token};
@@ -937,7 +937,9 @@ fn parse_return_statement(parser: &mut Parser) -> Result<Statement, ParseError> 
     parser.expect(Token::Return)?;
 
     // Optional return value
-    let value = if parser.check(&Token::Semicolon) || parser.at_eof() {
+    let value = if parser.can_insert_semicolon_before_current()
+        || parser.has_line_terminator_before_current()
+    {
         None
     } else {
         Some(super::expr::parse_expression(parser)?)
@@ -963,7 +965,9 @@ fn parse_yield_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     parser.expect(Token::Yield)?;
 
     // Optional yield value
-    let value = if parser.check(&Token::Semicolon) || parser.at_eof() {
+    let value = if parser.can_insert_semicolon_before_current()
+        || parser.has_line_terminator_before_current()
+    {
         None
     } else {
         Some(super::expr::parse_expression(parser)?)
@@ -994,7 +998,7 @@ fn parse_break_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     parser.expect(Token::Break)?;
 
     // Optional label: break myLabel;
-    let label = if parser.check_identifier_like() {
+    let label = if !parser.has_line_terminator_before_current() && parser.check_identifier_like() {
         Some(expect_identifier(parser)?)
     } else {
         None
@@ -1017,7 +1021,7 @@ fn parse_continue_statement(parser: &mut Parser) -> Result<Statement, ParseError
     parser.expect(Token::Continue)?;
 
     // Optional label: continue myLabel;
-    let label = if parser.check_identifier_like() {
+    let label = if !parser.has_line_terminator_before_current() && parser.check_identifier_like() {
         Some(expect_identifier(parser)?)
     } else {
         None
@@ -1059,6 +1063,17 @@ fn parse_labeled_statement(parser: &mut Parser) -> Result<Statement, ParseError>
 fn parse_throw_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
     parser.expect(Token::Throw)?;
+
+    if parser.has_line_terminator_before_current() || parser.can_insert_semicolon_before_current() {
+        return Err(ParseError {
+            kind: ParseErrorKind::InvalidSyntax {
+                reason: "Illegal newline after throw".to_string(),
+            },
+            span: parser.current_span(),
+            message: "Line terminator is not allowed immediately after 'throw'".to_string(),
+            suggestion: None,
+        });
+    }
 
     // Required expression
     let value = super::expr::parse_expression(parser)?;
@@ -2420,5 +2435,45 @@ export { EventEmitterShim as default, default as EventEmitter };
             interner.resolve(specifiers[1].alias.as_ref().unwrap().name),
             "EventEmitter"
         );
+    }
+
+    #[test]
+    fn test_return_line_terminator_uses_asi() {
+        let module = parse("return\n42;");
+        match &module.statements[0] {
+            crate::parser::ast::Statement::Return(ret) => {
+                assert!(ret.value.is_none());
+            }
+            _ => panic!("Expected Return"),
+        }
+    }
+
+    #[test]
+    fn test_break_line_terminator_drops_label() {
+        let module = parse("break\nlabel;");
+        match &module.statements[0] {
+            crate::parser::ast::Statement::Break(stmt) => {
+                assert!(stmt.label.is_none());
+            }
+            _ => panic!("Expected Break"),
+        }
+    }
+
+    #[test]
+    fn test_continue_line_terminator_drops_label() {
+        let module = parse("continue\nlabel;");
+        match &module.statements[0] {
+            crate::parser::ast::Statement::Continue(stmt) => {
+                assert!(stmt.label.is_none());
+            }
+            _ => panic!("Expected Continue"),
+        }
+    }
+
+    #[test]
+    fn test_throw_line_terminator_is_parse_error() {
+        let parser = Parser::new("throw\nerr;").expect("should lex");
+        let result = parser.parse();
+        assert!(result.is_err(), "throw newline should be rejected");
     }
 }

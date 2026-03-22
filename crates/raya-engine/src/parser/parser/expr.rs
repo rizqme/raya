@@ -124,6 +124,15 @@ fn parse_expression_with_precedence(
             break;
         }
 
+        // Postfix `++/--` are only legal when no line terminator separates them
+        // from the left-hand side. If a newline intervenes, ASI ends the
+        // expression and the token belongs to the following parse step.
+        if matches!(parser.current(), Token::PlusPlus | Token::MinusMinus)
+            && parser.has_line_terminator_before_current()
+        {
+            break;
+        }
+
         // Standard precedence climbing: continue while current_prec >= min_prec
         // Special case: allow postfix operators through even if precedence is None
         // (they will be handled in parse_infix -> parse_postfix)
@@ -996,6 +1005,9 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
 
             // Postfix increment/decrement
             Token::PlusPlus | Token::MinusMinus => {
+                if parser.has_line_terminator_before_current() {
+                    break;
+                }
                 let op_token = parser.advance();
                 let operator = match op_token {
                     Token::PlusPlus => UnaryOperator::PostfixIncrement,
