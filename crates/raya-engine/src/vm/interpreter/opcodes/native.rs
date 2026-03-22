@@ -12066,6 +12066,74 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    id if id == crate::compiler::native_id::OBJECT_ITERATOR_GET => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.iteratorGet requires 1 argument".to_string(),
+                            ));
+                        }
+                        let iterator = match self.get_iterator_from_value(args[0], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(iterator) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_ITERATOR_STEP => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.iteratorStep requires 1 argument".to_string(),
+                            ));
+                        }
+                        let step = match self.iterator_step_result(args[0], task, module) {
+                            Ok(Some(value)) => value,
+                            Ok(None) => Value::null(),
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(step) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_ITERATOR_VALUE => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.iteratorValue requires 1 argument".to_string(),
+                            ));
+                        }
+                        let value = match self.iterator_result_value(args[0], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_ITERATOR_CLOSE => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.iteratorClose requires 1 argument".to_string(),
+                            ));
+                        }
+                        if let Err(error) = self.iterator_close(args[0], task, module) {
+                            return OpcodeResult::Error(error);
+                        }
+                        stack.push(Value::undefined()).map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_ITERATOR_APPEND_TO_ARRAY => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.iteratorAppendToArray requires target array and iterable".to_string(),
+                            ));
+                        }
+                        if let Err(error) = self.append_iterable_to_array(args[0], args[1], task, module) {
+                            return OpcodeResult::Error(error);
+                        }
+                        stack.push(args[0]).map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue)
+                    }
                     id if id == crate::compiler::native_id::OBJECT_SET_PROTOTYPE_OF => {
                         if args.len() < 2 {
                             return OpcodeResult::Error(VmError::TypeError(

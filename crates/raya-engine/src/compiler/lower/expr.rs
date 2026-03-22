@@ -377,6 +377,52 @@ impl<'a> Lowerer<'a> {
             .collect()
     }
 
+    pub(super) fn emit_iterator_get_helper(&mut self, iterable: Register) -> Register {
+        let iterator = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(iterator.clone()),
+            native_id: crate::compiler::native_id::OBJECT_ITERATOR_GET,
+            args: vec![iterable],
+        });
+        iterator
+    }
+
+    pub(super) fn emit_iterator_step_helper(&mut self, iterator: Register) -> Register {
+        let step = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(step.clone()),
+            native_id: crate::compiler::native_id::OBJECT_ITERATOR_STEP,
+            args: vec![iterator],
+        });
+        step
+    }
+
+    pub(super) fn emit_iterator_value_helper(&mut self, step_result: Register) -> Register {
+        let value = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(value.clone()),
+            native_id: crate::compiler::native_id::OBJECT_ITERATOR_VALUE,
+            args: vec![step_result],
+        });
+        value
+    }
+
+    pub(super) fn emit_iterator_close_helper(&mut self, iterator: Register) {
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_ITERATOR_CLOSE,
+            args: vec![iterator],
+        });
+    }
+
+    fn emit_iterator_append_to_array_helper(&mut self, target_array: Register, iterable: Register) {
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_ITERATOR_APPEND_TO_ARRAY,
+            args: vec![target_array, iterable],
+        });
+    }
+
     fn lower_call_argument_array(&mut self, args: &[ast::CallArgument]) -> Register {
         let args_array = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
         let zero = self.emit_i32_const(0);
@@ -396,61 +442,8 @@ impl<'a> Lowerer<'a> {
                     });
                 }
                 ast::CallArgument::Spread(expr) => {
-                    let src_arr = self.lower_expr(expr);
-                    let len = self.alloc_register(TypeId::new(INT_TYPE_ID));
-                    self.emit(IrInstr::ArrayLen {
-                        dest: len.clone(),
-                        array: src_arr.clone(),
-                    });
-                    let i = self.emit_i32_const(0);
-
-                    let header = self.alloc_block();
-                    let body = self.alloc_block();
-                    let exit = self.alloc_block();
-
-                    self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
-
-                    self.current_function_mut()
-                        .add_block(crate::ir::BasicBlock::with_label(header, "callspread.hdr"));
-                    self.current_block = header;
-                    let cond = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
-                    self.emit(IrInstr::BinaryOp {
-                        dest: cond.clone(),
-                        op: BinaryOp::Less,
-                        left: i.clone(),
-                        right: len.clone(),
-                    });
-                    self.set_terminator(crate::compiler::ir::Terminator::Branch {
-                        cond,
-                        then_block: body,
-                        else_block: exit,
-                    });
-
-                    self.current_function_mut()
-                        .add_block(crate::ir::BasicBlock::with_label(body, "callspread.body"));
-                    self.current_block = body;
-                    let elem = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
-                    self.emit(IrInstr::LoadElement {
-                        dest: elem.clone(),
-                        array: src_arr.clone(),
-                        index: i.clone(),
-                    });
-                    self.emit(IrInstr::ArrayPush {
-                        array: args_array.clone(),
-                        element: elem,
-                    });
-                    let one = self.emit_i32_const(1);
-                    self.emit(IrInstr::BinaryOp {
-                        dest: i.clone(),
-                        op: BinaryOp::Add,
-                        left: i.clone(),
-                        right: one,
-                    });
-                    self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
-
-                    self.current_function_mut()
-                        .add_block(crate::ir::BasicBlock::with_label(exit, "callspread.exit"));
-                    self.current_block = exit;
+                    let iterable = self.lower_expr(expr);
+                    self.emit_iterator_append_to_array_helper(args_array.clone(), iterable);
                 }
             }
         }
@@ -5429,65 +5422,8 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                     ast::ArrayElement::Spread(spread_expr) => {
-                        let src_arr = self.lower_expr(spread_expr);
-                        // Inline for-loop: for i in 0..src_arr.length { dest.push(src_arr[i]) }
-                        let len = self.alloc_register(TypeId::new(INT_TYPE_ID));
-                        self.emit(IrInstr::ArrayLen {
-                            dest: len.clone(),
-                            array: src_arr.clone(),
-                        });
-                        let i = self.emit_i32_const(0);
-
-                        let header = self.alloc_block();
-                        let body = self.alloc_block();
-                        let exit = self.alloc_block();
-
-                        self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
-
-                        // Header: i < len?
-                        self.current_function_mut()
-                            .add_block(crate::ir::BasicBlock::with_label(header, "spread.hdr"));
-                        self.current_block = header;
-                        let cond = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
-                        self.emit(IrInstr::BinaryOp {
-                            dest: cond.clone(),
-                            op: BinaryOp::Less,
-                            left: i.clone(),
-                            right: len.clone(),
-                        });
-                        self.set_terminator(crate::compiler::ir::Terminator::Branch {
-                            cond,
-                            then_block: body,
-                            else_block: exit,
-                        });
-
-                        // Body: elem = src_arr[i]; dest.push(elem); i++
-                        self.current_function_mut()
-                            .add_block(crate::ir::BasicBlock::with_label(body, "spread.body"));
-                        self.current_block = body;
-                        let elem = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                        self.emit(IrInstr::LoadElement {
-                            dest: elem.clone(),
-                            array: src_arr.clone(),
-                            index: i.clone(),
-                        });
-                        self.emit(IrInstr::ArrayPush {
-                            array: dest.clone(),
-                            element: elem,
-                        });
-                        let one = self.emit_i32_const(1);
-                        self.emit(IrInstr::BinaryOp {
-                            dest: i.clone(),
-                            op: BinaryOp::Add,
-                            left: i.clone(),
-                            right: one,
-                        });
-                        self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
-
-                        // Exit
-                        self.current_function_mut()
-                            .add_block(crate::ir::BasicBlock::with_label(exit, "spread.exit"));
-                        self.current_block = exit;
+                        let iterable = self.lower_expr(spread_expr);
+                        self.emit_iterator_append_to_array_helper(dest.clone(), iterable);
                     }
                 }
             }

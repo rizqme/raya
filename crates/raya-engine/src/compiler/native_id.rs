@@ -73,6 +73,16 @@ pub const OBJECT_HAS_PROPERTY: u16 = 0x0020;
 pub const OBJECT_CONSTRUCT_APPLY_HELPER: u16 = 0x0021;
 /// Materialize the current activation's `arguments` object.
 pub const OBJECT_GET_ARGUMENTS_OBJECT: u16 = 0x0022;
+/// Resolve `iterable[Symbol.iterator]()` and return the iterator object.
+pub const OBJECT_ITERATOR_GET: u16 = 0x0023;
+/// Execute iterator `next()` and return the result object, or null when done.
+pub const OBJECT_ITERATOR_STEP: u16 = 0x0024;
+/// Read `value` from an iterator result object.
+pub const OBJECT_ITERATOR_VALUE: u16 = 0x0025;
+/// Invoke iterator `return()` when present.
+pub const OBJECT_ITERATOR_CLOSE: u16 = 0x0026;
+/// Append all values from an iterable into a target array.
+pub const OBJECT_ITERATOR_APPEND_TO_ARRAY: u16 = 0x0027;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -579,6 +589,11 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_DESCRIPTOR_NEW => "Object.descriptorNew",
         OBJECT_CONSTRUCT_APPLY_HELPER => "Object.constructApply",
         OBJECT_GET_ARGUMENTS_OBJECT => "Object.getArgumentsObject",
+        OBJECT_ITERATOR_GET => "Object.iteratorGet",
+        OBJECT_ITERATOR_STEP => "Object.iteratorStep",
+        OBJECT_ITERATOR_VALUE => "Object.iteratorValue",
+        OBJECT_ITERATOR_CLOSE => "Object.iteratorClose",
+        OBJECT_ITERATOR_APPEND_TO_ARRAY => "Object.iteratorAppendToArray",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",

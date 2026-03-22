@@ -11,8 +11,9 @@
 
 use super::harness::{
     expect_bool, expect_bool_runtime, expect_bool_runtime_node_compat, expect_bool_with_builtins,
-    expect_i32, expect_i32_runtime_node_compat, expect_i32_with_builtins, expect_string,
-    expect_string_runtime_node_compat, expect_string_with_builtins,
+    expect_i32, expect_i32_runtime, expect_i32_runtime_node_compat, expect_i32_with_builtins,
+    expect_string, expect_string_runtime, expect_string_runtime_node_compat,
+    expect_string_with_builtins,
 };
 
 // ============================================================================
@@ -418,10 +419,12 @@ fn test_symbol_to_string_surface() {
 
 #[test]
 fn test_symbol_iterator_key() {
-    expect_string_with_builtins(
+    expect_string_runtime(
         r#"
-        let it = Symbol.iterator();
-        return it.valueOf();
+        function main(): string {
+            let it = Symbol.iterator();
+            return it.valueOf();
+        }
     "#,
         "Symbol.iterator",
     );
@@ -2546,16 +2549,18 @@ fn test_temporal_zoned_datetime_to_string_suffix() {
 
 #[test]
 fn test_iterator_from_array_next_and_done() {
-    expect_i32_with_builtins(
+    expect_i32_runtime(
         r#"
-        let it = Iterator.fromArray<number>([7, 8]);
-        let a = it.next();
-        let b = it.next();
-        let c = it.next();
-        if (a.value == null || b.value == null) {
-            return -1;
+        function main(): int {
+            let it = Iterator.fromArray<number>([7, 8]);
+            let a = it.next();
+            let b = it.next();
+            let c = it.next();
+            if (a.value == null || b.value == null) {
+                return -1;
+            }
+            return (a.value as int) * 100 + (b.value as int) * 10 + (c.done ? 1 : 0);
         }
-        return (a.value as int) * 100 + (b.value as int) * 10 + (c.done ? 1 : 0);
     "#,
         781,
     );
@@ -2563,14 +2568,81 @@ fn test_iterator_from_array_next_and_done() {
 
 #[test]
 fn test_iterator_to_array_remaining_values() {
-    expect_i32_with_builtins(
+    expect_i32_runtime(
         r#"
-        let it = Iterator.fromArray<number>([1, 2, 3, 4]);
-        let _first = it.next();
-        let rest = it.toArray();
-        return rest.length * 10 + rest[0];
+        function main(): int {
+            let it = Iterator.fromArray<number>([1, 2, 3, 4]);
+            let _first = it.next();
+            let rest = it.toArray();
+            return rest.length * 10 + rest[0];
+        }
     "#,
         32,
+    );
+}
+
+#[test]
+fn test_node_compat_for_of_uses_symbol_iterator_protocol_and_closes_on_break() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let log: string[] = [];
+            let iterable = {
+                [Symbol.iterator]() {
+                    return {
+                        i: 0,
+                        next() {
+                            if (this.i < 2) {
+                                this.i = this.i + 1;
+                                return { value: this.i, done: false };
+                            }
+                            return { value: undefined, done: true };
+                        },
+                        return() {
+                            log.push("closed");
+                            return { done: true };
+                        }
+                    };
+                }
+            };
+            let out: number[] = [];
+            for (let value of iterable) {
+                out.push(value);
+                break;
+            }
+            return JSON.stringify([out, log]);
+        }
+        main()
+    "#,
+        "[[1],[\"closed\"]]",
+    );
+}
+
+#[test]
+fn test_node_compat_array_spread_uses_symbol_iterator_protocol() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let iterable = {
+                [Symbol.iterator]() {
+                    return {
+                        i: 0,
+                        next() {
+                            if (this.i < 3) {
+                                let value = this.i;
+                                this.i = this.i + 1;
+                                return { value, done: false };
+                            }
+                            return { done: true };
+                        }
+                    };
+                }
+            };
+            return JSON.stringify([...iterable]);
+        }
+        main()
+    "#,
+        "[0,1,2]",
     );
 }
 

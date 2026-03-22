@@ -322,49 +322,9 @@ impl<'a> Interpreter<'a> {
         self.construct_value_with_new_target(constructor, constructor, init_args, task, module)
     }
 
-    fn array_from_is_object_value(&self, value: Value) -> bool {
-        crate::vm::interpreter::opcodes::native::checked_array_ptr(value).is_some()
-            || crate::vm::interpreter::opcodes::native::checked_object_ptr(value).is_some()
-            || self.callable_function_info(value).is_some()
-    }
-
     fn array_from_is_constructor_candidate(&self, value: Value, module: &Module) -> bool {
         let _ = module;
         self.callable_is_constructible(value)
-    }
-
-    fn array_from_iterator_method(
-        &mut self,
-        items: Value,
-        task: &Arc<Task>,
-        module: &Module,
-    ) -> Result<Option<Value>, VmError> {
-        let debug_array_from = std::env::var("RAYA_DEBUG_ARRAY_FROM").is_ok();
-        let Some(iterator_method) =
-            self.well_known_symbol_property_value(items, "Symbol.iterator", task, module)?
-        else {
-            if debug_array_from {
-                eprintln!("[array.from] no @@iterator on items={:#x}", items.raw());
-            }
-            return Ok(None);
-        };
-        if debug_array_from {
-            eprintln!(
-                "[array.from] @@iterator items={:#x} method={:#x} callable={}",
-                items.raw(),
-                iterator_method.raw(),
-                Self::is_callable_value(iterator_method)
-            );
-        }
-        if iterator_method.is_undefined() || iterator_method.is_null() {
-            return Ok(None);
-        }
-        if !Self::is_callable_value(iterator_method) {
-            return Err(VmError::TypeError(
-                "Array.from iterator method is not callable".to_string(),
-            ));
-        }
-        Ok(Some(iterator_method))
     }
 
     fn array_from_length_of_array_like(&self, items: Value) -> Result<usize, VmError> {
@@ -474,116 +434,6 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn array_from_iterator_close(
-        &mut self,
-        iterator: Value,
-        task: &Arc<Task>,
-        module: &Module,
-    ) -> Result<(), VmError> {
-        let Some(return_method) = self.get_field_value_by_name(iterator, "return") else {
-            return Ok(());
-        };
-        if return_method.is_undefined() || return_method.is_null() {
-            return Ok(());
-        }
-        if !Self::is_callable_value(return_method) {
-            return Err(VmError::TypeError(
-                "Array.from iterator return is not callable".to_string(),
-            ));
-        }
-        let _ =
-            self.invoke_callable_sync_with_this(return_method, Some(iterator), &[], task, module)?;
-        Ok(())
-    }
-
-    fn array_from_iterator_step(
-        &mut self,
-        iterator: Value,
-        task: &Arc<Task>,
-        module: &Module,
-    ) -> Result<Option<Value>, VmError> {
-        let debug_array_from = std::env::var("RAYA_DEBUG_ARRAY_FROM").is_ok();
-        let Some(next_method) = self.get_field_value_by_name(iterator, "next") else {
-            if debug_array_from {
-                eprintln!(
-                    "[array.from] iterator missing next iterator={:#x} proto={:?}",
-                    iterator.raw(),
-                    self.prototype_of_value(iterator)
-                        .map(|v| format!("{:#x}", v.raw()))
-                );
-            }
-            return Err(VmError::TypeError(
-                "Array.from iterator is missing next()".to_string(),
-            ));
-        };
-        if debug_array_from {
-            eprintln!(
-                "[array.from] iterator next iterator={:#x} next={:#x}",
-                iterator.raw(),
-                next_method.raw()
-            );
-        }
-        if !Self::is_callable_value(next_method) {
-            return Err(VmError::TypeError(
-                "Array.from iterator next is not callable".to_string(),
-            ));
-        }
-        let next_result =
-            self.invoke_callable_sync_with_this(next_method, Some(iterator), &[], task, module)?;
-        if debug_array_from {
-            eprintln!(
-                "[array.from] iterator next-result raw={:#x} object={} array={} callable={} null={} undefined={}",
-                next_result.raw(),
-                crate::vm::interpreter::opcodes::native::checked_object_ptr(next_result).is_some(),
-                crate::vm::interpreter::opcodes::native::checked_array_ptr(next_result).is_some(),
-                self.callable_function_info(next_result).is_some(),
-                next_result.is_null(),
-                next_result.is_undefined()
-            );
-        }
-        if !self.array_from_is_object_value(next_result) {
-            return Err(VmError::TypeError(
-                "Array.from iterator result must be an object".to_string(),
-            ));
-        }
-        let done_value =
-            self.array_from_iterator_result_property(next_result, "done", task, module)?;
-        let done = if let Some(boolean) = done_value.as_bool() {
-            boolean
-        } else {
-            !done_value.is_null() && !done_value.is_undefined()
-        };
-        if done {
-            return Ok(None);
-        }
-        Ok(Some(self.array_from_iterator_result_property(
-            next_result,
-            "value",
-            task,
-            module,
-        )?))
-    }
-
-    fn array_from_iterator_result_property(
-        &mut self,
-        result: Value,
-        key: &str,
-        task: &Arc<Task>,
-        module: &Module,
-    ) -> Result<Value, VmError> {
-        if let Some(getter) = self.descriptor_accessor(result, key, "get") {
-            if !Self::is_callable_value(getter) {
-                return Err(VmError::TypeError(format!(
-                    "Array.from iterator result '{}' getter is not callable",
-                    key
-                )));
-            }
-            return self.invoke_callable_sync_with_this(getter, Some(result), &[], task, module);
-        }
-        Ok(self
-            .get_field_value_by_name(result, key)
-            .unwrap_or(Value::undefined()))
-    }
 
     fn array_from_target(
         &mut self,
@@ -663,20 +513,10 @@ impl<'a> Interpreter<'a> {
                 if map_this.is_heap_allocated() {
                     self.ephemeral_gc_roots.write().push(map_this);
                 }
-                if let Some(iterator_method) =
-                    self.array_from_iterator_method(items, task, module)?
-                {
-                    let iterator = self.invoke_callable_sync_with_this(
-                        iterator_method,
-                        Some(items),
-                        &[],
-                        task,
-                        module,
-                    )?;
+                if let Some(iterator) = self.try_get_iterator_from_value(items, task, module)? {
                     if std::env::var("RAYA_DEBUG_ARRAY_FROM").is_ok() {
                         eprintln!(
-                            "[array.from] iterator call method={:#x} result={:#x} proto={:?}",
-                            iterator_method.raw(),
+                            "[array.from] iterator result={:#x} proto={:?}",
                             iterator.raw(),
                             self.prototype_of_value(iterator)
                                 .map(|v| format!("{:#x}", v.raw()))
@@ -691,18 +531,31 @@ impl<'a> Interpreter<'a> {
                     }
                     let mut index = 0usize;
                     loop {
-                        let next_value = match self.array_from_iterator_step(iterator, task, module)
-                        {
-                            Ok(Some(value)) => value,
+                        let next_result = match self.iterator_step_result(iterator, task, module) {
+                            Ok(Some(result)) => result,
                             Ok(None) => break,
                             Err(error) => {
-                                let _ = self.array_from_iterator_close(iterator, task, module);
-                                self.array_release_ephemeral_root(target);
-                                self.array_release_ephemeral_root(iterator);
-                                self.array_release_ephemeral_root(map_this);
-                                self.array_release_ephemeral_root(map_fn);
-                                self.array_release_ephemeral_root(items);
-                                self.array_release_ephemeral_root(constructor);
+                                let _ = self.iterator_close(iterator, task, module);
+                                self.iterator_release_ephemeral_root(target);
+                                self.iterator_release_ephemeral_root(iterator);
+                                self.iterator_release_ephemeral_root(map_this);
+                                self.iterator_release_ephemeral_root(map_fn);
+                                self.iterator_release_ephemeral_root(items);
+                                self.iterator_release_ephemeral_root(constructor);
+                                return Err(error);
+                            }
+                        };
+                        let next_value = match self.iterator_result_value(next_result, task, module)
+                        {
+                            Ok(value) => value,
+                            Err(error) => {
+                                let _ = self.iterator_close(iterator, task, module);
+                                self.iterator_release_ephemeral_root(target);
+                                self.iterator_release_ephemeral_root(iterator);
+                                self.iterator_release_ephemeral_root(map_this);
+                                self.iterator_release_ephemeral_root(map_fn);
+                                self.iterator_release_ephemeral_root(items);
+                                self.iterator_release_ephemeral_root(constructor);
                                 return Err(error);
                             }
                         };
@@ -721,13 +574,13 @@ impl<'a> Interpreter<'a> {
                             ) {
                                 Ok(value) => value,
                                 Err(error) => {
-                                    let _ = self.array_from_iterator_close(iterator, task, module);
-                                    self.array_release_ephemeral_root(target);
-                                    self.array_release_ephemeral_root(iterator);
-                                    self.array_release_ephemeral_root(map_this);
-                                    self.array_release_ephemeral_root(map_fn);
-                                    self.array_release_ephemeral_root(items);
-                                    self.array_release_ephemeral_root(constructor);
+                                    let _ = self.iterator_close(iterator, task, module);
+                                    self.iterator_release_ephemeral_root(target);
+                                    self.iterator_release_ephemeral_root(iterator);
+                                    self.iterator_release_ephemeral_root(map_this);
+                                    self.iterator_release_ephemeral_root(map_fn);
+                                    self.iterator_release_ephemeral_root(items);
+                                    self.iterator_release_ephemeral_root(constructor);
                                     return Err(error);
                                 }
                             }
@@ -740,27 +593,27 @@ impl<'a> Interpreter<'a> {
                         if let Err(error) =
                             self.array_from_define_index(target, index, mapped_value, task, module)
                         {
-                            let _ = self.array_from_iterator_close(iterator, task, module);
-                            self.array_release_ephemeral_root(mapped_value);
-                            self.array_release_ephemeral_root(target);
-                            self.array_release_ephemeral_root(iterator);
-                            self.array_release_ephemeral_root(map_this);
-                            self.array_release_ephemeral_root(map_fn);
-                            self.array_release_ephemeral_root(items);
-                            self.array_release_ephemeral_root(constructor);
+                            let _ = self.iterator_close(iterator, task, module);
+                            self.iterator_release_ephemeral_root(mapped_value);
+                            self.iterator_release_ephemeral_root(target);
+                            self.iterator_release_ephemeral_root(iterator);
+                            self.iterator_release_ephemeral_root(map_this);
+                            self.iterator_release_ephemeral_root(map_fn);
+                            self.iterator_release_ephemeral_root(items);
+                            self.iterator_release_ephemeral_root(constructor);
                             return Err(error);
                         }
-                        self.array_release_ephemeral_root(mapped_value);
+                        self.iterator_release_ephemeral_root(mapped_value);
                         index += 1;
                     }
                     self.array_from_set_length(target, index, task, module)?;
                     stack.push(target)?;
-                    self.array_release_ephemeral_root(target);
-                    self.array_release_ephemeral_root(iterator);
-                    self.array_release_ephemeral_root(map_this);
-                    self.array_release_ephemeral_root(map_fn);
-                    self.array_release_ephemeral_root(items);
-                    self.array_release_ephemeral_root(constructor);
+                    self.iterator_release_ephemeral_root(target);
+                    self.iterator_release_ephemeral_root(iterator);
+                    self.iterator_release_ephemeral_root(map_this);
+                    self.iterator_release_ephemeral_root(map_fn);
+                    self.iterator_release_ephemeral_root(items);
+                    self.iterator_release_ephemeral_root(constructor);
                     return Ok(());
                 }
 

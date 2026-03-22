@@ -394,6 +394,8 @@ struct LoopContext {
     break_target: BasicBlockId,
     /// Block to jump to for continue
     continue_target: BasicBlockId,
+    /// Active iterator for protocol-based loops that need IteratorClose on abrupt exit.
+    iterator_record: Option<Register>,
     /// Depth of try_finally_stack when this loop started
     /// (used to know which finally blocks to inline on break/continue)
     try_finally_depth: usize,

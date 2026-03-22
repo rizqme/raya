@@ -334,6 +334,7 @@ impl<'a> Lowerer<'a> {
             label: self.pending_label.take(),
             break_target: exit_block,
             continue_target: cond_block,
+            iterator_record: None,
             try_finally_depth: self.try_finally_stack.len(),
         });
 
@@ -376,179 +377,16 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_for_of(&mut self, for_of: &ast::ForOfStatement) {
-        // For-of loops are desugared to index-based iteration:
-        // for (let x of arr) { body }
-        // becomes:
-        // let _idx = 0;
-        // let _len = arr.length;
-        // while (_idx < _len) {
-        //     let x = arr[_idx];
-        //     body;
-        //     _idx = _idx + 1;
-        // }
+        let (_, elem_ty, _) = self.classify_for_of_iterable(&for_of.right);
+        let iterable_reg = self.lower_expr(&for_of.right);
+        let iterator_reg = self.emit_iterator_get_helper(iterable_reg);
 
-        let number_ty = TypeId::new(2); // number type
-
-        let (iter_kind, elem_ty, iter_class_name) = self.classify_for_of_iterable(&for_of.right);
-
-        // Normalize iterable to either an indexable array or a direct string view.
-        let iterable_reg = match iter_kind {
-            ForOfIterableKind::Array | ForOfIterableKind::Unknown | ForOfIterableKind::String => {
-                self.lower_expr(&for_of.right)
-            }
-            ForOfIterableKind::ClassIterator => {
-                let source_reg = self.lower_expr(&for_of.right);
-                let class_name = match iter_class_name.as_deref() {
-                    Some(name) => name,
-                    None => {
-                        self.errors
-                            .push(crate::compiler::CompileError::InternalError {
-                                message: "for-of iterable class name not available".to_string(),
-                            });
-                        return;
-                    }
-                };
-                if class_name == "Map" {
-                    let iter_array = self.alloc_register(UNRESOLVED);
-                    let mut lowered = false;
-                    if let Some(nominal_type_id) = self.nominal_type_id_by_name("Map") {
-                        if let Some(entries_sym) = self.interner.lookup("entries") {
-                            if let Some(slot) = self.find_method_slot(nominal_type_id, entries_sym)
-                            {
-                                self.emit(IrInstr::CallMethodExact {
-                                    dest: Some(iter_array.clone()),
-                                    object: source_reg.clone(),
-                                    method: slot,
-                                    args: vec![],
-                                    optional: false,
-                                });
-                                lowered = true;
-                            }
-                        }
-                    }
-                    if !lowered {
-                        self.emit(IrInstr::NativeCall {
-                            dest: Some(iter_array.clone()),
-                            native_id: crate::compiler::native_id::MAP_ENTRIES,
-                            args: vec![source_reg],
-                        });
-                    }
-                    iter_array
-                } else if class_name == "Set" {
-                    let iter_array = self.alloc_register(UNRESOLVED);
-                    let mut lowered = false;
-                    if let Some(nominal_type_id) = self.nominal_type_id_by_name("Set") {
-                        if let Some(values_sym) = self.interner.lookup("values") {
-                            if let Some(slot) = self.find_method_slot(nominal_type_id, values_sym) {
-                                self.emit(IrInstr::CallMethodExact {
-                                    dest: Some(iter_array.clone()),
-                                    object: source_reg.clone(),
-                                    method: slot,
-                                    args: vec![],
-                                    optional: false,
-                                });
-                                lowered = true;
-                            }
-                        }
-                    }
-                    if !lowered {
-                        self.emit(IrInstr::NativeCall {
-                            dest: Some(iter_array.clone()),
-                            native_id: crate::compiler::native_id::SET_VALUES,
-                            args: vec![source_reg],
-                        });
-                    }
-                    iter_array
-                } else {
-                    let nominal_type_id = match self.nominal_type_id_by_name(class_name) {
-                        Some(id) => id,
-                        None => {
-                            let mut known: Vec<String> = self
-                                .class_map
-                                .keys()
-                                .map(|sym| self.interner.resolve(*sym).to_string())
-                                .collect();
-                            known.sort();
-                            known.dedup();
-                            self.errors
-                                .push(crate::compiler::CompileError::InternalError {
-                                    message: format!(
-                                    "for-of iterable class '{}' not registered (known classes: {})",
-                                    class_name,
-                                    known.join(", ")
-                                ),
-                                });
-                            return;
-                        }
-                    };
-                    let symbol_iterator_sym = self.interner.lookup("Symbol.iterator");
-                    let iterator_sym = self.interner.lookup("iterator");
-                    let slot = match symbol_iterator_sym
-                        .and_then(|sym| self.find_method_slot(nominal_type_id, sym))
-                        .or_else(|| {
-                            iterator_sym.and_then(|sym| self.find_method_slot(nominal_type_id, sym))
-                        }) {
-                        Some(slot) => slot,
-                        None => {
-                            self.errors
-                            .push(crate::compiler::CompileError::InternalError {
-                                message: format!(
-                                    "for-of iterator method not found on {} (expected Symbol.iterator/iterator)",
-                                    class_name
-                                ),
-                            });
-                            return;
-                        }
-                    };
-                    let iter_array = self.alloc_register(UNRESOLVED);
-                    self.emit(IrInstr::CallMethodExact {
-                        dest: Some(iter_array.clone()),
-                        object: source_reg,
-                        method: slot,
-                        args: vec![],
-                        optional: false,
-                    });
-                    iter_array
-                }
-            }
-        };
-
-        // Get iterable length.
-        let len_reg = self.alloc_register(number_ty);
-        if iter_kind == ForOfIterableKind::String {
-            self.emit(IrInstr::StringLen {
-                dest: len_reg.clone(),
-                string: iterable_reg.clone(),
-            });
-        } else {
-            self.emit(IrInstr::ArrayLen {
-                dest: len_reg.clone(),
-                array: iterable_reg.clone(),
-            });
-        }
-
-        // Initialize index: _idx = 0
-        let idx_local = self.allocate_anonymous_local();
-        let idx_reg = self.alloc_register(number_ty);
-        self.emit(IrInstr::Assign {
-            dest: idx_reg.clone(),
-            value: crate::ir::IrValue::Constant(crate::ir::IrConstant::I32(0)),
-        });
-        self.emit(IrInstr::StoreLocal {
-            index: idx_local,
-            value: idx_reg.clone(),
-        });
-
-        // Create blocks
         let header_block = self.alloc_block();
         let body_block = self.alloc_block();
-        let update_block = self.alloc_block();
         let exit_block = self.alloc_block();
 
-        // Jump to header
         self.set_terminator(Terminator::Jump(header_block));
 
-        // Header block: compare index < length
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(
                 header_block,
@@ -556,64 +394,36 @@ impl<'a> Lowerer<'a> {
             ));
         self.current_block = header_block;
 
-        // Load current index
-        let current_idx = self.alloc_register(number_ty);
-        self.emit(IrInstr::LoadLocal {
-            dest: current_idx.clone(),
-            index: idx_local,
+        let step_result = self.emit_iterator_step_helper(iterator_reg.clone());
+        self.set_terminator(Terminator::BranchIfNull {
+            value: step_result.clone(),
+            null_block: exit_block,
+            not_null_block: body_block,
         });
 
-        // Compare: _idx < _len
-        let cond_reg = self.alloc_register(TypeId::new(4)); // boolean type
-        self.emit(IrInstr::BinaryOp {
-            dest: cond_reg.clone(),
-            op: crate::ir::BinaryOp::Less,
-            left: current_idx.clone(),
-            right: len_reg.clone(),
-        });
-
-        // Branch: if condition is true, go to body; else go to exit
-        self.set_terminator(Terminator::Branch {
-            cond: cond_reg,
-            then_block: body_block,
-            else_block: exit_block,
-        });
-
-        // Push loop context for break/continue
         self.loop_stack.push(super::LoopContext {
             label: self.pending_label.take(),
             break_target: exit_block,
-            continue_target: update_block,
+            continue_target: header_block,
+            iterator_record: Some(iterator_reg.clone()),
             try_finally_depth: self.try_finally_stack.len(),
         });
 
-        // Body block
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(body_block, "forof.body"));
         self.current_block = body_block;
 
-        // Load current index again (might be different register after block switch)
-        let body_idx = self.alloc_register(number_ty);
-        self.emit(IrInstr::LoadLocal {
-            dest: body_idx.clone(),
-            index: idx_local,
-        });
-
-        // Load element/character at the current index.
-        let elem_reg = self.alloc_register(elem_ty);
-        if iter_kind == ForOfIterableKind::String {
-            self.emit(IrInstr::NativeCall {
-                dest: Some(elem_reg.clone()),
-                native_id: crate::compiler::native_id::STRING_CHAR_AT,
-                args: vec![iterable_reg.clone(), body_idx],
-            });
+        let raw_elem_reg = self.emit_iterator_value_helper(step_result);
+        let elem_reg = if elem_ty.as_u32() == UNRESOLVED_TYPE_ID {
+            raw_elem_reg
         } else {
-            self.emit(IrInstr::LoadElement {
-                dest: elem_reg.clone(),
-                array: iterable_reg.clone(),
-                index: body_idx,
+            let typed_elem = self.alloc_register(elem_ty);
+            self.emit(IrInstr::Assign {
+                dest: typed_elem.clone(),
+                value: crate::ir::IrValue::Register(raw_elem_reg),
             });
-        }
+            typed_elem
+        };
 
         // Determine loop variable name and check if captured
         let loop_var_name = match &for_of.left {
@@ -717,54 +527,12 @@ impl<'a> Lowerer<'a> {
         // Lower the body
         self.lower_stmt(&for_of.body);
 
-        // Jump to update block if not terminated
         if !self.current_block_is_terminated() {
-            self.set_terminator(Terminator::Jump(update_block));
+            self.set_terminator(Terminator::Jump(header_block));
         }
 
-        // Pop loop context
         self.loop_stack.pop();
 
-        // Update block: _idx = _idx + 1
-        self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(
-                update_block,
-                "forof.update",
-            ));
-        self.current_block = update_block;
-
-        // Load current index
-        let update_idx = self.alloc_register(number_ty);
-        self.emit(IrInstr::LoadLocal {
-            dest: update_idx.clone(),
-            index: idx_local,
-        });
-
-        // Increment: _idx + 1
-        let one_reg = self.alloc_register(number_ty);
-        self.emit(IrInstr::Assign {
-            dest: one_reg.clone(),
-            value: crate::ir::IrValue::Constant(crate::ir::IrConstant::I32(1)),
-        });
-
-        let new_idx = self.alloc_register(number_ty);
-        self.emit(IrInstr::BinaryOp {
-            dest: new_idx.clone(),
-            op: crate::ir::BinaryOp::Add,
-            left: update_idx,
-            right: one_reg,
-        });
-
-        // Store incremented index
-        self.emit(IrInstr::StoreLocal {
-            index: idx_local,
-            value: new_idx,
-        });
-
-        // Jump back to header
-        self.set_terminator(Terminator::Jump(header_block));
-
-        // Exit block
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(exit_block, "forof.exit"));
         self.current_block = exit_block;
@@ -856,6 +624,7 @@ impl<'a> Lowerer<'a> {
             label: self.pending_label.take(),
             break_target: exit_block,
             continue_target: update_block,
+            iterator_record: None,
             try_finally_depth: self.try_finally_stack.len(),
         });
 
@@ -2847,6 +2616,8 @@ impl<'a> Lowerer<'a> {
             .map(|e| self.lower_expr(e))
             .or_else(|| self.constructor_return_this.clone());
 
+        self.close_active_loop_iterators();
+
         // Inline finally blocks from innermost to outermost.
         // Drain the stack to prevent recursive re-inlining: if a finally block
         // itself contains a return, that nested lower_return sees an empty stack.
@@ -2885,6 +2656,37 @@ impl<'a> Lowerer<'a> {
             self.lower_expr(value);
         }
         self.emit(IrInstr::Yield);
+    }
+
+    fn close_active_loop_iterators(&mut self) {
+        let iterator_records: Vec<Register> = self
+            .loop_stack
+            .iter()
+            .rev()
+            .filter_map(|ctx| ctx.iterator_record.clone())
+            .collect();
+        for iterator in iterator_records {
+            self.emit_iterator_close_helper(iterator);
+        }
+    }
+
+    fn close_loop_iterators_from_target(&mut self, target_index: usize, include_target: bool) {
+        let iterator_records: Vec<Register> = self
+            .loop_stack
+            .iter()
+            .enumerate()
+            .rev()
+            .filter_map(|(index, ctx)| {
+                if index < target_index || (!include_target && index == target_index) {
+                    None
+                } else {
+                    ctx.iterator_record.clone()
+                }
+            })
+            .collect();
+        for iterator in iterator_records {
+            self.emit_iterator_close_helper(iterator);
+        }
     }
 
     fn lower_if(&mut self, if_stmt: &ast::IfStatement) {
@@ -3033,6 +2835,7 @@ impl<'a> Lowerer<'a> {
             label: self.pending_label.take(),
             break_target: exit_block,
             continue_target: header_block,
+            iterator_record: None,
             try_finally_depth: self.try_finally_stack.len(),
         });
 
@@ -3124,6 +2927,7 @@ impl<'a> Lowerer<'a> {
             label: self.pending_label.take(),
             break_target: exit_block,
             continue_target: update_block,
+            iterator_record: None,
             try_finally_depth: self.try_finally_stack.len(),
         });
 
@@ -3252,13 +3056,15 @@ impl<'a> Lowerer<'a> {
         // Labeled break: search loop stack for matching label
         if let Some(ref label_ident) = brk.label {
             let label_sym = label_ident.name;
-            if let Some(loop_ctx) = self
+            if let Some((target_index, loop_ctx)) = self
                 .loop_stack
                 .iter()
+                .enumerate()
                 .rev()
-                .find(|ctx| ctx.label == Some(label_sym))
-                .cloned()
+                .find(|(_, ctx)| ctx.label == Some(label_sym))
+                .map(|(index, ctx)| (index, ctx.clone()))
             {
+                self.close_loop_iterators_from_target(target_index, true);
                 let depth = loop_ctx.try_finally_depth;
                 let entries: Vec<super::TryFinallyEntry> =
                     self.try_finally_stack.drain(depth..).rev().collect();
@@ -3281,7 +3087,14 @@ impl<'a> Lowerer<'a> {
             self.set_terminator(Terminator::Jump(switch_exit));
             return;
         }
-        if let Some(loop_ctx) = self.loop_stack.last().cloned() {
+        if let Some((target_index, loop_ctx)) = self
+            .loop_stack
+            .iter()
+            .enumerate()
+            .last()
+            .map(|(index, ctx)| (index, ctx.clone()))
+        {
+            self.close_loop_iterators_from_target(target_index, true);
             let depth = loop_ctx.try_finally_depth;
             let entries: Vec<super::TryFinallyEntry> =
                 self.try_finally_stack.drain(depth..).rev().collect();
@@ -3306,14 +3119,20 @@ impl<'a> Lowerer<'a> {
             let label_sym = label_ident.name;
             self.loop_stack
                 .iter()
+                .enumerate()
                 .rev()
-                .find(|ctx| ctx.label == Some(label_sym))
-                .cloned()
+                .find(|(_, ctx)| ctx.label == Some(label_sym))
+                .map(|(index, ctx)| (index, ctx.clone()))
         } else {
-            self.loop_stack.last().cloned()
+            self.loop_stack
+                .iter()
+                .enumerate()
+                .last()
+                .map(|(index, ctx)| (index, ctx.clone()))
         };
 
-        if let Some(loop_ctx) = loop_ctx {
+        if let Some((target_index, loop_ctx)) = loop_ctx {
+            self.close_loop_iterators_from_target(target_index, false);
             let depth = loop_ctx.try_finally_depth;
             let entries: Vec<super::TryFinallyEntry> =
                 self.try_finally_stack.drain(depth..).rev().collect();
@@ -3334,6 +3153,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_throw(&mut self, throw: &ast::ThrowStatement) {
         let value = self.lower_expr(&throw.value);
+        self.close_active_loop_iterators();
         self.set_terminator(Terminator::Throw(value));
     }
 
