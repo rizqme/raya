@@ -15,6 +15,7 @@ pub mod builtins;
 pub mod captures;
 pub mod checker;
 pub mod diagnostic;
+pub mod early_errors;
 pub mod error;
 pub mod exhaustiveness;
 pub mod narrowing;
@@ -150,6 +151,7 @@ pub use builtins::{
 pub use captures::{CaptureInfo, ClosureCaptures, ClosureId, ModuleCaptureInfo};
 pub use checker::{CheckResult, InferredTypes, TypeChecker};
 pub use diagnostic::{create_files, Diagnostic, ErrorCode, SimpleFiles};
+pub use early_errors::check_early_errors;
 pub use error::{BindError, CheckError, CheckWarning, SoftDiagnostic, WarningCode, WarningConfig};
 pub use exhaustiveness::ExhaustivenessResult;
 pub use narrowing::TypeEnv;

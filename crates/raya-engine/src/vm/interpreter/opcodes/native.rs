@@ -8,7 +8,9 @@ use crate::compiler::native_id::{
     CHANNEL_RECEIVE, CHANNEL_SEND, CHANNEL_TRY_RECEIVE, CHANNEL_TRY_SEND,
 };
 use crate::compiler::{Compiler, Module, Opcode};
-use crate::parser::checker::{Binder, CheckerPolicy, ScopeId, TypeChecker, TypeSystemMode};
+use crate::parser::checker::{
+    check_early_errors, Binder, CheckerPolicy, ScopeId, TypeChecker, TypeSystemMode,
+};
 use crate::parser::{Parser, TypeContext};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set, url};
 use crate::vm::gc::header_ptr_from_value_ptr;
@@ -4469,6 +4471,9 @@ impl<'a> Interpreter<'a> {
             eprintln!("[dynamic-fn] compile:parsed-lexer");
         }
         let (ast, interner) = parser.parse().map_err(|error| {
+            VmError::RuntimeError(format!("{} parse error: {:?}", error_context, error))
+        })?;
+        check_early_errors(&ast, &interner, TypeSystemMode::Js).map_err(|error| {
             VmError::RuntimeError(format!("{} parse error: {:?}", error_context, error))
         })?;
         if debug_dynamic_function {

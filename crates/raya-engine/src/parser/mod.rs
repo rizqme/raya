@@ -52,3 +52,4 @@ pub use types::{Type, TypeContext, TypeId};
 
 // Checker re-exports
 pub use checker::{CheckError, SymbolTable, TypeChecker};
+pub use checker::check_early_errors;
