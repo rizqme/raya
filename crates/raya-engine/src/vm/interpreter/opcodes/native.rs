@@ -145,6 +145,111 @@ impl OrderedOwnKeyCollector {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JsOwnPropertySource {
+    ArgumentsExotic,
+    ArrayExotic,
+    TypedArrayExotic,
+    Ordinary,
+    Metadata,
+    BuiltinGlobal,
+    CallableVirtual,
+    NominalMethod,
+    BuiltinNativeMethod,
+    ConstructorStaticMethod,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JsOwnPropertyKind {
+    Data,
+    Accessor,
+    PoisonedAccessor,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct JsOwnPropertyShape {
+    source: JsOwnPropertySource,
+    kind: JsOwnPropertyKind,
+    writable: bool,
+    configurable: bool,
+    enumerable: bool,
+}
+
+impl JsOwnPropertyShape {
+    fn data(
+        source: JsOwnPropertySource,
+        writable: bool,
+        configurable: bool,
+        enumerable: bool,
+    ) -> Self {
+        Self {
+            source,
+            kind: JsOwnPropertyKind::Data,
+            writable,
+            configurable,
+            enumerable,
+        }
+    }
+
+    fn accessor(source: JsOwnPropertySource, configurable: bool, enumerable: bool) -> Self {
+        Self {
+            source,
+            kind: JsOwnPropertyKind::Accessor,
+            writable: false,
+            configurable,
+            enumerable,
+        }
+    }
+
+    fn poisoned_accessor(
+        source: JsOwnPropertySource,
+        configurable: bool,
+        enumerable: bool,
+    ) -> Self {
+        Self {
+            source,
+            kind: JsOwnPropertyKind::PoisonedAccessor,
+            writable: false,
+            configurable,
+            enumerable,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct JsOwnPropertyRecord {
+    shape: JsOwnPropertyShape,
+    value: Option<Value>,
+    getter: Option<Value>,
+    setter: Option<Value>,
+}
+
+impl JsOwnPropertyRecord {
+    fn data(shape: JsOwnPropertyShape, value: Value) -> Self {
+        Self {
+            shape,
+            value: Some(value),
+            getter: None,
+            setter: None,
+        }
+    }
+
+    fn accessor(shape: JsOwnPropertyShape, getter: Option<Value>, setter: Option<Value>) -> Self {
+        Self {
+            shape,
+            value: None,
+            getter,
+            setter,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct JsResolvedPropertyRecord {
+    owner: Value,
+    record: JsOwnPropertyRecord,
+}
+
 #[derive(Clone, Copy)]
 struct ArgumentsDataDescriptorState {
     value: Value,
@@ -2541,6 +2646,15 @@ impl<'a> Interpreter<'a> {
             return Ok(true);
         }
 
+        let own_shape = self.resolve_own_property_shape(target, &key_name);
+        if let Some(shape) = own_shape {
+            if !shape.configurable {
+                return Ok(false);
+            }
+        } else {
+            return Ok(true);
+        }
+
         if let Some(array_ptr) = checked_array_ptr(target) {
             if key_name == "length" {
                 return Ok(false);
@@ -2563,18 +2677,6 @@ impl<'a> Interpreter<'a> {
         let has_callable_virtual_source = self.is_callable_virtual_property(target, &key_name);
         let has_constructor_static_source = self.has_constructor_static_method(target, &key_name);
         let has_fixed_field_source = self.get_field_index_for_value(target, &key_name).is_some();
-
-        if let Some(existing) = self.get_descriptor_metadata(target, &key_name) {
-            if !self.descriptor_flag(existing, "configurable", true) {
-                return Ok(false);
-            }
-        } else if let Some((_, configurable, _)) =
-            self.callable_virtual_property_descriptor(target, &key_name)
-        {
-            if !configurable {
-                return Ok(false);
-            }
-        }
 
         let mut removed = false;
         if let Some(obj_ptr) = checked_object_ptr(target) {
@@ -3989,89 +4091,44 @@ impl<'a> Interpreter<'a> {
             );
         }
 
-        if let Some(result) = self.arguments_exotic_set(target, key, value)? {
-            return Ok(result);
-        }
-
-        if target.raw() == receiver.raw() {
-            if let Some(array_ptr) = checked_array_ptr(target) {
-                if key == "length" {
-                    return self.set_array_length_via_array_set_length(
-                        target,
+        if let Some(resolved) = self.resolve_property_record_on_receiver_with_context(
+            target,
+            key,
+            caller_task,
+            caller_module,
+        )? {
+            match resolved.record.shape.kind {
+                JsOwnPropertyKind::PoisonedAccessor => {
+                    return Err(VmError::TypeError(format!(
+                        "'{}' is not writable on strict mode arguments objects",
+                        key
+                    )));
+                }
+                JsOwnPropertyKind::Accessor => {
+                    if let Some(setter) = resolved.record.setter {
+                        let _ = self.invoke_callable_sync_with_this(
+                            setter,
+                            Some(receiver),
+                            &[value],
+                            caller_task,
+                            caller_module,
+                        )?;
+                        return Ok(true);
+                    }
+                    return Ok(false);
+                }
+                JsOwnPropertyKind::Data => {
+                    if !resolved.record.shape.writable {
+                        return Ok(false);
+                    }
+                    return self.set_property_value_on_receiver(
+                        receiver,
+                        key,
                         value,
                         caller_task,
                         caller_module,
                     );
                 }
-                if let Some(index) = parse_js_array_index_name(key) {
-                    let array = unsafe { &mut *array_ptr.as_ptr() };
-                    array.set(index, value).map_err(VmError::RuntimeError)?;
-                    return Ok(true);
-                }
-            }
-
-            if self.set_builtin_global_property(target, key, value) {
-                self.sync_descriptor_value(target, key, value);
-                return Ok(true);
-            }
-        }
-
-        if let Some(setter) = self.descriptor_accessor(target, key, "set") {
-            let _ = self.invoke_callable_sync_with_this(
-                setter,
-                Some(receiver),
-                &[value],
-                caller_task,
-                caller_module,
-            )?;
-            return Ok(true);
-        }
-
-        let has_getter_only = self.descriptor_accessor(target, key, "get").is_some()
-            && !self.is_field_writable(target, key);
-        if has_getter_only {
-            return Ok(false);
-        }
-
-        let has_own_property = self.ordinary_own_property(target, key).is_some()
-            || self.get_descriptor_metadata(target, key).is_some()
-            || self
-                .callable_virtual_property_descriptor(target, key)
-                .is_some();
-        if has_own_property {
-            if checked_array_ptr(target).is_some()
-                && key == "length"
-                && target.raw() == receiver.raw()
-            {
-                return self.set_array_length_via_array_set_length(
-                    target,
-                    value,
-                    caller_task,
-                    caller_module,
-                );
-            }
-            if !self.is_field_writable(target, key) {
-                return Ok(false);
-            }
-            return self.set_property_value_on_receiver(
-                receiver,
-                key,
-                value,
-                caller_task,
-                caller_module,
-            );
-        }
-
-        if let Some(prototype) = self.prototype_of_value(target) {
-            if prototype != target {
-                return self.set_property_value_via_js_semantics(
-                    prototype,
-                    key,
-                    value,
-                    receiver,
-                    caller_task,
-                    caller_module,
-                );
             }
         }
 
@@ -4118,27 +4175,22 @@ impl<'a> Interpreter<'a> {
             return Ok(Some(result));
         }
 
-        if let Some(value) = self.descriptor_property_value_with_context(
+        if let Some(resolved) = self.resolve_property_record_on_receiver_with_context(
             proxy.target,
             key,
-            value,
             caller_task,
             caller_module,
         )? {
-            return Ok(Some(value));
-        }
-
-        if let Some(value) = self.get_field_value_by_name(proxy.target, key) {
-            return Ok(Some(value));
-        }
-
-        if key == "prototype" {
-            if let Some(value) = self.constructor_prototype_value(proxy.target) {
-                return Ok(Some(value));
+            let value = self.read_resolved_property_value_with_context(
+                key,
+                resolved.record,
+                value,
+                caller_task,
+                caller_module,
+            )?;
+            if key == "prototype" {
+                self.ensure_prototype_nominal_type_id(resolved.owner, value);
             }
-        }
-
-        if let Some(value) = self.callable_property_value(proxy.target, key) {
             return Ok(Some(value));
         }
 
@@ -6253,38 +6305,456 @@ impl<'a> Interpreter<'a> {
         Ok(Some(value))
     }
 
-    fn own_js_property_flags(&self, target: Value, key: &str) -> Option<(bool, bool, bool)> {
-        if let Some(flags) = self.arguments_exotic_property_flags(target, key) {
-            return Some(flags);
+    fn property_attributes_from_descriptor_metadata(
+        &self,
+        target: Value,
+        key: &str,
+        default: (bool, bool, bool),
+    ) -> (bool, bool, bool) {
+        let Some(descriptor) = self.get_descriptor_metadata(target, key) else {
+            return default;
+        };
+        let is_accessor = self.descriptor_field_present(descriptor, "get")
+            || self.descriptor_field_present(descriptor, "set");
+        let writable = if is_accessor {
+            false
+        } else {
+            self.descriptor_flag(descriptor, "writable", default.0)
+        };
+        let configurable = self.descriptor_flag(descriptor, "configurable", default.1);
+        let enumerable = self.descriptor_flag(descriptor, "enumerable", default.2);
+        (writable, configurable, enumerable)
+    }
+
+    fn own_nominal_method_value(&self, target: Value, key: &str) -> Option<Value> {
+        let obj_ptr = checked_object_ptr(target)?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let method_slot = obj.nominal_type_id_usize().and_then(|ntid| {
+            let class_metadata = self.class_metadata.read();
+            class_metadata
+                .get(ntid)
+                .and_then(|meta| meta.get_method_index(key))
+                .or_else(|| {
+                    drop(class_metadata);
+                    let classes = self.classes.read();
+                    let class = classes.get_class(ntid)?;
+                    let module = class.module.as_ref()?;
+                    module.classes.iter().find(|cd| cd.name == class.name).and_then(|cd| {
+                        cd.methods.iter().find_map(|method| {
+                            let plain = method.name.rsplit("::").next().unwrap_or(&method.name);
+                            if method.name == key || plain == key {
+                                Some(method.slot)
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                })
+        })?;
+        self.bound_method_value_for_slot(target, method_slot).ok()
+    }
+
+    fn own_builtin_native_method_value(&self, target: Value, key: &str) -> Option<Value> {
+        let native_id =
+            crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key)?;
+        let method = Object::new_bound_native(target, native_id);
+        let method_ptr = self.gc.lock().allocate(method);
+        Some(unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) })
+    }
+
+    fn resolve_own_property_shape(&self, target: Value, key: &str) -> Option<JsOwnPropertyShape> {
+        if let Some(obj_ptr) = checked_object_ptr(target) {
+            let obj = unsafe { &*obj_ptr.as_ptr() };
+            if let Some(arguments) = obj.arguments.as_deref() {
+                if key == "length" {
+                    let length = arguments.length.as_ref()?;
+                    return Some(JsOwnPropertyShape::data(
+                        JsOwnPropertySource::ArgumentsExotic,
+                        length.writable,
+                        length.configurable,
+                        length.enumerable,
+                    ));
+                }
+                if key == "callee" {
+                    if arguments.strict_poison {
+                        return Some(JsOwnPropertyShape::poisoned_accessor(
+                            JsOwnPropertySource::ArgumentsExotic,
+                            false,
+                            false,
+                        ));
+                    }
+                    let callee = arguments.callee.as_ref()?;
+                    return Some(JsOwnPropertyShape::data(
+                        JsOwnPropertySource::ArgumentsExotic,
+                        callee.writable,
+                        callee.configurable,
+                        callee.enumerable,
+                    ));
+                }
+                if key != "caller" {
+                    if let Some(index) = parse_js_array_index_name(key) {
+                        let property = arguments.indexed.get(index)?;
+                        if !property.deleted {
+                            return Some(JsOwnPropertyShape::data(
+                                JsOwnPropertySource::ArgumentsExotic,
+                                property.writable,
+                                property.configurable,
+                                property.enumerable,
+                            ));
+                        }
+                    }
+                }
+            }
         }
-        if let Some(flags) = self.ambient_builtin_global_property_flags(target, key) {
-            return Some(flags);
-        }
-        if let Some(flags) = self.typed_array_index_property_flags(target, key) {
-            return Some(flags);
-        }
-        if checked_array_ptr(target).is_some() {
+
+        if let Some(array_ptr) = checked_array_ptr(target) {
+            let array = unsafe { &*array_ptr.as_ptr() };
             if key == "length" {
-                return Some((true, false, false));
+                let (writable, configurable, enumerable) =
+                    self.property_attributes_from_descriptor_metadata(target, key, (true, false, false));
+                let _ = array;
+                return Some(JsOwnPropertyShape::data(
+                    JsOwnPropertySource::ArrayExotic,
+                    writable,
+                    configurable,
+                    enumerable,
+                ));
             }
-            if parse_js_array_index_name(key).is_some() {
-                return Some((true, true, true));
+            if let Some(index) = parse_js_array_index_name(key) {
+                if array.get(index).is_some() {
+                    let (writable, configurable, enumerable) = self
+                        .property_attributes_from_descriptor_metadata(target, key, (true, true, true));
+                    return Some(JsOwnPropertyShape::data(
+                        JsOwnPropertySource::ArrayExotic,
+                        writable,
+                        configurable,
+                        enumerable,
+                    ));
+                }
+            }
+            if self.metadata_data_property_value(target, key).is_some() {
+                let (writable, configurable, enumerable) = self
+                    .property_attributes_from_descriptor_metadata(target, key, (true, true, true));
+                return Some(JsOwnPropertyShape::data(
+                    JsOwnPropertySource::Metadata,
+                    writable,
+                    configurable,
+                    enumerable,
+                ));
             }
         }
-        match self.ordinary_own_property(target, key) {
-            Some(OrdinaryOwnProperty::Data {
+
+        if self.is_typed_array_like_value(target) {
+            if key == "length"
+                || matches!(key, "buffer" | "byteOffset" | "byteLength")
+                || self.typed_array_index_property_flags(target, key).is_some()
+            {
+                let default = if self.typed_array_index_property_flags(target, key).is_some() {
+                    (true, true, true)
+                } else {
+                    (false, false, false)
+                };
+                let (writable, configurable, enumerable) =
+                    self.property_attributes_from_descriptor_metadata(target, key, default);
+                return Some(JsOwnPropertyShape::data(
+                    JsOwnPropertySource::TypedArrayExotic,
+                    writable,
+                    configurable,
+                    enumerable,
+                ));
+            }
+        }
+
+        if let Some(property) = self.ordinary_own_property(target, key) {
+            return Some(match property {
+                OrdinaryOwnProperty::Data {
+                    writable,
+                    configurable,
+                    enumerable,
+                    ..
+                } => JsOwnPropertyShape::data(
+                    JsOwnPropertySource::Ordinary,
+                    writable,
+                    configurable,
+                    enumerable,
+                ),
+                OrdinaryOwnProperty::Accessor {
+                    configurable,
+                    enumerable,
+                    ..
+                } => JsOwnPropertyShape::accessor(
+                    JsOwnPropertySource::Ordinary,
+                    configurable,
+                    enumerable,
+                ),
+            });
+        }
+
+        if self.metadata_data_property_value(target, key).is_some() {
+            let (writable, configurable, enumerable) =
+                self.property_attributes_from_descriptor_metadata(target, key, (true, true, true));
+            return Some(JsOwnPropertyShape::data(
+                JsOwnPropertySource::Metadata,
                 writable,
                 configurable,
                 enumerable,
-                ..
-            }) => Some((writable, configurable, enumerable)),
-            Some(OrdinaryOwnProperty::Accessor {
+            ));
+        }
+
+        if let Some((writable, configurable, enumerable)) =
+            self.ambient_builtin_global_property_flags(target, key)
+        {
+            return Some(JsOwnPropertyShape::data(
+                JsOwnPropertySource::BuiltinGlobal,
+                writable,
                 configurable,
                 enumerable,
-                ..
-            }) => Some((false, configurable, enumerable)),
-            None => None,
+            ));
         }
+
+        let callable_get = self.callable_virtual_accessor_value(target, key, "get");
+        let callable_set = self.callable_virtual_accessor_value(target, key, "set");
+        if callable_get.is_some() || callable_set.is_some() {
+            let (_, configurable, enumerable) = self
+                .callable_virtual_property_descriptor(target, key)
+                .unwrap_or((false, true, false));
+            return Some(JsOwnPropertyShape::accessor(
+                JsOwnPropertySource::CallableVirtual,
+                configurable,
+                enumerable,
+            ));
+        }
+        if let Some((writable, configurable, enumerable)) =
+            self.callable_virtual_property_descriptor(target, key)
+        {
+            return Some(JsOwnPropertyShape::data(
+                JsOwnPropertySource::CallableVirtual,
+                writable,
+                configurable,
+                enumerable,
+            ));
+        }
+
+        if self.has_class_vtable_method(target, key) {
+            return Some(JsOwnPropertyShape::data(
+                JsOwnPropertySource::NominalMethod,
+                true,
+                true,
+                false,
+            ));
+        }
+
+        if crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key)
+            .is_some()
+        {
+            return Some(JsOwnPropertyShape::data(
+                JsOwnPropertySource::BuiltinNativeMethod,
+                true,
+                true,
+                false,
+            ));
+        }
+
+        if self.has_constructor_static_method(target, key) {
+            return Some(JsOwnPropertyShape::data(
+                JsOwnPropertySource::ConstructorStaticMethod,
+                true,
+                true,
+                false,
+            ));
+        }
+
+        None
+    }
+
+    fn resolve_own_property_record_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<JsOwnPropertyRecord>, VmError> {
+        let Some(shape) = self.resolve_own_property_shape(target, key) else {
+            return Ok(None);
+        };
+
+        let record = match (shape.source, shape.kind) {
+            (JsOwnPropertySource::ArgumentsExotic, JsOwnPropertyKind::PoisonedAccessor) => {
+                JsOwnPropertyRecord::accessor(shape, None, None)
+            }
+            (JsOwnPropertySource::ArgumentsExotic, JsOwnPropertyKind::Data) => {
+                let value = self.arguments_exotic_get(target, key)?.unwrap_or(Value::undefined());
+                JsOwnPropertyRecord::data(shape, value)
+            }
+            (JsOwnPropertySource::ArrayExotic, JsOwnPropertyKind::Data) => {
+                let value = if let Some(array_ptr) = checked_array_ptr(target) {
+                    let array = unsafe { &*array_ptr.as_ptr() };
+                    if key == "length" {
+                        if array.len() <= i32::MAX as usize {
+                            Value::i32(array.len() as i32)
+                        } else {
+                            Value::f64(array.len() as f64)
+                        }
+                    } else if let Some(index) = parse_js_array_index_name(key) {
+                        array.get(index).unwrap_or(Value::undefined())
+                    } else {
+                        self.metadata_data_property_value(target, key)
+                            .unwrap_or(Value::undefined())
+                    }
+                } else {
+                    Value::undefined()
+                };
+                JsOwnPropertyRecord::data(shape, value)
+            }
+            (JsOwnPropertySource::TypedArrayExotic, JsOwnPropertyKind::Data) => {
+                let value = self
+                    .typed_array_own_property_value_with_context(
+                        target,
+                        key,
+                        caller_task,
+                        caller_module,
+                    )?
+                    .unwrap_or(Value::undefined());
+                JsOwnPropertyRecord::data(shape, value)
+            }
+            (JsOwnPropertySource::Ordinary, JsOwnPropertyKind::Data) => {
+                let value = match self.ordinary_own_property(target, key) {
+                    Some(OrdinaryOwnProperty::Data { value, .. }) => value,
+                    _ => Value::undefined(),
+                };
+                JsOwnPropertyRecord::data(shape, value)
+            }
+            (JsOwnPropertySource::Ordinary, JsOwnPropertyKind::Accessor) => {
+                let (getter, setter) = match self.ordinary_own_property(target, key) {
+                    Some(OrdinaryOwnProperty::Accessor { get, set, .. }) => (
+                        (!get.is_undefined()).then_some(get),
+                        (!set.is_undefined()).then_some(set),
+                    ),
+                    _ => (None, None),
+                };
+                JsOwnPropertyRecord::accessor(shape, getter, setter)
+            }
+            (JsOwnPropertySource::Metadata, JsOwnPropertyKind::Data) => JsOwnPropertyRecord::data(
+                shape,
+                self.metadata_data_property_value(target, key)
+                    .unwrap_or(Value::undefined()),
+            ),
+            (JsOwnPropertySource::BuiltinGlobal, JsOwnPropertyKind::Data) => {
+                JsOwnPropertyRecord::data(
+                    shape,
+                    self.builtin_global_property_value(target, key)
+                        .unwrap_or(Value::undefined()),
+                )
+            }
+            (JsOwnPropertySource::CallableVirtual, JsOwnPropertyKind::Data) => {
+                JsOwnPropertyRecord::data(
+                    shape,
+                    self.callable_virtual_property_value(target, key)
+                        .unwrap_or(Value::undefined()),
+                )
+            }
+            (JsOwnPropertySource::CallableVirtual, JsOwnPropertyKind::Accessor) => {
+                JsOwnPropertyRecord::accessor(
+                    shape,
+                    self.callable_virtual_accessor_value(target, key, "get"),
+                    self.callable_virtual_accessor_value(target, key, "set"),
+                )
+            }
+            (JsOwnPropertySource::NominalMethod, JsOwnPropertyKind::Data) => {
+                JsOwnPropertyRecord::data(
+                    shape,
+                    self.own_nominal_method_value(target, key)
+                        .unwrap_or(Value::undefined()),
+                )
+            }
+            (JsOwnPropertySource::BuiltinNativeMethod, JsOwnPropertyKind::Data) => {
+                JsOwnPropertyRecord::data(
+                    shape,
+                    self.own_builtin_native_method_value(target, key)
+                        .unwrap_or(Value::undefined()),
+                )
+            }
+            (JsOwnPropertySource::ConstructorStaticMethod, JsOwnPropertyKind::Data) => {
+                JsOwnPropertyRecord::data(
+                    shape,
+                    self.materialize_constructor_static_method(target, key)
+                        .unwrap_or(Value::undefined()),
+                )
+            }
+            _ => return Ok(None),
+        };
+
+        Ok(Some(record))
+    }
+
+    fn resolve_property_record_on_receiver_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<JsResolvedPropertyRecord>, VmError> {
+        let mut current = Some(target);
+        let mut seen = vec![target.raw()];
+
+        while let Some(candidate) = current {
+            if let Some(record) = self.resolve_own_property_record_with_context(
+                candidate,
+                key,
+                caller_task,
+                caller_module,
+            )? {
+                return Ok(Some(JsResolvedPropertyRecord {
+                    owner: candidate,
+                    record,
+                }));
+            }
+
+            let Some(prototype) = self.prototype_of_value(candidate) else {
+                break;
+            };
+            if prototype.raw() == candidate.raw() || seen.contains(&prototype.raw()) {
+                break;
+            }
+            seen.push(prototype.raw());
+            current = Some(prototype);
+        }
+
+        Ok(None)
+    }
+
+    fn read_resolved_property_value_with_context(
+        &mut self,
+        key: &str,
+        record: JsOwnPropertyRecord,
+        receiver: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Value, VmError> {
+        match record.shape.kind {
+            JsOwnPropertyKind::PoisonedAccessor => Err(VmError::TypeError(format!(
+                "'{}' is not accessible on strict mode arguments objects",
+                key
+            ))),
+            JsOwnPropertyKind::Accessor => {
+                if let Some(getter) = record.getter {
+                    return self.invoke_callable_sync_with_this(
+                        getter,
+                        Some(receiver),
+                        &[],
+                        caller_task,
+                        caller_module,
+                    );
+                }
+                Ok(Value::undefined())
+            }
+            JsOwnPropertyKind::Data => Ok(record.value.unwrap_or(Value::undefined())),
+        }
+    }
+
+    fn own_js_property_flags(&self, target: Value, key: &str) -> Option<(bool, bool, bool)> {
+        self.resolve_own_property_shape(target, key)
+            .map(|shape| (shape.writable, shape.configurable, shape.enumerable))
     }
 
     fn get_field_value_on_target_by_name(&self, obj_val: Value, field_name: &str) -> Option<Value> {
@@ -6373,19 +6843,7 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> bool {
-        self.ordinary_own_property(target, key).is_some()
-            || self.get_descriptor_metadata(target, key).is_some()
-            || self.builtin_global_property_value(target, key).is_some()
-            || self.typed_array_index_property_flags(target, key).is_some()
-            || self.has_class_vtable_method(target, key)
-            || crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key)
-                .is_some()
-            || self
-                .callable_virtual_property_descriptor(target, key)
-                .is_some()
-            || self
-                .materialize_constructor_static_method(target, key)
-                .is_some()
+        self.resolve_own_property_shape(target, key).is_some()
     }
 
     pub(in crate::vm::interpreter) fn has_property_via_js_semantics(
@@ -6397,7 +6855,7 @@ impl<'a> Interpreter<'a> {
         let mut seen = vec![target.raw()];
 
         while let Some(candidate) = current {
-            if self.has_own_property_via_js_semantics(candidate, key) {
+            if self.resolve_own_property_shape(candidate, key).is_some() {
                 return true;
             }
 
@@ -6412,44 +6870,6 @@ impl<'a> Interpreter<'a> {
         }
 
         false
-    }
-
-    fn descriptor_property_value_with_context(
-        &mut self,
-        target: Value,
-        key: &str,
-        receiver: Value,
-        caller_task: &Arc<Task>,
-        caller_module: &Module,
-    ) -> Result<Option<Value>, VmError> {
-        let Some(descriptor) = self.get_descriptor_metadata(target, key) else {
-            return Ok(None);
-        };
-
-        let has_getter = self.descriptor_field_present(descriptor, "get");
-        let has_setter = self.descriptor_field_present(descriptor, "set");
-        if has_getter || has_setter {
-            if let Some(getter) = self.descriptor_accessor(target, key, "get") {
-                let value = self.invoke_callable_sync_with_this(
-                    getter,
-                    Some(receiver),
-                    &[],
-                    caller_task,
-                    caller_module,
-                )?;
-                return Ok(Some(value));
-            }
-            return Ok(Some(Value::undefined()));
-        }
-
-        if self.descriptor_field_present(descriptor, "value") {
-            return Ok(Some(
-                self.get_field_value_by_name(descriptor, "value")
-                    .unwrap_or(Value::undefined()),
-            ));
-        }
-
-        Ok(None)
     }
 
     pub(in crate::vm::interpreter) fn get_own_property_value_via_js_semantics_with_context(
@@ -6476,112 +6896,31 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
-        if let Some(value) = self.arguments_exotic_get(target, key)? {
-            return Ok(Some(value));
-        }
-
         if let Some(value) =
             self.try_proxy_like_get_property(target, key, caller_task, caller_module)?
         {
             return Ok(Some(value));
         }
 
-        if let Some(value) = self.descriptor_property_value_with_context(
+        let Some(record) = self.resolve_own_property_record_with_context(
             target,
             key,
+            caller_task,
+            caller_module,
+        )? else {
+            return Ok(None);
+        };
+        let value = self.read_resolved_property_value_with_context(
+            key,
+            record,
             receiver,
             caller_task,
             caller_module,
-        )? {
-            return Ok(Some(value));
-        }
-
-        if let Some(value) = self.builtin_global_property_value(target, key) {
-            return Ok(Some(value));
-        }
-
-        if let Some(value) = self.typed_array_own_property_value_with_context(
-            target,
-            key,
-            caller_task,
-            caller_module,
-        )? {
-            return Ok(Some(value));
-        }
-
-        if let Some(value) = self.get_own_js_property_value_by_name(target, key) {
-            // Ensure prototype objects have nominal_type_id for vtable method lookup
-            if key == "prototype" {
-                self.ensure_prototype_nominal_type_id(target, value);
-            }
-            return Ok(Some(value));
-        }
-
-        // Class vtable method lookup
-        if let Some(obj_ptr) = checked_object_ptr(target) {
-            let obj = unsafe { &*obj_ptr.as_ptr() };
-            if let Some(method_slot) = obj.nominal_type_id_usize().and_then(|ntid| {
-                let class_metadata = self.class_metadata.read();
-                class_metadata
-                    .get(ntid)
-                    .and_then(|meta| meta.get_method_index(key))
-                    .or_else(|| {
-                        drop(class_metadata);
-                        let classes = self.classes.read();
-                        let class = classes.get_class(ntid)?;
-                        let module = class.module.as_ref()?;
-                        module
-                            .classes
-                            .iter()
-                            .find(|cd| cd.name == class.name)
-                            .and_then(|cd| {
-                                cd.methods.iter().find_map(|m| {
-                                    let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
-                                    if m.name == key || plain == key {
-                                        Some(m.slot)
-                                    } else {
-                                        None
-                                    }
-                                })
-                            })
-                    })
-            }) {
-                if let Ok(value) = self.bound_method_value_for_slot(target, method_slot) {
-                    return Ok(Some(value));
-                }
-            }
-        }
-
-        // Builtin native method lookup
-        if let Some(native_id) =
-            crate::vm::interpreter::opcodes::types::builtin_handle_native_method_id(target, key)
-        {
-            let method = Object::new_bound_native(target, native_id);
-            let method_ptr = self.gc.lock().allocate(method);
-            let val =
-                unsafe { Value::from_ptr(std::ptr::NonNull::new(method_ptr.as_ptr()).unwrap()) };
-            return Ok(Some(val));
-        }
-
+        )?;
         if key == "prototype" {
-            if let Some(value) = self.constructor_prototype_value(target) {
-                return Ok(Some(value));
-            }
+            self.ensure_prototype_nominal_type_id(target, value);
         }
-
-        if let Some(value) = self.callable_virtual_property_value(target, key) {
-            // Ensure prototype objects have nominal_type_id for vtable method lookup
-            if key == "prototype" {
-                self.ensure_prototype_nominal_type_id(target, value);
-            }
-            return Ok(Some(value));
-        }
-
-        if let Some(value) = self.materialize_constructor_static_method(target, key) {
-            return Ok(Some(value));
-        }
-
-        Ok(None)
+        Ok(Some(value))
     }
 
     pub(in crate::vm::interpreter) fn get_property_value_via_js_semantics_with_context(
@@ -6608,33 +6947,25 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
-        let mut current = Some(target);
-        let mut seen = vec![target.raw()];
-
-        while let Some(candidate) = current {
-            if let Some(value) = self
-                .get_own_property_value_on_receiver_via_js_semantics_with_context(
-                    candidate,
-                    key,
-                    receiver,
-                    caller_task,
-                    caller_module,
-                )?
-            {
-                return Ok(Some(value));
-            }
-
-            let Some(prototype) = self.prototype_of_value(candidate) else {
-                break;
-            };
-            if prototype.raw() == candidate.raw() || seen.contains(&prototype.raw()) {
-                break;
-            }
-            seen.push(prototype.raw());
-            current = Some(prototype);
+        let Some(resolved) = self.resolve_property_record_on_receiver_with_context(
+            target,
+            key,
+            caller_task,
+            caller_module,
+        )? else {
+            return Ok(None);
+        };
+        let value = self.read_resolved_property_value_with_context(
+            key,
+            resolved.record,
+            receiver,
+            caller_task,
+            caller_module,
+        )?;
+        if key == "prototype" {
+            self.ensure_prototype_nominal_type_id(resolved.owner, value);
         }
-
-        Ok(None)
+        Ok(Some(value))
     }
 
     fn descriptor_flag(&self, descriptor: Value, field_name: &str, default: bool) -> bool {
@@ -7172,54 +7503,15 @@ impl<'a> Interpreter<'a> {
         target: Value,
         key: &str,
     ) -> bool {
-        // Explicit descriptor metadata takes precedence (e.g., from defineProperty
-        // with enumerable:false, or Object.seal/freeze).
-        if let Some(descriptor) = self.get_descriptor_metadata(target, key) {
-            // Only trust the descriptor's enumerable flag if the "enumerable"
-            // field was explicitly set (via defineProperty).  Synthesized
-            // descriptors from the property kernel have all fields present but
-            // with default false, which incorrectly marks data properties as
-            // non-enumerable.
-            if self.descriptor_field_present(descriptor, "enumerable") {
-                return self.descriptor_flag(descriptor, "enumerable", false);
-            }
-        }
-
-        // Check explicit per-property flags (set by the property kernel).
-        if let Some((writable, configurable, enumerable)) = self.own_js_property_flags(target, key)
-        {
+        if let Some(shape) = self.resolve_own_property_shape(target, key) {
             if std::env::var("RAYA_DEBUG_FORIN_ENUM").is_ok() {
                 eprintln!(
-                    "[enum-flags] key='{}' w={} c={} e={}",
-                    key, writable, configurable, enumerable
+                    "[enum-flags] key='{}' w={} c={} e={} source={:?}",
+                    key, shape.writable, shape.configurable, shape.enumerable, shape.source
                 );
             }
-            return enumerable;
+            return shape.enumerable;
         }
-
-        // Default: data properties are enumerable, callable properties
-        // (methods, constructor) are non-enumerable.  This matches ES spec:
-        // object literal fields are enumerable, prototype methods are not.
-        if let Some(obj_ptr) = checked_object_ptr(target) {
-            let obj = unsafe { &*obj_ptr.as_ptr() };
-            // Check slot-based fields
-            if let Some(field_idx) = self.get_field_index_for_value(target, key) {
-                let value = obj.get_field(field_idx);
-                // Callable values (methods) default to non-enumerable
-                if value.is_some_and(|v| self.callable_function_info(v).is_some()) {
-                    return false;
-                }
-                return true;
-            }
-            // Dynamic properties are enumerable (set by assignment/defineProperty)
-            if obj
-                .dyn_props()
-                .is_some_and(|dp| dp.get(self.intern_prop_key(key)).is_some())
-            {
-                return true;
-            }
-        }
-
         false
     }
 

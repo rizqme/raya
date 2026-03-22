@@ -2987,6 +2987,61 @@ fn test_node_compat_get_own_property_names_orders_indices_before_strings() {
 }
 
 #[test]
+fn test_node_compat_reflect_set_uses_inherited_setter_on_receiver() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let hits: any[] = [];
+            let proto = {};
+            Object.defineProperty(proto, "x", {
+                set: function(v) {
+                    this._x = v;
+                    hits.push(v);
+                },
+                configurable: true
+            });
+            let obj = {};
+            Object.setPrototypeOf(obj, proto);
+            let ok = Reflect.set(obj, "x", 7);
+            return JSON.stringify([
+                ok,
+                hits.length,
+                obj._x,
+                Object.prototype.hasOwnProperty.call(obj, "x"),
+                Object.prototype.hasOwnProperty.call(obj, "_x")
+            ]);
+        }
+    "#,
+        "[true,1,7,false,true]",
+    );
+}
+
+#[test]
+fn test_node_compat_reflect_set_respects_inherited_non_writable_data_property() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let proto = {};
+            Object.defineProperty(proto, "x", {
+                value: 1,
+                writable: false,
+                configurable: true
+            });
+            let obj = {};
+            Object.setPrototypeOf(obj, proto);
+            let ok = Reflect.set(obj, "x", 7);
+            return JSON.stringify([
+                ok,
+                obj.x,
+                Object.prototype.hasOwnProperty.call(obj, "x")
+            ]);
+        }
+    "#,
+        "[false,1,false]",
+    );
+}
+
+#[test]
 fn test_node_compat_top_level_strict_functions_inherit_arguments_poisoning() {
     expect_string_runtime_node_compat(
         r#"
