@@ -2266,19 +2266,21 @@ fn test_node_compat_reflect_has_method_on_callable_structural_field() {
 fn test_node_compat_proxy_reflect_runtime_integration() {
     expect_bool_runtime_node_compat(
         r#"
-        let target = new Object();
-        Reflect.set(target, "x", 7);
-        let handler = new Object();
-        let proxy = new Proxy<Object>(target, handler);
-        let a = proxy.isProxy();
-        let b = Reflect.isProxy(proxy);
-        let t1 = proxy.getTarget();
-        let t2 = Reflect.getProxyTarget(proxy);
-        if (t1 == null || t2 == null) {
-            return false;
+        function main(): boolean {
+            let target = new Object();
+            Reflect.set(target, "x", 7);
+            let handler = new Object();
+            let proxy = new Proxy<Object>(target, handler);
+            let a = proxy.isProxy();
+            let b = Reflect.isProxy(proxy);
+            let t1 = proxy.getTarget();
+            let t2 = Reflect.getProxyTarget(proxy);
+            if (t1 == null || t2 == null) {
+                return false;
+            }
+            let v = Reflect.get(target, "x");
+            return a && b && v == 7;
         }
-        let v = Reflect.get(target, "x");
-        return a && b && v == 7;
     "#,
         true,
     );
@@ -2288,14 +2290,16 @@ fn test_node_compat_proxy_reflect_runtime_integration() {
 fn test_node_compat_proxy_reflect_get_trap() {
     expect_bool_runtime_node_compat(
         r#"
-        let target = new Object();
-        Reflect.set(target, "x", 7);
-        let handler = new Object();
-        handler["get"] = (t: Object, k: string): number => {
-            return 99;
-        };
-        let proxy = new Proxy<Object>(target, handler);
-        return Reflect.get(proxy, "x") == 99;
+        function main(): boolean {
+            let target = new Object();
+            Reflect.set(target, "x", 7);
+            let handler = new Object();
+            handler["get"] = (t: Object, k: string): number => {
+                return 99;
+            };
+            let proxy = new Proxy<Object>(target, handler);
+            return Reflect.get(proxy, "x") == 99;
+        }
     "#,
         true,
     );
@@ -2305,15 +2309,17 @@ fn test_node_compat_proxy_reflect_get_trap() {
 fn test_node_compat_proxy_reflect_set_trap() {
     expect_bool_runtime_node_compat(
         r#"
-        let target = new Object();
-        let handler = new Object();
-        handler["set"] = (t: Object, k: string, v: Object | string | number | boolean | null): boolean => {
-            Reflect.set(t, k, (v as number) + 1);
-            return true;
-        };
-        let proxy = new Proxy<Object>(target, handler);
-        let ok = Reflect.set(proxy, "x", 7);
-        return ok && Reflect.get(target, "x") == 8;
+        function main(): boolean {
+            let target = new Object();
+            let handler = new Object();
+            handler["set"] = (t: Object, k: string, v: Object | string | number | boolean | null): boolean => {
+                Reflect.set(t, k, (v as number) + 1);
+                return true;
+            };
+            let proxy = new Proxy<Object>(target, handler);
+            let ok = Reflect.set(proxy, "x", 7);
+            return ok && Reflect.get(target, "x") == 8;
+        }
     "#,
         true,
     );
@@ -2323,15 +2329,139 @@ fn test_node_compat_proxy_reflect_set_trap() {
 fn test_node_compat_proxy_reflect_has_trap() {
     expect_bool_runtime_node_compat(
         r#"
-        let target = new Object();
-        let handler = new Object();
-        handler["has"] = (_t: Object, _k: string): boolean => {
-            return true;
-        };
-        let proxy = new Proxy<Object>(target, handler);
-        return Reflect.has(proxy, "missing");
+        function main(): boolean {
+            let target = new Object();
+            let handler = new Object();
+            handler["has"] = (_t: Object, _k: string): boolean => {
+                return true;
+            };
+            let proxy = new Proxy<Object>(target, handler);
+            return Reflect.has(proxy, "missing");
+        }
     "#,
         true,
+    );
+}
+
+#[test]
+fn test_node_compat_proxy_has_trap_respects_nonconfigurable_invariant() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let target = new Object();
+            Object.defineProperty(target, "x", { value: 1, configurable: false });
+            let handler = new Object();
+            handler["has"] = (_t: Object, _k: string): boolean => false;
+            let proxy = new Proxy<Object>(target, handler);
+            try {
+                Reflect.has(proxy, "x");
+                return "NO_THROW";
+            } catch (e) {
+                return e.name;
+            }
+        }
+    "#,
+        "TypeError",
+    );
+}
+
+#[test]
+fn test_node_compat_proxy_get_trap_respects_frozen_data_invariant() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let target = new Object();
+            Object.defineProperty(target, "x", {
+                value: 1,
+                writable: false,
+                configurable: false
+            });
+            let handler = new Object();
+            handler["get"] = (_t: Object, _k: string): number => 2;
+            let proxy = new Proxy<Object>(target, handler);
+            try {
+                Reflect.get(proxy, "x");
+                return "NO_THROW";
+            } catch (e) {
+                return e.name;
+            }
+        }
+    "#,
+        "TypeError",
+    );
+}
+
+#[test]
+fn test_node_compat_proxy_set_trap_respects_frozen_data_invariant() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let target = new Object();
+            Object.defineProperty(target, "x", {
+                value: 1,
+                writable: false,
+                configurable: false
+            });
+            let handler = new Object();
+            handler["set"] = (_t: Object, _k: string, _v: number): boolean => true;
+            let proxy = new Proxy<Object>(target, handler);
+            try {
+                Reflect.set(proxy, "x", 2);
+                return "NO_THROW";
+            } catch (e) {
+                return JSON.stringify([e.name, Reflect.get(target, "x")]);
+            }
+        }
+    "#,
+        "[\"TypeError\",1]",
+    );
+}
+
+#[test]
+fn test_node_compat_proxy_delete_trap_respects_nonconfigurable_invariant() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let target = new Object();
+            Object.defineProperty(target, "x", { value: 1, configurable: false });
+            let handler = new Object();
+            handler["deleteProperty"] = (_t: Object, _k: string): boolean => true;
+            let proxy = new Proxy<Object>(target, handler);
+            try {
+                Object.deleteProperty(proxy, "x");
+                return "NO_THROW";
+            } catch (e) {
+                return e.name;
+            }
+        }
+    "#,
+        "TypeError",
+    );
+}
+
+#[test]
+fn test_node_compat_proxy_define_trap_respects_existing_property_invariant() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let target = new Object();
+            Object.defineProperty(target, "x", {
+                value: 1,
+                writable: false,
+                configurable: false
+            });
+            let handler = new Object();
+            handler["defineProperty"] = (_t: Object, _k: string, _d: Object): boolean => true;
+            let proxy = new Proxy<Object>(target, handler);
+            try {
+                Object.defineProperty(proxy, "x", { value: 2 });
+                return "NO_THROW";
+            } catch (e) {
+                return JSON.stringify([e.name, Reflect.get(target, "x")]);
+            }
+        }
+    "#,
+        "[\"TypeError\",1]",
     );
 }
 

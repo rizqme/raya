@@ -243,6 +243,25 @@ impl JsOwnPropertyRecord {
             setter,
         }
     }
+
+    fn as_ordinary_property(self) -> OrdinaryOwnProperty {
+        match self.shape.kind {
+            JsOwnPropertyKind::Data => OrdinaryOwnProperty::Data {
+                value: self.value.unwrap_or(Value::undefined()),
+                writable: self.shape.writable,
+                enumerable: self.shape.enumerable,
+                configurable: self.shape.configurable,
+            },
+            JsOwnPropertyKind::Accessor | JsOwnPropertyKind::PoisonedAccessor => {
+                OrdinaryOwnProperty::Accessor {
+                    get: self.getter.unwrap_or(Value::undefined()),
+                    set: self.setter.unwrap_or(Value::undefined()),
+                    enumerable: self.shape.enumerable,
+                    configurable: self.shape.configurable,
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2646,6 +2665,36 @@ impl<'a> Interpreter<'a> {
             return Ok(true);
         };
 
+        if let Some(proxy) = crate::vm::reflect::try_unwrap_proxy(target) {
+            if proxy.handler.is_null() {
+                return Err(VmError::TypeError("Proxy has been revoked".to_string()));
+            }
+            if let Some(trap) = self.get_field_value_by_name(proxy.handler, "deleteProperty") {
+                if !trap.is_undefined() && !trap.is_null() {
+                    let trap_result = self
+                        .invoke_proxy_property_trap_with_context(
+                            trap,
+                            proxy.handler,
+                            proxy.target,
+                            &key_name,
+                            &[],
+                            task,
+                            module,
+                        )?
+                        .is_truthy();
+                    self.enforce_proxy_delete_invariants(
+                        proxy.target,
+                        &key_name,
+                        trap_result,
+                        task,
+                        module,
+                    )?;
+                    return Ok(trap_result);
+                }
+            }
+            return self.delete_property_from_target(proxy.target, key, task, module);
+        }
+
         if !target.is_ptr() {
             return Ok(true);
         }
@@ -4343,37 +4392,16 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<bool, VmError> {
+        if let Some(trap_result) = self.try_proxy_set_property_with_invariants(
+            target,
+            key,
+            value,
+            caller_task,
+            caller_module,
+        )? {
+            return Ok(trap_result);
+        }
         if let Some(proxy) = crate::vm::reflect::try_unwrap_proxy(target) {
-            if proxy.handler.is_null() {
-                return Err(VmError::TypeError("Proxy has been revoked".to_string()));
-            }
-            if let Some(setter) = self.get_field_value_by_name(proxy.handler, "set") {
-                if !setter.is_undefined() && !setter.is_null() {
-                    let key_ptr = self.gc.lock().allocate(RayaString::new(key.to_string()));
-                    let key_value = unsafe {
-                        Value::from_ptr(
-                            std::ptr::NonNull::new(key_ptr.as_ptr()).expect("proxy key ptr"),
-                        )
-                    };
-                    self.ephemeral_gc_roots.write().push(key_value);
-                    let trap_args = [proxy.target, key_value, value];
-                    let result = self.invoke_callable_sync_with_this(
-                        setter,
-                        Some(proxy.handler),
-                        &trap_args,
-                        caller_task,
-                        caller_module,
-                    );
-                    let mut ephemeral = self.ephemeral_gc_roots.write();
-                    if let Some(index) = ephemeral
-                        .iter()
-                        .rposition(|candidate| *candidate == key_value)
-                    {
-                        ephemeral.swap_remove(index);
-                    }
-                    return result.map(|trap_result| trap_result.is_truthy());
-                }
-            }
             return self.set_property_value_via_js_semantics(
                 proxy.target,
                 key,
@@ -4439,35 +4467,15 @@ impl<'a> Interpreter<'a> {
         // actual proxy exotic object. Wrapper classes like the JS-visible
         // `Proxy` helper must behave as normal objects so their own/prototype
         // methods stay reachable.
-        let Some(proxy) = crate::vm::reflect::try_unwrap_proxy(value) else {
-            return Ok(None);
-        };
-
-        if let Some(getter) = self.get_field_value_by_name(proxy.handler, "get") {
-            let key_ptr = self.gc.lock().allocate(RayaString::new(key.to_string()));
-            let key_value = unsafe {
-                Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).expect("proxy key ptr"))
-            };
-            self.ephemeral_gc_roots.write().push(key_value);
-            let trap_args = [proxy.target, key_value];
-            let result = self.invoke_callable_sync_with_this(
-                getter,
-                Some(proxy.handler),
-                &trap_args,
-                caller_task,
-                caller_module,
-            );
-            let mut ephemeral = self.ephemeral_gc_roots.write();
-            if let Some(index) = ephemeral
-                .iter()
-                .rposition(|candidate| *candidate == key_value)
-            {
-                ephemeral.swap_remove(index);
-            }
-            let result = result?;
+        if let Some(result) =
+            self.try_proxy_get_property_with_invariants(value, key, caller_task, caller_module)?
+        {
             return Ok(Some(result));
         }
 
+        let Some(proxy) = crate::vm::reflect::try_unwrap_proxy(value) else {
+            return Ok(None);
+        };
         if let Some(resolved) = self.resolve_property_record_on_receiver_with_context(
             proxy.target,
             key,
@@ -6059,6 +6067,322 @@ impl<'a> Interpreter<'a> {
         !name.starts_with("Symbol.")
     }
 
+    fn invoke_proxy_property_trap_with_context(
+        &mut self,
+        trap: Value,
+        handler: Value,
+        target: Value,
+        key: &str,
+        extra_args: &[Value],
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Value, VmError> {
+        let key_ptr = self.gc.lock().allocate(RayaString::new(key.to_string()));
+        let key_value =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).expect("proxy key ptr")) };
+        self.ephemeral_gc_roots.write().push(key_value);
+        let mut trap_args = Vec::with_capacity(2 + extra_args.len());
+        trap_args.push(target);
+        trap_args.push(key_value);
+        trap_args.extend_from_slice(extra_args);
+        let result = self.invoke_callable_sync_with_this(
+            trap,
+            Some(handler),
+            &trap_args,
+            caller_task,
+            caller_module,
+        );
+        let mut ephemeral = self.ephemeral_gc_roots.write();
+        if let Some(index) = ephemeral
+            .iter()
+            .rposition(|candidate| *candidate == key_value)
+        {
+            ephemeral.swap_remove(index);
+        }
+        result
+    }
+
+    fn proxy_target_own_property_record_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<JsOwnPropertyRecord>, VmError> {
+        self.resolve_own_property_record_with_context(target, key, caller_task, caller_module)
+    }
+
+    fn proxy_invariant_error(&self, key: &str, op: &str) -> VmError {
+        VmError::TypeError(format!("Proxy {op} trap violated invariant for '{key}'"))
+    }
+
+    fn enforce_proxy_get_invariants(
+        &mut self,
+        target: Value,
+        key: &str,
+        trap_result: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<(), VmError> {
+        let Some(record) =
+            self.proxy_target_own_property_record_with_context(target, key, caller_task, caller_module)?
+        else {
+            return Ok(());
+        };
+        if !record.shape.configurable {
+            match record.shape.kind {
+                JsOwnPropertyKind::Data => {
+                    if !record.shape.writable
+                        && !value_same_value(trap_result, record.value.unwrap_or(Value::undefined()))
+                    {
+                        return Err(self.proxy_invariant_error(key, "get"));
+                    }
+                }
+                JsOwnPropertyKind::Accessor | JsOwnPropertyKind::PoisonedAccessor => {
+                    let getter = record.getter.unwrap_or(Value::undefined());
+                    if getter.is_undefined() && !trap_result.is_undefined() {
+                        return Err(self.proxy_invariant_error(key, "get"));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn enforce_proxy_set_invariants(
+        &mut self,
+        target: Value,
+        key: &str,
+        value: Value,
+        trap_result: bool,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<(), VmError> {
+        if !trap_result {
+            return Ok(());
+        }
+        let Some(record) =
+            self.proxy_target_own_property_record_with_context(target, key, caller_task, caller_module)?
+        else {
+            return Ok(());
+        };
+        if !record.shape.configurable {
+            match record.shape.kind {
+                JsOwnPropertyKind::Data => {
+                    if !record.shape.writable
+                        && !value_same_value(value, record.value.unwrap_or(Value::undefined()))
+                    {
+                        return Err(self.proxy_invariant_error(key, "set"));
+                    }
+                }
+                JsOwnPropertyKind::Accessor | JsOwnPropertyKind::PoisonedAccessor => {
+                    let setter = record.setter.unwrap_or(Value::undefined());
+                    if setter.is_undefined() {
+                        return Err(self.proxy_invariant_error(key, "set"));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn enforce_proxy_has_invariants(
+        &mut self,
+        target: Value,
+        key: &str,
+        trap_result: bool,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<(), VmError> {
+        if trap_result {
+            return Ok(());
+        }
+        let Some(record) =
+            self.proxy_target_own_property_record_with_context(target, key, caller_task, caller_module)?
+        else {
+            return Ok(());
+        };
+        if !record.shape.configurable || !self.is_js_value_extensible(target) {
+            return Err(self.proxy_invariant_error(key, "has"));
+        }
+        Ok(())
+    }
+
+    fn enforce_proxy_delete_invariants(
+        &mut self,
+        target: Value,
+        key: &str,
+        trap_result: bool,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<(), VmError> {
+        if !trap_result {
+            return Ok(());
+        }
+        let Some(record) =
+            self.proxy_target_own_property_record_with_context(target, key, caller_task, caller_module)?
+        else {
+            return Ok(());
+        };
+        if !record.shape.configurable || !self.is_js_value_extensible(target) {
+            return Err(self.proxy_invariant_error(key, "deleteProperty"));
+        }
+        Ok(())
+    }
+
+    fn enforce_proxy_define_invariants(
+        &mut self,
+        target: Value,
+        key: &str,
+        descriptor: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<(), VmError> {
+        let record = self.validate_descriptor_for_definition(key, descriptor)?;
+        let target_record =
+            self.proxy_target_own_property_record_with_context(target, key, caller_task, caller_module)?;
+        let setting_config_false = record.has_configurable && !record.configurable;
+
+        match target_record {
+            None => {
+                if !self.is_js_value_extensible(target) || setting_config_false {
+                    return Err(self.proxy_invariant_error(key, "defineProperty"));
+                }
+            }
+            Some(current_record) => {
+                if setting_config_false && current_record.shape.configurable {
+                    return Err(self.proxy_invariant_error(key, "defineProperty"));
+                }
+                self.validate_existing_property_descriptor(
+                    key,
+                    current_record.as_ordinary_property(),
+                    record,
+                )
+                .map_err(|_| self.proxy_invariant_error(key, "defineProperty"))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn try_proxy_get_property_with_invariants(
+        &mut self,
+        value: Value,
+        key: &str,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(proxy) = crate::vm::reflect::try_unwrap_proxy(value) else {
+            return Ok(None);
+        };
+
+        if proxy.handler.is_null() {
+            return Err(VmError::TypeError("Proxy has been revoked".to_string()));
+        }
+
+        if let Some(getter) = self.get_field_value_by_name(proxy.handler, "get") {
+            let result = self.invoke_proxy_property_trap_with_context(
+                getter,
+                proxy.handler,
+                proxy.target,
+                key,
+                &[],
+                caller_task,
+                caller_module,
+            )?;
+            self.enforce_proxy_get_invariants(
+                proxy.target,
+                key,
+                result,
+                caller_task,
+                caller_module,
+            )?;
+            return Ok(Some(result));
+        }
+
+        Ok(None)
+    }
+
+    fn try_proxy_set_property_with_invariants(
+        &mut self,
+        target: Value,
+        key: &str,
+        value: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<bool>, VmError> {
+        let Some(proxy) = crate::vm::reflect::try_unwrap_proxy(target) else {
+            return Ok(None);
+        };
+        if proxy.handler.is_null() {
+            return Err(VmError::TypeError("Proxy has been revoked".to_string()));
+        }
+        if let Some(setter) = self.get_field_value_by_name(proxy.handler, "set") {
+            if !setter.is_undefined() && !setter.is_null() {
+                let trap_result = self
+                    .invoke_proxy_property_trap_with_context(
+                        setter,
+                        proxy.handler,
+                        proxy.target,
+                        key,
+                        &[value],
+                        caller_task,
+                        caller_module,
+                    )?
+                    .is_truthy();
+                self.enforce_proxy_set_invariants(
+                    proxy.target,
+                    key,
+                    value,
+                    trap_result,
+                    caller_task,
+                    caller_module,
+                )?;
+                return Ok(Some(trap_result));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(in crate::vm::interpreter) fn try_proxy_has_property_with_invariants(
+        &mut self,
+        target: Value,
+        key: &str,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Option<bool>, VmError> {
+        let Some(proxy) = crate::vm::reflect::try_unwrap_proxy(target) else {
+            return Ok(None);
+        };
+        if proxy.handler.is_null() {
+            return Err(VmError::TypeError("Proxy has been revoked".to_string()));
+        }
+        if let Some(has_trap) = self.get_field_value_by_name(proxy.handler, "has") {
+            if !has_trap.is_undefined() && !has_trap.is_null() {
+                let trap_result = self
+                    .invoke_proxy_property_trap_with_context(
+                        has_trap,
+                        proxy.handler,
+                        proxy.target,
+                        key,
+                        &[],
+                        caller_task,
+                        caller_module,
+                    )?
+                    .is_truthy();
+                self.enforce_proxy_has_invariants(
+                    proxy.target,
+                    key,
+                    trap_result,
+                    caller_task,
+                    caller_module,
+                )?;
+                return Ok(Some(trap_result));
+            }
+        }
+        Ok(None)
+    }
+
     fn numeric_value_as_isize(&self, value: Value) -> Option<isize> {
         if let Some(v) = value.as_i32() {
             return Some(v as isize);
@@ -7444,6 +7768,11 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<Value>, VmError> {
+        if let Some(value) =
+            self.try_proxy_get_property_with_invariants(target, key, caller_task, caller_module)?
+        {
+            return Ok(Some(value));
+        }
         let Some(resolved) = self.resolve_property_record_on_receiver_with_context(
             target,
             key,
@@ -8203,58 +8532,42 @@ impl<'a> Interpreter<'a> {
             ));
         }
 
+        let descriptor = self.normalize_property_descriptor_with_context(
+            descriptor,
+            caller_task,
+            caller_module,
+        )?;
+
         if let Some(proxy) = self.unwrapped_proxy_like(target) {
             if proxy.handler.is_null() {
                 return Err(VmError::TypeError("Proxy has been revoked".to_string()));
             }
             if let Some(trap) = self.get_field_value_by_name(proxy.handler, "defineProperty") {
                 if !trap.is_undefined() && !trap.is_null() {
-                    if !Self::is_callable_value(trap) {
-                        return Err(VmError::TypeError(
-                            "Proxy defineProperty trap is not callable".to_string(),
-                        ));
-                    }
-                    let key_ptr = self.gc.lock().allocate(RayaString::new(key.to_string()));
-                    let key_value = unsafe {
-                        Value::from_ptr(
-                            std::ptr::NonNull::new(key_ptr.as_ptr()).expect("proxy key ptr"),
-                        )
-                    };
-                    {
-                        let mut roots = self.ephemeral_gc_roots.write();
-                        roots.push(key_value);
-                        if descriptor.is_heap_allocated() {
-                            roots.push(descriptor);
-                        }
-                    }
-                    let trap_args = [proxy.target, key_value, descriptor];
-                    let trap_result = self.invoke_callable_sync_with_this(
-                        trap,
-                        Some(proxy.handler),
-                        &trap_args,
-                        caller_task,
-                        caller_module,
-                    );
-                    {
-                        let mut roots = self.ephemeral_gc_roots.write();
-                        if let Some(index) =
-                            roots.iter().rposition(|candidate| *candidate == key_value)
-                        {
-                            roots.swap_remove(index);
-                        }
-                        if let Some(index) =
-                            roots.iter().rposition(|candidate| *candidate == descriptor)
-                        {
-                            roots.swap_remove(index);
-                        }
-                    }
-                    let trap_result = trap_result?;
-                    if !trap_result.is_truthy() {
+                    let trap_result = self
+                        .invoke_proxy_property_trap_with_context(
+                            trap,
+                            proxy.handler,
+                            proxy.target,
+                            key,
+                            &[descriptor],
+                            caller_task,
+                            caller_module,
+                        )?
+                        .is_truthy();
+                    if !trap_result {
                         return Err(VmError::TypeError(format!(
                             "Proxy defineProperty trap returned false for '{}'",
                             key
                         )));
                     }
+                    self.enforce_proxy_define_invariants(
+                        proxy.target,
+                        key,
+                        descriptor,
+                        caller_task,
+                        caller_module,
+                    )?;
                     return Ok(());
                 }
             }
@@ -8266,12 +8579,6 @@ impl<'a> Interpreter<'a> {
                 caller_module,
             );
         }
-
-        let descriptor = self.normalize_property_descriptor_with_context(
-            descriptor,
-            caller_task,
-            caller_module,
-        )?;
 
         if let Some(()) = self.exotic_define_own_property_with_context(
             target,
