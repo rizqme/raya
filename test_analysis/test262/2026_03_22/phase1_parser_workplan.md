@@ -47,6 +47,8 @@ Status now:
   - `break`
   - `continue`
   - `yield`
+- class member heads now treat `static` and `async` contextually instead of as
+  unconditional modifiers
 
 ### `crates/raya-engine/src/parser/parser/expr.rs`
 
@@ -71,6 +73,8 @@ Status now:
 - postfix `++/--` no longer binds across a line terminator
 - the precedence climber no longer loops forever when newline-separated postfix
   `++/--` remains in the token stream for the next parse step
+- object methods now share one parsing path for ordinary, async, and generator
+  heads, including TS-style type parameters and return annotations
 
 ### `crates/raya-engine/src/parser/parser/pattern.rs`
 

@@ -1545,6 +1545,81 @@ fn parse_object_property_key(
     }
 }
 
+fn object_property_async_modifier(parser: &Parser) -> bool {
+    if !parser.check(&Token::Async) {
+        return false;
+    }
+
+    if let Some(next_span) = parser.peek_span() {
+        if next_span.line > parser.current_span().line {
+            return false;
+        }
+    }
+
+    match parser.peek() {
+        Some(Token::Star) => true,
+        Some(token)
+            if matches!(
+                token,
+                Token::Identifier(_) | Token::StringLiteral(_) | Token::IntLiteral(_)
+            ) || keyword_as_property_name(token).is_some()
+                || matches!(token, Token::LeftBracket) =>
+        {
+            matches!(parser.peek2(), Some(Token::LeftParen | Token::Less))
+        }
+        _ => false,
+    }
+}
+
+fn parse_object_method(
+    parser: &mut Parser,
+    start_span: Span,
+    key: PropertyKey,
+    kind: PropertyKind,
+    is_async: bool,
+    is_generator: bool,
+) -> Result<ObjectProperty, ParseError> {
+    let type_params = if parser.check(&Token::Less) {
+        parser.advance();
+        Some(super::stmt::parse_type_parameters(parser)?)
+    } else {
+        None
+    };
+
+    parser.expect(Token::LeftParen)?;
+    let params = super::stmt::parse_function_parameters(parser)?;
+    parser.expect(Token::RightParen)?;
+
+    let return_type = if parser.check(&Token::Colon) {
+        parser.advance();
+        Some(super::types::parse_type_annotation(parser)?)
+    } else {
+        None
+    };
+
+    parser.expect(Token::LeftBrace)?;
+    let body = super::stmt::parse_block_statement(parser)?;
+    let span = parser.combine_spans(&start_span, &body.span);
+    let value = Expression::Function(FunctionExpression {
+        name: None,
+        type_params,
+        params,
+        return_type,
+        body,
+        is_method: true,
+        is_async,
+        is_generator,
+        span,
+    });
+
+    Ok(ObjectProperty::Property(Property {
+        key,
+        value,
+        kind,
+        span,
+    }))
+}
+
 /// Parse an object property.
 fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseError> {
     let start_span = parser.current_span();
@@ -1556,46 +1631,43 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
         return Ok(ObjectProperty::Spread(SpreadProperty { argument, span }));
     }
 
-    if let Some(name) = get_property_name_symbol(parser) {
-        if matches!(parser.peek(), Some(Token::LeftParen)) {
-            parser.advance();
-            let key = PropertyKey::Identifier(Identifier {
-                name,
-                span: start_span,
-            });
-            parser.expect(Token::LeftParen)?;
-            let params = super::stmt::parse_function_parameters(parser)?;
-            parser.expect(Token::RightParen)?;
-            parser.expect(Token::LeftBrace)?;
-            let body = super::stmt::parse_block_statement(parser)?;
-            let span = parser.combine_spans(&start_span, &body.span);
-            let value = Expression::Function(FunctionExpression {
-                name: None,
-                type_params: None,
-                params,
-                return_type: None,
-                body,
-                is_method: true,
-                is_async: false,
-                is_generator: false,
-                span,
-            });
-            return Ok(ObjectProperty::Property(Property {
-                key,
-                value,
-                kind: PropertyKind::Init,
-                span,
-            }));
-        }
+    let is_async = if object_property_async_modifier(parser) {
+        parser.advance();
+        true
+    } else {
+        false
+    };
+
+    let is_generator = if parser.check(&Token::Star) {
+        parser.advance();
+        true
+    } else {
+        false
+    };
+
+    if is_async || is_generator {
+        let key = parse_object_property_key(parser, parser.current_span())?;
+        return parse_object_method(
+            parser,
+            start_span,
+            key,
+            PropertyKind::Init,
+            is_async,
+            is_generator,
+        );
     }
 
-    let is_accessor_keyword = if let Token::Identifier(name) = parser.current() {
-        let ident = parser.interner.resolve(*name);
-        (ident == "get" || ident == "set")
-            && !matches!(
-                parser.peek(),
-                Some(Token::Colon | Token::Comma | Token::RightBrace | Token::LeftParen)
-            )
+    let is_accessor_keyword = if !is_generator {
+        if let Token::Identifier(name) = parser.current() {
+            let ident = parser.interner.resolve(*name);
+            (ident == "get" || ident == "set")
+                && !matches!(
+                    parser.peek(),
+                    Some(Token::Colon | Token::Comma | Token::RightBrace | Token::LeftParen)
+                )
+        } else {
+            false
+        }
     } else {
         false
     };
@@ -1612,57 +1684,13 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
         };
         parser.advance();
         let key = parse_object_property_key(parser, parser.current_span())?;
-        parser.expect(Token::LeftParen)?;
-        let params = super::stmt::parse_function_parameters(parser)?;
-        parser.expect(Token::RightParen)?;
-        parser.expect(Token::LeftBrace)?;
-        let body = super::stmt::parse_block_statement(parser)?;
-        let span = parser.combine_spans(&start_span, &body.span);
-        let value = Expression::Function(FunctionExpression {
-            name: None,
-            type_params: None,
-            params,
-            return_type: None,
-            body,
-            is_method: true,
-            is_async: false,
-            is_generator: false,
-            span,
-        });
-        return Ok(ObjectProperty::Property(Property {
-            key,
-            value,
-            kind,
-            span,
-        }));
+        return parse_object_method(parser, start_span, key, kind, false, false);
     }
 
     let key = parse_object_property_key(parser, start_span)?;
 
-    if parser.check(&Token::LeftParen) {
-        parser.advance();
-        let params = super::stmt::parse_function_parameters(parser)?;
-        parser.expect(Token::RightParen)?;
-        parser.expect(Token::LeftBrace)?;
-        let body = super::stmt::parse_block_statement(parser)?;
-        let span = parser.combine_spans(&start_span, &body.span);
-        let value = Expression::Function(FunctionExpression {
-            name: None,
-            type_params: None,
-            params,
-            return_type: None,
-            body,
-            is_method: true,
-            is_async: false,
-            is_generator: false,
-            span,
-        });
-        return Ok(ObjectProperty::Property(Property {
-            key,
-            value,
-            kind: PropertyKind::Init,
-            span,
-        }));
+    if parser.check(&Token::Less) || parser.check(&Token::LeftParen) {
+        return parse_object_method(parser, start_span, key, PropertyKind::Init, false, false);
     }
 
     if parser.check(&Token::Comma) || parser.check(&Token::RightBrace) {

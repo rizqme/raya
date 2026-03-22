@@ -1520,6 +1520,44 @@ pub(super) fn parse_class_members(parser: &mut Parser) -> Result<Vec<ClassMember
     Ok(members)
 }
 
+fn class_member_static_modifier(parser: &Parser) -> bool {
+    parser.check(&Token::Static)
+        && !matches!(
+            parser.peek(),
+            Some(
+                Token::LeftParen
+                    | Token::Less
+                    | Token::Colon
+                    | Token::Equal
+                    | Token::Semicolon
+                    | Token::RightBrace
+            )
+        )
+}
+
+fn class_member_async_modifier(parser: &Parser) -> bool {
+    if !parser.check(&Token::Async) {
+        return false;
+    }
+
+    if let Some(next_span) = parser.peek_span() {
+        if next_span.line > parser.current_span().line {
+            return false;
+        }
+    }
+
+    match parser.peek() {
+        Some(Token::Star) => true,
+        Some(token)
+            if matches!(token, Token::Identifier(_) | Token::PrivateIdentifier(_))
+                || keyword_as_property_name(token).is_some() =>
+        {
+            matches!(parser.peek2(), Some(Token::LeftParen | Token::Less))
+        }
+        _ => false,
+    }
+}
+
 /// Parse a single class member
 fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
     let start_span = parser.current_span();
@@ -1555,7 +1593,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
         false
     };
 
-    let is_static = if parser.check(&Token::Static) {
+    let is_static = if class_member_static_modifier(parser) {
         parser.advance();
         // Static initializer block: static { ... }
         if parser.check(&Token::LeftBrace) {
@@ -1575,7 +1613,14 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
         false
     };
 
-    let is_async = if parser.check(&Token::Async) {
+    let is_async = if class_member_async_modifier(parser) {
+        parser.advance();
+        true
+    } else {
+        false
+    };
+
+    let is_generator = if parser.check(&Token::Star) {
         parser.advance();
         true
     } else {
@@ -1587,18 +1632,20 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
     // if the current identifier is "get" or "set" and is followed by another identifier
     // (which would be the actual property name, not `:` for type annotations or `(` for calls).
     let mut method_kind = MethodKind::Normal;
-    if let Token::Identifier(sym) = parser.current() {
-        let name_str = parser.resolve(*sym);
-        if (name_str == "get" || name_str == "set")
-            && matches!(parser.peek(), Some(Token::Identifier(_)))
-        {
-            // This is a getter or setter - the next token is the actual property name
-            if name_str == "get" {
-                method_kind = MethodKind::Getter;
-            } else {
-                method_kind = MethodKind::Setter;
+    if !is_generator {
+        if let Token::Identifier(sym) = parser.current() {
+            let name_str = parser.resolve(*sym);
+            if (name_str == "get" || name_str == "set")
+                && matches!(parser.peek(), Some(Token::Identifier(_)))
+            {
+                // This is a getter or setter - the next token is the actual property name
+                if name_str == "get" {
+                    method_kind = MethodKind::Getter;
+                } else {
+                    method_kind = MethodKind::Setter;
+                }
+                parser.advance(); // consume the get/set keyword
             }
-            parser.advance(); // consume the get/set keyword
         }
     }
 
@@ -1694,6 +1741,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
             body,
             is_static,
             is_async,
+            is_generator,
             span,
         }))
     } else {
@@ -2406,6 +2454,132 @@ class Foo {
         } else {
             panic!("Expected ClassDecl");
         }
+    }
+
+    #[test]
+    fn test_class_static_and_async_can_be_method_names() {
+        let source = r#"
+class Foo {
+    static() {}
+    async() {}
+    static async() {}
+}
+"#;
+        let module = parse(source);
+        let crate::parser::ast::Statement::ClassDecl(class) = &module.statements[0] else {
+            panic!("Expected ClassDecl");
+        };
+
+        assert_eq!(class.members.len(), 3);
+
+        let methods: Vec<_> = class
+            .members
+            .iter()
+            .map(|member| match member {
+                crate::parser::ast::ClassMember::Method(method) => method,
+                other => panic!("Expected method, got {:?}", other),
+            })
+            .collect();
+
+        assert_eq!(methods.len(), 3);
+        assert_eq!(methods[1].name.name, methods[2].name.name);
+        assert!(!methods[0].is_static);
+        assert!(!methods[0].is_async);
+        assert!(!methods[1].is_async);
+        assert!(methods[2].is_static);
+        assert!(!methods[2].is_async);
+    }
+
+    #[test]
+    fn test_class_generator_method_heads() {
+        let source = r#"
+class Foo {
+    *iter() {}
+    async *aiter() {}
+    static *make() {}
+}
+"#;
+        let module = parse(source);
+        let crate::parser::ast::Statement::ClassDecl(class) = &module.statements[0] else {
+            panic!("Expected ClassDecl");
+        };
+
+        assert_eq!(class.members.len(), 3);
+
+        let methods: Vec<_> = class
+            .members
+            .iter()
+            .map(|member| match member {
+                crate::parser::ast::ClassMember::Method(method) => method,
+                other => panic!("Expected method, got {:?}", other),
+            })
+            .collect();
+
+        assert!(methods[0].is_generator);
+        assert!(!methods[0].is_async);
+        assert!(methods[1].is_generator);
+        assert!(methods[1].is_async);
+        assert!(methods[2].is_generator);
+        assert!(methods[2].is_static);
+    }
+
+    #[test]
+    fn test_object_async_and_generator_method_heads() {
+        let source = r#"
+const value = {
+    async foo(): number { return 1; },
+    async() { return 2; },
+    *iter() {},
+    async *aiter() {}
+};
+"#;
+        let module = parse(source);
+        let crate::parser::ast::Statement::VariableDecl(decl) = &module.statements[0] else {
+            panic!("Expected variable declaration");
+        };
+        let Some(crate::parser::ast::Expression::Object(object)) = &decl.initializer else {
+            panic!("Expected object expression");
+        };
+
+        assert_eq!(object.properties.len(), 4);
+
+        let methods: Vec<_> = object
+            .properties
+            .iter()
+            .map(|prop| match prop {
+                crate::parser::ast::ObjectProperty::Property(property) => property,
+                other => panic!("Expected object property, got {:?}", other),
+            })
+            .collect();
+
+        let first = match &methods[0].value {
+            crate::parser::ast::Expression::Function(func) => func,
+            other => panic!("Expected function expression, got {:?}", other),
+        };
+        assert!(first.is_async);
+        assert!(!first.is_generator);
+        assert!(first.return_type.is_some());
+
+        let second = match &methods[1].value {
+            crate::parser::ast::Expression::Function(func) => func,
+            other => panic!("Expected function expression, got {:?}", other),
+        };
+        assert!(!second.is_async);
+        assert!(!second.is_generator);
+
+        let third = match &methods[2].value {
+            crate::parser::ast::Expression::Function(func) => func,
+            other => panic!("Expected function expression, got {:?}", other),
+        };
+        assert!(!third.is_async);
+        assert!(third.is_generator);
+
+        let fourth = match &methods[3].value {
+            crate::parser::ast::Expression::Function(func) => func,
+            other => panic!("Expected function expression, got {:?}", other),
+        };
+        assert!(fourth.is_async);
+        assert!(fourth.is_generator);
     }
 
     #[test]

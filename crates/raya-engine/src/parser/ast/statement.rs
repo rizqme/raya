@@ -349,6 +349,7 @@ pub struct MethodDecl {
 
     pub is_static: bool,
     pub is_async: bool,
+    pub is_generator: bool,
     pub span: Span,
 }
 
