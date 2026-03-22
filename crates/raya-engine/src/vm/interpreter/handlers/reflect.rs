@@ -51,23 +51,9 @@ impl<'a> Interpreter<'a> {
     fn own_enumerable_property_names(&self, target: Value) -> Vec<String> {
         let mut names = Vec::new();
         let debug = std::env::var("RAYA_DEBUG_FORIN").is_ok();
+        let object_ptr = Self::reflect_object_ptr(target);
 
-        if let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target)
-        {
-            let array = unsafe { &*array_ptr.as_ptr() };
-            for index in 0..array.len() {
-                if array.get(index).is_none() {
-                    continue;
-                }
-                let key = index.to_string();
-                if self.is_property_enumerable(target, &key) {
-                    names.push(key);
-                }
-            }
-            return names;
-        }
-
-        if let Some(obj_ptr) = Self::reflect_object_ptr(target) {
+        if let Some(obj_ptr) = object_ptr {
             let obj = unsafe { obj_ptr.as_ref() };
             let field_names = self.reflect_object_field_names(target, obj);
             if debug {
@@ -91,7 +77,15 @@ impl<'a> Interpreter<'a> {
                     names.push(name);
                 }
             }
-        } else if debug {
+        } else {
+            for name in self.js_own_property_names(target) {
+                if self.is_property_enumerable(target, &name) {
+                    names.push(name);
+                }
+            }
+        }
+
+        if debug && object_ptr.is_none() && names.is_empty() {
             eprintln!(
                 "[forin] own_enum: target={:#x} is NOT an object ptr",
                 target.raw()

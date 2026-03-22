@@ -29,6 +29,7 @@ use crate::vm::value::Value;
 use crate::vm::VmError;
 use rustc_hash::FxHashSet;
 use std::any::TypeId;
+use std::collections::BTreeSet;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -95,6 +96,52 @@ impl JsPropertyDescriptorRecord {
 
     fn is_data(self) -> bool {
         self.has_value || self.has_writable
+    }
+}
+
+#[derive(Default)]
+struct OrderedOwnKeyCollector {
+    indices: BTreeSet<u32>,
+    strings_seen: FxHashSet<String>,
+    strings: Vec<String>,
+}
+
+impl OrderedOwnKeyCollector {
+    fn push(&mut self, name: impl Into<String>) {
+        let name = name.into();
+        if name.is_empty() || name == FIELD_PRESENT_MASK_KEY {
+            return;
+        }
+        if let Some(index) = parse_js_array_index_name(&name) {
+            let Ok(index) = u32::try_from(index) else {
+                return;
+            };
+            self.indices.insert(index);
+            return;
+        }
+        if self.strings_seen.insert(name.clone()) {
+            self.strings.push(name);
+        }
+    }
+
+    fn extend<I>(&mut self, names: I)
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        for name in names {
+            self.push(name);
+        }
+    }
+
+    fn finish(self) -> Vec<String> {
+        let mut ordered = self
+            .indices
+            .into_iter()
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>();
+        ordered.extend(self.strings);
+        ordered
     }
 }
 
@@ -463,56 +510,6 @@ impl<'a> Interpreter<'a> {
             .or(Some(nominal_type_id))
     }
 
-    fn materialize_builtin_error_surface(
-        &mut self,
-        object_value: Value,
-        constructor: Value,
-        task: &Arc<Task>,
-        module: &Module,
-    ) -> Result<(), VmError> {
-        const INHERITED_SURFACE_NAMES: &[&str] =
-            &["equals", "hashCode", "isPrototypeOf", "valueOf"];
-        let Some(obj_ptr) = checked_object_ptr(object_value) else {
-            return Ok(());
-        };
-
-        {
-            let obj = unsafe { &mut *obj_ptr.as_ptr() };
-            let key_id = self.intern_prop_key("constructor");
-            obj.ensure_dyn_props().insert(
-                key_id,
-                DynProp::data_with_attrs(constructor, true, false, true),
-            );
-        }
-        let fallback_callable = self
-            .get_property_value_via_js_semantics_with_context(
-                object_value,
-                "toString",
-                task,
-                module,
-            )?
-            .unwrap_or(constructor);
-
-        for property_name in INHERITED_SURFACE_NAMES {
-            let value = if let Some(value) = self.get_property_value_via_js_semantics_with_context(
-                object_value,
-                property_name,
-                task,
-                module,
-            )? {
-                value
-            } else {
-                fallback_callable
-            };
-            let obj = unsafe { &mut *obj_ptr.as_ptr() };
-            let key_id = self.intern_prop_key(property_name);
-            obj.ensure_dyn_props()
-                .insert(key_id, DynProp::data_with_attrs(value, true, false, true));
-        }
-
-        Ok(())
-    }
-
     fn construct_ordinary_callable(
         &mut self,
         constructor: Value,
@@ -719,14 +716,6 @@ impl<'a> Interpreter<'a> {
             };
             if let Some(prototype) = prototype {
                 self.set_constructed_object_prototype_from_value(obj_val, prototype);
-            }
-
-            if self
-                .js_callable_builtin_constructor_name(constructor)
-                .and_then(Self::builtin_error_layout_fields)
-                .is_some()
-            {
-                self.materialize_builtin_error_surface(obj_val, constructor, task, module)?;
             }
 
             let (constructor_id, constructor_module) = {
@@ -4266,7 +4255,7 @@ impl<'a> Interpreter<'a> {
             let class_obj = unsafe { &mut *class_obj_ptr.as_ptr() };
             class_obj.ensure_dyn_props().insert(
                 self.intern_prop_key("prototype"),
-                DynProp::data(prototype_val),
+                DynProp::data_with_attrs(prototype_val, true, false, false),
             );
         }
         if debug_dynamic_function {
@@ -8240,29 +8229,15 @@ impl<'a> Interpreter<'a> {
         self.write_ordinary_own_property(target, key, next)
     }
 
-    fn is_internal_ordinary_kernel_key(key: &str) -> bool {
-        key == FIELD_PRESENT_MASK_KEY
-    }
-
-    pub(in crate::vm::interpreter) fn ordinary_own_property_names(
+    fn ordinary_layout_backed_property_names(
         &self,
         target: Value,
-    ) -> Vec<String> {
+        collector: &mut OrderedOwnKeyCollector,
+    ) {
         let Some(obj_ptr) = checked_object_ptr(target) else {
-            return Vec::new();
+            return;
         };
         let obj = unsafe { &*obj_ptr.as_ptr() };
-
-        let mut names = Vec::new();
-        let mut push_name = |name: String| {
-            if name.is_empty()
-                || Self::is_internal_ordinary_kernel_key(&name)
-                || names.iter().any(|existing| existing == &name)
-            {
-                return;
-            }
-            names.push(name);
-        };
 
         let layout_names = if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
             let class_metadata = self.class_metadata.read();
@@ -8278,46 +8253,137 @@ impl<'a> Interpreter<'a> {
         if let Some(layout_names) = layout_names {
             for name in layout_names {
                 if self.ordinary_own_property(target, &name).is_some() {
-                    push_name(name);
+                    collector.push(name);
                 }
             }
         } else {
             for index in 0..obj.field_count() {
-                push_name(format!("field_{}", index));
+                collector.push(format!("field_{}", index));
             }
         }
+    }
 
+    fn ordinary_dynamic_property_names(
+        &self,
+        target: Value,
+        collector: &mut OrderedOwnKeyCollector,
+    ) {
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return;
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
         if let Some(dp) = obj.dyn_props() {
             for key_id in dp.keys_in_order() {
                 let Some(name) = self.prop_key_name(key_id) else {
                     continue;
                 };
+                if self.callable_virtual_property_descriptor(target, &name).is_some() {
+                    continue;
+                }
                 if self.ordinary_own_property(target, &name).is_some() {
-                    push_name(name);
+                    collector.push(name);
                 }
             }
         }
+    }
 
-        names
+    fn ordinary_named_own_property_keys(&self, target: Value) -> Vec<String> {
+        let mut collector = OrderedOwnKeyCollector::default();
+        self.ordinary_layout_backed_property_names(target, &mut collector);
+        self.ordinary_dynamic_property_names(target, &mut collector);
+        collector.finish()
+    }
+
+    fn callable_virtual_own_property_names(&self, target: Value) -> Vec<String> {
+        let mut collector = OrderedOwnKeyCollector::default();
+        for key in ["length", "name", "prototype"] {
+            if self.callable_virtual_property_descriptor(target, key).is_some() {
+                collector.push(key.to_string());
+            }
+        }
+        collector.finish()
+    }
+
+    fn metadata_backed_property_names(&self, target: Value) -> Vec<String> {
+        self.metadata
+            .lock()
+            .get_property_keys_for_metadata(target, NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY)
+    }
+
+    fn arguments_exotic_own_property_names(&self, target: Value) -> Vec<String> {
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return Vec::new();
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let Some(arguments) = obj.arguments.as_deref() else {
+            return Vec::new();
+        };
+
+        let mut collector = OrderedOwnKeyCollector::default();
+
+        for (index, property) in arguments.indexed.iter().enumerate() {
+            if !property.deleted {
+                collector.push(index.to_string());
+            }
+        }
+        if arguments.length.is_some() {
+            collector.push("length".to_string());
+        }
+        if arguments.strict_poison || arguments.callee.is_some() {
+            collector.push("callee".to_string());
+        }
+        collector.extend(self.ordinary_named_own_property_keys(target));
+        collector.finish()
+    }
+
+    fn array_own_property_names(&self, target: Value) -> Vec<String> {
+        let Some(array_ptr) = checked_array_ptr(target) else {
+            return Vec::new();
+        };
+        let array = unsafe { &*array_ptr.as_ptr() };
+
+        let mut collector = OrderedOwnKeyCollector::default();
+
+        for index in 0..array.len() {
+            if array.get(index).is_none() {
+                continue;
+            }
+            collector.push(index.to_string());
+        }
+
+        collector.push("length".to_string());
+        collector.extend(self.metadata_backed_property_names(target));
+        collector.finish()
     }
 
     pub(in crate::vm::interpreter) fn js_own_property_names(&self, target: Value) -> Vec<String> {
-        let mut names = self.ordinary_own_property_names(target);
+        if checked_array_ptr(target).is_some() {
+            return self.array_own_property_names(target);
+        }
+        if checked_object_ptr(target)
+            .and_then(|obj_ptr| unsafe { obj_ptr.as_ref() }.arguments.as_deref())
+            .is_some()
+        {
+            return self.arguments_exotic_own_property_names(target);
+        }
+
+        let mut collector = OrderedOwnKeyCollector::default();
+        collector.extend(self.ordinary_named_own_property_keys(target));
+        collector.extend(self.metadata_backed_property_names(target));
+        collector.extend(self.callable_virtual_own_property_names(target));
 
         if let Some(global_obj) = self.builtin_global_value("globalThis") {
             if global_obj.raw() == target.raw() {
                 for name in self.builtin_global_slots.read().keys() {
-                    if self.fixed_property_deleted(target, name)
-                        || names.iter().any(|existing| existing == name)
-                    {
+                    if self.fixed_property_deleted(target, name) {
                         continue;
                     }
-                    names.push(name.clone());
+                    collector.push(name.clone());
                 }
             }
         }
 
-        names
+        collector.finish()
     }
 
     fn alloc_plain_object(&self) -> Result<Value, VmError> {
@@ -8406,11 +8472,6 @@ impl<'a> Interpreter<'a> {
             .or(builtin_global_value);
 
         let descriptor = self.alloc_object_descriptor()?;
-        let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() }) else {
-            return Ok(None);
-        };
-        let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
-
         let legacy_error_descriptor = self.legacy_error_field_descriptor(target, key);
         let callable_virtual_descriptor = self.callable_virtual_property_descriptor(target, key);
         let writable_flag = callable_virtual_descriptor
@@ -8439,27 +8500,14 @@ impl<'a> Interpreter<'a> {
                 }
             });
 
-        if let Some(value_index) = self.get_field_index_for_value(descriptor, "value") {
-            descriptor_obj
-                .set_field(value_index, value)
-                .map_err(VmError::RuntimeError)?;
-        }
-        if let Some(writable_index) = self.get_field_index_for_value(descriptor, "writable") {
-            descriptor_obj
-                .set_field(writable_index, Value::bool(writable_flag))
-                .map_err(VmError::RuntimeError)?;
-        }
-        if let Some(configurable_index) = self.get_field_index_for_value(descriptor, "configurable")
-        {
-            descriptor_obj
-                .set_field(configurable_index, Value::bool(configurable_flag))
-                .map_err(VmError::RuntimeError)?;
-        }
-        if let Some(enumerable_index) = self.get_field_index_for_value(descriptor, "enumerable") {
-            descriptor_obj
-                .set_field(enumerable_index, Value::bool(enumerable_flag))
-                .map_err(VmError::RuntimeError)?;
-        }
+        self.set_internal_descriptor_field(descriptor, "value", value)?;
+        self.set_internal_descriptor_field(descriptor, "writable", Value::bool(writable_flag))?;
+        self.set_internal_descriptor_field(
+            descriptor,
+            "configurable",
+            Value::bool(configurable_flag),
+        )?;
+        self.set_internal_descriptor_field(descriptor, "enumerable", Value::bool(enumerable_flag))?;
 
         Ok(Some(descriptor))
     }
@@ -8476,42 +8524,10 @@ impl<'a> Interpreter<'a> {
         }
 
         let descriptor = self.alloc_object_descriptor()?;
-        let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() }) else {
-            return Ok(None);
-        };
-        let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
-
-        if let Some(value_index) = self.get_field_index_for_value(descriptor, "value") {
-            descriptor_obj
-                .set_field(value_index, Value::undefined())
-                .map_err(VmError::RuntimeError)?;
-        }
-        if let Some(writable_index) = self.get_field_index_for_value(descriptor, "writable") {
-            descriptor_obj
-                .set_field(writable_index, Value::undefined())
-                .map_err(VmError::RuntimeError)?;
-        }
-        if let Some(configurable_index) = self.get_field_index_for_value(descriptor, "configurable")
-        {
-            descriptor_obj
-                .set_field(configurable_index, Value::bool(true))
-                .map_err(VmError::RuntimeError)?;
-        }
-        if let Some(enumerable_index) = self.get_field_index_for_value(descriptor, "enumerable") {
-            descriptor_obj
-                .set_field(enumerable_index, Value::bool(false))
-                .map_err(VmError::RuntimeError)?;
-        }
-        if let Some(get_index) = self.get_field_index_for_value(descriptor, "get") {
-            descriptor_obj
-                .set_field(get_index, getter.unwrap_or(Value::undefined()))
-                .map_err(VmError::RuntimeError)?;
-        }
-        if let Some(set_index) = self.get_field_index_for_value(descriptor, "set") {
-            descriptor_obj
-                .set_field(set_index, setter.unwrap_or(Value::undefined()))
-                .map_err(VmError::RuntimeError)?;
-        }
+        self.set_internal_descriptor_field(descriptor, "configurable", Value::bool(true))?;
+        self.set_internal_descriptor_field(descriptor, "enumerable", Value::bool(false))?;
+        self.set_internal_descriptor_field(descriptor, "get", getter.unwrap_or(Value::undefined()))?;
+        self.set_internal_descriptor_field(descriptor, "set", setter.unwrap_or(Value::undefined()))?;
 
         Ok(Some(descriptor))
     }
@@ -8528,57 +8544,20 @@ impl<'a> Interpreter<'a> {
 
         if prop.is_accessor {
             // Accessor descriptor: get, set, enumerable, configurable
-            if let Some(idx) = self.get_field_index_for_value(descriptor, "get") {
-                descriptor_obj
-                    .set_field(idx, prop.get)
-                    .map_err(VmError::RuntimeError)?;
-            }
-            self.set_descriptor_field_present(descriptor, "get", true);
-            if let Some(idx) = self.get_field_index_for_value(descriptor, "set") {
-                descriptor_obj
-                    .set_field(idx, prop.set)
-                    .map_err(VmError::RuntimeError)?;
-            }
-            self.set_descriptor_field_present(descriptor, "set", true);
-            // value and writable are undefined for accessor descriptors
-            if let Some(idx) = self.get_field_index_for_value(descriptor, "value") {
-                descriptor_obj
-                    .set_field(idx, Value::undefined())
-                    .map_err(VmError::RuntimeError)?;
-            }
-            if let Some(idx) = self.get_field_index_for_value(descriptor, "writable") {
-                descriptor_obj
-                    .set_field(idx, Value::undefined())
-                    .map_err(VmError::RuntimeError)?;
-            }
+            self.set_internal_descriptor_field(descriptor, "get", prop.get)?;
+            self.set_internal_descriptor_field(descriptor, "set", prop.set)?;
         } else {
             // Data descriptor: value, writable, enumerable, configurable
-            if let Some(idx) = self.get_field_index_for_value(descriptor, "value") {
-                descriptor_obj
-                    .set_field(idx, prop.value)
-                    .map_err(VmError::RuntimeError)?;
-            }
-            self.set_descriptor_field_present(descriptor, "value", true);
-            if let Some(idx) = self.get_field_index_for_value(descriptor, "writable") {
-                descriptor_obj
-                    .set_field(idx, Value::bool(prop.writable))
-                    .map_err(VmError::RuntimeError)?;
-            }
-            self.set_descriptor_field_present(descriptor, "writable", true);
+            self.set_internal_descriptor_field(descriptor, "value", prop.value)?;
+            self.set_internal_descriptor_field(descriptor, "writable", Value::bool(prop.writable))?;
         }
 
-        if let Some(idx) = self.get_field_index_for_value(descriptor, "enumerable") {
-            descriptor_obj
-                .set_field(idx, Value::bool(prop.enumerable))
-                .map_err(VmError::RuntimeError)?;
-        }
-        self.set_descriptor_field_present(descriptor, "enumerable", true);
-        if let Some(idx) = self.get_field_index_for_value(descriptor, "configurable") {
-            descriptor_obj
-                .set_field(idx, Value::bool(prop.configurable))
-                .map_err(VmError::RuntimeError)?;
-        }
-        self.set_descriptor_field_present(descriptor, "configurable", true);
+        self.set_internal_descriptor_field(descriptor, "enumerable", Value::bool(prop.enumerable))?;
+        self.set_internal_descriptor_field(
+            descriptor,
+            "configurable",
+            Value::bool(prop.configurable),
+        )?;
 
         Ok(descriptor)
     }

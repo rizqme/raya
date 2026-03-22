@@ -2906,6 +2906,87 @@ fn test_node_compat_non_configurable_accessor_redefinition_preserves_descriptor(
 }
 
 #[test]
+fn test_node_compat_error_instance_own_names_exclude_prototype_helpers() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            try {
+                throw new TypeError("x");
+            } catch (e) {
+                return JSON.stringify([
+                    Object.getOwnPropertyNames(e),
+                    Object.keys(e),
+                    Object.prototype.hasOwnProperty.call(e, "constructor"),
+                    Object.prototype.hasOwnProperty.call(e, "valueOf")
+                ]);
+            }
+            return "NO_THROW";
+        }
+    "#,
+        "[[\"message\",\"name\",\"stack\",\"cause\",\"code\",\"errno\",\"syscall\",\"path\"],[\"message\",\"name\",\"stack\",\"cause\",\"code\",\"errno\",\"syscall\",\"path\"],false,false]",
+    );
+}
+
+#[test]
+fn test_node_compat_data_descriptors_hide_absent_accessor_fields() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            try {
+                throw new TypeError("x");
+            } catch (e) {
+                let desc = Object.getOwnPropertyDescriptor(e, "name");
+                return JSON.stringify([
+                    Object.getOwnPropertyNames(desc),
+                    Object.getOwnPropertyDescriptor(desc, "get") === undefined,
+                    Object.getOwnPropertyDescriptor(desc, "set") === undefined
+                ]);
+            }
+            return "NO_THROW";
+        }
+    "#,
+        "[[\"value\",\"writable\",\"configurable\",\"enumerable\"],true,true]",
+    );
+}
+
+#[test]
+fn test_node_compat_function_virtual_keys_are_non_enumerable() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            function sample(a, b) {}
+            return JSON.stringify([
+                Object.getOwnPropertyNames(sample),
+                Object.keys(sample)
+            ]);
+        }
+    "#,
+        "[[\"length\",\"name\",\"prototype\"],[]]",
+    );
+}
+
+#[test]
+fn test_node_compat_get_own_property_names_orders_indices_before_strings() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let o = { 2: "c", 1: "b", a: 1, 0: "a" };
+            return JSON.stringify([
+                Object.getOwnPropertyNames(o),
+                Object.keys(o),
+                (function() {
+                    let out = [];
+                    for (let k in o) out.push(k);
+                    return out;
+                })()
+            ]);
+        }
+    "#,
+        "[[\"0\",\"1\",\"2\",\"a\"],[\"0\",\"1\",\"2\",\"a\"],[\"0\",\"1\",\"2\",\"a\"]]",
+    );
+}
+
+#[test]
 fn test_node_compat_top_level_strict_functions_inherit_arguments_poisoning() {
     expect_string_runtime_node_compat(
         r#"

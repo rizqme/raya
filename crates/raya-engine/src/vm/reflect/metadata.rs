@@ -30,6 +30,8 @@ struct TargetMetadata {
     direct: HashMap<MetadataKey, Value>,
     /// Property-level metadata (property -> key -> value)
     properties: HashMap<PropertyKey, HashMap<MetadataKey, Value>>,
+    /// Insertion order for property-level metadata buckets.
+    property_order: Vec<PropertyKey>,
 }
 
 /// Global metadata store
@@ -149,6 +151,9 @@ impl MetadataStore {
         };
 
         let entry = self.targets.entry(id).or_default();
+        if !entry.properties.contains_key(&property_key) {
+            entry.property_order.push(property_key.clone());
+        }
         let prop_entry = entry.properties.entry(property_key).or_default();
         prop_entry.insert(key, value);
         true
@@ -201,6 +206,32 @@ impl MetadataStore {
             .unwrap_or_default()
     }
 
+    /// Get property keys that currently store a given metadata key, preserving
+    /// insertion order of the property buckets.
+    pub fn get_property_keys_for_metadata(
+        &self,
+        target: Value,
+        metadata_key: &str,
+    ) -> Vec<PropertyKey> {
+        let Some(id) = Self::target_id(target) else {
+            return Vec::new();
+        };
+        let Some(entry) = self.targets.get(&id) else {
+            return Vec::new();
+        };
+        entry
+            .property_order
+            .iter()
+            .filter(|property_key| {
+                entry
+                    .properties
+                    .get(*property_key)
+                    .is_some_and(|metadata| metadata.contains_key(metadata_key))
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Delete metadata from a property
     ///
     /// `Reflect.deleteMetadata(key, target, propertyKey)`
@@ -215,9 +246,15 @@ impl MetadataStore {
             return false;
         };
         self.targets.get_mut(&id).is_some_and(|e| {
-            e.properties
-                .get_mut(property_key)
-                .is_some_and(|p| p.remove(key).is_some())
+            let Some(property_metadata) = e.properties.get_mut(property_key) else {
+                return false;
+            };
+            let removed = property_metadata.remove(key).is_some();
+            if property_metadata.is_empty() {
+                e.properties.remove(property_key);
+                e.property_order.retain(|candidate| candidate != property_key);
+            }
+            removed
         })
     }
 
@@ -352,6 +389,42 @@ mod tests {
         // Delete property metadata
         assert!(store.delete_metadata_property("type", target, "name"));
         assert!(!store.has_metadata_property("type", target, "name"));
+    }
+
+    #[test]
+    fn test_property_metadata_key_order_for_specific_lane() {
+        let mut store = MetadataStore::new();
+        let target = fake_ptr(6);
+
+        assert!(store.define_metadata_property(
+            "lane".to_string(),
+            Value::i32(1),
+            target,
+            "beta".to_string()
+        ));
+        assert!(store.define_metadata_property(
+            "lane".to_string(),
+            Value::i32(2),
+            target,
+            "alpha".to_string()
+        ));
+        assert!(store.define_metadata_property(
+            "other".to_string(),
+            Value::i32(3),
+            target,
+            "ignored".to_string()
+        ));
+
+        assert_eq!(
+            store.get_property_keys_for_metadata(target, "lane"),
+            vec!["beta".to_string(), "alpha".to_string()]
+        );
+
+        assert!(store.delete_metadata_property("lane", target, "beta"));
+        assert_eq!(
+            store.get_property_keys_for_metadata(target, "lane"),
+            vec!["alpha".to_string()]
+        );
     }
 
     #[test]
