@@ -2911,6 +2911,19 @@ fn test_node_compat_direct_eval_in_default_param_rejects_arguments_decl_for_func
 }
 
 #[test]
+fn test_node_compat_eval_returns_non_string_argument_unchanged() {
+    expect_bool_runtime_node_compat(
+        r#"
+        function main(): boolean {
+            let value = { marker: 1 };
+            return eval(value) === value;
+        }
+    "#,
+        true,
+    );
+}
+
+#[test]
 fn test_node_compat_hoisted_js_closure_capture_sees_post_init_value() {
     expect_string_runtime_node_compat(
         r#"

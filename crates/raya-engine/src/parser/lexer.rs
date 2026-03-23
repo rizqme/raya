@@ -483,6 +483,12 @@ fn unescape_string(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.next() {
+                Some('\n') => {}
+                Some('\r') => {
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
+                    }
+                }
                 Some('n') => result.push('\n'),
                 Some('r') => result.push('\r'),
                 Some('t') => result.push('\t'),
@@ -874,6 +880,16 @@ impl<'a> Lexer<'a> {
                 }
             }
 
+            if let Some((next_pos, next_line, next_column)) =
+                self.scan_string_literal(pos, line, column, line_break_before)
+            {
+                pos = next_pos;
+                line = next_line;
+                column = next_column;
+                line_break_before = false;
+                continue;
+            }
+
             // Use logos for regular tokens
             let mut logos_lexer = LogosToken::lexer(&self.source[pos..]);
 
@@ -924,6 +940,89 @@ impl<'a> Lexer<'a> {
         } else {
             Err(self.errors)
         }
+    }
+
+    fn scan_string_literal(
+        &mut self,
+        pos: usize,
+        line: u32,
+        column: u32,
+        line_break_before: bool,
+    ) -> Option<(usize, u32, u32)> {
+        let quote = match self.source.as_bytes().get(pos).copied() {
+            Some(b'\'') => '\'',
+            Some(b'"') => '"',
+            _ => return None,
+        };
+
+        let start = pos;
+        let mut cursor = pos + 1;
+        let mut current_line = line;
+        let mut current_column = column + 1;
+
+        while cursor < self.source.len() {
+            let ch = self.source[cursor..].chars().next()?;
+            let ch_len = ch.len_utf8();
+
+            match ch {
+                c if c == quote => {
+                    let end = cursor + ch_len;
+                    let inner = &self.source[start + 1..cursor];
+                    let token =
+                        Token::StringLiteral(self.interner.intern(&unescape_string(inner)));
+                    let span = Span::new(start, end, line, column);
+                    self.tokens
+                        .push(LexedToken::new(token, span, line_break_before));
+                    return Some((end, current_line, current_column + 1));
+                }
+                '\\' => {
+                    cursor += ch_len;
+                    current_column += 1;
+                    if cursor >= self.source.len() {
+                        let span = Span::new(start, cursor, line, column);
+                        self.errors.push(LexError::UnterminatedString { span });
+                        return Some((cursor, current_line, current_column));
+                    }
+
+                    let next = self.source[cursor..].chars().next()?;
+                    let next_len = next.len_utf8();
+                    match next {
+                        '\n' => {
+                            cursor += next_len;
+                            current_line += 1;
+                            current_column = 1;
+                        }
+                        '\r' => {
+                            cursor += next_len;
+                            if cursor < self.source.len()
+                                && self.source[cursor..].chars().next() == Some('\n')
+                            {
+                                cursor += '\n'.len_utf8();
+                            }
+                            current_line += 1;
+                            current_column = 1;
+                        }
+                        _ => {
+                            cursor += next_len;
+                            current_column += 1;
+                        }
+                    }
+                }
+                '\n' | '\r' => {
+                    let span = Span::new(start, cursor, line, column);
+                    self.errors.push(LexError::UnterminatedString { span });
+                    return Some((cursor, current_line, current_column));
+                }
+                _ => {
+                    cursor += ch_len;
+                    current_column += 1;
+                }
+            }
+        }
+
+        let span = Span::new(start, self.source.len(), line, column);
+        self.errors.push(LexError::UnterminatedString { span });
+        Some((self.source.len(), current_line, current_column))
     }
 
     fn convert_token(&mut self, logos_token: LogosToken) -> Token {
@@ -1459,5 +1558,27 @@ class User {
             !has_annotation,
             "//@... should not produce Annotation tokens"
         );
+    }
+
+    #[test]
+    fn test_string_line_continuation_double_quote() {
+        let source = "\"a\\\nb\"";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("should lex");
+        match &tokens[0].token {
+            Token::StringLiteral(sym) => assert_eq!(interner.resolve(*sym), "ab"),
+            other => panic!("expected string literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_string_line_continuation_single_quote() {
+        let source = "'a\\\r\nb'";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("should lex");
+        match &tokens[0].token {
+            Token::StringLiteral(sym) => assert_eq!(interner.resolve(*sym), "ab"),
+            other => panic!("expected string literal, got {other:?}"),
+        }
     }
 }
