@@ -1549,6 +1549,14 @@ impl<'a> Interpreter<'a> {
                             return OpcodeResult::Continue;
                         }
                         Ok(false) => {
+                            if self.allow_ambient_builtin_global_noop_write(
+                                obj_val, key_name, value,
+                            ) {
+                                if let Err(e) = stack.push(value) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                return OpcodeResult::Continue;
+                            }
                             return OpcodeResult::Error(VmError::TypeError(format!(
                                 "Cannot assign to non-writable property '{}'",
                                 key_name
@@ -1597,11 +1605,37 @@ impl<'a> Interpreter<'a> {
                         let key_str = key_str
                             .as_deref()
                             .expect("dyn object property access should always have a key string");
-                        if self.set_builtin_global_property(actual_obj, key_str, value) {
-                            if let Err(e) = stack.push(value) {
-                                return OpcodeResult::Error(e);
+                        if self.is_runtime_global_object(actual_obj) {
+                            match self.set_property_value_via_js_semantics(
+                                actual_obj,
+                                key_str,
+                                value,
+                                actual_obj,
+                                task,
+                                module,
+                            ) {
+                                Ok(true) => {
+                                    if let Err(e) = stack.push(value) {
+                                        return OpcodeResult::Error(e);
+                                    }
+                                    return OpcodeResult::Continue;
+                                }
+                                Ok(false) => {
+                                    if self.allow_ambient_builtin_global_noop_write(
+                                        actual_obj, key_str, value,
+                                    ) {
+                                        if let Err(e) = stack.push(value) {
+                                            return OpcodeResult::Error(e);
+                                        }
+                                        return OpcodeResult::Continue;
+                                    }
+                                    if let Err(e) = stack.push(value) {
+                                        return OpcodeResult::Error(e);
+                                    }
+                                    return OpcodeResult::Continue;
+                                }
+                                Err(error) => return OpcodeResult::Error(error),
                             }
-                            return OpcodeResult::Continue;
                         }
                         if Self::is_callable_value(actual_obj) {
                             if let Some((writable, _, _)) =
@@ -1682,6 +1716,14 @@ impl<'a> Interpreter<'a> {
                         ) {
                             Ok(true) => {}
                             Ok(false) => {
+                                if self.allow_ambient_builtin_global_noop_write(
+                                    obj_val, key_str, value,
+                                ) {
+                                    if let Err(e) = stack.push(value) {
+                                        return OpcodeResult::Error(e);
+                                    }
+                                    return OpcodeResult::Continue;
+                                }
                                 return OpcodeResult::Error(VmError::TypeError(format!(
                                     "Cannot assign to non-writable property '{}'",
                                     key_str

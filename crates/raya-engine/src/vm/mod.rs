@@ -96,19 +96,19 @@ pub enum VmError {
     NullPointer,
 
     /// Type error
-    #[error("Type error: {0}")]
+    #[error("TypeError: {0}")]
     TypeError(String),
 
     /// Syntax error
-    #[error("Syntax error: {0}")]
+    #[error("SyntaxError: {0}")]
     SyntaxError(String),
 
     /// Range error
-    #[error("Range error: {0}")]
+    #[error("RangeError: {0}")]
     RangeError(String),
 
     /// Reference error
-    #[error("Reference error: {0}")]
+    #[error("ReferenceError: {0}")]
     ReferenceError(String),
 
     /// Runtime error

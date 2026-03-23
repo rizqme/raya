@@ -146,15 +146,6 @@ function Number(value: PrimitiveCoercible): number {
     return __jsToNumber(value);
 }
 
-(Number as any)["NaN"] = NaN;
-(Number as any)["POSITIVE_INFINITY"] = Infinity;
-(Number as any)["NEGATIVE_INFINITY"] = -Infinity;
-(Number as any)["MAX_VALUE"] = 1.7976931348623157e308;
-(Number as any)["MIN_VALUE"] = 5e-324;
-(Number as any)["MAX_SAFE_INTEGER"] = 9007199254740991;
-(Number as any)["MIN_SAFE_INTEGER"] = -9007199254740991;
-(Number as any)["EPSILON"] = 2.220446049250313e-16;
-
 // Pragmatic JS-compat subset until bigint is represented as a first-class runtime primitive.
 function BigInt(value: PrimitiveCoercible): int {
     return __jsToIntegerOrInfinity(value) as int;

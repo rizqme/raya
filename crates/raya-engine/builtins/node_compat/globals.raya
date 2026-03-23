@@ -178,6 +178,24 @@ function eval(source: string): any {
     return __NATIVE_CALL<any>(NC_COMPILER_EVAL, source);
 }
 
+function __defineReadonlyNumberConstant(name: string, value: number): void {
+    let descriptor: any = {};
+    descriptor["value"] = value;
+    descriptor["writable"] = false;
+    descriptor["enumerable"] = false;
+    descriptor["configurable"] = false;
+    Object.defineProperty(Number as any, name, descriptor);
+}
+
+__defineReadonlyNumberConstant("NaN", NaN);
+__defineReadonlyNumberConstant("POSITIVE_INFINITY", Infinity);
+__defineReadonlyNumberConstant("NEGATIVE_INFINITY", -Infinity);
+__defineReadonlyNumberConstant("MAX_VALUE", 1.7976931348623157e308);
+__defineReadonlyNumberConstant("MIN_VALUE", 5e-324);
+__defineReadonlyNumberConstant("MAX_SAFE_INTEGER", 9007199254740991);
+__defineReadonlyNumberConstant("MIN_SAFE_INTEGER", -9007199254740991);
+__defineReadonlyNumberConstant("EPSILON", 2.220446049250313e-16);
+
 class __NodeCompatReflect {
     isExtensible(target: Proxy<Object> | Object): boolean {
         if (target == null) {
