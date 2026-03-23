@@ -892,6 +892,9 @@ impl<'a> Interpreter<'a> {
             caller_task.current_module(),
             Some(caller_task.id()),
         ));
+        if let Some(env) = caller_task.current_active_direct_eval_env() {
+            scratch_task.push_active_direct_eval_env(env);
+        }
 
         let opcode_result = if let Some(raw_ptr) = unsafe { callable.as_ptr::<u8>() } {
             let header = unsafe { &*crate::vm::gc::header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
@@ -1594,6 +1597,7 @@ impl<'a> Interpreter<'a> {
                 }
 
                 if let Some(frame) = frames.pop() {
+                    task.clear_activation_direct_eval_env(current_func_id, locals_base);
                     task.pop_call_frame();
                     if frame.is_closure {
                         task.pop_closure();
@@ -1690,6 +1694,7 @@ impl<'a> Interpreter<'a> {
                 while stack_guard.depth() > locals_base {
                     let _ = stack_guard.pop();
                 }
+                task.clear_activation_direct_eval_env(current_func_id, locals_base);
 
                 if let Some(frame) = frames.pop() {
                     task.pop_call_frame();
@@ -2424,6 +2429,7 @@ impl<'a> Interpreter<'a> {
 
                         // No handler in current frame — pop frame and try parent
                         if let Some(frame) = frames.pop() {
+                            task.clear_activation_direct_eval_env(current_func_id, locals_base);
                             task.pop_call_frame();
                             if frame.is_closure {
                                 task.pop_closure();

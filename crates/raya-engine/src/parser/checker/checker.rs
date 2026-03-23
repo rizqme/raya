@@ -3193,6 +3193,8 @@ impl<'a> TypeChecker<'a> {
         self.check_unknown_actionable(right_ty, "binary", *bin.right.span());
 
         match bin.operator {
+            BinaryOperator::Comma => right_ty,
+
             BinaryOperator::Add => {
                 // Add can be either numeric or string concatenation
                 let string_ty = self.type_ctx.string_type();

@@ -173,10 +173,24 @@ struct CallState {
     execution_frames: Vec<ExecutionFrame>,
 }
 
+#[derive(Debug, Clone)]
+struct ActivationEvalEnv {
+    func_id: usize,
+    locals_base: usize,
+    env: Value,
+}
+
+#[derive(Default)]
+struct EvalState {
+    active_env_stack: Vec<Value>,
+    activation_envs: Vec<ActivationEvalEnv>,
+}
+
 /// Initialization and mutex state (VM worker only, rare access)
 struct InitState {
     initial_args: Vec<Value>,
     held_mutexes: Vec<MutexId>,
+    eval_state: EvalState,
 }
 
 // ============================================================================
@@ -308,6 +322,7 @@ impl Task {
             init: ParkingMutex::new(InitState {
                 initial_args: args,
                 held_mutexes: Vec::new(),
+                eval_state: EvalState::default(),
             }),
 
             stack: StdMutex::new(Stack::new()),
@@ -433,6 +448,57 @@ impl Task {
     /// Set the current activation's runtime argument count.
     pub fn set_current_arg_count(&self, count: usize) {
         self.current_arg_count.store(count, Ordering::Relaxed);
+    }
+
+    pub fn push_active_direct_eval_env(&self, env: Value) {
+        self.init.lock().eval_state.active_env_stack.push(env);
+    }
+
+    pub fn pop_active_direct_eval_env(&self) -> Option<Value> {
+        self.init.lock().eval_state.active_env_stack.pop()
+    }
+
+    pub fn current_active_direct_eval_env(&self) -> Option<Value> {
+        self.init.lock().eval_state.active_env_stack.last().copied()
+    }
+
+    pub fn set_activation_direct_eval_env(&self, func_id: usize, locals_base: usize, env: Value) {
+        let mut init = self.init.lock();
+        if let Some(existing) = init
+            .eval_state
+            .activation_envs
+            .iter_mut()
+            .find(|binding| binding.func_id == func_id && binding.locals_base == locals_base)
+        {
+            existing.env = env;
+            return;
+        }
+        init.eval_state.activation_envs.push(ActivationEvalEnv {
+            func_id,
+            locals_base,
+            env,
+        });
+    }
+
+    pub fn current_activation_direct_eval_env(&self) -> Option<Value> {
+        let func_id = self.current_func_id();
+        let locals_base = self.current_locals_base();
+        self.init
+            .lock()
+            .eval_state
+            .activation_envs
+            .iter()
+            .rev()
+            .find(|binding| binding.func_id == func_id && binding.locals_base == locals_base)
+            .map(|binding| binding.env)
+    }
+
+    pub fn clear_activation_direct_eval_env(&self, func_id: usize, locals_base: usize) {
+        self.init
+            .lock()
+            .eval_state
+            .activation_envs
+            .retain(|binding| !(binding.func_id == func_id && binding.locals_base == locals_base));
     }
 
     // =========================================================================
@@ -1291,6 +1357,7 @@ impl Task {
             init: ParkingMutex::new(InitState {
                 initial_args: Vec::new(),
                 held_mutexes: Vec::new(),
+                eval_state: EvalState::default(),
             }),
 
             stack: StdMutex::new(stack),

@@ -28,17 +28,22 @@ pub fn execute(
     };
     let mut session = Session::new(&options);
 
-    // Wrap bare expressions in a return statement for convenience.
-    // Full programs (with function/class/import) are passed through as-is.
-    let source = if needs_wrapping(&code) {
-        format!("return {};", code)
+    let value = if node_compat && matches!(type_mode, TypeMode::Ts | TypeMode::Js) {
+        session
+            .eval_via_vm(&code)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
     } else {
-        code
+        // Wrap bare expressions in a return statement for convenience.
+        // Full programs (with function/class/import) are passed through as-is.
+        let source = if needs_wrapping(&code) {
+            format!("return {};", code)
+        } else {
+            code
+        };
+        session
+            .eval(&source)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
     };
-
-    let value = session
-        .eval(&source)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Print result unless --no-print, or if --print forces it
     if !no_print && (print || !value.is_null()) {

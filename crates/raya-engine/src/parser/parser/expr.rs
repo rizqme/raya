@@ -651,6 +651,19 @@ fn parse_infix(
 ) -> Result<Expression, ParseError> {
     let start_span = *left.span();
 
+    if parser.check(&Token::Comma) {
+        parser.advance();
+        let right = parse_expression_with_precedence(parser, Precedence::Assignment)?;
+        let span = parser.combine_spans(&start_span, right.span());
+        let sequence = Expression::Binary(BinaryExpression {
+            left: Box::new(left),
+            operator: BinaryOperator::Comma,
+            right: Box::new(right),
+            span,
+        });
+        return parse_postfix(parser, sequence);
+    }
+
     // Check for assignment operators
     if matches!(
         parser.current(),
@@ -1449,9 +1462,14 @@ fn try_parse_parenthesized_arrow_function(
     start_span: Span,
 ) -> Result<Option<Expression>, ParseError> {
     let ambiguous_destructuring = matches!(parser.current(), Token::LeftBrace | Token::LeftBracket);
-    if !ambiguous_destructuring && !looks_like_arrow_params(parser) {
+    let ambiguous_assignment_params = looks_like_ambiguous_parenthesized_arrow_params(parser);
+    if !ambiguous_destructuring
+        && !ambiguous_assignment_params
+        && !looks_like_arrow_params(parser)
+    {
         return Ok(None);
     }
+    let speculative_only = ambiguous_destructuring || ambiguous_assignment_params;
 
     let checkpoint = parser.checkpoint();
 
@@ -1459,7 +1477,7 @@ fn try_parse_parenthesized_arrow_function(
         Ok(params) => params,
         Err(err) => {
             parser.restore(checkpoint);
-            if ambiguous_destructuring {
+            if speculative_only {
                 return Ok(None);
             }
             return Err(err);
@@ -1468,7 +1486,7 @@ fn try_parse_parenthesized_arrow_function(
 
     if let Err(err) = parser.expect(Token::RightParen) {
         parser.restore(checkpoint);
-        if ambiguous_destructuring {
+        if speculative_only {
             return Ok(None);
         }
         return Err(err);
@@ -1480,7 +1498,7 @@ fn try_parse_parenthesized_arrow_function(
             Ok(ty) => Some(ty),
             Err(err) => {
                 parser.restore(checkpoint);
-                if ambiguous_destructuring {
+                if speculative_only {
                     return Ok(None);
                 }
                 return Err(err);
@@ -1492,7 +1510,7 @@ fn try_parse_parenthesized_arrow_function(
 
     if !parser.check(&Token::Arrow) {
         parser.restore(checkpoint);
-        if ambiguous_destructuring {
+        if speculative_only {
             return Ok(None);
         }
         return Err(ParseError {
@@ -1508,6 +1526,10 @@ fn try_parse_parenthesized_arrow_function(
 
     parser.advance();
     parse_arrow_function_body_with_type(parser, params, return_type, start_span).map(Some)
+}
+
+fn looks_like_ambiguous_parenthesized_arrow_params(parser: &Parser) -> bool {
+    matches!(parser.current(), Token::Identifier(_)) && matches!(parser.peek(), Some(Token::Equal))
 }
 
 /// Parse function call arguments.

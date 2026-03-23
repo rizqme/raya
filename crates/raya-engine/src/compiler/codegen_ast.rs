@@ -246,10 +246,18 @@ impl<'a> CodeGenerator<'a> {
     ) -> CompileResult<()> {
         // Compile left and right operands
         self.compile_expr(func, &binary.left)?;
+
+        if matches!(binary.operator, BinaryOperator::Comma) {
+            func.emit(Opcode::Pop);
+            self.compile_expr(func, &binary.right)?;
+            return Ok(());
+        }
+
         self.compile_expr(func, &binary.right)?;
 
         // Emit the appropriate opcode based on operator
         match binary.operator {
+            BinaryOperator::Comma => unreachable!(),
             BinaryOperator::Add => func.emit(Opcode::Iadd),
             BinaryOperator::Subtract => func.emit(Opcode::Isub),
             BinaryOperator::Multiply => func.emit(Opcode::Imul),

@@ -92,6 +92,10 @@ pub struct Compiler<'a> {
     source_text: Option<String>,
     /// Ambient builtin globals available without explicit source declarations/imports.
     ambient_builtin_globals: FxHashSet<String>,
+    /// Optional function name lowered as a direct-eval wrapper environment.
+    direct_eval_entry_function: Option<String>,
+    /// Identifier names that should resolve through the direct-eval environment.
+    direct_eval_binding_names: FxHashSet<String>,
 }
 
 impl<'a> Compiler<'a> {
@@ -120,6 +124,8 @@ impl<'a> Compiler<'a> {
             module_identity: None,
             source_text: None,
             ambient_builtin_globals: FxHashSet::default(),
+            direct_eval_entry_function: None,
+            direct_eval_binding_names: FxHashSet::default(),
         }
     }
 
@@ -202,6 +208,25 @@ impl<'a> Compiler<'a> {
         self
     }
 
+    /// Mark a specific function declaration as the direct-eval wrapper entry.
+    pub fn with_direct_eval_entry_function(
+        mut self,
+        function_name: impl Into<String>,
+    ) -> Self {
+        self.direct_eval_entry_function = Some(function_name.into());
+        self
+    }
+
+    /// Provide identifier names that should resolve through the direct-eval environment.
+    pub fn with_direct_eval_binding_names<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.direct_eval_binding_names = names.into_iter().map(Into::into).collect();
+        self
+    }
+
     /// Compile a module into bytecode
     pub fn compile(&mut self, module: &ast::Module) -> CompileResult<Module> {
         let mut codegen = CodeGenerator::new(&self.type_ctx, self.interner);
@@ -217,7 +242,9 @@ impl<'a> Compiler<'a> {
                 .with_js_this_binding_compat(self.js_this_binding_compat)
                 .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
                 .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
-                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
+                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
+                .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
+                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone());
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -261,7 +288,9 @@ impl<'a> Compiler<'a> {
                 .with_js_this_binding_compat(self.js_this_binding_compat)
                 .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
                 .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
-                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
+                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
+                .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
+                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone());
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -433,7 +462,9 @@ impl<'a> Compiler<'a> {
                 .with_js_this_binding_compat(self.js_this_binding_compat)
                 .with_builtin_this_coercion_compat(self.uses_builtin_this_coercion_compat())
                 .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
-                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone());
+                .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
+                .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
+                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone());
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }

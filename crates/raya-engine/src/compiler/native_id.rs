@@ -83,6 +83,16 @@ pub const OBJECT_ITERATOR_VALUE: u16 = 0x0025;
 pub const OBJECT_ITERATOR_CLOSE: u16 = 0x0026;
 /// Append all values from an iterable into a target array.
 pub const OBJECT_ITERATOR_APPEND_TO_ARRAY: u16 = 0x0027;
+/// Resolve a direct-eval binding name from the active eval environment.
+pub const OBJECT_EVAL_ENV_GET: u16 = 0x0028;
+/// Non-throwing direct-eval binding lookup used by `typeof`.
+pub const OBJECT_EVAL_ENV_TRY_GET: u16 = 0x0029;
+/// Write a direct-eval binding into the active eval environment.
+pub const OBJECT_EVAL_ENV_SET: u16 = 0x002A;
+/// Hoist a function-scoped `var` binding into the active eval environment.
+pub const OBJECT_EVAL_ENV_DECLARE_VAR: u16 = 0x002B;
+/// Assign an unresolved JS identifier through activation eval env / global fallback.
+pub const OBJECT_SET_AMBIENT_GLOBAL: u16 = 0x002C;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -594,6 +604,11 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_ITERATOR_VALUE => "Object.iteratorValue",
         OBJECT_ITERATOR_CLOSE => "Object.iteratorClose",
         OBJECT_ITERATOR_APPEND_TO_ARRAY => "Object.iteratorAppendToArray",
+        OBJECT_EVAL_ENV_GET => "Object.evalEnvGet",
+        OBJECT_EVAL_ENV_TRY_GET => "Object.evalEnvTryGet",
+        OBJECT_EVAL_ENV_SET => "Object.evalEnvSet",
+        OBJECT_EVAL_ENV_DECLARE_VAR => "Object.evalEnvDeclareVar",
+        OBJECT_SET_AMBIENT_GLOBAL => "Object.setAmbientGlobal",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",

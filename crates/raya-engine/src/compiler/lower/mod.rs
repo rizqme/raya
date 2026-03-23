@@ -719,6 +719,16 @@ pub struct Lowerer<'a> {
     builtin_this_coercion_compat: bool,
     /// Whether unresolved member/call paths may lower to runtime late-bound dispatch.
     allow_unresolved_runtime_fallback: bool,
+    /// Optional direct-eval wrapper function name for dynamic JS eval lowering.
+    direct_eval_entry_function: Option<String>,
+    /// Identifier names resolved through the active direct-eval environment.
+    direct_eval_binding_names: FxHashSet<String>,
+    /// Whether the currently lowered function body is the direct-eval wrapper.
+    in_direct_eval_function: bool,
+    /// Parameter bindings visible in the currently lowered function body.
+    parameter_symbols: FxHashSet<Symbol>,
+    /// Anonymous local that tracks direct-eval script completion values.
+    eval_completion_local: Option<u16>,
     /// Inner type for RefCell-wrapped variables (for preserving type info through loads)
     refcell_inner_types: FxHashMap<u16, TypeId>,
     /// Active per-function array local used to collect lowered generator `yield` values.
@@ -1387,6 +1397,11 @@ impl<'a> Lowerer<'a> {
             js_strict_context: false,
             builtin_this_coercion_compat: false,
             allow_unresolved_runtime_fallback: true,
+            direct_eval_entry_function: None,
+            direct_eval_binding_names: FxHashSet::default(),
+            in_direct_eval_function: false,
+            parameter_symbols: FxHashSet::default(),
+            eval_completion_local: None,
             generator_yield_array_local: None,
         }
     }
@@ -1434,6 +1449,26 @@ impl<'a> Lowerer<'a> {
     pub fn with_unresolved_runtime_fallback(mut self, enable: bool) -> Self {
         self.allow_unresolved_runtime_fallback = enable;
         self
+    }
+
+    pub fn with_direct_eval_entry_function(mut self, function_name: Option<String>) -> Self {
+        self.direct_eval_entry_function = function_name;
+        self
+    }
+
+    pub fn with_direct_eval_binding_names<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.direct_eval_binding_names = names.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub(super) fn direct_eval_has_parameter_binding(&self, name: &str) -> bool {
+        self.parameter_symbols
+            .iter()
+            .any(|symbol| self.interner.resolve(*symbol) == name)
     }
 
     /// Report an unresolved type error at a dispatch point.
@@ -1529,7 +1564,39 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn emit_fallthrough_return(&mut self) {
+        if let Some(local_idx) = self.eval_completion_local {
+            let value = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::LoadLocal {
+                dest: value.clone(),
+                index: local_idx,
+            });
+            self.emit_function_return(Some(value));
+            return;
+        }
         self.emit_function_return(None);
+    }
+
+    pub(super) fn init_eval_completion_local(&mut self) {
+        let local_idx = self.allocate_anonymous_local();
+        let initial = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::Assign {
+            dest: initial.clone(),
+            value: IrValue::Constant(IrConstant::Null),
+        });
+        self.emit(IrInstr::StoreLocal {
+            index: local_idx,
+            value: initial,
+        });
+        self.eval_completion_local = Some(local_idx);
+    }
+
+    pub(super) fn record_eval_completion(&mut self, value: Register) {
+        if let Some(local_idx) = self.eval_completion_local {
+            self.emit(IrInstr::StoreLocal {
+                index: local_idx,
+                value,
+            });
+        }
     }
 
     /// Try to evaluate an expression as a compile-time constant
@@ -2602,6 +2669,11 @@ impl<'a> Lowerer<'a> {
     ) {
         self.js_arguments_local = None;
 
+        if self.in_direct_eval_function {
+            self.current_function_mut().js_arguments_mapping.clear();
+            return;
+        }
+
         let Some(arguments_symbol) = arguments_symbol else {
             self.current_function_mut().js_arguments_mapping.clear();
             return;
@@ -3273,6 +3345,8 @@ impl<'a> Lowerer<'a> {
         self.next_capture_slot = 0;
         self.this_captured_idx = None;
         self.js_arguments_local = None;
+        self.eval_completion_local = None;
+        self.parameter_symbols.clear();
         // closure_locals maps local-slot indices to async func IDs.  It is
         // strictly per-function: stale entries from a previously-lowered
         // function (e.g. std:math init code registering `wrapped` at slot 2)
@@ -3284,6 +3358,7 @@ impl<'a> Lowerer<'a> {
         let mut locals = FxHashSet::default();
         for param in &func.params {
             collect_pattern_names(&param.pattern, &mut locals);
+            collect_pattern_names(&param.pattern, &mut self.parameter_symbols);
         }
         locals.extend(self.collect_local_names(&func.body.statements));
         let arguments_symbol = self.find_js_arguments_symbol(&func.params, &func.body);
@@ -3487,7 +3562,14 @@ impl<'a> Lowerer<'a> {
         }
         self.current_function = Some(ir_func);
         let saved_js_strict_context = self.js_strict_context;
+        let saved_in_direct_eval_function = self.in_direct_eval_function;
+        let saved_parameter_symbols = self.parameter_symbols.clone();
+        let saved_eval_completion_local = self.eval_completion_local;
         self.js_strict_context = is_strict_js;
+        self.in_direct_eval_function = self
+            .direct_eval_entry_function
+            .as_deref()
+            .is_some_and(|target| target == name);
 
         // Create entry block
         let entry_block = self.alloc_block();
@@ -3497,6 +3579,9 @@ impl<'a> Lowerer<'a> {
 
         if func.is_generator {
             self.init_generator_yield_array();
+        }
+        if self.in_direct_eval_function {
+            self.init_eval_completion_local();
         }
 
         // Bind destructuring patterns in function parameters
@@ -3566,6 +3651,9 @@ impl<'a> Lowerer<'a> {
         // Take the function out
         let lowered = self.current_function.take().unwrap();
         self.js_strict_context = saved_js_strict_context;
+        self.in_direct_eval_function = saved_in_direct_eval_function;
+        self.parameter_symbols = saved_parameter_symbols;
+        self.eval_completion_local = saved_eval_completion_local;
         lowered
     }
 
@@ -3591,6 +3679,8 @@ impl<'a> Lowerer<'a> {
         self.this_ancestor_info = None;
         self.this_captured_idx = None;
         self.js_arguments_local = None;
+        self.parameter_symbols.clear();
+        self.eval_completion_local = None;
         self.pending_constructor_prologue = None;
         self.current_method_env_globals = None;
         self.pending_class_method_env_globals = None;
@@ -3643,6 +3733,27 @@ impl<'a> Lowerer<'a> {
 
         let mut var_names = FxHashSet::default();
         collect_function_scoped_var_names(statements, &mut var_names);
+        if self.in_direct_eval_function {
+            let mut ordered = var_names
+                .into_iter()
+                .map(|symbol| self.interner.resolve(symbol).to_string())
+                .collect::<Vec<_>>();
+            ordered.sort();
+            for name in ordered {
+                let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: name_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(name)),
+                });
+                self.emit(IrInstr::NativeCall {
+                    dest: None,
+                    native_id: crate::compiler::native_id::OBJECT_EVAL_ENV_DECLARE_VAR,
+                    args: vec![name_reg],
+                });
+            }
+            return;
+        }
+
         for name in var_names {
             if self.local_map.contains_key(&name) {
                 continue;

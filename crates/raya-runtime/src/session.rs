@@ -91,6 +91,21 @@ impl Session {
         Ok(result)
     }
 
+    /// Evaluate code by routing it through the VM's JS `eval(...)` implementation.
+    ///
+    /// This is used by CLI eval mode for JS/TS node-compat snippets so the
+    /// snippet is parsed and executed by the VM's eval infrastructure rather
+    /// than the outer program wrapper/compiler entry path.
+    pub fn eval_via_vm(&mut self, code: &str) -> Result<Value, RuntimeError> {
+        let runtime = Runtime::with_options(self.options.clone());
+        let bootstrap = format!("return eval({code:?});");
+        let program = runtime.compile_program_source(&bootstrap)?;
+        let mut vm = vm_setup::create_vm(&self.options);
+        let result = runtime.execute_program_with_vm(&program, &mut vm)?;
+        self.last_vm = Some(vm);
+        Ok(result)
+    }
+
     /// Format a Value to a human-readable display string.
     ///
     /// Handles primitives directly and reads heap objects (strings, objects,

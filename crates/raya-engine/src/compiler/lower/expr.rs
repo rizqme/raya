@@ -539,6 +539,160 @@ impl<'a> Lowerer<'a> {
         object_reg
     }
 
+    fn direct_eval_binding_enabled(&self, name: &str) -> bool {
+        self.in_direct_eval_function && self.direct_eval_binding_names.contains(name)
+    }
+
+    fn emit_direct_eval_name_reg(&mut self, name: &str) -> Register {
+        let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: name_reg.clone(),
+            value: IrValue::Constant(IrConstant::String(name.to_string())),
+        });
+        name_reg
+    }
+
+    fn emit_direct_eval_binding_get(&mut self, name: &str, non_throwing: bool) -> Register {
+        let dest = self.alloc_register(UNRESOLVED);
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: if non_throwing {
+                crate::compiler::native_id::OBJECT_EVAL_ENV_TRY_GET
+            } else {
+                crate::compiler::native_id::OBJECT_EVAL_ENV_GET
+            },
+            args: vec![name_reg],
+        });
+        dest
+    }
+
+    pub(super) fn emit_direct_eval_binding_set(&mut self, name: &str, value: Register) {
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_EVAL_ENV_SET,
+            args: vec![name_reg, value],
+        });
+    }
+
+    fn emit_unresolved_js_assignment(&mut self, name: &str, value: Register) {
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_SET_AMBIENT_GLOBAL,
+            args: vec![name_reg, value],
+        });
+    }
+
+    fn collect_visible_direct_eval_symbols(&self) -> Vec<Symbol> {
+        let mut seen = FxHashSet::default();
+        let mut names = Vec::new();
+
+        let mut push = |symbol: Symbol| {
+            if seen.insert(symbol) {
+                names.push(symbol);
+            }
+        };
+
+        for &symbol in self.local_map.keys() {
+            push(symbol);
+        }
+        for capture in &self.captures {
+            push(capture.symbol);
+        }
+        if let Some(ancestors) = &self.ancestor_variables {
+            for &symbol in ancestors.keys() {
+                push(symbol);
+            }
+        }
+        for &symbol in self.module_var_globals.keys() {
+            push(symbol);
+        }
+        if let Some(bindings) = &self.current_method_env_globals {
+            for &symbol in bindings.keys() {
+                push(symbol);
+            }
+        }
+        names.sort_by_key(|symbol| self.interner.resolve(*symbol).to_string());
+        names
+    }
+
+    fn direct_eval_exposes_arguments(&self) -> bool {
+        self.js_this_binding_compat
+            && (self.js_arguments_local.is_some() || self.direct_eval_binding_enabled("arguments"))
+    }
+
+    fn lower_direct_eval_environment_object(&mut self) -> Register {
+        let env_object = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(env_object.clone()),
+            native_id: crate::compiler::native_id::OBJECT_NEW,
+            args: vec![],
+        });
+
+        for symbol in self.collect_visible_direct_eval_symbols() {
+            let name = self.interner.resolve(symbol).to_string();
+            let value = if name == "arguments" {
+                self.lower_js_arguments_object()
+            } else {
+                let ident = ast::Identifier {
+                    name: symbol,
+                    span: crate::parser::token::Span::default(),
+                };
+                self.lower_identifier(&ident)
+            };
+            let key_reg = self.emit_direct_eval_name_reg(&name);
+            self.emit(IrInstr::NativeCall {
+                dest: None,
+                native_id: crate::compiler::native_id::REFLECT_SET,
+                args: vec![env_object.clone(), key_reg, value],
+            });
+        }
+
+        if self.direct_eval_exposes_arguments() {
+            let key_reg = self.emit_direct_eval_name_reg("arguments");
+            let value = self.lower_js_arguments_object();
+            self.emit(IrInstr::NativeCall {
+                dest: None,
+                native_id: crate::compiler::native_id::REFLECT_SET,
+                args: vec![env_object.clone(), key_reg, value],
+            });
+        }
+
+        env_object
+    }
+
+    fn write_back_direct_eval_environment(&mut self, env_object: Register) {
+        for symbol in self.collect_visible_direct_eval_symbols() {
+            let name = self.interner.resolve(symbol).to_string();
+            let key_reg = self.emit_direct_eval_name_reg(&name);
+            let value = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::NativeCall {
+                dest: Some(value.clone()),
+                native_id: crate::compiler::native_id::REFLECT_GET,
+                args: vec![env_object.clone(), key_reg],
+            });
+            self.store_identifier_value(symbol, value);
+        }
+
+        if self.direct_eval_exposes_arguments() {
+            let key_reg = self.emit_direct_eval_name_reg("arguments");
+            let value = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::NativeCall {
+                dest: Some(value.clone()),
+                native_id: crate::compiler::native_id::REFLECT_GET,
+                args: vec![env_object, key_reg],
+            });
+            if let Some(local_idx) = self.js_arguments_local {
+                self.emit(IrInstr::StoreLocal {
+                    index: local_idx,
+                    value,
+                });
+            }
+        }
+    }
+
     /// Lower an expression, returning the register holding its value
     pub fn lower_expr(&mut self, expr: &Expression) -> Register {
         // Track source span for sourcemap generation
@@ -1159,6 +1313,9 @@ impl<'a> Lowerer<'a> {
         // Ambient builtin globals (seeded by declaration surfaces) are resolved at runtime
         // through a dedicated native lookup and do not require source-level declarations.
         if self.ambient_builtin_globals.contains(name) {
+            if self.direct_eval_binding_enabled(name) {
+                return self.emit_direct_eval_binding_get(name, false);
+            }
             let expr_ty = self
                 .expr_types_by_span
                 .get(&(ident.span.start, ident.span.end))
@@ -1249,6 +1406,9 @@ impl<'a> Lowerer<'a> {
         // instead of a hard compile error.  The runtime will throw ReferenceError if
         // the identifier is truly absent.
         if self.allow_unresolved_runtime_fallback {
+            if self.in_direct_eval_function {
+                return self.emit_direct_eval_binding_get(name, false);
+            }
             let dest = self.alloc_register(UNRESOLVED);
             let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             self.emit(IrInstr::Assign {
@@ -1334,6 +1494,11 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_binary(&mut self, binary: &ast::BinaryExpression) -> Register {
+        if matches!(binary.operator, ast::BinaryOperator::Comma) {
+            self.lower_expr(&binary.left);
+            return self.lower_expr(&binary.right);
+        }
+
         if let Some(lowered) = self.try_lower_typeof_number_compare(binary) {
             return lowered;
         }
@@ -1949,6 +2114,32 @@ impl<'a> Lowerer<'a> {
                     .current_method_env_globals
                     .as_ref()
                     .is_some_and(|bindings| bindings.contains_key(&ident.name));
+
+            if self.js_this_binding_compat && name == "eval" && !identifier_resolved_locally {
+                let source = args.first().cloned().unwrap_or_else(|| {
+                    let empty = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                    self.emit(IrInstr::Assign {
+                        dest: empty.clone(),
+                        value: IrValue::Constant(IrConstant::String(String::new())),
+                    });
+                    empty
+                });
+                let env_object = self.lower_direct_eval_environment_object();
+                let has_parameter_named_arguments =
+                    self.direct_eval_has_parameter_binding("arguments");
+                let eval_context_reg = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: eval_context_reg.clone(),
+                    value: IrValue::Constant(IrConstant::Boolean(has_parameter_named_arguments)),
+                });
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id: crate::compiler::native_id::FUNCTION_EVAL_HELPER,
+                    args: vec![source, env_object.clone(), eval_context_reg],
+                });
+                self.write_back_direct_eval_environment(env_object);
+                return dest;
+            }
 
             if self.js_this_binding_compat && Self::js_builtin_call_uses_construct(name) {
                 let synthetic_new = ast::NewExpression {
@@ -6587,6 +6778,17 @@ impl<'a> Lowerer<'a> {
                     value,
                 });
             }
+            return;
+        }
+
+        let name = self.interner.resolve(symbol).to_string();
+        if self.in_direct_eval_function {
+            self.emit_direct_eval_binding_set(&name, value);
+            return;
+        }
+
+        if self.allow_unresolved_runtime_fallback {
+            self.emit_unresolved_js_assignment(&name, value);
         }
     }
 
@@ -6777,6 +6979,22 @@ impl<'a> Lowerer<'a> {
                                     value: rhs,
                                 });
                             }
+                        }
+                    }
+
+                    if !assigned_symbol {
+                        if self.in_direct_eval_function {
+                            self.emit_direct_eval_binding_set(
+                                self.interner.resolve(ident.name),
+                                assigned_value.clone(),
+                            );
+                            assigned_symbol = true;
+                        } else if self.allow_unresolved_runtime_fallback {
+                            self.emit_unresolved_js_assignment(
+                                self.interner.resolve(ident.name),
+                                assigned_value.clone(),
+                            );
+                            assigned_symbol = true;
                         }
                     }
 
@@ -7212,6 +7430,22 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
+                if !assigned_symbol {
+                    if self.in_direct_eval_function {
+                        self.emit_direct_eval_binding_set(
+                            self.interner.resolve(ident.name),
+                            value.clone(),
+                        );
+                        assigned_symbol = true;
+                    } else if self.allow_unresolved_runtime_fallback {
+                        self.emit_unresolved_js_assignment(
+                            self.interner.resolve(ident.name),
+                            value.clone(),
+                        );
+                        assigned_symbol = true;
+                    }
+                }
+
                 // Keep callable-hint state in sync for identifier reassignments.
                 if assigned_symbol {
                     if assign.operator == AssignmentOperator::Assign {
@@ -7548,6 +7782,8 @@ impl<'a> Lowerer<'a> {
         let saved_js_arguments_local = self.js_arguments_local.take();
         let saved_generator_yield_array_local = self.generator_yield_array_local.take();
         let saved_closure_locals = std::mem::take(&mut self.closure_locals);
+        let saved_parameter_symbols = self.parameter_symbols.clone();
+        let saved_eval_completion_local = self.eval_completion_local;
 
         let mut new_ancestor_vars = rustc_hash::FxHashMap::default();
         for (sym, &local_idx) in &saved_local_map {
@@ -7586,6 +7822,8 @@ impl<'a> Lowerer<'a> {
         self.this_ancestor_info = None;
         self.this_captured_idx = None;
         self.js_arguments_local = None;
+        self.parameter_symbols.clear();
+        self.eval_completion_local = None;
 
         self.next_register = 0;
         self.next_block = 0;
@@ -7629,6 +7867,7 @@ impl<'a> Lowerer<'a> {
         }
 
         for (decl_param_idx, param) in func.params.iter().enumerate() {
+            super::collect_pattern_names(&param.pattern, &mut self.parameter_symbols);
             if param.is_rest {
                 let rest_ident = match &param.pattern {
                     ast::Pattern::Identifier(ident) => Some(ident.name),
@@ -7836,6 +8075,8 @@ impl<'a> Lowerer<'a> {
         self.this_captured_idx = saved_this_captured_idx;
         self.js_arguments_local = saved_js_arguments_local;
         self.generator_yield_array_local = saved_generator_yield_array_local;
+        self.parameter_symbols = saved_parameter_symbols;
+        self.eval_completion_local = saved_eval_completion_local;
         self.closure_locals = saved_closure_locals;
         self.function_depth = saved_function_depth;
 
@@ -8031,6 +8272,8 @@ impl<'a> Lowerer<'a> {
         let saved_this_captured_idx = self.this_captured_idx.take();
         let saved_js_arguments_local = self.js_arguments_local.take();
         let saved_generator_yield_array_local = self.generator_yield_array_local.take();
+        let saved_parameter_symbols = self.parameter_symbols.clone();
+        let saved_eval_completion_local = self.eval_completion_local;
         // closure_locals maps local-slot indices to async func IDs; it is
         // per-scope, so it must be cleared on entry and restored on exit to
         // prevent stale entries from an outer (or sibling) function bleeding
@@ -8098,6 +8341,8 @@ impl<'a> Lowerer<'a> {
         };
         self.this_captured_idx = None;
         self.js_arguments_local = None;
+        self.parameter_symbols.clear();
+        self.eval_completion_local = None;
 
         // Reset per-function state
         self.next_register = 0;
@@ -8135,6 +8380,7 @@ impl<'a> Lowerer<'a> {
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
 
         for (decl_param_idx, param) in arrow.params.iter().enumerate() {
+            super::collect_pattern_names(&param.pattern, &mut self.parameter_symbols);
             // Skip rest parameters - they're handled separately
             if param.is_rest {
                 // Extract rest parameter info for later processing
@@ -8390,6 +8636,8 @@ impl<'a> Lowerer<'a> {
         self.this_captured_idx = saved_this_captured_idx;
         self.js_arguments_local = saved_js_arguments_local;
         self.generator_yield_array_local = saved_generator_yield_array_local;
+        self.parameter_symbols = saved_parameter_symbols;
+        self.eval_completion_local = saved_eval_completion_local;
         self.closure_locals = saved_closure_locals;
         self.function_depth = saved_function_depth;
 
@@ -8633,6 +8881,15 @@ impl<'a> Lowerer<'a> {
                     || self.ambient_builtin_globals.contains(name)
                     || matches!(name, "Infinity" | "NaN" | "undefined" | "arguments");
                 if !resolved_locally {
+                    if self.in_direct_eval_function {
+                        let operand = self.emit_direct_eval_binding_get(name, true);
+                        let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                        self.emit(IrInstr::Typeof {
+                            dest: dest.clone(),
+                            operand,
+                        });
+                        return dest;
+                    }
                     // Use TRY_GET_GLOBAL (non-throwing) + Typeof
                     let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                     self.emit(IrInstr::Assign {
@@ -11119,6 +11376,9 @@ impl<'a> Lowerer<'a> {
     /// Convert AST binary operator to IR binary operator
     fn convert_binary_op(&self, op: &ast::BinaryOperator) -> BinaryOp {
         match op {
+            ast::BinaryOperator::Comma => {
+                unreachable!("comma expressions are lowered structurally before IR binary ops")
+            }
             ast::BinaryOperator::Add => BinaryOp::Add,
             ast::BinaryOperator::Subtract => BinaryOp::Sub,
             ast::BinaryOperator::Multiply => BinaryOp::Mul,

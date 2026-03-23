@@ -8,8 +8,11 @@ use crate::compiler::native_id::{
     CHANNEL_RECEIVE, CHANNEL_SEND, CHANNEL_TRY_RECEIVE, CHANNEL_TRY_SEND,
 };
 use crate::compiler::{Compiler, Module, Opcode};
+use crate::parser::ast::visitor::{walk_module, Visitor};
+use crate::parser::ast::{ArrowFunction, FunctionDecl, FunctionExpression, Pattern, VariableDecl};
 use crate::parser::checker::{
-    check_early_errors, Binder, CheckerPolicy, ScopeId, TypeChecker, TypeSystemMode,
+    check_early_errors, check_early_errors_with_options, Binder, CheckerPolicy, EarlyErrorOptions,
+    ScopeId, TypeChecker, TypeSystemMode,
 };
 use crate::parser::{Parser, TypeContext};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set, url};
@@ -144,6 +147,93 @@ impl OrderedOwnKeyCollector {
         ordered.extend(self.strings);
         ordered
     }
+}
+
+#[derive(Default)]
+struct DynamicJsCompileOptions {
+    direct_eval_entry_function: Option<String>,
+    direct_eval_binding_names: FxHashSet<String>,
+    has_parameter_named_arguments: bool,
+}
+
+struct DirectEvalIdentifierCollector<'a> {
+    interner: &'a crate::parser::Interner,
+    names: FxHashSet<String>,
+}
+
+impl Visitor for DirectEvalIdentifierCollector<'_> {
+    fn visit_identifier(&mut self, ident: &crate::parser::ast::Identifier) {
+        self.names
+            .insert(self.interner.resolve(ident.name).to_string());
+    }
+
+    fn visit_member_expression(&mut self, expr: &crate::parser::ast::MemberExpression) {
+        self.visit_expression(&expr.object);
+    }
+}
+
+struct DirectEvalDeclarationCollector<'a> {
+    interner: &'a crate::parser::Interner,
+    declares_arguments: bool,
+}
+
+impl<'a> DirectEvalDeclarationCollector<'a> {
+    fn new(interner: &'a crate::parser::Interner) -> Self {
+        Self {
+            interner,
+            declares_arguments: false,
+        }
+    }
+
+    fn collect_pattern(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::Identifier(ident) => {
+                if self.interner.resolve(ident.name) == "arguments" {
+                    self.declares_arguments = true;
+                }
+            }
+            Pattern::Array(array) => {
+                for element in array.elements.iter().flatten() {
+                    self.collect_pattern(&element.pattern);
+                }
+                if let Some(rest) = &array.rest {
+                    self.collect_pattern(rest);
+                }
+            }
+            Pattern::Object(object) => {
+                for property in &object.properties {
+                    self.collect_pattern(&property.value);
+                }
+                if let Some(rest) = &object.rest {
+                    if self.interner.resolve(rest.name) == "arguments" {
+                        self.declares_arguments = true;
+                    }
+                }
+            }
+            Pattern::Rest(rest) => self.collect_pattern(&rest.argument),
+        }
+    }
+}
+
+impl Visitor for DirectEvalDeclarationCollector<'_> {
+    fn visit_variable_decl(&mut self, decl: &VariableDecl) {
+        if matches!(decl.kind, crate::parser::ast::VariableKind::Var) {
+            self.collect_pattern(&decl.pattern);
+        }
+        if let Some(initializer) = &decl.initializer {
+            self.visit_expression(initializer);
+        }
+    }
+
+    fn visit_function_decl(&mut self, decl: &FunctionDecl) {
+        if self.interner.resolve(decl.name.name) == "arguments" {
+            self.declares_arguments = true;
+        }
+    }
+
+    fn visit_function_expression(&mut self, _func: &FunctionExpression) {}
+
+    fn visit_arrow_function(&mut self, _func: &ArrowFunction) {}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1928,6 +2018,48 @@ impl<'a> Interpreter<'a> {
             self.define_data_property_on_target(global_this, key, value, true, true, false)?;
         }
 
+        Ok(())
+    }
+
+    fn current_activation_eval_env(&self, task: &Arc<Task>) -> Option<Value> {
+        task.current_active_direct_eval_env()
+            .or_else(|| task.current_activation_direct_eval_env())
+    }
+
+    fn activation_eval_env_get(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        key: &str,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(env) = self.current_activation_eval_env(task) else {
+            return Ok(None);
+        };
+        self.get_property_value_via_js_semantics_with_context(env, key, task, module)
+    }
+
+    fn activation_eval_env_set(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        key: &str,
+        value: Value,
+    ) -> Result<bool, VmError> {
+        let Some(env) = self.current_activation_eval_env(task) else {
+            return Ok(false);
+        };
+        self.set_property_value_via_js_semantics(env, key, value, env, task, module)
+    }
+
+    fn activation_eval_env_declare_var(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        key: &str,
+    ) -> Result<(), VmError> {
+        if self.activation_eval_env_get(task, module, key)?.is_none() {
+            let _ = self.activation_eval_env_set(task, module, key, Value::undefined())?;
+        }
         Ok(())
     }
 
@@ -5537,11 +5669,45 @@ impl<'a> Interpreter<'a> {
         self.builtin_global_slots.read().keys().cloned().collect()
     }
 
+    fn collect_direct_eval_binding_names(
+        &self,
+        module: &crate::parser::ast::Module,
+        interner: &crate::parser::Interner,
+    ) -> FxHashSet<String> {
+        let mut collector = DirectEvalIdentifierCollector {
+            interner,
+            names: FxHashSet::default(),
+        };
+        walk_module(&mut collector, module);
+        collector.names
+    }
+
+    fn direct_eval_declares_arguments(
+        &self,
+        module: &crate::parser::ast::Module,
+        interner: &crate::parser::Interner,
+    ) -> bool {
+        let mut collector = DirectEvalDeclarationCollector::new(interner);
+        walk_module(&mut collector, module);
+        collector.declares_arguments
+    }
+
+    fn raw_direct_eval_declares_arguments(&self, source: &str) -> bool {
+        let Ok(parser) = Parser::new(source) else {
+            return false;
+        };
+        let Ok((ast, interner)) = parser.parse() else {
+            return false;
+        };
+        self.direct_eval_declares_arguments(&ast, &interner)
+    }
+
     fn compile_dynamic_js_module_source(
         &self,
         source: &str,
         module_identity_prefix: &str,
         error_context: &str,
+        options: DynamicJsCompileOptions,
     ) -> Result<Arc<Module>, VmError> {
         let dynamic_compile_syntax_error = |stage: &str, error: String| {
             VmError::SyntaxError(format!("{error_context} {stage}: {error}"))
@@ -5558,11 +5724,19 @@ impl<'a> Interpreter<'a> {
         let (ast, interner) = parser
             .parse()
             .map_err(|error| dynamic_compile_syntax_error("parse error", format!("{error:?}")))?;
-        check_early_errors(&ast, &interner, TypeSystemMode::Js)
+        let mut early_error_options = EarlyErrorOptions::for_mode(TypeSystemMode::Js);
+        early_error_options.allow_top_level_return = false;
+        check_early_errors_with_options(&ast, &interner, early_error_options)
             .map_err(|error| dynamic_compile_syntax_error("parse error", format!("{error:?}")))?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:parsed-ast");
         }
+
+        let direct_eval_binding_names = if options.direct_eval_binding_names.is_empty() {
+            self.collect_direct_eval_binding_names(&ast, &interner)
+        } else {
+            options.direct_eval_binding_names
+        };
 
         let mut type_ctx = TypeContext::new();
         let policy = CheckerPolicy::for_mode(TypeSystemMode::Js);
@@ -5596,14 +5770,15 @@ impl<'a> Interpreter<'a> {
             symbols.update_type(ScopeId(scope_id), &name, ty);
         }
 
-        let ambient_builtin_globals = self.dynamic_js_ambient_builtin_globals();
+        let mut ambient_builtin_globals = self.dynamic_js_ambient_builtin_globals();
+        ambient_builtin_globals.extend(direct_eval_binding_names.iter().cloned());
         let module_identity = format!(
             "{}/{}",
             module_identity_prefix,
             DYNAMIC_JS_FUNCTION_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
 
-        let compiler = Compiler::new(type_ctx, &interner)
+        let mut compiler = Compiler::new(type_ctx, &interner)
             .with_expr_types(check_result.expr_types)
             .with_type_annotation_types(check_result.type_annotation_types)
             .with_module_identity(module_identity)
@@ -5611,6 +5786,11 @@ impl<'a> Interpreter<'a> {
             .with_allow_unresolved_runtime_fallback(true)
             .with_ambient_builtin_globals(ambient_builtin_globals)
             .with_source_text(source.to_string());
+        if let Some(entry) = options.direct_eval_entry_function {
+            compiler = compiler
+                .with_direct_eval_entry_function(entry)
+                .with_direct_eval_binding_names(direct_eval_binding_names);
+        }
         let module = compiler.compile_via_ir(&ast).map_err(|error| {
             VmError::RuntimeError(format!("{} compile error: {}", error_context, error))
         })?;
@@ -5626,7 +5806,12 @@ impl<'a> Interpreter<'a> {
         body_source: &str,
     ) -> Result<Arc<Module>, VmError> {
         let source = format!("function __dynamic_fn__({params_source}) {{\n{body_source}\n}}\n");
-        self.compile_dynamic_js_module_source(&source, "__dynamic_function__", "Dynamic Function")
+        self.compile_dynamic_js_module_source(
+            &source,
+            "__dynamic_function__",
+            "Dynamic Function",
+            DynamicJsCompileOptions::default(),
+        )
     }
 
     fn alloc_dynamic_js_closure(
@@ -5705,9 +5890,27 @@ impl<'a> Interpreter<'a> {
         Ok(closure_val)
     }
 
+    fn current_direct_eval_this_value(
+        &self,
+        stack: &Stack,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Value {
+        module
+            .functions
+            .get(task.current_func_id())
+            .filter(|function| function.uses_js_this_slot)
+            .and_then(|_| stack.peek_at(task.current_locals_base()).ok())
+            .or_else(|| self.builtin_global_value("globalThis"))
+            .unwrap_or(Value::undefined())
+    }
+
     fn eval_dynamic_js_source(
         &mut self,
         source: &str,
+        options: DynamicJsCompileOptions,
+        direct_env: Option<Value>,
+        stack: &Stack,
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Value, VmError> {
@@ -5717,19 +5920,68 @@ impl<'a> Interpreter<'a> {
             .filter(|function| function.is_strict_js)
             .map(|_| "\"use strict\";\n")
             .unwrap_or("");
-        let wrapped = format!("function __eval__() {{\n{inherited_strict_prefix}{source}\n}}\n");
-        let function_module =
-            self.compile_dynamic_js_module_source(&wrapped, "__eval__", "Dynamic eval")?;
+        if direct_env.is_some()
+            && options.has_parameter_named_arguments
+            && self.raw_direct_eval_declares_arguments(source)
+        {
+            return Err(VmError::SyntaxError(
+                "direct eval may not declare 'arguments' when the caller parameter environment already binds it"
+                .to_string(),
+            ));
+        }
+        let caller_has_parameter_named_arguments = options.has_parameter_named_arguments;
+        let (function_name, wrapped, options, explicit_this) = if direct_env.is_some() {
+            (
+                "__direct_eval__",
+                format!(
+                    "function __direct_eval__() {{\n{inherited_strict_prefix}{source}\n}}\n"
+                ),
+                DynamicJsCompileOptions {
+                    direct_eval_entry_function: Some("__direct_eval__".to_string()),
+                    has_parameter_named_arguments: caller_has_parameter_named_arguments,
+                    ..DynamicJsCompileOptions::default()
+                },
+                Some(self.current_direct_eval_this_value(stack, task, module)),
+            )
+        } else {
+            (
+                "__eval__",
+                format!("function __eval__() {{\n{source}\n}}\n"),
+                DynamicJsCompileOptions::default(),
+                Some(
+                    self.builtin_global_value("globalThis")
+                        .unwrap_or(Value::undefined()),
+                ),
+            )
+        };
+        let function_module = self.compile_dynamic_js_module_source(
+            &wrapped,
+            "__eval__",
+            "Dynamic eval",
+            options,
+        )?;
         let closure_val = self.alloc_dynamic_js_closure(
             function_module,
-            "__eval__",
+            function_name,
             "Dynamic eval module registration error",
-            "Dynamic eval compile did not produce __eval__",
+            "Dynamic eval compile did not produce wrapper function",
         )?;
-        let global_this = self
-            .builtin_global_value("globalThis")
-            .unwrap_or(Value::undefined());
-        self.invoke_callable_sync_with_this(closure_val, Some(global_this), &[], task, module)
+        if let Some(env) = direct_env {
+            task.push_active_direct_eval_env(env);
+            let result =
+                self.invoke_callable_sync_with_this(closure_val, explicit_this, &[], task, module);
+            let _ = task.pop_active_direct_eval_env();
+            if result.is_ok() {
+                task.set_activation_direct_eval_env(
+                    task.current_func_id(),
+                    task.current_locals_base(),
+                    env,
+                );
+            }
+            result
+        } else {
+            self.invoke_callable_sync_with_this(closure_val, explicit_this, &[], task, module)
+        }
     }
 
     pub(in crate::vm::interpreter) fn collect_apply_arguments(
@@ -9842,6 +10094,14 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let name = unsafe { &*name_ptr.as_ptr() };
+                        if let Ok(Some(value)) =
+                            self.activation_eval_env_get(task, module, &name.data)
+                        {
+                            if let Err(e) = stack.push(value) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
+                        }
                         let Some(slot) = self
                             .builtin_global_slots
                             .read()
@@ -9880,12 +10140,16 @@ impl<'a> Interpreter<'a> {
                         };
                         let name = unsafe { &*name_ptr.as_ptr() };
                         // 1. Check builtin_global_slots (builtins + module exports)
-                        let value = self
-                            .builtin_global_slots
-                            .read()
-                            .get(name.data.as_str())
-                            .copied()
-                            .and_then(|slot| self.globals_by_index.read().get(slot).copied());
+                        let value = match self.activation_eval_env_get(task, module, &name.data) {
+                            Ok(Some(v)) => Some(v),
+                            Ok(None) => self
+                                .builtin_global_slots
+                                .read()
+                                .get(name.data.as_str())
+                                .copied()
+                                .and_then(|slot| self.globals_by_index.read().get(slot).copied()),
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         let result = if let Some(v) = value {
                             v
                         } else if let Some(gt) = self.builtin_global_value("globalThis") {
@@ -9910,6 +10174,183 @@ impl<'a> Interpreter<'a> {
                         };
                         if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_GET => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "eval env get expects exactly one string argument".to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "eval env get expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        let value = match self.activation_eval_env_get(task, module, &name.data) {
+                            Ok(Some(v)) => v,
+                            Ok(None) => {
+                                let name_reg = name.data.clone();
+                                let builtin = self
+                                    .builtin_global_slots
+                                    .read()
+                                    .get(name_reg.as_str())
+                                    .copied()
+                                    .and_then(|slot| self.globals_by_index.read().get(slot).copied());
+                                if let Some(v) = builtin {
+                                    v
+                                } else if let Some(gt) = self.builtin_global_value("globalThis") {
+                                    match self.get_property_value_via_js_semantics_with_context(
+                                        gt,
+                                        &name.data,
+                                        task,
+                                        module,
+                                    ) {
+                                        Ok(Some(v)) => v,
+                                        Ok(None) => {
+                                            return OpcodeResult::Error(VmError::RuntimeError(
+                                                format!("{} is not defined", name.data),
+                                            ))
+                                        }
+                                        Err(error) => return OpcodeResult::Error(error),
+                                    }
+                                } else {
+                                    return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                        "{} is not defined",
+                                        name.data
+                                    )));
+                                }
+                            }
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_TRY_GET => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "eval env tryGet expects exactly one string argument".to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "eval env tryGet expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        let value = match self.activation_eval_env_get(task, module, &name.data) {
+                            Ok(Some(v)) => v,
+                            Ok(None) => {
+                                let name_reg = name.data.clone();
+                                self.builtin_global_slots
+                                    .read()
+                                    .get(name_reg.as_str())
+                                    .copied()
+                                    .and_then(|slot| self.globals_by_index.read().get(slot).copied())
+                                    .or_else(|| {
+                                        self.builtin_global_value("globalThis").and_then(|gt| {
+                                            self.get_property_value_via_js_semantics_with_context(
+                                                gt,
+                                                &name.data,
+                                                task,
+                                                module,
+                                            )
+                                            .ok()
+                                            .flatten()
+                                        })
+                                    })
+                                    .unwrap_or(Value::undefined())
+                            }
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_SET => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "eval env set expects name and value".to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "eval env set expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        match self.activation_eval_env_set(task, module, &name.data, args[1]) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                return OpcodeResult::Error(VmError::RuntimeError(
+                                    "No active eval environment".to_string(),
+                                ))
+                            }
+                            Err(error) => return OpcodeResult::Error(error),
+                        }
+                        if let Err(error) = stack.push(args[1]) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_DECLARE_VAR => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "eval env declareVar expects a string name".to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "eval env declareVar expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        if let Err(error) =
+                            self.activation_eval_env_declare_var(task, module, &name.data)
+                        {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(Value::undefined()) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_SET_AMBIENT_GLOBAL => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "setAmbientGlobal expects name and value".to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "setAmbientGlobal expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        let did_set_activation =
+                            match self.activation_eval_env_set(task, module, &name.data, args[1]) {
+                                Ok(value) => value,
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                        if !did_set_activation {
+                            if let Err(error) =
+                                self.bind_script_global_property(&name.data, args[1], task, module)
+                            {
+                                return OpcodeResult::Error(error);
+                            }
+                        }
+                        if let Err(error) = stack.push(args[1]) {
+                            return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
                     }
@@ -10116,7 +10557,20 @@ impl<'a> Interpreter<'a> {
                         } else {
                             String::new()
                         };
-                        let value = match self.eval_dynamic_js_source(&source, task, module) {
+                        let direct_env = args.get(1).copied();
+                        let has_parameter_named_arguments =
+                            args.get(2).copied().is_some_and(|value| value.is_truthy());
+                        let value = match self.eval_dynamic_js_source(
+                            &source,
+                            DynamicJsCompileOptions {
+                                has_parameter_named_arguments,
+                                ..DynamicJsCompileOptions::default()
+                            },
+                            direct_env,
+                            stack,
+                            task,
+                            module,
+                        ) {
                             Ok(value) => value,
                             Err(error) => return OpcodeResult::Error(error),
                         };

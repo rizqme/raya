@@ -175,10 +175,7 @@ function unescape(input: string): string {
 }
 
 function eval(source: string): any {
-    throw createError(
-        E_UNIMPLEMENTED_BUILTIN_BEHAVIOR,
-        "eval is not implemented in node-compat runtime yet",
-    );
+    return __NATIVE_CALL<any>(NC_COMPILER_EVAL, source);
 }
 
 class __NodeCompatReflect {

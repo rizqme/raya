@@ -328,6 +328,9 @@ pub struct BinaryExpression {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOperator {
+    // Sequence
+    Comma, // ,
+
     // Arithmetic
     Add,      // +
     Subtract, // -

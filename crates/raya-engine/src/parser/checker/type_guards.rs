@@ -137,6 +137,7 @@ pub fn extract_type_guard(expr: &Expression, interner: &Interner) -> Option<Type
         BinaryOperator::StrictNotEqual => (true, true),
         BinaryOperator::Equal => (false, true),
         BinaryOperator::NotEqual => (true, true),
+        BinaryOperator::Comma => return None,
         _ => return None,
     };
 

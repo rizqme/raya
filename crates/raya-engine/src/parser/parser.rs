@@ -736,6 +736,45 @@ mod tests {
     }
 
     #[test]
+    fn test_parenthesized_assignment_expression_stays_grouped() {
+        use crate::parser::ast::Expression;
+
+        let mut parser = Parser::new("(x = 1)").unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        match expr {
+            Expression::Assignment(_) => {}
+            other => panic!("Expected assignment expression, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_defaulted_parenthesized_arrow_parses() {
+        use crate::parser::ast::Expression;
+
+        let mut parser = Parser::new("(p = eval(\"1\"), arguments) => 0").unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        match expr {
+            Expression::Arrow(_) => {}
+            other => panic!("Expected arrow function, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parenthesized_comma_expression_stays_grouped() {
+        use crate::parser::ast::{BinaryOperator, Expression};
+
+        let mut parser = Parser::new("(p = eval(\"1\"), arguments)").unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        let Expression::Binary(binary) = expr else {
+            panic!("Expected comma expression");
+        };
+        assert!(matches!(binary.operator, BinaryOperator::Comma));
+    }
+
+    #[test]
     fn test_call_expression_tracks_spread_arguments() {
         use crate::parser::ast::{CallArgument, Expression};
 

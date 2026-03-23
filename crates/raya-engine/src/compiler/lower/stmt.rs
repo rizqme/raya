@@ -1690,6 +1690,18 @@ impl<'a> Lowerer<'a> {
         self.callable_symbol_hints.remove(&name);
         self.clear_late_bound_object_binding(name);
 
+        if self.in_direct_eval_function && decl.kind == crate::parser::ast::VariableKind::Var {
+            if let Some(init) = &decl.initializer {
+                let mut value =
+                    self.lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
+                if let Some(type_ann) = &decl.type_annotation {
+                    value = self.coerce_value_to_annotation_type(value, type_ann);
+                }
+                self.emit_direct_eval_binding_set(self.interner.resolve(name), value);
+            }
+            return;
+        }
+
         // Re-populate object field layout for __std_exports_<tag> variables.
         // These are declared as `const __std_exports_<tag> = __std_module_<tag>()`.
         // Doing this here (after the stale-entry removal) ensures has_concrete_layout=true
@@ -2497,8 +2509,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_expr_stmt(&mut self, stmt: &ast::ExpressionStatement) {
-        // Evaluate expression for side effects, discard result
-        self.lower_expr(&stmt.expression);
+        let value = self.lower_expr(&stmt.expression);
+        self.record_eval_completion(value);
     }
 
     fn lower_nested_function_decl(&mut self, func_decl: &ast::FunctionDecl) {
@@ -2570,8 +2582,14 @@ impl<'a> Lowerer<'a> {
         self.local_registers.insert(local_idx, closure_reg.clone());
         self.emit(IrInstr::StoreLocal {
             index: local_idx,
-            value: closure_reg,
+            value: closure_reg.clone(),
         });
+        if self.in_direct_eval_function {
+            self.emit_direct_eval_binding_set(
+                self.interner.resolve(func_decl.name.name),
+                closure_reg.clone(),
+            );
+        }
 
         // Async function declarations lowered through the closure path still need
         // closure-locals metadata so call lowering emits SpawnClosure, not CallClosure.
