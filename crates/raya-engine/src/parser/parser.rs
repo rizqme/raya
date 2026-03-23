@@ -300,7 +300,7 @@ impl Parser {
     pub(crate) fn check_identifier_like(&self) -> bool {
         matches!(
             self.current(),
-            Token::Identifier(_) | Token::Async | Token::From | Token::Type
+            Token::Identifier(_) | Token::Async | Token::From | Token::Type | Token::Static
         )
     }
 
@@ -311,6 +311,7 @@ impl Parser {
             Token::Async => Some(self.intern("async")),
             Token::From => Some(self.intern("from")),
             Token::Type => Some(self.intern("type")),
+            Token::Static => Some(self.intern("static")),
             _ => None,
         }
     }

@@ -20,7 +20,7 @@ use crate::parser::checker::{
 use crate::parser::{Parser, TypeContext};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set, url};
 use crate::vm::gc::header_ptr_from_value_ptr;
-use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
+use crate::vm::interpreter::execution::{ExecutionResult, OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
     layout_id_from_ordered_names, ArgumentsDataProperty, ArgumentsIndexedProperty,
@@ -167,6 +167,9 @@ struct DynamicJsCompileOptions {
     uses_script_global_bindings: bool,
     allow_new_target: bool,
     allow_super_property: bool,
+    track_top_level_completion: bool,
+    emit_script_global_bindings: bool,
+    script_global_bindings_configurable: bool,
 }
 
 struct DirectEvalIdentifierCollector<'a> {
@@ -2187,6 +2190,7 @@ impl<'a> Interpreter<'a> {
         &mut self,
         key: &str,
         value: Value,
+        configurable: bool,
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<(), VmError> {
@@ -2225,7 +2229,14 @@ impl<'a> Interpreter<'a> {
         }
 
         if self.is_js_value_extensible(global_this) {
-            self.define_data_property_on_target(global_this, key, value, true, true, false)?;
+            self.define_data_property_on_target(
+                global_this,
+                key,
+                value,
+                true,
+                true,
+                configurable,
+            )?;
         }
 
         Ok(())
@@ -6463,6 +6474,11 @@ impl<'a> Interpreter<'a> {
             .with_js_this_binding_compat(true)
             .with_allow_unresolved_runtime_fallback(true)
             .with_ambient_builtin_globals(ambient_builtin_globals)
+            .with_track_top_level_completion(options.track_top_level_completion)
+            .with_emit_script_global_bindings(options.emit_script_global_bindings)
+            .with_script_global_bindings_configurable(
+                options.script_global_bindings_configurable,
+            )
             .with_source_text(source.to_string());
         if let Some(entry) = options.direct_eval_entry_function {
             compiler = compiler
@@ -6534,6 +6550,53 @@ impl<'a> Interpreter<'a> {
                 std::ptr::NonNull::new(closure_ptr.as_ptr()).expect("dynamic function ptr"),
             )
         })
+    }
+
+    fn execute_dynamic_js_module_main(
+        &mut self,
+        dynamic_module: Arc<Module>,
+        caller_task: &Arc<Task>,
+    ) -> Result<Value, VmError> {
+        self.register_dynamic_module(dynamic_module.clone())
+            .map_err(|message| {
+                VmError::RuntimeError(format!(
+                    "Dynamic eval module registration error: {message}"
+                ))
+            })?;
+        let main_fn_id = dynamic_module
+            .functions
+            .iter()
+            .rposition(|function| function.name == "main")
+            .ok_or_else(|| VmError::RuntimeError("Dynamic eval compile did not produce main function".to_string()))?;
+        let eval_task = Arc::new(Task::new(
+            main_fn_id,
+            dynamic_module,
+            Some(caller_task.id()),
+        ));
+        self.tasks
+            .write()
+            .insert(eval_task.id(), eval_task.clone());
+        match self.run(&eval_task) {
+            ExecutionResult::Completed(value) => {
+                eval_task.complete(value);
+                Ok(value)
+            }
+            ExecutionResult::Suspended(reason) => {
+                eval_task.suspend(reason);
+                Err(VmError::RuntimeError(
+                    "Synchronous dynamic eval suspended unexpectedly".to_string(),
+                ))
+            }
+            ExecutionResult::Failed(error) => {
+                eval_task.fail();
+                if !caller_task.has_exception() {
+                    if let Some(exception) = eval_task.current_exception() {
+                        caller_task.set_exception(exception);
+                    }
+                }
+                Err(error)
+            }
+        }
     }
 
     fn alloc_dynamic_js_function(
@@ -6662,8 +6725,9 @@ impl<'a> Interpreter<'a> {
                 }
                 other => other,
             })?;
+        let raw_eval_declarations = self.raw_direct_eval_declarations(source);
         let direct_eval_declarations = if direct_env.is_some() {
-            self.raw_direct_eval_declarations(source)
+            raw_eval_declarations.clone()
         } else {
             None
         };
@@ -6723,6 +6787,37 @@ impl<'a> Interpreter<'a> {
                 "direct eval may not declare 'arguments' during parameter initialization when the caller already provides an arguments binding",
             ));
         }
+        if direct_env.is_none() {
+            let source_is_strict = raw_eval_declarations
+                .as_ref()
+                .is_some_and(|collector| collector.source_is_strict);
+            let function_module = self
+                .compile_dynamic_js_module_source(
+                    source,
+                    "__eval__",
+                    "Dynamic eval",
+                    DynamicJsCompileOptions {
+                        track_top_level_completion: true,
+                        emit_script_global_bindings: !source_is_strict,
+                        script_global_bindings_configurable: !source_is_strict,
+                        ..effective_options.clone()
+                    },
+                )
+                .map_err(|error| match error {
+                    VmError::SyntaxError(message) => {
+                        self.raise_task_builtin_error(task, "SyntaxError", message)
+                    }
+                    VmError::TypeError(message) => {
+                        self.raise_task_builtin_error(task, "TypeError", message)
+                    }
+                    VmError::ReferenceError(message) => {
+                        self.raise_task_builtin_error(task, "ReferenceError", message)
+                    }
+                    other => other,
+                })?;
+            return self.execute_dynamic_js_module_main(function_module, task);
+        }
+
         let (function_name, wrapped, options, explicit_this) = if direct_env.is_some() {
             (
                 "__direct_eval__",
@@ -6741,15 +6836,7 @@ impl<'a> Interpreter<'a> {
                 Some(self.current_direct_eval_this_value(stack, task, module)),
             )
         } else {
-            (
-                "__eval__",
-                format!("function __eval__() {{\n{source}\n}}\n"),
-                DynamicJsCompileOptions::default(),
-                Some(
-                    self.builtin_global_value("globalThis")
-                        .unwrap_or(Value::undefined()),
-                ),
-            )
+            unreachable!("indirect eval returns through raw-module path")
         };
         let uses_script_global_bindings = options.uses_script_global_bindings;
         let function_module = self
@@ -11323,8 +11410,13 @@ impl<'a> Interpreter<'a> {
                                         format!("{} is not defined", name.data),
                                     ));
                                 }
-                                if let Err(error) =
-                                    self.bind_script_global_property(&name.data, args[1], task, module)
+                                if let Err(error) = self.bind_script_global_property(
+                                    &name.data,
+                                    args[1],
+                                    false,
+                                    task,
+                                    module,
+                                )
                                 {
                                     return OpcodeResult::Error(error);
                                 }
@@ -11652,7 +11744,13 @@ impl<'a> Interpreter<'a> {
                                 ));
                             }
                             if let Err(error) =
-                                self.bind_script_global_property(&name.data, args[1], task, module)
+                                self.bind_script_global_property(
+                                    &name.data,
+                                    args[1],
+                                    false,
+                                    task,
+                                    module,
+                                )
                             {
                                 return OpcodeResult::Error(error);
                             }
@@ -11694,9 +11792,10 @@ impl<'a> Interpreter<'a> {
                     }
 
                     id if id == crate::compiler::native_id::OBJECT_BIND_SCRIPT_GLOBAL => {
-                        if args.len() != 2 {
+                        if args.len() != 2 && args.len() != 3 {
                             return OpcodeResult::Error(VmError::RuntimeError(
-                                "script global binding expects name and value".to_string(),
+                                "script global binding expects name, value, and optional configurability"
+                                    .to_string(),
                             ));
                         }
                         let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
@@ -11705,8 +11804,15 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let name = unsafe { &*name_ptr.as_ptr() };
-                        if let Err(error) =
-                            self.bind_script_global_property(&name.data, args[1], task, module)
+                        let configurable =
+                            args.get(2).copied().is_some_and(|value| value.is_truthy());
+                        if let Err(error) = self.bind_script_global_property(
+                            &name.data,
+                            args[1],
+                            configurable,
+                            task,
+                            module,
+                        )
                         {
                             return OpcodeResult::Error(error);
                         }

@@ -729,6 +729,12 @@ pub struct Lowerer<'a> {
     direct_eval_entry_function: Option<String>,
     /// Identifier names resolved through the active direct-eval environment.
     direct_eval_binding_names: FxHashSet<String>,
+    /// Whether top-level statement completion should be preserved as the module result.
+    track_top_level_completion: bool,
+    /// Whether top-level JS var/function declarations should publish to globalThis.
+    emit_script_global_bindings: bool,
+    /// Whether published top-level JS globals should be configurable.
+    script_global_bindings_configurable: bool,
     /// Whether the currently lowered function body is the direct-eval wrapper.
     in_direct_eval_function: bool,
     /// Whether the current lowering context is inside a parameter initializer or a closure
@@ -1431,6 +1437,9 @@ impl<'a> Lowerer<'a> {
             allow_unresolved_runtime_fallback: true,
             direct_eval_entry_function: None,
             direct_eval_binding_names: FxHashSet::default(),
+            track_top_level_completion: false,
+            emit_script_global_bindings: true,
+            script_global_bindings_configurable: false,
             in_direct_eval_function: false,
             parameter_scope_eval_mode: false,
             body_scope_eval_arguments_mode: false,
@@ -1497,6 +1506,21 @@ impl<'a> Lowerer<'a> {
         S: Into<String>,
     {
         self.direct_eval_binding_names = names.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_track_top_level_completion(mut self, enable: bool) -> Self {
+        self.track_top_level_completion = enable;
+        self
+    }
+
+    pub fn with_emit_script_global_bindings(mut self, enable: bool) -> Self {
+        self.emit_script_global_bindings = enable;
+        self
+    }
+
+    pub fn with_script_global_bindings_configurable(mut self, enable: bool) -> Self {
+        self.script_global_bindings_configurable = enable;
         self
     }
 
@@ -1619,6 +1643,15 @@ impl<'a> Lowerer<'a> {
             return;
         }
         self.emit_function_return(None);
+    }
+
+    pub(super) fn emit_bool_const(&mut self, value: bool) -> Register {
+        let reg = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: reg.clone(),
+            value: IrValue::Constant(IrConstant::Boolean(value)),
+        });
+        reg
     }
 
     pub(super) fn init_eval_completion_local(&mut self) {
@@ -2437,7 +2470,7 @@ impl<'a> Lowerer<'a> {
 
         // Reserve main function's ID BEFORE lowering, so arrow functions
         // created during lowering get IDs after main
-        let main_func_id = if !top_level_stmts.is_empty() {
+        let main_func_id = if !top_level_stmts.is_empty() || self.track_top_level_completion {
             let id = self.next_function_id;
             self.next_function_id += 1;
             Some(id)
@@ -3809,6 +3842,9 @@ impl<'a> Lowerer<'a> {
         self.emit_static_field_initializations();
         self.emit_js_top_level_var_hoists(stmts);
         self.emit_js_top_level_function_hoists();
+        if self.track_top_level_completion {
+            self.init_eval_completion_local();
+        }
 
         // Lower statements first (so variable declarations like `let x = 0` are processed)
         for stmt in stmts {
@@ -3996,7 +4032,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn emit_js_script_global_binding(&mut self, name: Symbol, value: Register) {
-        if !self.js_this_binding_compat {
+        if !self.js_this_binding_compat || !self.emit_script_global_bindings {
             return;
         }
 
@@ -4005,10 +4041,11 @@ impl<'a> Lowerer<'a> {
             dest: prop_name.clone(),
             value: IrValue::Constant(IrConstant::String(self.interner.resolve(name).to_string())),
         });
+        let configurable = self.emit_bool_const(self.script_global_bindings_configurable);
         self.emit(IrInstr::NativeCall {
             dest: None,
             native_id: crate::compiler::native_id::OBJECT_BIND_SCRIPT_GLOBAL,
-            args: vec![prop_name, value],
+            args: vec![prop_name, value, configurable],
         });
     }
 

@@ -96,6 +96,12 @@ pub struct Compiler<'a> {
     direct_eval_entry_function: Option<String>,
     /// Identifier names that should resolve through the direct-eval environment.
     direct_eval_binding_names: FxHashSet<String>,
+    /// Whether top-level statement completion values should be preserved as the module result.
+    track_top_level_completion: bool,
+    /// Whether top-level JS var/function declarations should publish to globalThis.
+    emit_script_global_bindings: bool,
+    /// Whether published top-level JS globals should be configurable.
+    script_global_bindings_configurable: bool,
 }
 
 impl<'a> Compiler<'a> {
@@ -126,6 +132,9 @@ impl<'a> Compiler<'a> {
             ambient_builtin_globals: FxHashSet::default(),
             direct_eval_entry_function: None,
             direct_eval_binding_names: FxHashSet::default(),
+            track_top_level_completion: false,
+            emit_script_global_bindings: true,
+            script_global_bindings_configurable: false,
         }
     }
 
@@ -227,6 +236,21 @@ impl<'a> Compiler<'a> {
         self
     }
 
+    pub fn with_track_top_level_completion(mut self, enable: bool) -> Self {
+        self.track_top_level_completion = enable;
+        self
+    }
+
+    pub fn with_emit_script_global_bindings(mut self, enable: bool) -> Self {
+        self.emit_script_global_bindings = enable;
+        self
+    }
+
+    pub fn with_script_global_bindings_configurable(mut self, enable: bool) -> Self {
+        self.script_global_bindings_configurable = enable;
+        self
+    }
+
     /// Compile a module into bytecode
     pub fn compile(&mut self, module: &ast::Module) -> CompileResult<Module> {
         let mut codegen = CodeGenerator::new(&self.type_ctx, self.interner);
@@ -244,7 +268,12 @@ impl<'a> Compiler<'a> {
                 .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
                 .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
                 .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
-                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone());
+                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
+                .with_track_top_level_completion(self.track_top_level_completion)
+                .with_emit_script_global_bindings(self.emit_script_global_bindings)
+                .with_script_global_bindings_configurable(
+                    self.script_global_bindings_configurable,
+                );
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -290,7 +319,12 @@ impl<'a> Compiler<'a> {
                 .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
                 .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
                 .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
-                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone());
+                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
+                .with_track_top_level_completion(self.track_top_level_completion)
+                .with_emit_script_global_bindings(self.emit_script_global_bindings)
+                .with_script_global_bindings_configurable(
+                    self.script_global_bindings_configurable,
+                );
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -464,7 +498,12 @@ impl<'a> Compiler<'a> {
                 .with_unresolved_runtime_fallback(self.allow_unresolved_runtime_fallback)
                 .with_ambient_builtin_globals(self.ambient_builtin_globals.clone())
                 .with_direct_eval_entry_function(self.direct_eval_entry_function.clone())
-                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone());
+                .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
+                .with_track_top_level_completion(self.track_top_level_completion)
+                .with_emit_script_global_bindings(self.emit_script_global_bindings)
+                .with_script_global_bindings_configurable(
+                    self.script_global_bindings_configurable,
+                );
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
