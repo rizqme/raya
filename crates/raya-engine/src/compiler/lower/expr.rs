@@ -540,7 +540,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn direct_eval_binding_enabled(&self, name: &str) -> bool {
-        self.in_direct_eval_function && self.direct_eval_binding_names.contains(name)
+        self.js_this_binding_compat && self.direct_eval_binding_names.contains(name)
     }
 
     fn emit_direct_eval_name_reg(&mut self, name: &str) -> Register {
@@ -607,6 +607,22 @@ impl<'a> Lowerer<'a> {
             native_id: crate::compiler::native_id::OBJECT_SET_AMBIENT_GLOBAL,
             args: vec![name_reg, value],
         });
+    }
+
+    fn emit_js_identifier_delete(&mut self, name: &str, resolved_locally: bool) -> Register {
+        let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        let local_reg = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: local_reg.clone(),
+            value: IrValue::Constant(IrConstant::Boolean(resolved_locally)),
+        });
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_JS_DELETE_IDENTIFIER,
+            args: vec![name_reg, local_reg],
+        });
+        dest
     }
 
     fn collect_visible_direct_eval_symbols(&self) -> Vec<Symbol> {
@@ -1163,6 +1179,10 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
             _ => {}
+        }
+
+        if self.direct_eval_binding_enabled(name) {
+            return self.emit_direct_eval_binding_get(name, false);
         }
 
         // Look up the variable in the local map (current function's locals)
@@ -1857,6 +1877,9 @@ impl<'a> Lowerer<'a> {
                     .is_some_and(|bindings| bindings.contains_key(&ident.name))
                 || self.ambient_builtin_globals.contains(name)
                 || matches!(name, "Infinity" | "NaN" | "undefined" | "arguments");
+            if self.js_this_binding_compat {
+                return self.emit_js_identifier_delete(name, resolved_locally);
+            }
             let dest = self.alloc_register(bool_ty);
             self.emit(IrInstr::Assign {
                 dest: dest.clone(),
@@ -6789,6 +6812,12 @@ impl<'a> Lowerer<'a> {
     }
 
     fn store_identifier_value(&mut self, symbol: Symbol, value: Register) {
+        let name = self.interner.resolve(symbol).to_string();
+        if self.direct_eval_binding_enabled(&name) {
+            self.emit_direct_eval_binding_set(&name, value);
+            return;
+        }
+
         if let Some(&local_idx) = self.local_map.get(&symbol) {
             if self.refcell_registers.contains_key(&local_idx) {
                 let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
@@ -6899,8 +6928,6 @@ impl<'a> Lowerer<'a> {
             }
             return;
         }
-
-        let name = self.interner.resolve(symbol).to_string();
         if self.in_direct_eval_function {
             self.emit_direct_eval_binding_set(&name, value);
             return;

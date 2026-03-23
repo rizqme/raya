@@ -2948,6 +2948,42 @@ fn test_node_compat_top_level_strict_direct_eval_inherits_strictness() {
 }
 
 #[test]
+fn test_node_compat_direct_eval_new_function_binding_may_be_deleted() {
+    expect_string_runtime_node_compat(
+        r#"
+        var initial;
+        var postDeletion;
+
+        function main(): string {
+            (function() {
+                eval("initial = typeof f; delete f; postDeletion = function(){ try { f; return 'alive'; } catch (e) { return e.name; } }; function f() { return 33; }");
+            }());
+            return JSON.stringify([initial, Reflect.apply(postDeletion, null, [])]);
+        }
+    "#,
+        "[\"function\",\"ReferenceError\"]",
+    );
+}
+
+#[test]
+fn test_node_compat_direct_eval_new_var_binding_may_be_deleted() {
+    expect_string_runtime_node_compat(
+        r#"
+        var initial = null;
+        var postDeletion;
+
+        function main(): string {
+            (function() {
+                eval("initial = x; delete x; postDeletion = function(){ try { x; return 'alive'; } catch (e) { return e.name; } }; var x;");
+            }());
+            return JSON.stringify([initial === undefined, Reflect.apply(postDeletion, null, [])]);
+        }
+    "#,
+        "[true,\"ReferenceError\"]",
+    );
+}
+
+#[test]
 fn test_node_compat_arguments_object_sloppy_mapping_tracks_param_assignment() {
     expect_string_runtime_node_compat(
         r#"

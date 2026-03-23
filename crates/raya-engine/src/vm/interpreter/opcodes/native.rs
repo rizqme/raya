@@ -2201,6 +2201,22 @@ impl<'a> Interpreter<'a> {
         self.set_property_value_via_js_semantics(env, key, value, env, task, module)
     }
 
+    fn activation_eval_env_create_mutable_binding(
+        &mut self,
+        task: &Arc<Task>,
+        key: &str,
+        value: Value,
+    ) -> Result<bool, VmError> {
+        let Some(env) = self.current_activation_eval_env(task) else {
+            return Ok(false);
+        };
+        if self.resolve_own_property_shape(env, key).is_some() {
+            return Ok(true);
+        }
+        self.define_data_property_on_target(env, key, value, true, true, true)?;
+        Ok(true)
+    }
+
     fn activation_eval_env_has(
         &self,
         task: &Arc<Task>,
@@ -2283,12 +2299,47 @@ impl<'a> Interpreter<'a> {
         key: &str,
     ) -> Result<(), VmError> {
         if self.activation_eval_env_get(task, module, key)?.is_none() {
-            let _ = self.activation_eval_env_set(task, module, key, Value::undefined())?;
+            let _ =
+                self.activation_eval_env_create_mutable_binding(task, key, Value::undefined())?;
         }
         if self.active_direct_eval_uses_script_global_bindings(task) {
             self.bind_direct_eval_global_var(key, task, module)?;
         }
         Ok(())
+    }
+
+    fn delete_js_identifier_reference(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        key: &str,
+        resolved_locally: bool,
+    ) -> Result<bool, VmError> {
+        if self.activation_eval_env_has(task, key) {
+            let Some(env) = self.current_activation_eval_env(task) else {
+                return Ok(false);
+            };
+            return self.delete_property_from_target(env, self.alloc_string_value(key), task, module);
+        }
+        if resolved_locally {
+            return Ok(false);
+        }
+        let Some(global_this) = self.builtin_global_value("globalThis") else {
+            return Ok(true);
+        };
+        if self.has_property_via_js_semantics(global_this, key) {
+            return self.delete_property_from_target(
+                global_this,
+                self.alloc_string_value(key),
+                task,
+                module,
+            );
+        }
+        Ok(true)
+    }
+
+    fn raise_unresolved_identifier_error(&mut self, task: &Arc<Task>, name: &str) -> VmError {
+        self.raise_task_builtin_error(task, "ReferenceError", format!("{name} is not defined"))
     }
 
     fn visible_function_name(raw_name: &str) -> String {
@@ -5997,11 +6048,14 @@ impl<'a> Interpreter<'a> {
             eprintln!("[dynamic-fn] compile:parsed-ast");
         }
 
-        let direct_eval_binding_names = if options.direct_eval_binding_names.is_empty() {
+        let mut direct_eval_binding_names = if options.direct_eval_binding_names.is_empty() {
             self.collect_direct_eval_binding_names(&ast, &interner)
         } else {
             options.direct_eval_binding_names
         };
+        if let Some(entry_name) = options.direct_eval_entry_function.as_ref() {
+            direct_eval_binding_names.remove(entry_name);
+        }
 
         let mut type_ctx = TypeContext::new();
         let policy = CheckerPolicy::for_mode(TypeSystemMode::Js);
@@ -10585,10 +10639,9 @@ impl<'a> Interpreter<'a> {
                                 })
                             });
                         let Some(value) = value else {
-                            return OpcodeResult::Error(VmError::ReferenceError(format!(
-                                "{} is not defined",
-                                name.data
-                            )));
+                            return OpcodeResult::Error(
+                                self.raise_unresolved_identifier_error(task, &name.data),
+                            );
                         };
                         if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
@@ -10682,17 +10735,19 @@ impl<'a> Interpreter<'a> {
                                     ) {
                                         Ok(Some(v)) => v,
                                         Ok(None) => {
-                                            return OpcodeResult::Error(VmError::ReferenceError(
-                                                format!("{} is not defined", name.data),
-                                            ))
+                                            return OpcodeResult::Error(
+                                                self.raise_unresolved_identifier_error(
+                                                    task,
+                                                    &name.data,
+                                                ),
+                                            )
                                         }
                                         Err(error) => return OpcodeResult::Error(error),
                                     }
                                 } else {
-                                    return OpcodeResult::Error(VmError::ReferenceError(format!(
-                                        "{} is not defined",
-                                        name.data
-                                    )));
+                                    return OpcodeResult::Error(
+                                        self.raise_unresolved_identifier_error(task, &name.data),
+                                    );
                                 }
                             }
                             Err(error) => return OpcodeResult::Error(error),
@@ -10824,6 +10879,11 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let name = unsafe { &*name_ptr.as_ptr() };
+                        if let Err(error) = self
+                            .activation_eval_env_create_mutable_binding(task, &name.data, args[1])
+                        {
+                            return OpcodeResult::Error(error);
+                        }
                         match self.activation_eval_env_set(task, module, &name.data, args[1]) {
                             Ok(true) => {}
                             Ok(false) => {
@@ -10841,6 +10901,33 @@ impl<'a> Interpreter<'a> {
                             }
                         }
                         if let Err(error) = stack.push(args[1]) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_JS_DELETE_IDENTIFIER => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "jsDeleteIdentifier expects name and resolvedLocally".to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "jsDeleteIdentifier expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        let deleted = match self.delete_js_identifier_reference(
+                            task,
+                            module,
+                            &name.data,
+                            args[1].is_truthy(),
+                        ) {
+                            Ok(deleted) => deleted,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(Value::bool(deleted)) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue

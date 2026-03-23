@@ -97,6 +97,8 @@ pub const OBJECT_EVAL_ENV_HAS: u16 = 0x002C;
 pub const OBJECT_SET_AMBIENT_GLOBAL: u16 = 0x002D;
 /// Hoist a function declaration binding into the active eval environment.
 pub const OBJECT_EVAL_ENV_DECLARE_FUNCTION: u16 = 0x002E;
+/// Delete an identifier reference using JS environment/global semantics.
+pub const OBJECT_JS_DELETE_IDENTIFIER: u16 = 0x002F;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -615,6 +617,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_EVAL_ENV_HAS => "Object.evalEnvHas",
         OBJECT_SET_AMBIENT_GLOBAL => "Object.setAmbientGlobal",
         OBJECT_EVAL_ENV_DECLARE_FUNCTION => "Object.evalEnvDeclareFunction",
+        OBJECT_JS_DELETE_IDENTIFIER => "Object.jsDeleteIdentifier",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",
