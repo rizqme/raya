@@ -46,6 +46,7 @@ pub enum Token {
     For,
     While,
     Do,
+    With,
     Break,
     Continue,
     Return,
@@ -256,6 +257,7 @@ impl fmt::Display for Token {
             Token::For => write!(f, "for"),
             Token::While => write!(f, "while"),
             Token::Do => write!(f, "do"),
+            Token::With => write!(f, "with"),
             Token::Break => write!(f, "break"),
             Token::Continue => write!(f, "continue"),
             Token::Return => write!(f, "return"),
@@ -384,6 +386,7 @@ impl Token {
                 | Token::For
                 | Token::While
                 | Token::Do
+                | Token::With
                 | Token::Break
                 | Token::Continue
                 | Token::Return

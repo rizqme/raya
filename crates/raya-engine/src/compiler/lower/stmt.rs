@@ -22,6 +22,13 @@ enum ForOfIterableKind {
 }
 
 impl<'a> Lowerer<'a> {
+    fn existing_refcell_local(&self, local_idx: u16) -> Option<Register> {
+        self.refcell_registers
+            .get(&local_idx)
+            .cloned()
+            .or_else(|| self.local_registers.get(&local_idx).cloned())
+    }
+
     fn coerce_value_to_annotation_type(
         &mut self,
         value: Register,
@@ -189,6 +196,7 @@ impl<'a> Lowerer<'a> {
             Statement::While(while_stmt) => self.lower_while(while_stmt),
             Statement::For(for_stmt) => self.lower_for(for_stmt),
             Statement::Block(block) => self.lower_block(block),
+            Statement::With(with_stmt) => self.lower_with(with_stmt),
             Statement::Break(brk) => self.lower_break(brk),
             Statement::Continue(cont) => self.lower_continue(cont),
             Statement::Throw(throw) => self.lower_throw(throw),
@@ -203,6 +211,9 @@ impl<'a> Lowerer<'a> {
                 // Module-level declarations handled in lower_module first pass
             }
             Statement::ClassDecl(class) => {
+                if self.js_this_binding_compat {
+                    self.visible_js_lexical_symbols.insert(class.name.name);
+                }
                 let Some(nominal_type_id) = self.nominal_type_id_for_decl(class) else {
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
@@ -232,6 +243,8 @@ impl<'a> Lowerer<'a> {
                     let saved_register = self.next_register;
                     let saved_block = self.next_block;
                     let saved_local_map = self.local_map.clone();
+                    let saved_visible_js_lexical_symbols =
+                        self.visible_js_lexical_symbols.clone();
                     let saved_local_registers = self.local_registers.clone();
                     let saved_refcell_registers = self.refcell_registers.clone();
                     let saved_refcell_inner_types = self.refcell_inner_types.clone();
@@ -250,6 +263,7 @@ impl<'a> Lowerer<'a> {
                     self.next_register = saved_register;
                     self.next_block = saved_block;
                     self.local_map = saved_local_map;
+                    self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
                     self.local_registers = saved_local_registers;
                     self.refcell_registers = saved_refcell_registers;
                     self.refcell_inner_types = saved_refcell_inner_types;
@@ -275,6 +289,22 @@ impl<'a> Lowerer<'a> {
                             self.lower_stmt(s);
                         }
                     }
+                }
+
+                if self.js_this_binding_compat && self.function_depth == 0 && self.block_depth == 0
+                {
+                    if let Some(&global_idx) = self.js_script_lexical_globals.get(&class.name.name) {
+                        let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
+                        self.global_type_map.insert(global_idx, class_value.ty);
+                        self.emit(IrInstr::StoreGlobal {
+                            index: global_idx,
+                            value: class_value,
+                        });
+                    }
+                }
+                if self.in_direct_eval_function {
+                    let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
+                    self.emit_direct_eval_binding_set(self.interner.resolve(class.name.name), class_value);
                 }
             }
             Statement::TypeAliasDecl(_) => {
@@ -317,6 +347,23 @@ impl<'a> Lowerer<'a> {
                 // Clear pending label if not consumed (e.g., label on non-loop statement)
                 self.pending_label = None;
             }
+        }
+    }
+
+    fn lower_with(&mut self, with_stmt: &ast::WithStatement) {
+        let object = self.lower_expr(&with_stmt.object);
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_PUSH_WITH_ENV,
+            args: vec![object],
+        });
+        self.lower_stmt(&with_stmt.body);
+        if !self.current_block_is_terminated() {
+            self.emit(IrInstr::NativeCall {
+                dest: None,
+                native_id: crate::compiler::native_id::OBJECT_POP_WITH_ENV,
+                args: vec![],
+            });
         }
     }
 
@@ -921,22 +968,39 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
-                let local_idx = self.allocate_local(ident.name);
+                let reuses_preallocated_capture = self.js_this_binding_compat
+                    && self.block_depth == 0
+                    && self.refcell_vars.contains(&ident.name)
+                    && self.local_map.contains_key(&ident.name);
+                let local_idx = if reuses_preallocated_capture {
+                    self.lookup_local(ident.name)
+                        .expect("preallocated captured local must exist")
+                } else {
+                    self.allocate_local(ident.name)
+                };
                 if self.refcell_vars.contains(&ident.name) {
-                    // Wrap in RefCell for capture-by-reference semantics
-                    let refcell_reg = self.alloc_register(TypeId::new(0));
-                    self.emit(IrInstr::NewRefCell {
-                        dest: refcell_reg.clone(),
-                        initial_value: value_reg.clone(),
-                    });
-                    self.local_registers.insert(local_idx, refcell_reg.clone());
-                    self.refcell_registers
-                        .insert(local_idx, refcell_reg.clone());
-                    self.refcell_inner_types.insert(local_idx, value_reg.ty);
-                    self.emit(IrInstr::StoreLocal {
-                        index: local_idx,
-                        value: refcell_reg,
-                    });
+                    if let Some(existing_refcell) = self.existing_refcell_local(local_idx) {
+                        self.emit(IrInstr::StoreRefCell {
+                            refcell: existing_refcell,
+                            value: value_reg.clone(),
+                        });
+                        self.refcell_inner_types.insert(local_idx, value_reg.ty);
+                    } else {
+                        // Wrap in RefCell for capture-by-reference semantics
+                        let refcell_reg = self.alloc_register(TypeId::new(0));
+                        self.emit(IrInstr::NewRefCell {
+                            dest: refcell_reg.clone(),
+                            initial_value: value_reg.clone(),
+                        });
+                        self.local_registers.insert(local_idx, refcell_reg.clone());
+                        self.refcell_registers
+                            .insert(local_idx, refcell_reg.clone());
+                        self.refcell_inner_types.insert(local_idx, value_reg.ty);
+                        self.emit(IrInstr::StoreLocal {
+                            index: local_idx,
+                            value: refcell_reg,
+                        });
+                    }
                 } else {
                     self.local_registers.insert(local_idx, value_reg.clone());
                     self.emit(IrInstr::StoreLocal {
@@ -1663,6 +1727,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_var_decl(&mut self, decl: &ast::VariableDecl) {
+        if self.js_this_binding_compat && decl.kind != crate::parser::ast::VariableKind::Var {
+            super::collect_pattern_names(&decl.pattern, &mut self.visible_js_lexical_symbols);
+        }
+
         // Handle destructuring patterns
         let name = match &decl.pattern {
             ast::Pattern::Identifier(ident) => ident.name,
@@ -1699,6 +1767,24 @@ impl<'a> Lowerer<'a> {
                 }
                 self.emit_direct_eval_binding_set(self.interner.resolve(name), value);
             }
+            return;
+        }
+
+        if self.in_direct_eval_function && decl.kind != crate::parser::ast::VariableKind::Var {
+            let mut value = if let Some(init) = &decl.initializer {
+                self.lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref())
+            } else {
+                let undefined = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::Assign {
+                    dest: undefined.clone(),
+                    value: IrValue::Constant(IrConstant::Undefined),
+                });
+                undefined
+            };
+            if let Some(type_ann) = &decl.type_annotation {
+                value = self.coerce_value_to_annotation_type(value, type_ann);
+            }
+            self.emit_direct_eval_binding_set(self.interner.resolve(name), value);
             return;
         }
 
@@ -1812,6 +1898,11 @@ impl<'a> Lowerer<'a> {
         let uses_hoisted_script_global = self.js_this_binding_compat
             && decl.kind == crate::parser::ast::VariableKind::Var
             && self.function_depth == 0;
+        let uses_top_level_script_lexical = self.js_this_binding_compat
+            && self.function_depth == 0
+            && self.block_depth == 0
+            && decl.kind != crate::parser::ast::VariableKind::Var
+            && self.js_script_lexical_globals.contains_key(&name);
         if self.function_depth == 0 && (self.block_depth == 0 || uses_hoisted_script_global) {
             if let Some(&global_idx) = self.module_var_globals.get(&name) {
                 if let Some(init) = &decl.initializer {
@@ -2085,14 +2176,49 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        if uses_top_level_script_lexical {
+            let global_idx = *self
+                .js_script_lexical_globals
+                .get(&name)
+                .expect("top-level JS lexical slot must exist");
+            if let Some(init) = &decl.initializer {
+                let mut value =
+                    self.lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
+                if let Some(type_ann) = &decl.type_annotation {
+                    value = self.coerce_value_to_annotation_type(value, type_ann);
+                }
+                self.global_type_map.insert(global_idx, value.ty);
+                self.emit(IrInstr::StoreGlobal {
+                    index: global_idx,
+                    value: value.clone(),
+                });
+            } else {
+                let undefined = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::Assign {
+                    dest: undefined.clone(),
+                    value: IrValue::Constant(IrConstant::Undefined),
+                });
+                self.global_type_map.insert(global_idx, undefined.ty);
+                self.emit(IrInstr::StoreGlobal {
+                    index: global_idx,
+                    value: undefined,
+                });
+            }
+            return;
+        }
+
         // Allocate local slot (only for non-constant or non-literal variables)
         let reuses_hoisted_local = self.js_this_binding_compat
             && decl.kind == crate::parser::ast::VariableKind::Var
             && self.function_depth > 0
             && self.local_map.contains_key(&name);
-        let local_idx = if reuses_hoisted_local {
+        let reuses_preallocated_capture = self.js_this_binding_compat
+            && self.block_depth == 0
+            && self.refcell_vars.contains(&name)
+            && self.local_map.contains_key(&name);
+        let local_idx = if reuses_hoisted_local || reuses_preallocated_capture {
             self.lookup_local(name)
-                .expect("existing hoisted JS var local must be present")
+                .expect("existing hoisted/preallocated JS local must be present")
         } else {
             self.allocate_local(name)
         };
@@ -2355,8 +2481,8 @@ impl<'a> Lowerer<'a> {
             }
 
             if needs_refcell {
-                if reuses_hoisted_local {
-                    if let Some(refcell_reg) = self.refcell_registers.get(&local_idx).cloned() {
+                if reuses_hoisted_local || reuses_preallocated_capture {
+                    if let Some(refcell_reg) = self.existing_refcell_local(local_idx) {
                         self.refcell_inner_types.insert(local_idx, value.ty);
                         self.emit(IrInstr::StoreRefCell {
                             refcell: refcell_reg,
@@ -2479,9 +2605,10 @@ impl<'a> Lowerer<'a> {
                 .as_ref()
                 .map(|t| self.resolve_type_annotation(t))
                 .unwrap_or(UNRESOLVED);
-            if reuses_hoisted_local
+            if (reuses_hoisted_local
                 && self.js_this_binding_compat
-                && decl.kind == crate::parser::ast::VariableKind::Var
+                && decl.kind == crate::parser::ast::VariableKind::Var)
+                || reuses_preallocated_capture
             {
                 return;
             }
@@ -3096,6 +3223,7 @@ impl<'a> Lowerer<'a> {
         // This allows nested scopes to shadow outer variables without
         // overwriting the outer variable's slot mapping
         let saved_local_map = self.local_map.clone();
+        let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
         self.block_depth += 1;
 
         for stmt in &block.statements {
@@ -3108,6 +3236,7 @@ impl<'a> Lowerer<'a> {
         // Restore local_map to exit the block scope
         // This ensures outer variables are accessible again after the block
         self.local_map = saved_local_map;
+        self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
         self.block_depth = self.block_depth.saturating_sub(1);
     }
 

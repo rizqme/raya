@@ -596,6 +596,10 @@ pub struct Lowerer<'a> {
     /// Module-level variable name to global index mapping.
     /// Variables stored as globals so both main and module-level functions can access them.
     module_var_globals: FxHashMap<Symbol, u16>,
+    /// Top-level JS lexical/class bindings stored in shared slots.
+    /// These are visible to top-level helper functions and direct eval, but are
+    /// not published onto the script global object.
+    js_script_lexical_globals: FxHashMap<Symbol, u16>,
     /// Import-local binding symbols, used for import-specific lowering diagnostics.
     import_bindings: FxHashSet<Symbol>,
     /// Ambient builtin globals available without explicit source declarations/imports.
@@ -735,6 +739,8 @@ pub struct Lowerer<'a> {
     body_scope_eval_arguments_mode: bool,
     /// Parameter bindings visible in the currently lowered function body.
     parameter_symbols: FxHashSet<Symbol>,
+    /// Currently-visible lexical/class bindings in JS lowering contexts.
+    visible_js_lexical_symbols: FxHashSet<Symbol>,
     /// Anonymous local that tracks direct-eval script completion values.
     eval_completion_local: Option<u16>,
     /// Inner type for RefCell-wrapped variables (for preserving type info through loads)
@@ -890,6 +896,9 @@ pub(super) fn collect_function_scoped_var_names(
             }
             Statement::DoWhile(do_while) => {
                 recurse_into_function_scoped_var_body(&do_while.body, names);
+            }
+            Statement::With(with_stmt) => {
+                recurse_into_function_scoped_var_body(&with_stmt.body, names);
             }
             Statement::If(if_stmt) => {
                 recurse_into_function_scoped_var_body(&if_stmt.then_branch, names);
@@ -1370,6 +1379,7 @@ impl<'a> Lowerer<'a> {
             constructor_value_type_map: FxHashMap::default(),
             next_global_index: 0,
             module_var_globals: FxHashMap::default(),
+            js_script_lexical_globals: FxHashMap::default(),
             import_bindings: FxHashSet::default(),
             ambient_builtin_globals: FxHashSet::default(),
             late_bound_object_vars: FxHashSet::default(),
@@ -1425,6 +1435,7 @@ impl<'a> Lowerer<'a> {
             parameter_scope_eval_mode: false,
             body_scope_eval_arguments_mode: false,
             parameter_symbols: FxHashSet::default(),
+            visible_js_lexical_symbols: FxHashSet::default(),
             eval_completion_local: None,
             generator_yield_array_local: None,
         }
@@ -1942,15 +1953,44 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            if self.js_this_binding_compat {
-                let mut js_function_scoped_vars = FxHashSet::default();
-                collect_function_scoped_var_names(&module.statements, &mut js_function_scoped_vars);
-                for name in js_function_scoped_vars {
-                    self.module_var_globals.entry(name).or_insert_with(|| {
+        if self.js_this_binding_compat {
+            let mut js_function_scoped_vars = FxHashSet::default();
+            collect_function_scoped_var_names(&module.statements, &mut js_function_scoped_vars);
+            for name in js_function_scoped_vars {
+                self.module_var_globals.entry(name).or_insert_with(|| {
                         let global_index = self.next_global_index;
                         self.next_global_index += 1;
                         global_index
                     });
+                }
+            }
+
+            for raw_stmt in &module.statements {
+                let stmt = Self::unwrap_export(raw_stmt);
+                match stmt {
+                    Statement::VariableDecl(decl)
+                        if decl.kind != crate::parser::ast::VariableKind::Var =>
+                    {
+                        if let ast::Pattern::Identifier(ident) = &decl.pattern {
+                            self.js_script_lexical_globals
+                                .entry(ident.name)
+                                .or_insert_with(|| {
+                                    let global_index = self.next_global_index;
+                                    self.next_global_index += 1;
+                                    global_index
+                                });
+                        }
+                    }
+                    Statement::ClassDecl(class) => {
+                        self.js_script_lexical_globals
+                            .entry(class.name.name)
+                            .or_insert_with(|| {
+                                let global_index = self.next_global_index;
+                                self.next_global_index += 1;
+                                global_index
+                            });
+                    }
+                    _ => {}
                 }
             }
         }
@@ -3393,6 +3433,7 @@ impl<'a> Lowerer<'a> {
         self.js_arguments_local = None;
         self.eval_completion_local = None;
         self.parameter_symbols.clear();
+        self.visible_js_lexical_symbols.clear();
         // closure_locals maps local-slot indices to async func IDs.  It is
         // strictly per-function: stale entries from a previously-lowered
         // function (e.g. std:math init code registering `wrapped` at slot 2)
@@ -3610,6 +3651,7 @@ impl<'a> Lowerer<'a> {
         let saved_js_strict_context = self.js_strict_context;
         let saved_in_direct_eval_function = self.in_direct_eval_function;
         let saved_parameter_symbols = self.parameter_symbols.clone();
+        let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
@@ -3684,6 +3726,7 @@ impl<'a> Lowerer<'a> {
         // Emit null-check + default-value for parameters with defaults
         self.emit_default_params(&func.params);
         self.emit_js_function_var_hoists(&func.body.statements);
+        self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
 
         // Lower function body
@@ -3704,6 +3747,7 @@ impl<'a> Lowerer<'a> {
         self.js_strict_context = saved_js_strict_context;
         self.in_direct_eval_function = saved_in_direct_eval_function;
         self.parameter_symbols = saved_parameter_symbols;
+        self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
@@ -3745,6 +3789,7 @@ impl<'a> Lowerer<'a> {
         let mut locals = self.collect_local_names(&stmts_owned);
         // Remove module-level globals — they use LoadGlobal/StoreGlobal, not locals
         locals.retain(|name| !self.module_var_globals.contains_key(name));
+        locals.retain(|name| !self.js_script_lexical_globals.contains_key(name));
         self.scan_for_captured_vars(&stmts_owned, &[], &locals);
 
         // Create main function and carry the already-computed module strictness
@@ -3843,6 +3888,45 @@ impl<'a> Lowerer<'a> {
                     value: undefined,
                 });
             }
+        }
+    }
+
+    pub(super) fn emit_js_function_captured_lexical_prebindings(
+        &mut self,
+        statements: &[ast::Statement],
+    ) {
+        if !self.js_this_binding_compat {
+            return;
+        }
+
+        let mut local_names = self.collect_local_names(statements);
+        let mut var_names = FxHashSet::default();
+        collect_function_scoped_var_names(statements, &mut var_names);
+        local_names.retain(|name| !var_names.contains(name));
+
+        for name in local_names {
+            if !self.refcell_vars.contains(&name) || self.local_map.contains_key(&name) {
+                continue;
+            }
+
+            let local_idx = self.allocate_local(name);
+            let undefined = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Assign {
+                dest: undefined.clone(),
+                value: IrValue::Constant(IrConstant::Undefined),
+            });
+            let refcell_reg = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::NewRefCell {
+                dest: refcell_reg.clone(),
+                initial_value: undefined,
+            });
+            self.local_registers.insert(local_idx, refcell_reg.clone());
+            self.refcell_registers.insert(local_idx, refcell_reg.clone());
+            self.refcell_inner_types.insert(local_idx, UNRESOLVED);
+            self.emit(IrInstr::StoreLocal {
+                index: local_idx,
+                value: refcell_reg,
+            });
         }
     }
 
@@ -4412,6 +4496,7 @@ impl<'a> Lowerer<'a> {
                     // Emit null-check + default-value for parameters with defaults
                     self.emit_default_params(&method.params);
                     self.emit_js_function_var_hoists(&body.statements);
+                    self.emit_js_function_captured_lexical_prebindings(&body.statements);
                     self.emit_js_function_decl_hoists(&body.statements);
 
                     // Lower method body
@@ -4744,6 +4829,7 @@ impl<'a> Lowerer<'a> {
                 // Emit null-check + default-value for constructor parameters with defaults
                 self.emit_default_params(&ctor.params);
                 self.emit_js_function_var_hoists(&ctor.body.statements);
+                self.emit_js_function_captured_lexical_prebindings(&ctor.body.statements);
                 self.emit_js_function_decl_hoists(&ctor.body.statements);
 
                 let this_reg = self.this_register.clone().unwrap();
@@ -5315,6 +5401,13 @@ impl<'a> Lowerer<'a> {
     /// Look up a local variable by name
     fn lookup_local(&self, name: Symbol) -> Option<u16> {
         self.local_map.get(&name).copied()
+    }
+
+    fn shared_script_binding_slot(&self, name: Symbol) -> Option<u16> {
+        self.module_var_globals
+            .get(&name)
+            .copied()
+            .or_else(|| self.js_script_lexical_globals.get(&name).copied())
     }
 
     /// Get the current function mutably

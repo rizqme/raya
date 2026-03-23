@@ -94,6 +94,9 @@ pub enum Expression {
     /// This expression: this
     This(Span),
 
+    /// new.target meta-property
+    NewTarget(Span),
+
     /// Super expression: super (for parent class access)
     Super(Span),
 
@@ -147,6 +150,7 @@ impl Expression {
             Expression::JsxElement(e) => &e.span,
             Expression::JsxFragment(e) => &e.span,
             Expression::This(span) => span,
+            Expression::NewTarget(span) => span,
             Expression::Super(span) => span,
             Expression::InstanceOf(e) => &e.span,
             Expression::In(e) => &e.span,

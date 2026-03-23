@@ -103,6 +103,16 @@ pub const OBJECT_JS_DELETE_IDENTIFIER: u16 = 0x002F;
 pub const OBJECT_EVAL_SET_COMPLETION: u16 = 0x0030;
 /// Read the current direct-eval completion value.
 pub const OBJECT_EVAL_GET_COMPLETION: u16 = 0x0031;
+/// Read the current JS `new.target` value.
+pub const OBJECT_CURRENT_NEW_TARGET: u16 = 0x0032;
+/// Resolve `super.prop` using the current callable home object.
+pub const OBJECT_GET_SUPER_PROPERTY: u16 = 0x0033;
+/// Attach a callable home object to a JS method closure.
+pub const OBJECT_SET_CALLABLE_HOME_OBJECT: u16 = 0x0034;
+/// Push a `with` object environment onto the active JS env chain.
+pub const OBJECT_PUSH_WITH_ENV: u16 = 0x0035;
+/// Pop the active `with` object environment from the JS env chain.
+pub const OBJECT_POP_WITH_ENV: u16 = 0x0036;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs

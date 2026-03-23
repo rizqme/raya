@@ -13,6 +13,8 @@ pub struct EarlyErrorOptions {
     pub mode: TypeSystemMode,
     pub allow_top_level_return: bool,
     pub allow_await_outside_async: bool,
+    pub allow_new_target: bool,
+    pub allow_super_property: bool,
 }
 
 impl EarlyErrorOptions {
@@ -21,6 +23,8 @@ impl EarlyErrorOptions {
             mode,
             allow_top_level_return: !matches!(mode, TypeSystemMode::Js),
             allow_await_outside_async: false,
+            allow_new_target: false,
+            allow_super_property: false,
         }
     }
 }
@@ -105,6 +109,8 @@ struct EarlyErrorPass<'a> {
     mode: TypeSystemMode,
     allow_top_level_return: bool,
     allow_await_outside_async: bool,
+    allow_new_target: bool,
+    allow_super_property: bool,
     errors: Vec<ParseError>,
     function_stack: Vec<FunctionContext>,
     lexical_stack: Vec<LexicalContext>,
@@ -121,6 +127,8 @@ impl<'a> EarlyErrorPass<'a> {
             mode: options.mode,
             allow_top_level_return: options.allow_top_level_return,
             allow_await_outside_async: options.allow_await_outside_async,
+            allow_new_target: options.allow_new_target,
+            allow_super_property: options.allow_super_property,
             errors: Vec::new(),
             function_stack: Vec::new(),
             lexical_stack: vec![LexicalContext::default()],
@@ -630,6 +638,7 @@ impl<'a> EarlyErrorPass<'a> {
                     this.check_expr(&do_while.condition);
                 });
             }
+            Statement::With(with_stmt) => self.check_with(with_stmt),
             Statement::For(for_stmt) => {
                 self.push_scope(ScopeKind::Block, |this| {
                     if let Some(init) = &for_stmt.init {
@@ -709,6 +718,14 @@ impl<'a> EarlyErrorPass<'a> {
         });
     }
 
+    fn check_with(&mut self, with_stmt: &WithStatement) {
+        if self.current_strict() {
+            self.error("`with` is not allowed in strict mode", with_stmt.span);
+        }
+        self.check_expr(&with_stmt.object);
+        self.check_stmt(&with_stmt.body);
+    }
+
     fn check_block_statements(&mut self, statements: &[Statement]) {
         for stmt in statements {
             self.check_stmt(stmt);
@@ -731,7 +748,8 @@ impl<'a> EarlyErrorPass<'a> {
     fn check_function_decl(&mut self, func: &FunctionDecl) {
         let body_has_use_strict =
             Self::directive_prologue_is_strict(&func.body.statements, self.interner);
-        let body_strict = self.current_strict() || body_has_use_strict;
+        let inherited_lexical = self.current_lexical();
+        let body_strict = inherited_lexical.strict || body_has_use_strict;
         if body_strict {
             self.check_strict_binding_name(&func.name);
         }
@@ -739,8 +757,10 @@ impl<'a> EarlyErrorPass<'a> {
             func.is_async,
             func.is_generator,
             LexicalContext {
+                super_property_allowed: inherited_lexical.super_property_allowed
+                    || self.allow_super_property,
+                super_call_allowed: inherited_lexical.super_call_allowed,
                 strict: body_strict,
-                ..LexicalContext::default()
             },
             |this| {
                 this.push_scope(ScopeKind::Parameter, |this| {
@@ -767,7 +787,12 @@ impl<'a> EarlyErrorPass<'a> {
     fn check_function_expr(&mut self, func: &FunctionExpression) {
         let body_has_use_strict =
             Self::directive_prologue_is_strict(&func.body.statements, self.interner);
-        let lexical = self.current_lexical();
+        let lexical = LexicalContext {
+            super_property_allowed: self.current_lexical().super_property_allowed
+                || self.allow_super_property
+                || func.is_method,
+            ..self.current_lexical()
+        };
         let body_strict = lexical.strict || body_has_use_strict;
         if let Some(name) = &func.name {
             if body_strict {
@@ -1153,6 +1178,11 @@ impl<'a> EarlyErrorPass<'a> {
             | Expression::NullLiteral(_)
             | Expression::This(_)
             | Expression::RegexLiteral(_) => {}
+            Expression::NewTarget(span) => {
+                if !self.allow_new_target && self.current_function().is_none() {
+                    self.error("`new.target` is only valid inside non-arrow function code", *span);
+                }
+            }
             Expression::Super(span) => {
                 if !allow_super_operand {
                     self.error(
@@ -1252,6 +1282,7 @@ impl<'a> EarlyErrorPass<'a> {
             Expression::Member(member) => {
                 if matches!(member.object.as_ref(), Expression::Super(_))
                     && !self.current_lexical().super_property_allowed
+                    && !self.allow_super_property
                 {
                     self.error(
                         "`super` property access is only valid inside derived class members",
@@ -1263,6 +1294,7 @@ impl<'a> EarlyErrorPass<'a> {
             Expression::Index(index) => {
                 if matches!(index.object.as_ref(), Expression::Super(_))
                     && !self.current_lexical().super_property_allowed
+                    && !self.allow_super_property
                 {
                     self.error(
                         "`super` property access is only valid inside derived class members",

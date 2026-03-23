@@ -2996,6 +2996,7 @@ impl<'a> TypeChecker<'a> {
             Expression::Index(index) => self.check_index(index),
             Expression::New(new_expr) => self.check_new(new_expr),
             Expression::This(span) => self.check_this(*span),
+            Expression::NewTarget(_) => self.type_ctx.unknown_type(),
             Expression::Await(await_expr) => self.check_await(await_expr),
             Expression::AsyncCall(async_call) => self.check_async_call(async_call),
             Expression::InstanceOf(instanceof) => self.check_instanceof(instanceof),
@@ -6369,13 +6370,8 @@ impl<'a> TypeChecker<'a> {
                             };
                         }
                         if self.is_js_mode() {
-                            self.errors
-                                .push(CheckError::JsTypedDotMonkeypatchForbidden {
-                                    property: property_name.clone(),
-                                    ty: format!("class {}", class_to_use.name),
-                                    span: member.span,
-                                });
-                            return self.type_ctx.unknown_type();
+                            self.maybe_escalate_identifier_to_jsobject(&member.object, None);
+                            return self.type_ctx.any_type();
                         }
                         // Fall through to hard error for typed class dot-writes
                     } else {

@@ -188,6 +188,10 @@ pub fn walk_statement<V: Visitor>(visitor: &mut V, stmt: &Statement) {
             visitor.visit_statement(&stmt.body);
             visitor.visit_expression(&stmt.condition);
         }
+        Statement::With(stmt) => {
+            visitor.visit_expression(&stmt.object);
+            visitor.visit_statement(&stmt.body);
+        }
         Statement::For(stmt) => visitor.visit_for_statement(stmt),
         Statement::ForOf(stmt) => visitor.visit_for_of_statement(stmt),
         Statement::ForIn(stmt) => {
@@ -425,6 +429,7 @@ pub fn walk_expression<V: Visitor>(visitor: &mut V, expr: &Expression) {
         | Expression::NullLiteral(_)
         | Expression::RegexLiteral(_)
         | Expression::This(_)
+        | Expression::NewTarget(_)
         | Expression::Super(_) => {}
         Expression::Identifier(id) => visitor.visit_identifier(id),
         Expression::TemplateLiteral(lit) => {

@@ -498,6 +498,22 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
         // new operator
         Token::New => {
+            if matches!(parser.peek(), Some(Token::Dot))
+                && matches!(parser.peek2(), Some(Token::Identifier(sym)) if parser.interner.resolve(*sym) == "target")
+            {
+                parser.advance();
+                parser.expect(Token::Dot)?;
+                let target = parser.expect_identifier_like()?;
+                if parser.interner.resolve(target.name) != "target" {
+                    return Err(ParseError::invalid_syntax(
+                        "expected `new.target`",
+                        parser.combine_spans(&start_span, &target.span),
+                    ));
+                }
+                return Ok(Expression::NewTarget(
+                    parser.combine_spans(&start_span, &target.span),
+                ));
+            }
             parser.advance();
             // Parse callee - only allow identifiers and member access, not calls
             // The parentheses belong to `new`, not a function call

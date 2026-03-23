@@ -45,6 +45,9 @@ pub enum Statement {
     /// Do-while loop
     DoWhile(DoWhileStatement),
 
+    /// With statement
+    With(WithStatement),
+
     /// For loop
     For(ForStatement),
 
@@ -102,6 +105,7 @@ impl Statement {
             Statement::Switch(s) => &s.span,
             Statement::While(s) => &s.span,
             Statement::DoWhile(s) => &s.span,
+            Statement::With(s) => &s.span,
             Statement::For(s) => &s.span,
             Statement::ForOf(s) => &s.span,
             Statement::ForIn(s) => &s.span,
@@ -149,6 +153,13 @@ pub struct VariableDecl {
     /// Initializer expression (required for const)
     pub initializer: Option<Expression>,
 
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WithStatement {
+    pub object: Expression,
+    pub body: Box<Statement>,
     pub span: Span,
 }
 

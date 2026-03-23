@@ -108,6 +108,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
         Token::If => parse_if_statement(parser),
         Token::While => parse_while_statement(parser),
         Token::Do => parse_do_while_statement(parser),
+        Token::With => parse_with_statement(parser),
         Token::For => parse_for_statement(parser),
         Token::Switch => parse_switch_statement(parser),
         Token::Try => parse_try_statement(parser),
@@ -595,6 +596,17 @@ fn parse_while_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
         body,
         span,
     }))
+}
+
+fn parse_with_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
+    let start_span = parser.current_span();
+    parser.expect(Token::With)?;
+    parser.expect(Token::LeftParen)?;
+    let object = super::expr::parse_expression(parser)?;
+    parser.expect(Token::RightParen)?;
+    let body = parse_block_or_statement(parser)?;
+    let span = parser.combine_spans(&start_span, body.span());
+    Ok(Statement::With(WithStatement { object, body, span }))
 }
 
 /// Parse do-while statement: do statement while (condition);

@@ -875,13 +875,39 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Value, VmError> {
-        self.invoke_callable_sync_with_this(callable, None, args, caller_task, caller_module)
+        self.invoke_callable_sync_with_this_and_new_target(
+            callable,
+            None,
+            None,
+            args,
+            caller_task,
+            caller_module,
+        )
     }
 
     pub(in crate::vm::interpreter) fn invoke_callable_sync_with_this(
         &mut self,
         callable: Value,
         explicit_this: Option<Value>,
+        args: &[Value],
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Value, VmError> {
+        self.invoke_callable_sync_with_this_and_new_target(
+            callable,
+            explicit_this,
+            None,
+            args,
+            caller_task,
+            caller_module,
+        )
+    }
+
+    pub(in crate::vm::interpreter) fn invoke_callable_sync_with_this_and_new_target(
+        &mut self,
+        callable: Value,
+        explicit_this: Option<Value>,
+        new_target: Option<Value>,
         args: &[Value],
         caller_task: &Arc<Task>,
         caller_module: &Module,
@@ -895,12 +921,31 @@ impl<'a> Interpreter<'a> {
         if let Some(env) = caller_task.current_active_direct_eval_env() {
             scratch_task.push_active_direct_eval_env(
                 env,
+                caller_task.current_active_direct_eval_is_strict(),
                 caller_task.current_active_direct_eval_uses_script_global_bindings(),
                 caller_task.current_active_direct_eval_persist_caller_declarations(),
             );
             if let Some(completion) = caller_task.current_active_direct_eval_completion() {
                 let _ = scratch_task.set_current_active_direct_eval_completion(completion);
             }
+        }
+        if let Some(home_object) = caller_task
+            .current_active_js_home_object()
+            .or_else(|| {
+                caller_task.current_closure().and_then(|closure| {
+                    let closure_ptr = unsafe { closure.as_ptr::<Object>() }?;
+                    let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+                    closure_obj.callable_home_object()
+                })
+            })
+        {
+            scratch_task.push_active_js_home_object(home_object);
+        }
+        if let Some(new_target) = caller_task.current_active_js_new_target() {
+            scratch_task.push_active_js_new_target(new_target);
+        }
+        if let Some(new_target) = new_target {
+            scratch_task.push_active_js_new_target(new_target);
         }
 
         let opcode_result = if let Some(raw_ptr) = unsafe { callable.as_ptr::<u8>() } {
@@ -1004,6 +1049,23 @@ impl<'a> Interpreter<'a> {
                 ));
                 if let Some(closure) = closure_val {
                     callee_task.push_closure(closure);
+                }
+                if let Some(env) = scratch_task.current_active_direct_eval_env() {
+                    callee_task.push_active_direct_eval_env(
+                        env,
+                        scratch_task.current_active_direct_eval_is_strict(),
+                        scratch_task.current_active_direct_eval_uses_script_global_bindings(),
+                        scratch_task.current_active_direct_eval_persist_caller_declarations(),
+                    );
+                    if let Some(completion) = scratch_task.current_active_direct_eval_completion() {
+                        let _ = callee_task.set_current_active_direct_eval_completion(completion);
+                    }
+                }
+                if let Some(home_object) = scratch_task.current_active_js_home_object() {
+                    callee_task.push_active_js_home_object(home_object);
+                }
+                if let Some(new_target) = scratch_task.current_active_js_new_target() {
+                    callee_task.push_active_js_new_target(new_target);
                 }
                 self.tasks
                     .write()

@@ -2964,6 +2964,21 @@ fn test_node_compat_strict_direct_eval_var_does_not_leak_to_caller_binding() {
 }
 
 #[test]
+fn test_node_compat_js_eval_wrapper_hoisted_function_captures_top_level_lexical() {
+    expect_string_runtime_node_compat(
+        r#"
+        "use strict";
+        let x = 1;
+        function f() {
+            return JSON.stringify([x, typeof x]);
+        }
+        return f();
+    "#,
+        "[1,\"number\"]",
+    );
+}
+
+#[test]
 fn test_node_compat_strict_direct_eval_block_function_stays_block_local() {
     expect_string_runtime_node_compat(
         r#"

@@ -184,11 +184,14 @@ struct ActivationEvalEnv {
 struct EvalState {
     active_env_stack: Vec<ActiveDirectEvalEnv>,
     activation_envs: Vec<ActivationEvalEnv>,
+    active_home_object_stack: Vec<Value>,
+    active_new_target_stack: Vec<Value>,
 }
 
 #[derive(Debug, Copy, Clone)]
 struct ActiveDirectEvalEnv {
     env: Value,
+    is_strict: bool,
     uses_script_global_bindings: bool,
     persist_caller_declarations: bool,
     completion: Value,
@@ -461,11 +464,13 @@ impl Task {
     pub fn push_active_direct_eval_env(
         &self,
         env: Value,
+        is_strict: bool,
         uses_script_global_bindings: bool,
         persist_caller_declarations: bool,
     ) {
         self.init.lock().eval_state.active_env_stack.push(ActiveDirectEvalEnv {
             env,
+            is_strict,
             uses_script_global_bindings,
             persist_caller_declarations,
             completion: Value::undefined(),
@@ -494,6 +499,15 @@ impl Task {
             .is_some_and(|ctx| ctx.uses_script_global_bindings)
     }
 
+    pub fn current_active_direct_eval_is_strict(&self) -> bool {
+        self.init
+            .lock()
+            .eval_state
+            .active_env_stack
+            .last()
+            .is_some_and(|ctx| ctx.is_strict)
+    }
+
     pub fn current_active_direct_eval_persist_caller_declarations(&self) -> bool {
         self.init
             .lock()
@@ -510,6 +524,48 @@ impl Task {
             .active_env_stack
             .last()
             .map(|ctx| ctx.completion)
+    }
+
+    pub fn push_active_js_home_object(&self, home_object: Value) {
+        self.init
+            .lock()
+            .eval_state
+            .active_home_object_stack
+            .push(home_object);
+    }
+
+    pub fn pop_active_js_home_object(&self) -> Option<Value> {
+        self.init.lock().eval_state.active_home_object_stack.pop()
+    }
+
+    pub fn current_active_js_home_object(&self) -> Option<Value> {
+        self.init
+            .lock()
+            .eval_state
+            .active_home_object_stack
+            .last()
+            .copied()
+    }
+
+    pub fn push_active_js_new_target(&self, new_target: Value) {
+        self.init
+            .lock()
+            .eval_state
+            .active_new_target_stack
+            .push(new_target);
+    }
+
+    pub fn pop_active_js_new_target(&self) -> Option<Value> {
+        self.init.lock().eval_state.active_new_target_stack.pop()
+    }
+
+    pub fn current_active_js_new_target(&self) -> Option<Value> {
+        self.init
+            .lock()
+            .eval_state
+            .active_new_target_stack
+            .last()
+            .copied()
     }
 
     pub fn set_current_active_direct_eval_completion(&self, value: Value) -> bool {

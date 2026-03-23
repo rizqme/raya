@@ -79,6 +79,9 @@ enum LogosToken {
     #[token("do")]
     Do,
 
+    #[token("with")]
+    With,
+
     #[token("break")]
     Break,
 
@@ -1042,6 +1045,7 @@ impl<'a> Lexer<'a> {
             LogosToken::For => Token::For,
             LogosToken::While => Token::While,
             LogosToken::Do => Token::Do,
+            LogosToken::With => Token::With,
             LogosToken::Break => Token::Break,
             LogosToken::Continue => Token::Continue,
             LogosToken::Return => Token::Return,

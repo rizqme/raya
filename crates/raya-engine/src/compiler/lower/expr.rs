@@ -34,6 +34,7 @@ const CAST_KIND_STRING: u16 = 0x0010;
 const CAST_KIND_ARRAY: u16 = 0x0020;
 const CAST_KIND_OBJECT: u16 = 0x0040;
 const CAST_KIND_FUNCTION: u16 = 0x0080;
+const DIRECT_EVAL_LEXICAL_MARKER_PREFIX: &str = "__direct_eval_lexical__:";
 
 enum SpreadSourceFields {
     Concrete(Vec<(String, u16)>),
@@ -543,6 +544,24 @@ impl<'a> Lowerer<'a> {
         self.js_this_binding_compat && self.direct_eval_binding_names.contains(name)
     }
 
+    fn should_resolve_from_direct_eval_env(&self, ident: &ast::Identifier) -> bool {
+        let name = self.interner.resolve(ident.name);
+        self.in_direct_eval_function
+            && self.direct_eval_binding_enabled(name)
+            && !self.local_map.contains_key(&ident.name)
+            && !self.constant_map.contains_key(&ident.name)
+            && !self.captures.iter().any(|capture| capture.symbol == ident.name)
+            && !self
+                .ancestor_variables
+                .as_ref()
+                .is_some_and(|ancestors| ancestors.contains_key(&ident.name))
+            && !self.module_var_globals.contains_key(&ident.name)
+            && !self
+                .current_method_env_globals
+                .as_ref()
+                .is_some_and(|bindings| bindings.contains_key(&ident.name))
+    }
+
     fn emit_direct_eval_name_reg(&mut self, name: &str) -> Register {
         let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
         self.emit(IrInstr::Assign {
@@ -649,6 +668,9 @@ impl<'a> Lowerer<'a> {
         for &symbol in self.module_var_globals.keys() {
             push(symbol);
         }
+        for &symbol in self.js_script_lexical_globals.keys() {
+            push(symbol);
+        }
         if let Some(bindings) = &self.current_method_env_globals {
             for &symbol in bindings.keys() {
                 push(symbol);
@@ -656,6 +678,29 @@ impl<'a> Lowerer<'a> {
         }
         names.sort_by_key(|symbol| self.interner.resolve(*symbol).to_string());
         names
+    }
+
+    fn direct_eval_binding_is_lexical(&self, symbol: Symbol) -> bool {
+        self.visible_js_lexical_symbols.contains(&symbol)
+            || self.js_script_lexical_globals.contains_key(&symbol)
+    }
+
+    fn emit_direct_eval_hidden_flag_set(&mut self, env_object: Register, key: String) {
+        let key_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: key_reg.clone(),
+            value: IrValue::Constant(IrConstant::String(key)),
+        });
+        let value_reg = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: value_reg.clone(),
+            value: IrValue::Constant(IrConstant::Boolean(true)),
+        });
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::REFLECT_SET,
+            args: vec![env_object, key_reg, value_reg],
+        });
     }
 
     fn direct_eval_exposes_arguments(&self) -> bool {
@@ -727,6 +772,12 @@ impl<'a> Lowerer<'a> {
                 native_id: crate::compiler::native_id::REFLECT_SET,
                 args: vec![env_object.clone(), key_reg, value],
             });
+            if self.direct_eval_binding_is_lexical(symbol) {
+                self.emit_direct_eval_hidden_flag_set(
+                    env_object.clone(),
+                    format!("{DIRECT_EVAL_LEXICAL_MARKER_PREFIX}{name}"),
+                );
+            }
         }
 
         if self.direct_eval_exposes_arguments() {
@@ -802,6 +853,7 @@ impl<'a> Lowerer<'a> {
             Expression::Logical(logical) => self.lower_logical(logical),
             Expression::TemplateLiteral(template) => self.lower_template_literal(template),
             Expression::This(_) => self.lower_this(),
+            Expression::NewTarget(_) => self.lower_new_target(),
             Expression::Super(_) => self.lower_super(),
             Expression::AsyncCall(async_call) => self.lower_async_call(async_call),
             Expression::InstanceOf(instanceof) => self.lower_instanceof(instanceof),
@@ -1181,10 +1233,6 @@ impl<'a> Lowerer<'a> {
             _ => {}
         }
 
-        if self.direct_eval_binding_enabled(name) {
-            return self.emit_direct_eval_binding_get(name, false);
-        }
-
         // Look up the variable in the local map (current function's locals)
         if let Some(&local_idx) = self.local_map.get(&ident.name) {
             // Check if this is a RefCell variable
@@ -1329,7 +1377,7 @@ impl<'a> Lowerer<'a> {
         }
 
         // Check module-level variables (stored as globals)
-        if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+        if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
             let global_ty = self
                 .global_type_map
                 .get(&global_idx)
@@ -1466,6 +1514,10 @@ impl<'a> Lowerer<'a> {
             return self.lower_js_arguments_object();
         }
 
+        if self.should_resolve_from_direct_eval_env(ident) {
+            return self.emit_direct_eval_binding_get(name, false);
+        }
+
         // Check if this is a named function used as a value (function reference)
         if !self.parameter_scope_eval_mode {
             if let Some(&func_id) = self.function_map.get(&ident.name) {
@@ -1501,6 +1553,10 @@ impl<'a> Lowerer<'a> {
                 });
                 return dest;
             }
+        }
+
+        if self.direct_eval_binding_enabled(name) {
+            return self.emit_direct_eval_binding_get(name, false);
         }
 
         // In JS-compat mode with runtime fallback, emit a dynamic global lookup
@@ -1542,7 +1598,7 @@ impl<'a> Lowerer<'a> {
                 .ancestor_variables
                 .as_ref()
                 .is_some_and(|m| m.contains_key(&ident.name));
-            let has_module_global = self.module_var_globals.contains_key(&ident.name);
+            let has_module_global = self.shared_script_binding_slot(ident.name).is_some();
             let has_function = self.function_map.contains_key(&ident.name);
             eprintln!(
                 "[lower][unresolved-ident] name={} fn={} class={} local={} capture={} ancestor={} module_global={} function={} class_map={}",
@@ -1870,7 +1926,7 @@ impl<'a> Lowerer<'a> {
                     .ancestor_variables
                     .as_ref()
                     .is_some_and(|ancestors| ancestors.contains_key(&ident.name))
-                || self.module_var_globals.contains_key(&ident.name)
+                || self.shared_script_binding_slot(ident.name).is_some()
                 || self
                     .current_method_env_globals
                     .as_ref()
@@ -2213,7 +2269,7 @@ impl<'a> Lowerer<'a> {
                     .ancestor_variables
                     .as_ref()
                     .is_some_and(|ancestors| ancestors.contains_key(&ident.name))
-                || self.module_var_globals.contains_key(&ident.name)
+                || self.shared_script_binding_slot(ident.name).is_some()
                 || self
                     .current_method_env_globals
                     .as_ref()
@@ -2590,12 +2646,29 @@ impl<'a> Lowerer<'a> {
                 .as_ref()
                 .is_some_and(|m| m.contains_key(&ident.name));
 
+            if self.should_resolve_from_direct_eval_env(ident) {
+                let closure = self.emit_direct_eval_binding_get(name, false);
+                if call.has_spread_arguments() {
+                    let receiver = self.lower_undefined_literal();
+                    let args_array = self.lower_call_argument_array(&call.arguments);
+                    self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
+                } else {
+                    self.emit(IrInstr::CallClosure {
+                        dest: Some(dest.clone()),
+                        closure,
+                        args,
+                    });
+                }
+                self.propagate_type_projection_to_register(call_ty, &dest);
+                return dest;
+            }
+
             // Check if it's a direct function call. Prefer closure/capture paths when
             // the identifier is locally bound or captured so lexical environments stay intact.
             if !self.local_map.contains_key(&ident.name)
                 && !is_captured
                 && !is_ancestor
-                && !self.module_var_globals.contains_key(&ident.name)
+                && self.shared_script_binding_slot(ident.name).is_none()
                 && !self
                     .current_method_env_globals
                     .as_ref()
@@ -2774,7 +2847,7 @@ impl<'a> Lowerer<'a> {
             }
 
             // Check for closure stored in a module-level global variable
-            if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+            if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
                 let closure_ty = self.get_expr_type(&call.callee);
                 let closure_ty_raw = closure_ty.as_u32();
                 let known_callable = self.closure_globals.contains_key(&global_idx)
@@ -4849,6 +4922,18 @@ impl<'a> Lowerer<'a> {
     fn lower_member(&mut self, member: &ast::MemberExpression) -> Register {
         let prop_name = self.interner.resolve(member.property.name);
 
+        if matches!(member.object.as_ref(), Expression::Super(_)) {
+            let dest = self.alloc_register(UNRESOLVED);
+            let this_reg = self.lower_this();
+            let key_reg = self.emit_named_key_register(prop_name);
+            self.emit(IrInstr::NativeCall {
+                dest: Some(dest.clone()),
+                native_id: crate::compiler::native_id::OBJECT_GET_SUPER_PROPERTY,
+                args: vec![this_reg, key_reg],
+            });
+            return dest;
+        }
+
         if let Expression::Identifier(ident) = &*member.object {
             if self.interner.resolve(ident.name) == "Symbol" {
                 if let Some(symbol_key) = Self::well_known_symbol_key(prop_name) {
@@ -6583,6 +6668,22 @@ impl<'a> Lowerer<'a> {
         self.spread_source_fields_from_type(spread_ty)
     }
 
+    fn attach_home_object_if_method(&mut self, value_expr: &ast::Expression, value: &Register, home_object: &Register) {
+        if matches!(
+            value_expr,
+            ast::Expression::Function(ast::FunctionExpression {
+                is_method: true,
+                ..
+            })
+        ) {
+            self.emit(IrInstr::NativeCall {
+                dest: None,
+                native_id: crate::compiler::native_id::OBJECT_SET_CALLABLE_HOME_OBJECT,
+                args: vec![value.clone(), home_object.clone()],
+            });
+        }
+    }
+
     fn lower_object(&mut self, object: &ast::ObjectExpression, full_expr: &Expression) -> Register {
         let checker_ty = self.get_expr_type(full_expr);
         let object_ty = if checker_ty.as_u32() == UNRESOLVED_TYPE_ID {
@@ -6685,6 +6786,7 @@ impl<'a> Lowerer<'a> {
                     if p.kind != ast::PropertyKind::Init {
                         let key = self.lower_object_property_key(&p.key);
                         let value = self.lower_expr(&p.value);
+                        self.attach_home_object_if_method(&p.value, &value, &dest);
                         let descriptor = match p.kind {
                             ast::PropertyKind::Get => self.lower_accessor_property_descriptor(
                                 Some(value),
@@ -6712,6 +6814,7 @@ impl<'a> Lowerer<'a> {
                     if let ast::PropertyKey::Computed(_) = &p.key {
                         let key = self.lower_object_property_key(&p.key);
                         let value = self.lower_expr(&p.value);
+                        self.attach_home_object_if_method(&p.value, &value, &dest);
                         self.emit(IrInstr::DynSetKeyed {
                             object: dest.clone(),
                             key,
@@ -6725,6 +6828,7 @@ impl<'a> Lowerer<'a> {
                         continue;
                     };
                     let value = self.lower_expr(&p.value);
+                    self.attach_home_object_if_method(&p.value, &value, &dest);
                     if let Some(nested_layout) = self.register_object_fields.get(&value.id).cloned()
                     {
                         self.register_nested_object_fields
@@ -6822,10 +6926,6 @@ impl<'a> Lowerer<'a> {
 
     fn store_identifier_value(&mut self, symbol: Symbol, value: Register) {
         let name = self.interner.resolve(symbol).to_string();
-        if self.direct_eval_binding_enabled(&name) {
-            self.emit_direct_eval_binding_set(&name, value);
-            return;
-        }
 
         if let Some(&local_idx) = self.local_map.get(&symbol) {
             if self.refcell_registers.contains_key(&local_idx) {
@@ -6905,7 +7005,7 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        if let Some(&global_idx) = self.module_var_globals.get(&symbol) {
+        if let Some(global_idx) = self.shared_script_binding_slot(symbol) {
             self.emit(IrInstr::StoreGlobal {
                 index: global_idx,
                 value,
@@ -6935,6 +7035,10 @@ impl<'a> Lowerer<'a> {
                     value,
                 });
             }
+            return;
+        }
+        if self.direct_eval_binding_enabled(&name) {
+            self.emit_direct_eval_binding_set(&name, value);
             return;
         }
         if self.in_direct_eval_function {
@@ -7021,7 +7125,7 @@ impl<'a> Lowerer<'a> {
                                 value: rhs,
                             });
                         }
-                    } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                    } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
                         assigned_symbol = true;
                         // Module-level variable — store via global slot
                         self.emit(IrInstr::StoreGlobal {
@@ -7105,7 +7209,7 @@ impl<'a> Lowerer<'a> {
                                     value: rhs,
                                 });
                             }
-                        } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                        } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
                             assigned_symbol = true;
                             self.emit(IrInstr::StoreGlobal {
                                 index: global_idx,
@@ -7522,7 +7626,7 @@ impl<'a> Lowerer<'a> {
                                 value: value.clone(),
                             });
                         }
-                    } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                    } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
                         assigned_symbol = true;
                         // Module-level variable inside arrow — store via global slot
                         self.emit(IrInstr::StoreGlobal {
@@ -7553,7 +7657,7 @@ impl<'a> Lowerer<'a> {
                             });
                         }
                     }
-                } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
                     assigned_symbol = true;
                     // Module-level variable — store via global slot
                     self.emit(IrInstr::StoreGlobal {
@@ -7938,6 +8042,7 @@ impl<'a> Lowerer<'a> {
         let saved_generator_yield_array_local = self.generator_yield_array_local.take();
         let saved_closure_locals = std::mem::take(&mut self.closure_locals);
         let saved_parameter_symbols = self.parameter_symbols.clone();
+        let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
@@ -7980,6 +8085,7 @@ impl<'a> Lowerer<'a> {
         self.this_captured_idx = None;
         self.js_arguments_local = None;
         self.parameter_symbols.clear();
+        self.visible_js_lexical_symbols.clear();
         self.eval_completion_local = None;
 
         self.next_register = 0;
@@ -8189,6 +8295,7 @@ impl<'a> Lowerer<'a> {
 
         self.emit_default_params(&func.params);
         self.emit_js_function_var_hoists(&func.body.statements);
+        self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
 
         for stmt in &func.body.statements {
@@ -8243,6 +8350,7 @@ impl<'a> Lowerer<'a> {
         self.js_arguments_local = saved_js_arguments_local;
         self.generator_yield_array_local = saved_generator_yield_array_local;
         self.parameter_symbols = saved_parameter_symbols;
+        self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
@@ -8442,6 +8550,7 @@ impl<'a> Lowerer<'a> {
         let saved_js_arguments_local = self.js_arguments_local.take();
         let saved_generator_yield_array_local = self.generator_yield_array_local.take();
         let saved_parameter_symbols = self.parameter_symbols.clone();
+        let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
@@ -8513,6 +8622,7 @@ impl<'a> Lowerer<'a> {
         self.this_captured_idx = None;
         self.js_arguments_local = None;
         self.parameter_symbols.clear();
+        self.visible_js_lexical_symbols.clear();
         self.eval_completion_local = None;
 
         // Reset per-function state
@@ -8809,6 +8919,7 @@ impl<'a> Lowerer<'a> {
         self.js_arguments_local = saved_js_arguments_local;
         self.generator_yield_array_local = saved_generator_yield_array_local;
         self.parameter_symbols = saved_parameter_symbols;
+        self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
@@ -8988,6 +9099,18 @@ impl<'a> Lowerer<'a> {
 
     fn lower_typeof(&mut self, typeof_expr: &ast::TypeofExpression) -> Register {
         if let Expression::Identifier(ident) = &*typeof_expr.argument {
+            let name = self.interner.resolve(ident.name);
+            if self.should_resolve_from_direct_eval_env(ident)
+                || (self.in_direct_eval_function && self.direct_eval_binding_enabled(name))
+            {
+                let operand = self.emit_direct_eval_binding_get(name, true);
+                let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                self.emit(IrInstr::Typeof {
+                    dest: dest.clone(),
+                    operand,
+                });
+                return dest;
+            }
             if self.class_map.contains_key(&ident.name) {
                 let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                 self.emit(IrInstr::Assign {
@@ -9051,7 +9174,7 @@ impl<'a> Lowerer<'a> {
                         .ancestor_variables
                         .as_ref()
                         .is_some_and(|av| av.contains_key(&ident.name))
-                    || self.module_var_globals.contains_key(&ident.name)
+                    || self.shared_script_binding_slot(ident.name).is_some()
                     || self.ambient_builtin_globals.contains(name)
                     || matches!(name, "Infinity" | "NaN" | "undefined" | "arguments");
                 if !resolved_locally {
@@ -9126,6 +9249,34 @@ impl<'a> Lowerer<'a> {
         if let Expression::Identifier(ident) = &*new_expr.callee {
             // Handle built-in primitive constructors
             let name = self.interner.resolve(ident.name);
+            if self.js_this_binding_compat
+                && self.function_depth > 0
+                && self.js_script_lexical_globals.contains_key(&ident.name)
+            {
+                let ctor_value = self.lower_identifier(ident);
+                let return_ty = {
+                    let expr = Expression::New(new_expr.clone());
+                    let inferred = self.get_expr_type(&expr);
+                    if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                        UNRESOLVED
+                    } else {
+                        inferred
+                    }
+                };
+                let ctor_dest = self.alloc_register(return_ty);
+                let mut native_args = Vec::with_capacity(new_expr.arguments.len() + 1);
+                native_args.push(ctor_value);
+                for arg in &new_expr.arguments {
+                    native_args.push(self.lower_expr(arg.expression()));
+                }
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(ctor_dest.clone()),
+                    native_id: crate::compiler::native_id::OBJECT_CONSTRUCT_DYNAMIC_CLASS,
+                    args: native_args,
+                });
+                return ctor_dest;
+            }
+
             if name == "Object" && new_expr.arguments.is_empty() && new_expr.type_args.is_none() {
                 let object_ty = self
                     .type_ctx
@@ -9567,6 +9718,16 @@ impl<'a> Lowerer<'a> {
 
         // Handle different callee types
         if let Expression::Identifier(ident) = &*async_call.callee {
+            if self.should_resolve_from_direct_eval_env(ident) {
+                let closure = self.emit_direct_eval_binding_get(self.interner.resolve(ident.name), false);
+                self.emit(IrInstr::SpawnClosure {
+                    dest: dest.clone(),
+                    closure,
+                    args,
+                });
+                return dest;
+            }
+
             // Direct function call: async myFn()
             if let Some(&func_id) = self.function_map.get(&ident.name) {
                 self.emit(IrInstr::Spawn {
@@ -9797,6 +9958,16 @@ impl<'a> Lowerer<'a> {
         // 'super' refers to the same object as 'this', just with parent class semantics
         // The actual parent method dispatch is handled in lower_call
         self.lower_this()
+    }
+
+    fn lower_new_target(&mut self) -> Register {
+        let dest = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_CURRENT_NEW_TARGET,
+            args: vec![],
+        });
+        dest
     }
 
     /// Lower instanceof expression: expr instanceof ClassName

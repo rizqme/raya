@@ -2565,6 +2565,7 @@ impl<'a> Binder<'a> {
             | Expression::BooleanLiteral(_)
             | Expression::NullLiteral(_)
             | Expression::This(_)
+            | Expression::NewTarget(_)
             | Expression::Super(_)
             | Expression::RegexLiteral(_) => false,
         }

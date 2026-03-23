@@ -416,6 +416,7 @@ pub struct CallableData {
     pub module: Option<Arc<crate::compiler::Module>>,
     pub direct_eval_env: Option<Value>,
     pub direct_eval_uses_script_global_bindings: bool,
+    pub home_object: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -738,6 +739,10 @@ impl Object {
             .is_some_and(|callable| callable.direct_eval_uses_script_global_bindings)
     }
 
+    pub fn callable_home_object(&self) -> Option<Value> {
+        self.callable.as_ref()?.home_object
+    }
+
     /// Attach a direct-eval environment to this callable.
     pub fn set_callable_direct_eval_env(&mut self, env: Value) -> Result<(), String> {
         let callable = self
@@ -758,6 +763,15 @@ impl Object {
             .as_mut()
             .ok_or_else(|| "Not a callable object".to_string())?;
         callable.direct_eval_uses_script_global_bindings = value;
+        Ok(())
+    }
+
+    pub fn set_callable_home_object(&mut self, home_object: Value) -> Result<(), String> {
+        let callable = self
+            .callable
+            .as_mut()
+            .ok_or_else(|| "Not a callable object".to_string())?;
+        callable.home_object = Some(home_object);
         Ok(())
     }
 
@@ -809,6 +823,7 @@ impl Object {
             module: None,
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
+            home_object: None,
         }));
         obj
     }
@@ -826,6 +841,7 @@ impl Object {
             module: Some(module),
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
+            home_object: None,
         }));
         obj
     }
@@ -843,6 +859,7 @@ impl Object {
             module,
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
+            home_object: None,
         }));
         obj
     }
@@ -859,6 +876,7 @@ impl Object {
             module: None,
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
+            home_object: None,
         }));
         obj
     }
@@ -886,6 +904,7 @@ impl Object {
             module: None,
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
+            home_object: None,
         }));
         obj
     }
