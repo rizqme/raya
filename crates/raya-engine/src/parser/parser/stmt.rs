@@ -119,11 +119,12 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
         Token::Import => parse_import_declaration(parser),
         Token::Export => parse_export_declaration(parser),
 
-        // Standalone block statement or object literal expression
-        // We use lookahead to distinguish:
-        // - Block: { followed by statement-starting keywords, declarations, or }
-        // - Object literal: { followed by property keys (identifiers, strings, etc.)
-        Token::LeftBrace => parse_block_or_object_literal(parser),
+        // In statement position, `{` starts a block. Object literals must be
+        // parenthesized to appear as expression statements.
+        Token::LeftBrace => {
+            parser.advance();
+            Ok(Statement::Block(parse_block_statement(parser)?))
+        }
 
         Token::Debugger => {
             let span = parser.current_span();
@@ -520,74 +521,6 @@ pub(super) fn parse_block_statement(parser: &mut Parser) -> Result<BlockStatemen
 // ============================================================================
 // Control Flow Statements
 // ============================================================================
-
-/// Parse a block or a single statement for use as a control flow body.
-/// Parse a standalone block statement or object literal expression.
-/// Uses lookahead to distinguish between:
-/// - Block statement: { const x = 1; return x; }
-/// - Object literal expression: { x: 1, y: 2 }
-fn parse_block_or_object_literal(parser: &mut Parser) -> Result<Statement, ParseError> {
-    let start_span = parser.current_span();
-
-    // Lookahead to determine if this is a block or object literal
-    // A block starts with statement keywords or declarations.
-    // An empty `{}` in statement position is a block (JS semantics).
-    // An object literal starts with property keys (identifiers, strings, numbers, etc.)
-    let is_likely_block = if let Some(next_token) = parser.peek() {
-        matches!(
-            next_token,
-            Token::RightBrace       // Empty block: {}
-            | Token::Let            // Block starts with let
-            | Token::Const          // Block starts with const
-            | Token::Var            // Block starts with var
-            | Token::Return         // Block starts with return
-            | Token::If             // Block starts with if
-            | Token::While          // Block starts with while
-            | Token::Do             // Block starts with do
-            | Token::For            // Block starts with for
-            | Token::Switch         // Block starts with switch
-            | Token::Try            // Block starts with try
-            | Token::Throw          // Block starts with throw
-            | Token::Break          // Block starts with break
-            | Token::Continue       // Block starts with continue
-            | Token::Debugger       // Block starts with debugger
-            | Token::Semicolon      // Empty statement
-            | Token::Function       // Block starts with function
-            | Token::Async          // Block starts with async
-            | Token::Class          // Block starts with class
-            | Token::Type           // Block starts with type
-            | Token::Interface      // Block starts with interface
-            | Token::Export         // Block starts with export
-            | Token::Import         // Block starts with import
-            | Token::At             // Block starts with annotation
-            | Token::LeftBrace // Nested block: { { ... } }
-        )
-    } else {
-        false
-    };
-
-    if is_likely_block {
-        // Parse as block statement
-        parser.expect(Token::LeftBrace)?;
-        let block = parse_block_statement(parser)?;
-        Ok(Statement::Block(block))
-    } else {
-        // Parse as object literal expression
-        let expression = super::expr::parse_expression(parser)?;
-
-        // Optional semicolon
-        if parser.check(&Token::Semicolon) {
-            parser.advance();
-        }
-
-        let span = parser.combine_spans(&start_span, expression.span());
-
-        Ok(Statement::Expression(ExpressionStatement {
-            expression,
-            span,
-        }))
-    }
-}
 
 /// Parse a block or a single statement for use as a control flow body.
 /// Supports both `if (x) { ... }` and `if (x) return y;` syntax.

@@ -6238,6 +6238,19 @@ impl<'a> Interpreter<'a> {
         Ok(Arc::new(module))
     }
 
+    fn preflight_direct_eval_source(&self, source: &str) -> Result<(), VmError> {
+        let parser = Parser::new(source)
+            .map_err(|error| VmError::SyntaxError(format!("Dynamic eval lexer error: {error:?}")))?;
+        let (ast, interner) = parser
+            .parse()
+            .map_err(|error| VmError::SyntaxError(format!("Dynamic eval parse error: {error:?}")))?;
+        let mut early_error_options = EarlyErrorOptions::for_mode(TypeSystemMode::Js);
+        early_error_options.allow_top_level_return = false;
+        check_early_errors_with_options(&ast, &interner, early_error_options)
+            .map_err(|error| VmError::SyntaxError(format!("Dynamic eval parse error: {error:?}")))?;
+        Ok(())
+    }
+
     fn compile_dynamic_js_function_module(
         &self,
         params_source: &str,
@@ -6359,6 +6372,13 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Value, VmError> {
+        self.preflight_direct_eval_source(source)
+            .map_err(|error| match error {
+                VmError::SyntaxError(message) => {
+                    self.raise_task_builtin_error(task, "SyntaxError", message)
+                }
+                other => other,
+            })?;
         let direct_eval_declarations = if direct_env.is_some() {
             self.raw_direct_eval_declarations(source)
         } else {
