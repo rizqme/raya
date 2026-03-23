@@ -1120,6 +1120,19 @@ struct ScopeAssignmentCollector<'a> {
 }
 
 impl Visitor for ScopeAssignmentCollector<'_> {
+    fn visit_variable_decl(&mut self, decl: &ast::VariableDecl) {
+        // Variable initializers behave like assignments for capture analysis.
+        // JS var hoisting can create closures before the initializer runs, so
+        // captured bindings with initializers must be treated as live mutable
+        // cells rather than one-time copied values.
+        if decl.initializer.is_some() {
+            collect_pattern_names(&decl.pattern, self.assigned);
+        }
+        if let Some(init) = &decl.initializer {
+            self.visit_expression(init);
+        }
+    }
+
     fn visit_expression(&mut self, expr: &Expression) {
         if let Expression::Assignment(assign) = expr {
             if let Expression::Identifier(ident) = &*assign.left {
@@ -3809,11 +3822,27 @@ impl<'a> Lowerer<'a> {
                 dest: undefined.clone(),
                 value: IrValue::Constant(IrConstant::Undefined),
             });
-            self.local_registers.insert(local_idx, undefined.clone());
-            self.emit(IrInstr::StoreLocal {
-                index: local_idx,
-                value: undefined,
-            });
+            if self.refcell_vars.contains(&name) {
+                let refcell_reg = self.alloc_register(TypeId::new(0));
+                self.emit(IrInstr::NewRefCell {
+                    dest: refcell_reg.clone(),
+                    initial_value: undefined,
+                });
+                self.local_registers.insert(local_idx, refcell_reg.clone());
+                self.refcell_registers
+                    .insert(local_idx, refcell_reg.clone());
+                self.refcell_inner_types.insert(local_idx, UNRESOLVED);
+                self.emit(IrInstr::StoreLocal {
+                    index: local_idx,
+                    value: refcell_reg,
+                });
+            } else {
+                self.local_registers.insert(local_idx, undefined.clone());
+                self.emit(IrInstr::StoreLocal {
+                    index: local_idx,
+                    value: undefined,
+                });
+            }
         }
     }
 

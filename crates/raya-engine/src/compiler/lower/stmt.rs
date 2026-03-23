@@ -2355,22 +2355,47 @@ impl<'a> Lowerer<'a> {
             }
 
             if needs_refcell {
-                // Wrap the value in a RefCell
-                let refcell_ty = TypeId::new(0); // RefCell type
-                let refcell_reg = self.alloc_register(refcell_ty);
-                self.emit(IrInstr::NewRefCell {
-                    dest: refcell_reg.clone(),
-                    initial_value: value.clone(),
-                });
-                // Store the RefCell pointer as the local
-                self.local_registers.insert(local_idx, refcell_reg.clone());
-                self.refcell_registers
-                    .insert(local_idx, refcell_reg.clone());
-                self.refcell_inner_types.insert(local_idx, value.ty);
-                self.emit(IrInstr::StoreLocal {
-                    index: local_idx,
-                    value: refcell_reg,
-                });
+                if reuses_hoisted_local {
+                    if let Some(refcell_reg) = self.refcell_registers.get(&local_idx).cloned() {
+                        self.refcell_inner_types.insert(local_idx, value.ty);
+                        self.emit(IrInstr::StoreRefCell {
+                            refcell: refcell_reg,
+                            value,
+                        });
+                    } else {
+                        let refcell_ty = TypeId::new(0);
+                        let refcell_reg = self.alloc_register(refcell_ty);
+                        self.emit(IrInstr::NewRefCell {
+                            dest: refcell_reg.clone(),
+                            initial_value: value.clone(),
+                        });
+                        self.local_registers.insert(local_idx, refcell_reg.clone());
+                        self.refcell_registers
+                            .insert(local_idx, refcell_reg.clone());
+                        self.refcell_inner_types.insert(local_idx, value.ty);
+                        self.emit(IrInstr::StoreLocal {
+                            index: local_idx,
+                            value: refcell_reg,
+                        });
+                    }
+                } else {
+                    // Wrap the value in a RefCell
+                    let refcell_ty = TypeId::new(0); // RefCell type
+                    let refcell_reg = self.alloc_register(refcell_ty);
+                    self.emit(IrInstr::NewRefCell {
+                        dest: refcell_reg.clone(),
+                        initial_value: value.clone(),
+                    });
+                    // Store the RefCell pointer as the local
+                    self.local_registers.insert(local_idx, refcell_reg.clone());
+                    self.refcell_registers
+                        .insert(local_idx, refcell_reg.clone());
+                    self.refcell_inner_types.insert(local_idx, value.ty);
+                    self.emit(IrInstr::StoreLocal {
+                        index: local_idx,
+                        value: refcell_reg,
+                    });
+                }
             } else {
                 // If there's a type annotation for a numeric type, use it for the register type
                 // so that operations on this variable use the correct opcodes.

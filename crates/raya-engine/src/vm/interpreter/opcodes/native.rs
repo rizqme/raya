@@ -6457,12 +6457,24 @@ impl<'a> Interpreter<'a> {
         )?;
         if let Some(caller_snapshot_env) = direct_env {
             self.seal_direct_eval_snapshot_env(caller_snapshot_env)?;
-            let runtime_env = if behavior.persist_caller_declarations {
+            let runtime_env = if behavior.publish_script_global_bindings {
+                // Script-global direct eval should run against the caller snapshot
+                // itself. Global publication happens after execution, so the eval body
+                // needs live access to the caller-visible bindings without an extra
+                // shadow wrapper in front of them.
+                self.set_direct_eval_completion(caller_snapshot_env, Value::undefined())?;
+                caller_snapshot_env
+            } else if behavior.persist_caller_declarations {
                 if let Some(existing_env) = task.current_activation_direct_eval_env() {
                     self.set_direct_eval_outer_env(existing_env, caller_snapshot_env)?;
                     existing_env
                 } else {
-                    self.alloc_direct_eval_runtime_env(caller_snapshot_env)?
+                    // First-entry sloppy direct eval should operate on the caller snapshot
+                    // itself so `var` redeclarations and assignments target the caller-owned
+                    // binding record. We only introduce a layered runtime env once there is
+                    // already persisted eval state to preserve across calls.
+                    self.set_direct_eval_completion(caller_snapshot_env, Value::undefined())?;
+                    caller_snapshot_env
                 }
             } else {
                 self.alloc_direct_eval_runtime_env(caller_snapshot_env)?

@@ -2911,6 +2911,46 @@ fn test_node_compat_direct_eval_in_default_param_rejects_arguments_decl_for_func
 }
 
 #[test]
+fn test_node_compat_hoisted_js_closure_capture_sees_post_init_value() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            function testcase() {
+                var x = 0;
+                function f() {
+                    return JSON.stringify([x, typeof x]);
+                }
+                return f();
+            }
+            return testcase();
+        }
+    "#,
+        "[0,\"number\"]",
+    );
+}
+
+#[test]
+fn test_node_compat_strict_direct_eval_var_does_not_leak_to_caller_binding() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            "use strict";
+            function testcase() {
+                var x = 0;
+                function f() {
+                    eval("var x = 1");
+                    return JSON.stringify([x, typeof x]);
+                }
+                return f();
+            }
+            return testcase();
+        }
+    "#,
+        "[0,\"number\"]",
+    );
+}
+
+#[test]
 fn test_node_compat_strict_direct_eval_block_function_stays_block_local() {
     expect_string_runtime_node_compat(
         r#"
