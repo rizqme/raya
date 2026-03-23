@@ -893,7 +893,10 @@ impl<'a> Interpreter<'a> {
             Some(caller_task.id()),
         ));
         if let Some(env) = caller_task.current_active_direct_eval_env() {
-            scratch_task.push_active_direct_eval_env(env);
+            scratch_task.push_active_direct_eval_env(
+                env,
+                caller_task.current_active_direct_eval_uses_script_global_bindings(),
+            );
         }
 
         let opcode_result = if let Some(raw_ptr) = unsafe { callable.as_ptr::<u8>() } {

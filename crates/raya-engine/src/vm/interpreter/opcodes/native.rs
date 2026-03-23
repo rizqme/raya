@@ -155,6 +155,7 @@ struct DynamicJsCompileOptions {
     direct_eval_binding_names: FxHashSet<String>,
     has_parameter_named_arguments: bool,
     in_parameter_initializer: bool,
+    uses_script_global_bindings: bool,
 }
 
 struct DirectEvalIdentifierCollector<'a> {
@@ -176,6 +177,17 @@ impl Visitor for DirectEvalIdentifierCollector<'_> {
 struct DirectEvalDeclarationCollector<'a> {
     interner: &'a crate::parser::Interner,
     declares_arguments: bool,
+    seen_var_names: FxHashSet<String>,
+    var_names: Vec<String>,
+    seen_function_names: FxHashSet<String>,
+    function_names: Vec<String>,
+}
+
+#[derive(Default, Clone)]
+struct DirectEvalDeclarations {
+    declares_arguments: bool,
+    var_names: Vec<String>,
+    function_names: Vec<String>,
 }
 
 impl<'a> DirectEvalDeclarationCollector<'a> {
@@ -183,35 +195,65 @@ impl<'a> DirectEvalDeclarationCollector<'a> {
         Self {
             interner,
             declares_arguments: false,
+            seen_var_names: FxHashSet::default(),
+            var_names: Vec::new(),
+            seen_function_names: FxHashSet::default(),
+            function_names: Vec::new(),
         }
     }
 
-    fn collect_pattern(&mut self, pattern: &Pattern) {
+    fn push_var_name(&mut self, name: &str) {
+        if self.seen_var_names.insert(name.to_string()) {
+            self.var_names.push(name.to_string());
+        }
+    }
+
+    fn push_function_name(&mut self, name: &str) {
+        if self.seen_function_names.insert(name.to_string()) {
+            self.function_names.push(name.to_string());
+        }
+    }
+
+    fn collect_var_pattern(&mut self, pattern: &Pattern) {
         match pattern {
             Pattern::Identifier(ident) => {
-                if self.interner.resolve(ident.name) == "arguments" {
+                let name = self.interner.resolve(ident.name);
+                if name == "arguments" {
                     self.declares_arguments = true;
                 }
+                self.push_var_name(name);
             }
             Pattern::Array(array) => {
                 for element in array.elements.iter().flatten() {
-                    self.collect_pattern(&element.pattern);
+                    self.collect_var_pattern(&element.pattern);
                 }
                 if let Some(rest) = &array.rest {
-                    self.collect_pattern(rest);
+                    self.collect_var_pattern(rest);
                 }
             }
             Pattern::Object(object) => {
                 for property in &object.properties {
-                    self.collect_pattern(&property.value);
+                    self.collect_var_pattern(&property.value);
                 }
                 if let Some(rest) = &object.rest {
-                    if self.interner.resolve(rest.name) == "arguments" {
+                    let name = self.interner.resolve(rest.name);
+                    if name == "arguments" {
                         self.declares_arguments = true;
                     }
+                    self.push_var_name(name);
                 }
             }
-            Pattern::Rest(rest) => self.collect_pattern(&rest.argument),
+            Pattern::Rest(rest) => self.collect_var_pattern(&rest.argument),
+        }
+    }
+}
+
+impl From<DirectEvalDeclarationCollector<'_>> for DirectEvalDeclarations {
+    fn from(collector: DirectEvalDeclarationCollector<'_>) -> Self {
+        Self {
+            declares_arguments: collector.declares_arguments,
+            var_names: collector.var_names,
+            function_names: collector.function_names,
         }
     }
 }
@@ -219,7 +261,7 @@ impl<'a> DirectEvalDeclarationCollector<'a> {
 impl Visitor for DirectEvalDeclarationCollector<'_> {
     fn visit_variable_decl(&mut self, decl: &VariableDecl) {
         if matches!(decl.kind, crate::parser::ast::VariableKind::Var) {
-            self.collect_pattern(&decl.pattern);
+            self.collect_var_pattern(&decl.pattern);
         }
         if let Some(initializer) = &decl.initializer {
             self.visit_expression(initializer);
@@ -227,9 +269,11 @@ impl Visitor for DirectEvalDeclarationCollector<'_> {
     }
 
     fn visit_function_decl(&mut self, decl: &FunctionDecl) {
-        if self.interner.resolve(decl.name.name) == "arguments" {
+        let name = self.interner.resolve(decl.name.name);
+        if name == "arguments" {
             self.declares_arguments = true;
         }
+        self.push_function_name(name);
     }
 
     fn visit_function_expression(&mut self, _func: &FunctionExpression) {}
@@ -2073,6 +2117,70 @@ impl<'a> Interpreter<'a> {
         self.has_property_via_js_semantics(env, key)
     }
 
+    fn active_direct_eval_uses_script_global_bindings(&self, task: &Arc<Task>) -> bool {
+        task.current_active_direct_eval_uses_script_global_bindings()
+            || task.current_closure().is_some_and(|closure| {
+                let Some(closure_ptr) = (unsafe { closure.as_ptr::<Object>() }) else {
+                    return false;
+                };
+                let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+                closure_obj.callable_direct_eval_uses_script_global_bindings()
+            })
+    }
+
+    fn bind_direct_eval_global_var(
+        &mut self,
+        key: &str,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<(), VmError> {
+        let Some(global_this) = self.builtin_global_value("globalThis") else {
+            return Ok(());
+        };
+        if self.has_property_via_js_semantics(global_this, key) {
+            return Ok(());
+        }
+        if self.is_js_value_extensible(global_this) {
+            self.define_data_property_on_target(
+                global_this,
+                key,
+                Value::undefined(),
+                true,
+                true,
+                true,
+            )?;
+            let _ = self.set_property_value_via_js_semantics(
+                global_this,
+                key,
+                Value::undefined(),
+                global_this,
+                task,
+                module,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn bind_direct_eval_global_function(
+        &mut self,
+        key: &str,
+        value: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<(), VmError> {
+        let Some(global_this) = self.builtin_global_value("globalThis") else {
+            return Ok(());
+        };
+        let own_flags = self.own_js_property_flags(global_this, key);
+        if own_flags.is_some_and(|(_, configurable, _)| configurable) || own_flags.is_none() {
+            self.define_data_property_on_target(global_this, key, value, true, true, true)?;
+            return Ok(());
+        }
+        let _ =
+            self.set_property_value_via_js_semantics(global_this, key, value, global_this, task, module)?;
+        Ok(())
+    }
+
     fn activation_eval_env_declare_var(
         &mut self,
         task: &Arc<Task>,
@@ -2081,6 +2189,9 @@ impl<'a> Interpreter<'a> {
     ) -> Result<(), VmError> {
         if self.activation_eval_env_get(task, module, key)?.is_none() {
             let _ = self.activation_eval_env_set(task, module, key, Value::undefined())?;
+        }
+        if self.active_direct_eval_uses_script_global_bindings(task) {
+            self.bind_direct_eval_global_var(key, task, module)?;
         }
         Ok(())
     }
@@ -4520,8 +4631,13 @@ impl<'a> Interpreter<'a> {
                 if !self.is_js_value_extensible(receiver) {
                     return Ok(false);
                 }
-                obj.ensure_dyn_props()
-                    .insert(self.intern_prop_key(key), DynProp::data(value));
+                let prop_key = self.intern_prop_key(key);
+                let dyn_props = obj.ensure_dyn_props();
+                if let Some(existing) = dyn_props.get_mut(prop_key) {
+                    existing.value = value;
+                } else {
+                    dyn_props.insert(prop_key, DynProp::data(value));
+                }
             }
             self.sync_descriptor_value(receiver, key, value);
             self.set_callable_virtual_property_deleted(receiver, key, false);
@@ -5714,14 +5830,24 @@ impl<'a> Interpreter<'a> {
         collector.declares_arguments
     }
 
-    fn raw_direct_eval_declares_arguments(&self, source: &str) -> bool {
+    fn raw_direct_eval_declarations(
+        &self,
+        source: &str,
+    ) -> Option<DirectEvalDeclarations> {
         let Ok(parser) = Parser::new(source) else {
-            return false;
+            return None;
         };
         let Ok((ast, interner)) = parser.parse() else {
-            return false;
+            return None;
         };
-        self.direct_eval_declares_arguments(&ast, &interner)
+        let mut collector = DirectEvalDeclarationCollector::new(&interner);
+        walk_module(&mut collector, &ast);
+        Some(collector.into())
+    }
+
+    fn raw_direct_eval_declares_arguments(&self, source: &str) -> bool {
+        self.raw_direct_eval_declarations(source)
+            .is_some_and(|collector| collector.declares_arguments)
     }
 
     fn compile_dynamic_js_module_source(
@@ -5936,6 +6062,11 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Value, VmError> {
+        let direct_eval_declarations = if direct_env.is_some() {
+            self.raw_direct_eval_declarations(source)
+        } else {
+            None
+        };
         let inherited_strict_prefix = module
             .functions
             .get(task.current_func_id())
@@ -5948,7 +6079,9 @@ impl<'a> Interpreter<'a> {
             .is_some_and(|function| function.uses_js_this_slot);
         if direct_env.is_some()
             && options.has_parameter_named_arguments
-            && self.raw_direct_eval_declares_arguments(source)
+            && direct_eval_declarations
+                .as_ref()
+                .is_some_and(|collector| collector.declares_arguments)
         {
             return Err(VmError::SyntaxError(
                 "direct eval may not declare 'arguments' when the caller parameter environment already binds it"
@@ -5958,7 +6091,9 @@ impl<'a> Interpreter<'a> {
         if direct_env.is_some()
             && options.in_parameter_initializer
             && caller_has_own_arguments_binding
-            && self.raw_direct_eval_declares_arguments(source)
+            && direct_eval_declarations
+                .as_ref()
+                .is_some_and(|collector| collector.declares_arguments)
         {
             return Err(VmError::SyntaxError(
                 "direct eval may not declare 'arguments' during parameter initialization when the caller already provides an arguments binding"
@@ -5976,6 +6111,7 @@ impl<'a> Interpreter<'a> {
                     direct_eval_entry_function: Some("__direct_eval__".to_string()),
                     has_parameter_named_arguments: caller_has_parameter_named_arguments,
                     in_parameter_initializer: options.in_parameter_initializer,
+                    uses_script_global_bindings: options.uses_script_global_bindings,
                     ..DynamicJsCompileOptions::default()
                 },
                 Some(self.current_direct_eval_this_value(stack, task, module)),
@@ -5991,6 +6127,7 @@ impl<'a> Interpreter<'a> {
                 ),
             )
         };
+        let uses_script_global_bindings = options.uses_script_global_bindings;
         let function_module = self.compile_dynamic_js_module_source(
             &wrapped,
             "__eval__",
@@ -6007,13 +6144,25 @@ impl<'a> Interpreter<'a> {
             if let Some(closure_ptr) = unsafe { closure_val.as_ptr::<Object>() } {
                 let closure = unsafe { &mut *closure_ptr.as_ptr() };
                 let _ = closure.set_callable_direct_eval_env(env);
+                let _ = closure
+                    .set_callable_direct_eval_uses_script_global_bindings(
+                        uses_script_global_bindings,
+                    );
             }
         }
         if let Some(env) = direct_env {
-            task.push_active_direct_eval_env(env);
+            task.push_active_direct_eval_env(
+                env,
+                uses_script_global_bindings,
+            );
             let result =
                 self.invoke_callable_sync_with_this(closure_val, explicit_this, &[], task, module);
             let _ = task.pop_active_direct_eval_env();
+            if uses_script_global_bindings {
+                if let Some(declarations) = &direct_eval_declarations {
+                    self.sync_direct_eval_global_bindings(env, declarations, task, module)?;
+                }
+            }
             if result.is_ok() {
                 task.set_activation_direct_eval_env(
                     task.current_func_id(),
@@ -6025,6 +6174,56 @@ impl<'a> Interpreter<'a> {
         } else {
             self.invoke_callable_sync_with_this(closure_val, explicit_this, &[], task, module)
         }
+    }
+
+    fn sync_direct_eval_global_bindings(
+        &mut self,
+        env: Value,
+        declarations: &DirectEvalDeclarations,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<(), VmError> {
+        let Some(global_this) = self.builtin_global_value("globalThis") else {
+            return Ok(());
+        };
+
+        for name in &declarations.var_names {
+            let value = self
+                .get_property_value_via_js_semantics_with_context(env, name, task, module)?
+                .unwrap_or(Value::undefined());
+            if !self.has_property_via_js_semantics(global_this, name) {
+                if self.is_js_value_extensible(global_this) {
+                    self.define_data_property_on_target(
+                        global_this,
+                        name,
+                        value,
+                        true,
+                        true,
+                        true,
+                    )?;
+                }
+            } else {
+                let _ = self.set_property_value_via_js_semantics(
+                    global_this,
+                    name,
+                    value,
+                    global_this,
+                    task,
+                    module,
+                )?;
+            }
+        }
+
+        for name in &declarations.function_names {
+            let value = self
+                .get_property_value_via_js_semantics_with_context(env, name, task, module)?
+                .unwrap_or(Value::undefined());
+            if !self.has_property_via_js_semantics(global_this, name) {
+                self.define_data_property_on_target(global_this, name, value, true, true, true)?;
+            }
+        }
+
+        Ok(())
     }
 
     pub(in crate::vm::interpreter) fn collect_apply_arguments(
@@ -10375,6 +10574,40 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_DECLARE_FUNCTION => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "eval env declareFunction expects name and value".to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "eval env declareFunction expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        match self.activation_eval_env_set(task, module, &name.data, args[1]) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                return OpcodeResult::Error(VmError::RuntimeError(
+                                    "No active eval environment".to_string(),
+                                ))
+                            }
+                            Err(error) => return OpcodeResult::Error(error),
+                        }
+                        if self.active_direct_eval_uses_script_global_bindings(task) {
+                            if let Err(error) =
+                                self.bind_direct_eval_global_function(&name.data, args[1], task, module)
+                            {
+                                return OpcodeResult::Error(error);
+                            }
+                        }
+                        if let Err(error) = stack.push(args[1]) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_HAS => {
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -10632,11 +10865,14 @@ impl<'a> Interpreter<'a> {
                             args.get(2).copied().is_some_and(|value| value.is_truthy());
                         let in_parameter_initializer =
                             args.get(3).copied().is_some_and(|value| value.is_truthy());
+                        let uses_script_global_bindings =
+                            args.get(4).copied().is_some_and(|value| value.is_truthy());
                         let value = match self.eval_dynamic_js_source(
                             &source,
                             DynamicJsCompileOptions {
                                 has_parameter_named_arguments,
                                 in_parameter_initializer,
+                                uses_script_global_bindings,
                                 ..DynamicJsCompileOptions::default()
                             },
                             direct_env,

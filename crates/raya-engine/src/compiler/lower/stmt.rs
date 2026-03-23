@@ -2610,7 +2610,7 @@ impl<'a> Lowerer<'a> {
         let publish_to_direct_eval_env = self.in_direct_eval_function
             && !(self.js_strict_context && self.block_depth > 0);
         if publish_to_direct_eval_env {
-            self.emit_direct_eval_binding_set(
+            self.emit_direct_eval_binding_declare_function(
                 self.interner.resolve(func_decl.name.name),
                 closure_reg.clone(),
             );

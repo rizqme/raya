@@ -3578,6 +3578,7 @@ impl<'a> Lowerer<'a> {
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
+        let saved_hoisted_function_decl_spans = std::mem::take(&mut self.hoisted_function_decl_spans);
         self.js_strict_context = is_strict_js;
         self.in_direct_eval_function = self
             .direct_eval_entry_function
@@ -3671,6 +3672,7 @@ impl<'a> Lowerer<'a> {
         self.eval_completion_local = saved_eval_completion_local;
         self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
         self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
+        self.hoisted_function_decl_spans = saved_hoisted_function_decl_spans;
         lowered
     }
 
@@ -3701,6 +3703,7 @@ impl<'a> Lowerer<'a> {
         self.pending_constructor_prologue = None;
         self.current_method_env_globals = None;
         self.pending_class_method_env_globals = None;
+        self.hoisted_function_decl_spans.clear();
 
         // Pre-scan to identify captured variables
         let stmts_owned: Vec<ast::Statement> = stmts.iter().map(|s| (*s).clone()).collect();

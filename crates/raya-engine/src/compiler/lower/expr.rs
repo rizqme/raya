@@ -587,6 +587,19 @@ impl<'a> Lowerer<'a> {
         });
     }
 
+    pub(super) fn emit_direct_eval_binding_declare_function(
+        &mut self,
+        name: &str,
+        value: Register,
+    ) {
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_EVAL_ENV_DECLARE_FUNCTION,
+            args: vec![name_reg, value],
+        });
+    }
+
     fn emit_unresolved_js_assignment(&mut self, name: &str, value: Register) {
         let name_reg = self.emit_direct_eval_name_reg(name);
         self.emit(IrInstr::NativeCall {
@@ -2206,6 +2219,16 @@ impl<'a> Lowerer<'a> {
                     dest: in_parameter_initializer_reg.clone(),
                     value: IrValue::Constant(IrConstant::Boolean(self.parameter_scope_eval_mode)),
                 });
+                let uses_script_global_bindings_reg =
+                    self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+                let uses_script_global_bindings = self
+                    .current_function
+                    .as_ref()
+                    .is_some_and(|function| function.name == "main");
+                self.emit(IrInstr::Assign {
+                    dest: uses_script_global_bindings_reg.clone(),
+                    value: IrValue::Constant(IrConstant::Boolean(uses_script_global_bindings)),
+                });
                 self.emit(IrInstr::NativeCall {
                     dest: Some(dest.clone()),
                     native_id: crate::compiler::native_id::FUNCTION_EVAL_HELPER,
@@ -2214,6 +2237,7 @@ impl<'a> Lowerer<'a> {
                         env_object.clone(),
                         eval_context_reg,
                         in_parameter_initializer_reg,
+                        uses_script_global_bindings_reg,
                     ],
                 });
                 self.write_back_direct_eval_environment(env_object);
@@ -2728,6 +2752,22 @@ impl<'a> Lowerer<'a> {
                     && !self.type_is_callable(closure_ty)
                     && !self.runtime_call_may_be_callable(closure_ty)
                 {
+                    if self.js_this_binding_compat && self.allow_unresolved_runtime_fallback {
+                        let closure = self.alloc_register(UNRESOLVED);
+                        self.emit(IrInstr::LoadGlobal {
+                            dest: closure.clone(),
+                            index: global_idx,
+                        });
+                        let receiver = self.lower_undefined_literal();
+                        if call.has_spread_arguments() {
+                            let args_array = self.lower_call_argument_array(&call.arguments);
+                            self.emit_js_apply_helper(dest.clone(), receiver, closure, args_array);
+                        } else {
+                            self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
+                        }
+                        self.propagate_type_projection_to_register(call_ty, &dest);
+                        return dest;
+                    }
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
                             message: format!(
@@ -8058,7 +8098,13 @@ impl<'a> Lowerer<'a> {
         }
         self.current_function = Some(ir_func);
         let saved_js_strict_context = self.js_strict_context;
+        let saved_in_direct_eval_function = self.in_direct_eval_function;
+        let saved_hoisted_function_decl_spans = std::mem::take(&mut self.hoisted_function_decl_spans);
         self.js_strict_context = is_strict_js;
+        self.in_direct_eval_function = self
+            .direct_eval_entry_function
+            .as_deref()
+            .is_some_and(|target| target == function_name);
         self.body_scope_eval_arguments_mode = false;
 
         let entry_block = self.alloc_block();
@@ -8134,6 +8180,8 @@ impl<'a> Lowerer<'a> {
         self.pending_arrow_functions
             .push((func_id.as_u32(), lowered_function));
         self.js_strict_context = saved_js_strict_context;
+        self.in_direct_eval_function = saved_in_direct_eval_function;
+        self.hoisted_function_decl_spans = saved_hoisted_function_decl_spans;
 
         self.next_register = saved_register;
         self.next_block = saved_block;

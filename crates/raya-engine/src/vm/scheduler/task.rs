@@ -182,8 +182,14 @@ struct ActivationEvalEnv {
 
 #[derive(Default)]
 struct EvalState {
-    active_env_stack: Vec<Value>,
+    active_env_stack: Vec<ActiveDirectEvalEnv>,
     activation_envs: Vec<ActivationEvalEnv>,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct ActiveDirectEvalEnv {
+    env: Value,
+    uses_script_global_bindings: bool,
 }
 
 /// Initialization and mutex state (VM worker only, rare access)
@@ -450,16 +456,33 @@ impl Task {
         self.current_arg_count.store(count, Ordering::Relaxed);
     }
 
-    pub fn push_active_direct_eval_env(&self, env: Value) {
-        self.init.lock().eval_state.active_env_stack.push(env);
+    pub fn push_active_direct_eval_env(&self, env: Value, uses_script_global_bindings: bool) {
+        self.init.lock().eval_state.active_env_stack.push(ActiveDirectEvalEnv {
+            env,
+            uses_script_global_bindings,
+        });
     }
 
     pub fn pop_active_direct_eval_env(&self) -> Option<Value> {
-        self.init.lock().eval_state.active_env_stack.pop()
+        self.init.lock().eval_state.active_env_stack.pop().map(|ctx| ctx.env)
     }
 
     pub fn current_active_direct_eval_env(&self) -> Option<Value> {
-        self.init.lock().eval_state.active_env_stack.last().copied()
+        self.init
+            .lock()
+            .eval_state
+            .active_env_stack
+            .last()
+            .map(|ctx| ctx.env)
+    }
+
+    pub fn current_active_direct_eval_uses_script_global_bindings(&self) -> bool {
+        self.init
+            .lock()
+            .eval_state
+            .active_env_stack
+            .last()
+            .is_some_and(|ctx| ctx.uses_script_global_bindings)
     }
 
     pub fn set_activation_direct_eval_env(&self, func_id: usize, locals_base: usize, env: Value) {

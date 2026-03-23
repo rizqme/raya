@@ -415,6 +415,7 @@ pub struct CallableData {
     pub captures: Vec<Value>,
     pub module: Option<Arc<crate::compiler::Module>>,
     pub direct_eval_env: Option<Value>,
+    pub direct_eval_uses_script_global_bindings: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -730,6 +731,13 @@ impl Object {
         self.callable.as_ref()?.direct_eval_env
     }
 
+    /// Whether this callable should use script-global binding rules for direct eval.
+    pub fn callable_direct_eval_uses_script_global_bindings(&self) -> bool {
+        self.callable
+            .as_ref()
+            .is_some_and(|callable| callable.direct_eval_uses_script_global_bindings)
+    }
+
     /// Attach a direct-eval environment to this callable.
     pub fn set_callable_direct_eval_env(&mut self, env: Value) -> Result<(), String> {
         let callable = self
@@ -737,6 +745,19 @@ impl Object {
             .as_mut()
             .ok_or_else(|| "Not a callable object".to_string())?;
         callable.direct_eval_env = Some(env);
+        Ok(())
+    }
+
+    /// Attach direct-eval global-binding policy to this callable.
+    pub fn set_callable_direct_eval_uses_script_global_bindings(
+        &mut self,
+        value: bool,
+    ) -> Result<(), String> {
+        let callable = self
+            .callable
+            .as_mut()
+            .ok_or_else(|| "Not a callable object".to_string())?;
+        callable.direct_eval_uses_script_global_bindings = value;
         Ok(())
     }
 
@@ -787,6 +808,7 @@ impl Object {
             captures,
             module: None,
             direct_eval_env: None,
+            direct_eval_uses_script_global_bindings: false,
         }));
         obj
     }
@@ -803,6 +825,7 @@ impl Object {
             captures,
             module: Some(module),
             direct_eval_env: None,
+            direct_eval_uses_script_global_bindings: false,
         }));
         obj
     }
@@ -819,6 +842,7 @@ impl Object {
             captures: Vec::new(),
             module,
             direct_eval_env: None,
+            direct_eval_uses_script_global_bindings: false,
         }));
         obj
     }
@@ -834,6 +858,7 @@ impl Object {
             captures: Vec::new(),
             module: None,
             direct_eval_env: None,
+            direct_eval_uses_script_global_bindings: false,
         }));
         obj
     }
@@ -860,6 +885,7 @@ impl Object {
             captures: Vec::new(),
             module: None,
             direct_eval_env: None,
+            direct_eval_uses_script_global_bindings: false,
         }));
         obj
     }

@@ -45,6 +45,9 @@ impl<'a> Interpreter<'a> {
                     Object::new_closure_with_module(func_index, captures, Arc::new(module.clone()));
                 if let Some(env) = self.current_activation_eval_env(task) {
                     let _ = closure.set_callable_direct_eval_env(env);
+                    let _ = closure.set_callable_direct_eval_uses_script_global_bindings(
+                        task.current_active_direct_eval_uses_script_global_bindings(),
+                    );
                 }
                 let gc_ptr = self.gc.lock().allocate(closure);
                 let value =

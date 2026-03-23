@@ -95,6 +95,8 @@ pub const OBJECT_EVAL_ENV_DECLARE_VAR: u16 = 0x002B;
 pub const OBJECT_EVAL_ENV_HAS: u16 = 0x002C;
 /// Assign an unresolved JS identifier through activation eval env / global fallback.
 pub const OBJECT_SET_AMBIENT_GLOBAL: u16 = 0x002D;
+/// Hoist a function declaration binding into the active eval environment.
+pub const OBJECT_EVAL_ENV_DECLARE_FUNCTION: u16 = 0x002E;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -612,6 +614,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_EVAL_ENV_DECLARE_VAR => "Object.evalEnvDeclareVar",
         OBJECT_EVAL_ENV_HAS => "Object.evalEnvHas",
         OBJECT_SET_AMBIENT_GLOBAL => "Object.setAmbientGlobal",
+        OBJECT_EVAL_ENV_DECLARE_FUNCTION => "Object.evalEnvDeclareFunction",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",
