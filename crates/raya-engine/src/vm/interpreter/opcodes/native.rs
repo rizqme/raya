@@ -154,6 +154,7 @@ struct DynamicJsCompileOptions {
     direct_eval_entry_function: Option<String>,
     direct_eval_binding_names: FxHashSet<String>,
     has_parameter_named_arguments: bool,
+    in_parameter_initializer: bool,
 }
 
 struct DirectEvalIdentifierCollector<'a> {
@@ -2021,9 +2022,19 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
-    fn current_activation_eval_env(&self, task: &Arc<Task>) -> Option<Value> {
+    pub(in crate::vm::interpreter) fn current_activation_eval_env(
+        &self,
+        task: &Arc<Task>,
+    ) -> Option<Value> {
         task.current_active_direct_eval_env()
             .or_else(|| task.current_activation_direct_eval_env())
+            .or_else(|| {
+                task.current_closure().and_then(|closure| {
+                    let closure_ptr = unsafe { closure.as_ptr::<Object>() }?;
+                    let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+                    closure_obj.callable_direct_eval_env()
+                })
+            })
     }
 
     fn activation_eval_env_get(
@@ -2049,6 +2060,17 @@ impl<'a> Interpreter<'a> {
             return Ok(false);
         };
         self.set_property_value_via_js_semantics(env, key, value, env, task, module)
+    }
+
+    fn activation_eval_env_has(
+        &self,
+        task: &Arc<Task>,
+        key: &str,
+    ) -> bool {
+        let Some(env) = self.current_activation_eval_env(task) else {
+            return false;
+        };
+        self.has_property_via_js_semantics(env, key)
     }
 
     fn activation_eval_env_declare_var(
@@ -5920,6 +5942,10 @@ impl<'a> Interpreter<'a> {
             .filter(|function| function.is_strict_js)
             .map(|_| "\"use strict\";\n")
             .unwrap_or("");
+        let caller_has_own_arguments_binding = module
+            .functions
+            .get(task.current_func_id())
+            .is_some_and(|function| function.uses_js_this_slot);
         if direct_env.is_some()
             && options.has_parameter_named_arguments
             && self.raw_direct_eval_declares_arguments(source)
@@ -5927,6 +5953,16 @@ impl<'a> Interpreter<'a> {
             return Err(VmError::SyntaxError(
                 "direct eval may not declare 'arguments' when the caller parameter environment already binds it"
                 .to_string(),
+            ));
+        }
+        if direct_env.is_some()
+            && options.in_parameter_initializer
+            && caller_has_own_arguments_binding
+            && self.raw_direct_eval_declares_arguments(source)
+        {
+            return Err(VmError::SyntaxError(
+                "direct eval may not declare 'arguments' during parameter initialization when the caller already provides an arguments binding"
+                    .to_string(),
             ));
         }
         let caller_has_parameter_named_arguments = options.has_parameter_named_arguments;
@@ -5939,6 +5975,7 @@ impl<'a> Interpreter<'a> {
                 DynamicJsCompileOptions {
                     direct_eval_entry_function: Some("__direct_eval__".to_string()),
                     has_parameter_named_arguments: caller_has_parameter_named_arguments,
+                    in_parameter_initializer: options.in_parameter_initializer,
                     ..DynamicJsCompileOptions::default()
                 },
                 Some(self.current_direct_eval_this_value(stack, task, module)),
@@ -5966,6 +6003,12 @@ impl<'a> Interpreter<'a> {
             "Dynamic eval module registration error",
             "Dynamic eval compile did not produce wrapper function",
         )?;
+        if let Some(env) = direct_env {
+            if let Some(closure_ptr) = unsafe { closure_val.as_ptr::<Object>() } {
+                let closure = unsafe { &mut *closure_ptr.as_ptr() };
+                let _ = closure.set_callable_direct_eval_env(env);
+            }
+        }
         if let Some(env) = direct_env {
             task.push_active_direct_eval_env(env);
             let result =
@@ -10325,6 +10368,26 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_HAS => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "eval env has expects a string name".to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "eval env has expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        if let Err(error) =
+                            stack.push(Value::bool(self.activation_eval_env_has(task, &name.data)))
+                        {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     id if id == crate::compiler::native_id::OBJECT_SET_AMBIENT_GLOBAL => {
                         if args.len() != 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(
@@ -10560,10 +10623,13 @@ impl<'a> Interpreter<'a> {
                         let direct_env = args.get(1).copied();
                         let has_parameter_named_arguments =
                             args.get(2).copied().is_some_and(|value| value.is_truthy());
+                        let in_parameter_initializer =
+                            args.get(3).copied().is_some_and(|value| value.is_truthy());
                         let value = match self.eval_dynamic_js_source(
                             &source,
                             DynamicJsCompileOptions {
                                 has_parameter_named_arguments,
+                                in_parameter_initializer,
                                 ..DynamicJsCompileOptions::default()
                             },
                             direct_env,

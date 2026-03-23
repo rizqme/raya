@@ -8,8 +8,8 @@ use super::{
     REGEXP_TYPE_ID, STRING_TYPE_ID, TASK_TYPE_ID, UNKNOWN_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
 };
 use crate::compiler::ir::{
-    BinaryOp, FunctionId, IrConstant, IrInstr, IrValue, NominalTypeId, Register, Terminator,
-    UnaryOp,
+    BasicBlock, BinaryOp, FunctionId, IrConstant, IrInstr, IrValue, NominalTypeId, Register,
+    Terminator, UnaryOp,
 };
 use crate::compiler::CompileError;
 use crate::parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
@@ -567,6 +567,17 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
+    fn emit_direct_eval_binding_has(&mut self, name: &str) -> Register {
+        let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_EVAL_ENV_HAS,
+            args: vec![name_reg],
+        });
+        dest
+    }
+
     pub(super) fn emit_direct_eval_binding_set(&mut self, name: &str, value: Register) {
         let name_reg = self.emit_direct_eval_name_reg(name);
         self.emit(IrInstr::NativeCall {
@@ -621,6 +632,45 @@ impl<'a> Lowerer<'a> {
     fn direct_eval_exposes_arguments(&self) -> bool {
         self.js_this_binding_compat
             && (self.js_arguments_local.is_some() || self.direct_eval_binding_enabled("arguments"))
+    }
+
+    fn lower_parameter_scope_eval_arguments(&mut self) -> Register {
+        let name = "arguments";
+        let has_binding = self.emit_direct_eval_binding_has(name);
+        let hit_block = self.alloc_block();
+        let miss_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+        let dest = self.alloc_register(UNRESOLVED);
+        self.set_terminator(Terminator::Branch {
+            cond: has_binding,
+            then_block: hit_block,
+            else_block: miss_block,
+        });
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(hit_block, "param.eval.args.hit"));
+        self.current_block = hit_block;
+        let value = self.emit_direct_eval_binding_get(name, false);
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(value),
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(miss_block, "param.eval.args.miss"));
+        self.current_block = miss_block;
+        let fallback = self.lower_js_arguments_object();
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(fallback),
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(merge_block, "param.eval.args.merge"));
+        self.current_block = merge_block;
+        dest
     }
 
     fn lower_direct_eval_environment_object(&mut self) -> Register {
@@ -1310,6 +1360,20 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        if name == "arguments"
+            && self.body_scope_eval_arguments_mode
+            && !self.function_map.contains_key(&ident.name)
+        {
+            return self.lower_parameter_scope_eval_arguments();
+        }
+
+        if self.parameter_scope_eval_mode {
+            if name == "arguments" {
+                return self.lower_parameter_scope_eval_arguments();
+            }
+            return self.emit_direct_eval_binding_get(name, false);
+        }
+
         // Ambient builtin globals (seeded by declaration surfaces) are resolved at runtime
         // through a dedicated native lookup and do not require source-level declarations.
         if self.ambient_builtin_globals.contains(name) {
@@ -1370,36 +1434,40 @@ impl<'a> Lowerer<'a> {
         }
 
         // Check if this is a named function used as a value (function reference)
-        if let Some(&func_id) = self.function_map.get(&ident.name) {
-            let dest = self.alloc_register(
-                self.effective_identifier_value_type(ident, self.default_js_function_type()),
-            );
-            self.emit(IrInstr::MakeClosure {
-                dest: dest.clone(),
-                func: func_id,
-                captures: vec![],
-            });
-            return dest;
+        if !self.parameter_scope_eval_mode {
+            if let Some(&func_id) = self.function_map.get(&ident.name) {
+                let dest = self.alloc_register(
+                    self.effective_identifier_value_type(ident, self.default_js_function_type()),
+                );
+                self.emit(IrInstr::MakeClosure {
+                    dest: dest.clone(),
+                    func: func_id,
+                    captures: vec![],
+                });
+                return dest;
+            }
         }
 
         // JS class identifiers are first-class constructor values. Materialize a
         // canonical runtime class handle instead of leaking the compiler's local
         // nominal type id into JS value position.
-        if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
-            let dest = self.alloc_register(
-                self.effective_identifier_value_type(ident, self.default_js_function_type()),
-            );
-            let nominal_id_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-            self.emit(IrInstr::Assign {
-                dest: nominal_id_reg.clone(),
-                value: IrValue::Constant(IrConstant::I32(nominal_type_id.as_u32() as i32)),
-            });
-            self.emit(IrInstr::NativeCall {
-                dest: Some(dest.clone()),
-                native_id: crate::compiler::native_id::OBJECT_GET_CLASS_VALUE,
-                args: vec![nominal_id_reg],
-            });
-            return dest;
+        if !self.parameter_scope_eval_mode {
+            if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
+                let dest = self.alloc_register(
+                    self.effective_identifier_value_type(ident, self.default_js_function_type()),
+                );
+                let nominal_id_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: nominal_id_reg.clone(),
+                    value: IrValue::Constant(IrConstant::I32(nominal_type_id.as_u32() as i32)),
+                });
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id: crate::compiler::native_id::OBJECT_GET_CLASS_VALUE,
+                    args: vec![nominal_id_reg],
+                });
+                return dest;
+            }
         }
 
         // In JS-compat mode with runtime fallback, emit a dynamic global lookup
@@ -2132,10 +2200,21 @@ impl<'a> Lowerer<'a> {
                     dest: eval_context_reg.clone(),
                     value: IrValue::Constant(IrConstant::Boolean(has_parameter_named_arguments)),
                 });
+                let in_parameter_initializer_reg =
+                    self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: in_parameter_initializer_reg.clone(),
+                    value: IrValue::Constant(IrConstant::Boolean(self.parameter_scope_eval_mode)),
+                });
                 self.emit(IrInstr::NativeCall {
                     dest: Some(dest.clone()),
                     native_id: crate::compiler::native_id::FUNCTION_EVAL_HELPER,
-                    args: vec![source, env_object.clone(), eval_context_reg],
+                    args: vec![
+                        source,
+                        env_object.clone(),
+                        eval_context_reg,
+                        in_parameter_initializer_reg,
+                    ],
                 });
                 self.write_back_direct_eval_environment(env_object);
                 return dest;
@@ -7784,6 +7863,8 @@ impl<'a> Lowerer<'a> {
         let saved_closure_locals = std::mem::take(&mut self.closure_locals);
         let saved_parameter_symbols = self.parameter_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
+        let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
+        let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
 
         let mut new_ancestor_vars = rustc_hash::FxHashMap::default();
         for (sym, &local_idx) in &saved_local_map {
@@ -7978,6 +8059,7 @@ impl<'a> Lowerer<'a> {
         self.current_function = Some(ir_func);
         let saved_js_strict_context = self.js_strict_context;
         self.js_strict_context = is_strict_js;
+        self.body_scope_eval_arguments_mode = false;
 
         let entry_block = self.alloc_block();
         self.current_block = entry_block;
@@ -8077,6 +8159,8 @@ impl<'a> Lowerer<'a> {
         self.generator_yield_array_local = saved_generator_yield_array_local;
         self.parameter_symbols = saved_parameter_symbols;
         self.eval_completion_local = saved_eval_completion_local;
+        self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
+        self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
         self.closure_locals = saved_closure_locals;
         self.function_depth = saved_function_depth;
 
@@ -8274,6 +8358,8 @@ impl<'a> Lowerer<'a> {
         let saved_generator_yield_array_local = self.generator_yield_array_local.take();
         let saved_parameter_symbols = self.parameter_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
+        let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
+        let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
         // closure_locals maps local-slot indices to async func IDs; it is
         // per-scope, so it must be cleared on entry and restored on exit to
         // prevent stale entries from an outer (or sibling) function bleeding
@@ -8526,6 +8612,7 @@ impl<'a> Lowerer<'a> {
         self.current_function = Some(ir_func);
         let saved_js_strict_context = self.js_strict_context;
         self.js_strict_context = is_strict_js;
+        self.body_scope_eval_arguments_mode = true;
 
         // Create entry block
         let entry_block = self.alloc_block();
@@ -8638,6 +8725,8 @@ impl<'a> Lowerer<'a> {
         self.generator_yield_array_local = saved_generator_yield_array_local;
         self.parameter_symbols = saved_parameter_symbols;
         self.eval_completion_local = saved_eval_completion_local;
+        self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
+        self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
         self.closure_locals = saved_closure_locals;
         self.function_depth = saved_function_depth;
 

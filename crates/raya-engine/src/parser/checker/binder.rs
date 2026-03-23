@@ -3741,7 +3741,7 @@ impl<'a> Binder<'a> {
     ) -> Result<(), BindError> {
         let mut seen_optional = false;
         for param in params {
-            let is_optional = param.optional || param.default_value.is_some();
+            let is_optional = param.optional;
             if is_optional {
                 seen_optional = true;
             } else if seen_optional {

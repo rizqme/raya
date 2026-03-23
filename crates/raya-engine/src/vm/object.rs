@@ -414,6 +414,7 @@ pub struct CallableData {
     pub kind: CallableKind,
     pub captures: Vec<Value>,
     pub module: Option<Arc<crate::compiler::Module>>,
+    pub direct_eval_env: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -724,6 +725,21 @@ impl Object {
         self.callable.as_ref()?.module.clone()
     }
 
+    /// Get the direct-eval environment captured by this callable, if any.
+    pub fn callable_direct_eval_env(&self) -> Option<Value> {
+        self.callable.as_ref()?.direct_eval_env
+    }
+
+    /// Attach a direct-eval environment to this callable.
+    pub fn set_callable_direct_eval_env(&mut self, env: Value) -> Result<(), String> {
+        let callable = self
+            .callable
+            .as_mut()
+            .ok_or_else(|| "Not a callable object".to_string())?;
+        callable.direct_eval_env = Some(env);
+        Ok(())
+    }
+
     /// Get captured variable values from the callable extension.
     pub fn callable_captures(&self) -> &[Value] {
         self.callable
@@ -770,6 +786,7 @@ impl Object {
             kind: CallableKind::Closure { func_id },
             captures,
             module: None,
+            direct_eval_env: None,
         }));
         obj
     }
@@ -785,6 +802,7 @@ impl Object {
             kind: CallableKind::Closure { func_id },
             captures,
             module: Some(module),
+            direct_eval_env: None,
         }));
         obj
     }
@@ -800,6 +818,7 @@ impl Object {
             kind: CallableKind::BoundMethod { func_id, receiver },
             captures: Vec::new(),
             module,
+            direct_eval_env: None,
         }));
         obj
     }
@@ -814,6 +833,7 @@ impl Object {
             },
             captures: Vec::new(),
             module: None,
+            direct_eval_env: None,
         }));
         obj
     }
@@ -839,6 +859,7 @@ impl Object {
             },
             captures: Vec::new(),
             module: None,
+            direct_eval_env: None,
         }));
         obj
     }

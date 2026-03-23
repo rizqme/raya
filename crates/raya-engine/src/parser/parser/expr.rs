@@ -272,6 +272,12 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
         // 2. async arrow function: async () => expr or async x => expr
         // 3. async block expression: async { statements }
         Token::Async => {
+            if matches!(parser.peek(), Some(Token::Function)) && !parser.has_line_terminator_before_peek()
+            {
+                parser.advance();
+                return parse_function_expression(parser, start_span, true);
+            }
+
             parser.advance();
 
             // async { ... } block expression — fire-and-forget task

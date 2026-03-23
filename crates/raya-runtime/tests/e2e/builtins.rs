@@ -2875,6 +2875,42 @@ fn test_node_compat_arguments_object_is_stable_within_activation() {
 }
 
 #[test]
+fn test_node_compat_direct_eval_in_default_param_closure_sees_eval_arguments_binding() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let f = (p = eval("var arguments = 'param'"), q = () => arguments) => {
+                function arguments() {}
+                return JSON.stringify([typeof arguments, q()]);
+            };
+            return f();
+        }
+    "#,
+        "[\"function\",\"param\"]",
+    );
+}
+
+#[test]
+fn test_node_compat_direct_eval_in_default_param_rejects_arguments_decl_for_function() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            function probe(p = eval("var arguments")) {
+                function arguments() {}
+            }
+            try {
+                probe();
+                return "NO_THROW";
+            } catch (e) {
+                return e.name;
+            }
+        }
+    "#,
+        "SyntaxError",
+    );
+}
+
+#[test]
 fn test_node_compat_arguments_object_sloppy_mapping_tracks_param_assignment() {
     expect_string_runtime_node_compat(
         r#"

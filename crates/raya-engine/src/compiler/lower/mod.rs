@@ -725,6 +725,12 @@ pub struct Lowerer<'a> {
     direct_eval_binding_names: FxHashSet<String>,
     /// Whether the currently lowered function body is the direct-eval wrapper.
     in_direct_eval_function: bool,
+    /// Whether the current lowering context is inside a parameter initializer or a closure
+    /// created from one, where direct-eval bindings must shadow later body declarations.
+    parameter_scope_eval_mode: bool,
+    /// Whether the current function body is an arrow-compatible body where `arguments`
+    /// should first consult any carried parameter-scope eval bindings.
+    body_scope_eval_arguments_mode: bool,
     /// Parameter bindings visible in the currently lowered function body.
     parameter_symbols: FxHashSet<Symbol>,
     /// Anonymous local that tracks direct-eval script completion values.
@@ -1400,6 +1406,8 @@ impl<'a> Lowerer<'a> {
             direct_eval_entry_function: None,
             direct_eval_binding_names: FxHashSet::default(),
             in_direct_eval_function: false,
+            parameter_scope_eval_mode: false,
+            body_scope_eval_arguments_mode: false,
             parameter_symbols: FxHashSet::default(),
             eval_completion_local: None,
             generator_yield_array_local: None,
@@ -1581,7 +1589,7 @@ impl<'a> Lowerer<'a> {
         let initial = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::Assign {
             dest: initial.clone(),
-            value: IrValue::Constant(IrConstant::Null),
+            value: IrValue::Constant(IrConstant::Undefined),
         });
         self.emit(IrInstr::StoreLocal {
             index: local_idx,
@@ -3565,11 +3573,14 @@ impl<'a> Lowerer<'a> {
         let saved_in_direct_eval_function = self.in_direct_eval_function;
         let saved_parameter_symbols = self.parameter_symbols.clone();
         let saved_eval_completion_local = self.eval_completion_local;
+        let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
+        let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
         self.js_strict_context = is_strict_js;
         self.in_direct_eval_function = self
             .direct_eval_entry_function
             .as_deref()
             .is_some_and(|target| target == name);
+        self.body_scope_eval_arguments_mode = false;
 
         // Create entry block
         let entry_block = self.alloc_block();
@@ -3654,6 +3665,8 @@ impl<'a> Lowerer<'a> {
         self.in_direct_eval_function = saved_in_direct_eval_function;
         self.parameter_symbols = saved_parameter_symbols;
         self.eval_completion_local = saved_eval_completion_local;
+        self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
+        self.body_scope_eval_arguments_mode = saved_body_scope_eval_arguments_mode;
         lowered
     }
 
@@ -5082,6 +5095,8 @@ impl<'a> Lowerer<'a> {
     /// Must be called after entry block creation and parameter registration,
     /// before lowering the function body.
     fn emit_default_params(&mut self, params: &[ast::Parameter]) {
+        let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
+        self.parameter_scope_eval_mode = true;
         for param in params {
             let Pattern::Identifier(ident) = &param.pattern else {
                 continue;
@@ -5155,6 +5170,7 @@ impl<'a> Lowerer<'a> {
                 .add_block(BasicBlock::with_label(continue_block, "param.cont"));
             self.current_block = continue_block;
         }
+        self.parameter_scope_eval_mode = saved_parameter_scope_eval_mode;
     }
 
     /// Find a method's vtable slot in parent class hierarchy

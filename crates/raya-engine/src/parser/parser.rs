@@ -762,6 +762,22 @@ mod tests {
     }
 
     #[test]
+    fn test_async_generator_function_expression_parses() {
+        use crate::parser::ast::Expression;
+
+        let mut parser = Parser::new("async function* f() { yield 1; }").unwrap();
+        let expr = parser.parse_single_expression().unwrap();
+
+        match expr {
+            Expression::Function(func) => {
+                assert!(func.is_async);
+                assert!(func.is_generator);
+            }
+            other => panic!("Expected async generator function expression, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_parenthesized_comma_expression_stays_grouped() {
         use crate::parser::ast::{BinaryOperator, Expression};
 

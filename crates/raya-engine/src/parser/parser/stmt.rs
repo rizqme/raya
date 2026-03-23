@@ -664,15 +664,13 @@ fn parse_while_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     }))
 }
 
-/// Parse do-while statement: do { ... } while (condition);
+/// Parse do-while statement: do statement while (condition);
 fn parse_do_while_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
     parser.expect(Token::Do)?;
 
-    // Parse body (must be a block statement)
-    parser.expect(Token::LeftBrace)?;
-    let body_block = parse_block_statement(parser)?;
-    let body = Box::new(Statement::Block(body_block));
+    // `do` accepts any statement body, including empty statements.
+    let body = parse_block_or_statement(parser)?;
 
     // Parse while keyword and condition
     parser.expect(Token::While)?;

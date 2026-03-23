@@ -41,8 +41,11 @@ impl<'a> Interpreter<'a> {
                 }
                 captures.reverse();
 
-                let closure =
+                let mut closure =
                     Object::new_closure_with_module(func_index, captures, Arc::new(module.clone()));
+                if let Some(env) = self.current_activation_eval_env(task) {
+                    let _ = closure.set_callable_direct_eval_env(env);
+                }
                 let gc_ptr = self.gc.lock().allocate(closure);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
