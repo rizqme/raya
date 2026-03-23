@@ -137,6 +137,16 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let index = self.resolve_global_slot(module, local_index);
+                if let Some(name) = self.js_global_binding_slots.read().get(&index).cloned() {
+                    if let Some(binding) = self.js_global_bindings.read().get(&name).copied() {
+                        if !binding.initialized {
+                            return OpcodeResult::Error(VmError::ReferenceError(format!(
+                                "{} is not defined",
+                                name
+                            )));
+                        }
+                    }
+                }
                 let globals = self.globals_by_index.read();
                 let value = globals.get(index).copied().unwrap_or(Value::null());
                 drop(globals);
@@ -204,6 +214,20 @@ impl<'a> Interpreter<'a> {
                     globals.resize(index + 1, Value::null());
                 }
                 globals[index] = value;
+                drop(globals);
+                if let Some(name) = self.js_global_binding_slots.read().get(&index).cloned() {
+                    if std::env::var("RAYA_DEBUG_JS_GLOBAL_BINDINGS").is_ok() {
+                        eprintln!(
+                            "[js-global:store] name={} slot={} value={:#x}",
+                            name,
+                            index,
+                            value.raw()
+                        );
+                    }
+                    if let Some(binding) = self.js_global_bindings.write().get_mut(&name) {
+                        binding.initialized = true;
+                    }
+                }
                 OpcodeResult::Continue
             }
 

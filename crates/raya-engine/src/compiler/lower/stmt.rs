@@ -942,6 +942,33 @@ impl<'a> Lowerer<'a> {
             ast::Pattern::Identifier(ident) => {
                 // Module-top-level bindings must use globals so module functions can see them.
                 if self.function_depth == 0 && self.block_depth == 0 {
+                    if self.js_this_binding_compat {
+                        if let Some(&global_idx) = self.js_script_lexical_globals.get(&ident.name) {
+                            self.global_type_map.insert(global_idx, value_reg.ty);
+                            if let Some(fields) =
+                                self.register_object_fields.get(&value_reg.id).cloned()
+                            {
+                                self.variable_object_fields.insert(ident.name, fields);
+                                let nested_fields: FxHashMap<u16, Vec<(String, usize)>> = self
+                                    .register_nested_object_fields
+                                    .iter()
+                                    .filter_map(|(&(obj_reg, field_idx), layout)| {
+                                        (obj_reg == value_reg.id)
+                                            .then_some((field_idx, layout.clone()))
+                                    })
+                                    .collect();
+                                if !nested_fields.is_empty() {
+                                    self.variable_nested_object_fields
+                                        .insert(ident.name, nested_fields);
+                                }
+                            }
+                            self.emit(IrInstr::StoreGlobal {
+                                index: global_idx,
+                                value: value_reg,
+                            });
+                            return;
+                        }
+                    }
                     if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
                         self.global_type_map.insert(global_idx, value_reg.ty);
                         if let Some(fields) =
@@ -1903,7 +1930,41 @@ impl<'a> Lowerer<'a> {
             && self.block_depth == 0
             && decl.kind != crate::parser::ast::VariableKind::Var
             && self.js_script_lexical_globals.contains_key(&name);
-        if self.function_depth == 0 && (self.block_depth == 0 || uses_hoisted_script_global) {
+        if uses_top_level_script_lexical {
+            let global_idx = *self
+                .js_script_lexical_globals
+                .get(&name)
+                .expect("top-level JS lexical slot must exist");
+            if let Some(init) = &decl.initializer {
+                let mut value =
+                    self.lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
+                if let Some(type_ann) = &decl.type_annotation {
+                    value = self.coerce_value_to_annotation_type(value, type_ann);
+                }
+                self.global_type_map.insert(global_idx, value.ty);
+                self.emit(IrInstr::StoreGlobal {
+                    index: global_idx,
+                    value: value.clone(),
+                });
+            } else {
+                let undefined = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::Assign {
+                    dest: undefined.clone(),
+                    value: IrValue::Constant(IrConstant::Undefined),
+                });
+                self.global_type_map.insert(global_idx, undefined.ty);
+                self.emit(IrInstr::StoreGlobal {
+                    index: global_idx,
+                    value: undefined,
+                });
+            }
+            return;
+        }
+
+        if self.function_depth == 0
+            && (self.block_depth == 0 || uses_hoisted_script_global)
+            && !uses_top_level_script_lexical
+        {
             if let Some(&global_idx) = self.module_var_globals.get(&name) {
                 if let Some(init) = &decl.initializer {
                     let explicit_dynamic_any_annotation =
@@ -2174,37 +2235,6 @@ impl<'a> Lowerer<'a> {
                 // No local allocation — resolved via LoadGlobal/StoreGlobal
                 return;
             }
-        }
-
-        if uses_top_level_script_lexical {
-            let global_idx = *self
-                .js_script_lexical_globals
-                .get(&name)
-                .expect("top-level JS lexical slot must exist");
-            if let Some(init) = &decl.initializer {
-                let mut value =
-                    self.lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
-                if let Some(type_ann) = &decl.type_annotation {
-                    value = self.coerce_value_to_annotation_type(value, type_ann);
-                }
-                self.global_type_map.insert(global_idx, value.ty);
-                self.emit(IrInstr::StoreGlobal {
-                    index: global_idx,
-                    value: value.clone(),
-                });
-            } else {
-                let undefined = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::Assign {
-                    dest: undefined.clone(),
-                    value: IrValue::Constant(IrConstant::Undefined),
-                });
-                self.global_type_map.insert(global_idx, undefined.ty);
-                self.emit(IrInstr::StoreGlobal {
-                    index: global_idx,
-                    value: undefined,
-                });
-            }
-            return;
         }
 
         // Allocate local slot (only for non-constant or non-literal variables)

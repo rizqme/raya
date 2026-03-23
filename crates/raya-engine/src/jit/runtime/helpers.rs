@@ -61,12 +61,17 @@ pub struct JitRuntimeBridgeContext {
     pub semaphore_registry: *const SemaphoreRegistry,
     pub globals_by_index: *const parking_lot::RwLock<Vec<Value>>,
     pub builtin_global_slots: *const parking_lot::RwLock<FxHashMap<String, usize>>,
+    pub js_global_bindings:
+        *const parking_lot::RwLock<FxHashMap<String, crate::vm::interpreter::JsGlobalBindingRecord>>,
+    pub js_global_binding_slots: *const parking_lot::RwLock<FxHashMap<usize, String>>,
     pub constant_string_cache: *const parking_lot::RwLock<FxHashMap<(String, usize), Value>>,
     pub ephemeral_gc_roots: *const parking_lot::RwLock<Vec<Value>>,
     pub pinned_handles: *const parking_lot::RwLock<rustc_hash::FxHashSet<u64>>,
     pub tasks: *const Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     pub injector: *const Arc<Injector<Arc<Task>>>,
     pub module_layouts: *const parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
+    pub module_registry:
+        *const parking_lot::RwLock<crate::vm::interpreter::ModuleRegistry>,
     pub metadata: *const parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
     pub class_metadata: *const parking_lot::RwLock<ClassMetadataRegistry>,
     pub native_handler: *const Arc<dyn NativeHandler>,
@@ -98,12 +103,17 @@ pub fn build_runtime_bridge_context(
     semaphore_registry: &SemaphoreRegistry,
     globals_by_index: &parking_lot::RwLock<Vec<Value>>,
     builtin_global_slots: &parking_lot::RwLock<FxHashMap<String, usize>>,
+    js_global_bindings: &parking_lot::RwLock<
+        FxHashMap<String, crate::vm::interpreter::JsGlobalBindingRecord>,
+    >,
+    js_global_binding_slots: &parking_lot::RwLock<FxHashMap<usize, String>>,
     constant_string_cache: &parking_lot::RwLock<FxHashMap<(String, usize), Value>>,
     ephemeral_gc_roots: &parking_lot::RwLock<Vec<Value>>,
     pinned_handles: &parking_lot::RwLock<rustc_hash::FxHashSet<u64>>,
     tasks: &Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     injector: &Arc<Injector<Arc<Task>>>,
     module_layouts: &parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
+    module_registry: &parking_lot::RwLock<crate::vm::interpreter::ModuleRegistry>,
     metadata: &parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
     class_metadata: &parking_lot::RwLock<ClassMetadataRegistry>,
     native_handler: &Arc<dyn NativeHandler>,
@@ -135,12 +145,15 @@ pub fn build_runtime_bridge_context(
         semaphore_registry: semaphore_registry as *const _,
         globals_by_index: globals_by_index as *const _,
         builtin_global_slots: builtin_global_slots as *const _,
+        js_global_bindings: js_global_bindings as *const _,
+        js_global_binding_slots: js_global_binding_slots as *const _,
         constant_string_cache: constant_string_cache as *const _,
         ephemeral_gc_roots: ephemeral_gc_roots as *const _,
         pinned_handles: pinned_handles as *const _,
         tasks: tasks as *const _,
         injector: injector as *const _,
         module_layouts: module_layouts as *const _,
+        module_registry: module_registry as *const _,
         metadata: metadata as *const _,
         class_metadata: class_metadata as *const _,
         native_handler: native_handler as *const _,
@@ -450,6 +463,8 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         || bridge.safepoint.is_null()
         || bridge.globals_by_index.is_null()
         || bridge.builtin_global_slots.is_null()
+        || bridge.js_global_bindings.is_null()
+        || bridge.js_global_binding_slots.is_null()
         || bridge.constant_string_cache.is_null()
         || bridge.ephemeral_gc_roots.is_null()
         || bridge.pinned_handles.is_null()
@@ -459,6 +474,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         || bridge.class_metadata.is_null()
         || bridge.native_handler.is_null()
         || bridge.module_layouts.is_null()
+        || bridge.module_registry.is_null()
         || bridge.structural_shape_adapters.is_null()
         || bridge.structural_shape_names.is_null()
         || bridge.structural_layout_shapes.is_null()
@@ -480,6 +496,8 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         unsafe { &*bridge.safepoint },
         unsafe { &*bridge.globals_by_index },
         unsafe { &*bridge.builtin_global_slots },
+        unsafe { &*bridge.js_global_bindings },
+        unsafe { &*bridge.js_global_binding_slots },
         unsafe { &*bridge.constant_string_cache },
         unsafe { &*bridge.ephemeral_gc_roots },
         unsafe { &*bridge.pinned_handles },
@@ -489,6 +507,7 @@ fn jit_build_interpreter<'a>(bridge: &'a JitRuntimeBridgeContext) -> Option<Inte
         unsafe { &*bridge.class_metadata },
         unsafe { &*bridge.native_handler },
         unsafe { &*bridge.module_layouts },
+        unsafe { &*bridge.module_registry },
         unsafe { &*bridge.structural_shape_adapters },
         unsafe { &*bridge.structural_shape_names },
         unsafe { &*bridge.structural_layout_shapes },
@@ -1659,12 +1678,15 @@ mod tests {
             &shared.semaphore_registry,
             &shared.globals_by_index,
             &shared.builtin_global_slots,
+            &shared.js_global_bindings,
+            &shared.js_global_binding_slots,
             &shared.constant_string_cache,
             &shared.ephemeral_gc_roots,
             &shared.pinned_handles,
             &shared.tasks,
             &shared.injector,
             &shared.module_layouts,
+            &shared.module_registry,
             &shared.metadata,
             &shared.class_metadata,
             &shared.native_handler,
@@ -1727,12 +1749,15 @@ mod tests {
             &shared.semaphore_registry,
             &shared.globals_by_index,
             &shared.builtin_global_slots,
+            &shared.js_global_bindings,
+            &shared.js_global_binding_slots,
             &shared.constant_string_cache,
             &shared.ephemeral_gc_roots,
             &shared.pinned_handles,
             &shared.tasks,
             &shared.injector,
             &shared.module_layouts,
+            &shared.module_registry,
             &shared.metadata,
             &shared.class_metadata,
             &shared.native_handler,
@@ -1822,12 +1847,15 @@ mod tests {
             &shared.semaphore_registry,
             &shared.globals_by_index,
             &shared.builtin_global_slots,
+            &shared.js_global_bindings,
+            &shared.js_global_binding_slots,
             &shared.constant_string_cache,
             &shared.ephemeral_gc_roots,
             &shared.pinned_handles,
             &shared.tasks,
             &shared.injector,
             &shared.module_layouts,
+            &shared.module_registry,
             &shared.metadata,
             &shared.class_metadata,
             &shared.native_handler,

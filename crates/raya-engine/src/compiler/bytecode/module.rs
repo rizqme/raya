@@ -874,6 +874,26 @@ pub struct Metadata {
     pub structural_shapes: Vec<StructuralShapeInfo>,
     /// Physical structural layouts referenced by this module.
     pub structural_layouts: Vec<StructuralLayoutInfo>,
+    /// JS-compatible top-level bindings that participate in the realm global env.
+    pub js_global_bindings: Vec<JsGlobalBindingInfo>,
+}
+
+/// Kind of JS top-level global binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsGlobalBindingKind {
+    Var,
+    Function,
+    Lexical,
+    Class,
+}
+
+/// JS top-level binding metadata entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsGlobalBindingInfo {
+    pub name: String,
+    pub slot: u32,
+    pub kind: JsGlobalBindingKind,
+    pub published_to_global_object: bool,
 }
 
 /// Canonical structural shape metadata entry.
@@ -956,6 +976,10 @@ impl Metadata {
         for layout in &self.structural_layouts {
             layout.encode(writer);
         }
+        writer.emit_u32(self.js_global_bindings.len() as u32);
+        for binding in &self.js_global_bindings {
+            binding.encode(writer);
+        }
     }
 
     /// Decode metadata from binary
@@ -999,6 +1023,11 @@ impl Metadata {
         for _ in 0..structural_layout_len {
             structural_layouts.push(StructuralLayoutInfo::decode(reader)?);
         }
+        let js_global_binding_len = reader.read_u32()? as usize;
+        let mut js_global_bindings = Vec::with_capacity(js_global_binding_len);
+        for _ in 0..js_global_binding_len {
+            js_global_bindings.push(JsGlobalBindingInfo::decode(reader)?);
+        }
 
         Ok(Self {
             name,
@@ -1008,6 +1037,51 @@ impl Metadata {
             mono_debug_map,
             structural_shapes,
             structural_layouts,
+            js_global_bindings,
+        })
+    }
+}
+
+impl JsGlobalBindingKind {
+    fn encode(self, writer: &mut BytecodeWriter) {
+        writer.emit_u8(match self {
+            Self::Var => 0,
+            Self::Function => 1,
+            Self::Lexical => 2,
+            Self::Class => 3,
+        });
+    }
+
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        Ok(match reader.read_u8()? {
+            0 => Self::Var,
+            1 => Self::Function,
+            2 => Self::Lexical,
+            3 => Self::Class,
+            other => {
+                return Err(DecodeError::InvalidFormat(format!(
+                    "invalid js global binding kind: {other}"
+                )))
+            }
+        })
+    }
+}
+
+impl JsGlobalBindingInfo {
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        writer.emit_u32(self.name.len() as u32);
+        writer.buffer.extend_from_slice(self.name.as_bytes());
+        writer.emit_u32(self.slot);
+        self.kind.encode(writer);
+        writer.emit_u8(u8::from(self.published_to_global_object));
+    }
+
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            name: reader.read_string()?,
+            slot: reader.read_u32()?,
+            kind: JsGlobalBindingKind::decode(reader)?,
+            published_to_global_object: reader.read_u8()? != 0,
         })
     }
 }
@@ -1476,6 +1550,7 @@ impl Module {
                 mono_debug_map: Vec::new(),
                 structural_shapes: Vec::new(),
                 structural_layouts: Vec::new(),
+                js_global_bindings: Vec::new(),
             },
             exports: Vec::new(),
             imports: Vec::new(),

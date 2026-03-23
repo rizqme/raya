@@ -19,6 +19,10 @@ pub enum DecodeError {
     /// Invalid opcode
     #[error("Invalid opcode {0} at offset {1}")]
     InvalidOpcode(u8, usize),
+
+    /// Invalid encoded payload that cannot be represented by a more specific error.
+    #[error("Invalid bytecode format: {0}")]
+    InvalidFormat(String),
 }
 
 /// Bytecode writer for encoding instructions

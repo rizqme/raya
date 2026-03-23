@@ -64,6 +64,7 @@ pub enum MonomorphizationMode {
 #[derive(Debug, Clone, Default)]
 pub struct LoweringMetadata {
     pub module_global_slots: HashMap<String, u32>,
+    pub js_global_bindings: Vec<crate::compiler::bytecode::module::JsGlobalBindingInfo>,
 }
 
 /// Main compiler entry point
@@ -331,6 +332,7 @@ impl<'a> Compiler<'a> {
         let mut ir_module = lowerer.lower_module(module);
         let lowering_metadata = LoweringMetadata {
             module_global_slots: lowerer.module_global_slots(),
+            js_global_bindings: lowerer.js_global_bindings(),
         };
         if let Some(module_identity) = &self.module_identity {
             ir_module.name = module_identity.clone();
@@ -455,6 +457,7 @@ impl<'a> Compiler<'a> {
         }
         bytecode_module.metadata.structural_shapes = structural_shapes;
         bytecode_module.metadata.structural_layouts = structural_layouts;
+        bytecode_module.metadata.js_global_bindings = lowering_metadata.js_global_bindings.clone();
         populate_symbol_link_metadata(&mut bytecode_module, module, self.interner);
 
         // Dump annotated bytecode to stderr when RAYA_DEBUG_DUMP_BYTECODE is set

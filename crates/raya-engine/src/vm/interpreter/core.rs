@@ -310,6 +310,14 @@ pub struct Interpreter<'a> {
     /// Ambient builtin global slot mapping (name -> absolute global slot index).
     pub(in crate::vm::interpreter) builtin_global_slots: &'a RwLock<FxHashMap<String, usize>>,
 
+    /// Shared JS-compatible realm-global bindings keyed by identifier name.
+    pub(in crate::vm::interpreter) js_global_bindings:
+        &'a RwLock<FxHashMap<String, crate::vm::interpreter::shared_state::JsGlobalBindingRecord>>,
+
+    /// Reverse mapping from absolute global slot to JS-compatible binding name.
+    pub(in crate::vm::interpreter) js_global_binding_slots:
+        &'a RwLock<FxHashMap<usize, String>>,
+
     /// VM-local interned constant strings keyed by `(module checksum, constant index)`.
     pub(in crate::vm::interpreter) constant_string_cache:
         &'a RwLock<FxHashMap<(String, usize), Value>>,
@@ -342,6 +350,10 @@ pub struct Interpreter<'a> {
     /// Per-module runtime layouts (global slot base, class base, native table, init state).
     pub(in crate::vm::interpreter) module_layouts:
         &'a RwLock<FxHashMap<[u8; 32], crate::vm::interpreter::shared_state::ModuleRuntimeLayout>>,
+
+    /// Loaded modules indexed by name/checksum for lazy builtin initialization.
+    pub(in crate::vm::interpreter) module_registry:
+        &'a RwLock<crate::vm::interpreter::module_registry::ModuleRegistry>,
 
     /// Shared structural adapter cache keyed by `(provider_layout, required_shape)`.
     pub(in crate::vm::interpreter) structural_shape_adapters: &'a RwLock<
@@ -539,6 +551,37 @@ impl<'a> Interpreter<'a> {
                 initialized: false,
             },
         );
+
+        for binding in &module.metadata.js_global_bindings {
+            let absolute_slot = global_base + binding.slot as usize;
+            let initialized = matches!(
+                binding.kind,
+                crate::compiler::bytecode::module::JsGlobalBindingKind::Var
+                    | crate::compiler::bytecode::module::JsGlobalBindingKind::Function
+            );
+            self.js_global_binding_slots
+                .write()
+                .insert(absolute_slot, binding.name.clone());
+            self.js_global_bindings.write().insert(
+                binding.name.clone(),
+                crate::vm::interpreter::JsGlobalBindingRecord {
+                    slot: absolute_slot,
+                    kind: binding.kind,
+                    published_to_global_object: binding.published_to_global_object,
+                    initialized,
+                },
+            );
+            if std::env::var("RAYA_DEBUG_JS_GLOBAL_BINDINGS").is_ok() {
+                eprintln!(
+                    "[js-global:register] name={} slot={} kind={:?} published={} initialized={}",
+                    binding.name,
+                    absolute_slot,
+                    binding.kind,
+                    binding.published_to_global_object,
+                    initialized
+                );
+            }
+        }
 
         for shape in &module.metadata.structural_shapes {
             if shape.member_names.is_empty() {
@@ -1410,6 +1453,10 @@ impl<'a> Interpreter<'a> {
         safepoint: &'a SafepointCoordinator,
         globals_by_index: &'a RwLock<Vec<Value>>,
         builtin_global_slots: &'a RwLock<FxHashMap<String, usize>>,
+        js_global_bindings: &'a RwLock<
+            FxHashMap<String, crate::vm::interpreter::shared_state::JsGlobalBindingRecord>,
+        >,
+        js_global_binding_slots: &'a RwLock<FxHashMap<usize, String>>,
         constant_string_cache: &'a RwLock<FxHashMap<(String, usize), Value>>,
         ephemeral_gc_roots: &'a RwLock<Vec<Value>>,
         pinned_handles: &'a RwLock<FxHashSet<u64>>,
@@ -1421,6 +1468,7 @@ impl<'a> Interpreter<'a> {
         module_layouts: &'a RwLock<
             FxHashMap<[u8; 32], crate::vm::interpreter::shared_state::ModuleRuntimeLayout>,
         >,
+        module_registry: &'a RwLock<crate::vm::interpreter::module_registry::ModuleRegistry>,
         structural_shape_adapters: &'a RwLock<
             FxHashMap<
                 crate::vm::interpreter::shared_state::StructuralAdapterKey,
@@ -1446,6 +1494,8 @@ impl<'a> Interpreter<'a> {
             safepoint,
             globals_by_index,
             builtin_global_slots,
+            js_global_bindings,
+            js_global_binding_slots,
             constant_string_cache,
             ephemeral_gc_roots,
             pinned_handles,
@@ -1455,6 +1505,7 @@ impl<'a> Interpreter<'a> {
             class_metadata,
             native_handler,
             module_layouts,
+            module_registry,
             structural_shape_adapters,
             structural_shape_names,
             structural_object_shapes,
@@ -2099,12 +2150,15 @@ impl<'a> Interpreter<'a> {
                                         self.semaphore_registry,
                                         self.globals_by_index,
                                         self.builtin_global_slots,
+                                        self.js_global_bindings,
+                                        self.js_global_binding_slots,
                                         self.constant_string_cache,
                                         self.ephemeral_gc_roots,
                                         self.pinned_handles,
                                         self.tasks,
                                         self.injector,
                                         self.module_layouts,
+                                        self.module_registry,
                                         self.metadata,
                                         self.class_metadata,
                                         self.native_handler,

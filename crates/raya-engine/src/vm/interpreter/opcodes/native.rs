@@ -2194,7 +2194,20 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<(), VmError> {
-        let Some(global_this) = self.builtin_global_value("globalThis") else {
+        if let Some(binding) = self.shared_js_global_binding(key) {
+            {
+                let mut globals = self.globals_by_index.write();
+                if binding.slot >= globals.len() {
+                    globals.resize(binding.slot + 1, Value::undefined());
+                }
+                globals[binding.slot] = value;
+            }
+            if let Some(binding) = self.js_global_bindings.write().get_mut(key) {
+                binding.initialized = true;
+            }
+        }
+
+        let Some(global_this) = self.ensure_builtin_global_value("globalThis", caller_task)? else {
             return Ok(());
         };
 
@@ -2207,6 +2220,19 @@ impl<'a> Interpreter<'a> {
                 && self.builtin_global_slots.read().contains_key(key));
 
         if has_concrete_own_property {
+            if let Some((_, configurable, _)) = self.own_js_property_flags(global_this, key) {
+                if configurable {
+                    self.define_data_property_on_target(
+                        global_this,
+                        key,
+                        value,
+                        true,
+                        true,
+                        configurable,
+                    )?;
+                    return Ok(());
+                }
+            }
             return match self.set_property_value_via_js_semantics(
                 global_this,
                 key,
@@ -2559,7 +2585,7 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<(), VmError> {
-        let Some(global_this) = self.builtin_global_value("globalThis") else {
+        let Some(global_this) = self.ensure_builtin_global_value("globalThis", task)? else {
             return Ok(());
         };
         if self.has_property_via_js_semantics(global_this, key) {
@@ -4564,6 +4590,325 @@ impl<'a> Interpreter<'a> {
     pub(in crate::vm::interpreter) fn builtin_global_value(&self, name: &str) -> Option<Value> {
         let slot = self.builtin_global_slots.read().get(name).copied()?;
         self.globals_by_index.read().get(slot).copied()
+    }
+
+    fn store_builtin_global_value(&self, name: &str, value: Value) {
+        let mut slots = self.builtin_global_slots.write();
+        let mut globals = self.globals_by_index.write();
+        if let Some(&slot) = slots.get(name) {
+            if slot >= globals.len() {
+                globals.resize(slot + 1, Value::null());
+            }
+            globals[slot] = value;
+            return;
+        }
+        let slot = globals.len();
+        globals.push(value);
+        slots.insert(name.to_string(), slot);
+    }
+
+    fn refresh_initialized_builtin_exports(&self, module: &Arc<Module>) {
+        let Some(layout) = self.module_layouts.read().get(&module.checksum).cloned() else {
+            return;
+        };
+
+        for export in &module.exports {
+            if !matches!(export.symbol_type, crate::compiler::SymbolType::Constant) {
+                continue;
+            }
+            let slot = layout.global_base
+                + export
+                    .runtime_global_slot
+                    .map(|slot| slot as usize)
+                    .unwrap_or(export.index);
+            let Some(value) = self.globals_by_index.read().get(slot).copied() else {
+                continue;
+            };
+            if std::env::var("RAYA_DEBUG_BUILTIN_INIT").is_ok() {
+                eprintln!(
+                    "[builtin-init] refresh module={} export={} slot={} value={:#x}",
+                    module.metadata.name,
+                    export.name,
+                    slot,
+                    value.raw()
+                );
+            }
+            if value.is_null() || value.is_undefined() {
+                continue;
+            }
+            self.store_builtin_global_value(&export.name, value);
+        }
+    }
+
+    fn lookup_builtin_export_module(&self, name: &str) -> Option<Arc<Module>> {
+        let module = self.module_registry.read().all_modules().into_iter().find(|module| {
+            (module.metadata.name.starts_with("__raya_builtin__/")
+                || module.metadata.name.contains("builtins/")
+                || module
+                    .metadata
+                    .source_file
+                    .as_deref()
+                    .is_some_and(|path: &str| path.contains("builtins/")))
+                && module.exports.iter().any(|export| export.name == name)
+        });
+        if std::env::var("RAYA_DEBUG_BUILTIN_INIT").is_ok() {
+            eprintln!(
+                "[builtin-init] lookup name={} module={}",
+                name,
+                module
+                    .as_ref()
+                    .map(|module| module.metadata.name.as_str())
+                    .unwrap_or("<none>")
+            );
+        }
+        module
+    }
+
+    fn ensure_module_top_level_initialized(
+        &mut self,
+        module: Arc<Module>,
+        caller_task: &Arc<Task>,
+    ) -> Result<(), VmError> {
+        if self
+            .module_layouts
+            .read()
+            .get(&module.checksum)
+            .is_some_and(|layout| layout.initialized)
+        {
+            return Ok(());
+        }
+
+        let Some(main_fn_id) = module
+            .functions
+            .iter()
+            .rposition(|function| function.name == "main")
+        else {
+            if std::env::var("RAYA_DEBUG_BUILTIN_INIT").is_ok() {
+                eprintln!(
+                    "[builtin-init] module={} has no main",
+                    module.metadata.name
+                );
+            }
+            if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
+                layout.initialized = true;
+            }
+            return Ok(());
+        };
+
+        if std::env::var("RAYA_DEBUG_BUILTIN_INIT").is_ok() {
+            eprintln!(
+                "[builtin-init] running module={} main_fn_id={}",
+                module.metadata.name,
+                main_fn_id
+            );
+        }
+        if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
+            layout.initialized = true;
+        }
+        let init_task = Arc::new(Task::new(main_fn_id, module.clone(), Some(caller_task.id())));
+        self.tasks.write().insert(init_task.id(), init_task.clone());
+        match self.run(&init_task) {
+            ExecutionResult::Completed(value) => {
+                init_task.complete(value);
+                self.refresh_initialized_builtin_exports(&module);
+                if std::env::var("RAYA_DEBUG_BUILTIN_INIT").is_ok() {
+                    eprintln!(
+                        "[builtin-init] completed module={} result={:#x}",
+                        module.metadata.name,
+                        value.raw()
+                    );
+                }
+                if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
+                    layout.initialized = true;
+                }
+                Ok(())
+            }
+            ExecutionResult::Suspended(reason) => {
+                if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
+                    layout.initialized = false;
+                }
+                init_task.suspend(reason);
+                Err(VmError::RuntimeError(
+                    "Builtin module initialization suspended unexpectedly".to_string(),
+                ))
+            }
+            ExecutionResult::Failed(error) => {
+                if let Some(layout) = self.module_layouts.write().get_mut(&module.checksum) {
+                    layout.initialized = false;
+                }
+                init_task.fail();
+                if !caller_task.has_exception() {
+                    if let Some(exception) = init_task.current_exception() {
+                        caller_task.set_exception(exception);
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn ensure_builtin_global_value(
+        &mut self,
+        name: &str,
+        caller_task: &Arc<Task>,
+    ) -> Result<Option<Value>, VmError> {
+        let current = self.builtin_global_value(name);
+        if current.is_some_and(|value| !value.is_null() && !value.is_undefined()) {
+            return Ok(current);
+        }
+
+        let Some(module) = self.lookup_builtin_export_module(name) else {
+            return self.materialize_missing_builtin_constant(name, caller_task);
+        };
+        self.ensure_module_top_level_initialized(module, caller_task)?;
+        let refreshed = self
+            .builtin_global_value(name)
+            .filter(|value| !value.is_null() && !value.is_undefined());
+        if refreshed.is_some() {
+            Ok(refreshed)
+        } else {
+            self.materialize_missing_builtin_constant(name, caller_task)
+        }
+    }
+
+    fn materialize_missing_builtin_constant(
+        &mut self,
+        name: &str,
+        caller_task: &Arc<Task>,
+    ) -> Result<Option<Value>, VmError> {
+        let value = match name {
+            "globalThis" => {
+                let value = self.alloc_plain_object()?;
+                self.store_builtin_global_value("globalThis", value);
+                value
+            }
+            "Math" => {
+                let Some(nominal_type_id) = self
+                    .classes
+                    .read()
+                    .get_class_by_name("__NodeCompatMath")
+                    .map(|class| class.id)
+                else {
+                    return Ok(None);
+                };
+                let value = self.alloc_nominal_instance_value(nominal_type_id)?;
+                self.store_builtin_global_value("Math", value);
+                value
+            }
+            "Reflect" => {
+                let Some(nominal_type_id) = self
+                    .classes
+                    .read()
+                    .get_class_by_name("__NodeCompatReflect")
+                    .map(|class| class.id)
+                else {
+                    return Ok(None);
+                };
+                let value = self.alloc_nominal_instance_value(nominal_type_id)?;
+                self.store_builtin_global_value("Reflect", value);
+                value
+            }
+            _ => return Ok(None),
+        };
+
+        if name != "globalThis" {
+            if let Some(global_this) = self
+                .builtin_global_value("globalThis")
+                .filter(|global_this| !global_this.is_null() && !global_this.is_undefined())
+            {
+                let _ = self.define_data_property_on_target(
+                    global_this,
+                    name,
+                    value,
+                    true,
+                    true,
+                    true,
+                );
+            }
+        } else {
+            for sibling in ["Math", "Reflect"] {
+                let _ = self.ensure_builtin_global_value(sibling, caller_task)?;
+            }
+        }
+
+        Ok(Some(value))
+    }
+
+    fn shared_js_global_binding(
+        &self,
+        name: &str,
+    ) -> Option<crate::vm::interpreter::shared_state::JsGlobalBindingRecord> {
+        self.js_global_bindings.read().get(name).copied()
+    }
+
+    fn shared_js_global_binding_value(
+        &self,
+        name: &str,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(binding) = self.shared_js_global_binding(name) else {
+            if std::env::var("RAYA_DEBUG_JS_GLOBAL_BINDINGS").is_ok() {
+                eprintln!("[js-global:get] name={} hit=false", name);
+            }
+            return Ok(None);
+        };
+        if std::env::var("RAYA_DEBUG_JS_GLOBAL_BINDINGS").is_ok() {
+            eprintln!(
+                "[js-global:get] name={} hit=true slot={} initialized={} published={}",
+                name,
+                binding.slot,
+                binding.initialized,
+                binding.published_to_global_object
+            );
+        }
+        if !binding.initialized {
+            return Err(VmError::ReferenceError(format!("{name} is not defined")));
+        }
+        Ok(Some(
+            self.globals_by_index
+                .read()
+                .get(binding.slot)
+                .copied()
+                .unwrap_or(Value::undefined()),
+        ))
+    }
+
+    fn set_shared_js_global_binding_value(
+        &mut self,
+        name: &str,
+        value: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<bool, VmError> {
+        let Some(binding) = self.shared_js_global_binding(name) else {
+            return Ok(false);
+        };
+        if binding.published_to_global_object {
+            let Some(global_this) = self.ensure_builtin_global_value("globalThis", caller_task)? else {
+                return Ok(false);
+            };
+            let written = self.set_property_value_via_js_semantics(
+                global_this,
+                name,
+                value,
+                global_this,
+                caller_task,
+                caller_module,
+            )?;
+            if !written {
+                return Ok(false);
+            }
+        }
+        {
+            let mut globals = self.globals_by_index.write();
+            if binding.slot >= globals.len() {
+                globals.resize(binding.slot + 1, Value::undefined());
+            }
+            globals[binding.slot] = value;
+        }
+        if let Some(binding) = self.js_global_bindings.write().get_mut(name) {
+            binding.initialized = true;
+        }
+        Ok(true)
     }
 
     /// Look up the nominal type ID for a builtin class by name (e.g., "TypeError", "Error").
@@ -6791,6 +7136,24 @@ impl<'a> Interpreter<'a> {
             let source_is_strict = raw_eval_declarations
                 .as_ref()
                 .is_some_and(|collector| collector.source_is_strict);
+            if let Some(declarations) = &raw_eval_declarations {
+                if !source_is_strict {
+                    let Some(global_this) = self.ensure_builtin_global_value("globalThis", task)?
+                    else {
+                        return Err(self.raise_task_builtin_error(
+                            task,
+                            "ReferenceError",
+                            "globalThis is not available",
+                        ));
+                    };
+                    self.preflight_direct_eval_global_declarations(
+                        global_this,
+                        declarations,
+                        task,
+                        module,
+                    )?;
+                }
+            }
             let function_module = self
                 .compile_dynamic_js_module_source(
                     source,
@@ -11192,32 +11555,37 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let name = unsafe { &*name_ptr.as_ptr() };
-                        if let Ok(Some(value)) =
-                            self.activation_eval_env_get(task, module, &name.data)
-                        {
-                            if let Err(e) = stack.push(value) {
-                                return OpcodeResult::Error(e);
+                        match self.activation_eval_env_get(task, module, &name.data) {
+                            Ok(Some(value)) => {
+                                if let Err(e) = stack.push(value) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                return OpcodeResult::Continue;
                             }
-                            return OpcodeResult::Continue;
+                            Ok(None) => {}
+                            Err(error) => return OpcodeResult::Error(error),
                         }
-                        let value = self
-                            .builtin_global_slots
-                            .read()
-                            .get(name.data.as_str())
-                            .copied()
-                            .and_then(|slot| self.globals_by_index.read().get(slot).copied())
-                            .or_else(|| {
-                                self.builtin_global_value("globalThis").and_then(|gt| {
-                                    self.get_property_value_via_js_semantics_with_context(
-                                        gt,
-                                        &name.data,
-                                        task,
-                                        module,
-                                    )
-                                    .ok()
-                                    .flatten()
-                                })
-                            });
+                        let value = match self.shared_js_global_binding_value(&name.data) {
+                            Ok(Some(v)) => Some(v),
+                            Ok(None) => match self.ensure_builtin_global_value(&name.data, task) {
+                                Ok(Some(v)) => Some(v),
+                                Ok(None) => match self.ensure_builtin_global_value("globalThis", task) {
+                                    Ok(Some(gt)) => self
+                                        .get_property_value_via_js_semantics_with_context(
+                                            gt,
+                                            &name.data,
+                                            task,
+                                            module,
+                                        )
+                                        .ok()
+                                        .flatten(),
+                                    Ok(None) => None,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                },
+                                Err(error) => return OpcodeResult::Error(error),
+                            },
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         let Some(value) = value else {
                             return OpcodeResult::Error(
                                 self.raise_unresolved_identifier_error(task, &name.data),
@@ -11246,17 +11614,23 @@ impl<'a> Interpreter<'a> {
                         // 1. Check builtin_global_slots (builtins + module exports)
                         let value = match self.activation_eval_env_get(task, module, &name.data) {
                             Ok(Some(v)) => Some(v),
-                            Ok(None) => self
-                                .builtin_global_slots
-                                .read()
-                                .get(name.data.as_str())
-                                .copied()
-                                .and_then(|slot| self.globals_by_index.read().get(slot).copied()),
+                            Ok(None) => match self.shared_js_global_binding_value(&name.data) {
+                                Ok(value) => match value {
+                                    Some(v) => Some(v),
+                                    None => match self.ensure_builtin_global_value(&name.data, task) {
+                                        Ok(value) => value,
+                                        Err(error) => return OpcodeResult::Error(error),
+                                    },
+                                },
+                                Err(error) => return OpcodeResult::Error(error),
+                            },
                             Err(error) => return OpcodeResult::Error(error),
                         };
                         let result = if let Some(v) = value {
                             v
-                        } else if let Some(gt) = self.builtin_global_value("globalThis") {
+                        } else if let Ok(Some(gt)) =
+                            self.ensure_builtin_global_value("globalThis", task)
+                        {
                             // 2. Check globalThis properties (script-level var bindings)
                             let prop = self.get_property_value_via_js_semantics_with_context(
                                 gt, &name.data, task, module,
@@ -11298,15 +11672,19 @@ impl<'a> Interpreter<'a> {
                             Ok(Some(v)) => v,
                             Ok(None) => {
                                 let name_reg = name.data.clone();
-                                let builtin = self
-                                    .builtin_global_slots
-                                    .read()
-                                    .get(name_reg.as_str())
-                                    .copied()
-                                    .and_then(|slot| self.globals_by_index.read().get(slot).copied());
-                                if let Some(v) = builtin {
+                                if let Some(v) = match self.shared_js_global_binding_value(&name_reg)
+                                {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                } {
                                     v
-                                } else if let Some(gt) = self.builtin_global_value("globalThis") {
+                                } else if let Ok(Some(v)) =
+                                    self.ensure_builtin_global_value(&name_reg, task)
+                                {
+                                    v
+                                } else if let Ok(Some(gt)) =
+                                    self.ensure_builtin_global_value("globalThis", task)
+                                {
                                     match self.get_property_value_via_js_semantics_with_context(
                                         gt,
                                         &name.data,
@@ -11354,24 +11732,30 @@ impl<'a> Interpreter<'a> {
                             Ok(Some(v)) => v,
                             Ok(None) => {
                                 let name_reg = name.data.clone();
-                                self.builtin_global_slots
-                                    .read()
-                                    .get(name_reg.as_str())
-                                    .copied()
-                                    .and_then(|slot| self.globals_by_index.read().get(slot).copied())
-                                    .or_else(|| {
-                                        self.builtin_global_value("globalThis").and_then(|gt| {
-                                            self.get_property_value_via_js_semantics_with_context(
-                                                gt,
-                                                &name.data,
-                                                task,
-                                                module,
-                                            )
-                                            .ok()
-                                            .flatten()
+                                match self.shared_js_global_binding_value(&name_reg) {
+                                    Ok(Some(v)) => v,
+                                    Ok(None) => self
+                                        .ensure_builtin_global_value(&name_reg, task)
+                                        .ok()
+                                        .flatten()
+                                        .or_else(|| {
+                                            self.ensure_builtin_global_value("globalThis", task)
+                                                .ok()
+                                                .flatten()
+                                                .and_then(|gt| {
+                                                    self.get_property_value_via_js_semantics_with_context(
+                                                        gt,
+                                                        &name.data,
+                                                        task,
+                                                        module,
+                                                    )
+                                                    .ok()
+                                                    .flatten()
+                                                })
                                         })
-                                    })
-                                    .unwrap_or(Value::undefined())
+                                        .unwrap_or(Value::undefined()),
+                                    Err(error) => return OpcodeResult::Error(error),
+                                }
                             }
                             Err(error) => return OpcodeResult::Error(error),
                         };
@@ -11396,8 +11780,21 @@ impl<'a> Interpreter<'a> {
                         match self.activation_eval_env_set(task, module, &name.data, args[1]) {
                             Ok(true) => {}
                             Ok(false) => {
+                                if let Ok(true) = self.set_shared_js_global_binding_value(
+                                    &name.data,
+                                    args[1],
+                                    task,
+                                    module,
+                                ) {
+                                    if let Err(error) = stack.push(args[1]) {
+                                        return OpcodeResult::Error(error);
+                                    }
+                                    return OpcodeResult::Continue;
+                                }
                                 let has_global_binding = self
-                                    .builtin_global_value("globalThis")
+                                    .ensure_builtin_global_value("globalThis", task)
+                                    .ok()
+                                    .flatten()
                                     .is_some_and(|global_this| {
                                         self.has_property_via_js_semantics(global_this, &name.data)
                                     });
@@ -11731,11 +12128,23 @@ impl<'a> Interpreter<'a> {
                             };
                         if !did_set_activation {
                             let strict = self.current_function_is_strict_js(task, module);
-                            let has_ambient_binding = self
-                                .builtin_global_value("globalThis")
-                                .is_some_and(|global_this| {
-                                    self.has_property_via_js_semantics(global_this, &name.data)
-                                });
+                            if let Ok(true) = self.set_shared_js_global_binding_value(
+                                &name.data,
+                                args[1],
+                                task,
+                                module,
+                            ) {
+                                if let Err(error) = stack.push(args[1]) {
+                                    return OpcodeResult::Error(error);
+                                }
+                                return OpcodeResult::Continue;
+                            }
+                            let has_ambient_binding = self.shared_js_global_binding(&name.data).is_some()
+                                || self
+                                    .builtin_global_value("globalThis")
+                                    .is_some_and(|global_this| {
+                                        self.has_property_via_js_semantics(global_this, &name.data)
+                                    });
                             if strict && !has_ambient_binding {
                                 return OpcodeResult::Error(self.raise_task_builtin_error(
                                     task,

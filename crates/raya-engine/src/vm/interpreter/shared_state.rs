@@ -3,6 +3,7 @@
 //! This module provides shared state that can be safely accessed by multiple
 //! worker threads executing tasks concurrently.
 
+use crate::compiler::bytecode::module::{JsGlobalBindingInfo, JsGlobalBindingKind};
 use crate::compiler::Module;
 use crate::compiler::Opcode;
 use crate::vm::gc::GarbageCollector;
@@ -49,6 +50,15 @@ pub struct ModuleRuntimeLayout {
     /// Resolved native function dispatch table for this module.
     pub resolved_natives: ResolvedNatives,
     /// Whether module-level init has been executed in this VM.
+    pub initialized: bool,
+}
+
+/// Shared realm-global binding metadata for JS-compatible script execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JsGlobalBindingRecord {
+    pub slot: usize,
+    pub kind: JsGlobalBindingKind,
+    pub published_to_global_object: bool,
     pub initialized: bool,
 }
 
@@ -340,6 +350,12 @@ pub struct SharedVmState {
     /// Maps builtin name -> global slot index.
     pub builtin_global_slots: RwLock<FxHashMap<String, usize>>,
 
+    /// Shared JS-compatible realm-global bindings keyed by identifier name.
+    pub js_global_bindings: RwLock<FxHashMap<String, JsGlobalBindingRecord>>,
+
+    /// Reverse mapping from absolute global slot to JS-compatible binding name.
+    pub js_global_binding_slots: RwLock<FxHashMap<usize, String>>,
+
     /// VM-local interned string constants keyed by module identity and constant index.
     ///
     /// Dynamic eval modules can legitimately share bytecode checksums while
@@ -611,6 +627,8 @@ impl SharedVmState {
             globals: RwLock::new(FxHashMap::default()),
             globals_by_index: RwLock::new(Vec::new()),
             builtin_global_slots: RwLock::new(FxHashMap::default()),
+            js_global_bindings: RwLock::new(FxHashMap::default()),
+            js_global_binding_slots: RwLock::new(FxHashMap::default()),
             constant_string_cache: RwLock::new(FxHashMap::default()),
             ephemeral_gc_roots: RwLock::new(Vec::new()),
             pinned_handles: RwLock::new(FxHashSet::default()),
@@ -908,6 +926,66 @@ impl SharedVmState {
     pub fn get_builtin_global(&self, name: &str) -> Option<Value> {
         let slot = self.builtin_global_slots.read().get(name).copied()?;
         self.globals_by_index.read().get(slot).copied()
+    }
+
+    pub fn register_js_global_binding(
+        &self,
+        binding: &JsGlobalBindingInfo,
+        absolute_slot: usize,
+    ) {
+        let initialized = matches!(
+            binding.kind,
+            JsGlobalBindingKind::Var | JsGlobalBindingKind::Function
+        );
+        self.js_global_binding_slots
+            .write()
+            .insert(absolute_slot, binding.name.clone());
+        self.js_global_bindings.write().insert(
+            binding.name.clone(),
+            JsGlobalBindingRecord {
+                slot: absolute_slot,
+                kind: binding.kind,
+                published_to_global_object: binding.published_to_global_object,
+                initialized,
+            },
+        );
+        if std::env::var("RAYA_DEBUG_JS_GLOBAL_BINDINGS").is_ok() {
+            eprintln!(
+                "[js-global:register] name={} slot={} kind={:?} published={} initialized={}",
+                binding.name,
+                absolute_slot,
+                binding.kind,
+                binding.published_to_global_object,
+                initialized
+            );
+        }
+    }
+
+    pub fn js_global_binding(&self, name: &str) -> Option<JsGlobalBindingRecord> {
+        self.js_global_bindings.read().get(name).copied()
+    }
+
+    pub fn js_global_binding_for_slot(&self, absolute_slot: usize) -> Option<JsGlobalBindingRecord> {
+        let name = self
+            .js_global_binding_slots
+            .read()
+            .get(&absolute_slot)
+            .cloned()?;
+        self.js_global_bindings.read().get(&name).copied()
+    }
+
+    pub fn mark_js_global_binding_initialized(&self, absolute_slot: usize) {
+        let Some(name) = self
+            .js_global_binding_slots
+            .read()
+            .get(&absolute_slot)
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(binding) = self.js_global_bindings.write().get_mut(&name) {
+            binding.initialized = true;
+        }
     }
 
     /// Resolve the absolute nominal type ID for a module-local nominal type ID.
@@ -1469,6 +1547,12 @@ impl SharedVmState {
         self.register_classes(&module, nominal_type_base);
 
         if let Some(layout) = self.module_layouts.read().get(&module.checksum).cloned() {
+            for binding in &module.metadata.js_global_bindings {
+                self.register_js_global_binding(
+                    binding,
+                    layout.global_base + binding.slot as usize,
+                );
+            }
             self.seed_builtin_global_exports(&module, &layout);
         }
 

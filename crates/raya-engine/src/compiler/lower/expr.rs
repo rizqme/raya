@@ -9111,7 +9111,9 @@ impl<'a> Lowerer<'a> {
                 });
                 return dest;
             }
-            if self.class_map.contains_key(&ident.name) {
+            if self.class_map.contains_key(&ident.name)
+                && self.shared_script_binding_slot(ident.name).is_none()
+            {
                 let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                 self.emit(IrInstr::Assign {
                     dest: dest.clone(),

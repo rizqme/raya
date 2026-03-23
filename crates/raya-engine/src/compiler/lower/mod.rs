@@ -632,6 +632,10 @@ pub struct Lowerer<'a> {
     /// Stable global slots for top-level JS function declarations.
     /// Stored in source order so later declarations overwrite earlier ones.
     js_top_level_function_globals: Vec<(Symbol, u16, FunctionId)>,
+    /// Function-scoped `var` bindings visible on the JS global object.
+    js_function_scoped_var_globals: FxHashSet<Symbol>,
+    /// Top-level JS class bindings stored in lexical global slots.
+    js_top_level_class_globals: FxHashSet<Symbol>,
     /// Expression types from type checker (maps expr ptr to TypeId)
     expr_types: FxHashMap<usize, TypeId>,
     /// Type annotation types from checker (maps annotation ptr to TypeId)
@@ -1398,6 +1402,8 @@ impl<'a> Lowerer<'a> {
             closure_locals: FxHashMap::default(),
             closure_globals: FxHashMap::default(),
             js_top_level_function_globals: Vec::new(),
+            js_function_scoped_var_globals: FxHashSet::default(),
+            js_top_level_class_globals: FxHashSet::default(),
             expr_types,
             type_annotation_types: FxHashMap::default(),
             expr_types_by_span: FxHashMap::default(),
@@ -1558,6 +1564,61 @@ impl<'a> Lowerer<'a> {
             slots.entry("default".to_string()).or_insert(slot as u32);
         }
         slots
+    }
+
+    pub fn js_global_bindings(
+        &self,
+    ) -> Vec<crate::compiler::bytecode::module::JsGlobalBindingInfo> {
+        use crate::compiler::bytecode::module::{JsGlobalBindingInfo, JsGlobalBindingKind};
+
+        if !self.js_this_binding_compat || self.builtin_this_coercion_compat {
+            return Vec::new();
+        }
+
+        let function_names = self
+            .js_top_level_function_globals
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect::<FxHashSet<_>>();
+        let mut bindings = Vec::with_capacity(
+            self.module_var_globals.len() + self.js_script_lexical_globals.len(),
+        );
+
+        for (&name, &slot) in &self.module_var_globals {
+            if !self.js_function_scoped_var_globals.contains(&name)
+                && !function_names.contains(&name)
+            {
+                continue;
+            }
+            let kind = if function_names.contains(&name) {
+                JsGlobalBindingKind::Function
+            } else {
+                JsGlobalBindingKind::Var
+            };
+            bindings.push(JsGlobalBindingInfo {
+                name: self.interner.resolve(name).to_string(),
+                slot: slot as u32,
+                kind,
+                published_to_global_object: true,
+            });
+        }
+
+        for (&name, &slot) in &self.js_script_lexical_globals {
+            let kind = if self.js_top_level_class_globals.contains(&name) {
+                JsGlobalBindingKind::Class
+            } else {
+                JsGlobalBindingKind::Lexical
+            };
+            bindings.push(JsGlobalBindingInfo {
+                name: self.interner.resolve(name).to_string(),
+                slot: slot as u32,
+                kind,
+                published_to_global_object: false,
+            });
+        }
+
+        bindings.sort_by(|a, b| a.name.cmp(&b.name).then(a.slot.cmp(&b.slot)));
+        bindings
     }
 
     pub fn structural_shape_member_sets(&self) -> Vec<Vec<String>> {
@@ -1986,9 +2047,10 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-        if self.js_this_binding_compat {
+        if self.js_this_binding_compat && !self.builtin_this_coercion_compat {
             let mut js_function_scoped_vars = FxHashSet::default();
             collect_function_scoped_var_names(&module.statements, &mut js_function_scoped_vars);
+            self.js_function_scoped_var_globals = js_function_scoped_vars.clone();
             for name in js_function_scoped_vars {
                 self.module_var_globals.entry(name).or_insert_with(|| {
                         let global_index = self.next_global_index;
@@ -2015,6 +2077,7 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     Statement::ClassDecl(class) => {
+                        self.js_top_level_class_globals.insert(class.name.name);
                         self.js_script_lexical_globals
                             .entry(class.name.name)
                             .or_insert_with(|| {
@@ -5441,10 +5504,14 @@ impl<'a> Lowerer<'a> {
     }
 
     fn shared_script_binding_slot(&self, name: Symbol) -> Option<u16> {
-        self.module_var_globals
-            .get(&name)
-            .copied()
-            .or_else(|| self.js_script_lexical_globals.get(&name).copied())
+        if self.builtin_this_coercion_compat {
+            self.module_var_globals.get(&name).copied()
+        } else {
+            self.js_script_lexical_globals
+                .get(&name)
+                .copied()
+                .or_else(|| self.module_var_globals.get(&name).copied())
+        }
     }
 
     /// Get the current function mutably
