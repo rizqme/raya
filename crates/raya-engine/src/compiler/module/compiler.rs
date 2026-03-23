@@ -19,8 +19,8 @@ use crate::parser::ast::{
     ExportDecl, Expression, ImportSpecifier, Module as AstModule, Pattern, Statement,
 };
 use crate::parser::checker::{
-    check_early_errors, Binder, CheckerPolicy, ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind,
-    TypeChecker, TypeSystemMode,
+    check_early_errors_with_options, Binder, CheckerPolicy, EarlyErrorOptions, ScopeId, ScopeKind,
+    Symbol, SymbolFlags, SymbolKind, TypeChecker, TypeSystemMode,
 };
 use crate::parser::{Interner, Parser, Span, TypeContext};
 
@@ -130,6 +130,8 @@ pub struct ModuleCompiler {
     builtin_globals_override: Option<ModuleExports>,
     /// Cached builtin global exports for the configured surface mode.
     builtin_globals: Option<ModuleExports>,
+    /// Current executable entry path, if compiling a program graph.
+    root_entry_path: Option<PathBuf>,
 }
 
 impl ModuleCompiler {
@@ -222,6 +224,7 @@ impl ModuleCompiler {
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
             builtin_globals_override: None,
             builtin_globals: None,
+            root_entry_path: None,
         }
     }
 
@@ -244,6 +247,7 @@ impl ModuleCompiler {
             builtin_surface_mode: BuiltinSurfaceMode::RayaStrict,
             builtin_globals_override: None,
             builtin_globals: None,
+            root_entry_path: None,
         })
     }
 
@@ -580,6 +584,7 @@ impl ModuleCompiler {
         &mut self,
         entry_path: PathBuf,
     ) -> ModuleCompileResult<Vec<CompiledModule>> {
+        self.root_entry_path = Some(entry_path.clone());
         // Discover all modules and build the dependency graph
         self.discover_modules(&entry_path)?;
 
@@ -676,6 +681,7 @@ impl ModuleCompiler {
             });
         }
 
+        self.root_entry_path = None;
         Ok(compiled)
     }
 
@@ -867,6 +873,16 @@ impl ModuleCompiler {
         !(logical.starts_with("__raya_builtin__/") || logical.starts_with("<__raya_builtin_"))
     }
 
+    fn early_error_options_for_path(&self, path: &Path) -> EarlyErrorOptions {
+        let mut options = EarlyErrorOptions::for_mode(self.checker_mode);
+        let is_entry = self.root_entry_path.as_ref().is_some_and(|entry| entry == path);
+        if is_entry {
+            options.allow_top_level_return = true;
+            options.allow_await_outside_async = true;
+        }
+        options
+    }
+
     fn inject_builtin_globals(
         &mut self,
         binder: &mut Binder<'_>,
@@ -920,7 +936,8 @@ impl ModuleCompiler {
             path: path.clone(),
             message: format!("{:?}", e),
         })?;
-        check_early_errors(&ast, &interner, self.checker_mode).map_err(|e| {
+        check_early_errors_with_options(&ast, &interner, self.early_error_options_for_path(path))
+            .map_err(|e| {
             ModuleCompileError::ParseError {
                 path: path.clone(),
                 message: e

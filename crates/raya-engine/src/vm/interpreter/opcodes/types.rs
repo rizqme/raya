@@ -677,11 +677,25 @@ impl<'a> Interpreter<'a> {
                 obj.layout_id()
             )));
         };
+        let required_names = self
+            .structural_shape_names
+            .read()
+            .get(&required_shape)
+            .cloned()
+            .unwrap_or_default();
         for slot in 0..adapter.len() {
             if matches!(
                 adapter.binding_for_slot(slot),
                 crate::vm::interpreter::shared_state::StructuralSlotBinding::Missing
-            ) {
+            ) && required_names
+                .get(slot)
+                .map_or(true, |name| {
+                    !matches!(
+                        name.as_str(),
+                        "constructor" | "equals" | "hashCode" | "isPrototypeOf" | "valueOf"
+                    ) && !self.has_property_via_js_semantics(obj_val, name)
+                })
+            {
                 return OpcodeResult::Error(VmError::TypeError(format!(
                     "Cannot cast object(layout_id={}) to structural shape @{required_shape:016x}: missing required slot {}",
                     obj.layout_id(),
@@ -873,11 +887,28 @@ impl<'a> Interpreter<'a> {
         let result = self
             .ensure_shape_adapter_for_object(obj, required_shape)
             .is_some_and(|adapter| {
+                let required_names = self
+                    .structural_shape_names
+                    .read()
+                    .get(&required_shape)
+                    .cloned()
+                    .unwrap_or_default();
                 (0..adapter.len()).all(|slot| {
                     !matches!(
                         adapter.binding_for_slot(slot),
                         crate::vm::interpreter::shared_state::StructuralSlotBinding::Missing
-                    )
+                    ) || required_names
+                        .get(slot)
+                        .is_some_and(|name| {
+                            matches!(
+                                name.as_str(),
+                                "constructor"
+                                    | "equals"
+                                    | "hashCode"
+                                    | "isPrototypeOf"
+                                    | "valueOf"
+                            ) || self.has_property_via_js_semantics(obj_val, name)
+                        })
                 })
             });
         stack

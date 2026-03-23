@@ -22,6 +22,8 @@ pub mod narrowing;
 pub mod symbols;
 pub mod type_guards;
 
+pub use early_errors::{check_early_errors, check_early_errors_with_options, EarlyErrorOptions};
+
 /// Type system behavior mode for checker/binder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TypeSystemMode {
@@ -151,7 +153,6 @@ pub use builtins::{
 pub use captures::{CaptureInfo, ClosureCaptures, ClosureId, ModuleCaptureInfo};
 pub use checker::{CheckResult, InferredTypes, TypeChecker};
 pub use diagnostic::{create_files, Diagnostic, ErrorCode, SimpleFiles};
-pub use early_errors::check_early_errors;
 pub use error::{BindError, CheckError, CheckWarning, SoftDiagnostic, WarningCode, WarningConfig};
 pub use exhaustiveness::ExhaustivenessResult;
 pub use narrowing::TypeEnv;

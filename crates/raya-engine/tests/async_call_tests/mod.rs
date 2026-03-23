@@ -3,6 +3,16 @@
 use raya_engine::parser::ast::*;
 use raya_engine::parser::parser::Parser;
 
+fn assert_expr_argument(arg: &CallArgument, expected_int: i64) {
+    match arg {
+        CallArgument::Expression(Expression::IntLiteral(lit)) => assert_eq!(lit.value, expected_int),
+        CallArgument::Expression(Expression::FloatLiteral(lit)) => {
+            assert_eq!(lit.value, expected_int as f64)
+        }
+        _ => panic!("Expected numeric expression argument"),
+    }
+}
+
 // ============================================================================
 // Basic Async Call
 // ============================================================================
@@ -46,11 +56,7 @@ fn test_parse_async_call_with_args() {
                 }
                 // Check arguments
                 assert_eq!(async_call.arguments.len(), 3);
-                match &async_call.arguments[0] {
-                    Expression::IntLiteral(lit) => assert_eq!(lit.value, 1),
-                    Expression::FloatLiteral(lit) => assert_eq!(lit.value, 1.0),
-                    _ => panic!("Expected number literal"),
-                }
+                assert_expr_argument(&async_call.arguments[0], 1);
             }
             _ => panic!("Expected async call expression"),
         },
@@ -329,7 +335,7 @@ fn test_parse_async_call_as_argument() {
                 assert_eq!(call.arguments.len(), 1);
                 // Argument should be an async call
                 match &call.arguments[0] {
-                    Expression::AsyncCall(async_call) => match &*async_call.callee {
+                    CallArgument::Expression(Expression::AsyncCall(async_call)) => match &*async_call.callee {
                         Expression::Identifier(id) => {
                             assert_eq!(interner.resolve(id.name), "compute")
                         }

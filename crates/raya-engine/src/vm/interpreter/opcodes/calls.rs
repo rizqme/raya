@@ -658,6 +658,49 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                     crate::vm::interpreter::shared_state::StructuralSlotBinding::Missing => {
+                        if let Some(method_name) = shape_method_name.as_deref() {
+                            let mut args = Vec::with_capacity(arg_count);
+                            for _ in 0..arg_count {
+                                match stack.pop() {
+                                    Ok(v) => args.push(v),
+                                    Err(e) => return OpcodeResult::Error(e),
+                                }
+                            }
+                            match stack.pop() {
+                                Ok(_) => {}
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+
+                            let callable = match self
+                                .get_property_value_via_js_semantics_with_context(
+                                    actual_receiver,
+                                    method_name,
+                                    task,
+                                    module,
+                                ) {
+                                Ok(Some(value)) => value,
+                                Ok(None) => Value::null(),
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                            return match self.callable_frame_for_value(
+                                callable,
+                                stack,
+                                &args.into_iter().rev().collect::<Vec<_>>(),
+                                Some(actual_receiver),
+                                ReturnAction::PushReturnValue,
+                                module,
+                                task,
+                            ) {
+                                Ok(Some(frame)) => frame,
+                                Ok(None) => {
+                                    return OpcodeResult::Error(VmError::TypeError(format!(
+                                        "Structural method slot {} is not callable",
+                                        method_index
+                                    )));
+                                }
+                                Err(e) => return OpcodeResult::Error(e),
+                            };
+                        }
                         return OpcodeResult::Error(VmError::TypeError(format!(
                             "Structural method slot {} is not present on receiver layout",
                             method_index

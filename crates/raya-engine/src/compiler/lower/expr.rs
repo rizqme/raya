@@ -1950,15 +1950,6 @@ impl<'a> Lowerer<'a> {
                     .as_ref()
                     .is_some_and(|bindings| bindings.contains_key(&ident.name));
 
-            if self.js_this_binding_compat && name == "eval" && !identifier_resolved_locally {
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(dest.clone()),
-                    native_id: crate::compiler::native_id::FUNCTION_EVAL_HELPER,
-                    args,
-                });
-                return dest;
-            }
-
             if self.js_this_binding_compat && Self::js_builtin_call_uses_construct(name) {
                 let synthetic_new = ast::NewExpression {
                     callee: call.callee.clone(),
@@ -8864,20 +8855,6 @@ impl<'a> Lowerer<'a> {
                 }
 
                 return dest;
-            }
-
-            if name == "Function" {
-                let ctor_dest = self.alloc_register(self.default_js_function_type());
-                let mut args = Vec::with_capacity(new_expr.arguments.len());
-                for arg in &new_expr.arguments {
-                    args.push(self.lower_expr(arg.expression()));
-                }
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(ctor_dest.clone()),
-                    native_id: crate::compiler::native_id::FUNCTION_CONSTRUCTOR_HELPER,
-                    args,
-                });
-                return ctor_dest;
             }
 
             let ctor_source_symbol = self

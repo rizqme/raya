@@ -1,8 +1,9 @@
 //! Basic token tests for the Raya lexer.
 
+use raya_engine::parser::token::LexedToken;
 use raya_engine::parser::{Interner, Lexer, Token};
 
-fn lex_tokens(source: &str) -> (Vec<(Token, raya_engine::parser::Span)>, Interner) {
+fn lex_tokens(source: &str) -> (Vec<LexedToken>, Interner) {
     let lexer = Lexer::new(source);
     lexer.tokenize().unwrap()
 }
@@ -13,12 +14,12 @@ fn lex_single(source: &str) -> (Token, Interner) {
         tokens.len() >= 2,
         "Expected at least 2 tokens (token + EOF)"
     );
-    (tokens[0].0.clone(), interner)
+    (tokens[0].token.clone(), interner)
 }
 
 fn assert_tokens(source: &str, expected: Vec<Token>) {
     let (tokens, _interner) = lex_tokens(source);
-    let actual: Vec<Token> = tokens.iter().map(|(t, _)| t.clone()).collect();
+    let actual: Vec<Token> = tokens.iter().map(|lexed| lexed.token.clone()).collect();
 
     // Expected should include EOF
     let mut expected_with_eof = expected;
@@ -421,20 +422,20 @@ fn test_simple_function() {
     let source = "function add(a, b) { return a + b; }";
     let (tokens, interner) = lex_tokens(source);
 
-    assert_eq!(tokens[0].0, Token::Function);
-    assert_identifier(&tokens[1].0, &interner, "add");
-    assert_eq!(tokens[2].0, Token::LeftParen);
-    assert_identifier(&tokens[3].0, &interner, "a");
-    assert_eq!(tokens[4].0, Token::Comma);
-    assert_identifier(&tokens[5].0, &interner, "b");
-    assert_eq!(tokens[6].0, Token::RightParen);
-    assert_eq!(tokens[7].0, Token::LeftBrace);
-    assert_eq!(tokens[8].0, Token::Return);
-    assert_identifier(&tokens[9].0, &interner, "a");
-    assert_eq!(tokens[10].0, Token::Plus);
-    assert_identifier(&tokens[11].0, &interner, "b");
-    assert_eq!(tokens[12].0, Token::Semicolon);
-    assert_eq!(tokens[13].0, Token::RightBrace);
+    assert_eq!(tokens[0].token, Token::Function);
+    assert_identifier(&tokens[1].token, &interner, "add");
+    assert_eq!(tokens[2].token, Token::LeftParen);
+    assert_identifier(&tokens[3].token, &interner, "a");
+    assert_eq!(tokens[4].token, Token::Comma);
+    assert_identifier(&tokens[5].token, &interner, "b");
+    assert_eq!(tokens[6].token, Token::RightParen);
+    assert_eq!(tokens[7].token, Token::LeftBrace);
+    assert_eq!(tokens[8].token, Token::Return);
+    assert_identifier(&tokens[9].token, &interner, "a");
+    assert_eq!(tokens[10].token, Token::Plus);
+    assert_identifier(&tokens[11].token, &interner, "b");
+    assert_eq!(tokens[12].token, Token::Semicolon);
+    assert_eq!(tokens[13].token, Token::RightBrace);
 }
 
 #[test]
@@ -448,7 +449,7 @@ fn test_switch_statement() {
     "#;
 
     let (tokens, _interner) = lex_tokens(source);
-    let token_types: Vec<Token> = tokens.iter().map(|(t, _)| t.clone()).collect();
+    let token_types: Vec<Token> = tokens.iter().map(|lexed| lexed.token.clone()).collect();
 
     // Verify switch, case, default are present
     assert!(token_types.contains(&Token::Switch));
@@ -464,11 +465,11 @@ fn test_labeled_statement() {
     let (tokens, interner) = lex_tokens(source);
 
     // First token should be identifier "outer"
-    assert_identifier(&tokens[0].0, &interner, "outer");
+    assert_identifier(&tokens[0].token, &interner, "outer");
     // Second token should be colon
-    assert_eq!(tokens[1].0, Token::Colon);
+    assert_eq!(tokens[1].token, Token::Colon);
     // Third token should be "for"
-    assert_eq!(tokens[2].0, Token::For);
+    assert_eq!(tokens[2].token, Token::For);
 }
 
 #[test]
@@ -476,7 +477,7 @@ fn test_class_declaration() {
     let source = "class User extends BaseUser implements Named { }";
 
     let (tokens, _interner) = lex_tokens(source);
-    let token_types: Vec<Token> = tokens.iter().map(|(t, _)| t.clone()).collect();
+    let token_types: Vec<Token> = tokens.iter().map(|lexed| lexed.token.clone()).collect();
 
     assert!(token_types.contains(&Token::Class));
     assert!(token_types.contains(&Token::Extends));
@@ -488,7 +489,7 @@ fn test_async_function() {
     let source = "async function fetchData() { await response; }";
 
     let (tokens, _interner) = lex_tokens(source);
-    let token_types: Vec<Token> = tokens.iter().map(|(t, _)| t.clone()).collect();
+    let token_types: Vec<Token> = tokens.iter().map(|lexed| lexed.token.clone()).collect();
 
     assert!(token_types.contains(&Token::Async));
     assert!(token_types.contains(&Token::Await));
@@ -505,7 +506,7 @@ fn test_comments_are_ignored() {
     "#;
 
     let (tokens, interner) = lex_tokens(source);
-    let token_types: Vec<Token> = tokens.iter().map(|(t, _)| t.clone()).collect();
+    let token_types: Vec<Token> = tokens.iter().map(|lexed| lexed.token.clone()).collect();
 
     // Comments should not appear in tokens
     assert!(token_types.contains(&Token::Const));
@@ -514,7 +515,7 @@ fn test_comments_are_ignored() {
     // Check for identifier "x"
     let has_x = tokens
         .iter()
-        .any(|(t, _)| matches!(t, Token::Identifier(sym) if interner.resolve(*sym) == "x"));
+        .any(|lexed| matches!(&lexed.token, Token::Identifier(sym) if interner.resolve(*sym) == "x"));
     assert!(has_x, "Expected identifier 'x'");
 }
 
@@ -530,7 +531,7 @@ fn test_simple_template_literal() {
     let (tokens, interner) = lex_tokens(source);
 
     assert_eq!(tokens.len(), 2); // Template + EOF
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 1);
             match &parts[0] {
@@ -551,7 +552,7 @@ fn test_template_with_single_expression() {
     let source = r#"`Hello, ${name}!`"#;
     let (tokens, interner) = lex_tokens(source);
 
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 3); // "Hello, " + expr + "!"
 
@@ -567,7 +568,7 @@ fn test_template_with_single_expression() {
                     assert_eq!(expr_tokens.len(), 1);
                     // Note: Expression tokens use their own interner, so we just check it's an identifier
                     assert!(
-                        matches!(&expr_tokens[0].0, Token::Identifier(_)),
+                        matches!(&expr_tokens[0].token, Token::Identifier(_)),
                         "Expected identifier token"
                     );
                 }
@@ -592,7 +593,7 @@ fn test_template_with_multiple_expressions() {
     let source = r#"`${a} + ${b} = ${a + b}`"#;
     let (tokens, interner) = lex_tokens(source);
 
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 5); // expr + " + " + expr + " = " + expr
 
@@ -602,7 +603,7 @@ fn test_template_with_multiple_expressions() {
                     assert_eq!(expr_tokens.len(), 1);
                     // Note: Expression tokens use their own interner, so we just check it's an identifier
                     assert!(
-                        matches!(&expr_tokens[0].0, Token::Identifier(_)),
+                        matches!(&expr_tokens[0].token, Token::Identifier(_)),
                         "Expected identifier token"
                     );
                 }
@@ -628,7 +629,7 @@ fn test_template_with_nested_braces() {
     let source = r#"`Result: ${{ x: 42 }.x}`"#;
     let (tokens, _interner) = lex_tokens(source);
 
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 2); // "Result: " + expr
 
@@ -637,7 +638,7 @@ fn test_template_with_nested_braces() {
                     // Should contain: { x : 42 } . x
                     let has_braces = expr_tokens
                         .iter()
-                        .any(|(t, _)| matches!(t, Token::LeftBrace | Token::RightBrace));
+                        .any(|lexed| matches!(lexed.token, Token::LeftBrace | Token::RightBrace));
                     assert!(has_braces, "Expected braces in expression");
                 }
                 _ => panic!("Expected expression part"),
@@ -654,7 +655,7 @@ fn test_template_with_complex_expression() {
     let source = r#"`Total: ${items.length * price}`"#;
     let (tokens, _interner) = lex_tokens(source);
 
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 2);
 
@@ -677,7 +678,7 @@ fn test_template_with_escape_sequences() {
     let source = r#"`Line 1\nLine 2\tTabbed`"#;
     let (tokens, interner) = lex_tokens(source);
 
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 1);
             match &parts[0] {
@@ -700,7 +701,7 @@ fn test_template_escaped_dollar_sign() {
     let source = r#"`Price: \$${price}`"#;
     let (tokens, interner) = lex_tokens(source);
 
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 2); // "Price: $" + expr
 
@@ -722,7 +723,7 @@ fn test_template_escaped_backtick() {
     let source = r#"`Use \` for templates`"#;
     let (tokens, interner) = lex_tokens(source);
 
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 1);
             match &parts[0] {
@@ -745,7 +746,7 @@ a multiline
 template`"#;
     let (tokens, interner) = lex_tokens(source);
 
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 1);
             match &parts[0] {
@@ -766,7 +767,7 @@ fn test_empty_template() {
     let source = "``";
     let (tokens, _interner) = lex_tokens(source);
 
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 0);
         }
@@ -851,7 +852,7 @@ fn test_unicode_in_template_literal() {
     let source = r#"`Hello \u{1F44B}!`"#; // Hello 👋!
     let (tokens, interner) = lex_tokens(source);
 
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 1);
             match &parts[0] {
@@ -874,7 +875,7 @@ fn test_unicode_fixed_in_template() {
     let source = r#"`\u0048\u0065\u006C\u006C\u006F`"#; // Hello
     let (tokens, interner) = lex_tokens(source);
 
-    match &tokens[0].0 {
+    match &tokens[0].token {
         Token::TemplateLiteral(parts) => {
             assert_eq!(parts.len(), 1);
             match &parts[0] {

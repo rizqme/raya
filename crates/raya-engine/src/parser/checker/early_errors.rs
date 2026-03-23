@@ -12,6 +12,7 @@ use crate::parser::{Interner, ParseError, Symbol};
 pub struct EarlyErrorOptions {
     pub mode: TypeSystemMode,
     pub allow_top_level_return: bool,
+    pub allow_await_outside_async: bool,
 }
 
 impl EarlyErrorOptions {
@@ -19,6 +20,7 @@ impl EarlyErrorOptions {
         Self {
             mode,
             allow_top_level_return: !matches!(mode, TypeSystemMode::Js),
+            allow_await_outside_async: false,
         }
     }
 }
@@ -102,6 +104,7 @@ struct EarlyErrorPass<'a> {
     #[allow(dead_code)]
     mode: TypeSystemMode,
     allow_top_level_return: bool,
+    allow_await_outside_async: bool,
     errors: Vec<ParseError>,
     function_stack: Vec<FunctionContext>,
     lexical_stack: Vec<LexicalContext>,
@@ -117,6 +120,7 @@ impl<'a> EarlyErrorPass<'a> {
             interner,
             mode: options.mode,
             allow_top_level_return: options.allow_top_level_return,
+            allow_await_outside_async: options.allow_await_outside_async,
             errors: Vec::new(),
             function_stack: Vec::new(),
             lexical_stack: vec![LexicalContext::default()],
@@ -627,29 +631,35 @@ impl<'a> EarlyErrorPass<'a> {
                 });
             }
             Statement::For(for_stmt) => {
-                if let Some(init) = &for_stmt.init {
-                    match init {
-                        ForInit::VariableDecl(decl) => this_check_var_decl(self, decl),
-                        ForInit::Expression(expr) => self.check_expr(expr),
+                self.push_scope(ScopeKind::Block, |this| {
+                    if let Some(init) = &for_stmt.init {
+                        match init {
+                            ForInit::VariableDecl(decl) => this_check_var_decl(this, decl),
+                            ForInit::Expression(expr) => this.check_expr(expr),
+                        }
                     }
-                }
-                if let Some(test) = &for_stmt.test {
-                    self.check_expr(test);
-                }
-                if let Some(update) = &for_stmt.update {
-                    self.check_expr(update);
-                }
-                self.push_loop(|this| this.check_stmt(&for_stmt.body));
+                    if let Some(test) = &for_stmt.test {
+                        this.check_expr(test);
+                    }
+                    if let Some(update) = &for_stmt.update {
+                        this.check_expr(update);
+                    }
+                    this.push_loop(|this| this.check_stmt(&for_stmt.body));
+                });
             }
             Statement::ForOf(for_of) => {
-                self.check_for_left(&for_of.left);
-                self.check_expr(&for_of.right);
-                self.push_loop(|this| this.check_stmt(&for_of.body));
+                self.push_scope(ScopeKind::Block, |this| {
+                    this.check_for_left(&for_of.left);
+                    this.check_expr(&for_of.right);
+                    this.push_loop(|this| this.check_stmt(&for_of.body));
+                });
             }
             Statement::ForIn(for_in) => {
-                self.check_for_left(&for_in.left);
-                self.check_expr(&for_in.right);
-                self.push_loop(|this| this.check_stmt(&for_in.body));
+                self.push_scope(ScopeKind::Block, |this| {
+                    this.check_for_left(&for_in.left);
+                    this.check_expr(&for_in.right);
+                    this.push_loop(|this| this.check_stmt(&for_in.body));
+                });
             }
             Statement::Break(brk) => self.check_break(brk),
             Statement::Continue(cont) => self.check_continue(cont),
@@ -1031,7 +1041,9 @@ impl<'a> EarlyErrorPass<'a> {
     }
 
     fn check_yield(&mut self, yld: &YieldStatement) {
-        if !self.current_function().is_some_and(|ctx| ctx.is_generator) {
+        if self.mode != TypeSystemMode::Raya
+            && !self.current_function().is_some_and(|ctx| ctx.is_generator)
+        {
             self.error("Yield statement outside of generator function", yld.span);
         }
         if let Some(value) = &yld.value {
@@ -1269,7 +1281,9 @@ impl<'a> EarlyErrorPass<'a> {
             Expression::Arrow(arrow) => self.check_arrow_function(arrow),
             Expression::Function(func) => self.check_function_expr(func),
             Expression::Await(await_expr) => {
-                if !self.current_function().is_some_and(|ctx| ctx.is_async) {
+                if !self.current_function().is_some_and(|ctx| ctx.is_async)
+                    && !self.allow_await_outside_async
+                {
                     self.error(
                         "Await expression outside of async function",
                         await_expr.span,
@@ -1372,6 +1386,7 @@ mod tests {
             EarlyErrorOptions {
                 mode: TypeSystemMode::Ts,
                 allow_top_level_return: false,
+                allow_await_outside_async: false,
             },
         )
             .expect_err("expected early error");
@@ -1394,6 +1409,31 @@ mod tests {
         assert!(errors[0]
             .message
             .contains("Return statement outside of function"));
+    }
+
+    #[test]
+    fn test_top_level_await_rejected_by_default() {
+        let (module, interner) = parse_module("await value;");
+        let errors = check_early_errors(&module, &interner, TypeSystemMode::Js)
+            .expect_err("expected early error");
+        assert!(errors[0]
+            .message
+            .contains("Await expression outside of async function"));
+    }
+
+    #[test]
+    fn test_top_level_await_allowed_with_entry_options() {
+        let (module, interner) = parse_module("await value;");
+        check_early_errors_with_options(
+            &module,
+            &interner,
+            EarlyErrorOptions {
+                mode: TypeSystemMode::Js,
+                allow_top_level_return: true,
+                allow_await_outside_async: true,
+            },
+        )
+        .expect("should pass");
     }
 
     #[test]
@@ -1629,6 +1669,14 @@ mod tests {
     #[test]
     fn test_nested_block_let_can_shadow_parameter() {
         let (module, interner) = parse_module("function f(a) { { let a = 1; } }");
+        check_early_errors(&module, &interner, TypeSystemMode::Ts).expect("should pass");
+    }
+
+    #[test]
+    fn test_sibling_for_loop_let_bindings_are_isolated() {
+        let (module, interner) = parse_module(
+            "for (let i = 0; i < 1; i = i + 1) {} for (let i = 0; i < 1; i = i + 1) {}",
+        );
         check_early_errors(&module, &interner, TypeSystemMode::Ts).expect("should pass");
     }
 

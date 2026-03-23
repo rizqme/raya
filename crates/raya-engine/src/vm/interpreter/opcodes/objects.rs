@@ -800,6 +800,24 @@ impl<'a> Interpreter<'a> {
                 );
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);
                 if let StructuralSlotBinding::Missing = slot_binding {
+                    if let Some(ref field_name) = member_name {
+                        match self
+                            .get_property_value_via_js_semantics_with_context(
+                                actual_obj,
+                                field_name,
+                                task,
+                                module,
+                            ) {
+                            Ok(Some(value)) => {
+                                if let Err(e) = stack.push(value) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                return OpcodeResult::Continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => return OpcodeResult::Error(error),
+                        }
+                    }
                     if let Err(e) = stack.push(Value::null()) {
                         return OpcodeResult::Error(e);
                     }
@@ -1120,6 +1138,24 @@ impl<'a> Interpreter<'a> {
                 };
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);
                 if let StructuralSlotBinding::Missing = slot_binding {
+                    if let Some(ref field_name) = member_name {
+                        match self
+                            .get_property_value_via_js_semantics_with_context(
+                                actual_obj,
+                                field_name,
+                                task,
+                                module,
+                            ) {
+                            Ok(Some(value)) => {
+                                if let Err(e) = stack.push(value) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                return OpcodeResult::Continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => return OpcodeResult::Error(error),
+                        }
+                    }
                     if let Err(e) = stack.push(Value::null()) {
                         return OpcodeResult::Error(e);
                     }

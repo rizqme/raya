@@ -7,12 +7,91 @@
 
 use crate::compiler::Module;
 use crate::vm::interpreter::Interpreter;
+use crate::vm::interpreter::opcodes::native::checked_string_ptr;
+use crate::vm::object::{Array, RayaString};
 use crate::vm::scheduler::Task;
 use crate::vm::value::Value;
 use crate::vm::VmError;
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
+    fn string_iterator_fallback(
+        &mut self,
+        iterable: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(string_ptr) = checked_string_ptr(iterable) else {
+            return Ok(None);
+        };
+
+        let string = unsafe { &*string_ptr.as_ptr() };
+        let mut chars = Array::new(0, 0);
+        for ch in string.data.chars() {
+            let raya_string = RayaString::new(ch.to_string());
+            let string_ptr = self.gc.lock().allocate(raya_string);
+            let string_value = unsafe {
+                Value::from_ptr(
+                    std::ptr::NonNull::new(string_ptr.as_ptr()).expect("string iterator char ptr"),
+                )
+            };
+            chars.push(string_value);
+        }
+
+        let array_ptr = self.gc.lock().allocate(chars);
+        let array_value = unsafe {
+            Value::from_ptr(
+                std::ptr::NonNull::new(array_ptr.as_ptr()).expect("string iterator array ptr"),
+            )
+        };
+        self.try_get_iterator_from_value(array_value, task, module)
+    }
+
+    fn iterator_next_method(
+        &mut self,
+        iterator: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        Ok(self
+            .get_property_value_via_js_semantics_with_context(iterator, "next", task, module)?
+            .unwrap_or(Value::undefined()))
+    }
+
+    fn normalize_iterator_candidate(
+        &mut self,
+        iterable: Value,
+        candidate: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<Value, VmError> {
+        let next_method = self.iterator_next_method(candidate, task, module)?;
+        if Self::is_callable_value(next_method) {
+            return Ok(candidate);
+        }
+
+        if candidate.raw() == iterable.raw() {
+            return Err(VmError::TypeError(
+                "Iterator is missing callable next()".to_string(),
+            ));
+        }
+
+        match self.try_get_iterator_from_value(candidate, task, module)? {
+            Some(nested_iterator) => {
+                let nested_next = self.iterator_next_method(nested_iterator, task, module)?;
+                if !Self::is_callable_value(nested_next) {
+                    return Err(VmError::TypeError(
+                        "Iterator is missing callable next()".to_string(),
+                    ));
+                }
+                Ok(nested_iterator)
+            }
+            None => Err(VmError::TypeError(
+                "Iterator is missing callable next()".to_string(),
+            )),
+        }
+    }
+
     pub(in crate::vm::interpreter) fn iterator_release_ephemeral_root(&self, value: Value) {
         let mut roots = self.ephemeral_gc_roots.write();
         if let Some(index) = roots.iter().rposition(|candidate| *candidate == value) {
@@ -52,9 +131,35 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Option<Value>, VmError> {
-        let Some(iterator_method) =
-            self.well_known_symbol_property_value(iterable, "Symbol.iterator", task, module)?
-        else {
+        let direct_symbol =
+            self.well_known_symbol_property_value(iterable, "Symbol.iterator", task, module)?;
+        let string_fallback_iterator = self.string_iterator_fallback(iterable, task, module)?;
+        let direct_js =
+            self.get_property_value_via_js_semantics_with_context(iterable, "Symbol.iterator", task, module)?;
+        let prototype_symbol = if let Some(prototype) = self.prototype_of_value(iterable) {
+            self.get_property_value_via_js_semantics_with_context(
+                prototype,
+                "Symbol.iterator",
+                task,
+                module,
+            )?
+        } else {
+            None
+        };
+        if Self::iterator_debug_enabled() {
+            eprintln!(
+                "[iter] methods iterable={:#x} direct_symbol={:?} string_fallback={:?} direct_js={:?} proto_symbol={:?}",
+                iterable.raw(),
+                direct_symbol.map(|value| format!("{:#x}", value.raw())),
+                string_fallback_iterator.map(|value| format!("{:#x}", value.raw())),
+                direct_js.map(|value| format!("{:#x}", value.raw())),
+                prototype_symbol.map(|value| format!("{:#x}", value.raw())),
+            );
+        }
+        if let Some(iterator) = string_fallback_iterator {
+            return Ok(Some(iterator));
+        }
+        let Some(iterator_method) = direct_symbol.or(direct_js).or(prototype_symbol) else {
             return Ok(None);
         };
         if iterator_method.is_null() || iterator_method.is_undefined() {
@@ -65,13 +170,15 @@ impl<'a> Interpreter<'a> {
                 "Iterator method is not callable".to_string(),
             ));
         }
-        let iterator =
+        let iterator_candidate =
             self.invoke_callable_sync_with_this(iterator_method, Some(iterable), &[], task, module)?;
-        if !self.is_js_object_value(iterator) && !Self::is_callable_value(iterator) {
+        if !self.is_js_object_value(iterator_candidate) && !Self::is_callable_value(iterator_candidate) {
             return Err(VmError::TypeError(
                 "Iterator method must return an object".to_string(),
             ));
         }
+        let iterator =
+            self.normalize_iterator_candidate(iterable, iterator_candidate, task, module)?;
         if Self::iterator_debug_enabled() {
             eprintln!(
                 "[iter] get iterable={:#x} iterator={:#x}",
@@ -98,9 +205,7 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Option<Value>, VmError> {
-        let next_method = self
-            .get_property_value_via_js_semantics_with_context(iterator, "next", task, module)?
-            .unwrap_or(Value::undefined());
+        let next_method = self.iterator_next_method(iterator, task, module)?;
         if !Self::is_callable_value(next_method) {
             return Err(VmError::TypeError(
                 "Iterator is missing callable next()".to_string(),

@@ -51,5 +51,5 @@ pub use token::{Span, TemplatePart, Token};
 pub use types::{Type, TypeContext, TypeId};
 
 // Checker re-exports
-pub use checker::check_early_errors;
+pub use checker::{check_early_errors, check_early_errors_with_options, EarlyErrorOptions};
 pub use checker::{CheckError, SymbolTable, TypeChecker};
