@@ -2019,7 +2019,7 @@ impl<'a> Binder<'a> {
                     ty: unknown_ty,
                     flags: SymbolFlags {
                         is_exported: false,
-                        is_const: true,
+                        is_const: !self.is_js_mode(),
                         is_async: func.is_async,
                         is_readonly: false,
                         is_imported: false,
@@ -2041,7 +2041,7 @@ impl<'a> Binder<'a> {
             ty: unknown_ty,
             flags: SymbolFlags {
                 is_exported: false,
-                is_const: true,
+                is_const: !self.is_js_mode(),
                 is_async: func.is_async,
                 is_readonly: false,
                 is_imported: false,
@@ -2766,7 +2766,7 @@ impl<'a> Binder<'a> {
             ty: func_ty,
             flags: SymbolFlags {
                 is_exported: false,
-                is_const: true,
+                is_const: !self.is_js_mode(),
                 is_async: func.is_async,
                 is_readonly: false,
                 is_imported: false,

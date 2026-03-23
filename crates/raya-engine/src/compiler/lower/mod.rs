@@ -479,6 +479,8 @@ pub struct Lowerer<'a> {
     function_map: FxHashMap<Symbol, FunctionId>,
     /// Per-declaration function ID (keyed by span start position, used for nested fn hoisting)
     function_decl_ids: FxHashMap<usize, FunctionId>,
+    /// Function declaration spans already materialized during JS hoist lowering.
+    hoisted_function_decl_spans: FxHashSet<usize>,
     /// Set of async function IDs (functions that should be spawned as Tasks)
     async_functions: FxHashSet<FunctionId>,
     /// Class name to ID mapping (last class registered with a given name wins)
@@ -1301,6 +1303,7 @@ impl<'a> Lowerer<'a> {
             next_local: 0,
             function_map: FxHashMap::default(),
             function_decl_ids: FxHashMap::default(),
+            hoisted_function_decl_spans: FxHashSet::default(),
             async_functions: FxHashSet::default(),
             class_map: FxHashMap::default(),
             class_decl_history: FxHashMap::default(),
@@ -3645,6 +3648,7 @@ impl<'a> Lowerer<'a> {
         // Emit null-check + default-value for parameters with defaults
         self.emit_default_params(&func.params);
         self.emit_js_function_var_hoists(&func.body.statements);
+        self.emit_js_function_decl_hoists(&func.body.statements);
 
         // Lower function body
         for stmt in &func.body.statements {
@@ -3705,8 +3709,11 @@ impl<'a> Lowerer<'a> {
         locals.retain(|name| !self.module_var_globals.contains_key(name));
         self.scan_for_captured_vars(&stmts_owned, &[], &locals);
 
-        // Create main function
-        let ir_func = IrFunction::new("main", vec![], TypeId::new(0));
+        // Create main function and carry the already-computed module strictness
+        // into IR metadata so top-level direct eval inherits it just like any
+        // other JS function body.
+        let mut ir_func = IrFunction::new("main", vec![], TypeId::new(0));
+        ir_func.is_strict_js = self.js_strict_context;
         self.current_function = Some(ir_func);
 
         // Create entry block
@@ -3782,6 +3789,23 @@ impl<'a> Lowerer<'a> {
                 index: local_idx,
                 value: undefined,
             });
+        }
+    }
+
+    pub(super) fn emit_js_function_decl_hoists(&mut self, statements: &[ast::Statement]) {
+        if !self.js_this_binding_compat {
+            return;
+        }
+
+        for stmt in statements {
+            let ast::Statement::FunctionDecl(func_decl) = stmt else {
+                continue;
+            };
+            if self.hoisted_function_decl_spans.contains(&func_decl.span.start) {
+                continue;
+            }
+            self.lower_nested_function_decl_hoist(func_decl);
+            self.hoisted_function_decl_spans.insert(func_decl.span.start);
         }
     }
 
@@ -4334,6 +4358,7 @@ impl<'a> Lowerer<'a> {
                     // Emit null-check + default-value for parameters with defaults
                     self.emit_default_params(&method.params);
                     self.emit_js_function_var_hoists(&body.statements);
+                    self.emit_js_function_decl_hoists(&body.statements);
 
                     // Lower method body
                     for stmt in &body.statements {
@@ -4665,6 +4690,7 @@ impl<'a> Lowerer<'a> {
                 // Emit null-check + default-value for constructor parameters with defaults
                 self.emit_default_params(&ctor.params);
                 self.emit_js_function_var_hoists(&ctor.body.statements);
+                self.emit_js_function_decl_hoists(&ctor.body.statements);
 
                 let this_reg = self.this_register.clone().unwrap();
                 let saved_constructor_return_this = self.constructor_return_this.take();

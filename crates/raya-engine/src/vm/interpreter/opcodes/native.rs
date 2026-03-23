@@ -10145,23 +10145,30 @@ impl<'a> Interpreter<'a> {
                             }
                             return OpcodeResult::Continue;
                         }
-                        let Some(slot) = self
+                        let value = self
                             .builtin_global_slots
                             .read()
                             .get(name.data.as_str())
                             .copied()
-                        else {
-                            return OpcodeResult::Error(VmError::RuntimeError(format!(
-                                "ambient builtin global '{}' is not initialized",
+                            .and_then(|slot| self.globals_by_index.read().get(slot).copied())
+                            .or_else(|| {
+                                self.builtin_global_value("globalThis").and_then(|gt| {
+                                    self.get_property_value_via_js_semantics_with_context(
+                                        gt,
+                                        &name.data,
+                                        task,
+                                        module,
+                                    )
+                                    .ok()
+                                    .flatten()
+                                })
+                            });
+                        let Some(value) = value else {
+                            return OpcodeResult::Error(VmError::ReferenceError(format!(
+                                "{} is not defined",
                                 name.data
                             )));
                         };
-                        let value = self
-                            .globals_by_index
-                            .read()
-                            .get(slot)
-                            .copied()
-                            .unwrap_or(Value::null());
                         if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
                         }
@@ -10254,14 +10261,14 @@ impl<'a> Interpreter<'a> {
                                     ) {
                                         Ok(Some(v)) => v,
                                         Ok(None) => {
-                                            return OpcodeResult::Error(VmError::RuntimeError(
+                                            return OpcodeResult::Error(VmError::ReferenceError(
                                                 format!("{} is not defined", name.data),
                                             ))
                                         }
                                         Err(error) => return OpcodeResult::Error(error),
                                     }
                                 } else {
-                                    return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    return OpcodeResult::Error(VmError::ReferenceError(format!(
                                         "{} is not defined",
                                         name.data
                                     )));

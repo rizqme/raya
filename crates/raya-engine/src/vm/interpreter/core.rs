@@ -2363,6 +2363,9 @@ impl<'a> Interpreter<'a> {
                             VmError::RangeError(message) => {
                                 self.alloc_builtin_error_value("RangeError", message)
                             }
+                            VmError::ReferenceError(message) => {
+                                self.alloc_builtin_error_value("ReferenceError", message)
+                            }
                             VmError::RuntimeError(message) => {
                                 self.alloc_builtin_error_value("Error", message)
                             }

@@ -2911,6 +2911,43 @@ fn test_node_compat_direct_eval_in_default_param_rejects_arguments_decl_for_func
 }
 
 #[test]
+fn test_node_compat_strict_direct_eval_block_function_stays_block_local() {
+    expect_string_runtime_node_compat(
+        r#"
+        function main(): string {
+            let errName = "NONE";
+            eval("\"use strict\"; { function hidden() {} }");
+            try {
+                hidden;
+            } catch (e) {
+                errName = e.name;
+            }
+            return errName;
+        }
+    "#,
+        "ReferenceError",
+    );
+}
+
+#[test]
+fn test_node_compat_top_level_strict_direct_eval_inherits_strictness() {
+    expect_string_runtime_node_compat(
+        r#"
+        "use strict";
+        let errName = "NONE";
+        eval("{ function hidden() {} }");
+        try {
+            hidden;
+        } catch (e) {
+            errName = e.name;
+        }
+        return errName;
+    "#,
+        "ReferenceError",
+    );
+}
+
+#[test]
 fn test_node_compat_arguments_object_sloppy_mapping_tracks_param_assignment() {
     expect_string_runtime_node_compat(
         r#"

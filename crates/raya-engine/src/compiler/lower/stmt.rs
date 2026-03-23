@@ -2514,6 +2514,24 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_nested_function_decl(&mut self, func_decl: &ast::FunctionDecl) {
+        if self
+            .hoisted_function_decl_spans
+            .contains(&func_decl.span.start)
+        {
+            return;
+        }
+        self.materialize_nested_function_decl(func_decl, false);
+    }
+
+    pub(super) fn lower_nested_function_decl_hoist(&mut self, func_decl: &ast::FunctionDecl) {
+        self.materialize_nested_function_decl(func_decl, true);
+    }
+
+    fn materialize_nested_function_decl(
+        &mut self,
+        func_decl: &ast::FunctionDecl,
+        reuse_existing_local: bool,
+    ) {
         use crate::parser::ast::FunctionExpression;
         use crate::parser::token::Span;
 
@@ -2574,7 +2592,12 @@ impl<'a> Lowerer<'a> {
         self.record_function_return_mappings(func_decl.name.name, func_decl.return_type.as_ref());
 
         // Assign to a local variable with the function's name
-        let local_idx = self.allocate_local(func_decl.name.name);
+        let local_idx = if reuse_existing_local {
+            self.lookup_local(func_decl.name.name)
+                .unwrap_or_else(|| self.allocate_local(func_decl.name.name))
+        } else {
+            self.allocate_local(func_decl.name.name)
+        };
         // Nested function declarations are callable closures; mark both the symbol
         // and local slot so captured/ancestor call lowering treats them as callable.
         self.callable_local_hints.insert(local_idx);
@@ -2584,7 +2607,9 @@ impl<'a> Lowerer<'a> {
             index: local_idx,
             value: closure_reg.clone(),
         });
-        if self.in_direct_eval_function {
+        let publish_to_direct_eval_env = self.in_direct_eval_function
+            && !(self.js_strict_context && self.block_depth > 0);
+        if publish_to_direct_eval_env {
             self.emit_direct_eval_binding_set(
                 self.interner.resolve(func_decl.name.name),
                 closure_reg.clone(),

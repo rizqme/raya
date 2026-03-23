@@ -107,6 +107,10 @@ pub enum VmError {
     #[error("Range error: {0}")]
     RangeError(String),
 
+    /// Reference error
+    #[error("Reference error: {0}")]
+    ReferenceError(String),
+
     /// Runtime error
     #[error("Runtime error: {0}")]
     RuntimeError(String),

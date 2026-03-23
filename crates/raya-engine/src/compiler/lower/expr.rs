@@ -8107,6 +8107,7 @@ impl<'a> Lowerer<'a> {
 
         self.emit_default_params(&func.params);
         self.emit_js_function_var_hoists(&func.body.statements);
+        self.emit_js_function_decl_hoists(&func.body.statements);
 
         for stmt in &func.body.statements {
             self.lower_stmt(stmt);
