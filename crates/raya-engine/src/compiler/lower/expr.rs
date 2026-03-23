@@ -2263,7 +2263,16 @@ impl<'a> Lowerer<'a> {
                         uses_script_global_bindings_reg,
                     ],
                 });
+                let result_local = self.allocate_anonymous_local();
+                self.emit(IrInstr::StoreLocal {
+                    index: result_local,
+                    value: dest.clone(),
+                });
                 self.write_back_direct_eval_environment(env_object);
+                self.emit(IrInstr::LoadLocal {
+                    dest: dest.clone(),
+                    index: result_local,
+                });
                 return dest;
             }
 

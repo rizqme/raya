@@ -340,8 +340,11 @@ pub struct SharedVmState {
     /// Maps builtin name -> global slot index.
     pub builtin_global_slots: RwLock<FxHashMap<String, usize>>,
 
-    /// VM-local interned string constants keyed by module checksum and constant index.
-    pub constant_string_cache: RwLock<FxHashMap<([u8; 32], usize), Value>>,
+    /// VM-local interned string constants keyed by module identity and constant index.
+    ///
+    /// Dynamic eval modules can legitimately share bytecode checksums while
+    /// carrying different string tables, so checksum alone is not a safe cache key here.
+    pub constant_string_cache: RwLock<FxHashMap<(String, usize), Value>>,
 
     /// Freshly allocated values rooted only until they are published into a
     /// stable root set such as task state or a shared cache.
@@ -742,7 +745,7 @@ impl SharedVmState {
 
     /// Intern a bytecode string constant once per VM and keep it rooted in shared state.
     pub fn intern_constant_string(&self, module: &Module, index: usize, value: &str) -> Value {
-        let key = (module.checksum, index);
+        let key = (module.metadata.name.clone(), index);
         let cached = {
             let cache = self.constant_string_cache.read();
             cache.get(&key).copied()

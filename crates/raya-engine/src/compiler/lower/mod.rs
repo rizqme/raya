@@ -1575,6 +1575,16 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn emit_fallthrough_return(&mut self) {
+        if self.in_direct_eval_function {
+            let value = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::NativeCall {
+                dest: Some(value.clone()),
+                native_id: crate::compiler::native_id::OBJECT_EVAL_GET_COMPLETION,
+                args: vec![],
+            });
+            self.emit_function_return(Some(value));
+            return;
+        }
         if let Some(local_idx) = self.eval_completion_local {
             let value = self.alloc_register(UNRESOLVED);
             self.emit(IrInstr::LoadLocal {
@@ -1588,6 +1598,10 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn init_eval_completion_local(&mut self) {
+        if self.in_direct_eval_function {
+            self.eval_completion_local = None;
+            return;
+        }
         let local_idx = self.allocate_anonymous_local();
         let initial = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::Assign {
@@ -1602,6 +1616,14 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn record_eval_completion(&mut self, value: Register) {
+        if self.in_direct_eval_function {
+            self.emit(IrInstr::NativeCall {
+                dest: None,
+                native_id: crate::compiler::native_id::OBJECT_EVAL_SET_COMPLETION,
+                args: vec![value],
+            });
+            return;
+        }
         if let Some(local_idx) = self.eval_completion_local {
             self.emit(IrInstr::StoreLocal {
                 index: local_idx,

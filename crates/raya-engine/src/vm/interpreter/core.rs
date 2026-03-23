@@ -312,7 +312,7 @@ pub struct Interpreter<'a> {
 
     /// VM-local interned constant strings keyed by `(module checksum, constant index)`.
     pub(in crate::vm::interpreter) constant_string_cache:
-        &'a RwLock<FxHashMap<([u8; 32], usize), Value>>,
+        &'a RwLock<FxHashMap<(String, usize), Value>>,
 
     /// Freshly allocated values rooted only until they are published into a
     /// stable root set such as task state or a shared cache.
@@ -896,7 +896,11 @@ impl<'a> Interpreter<'a> {
             scratch_task.push_active_direct_eval_env(
                 env,
                 caller_task.current_active_direct_eval_uses_script_global_bindings(),
+                caller_task.current_active_direct_eval_persist_caller_declarations(),
             );
+            if let Some(completion) = caller_task.current_active_direct_eval_completion() {
+                let _ = scratch_task.set_current_active_direct_eval_completion(completion);
+            }
         }
 
         let opcode_result = if let Some(raw_ptr) = unsafe { callable.as_ptr::<u8>() } {
@@ -1344,7 +1348,7 @@ impl<'a> Interpreter<'a> {
         safepoint: &'a SafepointCoordinator,
         globals_by_index: &'a RwLock<Vec<Value>>,
         builtin_global_slots: &'a RwLock<FxHashMap<String, usize>>,
-        constant_string_cache: &'a RwLock<FxHashMap<([u8; 32], usize), Value>>,
+        constant_string_cache: &'a RwLock<FxHashMap<(String, usize), Value>>,
         ephemeral_gc_roots: &'a RwLock<Vec<Value>>,
         pinned_handles: &'a RwLock<FxHashSet<u64>>,
         tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,

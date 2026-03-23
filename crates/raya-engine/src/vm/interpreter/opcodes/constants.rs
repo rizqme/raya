@@ -80,7 +80,7 @@ impl<'a> Interpreter<'a> {
                     }
                 };
                 let value = {
-                    let key = (module.checksum, index);
+                    let key = (module.metadata.name.clone(), index);
                     let debug_const = std::env::var("RAYA_DEBUG_CONSTSTR").is_ok();
                     if debug_const {
                         eprintln!(

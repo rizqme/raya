@@ -190,6 +190,8 @@ struct EvalState {
 struct ActiveDirectEvalEnv {
     env: Value,
     uses_script_global_bindings: bool,
+    persist_caller_declarations: bool,
+    completion: Value,
 }
 
 /// Initialization and mutex state (VM worker only, rare access)
@@ -456,10 +458,17 @@ impl Task {
         self.current_arg_count.store(count, Ordering::Relaxed);
     }
 
-    pub fn push_active_direct_eval_env(&self, env: Value, uses_script_global_bindings: bool) {
+    pub fn push_active_direct_eval_env(
+        &self,
+        env: Value,
+        uses_script_global_bindings: bool,
+        persist_caller_declarations: bool,
+    ) {
         self.init.lock().eval_state.active_env_stack.push(ActiveDirectEvalEnv {
             env,
             uses_script_global_bindings,
+            persist_caller_declarations,
+            completion: Value::undefined(),
         });
     }
 
@@ -483,6 +492,33 @@ impl Task {
             .active_env_stack
             .last()
             .is_some_and(|ctx| ctx.uses_script_global_bindings)
+    }
+
+    pub fn current_active_direct_eval_persist_caller_declarations(&self) -> bool {
+        self.init
+            .lock()
+            .eval_state
+            .active_env_stack
+            .last()
+            .is_some_and(|ctx| ctx.persist_caller_declarations)
+    }
+
+    pub fn current_active_direct_eval_completion(&self) -> Option<Value> {
+        self.init
+            .lock()
+            .eval_state
+            .active_env_stack
+            .last()
+            .map(|ctx| ctx.completion)
+    }
+
+    pub fn set_current_active_direct_eval_completion(&self, value: Value) -> bool {
+        let mut init = self.init.lock();
+        let Some(ctx) = init.eval_state.active_env_stack.last_mut() else {
+            return false;
+        };
+        ctx.completion = value;
+        true
     }
 
     pub fn set_activation_direct_eval_env(&self, func_id: usize, locals_base: usize, env: Value) {

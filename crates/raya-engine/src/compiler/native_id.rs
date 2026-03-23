@@ -99,6 +99,10 @@ pub const OBJECT_SET_AMBIENT_GLOBAL: u16 = 0x002D;
 pub const OBJECT_EVAL_ENV_DECLARE_FUNCTION: u16 = 0x002E;
 /// Delete an identifier reference using JS environment/global semantics.
 pub const OBJECT_JS_DELETE_IDENTIFIER: u16 = 0x002F;
+/// Record the current direct-eval completion value.
+pub const OBJECT_EVAL_SET_COMPLETION: u16 = 0x0030;
+/// Read the current direct-eval completion value.
+pub const OBJECT_EVAL_GET_COMPLETION: u16 = 0x0031;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -618,6 +622,8 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_SET_AMBIENT_GLOBAL => "Object.setAmbientGlobal",
         OBJECT_EVAL_ENV_DECLARE_FUNCTION => "Object.evalEnvDeclareFunction",
         OBJECT_JS_DELETE_IDENTIFIER => "Object.jsDeleteIdentifier",
+        OBJECT_EVAL_SET_COMPLETION => "Object.evalSetCompletion",
+        OBJECT_EVAL_GET_COMPLETION => "Object.evalGetCompletion",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",

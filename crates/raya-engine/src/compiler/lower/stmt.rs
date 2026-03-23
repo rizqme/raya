@@ -2591,6 +2591,16 @@ impl<'a> Lowerer<'a> {
 
         self.record_function_return_mappings(func_decl.name.name, func_decl.return_type.as_ref());
 
+        let publish_to_direct_eval_env = self.in_direct_eval_function
+            && !(self.js_strict_context && self.block_depth > 0);
+        if publish_to_direct_eval_env {
+            self.emit_direct_eval_binding_declare_function(
+                self.interner.resolve(func_decl.name.name),
+                closure_reg,
+            );
+            return;
+        }
+
         // Assign to a local variable with the function's name
         let local_idx = if reuse_existing_local {
             self.lookup_local(func_decl.name.name)
@@ -2607,14 +2617,6 @@ impl<'a> Lowerer<'a> {
             index: local_idx,
             value: closure_reg.clone(),
         });
-        let publish_to_direct_eval_env = self.in_direct_eval_function
-            && !(self.js_strict_context && self.block_depth > 0);
-        if publish_to_direct_eval_env {
-            self.emit_direct_eval_binding_declare_function(
-                self.interner.resolve(func_decl.name.name),
-                closure_reg.clone(),
-            );
-        }
 
         // Async function declarations lowered through the closure path still need
         // closure-locals metadata so call lowering emits SpawnClosure, not CallClosure.
