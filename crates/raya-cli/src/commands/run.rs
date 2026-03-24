@@ -47,6 +47,7 @@ impl RunArgs {
             },
             type_mode: Some(self.type_mode),
             ts_options: None,
+            ..Default::default()
         })
     }
 }

@@ -179,6 +179,40 @@ function String(value: PrimitiveCoercible): string {
     return __primitiveToString(primitive);
 }
 
+const STRING_FROM_CHAR_CODE: number = 0x003F;
+
+function __String_fromCharCode(code0?: any, code1?: any, code2?: any, code3?: any): string {
+    let argc = arguments.length;
+    if (argc == 0) {
+        return __NATIVE_CALL<string>(STRING_FROM_CHAR_CODE);
+    }
+    if (argc == 1) {
+        return __NATIVE_CALL<string>(STRING_FROM_CHAR_CODE, code0);
+    }
+    if (argc == 2) {
+        return __NATIVE_CALL<string>(STRING_FROM_CHAR_CODE, code0, code1);
+    }
+    if (argc == 3) {
+        return __NATIVE_CALL<string>(STRING_FROM_CHAR_CODE, code0, code1, code2);
+    }
+    if (argc == 4) {
+        return __NATIVE_CALL<string>(STRING_FROM_CHAR_CODE, code0, code1, code2, code3);
+    }
+
+    let codes: any[] = [];
+    for (let i = 0; i < argc; i = i + 1) {
+        codes.push(arguments[i]);
+    }
+    return __NATIVE_CALL<string>(STRING_FROM_CHAR_CODE, codes);
+}
+
+Object.defineProperty(String, "fromCharCode", {
+    value: __String_fromCharCode,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+});
+
 class __BooleanPrototype {
     valueOf(): boolean {
         if (this == null || this["__boxedPrimitiveKind"] != "Boolean") {

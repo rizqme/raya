@@ -619,10 +619,44 @@ pub struct Lexer<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LexError {
     UnexpectedCharacter { char: char, span: Span },
+    UnterminatedComment { span: Span },
     UnterminatedString { span: Span },
     UnterminatedTemplate { span: Span },
     InvalidNumber { text: String, span: Span },
     InvalidEscape { escape: String, span: Span },
+}
+
+fn is_js_whitespace(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0009}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{FEFF}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+    )
+}
+
+fn line_terminator_width(source: &str, pos: usize) -> Option<(usize, bool)> {
+    let ch = source[pos..].chars().next()?;
+    match ch {
+        '\n' => Some((1, true)),
+        '\r' => {
+            if source[pos + 1..].starts_with('\n') {
+                Some((2, true))
+            } else {
+                Some((1, true))
+            }
+        }
+        '\u{2028}' | '\u{2029}' => Some((ch.len_utf8(), true)),
+        _ => None,
+    }
 }
 
 impl<'a> Lexer<'a> {
@@ -669,64 +703,105 @@ impl<'a> Lexer<'a> {
             // Skip whitespace and comments manually before checking for template literal
             // This is needed because logos skips whitespace internally, but we need to
             // check for backticks BEFORE logos processes them
-            let bytes = self.source.as_bytes();
-            while pos < bytes.len() {
-                let ch = bytes[pos];
-                match ch {
-                    b' ' | b'\t' | b'\r' => {
-                        column += 1;
-                        pos += 1;
-                    }
-                    b'\n' => {
-                        line += 1;
-                        column = 1;
-                        pos += 1;
-                        line_break_before = true;
-                    }
-                    b'/' if pos + 1 < bytes.len() => {
-                        // Check for comments
-                        match bytes[pos + 1] {
-                            b'/' => {
-                                // Check for //@@annotation - don't skip, let logos handle it
-                                if pos + 3 < bytes.len()
-                                    && bytes[pos + 2] == b'@'
-                                    && bytes[pos + 3] == b'@'
-                                {
-                                    break; // Not a comment, let logos tokenize
-                                }
-                                // Line comment - skip to end of line
-                                pos += 2;
-                                column += 2;
-                                while pos < bytes.len() && bytes[pos] != b'\n' {
-                                    pos += 1;
-                                    column += 1;
-                                }
-                            }
-                            b'*' => {
-                                // Block comment - skip to */
-                                pos += 2;
-                                column += 2;
-                                while pos + 1 < bytes.len() {
-                                    if bytes[pos] == b'*' && bytes[pos + 1] == b'/' {
-                                        pos += 2;
-                                        column += 2;
-                                        break;
-                                    }
-                                    if bytes[pos] == b'\n' {
-                                        line += 1;
-                                        column = 1;
-                                        line_break_before = true;
-                                    } else {
-                                        column += 1;
-                                    }
-                                    pos += 1;
-                                }
-                            }
-                            _ => break, // Not a comment, stop skipping
+            while pos < self.source.len() {
+                if pos == 0 && self.source[pos..].starts_with("#!") {
+                    pos += 2;
+                    column += 2;
+                    while pos < self.source.len() {
+                        if let Some((width, _)) = line_terminator_width(self.source, pos) {
+                            pos += width;
+                            line += 1;
+                            column = 1;
+                            line_break_before = true;
+                            break;
                         }
+                        let ch = match self.source[pos..].chars().next() {
+                            Some(ch) => ch,
+                            None => break,
+                        };
+                        pos += ch.len_utf8();
+                        column += 1;
                     }
-                    _ => break, // Not whitespace, stop skipping
+                    continue;
                 }
+
+                if let Some((width, _)) = line_terminator_width(self.source, pos) {
+                    pos += width;
+                    line += 1;
+                    column = 1;
+                    line_break_before = true;
+                    continue;
+                }
+
+                let ch = match self.source[pos..].chars().next() {
+                    Some(ch) => ch,
+                    None => break,
+                };
+
+                if is_js_whitespace(ch) {
+                    pos += ch.len_utf8();
+                    column += 1;
+                    continue;
+                }
+
+                if self.source[pos..].starts_with("//") {
+                    // Check for //@@annotation - don't skip, let logos handle it
+                    let bytes = self.source.as_bytes();
+                    if pos + 3 < bytes.len() && bytes[pos + 2] == b'@' && bytes[pos + 3] == b'@' {
+                        break;
+                    }
+                    pos += 2;
+                    column += 2;
+                    while pos < self.source.len() {
+                        if let Some((_, _)) = line_terminator_width(self.source, pos) {
+                            break;
+                        }
+                        let ch = match self.source[pos..].chars().next() {
+                            Some(ch) => ch,
+                            None => break,
+                        };
+                        pos += ch.len_utf8();
+                        column += 1;
+                    }
+                    continue;
+                }
+
+                if self.source[pos..].starts_with("/*") {
+                    let comment_start = pos;
+                    pos += 2;
+                    column += 2;
+                    let mut terminated = false;
+                    while pos < self.source.len() {
+                        if self.source[pos..].starts_with("*/") {
+                            pos += 2;
+                            column += 2;
+                            terminated = true;
+                            break;
+                        }
+                        if let Some((width, _)) = line_terminator_width(self.source, pos) {
+                            pos += width;
+                            line += 1;
+                            column = 1;
+                            line_break_before = true;
+                            continue;
+                        }
+                        let ch = match self.source[pos..].chars().next() {
+                            Some(ch) => ch,
+                            None => break,
+                        };
+                        pos += ch.len_utf8();
+                        column += 1;
+                    }
+                    if !terminated {
+                        self.errors.push(LexError::UnterminatedComment {
+                            span: Span::new(comment_start, pos, line, column),
+                        });
+                        pos = self.source.len();
+                    }
+                    continue;
+                }
+
+                break;
             }
 
             // Check if we reached the end after skipping whitespace
@@ -1355,6 +1430,7 @@ impl LexError {
     pub fn span(&self) -> &Span {
         match self {
             LexError::UnexpectedCharacter { span, .. }
+            | LexError::UnterminatedComment { span }
             | LexError::UnterminatedString { span }
             | LexError::UnterminatedTemplate { span }
             | LexError::InvalidNumber { span, .. }
@@ -1368,6 +1444,7 @@ impl LexError {
             LexError::UnexpectedCharacter { char, .. } => {
                 format!("Unexpected character '{}'", char)
             }
+            LexError::UnterminatedComment { .. } => "Unterminated block comment".to_string(),
             LexError::UnterminatedString { .. } => "Unterminated string literal".to_string(),
             LexError::UnterminatedTemplate { .. } => "Unterminated template literal".to_string(),
             LexError::InvalidNumber { text, .. } => {
@@ -1384,6 +1461,9 @@ impl LexError {
         match self {
             LexError::UnterminatedString { .. } => {
                 Some("Add a closing quote to terminate the string".to_string())
+            }
+            LexError::UnterminatedComment { .. } => {
+                Some("Add a closing */ to terminate the block comment".to_string())
             }
             LexError::UnterminatedTemplate { .. } => {
                 Some("Add a closing backtick (`) to terminate the template literal".to_string())

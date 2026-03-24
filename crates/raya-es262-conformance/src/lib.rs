@@ -530,7 +530,10 @@ fn build_case_runtime() -> Runtime {
         builtin_mode: BuiltinMode::NodeCompat,
         type_mode: Some(TypeMode::Js),
         threads: 1,
-        no_jit: true,
+        max_preemptions: Some(5_000),
+        preempt_threshold_ms: Some(250),
+        no_jit: false,
+        jit_threshold: 32,
         ..Default::default()
     })
 }
@@ -876,6 +879,7 @@ fn matches_expected_error(actual: &str, expected: Option<&str>) -> bool {
     match expected {
         Some("SyntaxError") => {
             actual.contains("SyntaxError")
+                || actual.contains("Lexer error")
                 || actual.contains("Parse error")
                 || actual.contains("Invalid syntax")
                 || actual.contains("Binding error")

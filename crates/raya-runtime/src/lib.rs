@@ -123,6 +123,12 @@ pub enum BuiltinMode {
 pub struct RuntimeOptions {
     /// Worker thread count (0 = auto-detect from CPU count).
     pub threads: usize,
+    /// Maximum consecutive preemptions before killing a task.
+    /// None = engine default.
+    pub max_preemptions: Option<u32>,
+    /// Interpreter preemption time slice in milliseconds.
+    /// None = engine default.
+    pub preempt_threshold_ms: Option<u64>,
     /// Maximum heap size in bytes (0 = unlimited).
     pub heap_limit: usize,
     /// Execution timeout in milliseconds (0 = unlimited).
@@ -150,6 +156,8 @@ impl Default for RuntimeOptions {
     fn default() -> Self {
         Self {
             threads: 0,
+            max_preemptions: None,
+            preempt_threshold_ms: None,
             heap_limit: 0,
             timeout: 0,
             no_jit: false,

@@ -16,6 +16,12 @@ pub fn create_vm(options: &RuntimeOptions) -> Vm {
     };
 
     let limits = SchedulerLimits {
+        max_preemptions: options
+            .max_preemptions
+            .unwrap_or(raya_engine::vm::defaults::DEFAULT_MAX_PREEMPTIONS),
+        preempt_threshold_ms: options
+            .preempt_threshold_ms
+            .unwrap_or(raya_engine::vm::defaults::DEFAULT_PREEMPT_THRESHOLD_MS),
         max_heap_size: if options.heap_limit > 0 {
             Some(options.heap_limit)
         } else {
@@ -23,14 +29,15 @@ pub fn create_vm(options: &RuntimeOptions) -> Vm {
         },
         ..Default::default()
     };
+    let use_custom_limits = options.heap_limit > 0
+        || options.max_preemptions.is_some()
+        || options.preempt_threshold_ms.is_some();
 
-    let mut vm = Vm::with_native_handler(threads, Arc::new(StdNativeHandler));
-
-    // Apply scheduler limits if any were set
-    if options.heap_limit > 0 {
-        // Recreate with limits
-        vm = create_vm_with_limits(threads, limits);
-    }
+    let mut vm = if use_custom_limits {
+        create_vm_with_limits(threads, limits)
+    } else {
+        Vm::with_native_handler(threads, Arc::new(StdNativeHandler))
+    };
 
     // Register symbolic native functions for ModuleNativeCall dispatch
     {
@@ -43,13 +50,5 @@ pub fn create_vm(options: &RuntimeOptions) -> Vm {
 }
 
 fn create_vm_with_limits(threads: usize, limits: SchedulerLimits) -> Vm {
-    // When we have limits, we need to use the scheduler_limits constructor
-    // and also set the native handler. Since with_scheduler_limits doesn't
-    // take a native handler, we use with_native_handler then apply limits
-    // through the scheduler. For now, use with_native_handler which is the
-    // primary path.
-    let vm = Vm::with_native_handler(threads, Arc::new(StdNativeHandler));
-    // TODO: Apply SchedulerLimits when Vm API supports both limits + handler
-    let _ = limits;
-    vm
+    Vm::with_scheduler_limits_and_native_handler(threads, limits, Arc::new(StdNativeHandler))
 }

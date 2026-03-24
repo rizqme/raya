@@ -130,6 +130,8 @@ pub const OBJECT_GENERATOR_SNAPSHOT_NEXT: u16 = 0x0038;
 pub const OBJECT_GENERATOR_SNAPSHOT_RETURN: u16 = 0x0039;
 /// Return the generator snapshot iterator itself for `@@iterator`.
 pub const OBJECT_GENERATOR_SNAPSHOT_ITERATOR: u16 = 0x003A;
+/// `String.fromCharCode(...codeUnits)` helper.
+pub const OBJECT_STRING_FROM_CHAR_CODE: u16 = 0x003F;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -707,6 +709,7 @@ pub fn native_name(id: u16) -> &'static str {
         STRING_SLICE => "String.slice",
         STRING_TRIM_START => "String.trimStart",
         STRING_TRIM_END => "String.trimEnd",
+        OBJECT_STRING_FROM_CHAR_CODE => "String.fromCharCode",
 
         // RegExp
         REGEXP_NEW => "RegExp.new",

@@ -541,6 +541,25 @@ impl Vm {
         }
     }
 
+    /// Create a new VM with specified scheduler limits and native handler.
+    pub fn with_scheduler_limits_and_native_handler(
+        worker_count: usize,
+        limits: crate::vm::scheduler::SchedulerLimits,
+        native_handler: std::sync::Arc<dyn crate::vm::NativeHandler>,
+    ) -> Self {
+        let mut scheduler =
+            Scheduler::with_limits_and_handler(worker_count, limits, native_handler);
+        scheduler.start();
+
+        Self {
+            scheduler,
+            #[cfg(feature = "jit")]
+            jit_engine: None,
+            #[cfg(feature = "jit")]
+            jit_config: None,
+        }
+    }
+
     /// Create a new VM from VmOptions (resource limits, capabilities, etc.)
     pub fn with_options(options: super::VmOptions) -> Self {
         let limits = crate::vm::scheduler::SchedulerLimits {

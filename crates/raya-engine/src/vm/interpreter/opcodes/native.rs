@@ -7431,6 +7431,102 @@ impl<'a> Interpreter<'a> {
         task.current_active_js_new_target()
     }
 
+    fn strip_leading_hashbang_comment<'s>(&self, source: &'s str) -> &'s str {
+        if !source.starts_with("#!") {
+            return source;
+        }
+        if let Some(line_end) = source.find('\n') {
+            &source[line_end + 1..]
+        } else {
+            ""
+        }
+    }
+
+    fn js_source_is_only_comments_and_whitespace(&self, source: &str) -> bool {
+        fn is_js_whitespace(ch: char) -> bool {
+            matches!(
+                ch,
+                '\u{0009}'
+                    | '\u{000B}'
+                    | '\u{000C}'
+                    | '\u{0020}'
+                    | '\u{00A0}'
+                    | '\u{1680}'
+                    | '\u{2000}'..='\u{200A}'
+                    | '\u{202F}'
+                    | '\u{205F}'
+                    | '\u{3000}'
+                    | '\u{FEFF}'
+            )
+        }
+
+        fn line_terminator_width(slice: &str) -> Option<usize> {
+            if slice.starts_with("\r\n") {
+                Some(2)
+            } else if slice.starts_with('\n')
+                || slice.starts_with('\r')
+                || slice.starts_with('\u{2028}')
+                || slice.starts_with('\u{2029}')
+            {
+                Some(slice.chars().next().map(char::len_utf8).unwrap_or(0))
+            } else {
+                None
+            }
+        }
+
+        let mut pos = 0usize;
+        while pos < source.len() {
+            let rest = &source[pos..];
+            if let Some(width) = line_terminator_width(rest) {
+                pos += width;
+                continue;
+            }
+            let Some(ch) = rest.chars().next() else {
+                break;
+            };
+            if is_js_whitespace(ch) {
+                pos += ch.len_utf8();
+                continue;
+            }
+            if rest.starts_with("//") {
+                pos += 2;
+                while pos < source.len() {
+                    let line_rest = &source[pos..];
+                    if line_terminator_width(line_rest).is_some() {
+                        break;
+                    }
+                    let Some(next) = line_rest.chars().next() else {
+                        break;
+                    };
+                    pos += next.len_utf8();
+                }
+                continue;
+            }
+            if rest.starts_with("/*") {
+                pos += 2;
+                let mut closed = false;
+                while pos < source.len() {
+                    let block_rest = &source[pos..];
+                    if block_rest.starts_with("*/") {
+                        pos += 2;
+                        closed = true;
+                        break;
+                    }
+                    let Some(next) = block_rest.chars().next() else {
+                        break;
+                    };
+                    pos += next.len_utf8();
+                }
+                if !closed {
+                    return false;
+                }
+                continue;
+            }
+            return false;
+        }
+        true
+    }
+
     fn eval_dynamic_js_source(
         &mut self,
         source: &str,
@@ -7440,6 +7536,10 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<Value, VmError> {
+        let source = self.strip_leading_hashbang_comment(source);
+        if self.js_source_is_only_comments_and_whitespace(source) {
+            return Ok(Value::undefined());
+        }
         let in_parameter_initializer = options.in_parameter_initializer;
         let caller_has_parameter_named_arguments = options.has_parameter_named_arguments;
         let inherited_allow_new_target =
@@ -14525,7 +14625,45 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    // Number native calls
+                    id if id == crate::compiler::native_id::OBJECT_STRING_FROM_CHAR_CODE => {
+                        let should_unpack_apply_args = args.len() == 1
+                            && (checked_array_ptr(args[0]).is_some()
+                                || matches!(
+                                    self.exotic_adapter_kind(args[0]),
+                                    Some(JsExoticAdapterKind::Arguments)
+                                ));
+                        let code_units = if should_unpack_apply_args {
+                            match self.collect_apply_arguments(args[0], task, module) {
+                                Ok(values) => values,
+                                Err(_) => args.clone(),
+                            }
+                        } else {
+                            args.clone()
+                        };
+                        let mut units = Vec::with_capacity(code_units.len());
+                        for value in code_units {
+                            let number = match self.js_to_number_with_context(value, task, module) {
+                                Ok(number) => number,
+                                Err(error) => return OpcodeResult::Error(error),
+                            };
+                            let unit = if !number.is_finite() || number == 0.0 {
+                                0u16
+                            } else {
+                                number.trunc().rem_euclid(65536.0) as u16
+                            };
+                            units.push(unit);
+                        }
+                        let result = String::from_utf16_lossy(&units);
+                        let raya_string = RayaString::new(result);
+                        let gc_ptr = self.gc.lock().allocate(raya_string);
+                        let value = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
                     0x0F00u16 => {
                         // NUMBER_TO_FIXED: format number with fixed decimal places
                         // args[0] = number value, args[1] = digits
