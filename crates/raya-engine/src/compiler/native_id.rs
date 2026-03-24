@@ -130,6 +130,10 @@ pub const OBJECT_GENERATOR_SNAPSHOT_NEXT: u16 = 0x0038;
 pub const OBJECT_GENERATOR_SNAPSHOT_RETURN: u16 = 0x0039;
 /// Return the generator snapshot iterator itself for `@@iterator`.
 pub const OBJECT_GENERATOR_SNAPSHOT_ITERATOR: u16 = 0x003A;
+/// Parse a JS BigInt literal into an arbitrary-precision runtime primitive.
+pub const OBJECT_PARSE_BIGINT_LITERAL: u16 = 0x0040;
+/// Apply JS unary minus using ToNumeric semantics.
+pub const OBJECT_JS_UNARY_MINUS: u16 = 0x0041;
 /// `String.fromCharCode(...codeUnits)` helper.
 pub const OBJECT_STRING_FROM_CHAR_CODE: u16 = 0x003F;
 
@@ -664,6 +668,8 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_JS_TO_INTEGER_OR_INFINITY => "Object.jsToIntegerOrInfinity",
         TRY_GET_GLOBAL => "tryGetGlobal",
         OBJECT_HAS_PROPERTY => "Object.hasProperty",
+        OBJECT_PARSE_BIGINT_LITERAL => "Object.parseBigIntLiteral",
+        OBJECT_JS_UNARY_MINUS => "Object.jsUnaryMinus",
 
         // Array
         ARRAY_PUSH => "Array.push",

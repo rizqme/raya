@@ -98,6 +98,7 @@ pub enum Token {
 
     // Literals
     IntLiteral(i64),
+    BigIntLiteral(String),
     FloatLiteral(f64),
     StringLiteral(Symbol), // Interned string
     TemplateLiteral(Vec<TemplatePart>),
@@ -295,6 +296,7 @@ impl fmt::Display for Token {
             Token::In => write!(f, "in"),
             Token::Of => write!(f, "of"),
             Token::IntLiteral(n) => write!(f, "{}", n),
+            Token::BigIntLiteral(n) => write!(f, "{}", n),
             Token::FloatLiteral(n) => write!(f, "{}", n),
             Token::StringLiteral(_) => write!(f, "\"<string>\""),
             Token::TemplateLiteral(_) => write!(f, "`...`"),
@@ -431,6 +433,7 @@ impl Token {
         matches!(
             self,
             Token::IntLiteral(_)
+                | Token::BigIntLiteral(_)
                 | Token::FloatLiteral(_)
                 | Token::StringLiteral(_)
                 | Token::TemplateLiteral(_)

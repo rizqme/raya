@@ -768,7 +768,15 @@ impl Vm {
             .register_module(runtime_module.clone())
             .map_err(VmError::RuntimeError)?;
 
-        // JIT: start background thread and submit prewarm candidates (non-blocking)
+        // Execute the entry `main` (the last one emitted by the compiler).
+        let entry_main_fn_id = module
+            .functions
+            .iter()
+            .rposition(|f| f.name == "main")
+            .ok_or_else(|| VmError::RuntimeError("No main function".to_string()))?;
+
+        // JIT: synchronously compile the entry `main` when possible, then start
+        // the background compiler for the broader candidate set.
         #[cfg(feature = "jit")]
         if let Some(ref config) = self.jit_config {
             // Create profiling counters for adaptive compilation
@@ -784,8 +792,31 @@ impl Vm {
             }
 
             // Start background compiler thread and submit prewarm candidates.
-            if let Some(engine) = self.jit_engine.take() {
+            if let Some(mut engine) = self.jit_engine.take() {
                 let module_id = engine.register_module(module.checksum);
+
+                if module
+                    .functions
+                    .get(entry_main_fn_id)
+                    .is_some_and(crate::jit::analysis::heuristics::function_supported_for_jit)
+                {
+                    let summary = engine.compile_selected(module, module_id, [entry_main_fn_id]);
+                    if summary.compiled > 0 {
+                        if let Some(profile) = self
+                            .scheduler
+                            .shared_state()
+                            .module_profiles
+                            .read()
+                            .get(&module.checksum)
+                            .cloned()
+                        {
+                            if let Some(fp) = profile.get(entry_main_fn_id) {
+                                fp.finish_compile();
+                            }
+                        }
+                    }
+                }
+
                 let bg_compiler = Arc::new(engine.start_background());
                 *self.scheduler.shared_state().background_compiler.lock() =
                     Some(bg_compiler.clone());
@@ -808,6 +839,9 @@ impl Vm {
 
                     for &func_index in candidates.iter().take(config.max_prewarm_functions) {
                         if let Some(fp) = profile.get(func_index) {
+                            if fp.is_jit_available() {
+                                continue;
+                            }
                             if !fp.try_start_compile() {
                                 continue;
                             }
@@ -828,13 +862,6 @@ impl Vm {
                 }
             }
         }
-
-        // Execute the entry `main` (the last one emitted by the compiler).
-        let entry_main_fn_id = module
-            .functions
-            .iter()
-            .rposition(|f| f.name == "main")
-            .ok_or_else(|| VmError::RuntimeError("No main function".to_string()))?;
         let result = self.execute_main_task(runtime_module.clone(), entry_main_fn_id)?;
 
         // Legacy compatibility: if the entry main returned null and the module

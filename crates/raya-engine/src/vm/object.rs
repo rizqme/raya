@@ -1,6 +1,7 @@
 //! Object model and class system
 
 use crate::vm::value::Value;
+use num_bigint::BigInt as ArbitraryBigInt;
 use rustc_hash::FxHashMap;
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1518,6 +1519,23 @@ impl RayaString {
     /// Concatenate two strings
     pub fn concat(&self, other: &RayaString) -> RayaString {
         RayaString::new(format!("{}{}", self.data, other.data))
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RayaBigInt {
+    pub data: ArbitraryBigInt,
+}
+
+impl std::fmt::Debug for RayaBigInt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("RayaBigInt").field(&self.data.to_string()).finish()
+    }
+}
+
+impl RayaBigInt {
+    pub fn new(data: ArbitraryBigInt) -> Self {
+        Self { data }
     }
 }
 

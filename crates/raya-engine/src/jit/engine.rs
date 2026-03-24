@@ -180,6 +180,54 @@ impl JitEngine {
         }
     }
 
+    /// Compile a selected set of functions synchronously and store them in the cache.
+    ///
+    /// This is used for first-run acceleration of entry functions that only
+    /// execute once, where background compilation would arrive too late.
+    pub fn compile_selected<I>(
+        &mut self,
+        module: &Module,
+        module_id: u64,
+        func_indices: I,
+    ) -> PrewarmSummary
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let mut compiled_count = 0u32;
+        let mut failed_count = 0u32;
+
+        for func_idx in func_indices {
+            if func_idx >= module.functions.len() {
+                continue;
+            }
+
+            let compile_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.compile_to_cache(module, func_idx, module_id)
+            }))
+            .map_err(|_| "panic during JIT compile".to_string())
+            .and_then(|r| r);
+
+            match compile_result {
+                Ok(()) => compiled_count += 1,
+                Err(err) => {
+                    failed_count += 1;
+                    if std::env::var("RAYA_JIT_DEBUG").is_ok() {
+                        eprintln!(
+                            "JIT selected compile failed: func={} name={} err={}",
+                            func_idx, module.functions[func_idx].name, err
+                        );
+                    }
+                }
+            }
+        }
+
+        PrewarmSummary {
+            module_id,
+            compiled: compiled_count,
+            failed: failed_count,
+        }
+    }
+
     /// Compile a single function and store the executable code in the cache.
     fn compile_to_cache(
         &mut self,

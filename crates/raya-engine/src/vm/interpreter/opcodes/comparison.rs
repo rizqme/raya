@@ -3,6 +3,7 @@ use crate::compiler::Opcode;
 use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
+use crate::vm::interpreter::opcodes::native::checked_bigint_ptr;
 use crate::vm::object::RayaString;
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
@@ -21,6 +22,10 @@ impl<'a> Interpreter<'a> {
     fn values_equal(a: Value, b: Value) -> bool {
         if let (Some(a_bool), Some(b_bool)) = (a.as_bool(), b.as_bool()) {
             return a_bool == b_bool;
+        }
+
+        if let (Some(a_bigint), Some(b_bigint)) = (checked_bigint_ptr(a), checked_bigint_ptr(b)) {
+            return unsafe { &*a_bigint.as_ptr() }.data == unsafe { &*b_bigint.as_ptr() }.data;
         }
 
         if let (Some(a_num), Some(b_num)) = (Self::numeric_value(a), Self::numeric_value(b)) {

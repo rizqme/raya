@@ -1,7 +1,7 @@
 //! Type operation opcode handlers: nominal checks/casts, generic casts, dynamic keyed access,
 //! and static/runtime type helpers.
 
-use super::native::{checked_callable_ptr, checked_object_ptr, js_number_to_string};
+use super::native::{checked_bigint_ptr, checked_callable_ptr, checked_object_ptr, js_number_to_string};
 use crate::compiler::native_id;
 use crate::compiler::type_registry::TypeRegistry;
 use crate::compiler::{Module, Opcode};
@@ -66,6 +66,16 @@ fn protocol_alias_names(key: &str) -> &'static [&'static str] {
         "Symbol.iterator" => &["__iteratorObject", "iterator"],
         _ => &[],
     }
+}
+
+fn module_uses_js_numeric_semantics(module: &Module) -> bool {
+    module
+        .metadata
+        .source_file
+        .as_deref()
+        .or(Some(module.metadata.name.as_str()))
+        .map(|name| matches!(name.rsplit('.').next(), Some("js" | "mjs" | "cjs" | "jsx")))
+        .unwrap_or(false)
 }
 
 fn value_kind_mask(value: Value) -> u16 {
@@ -1755,11 +1765,14 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+                let js_numeric_semantics = module_uses_js_numeric_semantics(module);
 
                 let type_str = if value.is_null() {
                     "object" // ES spec: typeof null === "object"
                 } else if value.is_bool() {
                     "boolean"
+                } else if js_numeric_semantics && checked_bigint_ptr(value).is_some() {
+                    "bigint"
                 } else if value.is_i32()
                     || value.is_f64()
                     || value.is_f32()

@@ -54,7 +54,6 @@ impl<'a> Lowerer<'a> {
         matches!(
             name,
             "Array"
-                | "Symbol"
                 | "Function"
                 | "Error"
                 | "AggregateError"
@@ -917,7 +916,25 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn lower_int_literal(&mut self, lit: &ast::IntLiteral) -> Register {
-        if self.js_this_binding_compat {
+        if self.js_this_binding_compat && lit.is_bigint {
+            let dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
+            let source = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+            let raw = lit
+                .raw_text
+                .clone()
+                .unwrap_or_else(|| format!("{}n", lit.value));
+            self.emit(IrInstr::Assign {
+                dest: source.clone(),
+                value: IrValue::Constant(IrConstant::String(raw)),
+            });
+            self.emit(IrInstr::NativeCall {
+                dest: Some(dest.clone()),
+                native_id: crate::compiler::native_id::OBJECT_PARSE_BIGINT_LITERAL,
+                args: vec![source],
+            });
+            return dest;
+        }
+        if self.js_this_binding_compat && !lit.is_bigint {
             let ty = TypeId::new(NUMBER_TYPE_ID);
             let dest = self.alloc_register(ty);
             self.emit(IrInstr::Assign {
@@ -1453,24 +1470,6 @@ impl<'a> Lowerer<'a> {
             return self.emit_constant_value(&const_val);
         }
 
-        if let Some(nominal_type_id) = self
-            .nominal_type_id_from_type_name(name)
-            .or_else(|| self.class_map.get(&ident.name).copied())
-        {
-            if std::env::var("RAYA_DEBUG_CLASS_IDENT").is_ok() {
-                eprintln!(
-                    "[lower-class-ident] name={} via=nominal_lookup nominal={} fn_depth={} block_depth={} shared_slot={:?} parameter_scope_eval_mode={}",
-                    name,
-                    nominal_type_id.as_u32(),
-                    self.function_depth,
-                    self.block_depth,
-                    self.shared_script_binding_slot(ident.name),
-                    self.parameter_scope_eval_mode
-                );
-            }
-            return self.load_class_value_for_nominal_type(nominal_type_id);
-        }
-
         if self.should_resolve_from_direct_eval_env(ident) {
             return self.emit_direct_eval_binding_get(name, false);
         }
@@ -1556,6 +1555,24 @@ impl<'a> Lowerer<'a> {
                 args: vec![name_reg],
             });
             return dest;
+        }
+
+        if let Some(nominal_type_id) = self
+            .nominal_type_id_from_type_name(name)
+            .or_else(|| self.class_map.get(&ident.name).copied())
+        {
+            if std::env::var("RAYA_DEBUG_CLASS_IDENT").is_ok() {
+                eprintln!(
+                    "[lower-class-ident] name={} via=nominal_lookup nominal={} fn_depth={} block_depth={} shared_slot={:?} parameter_scope_eval_mode={}",
+                    name,
+                    nominal_type_id.as_u32(),
+                    self.function_depth,
+                    self.block_depth,
+                    self.shared_script_binding_slot(ident.name),
+                    self.parameter_scope_eval_mode
+                );
+            }
+            return self.load_class_value_for_nominal_type(nominal_type_id);
         }
 
         if name == "arguments" {
@@ -1893,31 +1910,32 @@ impl<'a> Lowerer<'a> {
             _ => {}
         }
 
-        if self.js_this_binding_compat
-            && matches!(
-                unary.operator,
-                ast::UnaryOperator::Minus | ast::UnaryOperator::Plus
-            )
-        {
+        if self.js_this_binding_compat && matches!(unary.operator, ast::UnaryOperator::Plus) {
             let operand = self.lower_expr(&unary.operand);
-            // ES spec: unary +/- first applies ToNumber, then negates if minus.
-            // Use OBJECT_JS_TO_NUMBER for proper coercion (string→number, etc.).
+            // ES spec: unary + applies ToNumber.
             let number = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
             self.emit(IrInstr::NativeCall {
                 dest: Some(number.clone()),
                 native_id: crate::compiler::native_id::OBJECT_JS_TO_NUMBER,
                 args: vec![operand],
             });
-            if matches!(unary.operator, ast::UnaryOperator::Minus) {
-                let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                self.emit(IrInstr::UnaryOp {
-                    dest: dest.clone(),
-                    op: UnaryOp::Neg,
-                    operand: number,
-                });
-                return dest;
-            }
             return number;
+        }
+
+        if self.js_this_binding_compat && matches!(unary.operator, ast::UnaryOperator::Minus) {
+            let operand = self.lower_expr(&unary.operand);
+            let dest_ty = match operand.ty.as_u32() {
+                INT_TYPE_ID => TypeId::new(INT_TYPE_ID),
+                NUMBER_TYPE_ID => TypeId::new(NUMBER_TYPE_ID),
+                _ => TypeId::new(UNKNOWN_TYPE_ID),
+            };
+            let dest = self.alloc_register(dest_ty);
+            self.emit(IrInstr::NativeCall {
+                dest: Some(dest.clone()),
+                native_id: crate::compiler::native_id::OBJECT_JS_UNARY_MINUS,
+                args: vec![operand],
+            });
+            return dest;
         }
 
         let operand = self.lower_expr(&unary.operand);
@@ -2386,6 +2404,32 @@ impl<'a> Lowerer<'a> {
                     dest: dest.clone(),
                     index: result_local,
                 });
+                return dest;
+            }
+
+            if self.js_this_binding_compat && name == "Symbol" {
+                let closure = self.alloc_register(UNRESOLVED);
+                let name_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: name_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String("Symbol".to_string())),
+                });
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(closure.clone()),
+                    native_id: crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL,
+                    args: vec![name_reg],
+                });
+                let receiver = self.lower_undefined_literal();
+                self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
+                self.propagate_type_projection_to_register(call_ty, &dest);
+                return dest;
+            }
+
+            if self.js_this_binding_compat && self.ambient_builtin_globals.contains(name) {
+                let closure = self.lower_identifier(ident);
+                let receiver = self.lower_undefined_literal();
+                self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
+                self.propagate_type_projection_to_register(call_ty, &dest);
                 return dest;
             }
 
@@ -9502,11 +9546,16 @@ impl<'a> Lowerer<'a> {
         }
 
         // ES spec: typeof always returns "number" for all numerics, "object" for null.
-        if let Expression::IntLiteral(_) = &*typeof_expr.argument {
+        if let Expression::IntLiteral(lit) = &*typeof_expr.argument {
             let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+            let type_name = if self.js_this_binding_compat && lit.is_bigint {
+                "bigint"
+            } else {
+                "number"
+            };
             self.emit(IrInstr::Assign {
                 dest: dest.clone(),
-                value: IrValue::Constant(IrConstant::String("number".to_string())),
+                value: IrValue::Constant(IrConstant::String(type_name.to_string())),
             });
             return dest;
         }
@@ -9521,7 +9570,12 @@ impl<'a> Lowerer<'a> {
             }
         }
         let static_typeof_name = match arg_type_id {
-            NUMBER_TYPE_ID | INT_TYPE_ID => Some("number"),
+            NUMBER_TYPE_ID => Some("number"),
+            INT_TYPE_ID => Some(if self.js_this_binding_compat {
+                "bigint"
+            } else {
+                "number"
+            }),
             STRING_TYPE_ID => Some("string"),
             BOOLEAN_TYPE_ID => Some("boolean"),
             NULL_TYPE_ID => Some("object"),
@@ -12212,25 +12266,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn should_lower_js_add_via_runtime(&self, left_ty: TypeId, right_ty: TypeId) -> bool {
-        if !self.js_this_binding_compat {
-            return false;
-        }
-        if self.is_definitely_numeric_add_type(left_ty)
-            && self.is_definitely_numeric_add_type(right_ty)
-        {
-            return false;
-        }
-        if self.is_string_like_type(left_ty)
-            && self.is_definitely_primitive_concat_safe_type(right_ty)
-        {
-            return false;
-        }
-        if self.is_string_like_type(right_ty)
-            && self.is_definitely_primitive_concat_safe_type(left_ty)
-        {
-            return false;
-        }
-        true
+        let _ = (left_ty, right_ty);
+        self.js_this_binding_compat
     }
 
     fn lower_runtime_js_add(&mut self, left: Register, right: Register) -> Register {

@@ -247,6 +247,19 @@ class __NumberPrototype {
     }
 }
 
+class __BigIntPrototype {
+    valueOf(): any {
+        if (this == null || this["__boxedPrimitiveKind"] != "BigInt") {
+            throw new TypeError("BigInt.prototype.valueOf requires that 'this' be a BigInt object");
+        }
+        return this["__primitiveValue"];
+    }
+
+    toString(): string {
+        return "" + this.valueOf();
+    }
+}
+
 class __StringIterator {
     target: string;
     index: number;

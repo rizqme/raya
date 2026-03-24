@@ -134,6 +134,8 @@ mod tests {
                 type_annotation: None,
                 initializer: Some(ast::Expression::IntLiteral(ast::IntLiteral {
                     value: 1,
+                    is_bigint: false,
+                    raw_text: None,
                     span: Span::new(15, 16, 1, 16),
                 })),
                 span: Span::new(0, 17, 1, 1),

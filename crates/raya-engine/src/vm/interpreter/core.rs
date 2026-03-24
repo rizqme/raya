@@ -1733,6 +1733,8 @@ impl<'a> Interpreter<'a> {
         let mut code: &[u8] = &module.functions[current_func_id].code;
         let mut locals_base = task.current_locals_base();
         let mut current_arg_count = 0usize; // Track current function's arg count (for rest parameters)
+        #[cfg(feature = "jit")]
+        let mut entry_initial_args_snapshot: Option<Vec<Value>> = None;
 
         // Check if we're resuming from suspension.
         //
@@ -1829,6 +1831,10 @@ impl<'a> Interpreter<'a> {
             task.push_call_frame(current_func_id);
 
             let initial_args = task.take_initial_args();
+            #[cfg(feature = "jit")]
+            {
+                entry_initial_args_snapshot = Some(initial_args.clone());
+            }
             current_arg_count = initial_args.len();
             let initial_slot_count = entry_local_count.max(current_arg_count);
 
@@ -1853,6 +1859,207 @@ impl<'a> Interpreter<'a> {
             task.set_current_func_id(current_func_id);
             task.set_current_locals_base(locals_base);
             task.set_current_arg_count(current_arg_count);
+        }
+
+        #[cfg(feature = "jit")]
+        if ip == 0
+            && frames.is_empty()
+            && self.debug_state.is_none()
+            && self.profiler.is_none()
+        {
+            if let (Some(cache), Some(mid)) = (&self.code_cache, jit_module_id) {
+                if let Some(jit_fn) = cache.get(mid, current_func_id as u32) {
+                    if let Some(ref telemetry) = self.jit_telemetry {
+                        telemetry
+                            .cache_hits
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+
+                    let args: Vec<u64> = (0..current_arg_count)
+                        .map(|i| {
+                            stack_guard
+                                .peek_at(locals_base + i)
+                                .unwrap_or_default()
+                                .raw()
+                        })
+                        .collect();
+
+                    let func = &module.functions[current_func_id];
+                    let local_count = func.local_count;
+                    let mut locals_buf = vec![Value::null().raw(); local_count];
+                    for (i, slot) in locals_buf.iter_mut().enumerate() {
+                        if let Ok(value) = stack_guard.peek_at(locals_base + i) {
+                            *slot = value.raw();
+                        }
+                    }
+
+                    let mut exit_info =
+                        crate::jit::runtime::trampoline::JitExitInfo::default();
+                    let jit_resolved_natives =
+                        parking_lot::RwLock::new(self.module_resolved_natives(&module));
+                    let bridge_ctx = crate::jit::runtime::helpers::build_runtime_bridge_context(
+                        self.safepoint,
+                        task,
+                        self.gc,
+                        self.classes,
+                        self.layouts,
+                        self.mutex_registry,
+                        self.semaphore_registry,
+                        self.globals_by_index,
+                        self.builtin_global_slots,
+                        self.js_global_bindings,
+                        self.js_global_binding_slots,
+                        self.constant_string_cache,
+                        self.ephemeral_gc_roots,
+                        self.pinned_handles,
+                        self.tasks,
+                        self.injector,
+                        self.module_layouts,
+                        self.module_registry,
+                        self.metadata,
+                        self.class_metadata,
+                        self.native_handler,
+                        &jit_resolved_natives,
+                        self.structural_shape_names,
+                        self.structural_object_shapes,
+                        self.structural_shape_adapters,
+                        self.aot_profile,
+                        self.type_handles,
+                        self.class_value_slots,
+                        self.prop_keys,
+                        self.stack_pool,
+                        self.max_preemptions,
+                        frames.len(),
+                        self.io_submit_tx,
+                    );
+                    let mut runtime_ctx =
+                        crate::jit::runtime::helpers::build_runtime_context(
+                            &bridge_ctx,
+                            module.as_ref(),
+                        );
+
+                    let result = unsafe {
+                        jit_fn(
+                            args.as_ptr(),
+                            current_arg_count as u32,
+                            locals_buf.as_mut_ptr(),
+                            local_count as u32,
+                            (&mut runtime_ctx as *mut _),
+                            (&mut exit_info as *mut _),
+                        )
+                    };
+
+                    if exit_info.kind
+                        == crate::jit::runtime::trampoline::JitExitKind::Completed as u32
+                    {
+                        return ExecutionResult::Completed(unsafe { Value::from_raw(result) });
+                    }
+
+                    let mut resume_ip: Option<usize> = None;
+                    let mut operand_values: Option<Vec<Value>> = None;
+                    let mut can_resume = false;
+
+                    if exit_info.kind
+                        == crate::jit::runtime::trampoline::JitExitKind::Suspended as u32
+                    {
+                        match exit_info.suspend_reason {
+                            x if x
+                                == crate::jit::runtime::trampoline::JitSuspendReason::NativeCallBoundary
+                                    as u32 =>
+                            {
+                                if let Some(vals) =
+                                    Self::materialize_native_resume_operands(func, &exit_info)
+                                {
+                                    resume_ip = Some(exit_info.bytecode_offset as usize);
+                                    operand_values = Some(vals);
+                                    can_resume = true;
+                                }
+                            }
+                            x if x
+                                == crate::jit::runtime::trampoline::JitSuspendReason::Preemption
+                                    as u32 =>
+                            {
+                                if Self::can_resume_at_preemption_boundary(
+                                    func,
+                                    exit_info.bytecode_offset,
+                                ) {
+                                    resume_ip = Some(exit_info.bytecode_offset as usize);
+                                    can_resume = true;
+                                }
+                            }
+                            x if x
+                                == crate::jit::runtime::trampoline::JitSuspendReason::InterpreterBoundary
+                                    as u32 =>
+                            {
+                                if let Some(vals) =
+                                    Self::materialize_interpreter_resume_stack(&exit_info)
+                                {
+                                    resume_ip = Some(exit_info.bytecode_offset as usize);
+                                    operand_values = Some(vals);
+                                    can_resume = true;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if can_resume {
+                        for (i, raw) in locals_buf.iter().enumerate() {
+                            let slot = locals_base + i;
+                            if slot >= stack_guard.depth() {
+                                break;
+                            }
+                            if let Err(e) =
+                                stack_guard.set_at(slot, unsafe { Value::from_raw(*raw) })
+                            {
+                                return ExecutionResult::Failed(e);
+                            }
+                        }
+                        if let Some(vals) = operand_values {
+                            for value in vals {
+                                if let Err(e) = stack_guard.push(value) {
+                                    return ExecutionResult::Failed(e);
+                                }
+                            }
+                        }
+                        if let Some(new_ip) = resume_ip {
+                            ip = new_ip;
+                        }
+                    } else {
+                        if let Some(ref telemetry) = self.jit_telemetry {
+                            telemetry
+                                .cache_misses
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        let initial_args = entry_initial_args_snapshot.as_deref().unwrap_or(&[]);
+                        let initial_slot_count = entry_local_count.max(initial_args.len());
+                        for local_index in 0..initial_slot_count {
+                            let initial = if local_index < entry_param_count {
+                                Value::undefined()
+                            } else {
+                                Value::null()
+                            };
+                            if let Err(e) = stack_guard.set_at(locals_base + local_index, initial) {
+                                return ExecutionResult::Failed(e);
+                            }
+                        }
+                        for (i, arg) in initial_args.iter().copied().enumerate() {
+                            if i < initial_slot_count {
+                                if let Err(e) = stack_guard.set_at(locals_base + i, arg) {
+                                    return ExecutionResult::Failed(e);
+                                }
+                            }
+                        }
+                        ip = 0;
+                        current_arg_count = initial_args.len();
+                        task.set_current_arg_count(current_arg_count);
+                    }
+                } else if let Some(ref telemetry) = self.jit_telemetry {
+                    telemetry
+                        .cache_misses
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
         }
 
         // Macro to save all frame state before leaving run()

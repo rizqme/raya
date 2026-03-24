@@ -25,14 +25,15 @@ use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
     layout_id_from_ordered_names, ArgumentsDataProperty, ArgumentsIndexedProperty,
     ArgumentsObjectData, Array, Buffer, CallableKind, ChannelObject, Class, DateObject, DynProp,
-    ExoticKind, GeneratorSnapshotData, LayoutId, MapObject, Object, RayaString, RefCell,
-    RegExpObject, SetObject, SlotMeta, TypeHandle,
+    ExoticKind, GeneratorSnapshotData, LayoutId, MapObject, Object, RayaBigInt, RayaString,
+    RefCell, RegExpObject, SetObject, SlotMeta, TypeHandle,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use num_bigint::BigInt as ArbitraryBigInt;
 use rustc_hash::FxHashSet;
 use std::any::TypeId;
 use std::collections::BTreeSet;
@@ -767,6 +768,9 @@ fn primitive_to_js_string(value: Value) -> Option<String> {
     if let Some(value) = value.as_f64() {
         return Some(js_number_to_string(value));
     }
+    if let Some(bigint_ptr) = checked_bigint_ptr(value) {
+        return Some(unsafe { &*bigint_ptr.as_ptr() }.data.to_string());
+    }
     let string_ptr = checked_string_ptr(value)?;
     Some(unsafe { &*string_ptr.as_ptr() }.data.clone())
 }
@@ -774,8 +778,23 @@ fn primitive_to_js_string(value: Value) -> Option<String> {
 fn boxed_primitive_helper_class_name(class_name: &str) -> Option<&'static str> {
     match class_name {
         "Boolean" => Some("__BooleanPrototype"),
+        "BigInt" => Some("__BigIntPrototype"),
         "Number" => Some("__NumberPrototype"),
         "String" => Some("__StringPrototype"),
+        _ => None,
+    }
+}
+
+fn intrinsic_number_constructor_constant(key: &str) -> Option<Value> {
+    match key {
+        "NaN" => Some(Value::f64(f64::NAN)),
+        "POSITIVE_INFINITY" => Some(Value::f64(f64::INFINITY)),
+        "NEGATIVE_INFINITY" => Some(Value::f64(f64::NEG_INFINITY)),
+        "MAX_VALUE" => Some(Value::f64(1.7976931348623157e308)),
+        "MIN_VALUE" => Some(Value::f64(5e-324)),
+        "MAX_SAFE_INTEGER" => Some(Value::f64(9007199254740991.0)),
+        "MIN_SAFE_INTEGER" => Some(Value::f64(-9007199254740991.0)),
+        "EPSILON" => Some(Value::f64(2.220446049250313e-16)),
         _ => None,
     }
 }
@@ -836,6 +855,18 @@ pub(in crate::vm::interpreter) fn checked_string_ptr(value: Value) -> Option<Non
     unsafe { value.as_ptr::<RayaString>() }
 }
 
+pub(in crate::vm::interpreter) fn checked_bigint_ptr(value: Value) -> Option<NonNull<RayaBigInt>> {
+    if !value.is_ptr() || value.is_null() {
+        return None;
+    }
+    let raw_ptr = unsafe { value.as_ptr::<u8>() }?;
+    let header = unsafe { &*header_ptr_from_value_ptr(raw_ptr.as_ptr()) };
+    if header.type_id() != TypeId::of::<RayaBigInt>() {
+        return None;
+    }
+    unsafe { value.as_ptr::<RayaBigInt>() }
+}
+
 /// Check if value is a callable Object and return pointer (alias for checked_callable_ptr).
 pub(in crate::vm::interpreter) fn checked_closure_ptr(value: Value) -> Option<NonNull<Object>> {
     checked_callable_ptr(value)
@@ -843,6 +874,9 @@ pub(in crate::vm::interpreter) fn checked_closure_ptr(value: Value) -> Option<No
 
 fn value_same_value(a: Value, b: Value) -> bool {
     if a.is_ptr() && b.is_ptr() {
+        if let (Some(a_ptr), Some(b_ptr)) = (checked_bigint_ptr(a), checked_bigint_ptr(b)) {
+            return unsafe { &*a_ptr.as_ptr() }.data == unsafe { &*b_ptr.as_ptr() }.data;
+        }
         let a_str = unsafe { a.as_ptr::<RayaString>() };
         let b_str = unsafe { b.as_ptr::<RayaString>() };
         if let (Some(a_ptr), Some(b_ptr)) = (a_str, b_str) {
@@ -3634,13 +3668,33 @@ impl<'a> Interpreter<'a> {
     }
 
     fn box_js_this_primitive(&mut self, this_value: Value) -> Result<Option<Value>, VmError> {
+        if let Some(constructor) = self.builtin_global_value("Symbol") {
+            if self.is_symbol_value(this_value) {
+                return self
+                    .alloc_boxed_primitive_object(constructor, "Symbol", this_value)
+                    .map(Some);
+            }
+        }
+        if let Some(constructor) = self.builtin_global_value("BigInt") {
+            if checked_bigint_ptr(this_value).is_some() {
+                return self
+                    .alloc_boxed_primitive_object(constructor, "BigInt", this_value)
+                    .map(Some);
+            }
+        }
         if let Some(constructor) = self.builtin_global_value("Number") {
             if this_value.as_i32().is_some()
                 || this_value.as_i64().is_some()
                 || this_value.as_f64().is_some()
             {
+                let numeric = this_value
+                    .as_f64()
+                    .or_else(|| this_value.as_i64().map(|value| value as f64))
+                    .or_else(|| this_value.as_i32().map(|value| value as f64))
+                    .map(Value::f64)
+                    .unwrap_or(this_value);
                 return self
-                    .alloc_boxed_primitive_object(constructor, "Number", this_value)
+                    .alloc_boxed_primitive_object(constructor, "Number", numeric)
                     .map(Some);
             }
         }
@@ -5339,16 +5393,28 @@ impl<'a> Interpreter<'a> {
         class_name: &str,
         constructor_value: Value,
     ) -> Option<Value> {
-        // Check caches: Class.prototype_value, then callable virtual property cache
-        {
+        // Read class metadata before consulting caches so previously-created
+        // generic prototype objects can still be hydrated with class-specific
+        // members once the real nominal class is known.
+        let (class_module, prototype_members, existing_class_prototype) = {
             let classes = self.classes.read();
-            if let Some(class) = classes.get_class(nominal_type_id) {
-                if let Some(proto_val) = class.prototype_value {
-                    drop(classes);
-                    self.ensure_intrinsic_prototype_parent(class_name, proto_val);
-                    return Some(proto_val);
-                }
-            }
+            let class = classes.get_class(nominal_type_id)?;
+            let class_module = class.module.clone();
+            let prototype_members = class.prototype_members.clone();
+            let existing = class.prototype_value;
+            (class_module, prototype_members, existing)
+        };
+
+        // Check caches: Class.prototype_value, then callable virtual property cache.
+        if let Some(proto_val) = existing_class_prototype {
+            self.hydrate_class_prototype_members(
+                proto_val,
+                class_name,
+                class_module.clone(),
+                &prototype_members,
+            )?;
+            self.ensure_intrinsic_prototype_parent(class_name, proto_val);
+            return Some(proto_val);
         }
         if let Some(existing) =
             self.cached_callable_virtual_property_value(constructor_value, "prototype")
@@ -5367,18 +5433,16 @@ impl<'a> Interpreter<'a> {
                     class.prototype_value = Some(existing);
                 }
             }
+            self.hydrate_class_prototype_members(
+                existing,
+                class_name,
+                class_module.clone(),
+                &prototype_members,
+            )?;
             self.ensure_intrinsic_prototype_parent(class_name, existing);
             return Some(existing);
         }
 
-        // Read class metadata for prototype member population.
-        let (class_module, prototype_members) = {
-            let classes = self.classes.read();
-            let class = classes.get_class(nominal_type_id)?;
-            let class_module = class.module.clone();
-            let prototype_members = class.prototype_members.clone();
-            (class_module, prototype_members)
-        };
         // Allocate prototype object with layout ["constructor"]
         let member_names = vec!["constructor".to_string()];
         let prototype_val = if class_name == "Array" {
@@ -5449,15 +5513,48 @@ impl<'a> Interpreter<'a> {
         // Seed error-specific prototype properties (name, message defaults)
         self.seed_builtin_error_prototype_properties(prototype_val, class_name)?;
 
+        self.hydrate_class_prototype_members(
+            prototype_val,
+            class_name,
+            class_module,
+            &prototype_members,
+        )?;
+
+        Some(prototype_val)
+    }
+
+    fn hydrate_class_prototype_members(
+        &self,
+        prototype_val: Value,
+        class_name: &str,
+        class_module: Option<Arc<Module>>,
+        prototype_members: &[crate::vm::object::PrototypeMember],
+    ) -> Option<()> {
+        let has_materialized_own_property = |name: &str| {
+            self.ordinary_own_property(prototype_val, name).is_some()
+                || self.metadata_descriptor_property(prototype_val, name).is_some()
+                || self.metadata_data_property_value(prototype_val, name).is_some()
+        };
+
         // Populate own prototype members. Inherited members live on the parent
         // prototype chain; only declare accessors/methods owned by this class.
         let mut method_values = Vec::new();
         let mut accessor_pairs: rustc_hash::FxHashMap<String, (Option<Value>, Option<Value>)> =
             rustc_hash::FxHashMap::default();
+
         for member in prototype_members {
             if member.name.is_empty() || member.name.starts_with('#') {
                 continue;
             }
+            // Only skip if the prototype already has a materialized own property.
+            // Nominal/vtable visibility is not enough here: builtins like
+            // Boolean.prototype need real own properties so JS reflection and
+            // boxed-wrapper coercion use the prototype methods instead of
+            // inherited Object.prototype fallbacks.
+            if has_materialized_own_property(&member.name) {
+                continue;
+            }
+
             let closure = if let Some(module) = class_module.clone() {
                 Object::new_closure_with_module(member.function_id, Vec::new(), module)
             } else {
@@ -5486,14 +5583,18 @@ impl<'a> Interpreter<'a> {
                     .ok()?;
                 }
                 crate::vm::object::PrototypeMemberKind::Getter => {
-                    accessor_pairs.entry(member.name).or_default().0 = Some(closure_val);
+                    accessor_pairs.entry(member.name.clone()).or_default().0 = Some(closure_val);
                 }
                 crate::vm::object::PrototypeMemberKind::Setter => {
-                    accessor_pairs.entry(member.name).or_default().1 = Some(closure_val);
+                    accessor_pairs.entry(member.name.clone()).or_default().1 = Some(closure_val);
                 }
             }
         }
+
         for (name, (get, set)) in accessor_pairs {
+            if has_materialized_own_property(&name) {
+                continue;
+            }
             self.define_accessor_property_on_target(
                 prototype_val,
                 &name,
@@ -5504,9 +5605,9 @@ impl<'a> Interpreter<'a> {
             )
             .ok()?;
         }
-        self.define_prototype_symbol_aliases(class_name, prototype_val, &method_values)?;
 
-        Some(prototype_val)
+        self.define_prototype_symbol_aliases(class_name, prototype_val, &method_values)?;
+        Some(())
     }
 
     pub(in crate::vm::interpreter) fn nominal_instance_prototype_value(
@@ -5672,7 +5773,18 @@ impl<'a> Interpreter<'a> {
             return self.create_prototype_for_class(ntid, &class_name, constructor);
         }
 
-        // 2. Callable virtual property cache (for non-nominal constructors,
+        // 2. Builtin/helper-class prototype resolution should win over any
+        //    earlier generic callable-prototype cache entries so wrapper
+        //    constructors (Boolean/Number/String) can hydrate real prototype
+        //    members instead of reusing a bare generic object.
+        if let Some((visible_name, _)) = self.callable_function_info(constructor) {
+            if let Some(proto) = self.create_prototype_for_class_by_name(&visible_name, constructor)
+            {
+                return Some(proto);
+            }
+        }
+
+        // 3. Callable virtual property cache (for non-nominal constructors,
         //    user-defined classes, or prototypes set via defineProperty)
         if let Some(existing) =
             self.cached_callable_virtual_property_value(constructor, "prototype")
@@ -5681,7 +5793,7 @@ impl<'a> Interpreter<'a> {
             return Some(existing);
         }
 
-        // 3. Create: resolve class name and create prototype, or use generic fallback
+        // 4. Create: resolve class name and create prototype, or use generic fallback
         let (visible_name, _) = self.callable_function_info(constructor)?;
         let nominal_type_id = self
             .classes
@@ -6176,7 +6288,10 @@ impl<'a> Interpreter<'a> {
         let Some(global_name) = self.builtin_global_name_for_value(constructor) else {
             return Ok(None);
         };
-        if !matches!(global_name.as_str(), "Boolean" | "Number" | "String") {
+        if !matches!(
+            global_name.as_str(),
+            "BigInt" | "Boolean" | "Number" | "String" | "Symbol"
+        ) {
             return Ok(None);
         }
         let primitive_value = self.invoke_callable_sync(constructor, args, task, module)?;
@@ -6212,6 +6327,7 @@ impl<'a> Interpreter<'a> {
             || value.as_bool().is_some()
             || value.as_i32().is_some()
             || value.as_f64().is_some()
+            || checked_bigint_ptr(value).is_some()
             || checked_string_ptr(value).is_some()
             || self.is_symbol_value(value)
     }
@@ -6227,43 +6343,50 @@ impl<'a> Interpreter<'a> {
             return Ok(value);
         }
 
-        if let Ok(Some(exotic)) = self.well_known_symbol_property_value(
+        match self.well_known_symbol_property_value(
             value,
             "Symbol.toPrimitive",
             caller_task,
             caller_module,
-        ) {
-            if !Self::is_callable_value(exotic) {
+        )? {
+            Some(exotic) if exotic.is_null() || exotic.is_undefined() => {
+                // Per ToPrimitive, null/undefined Symbol.toPrimitive is ignored
+                // and ordinary valueOf/toString fallback still applies.
+            }
+            Some(exotic) if !Self::is_callable_value(exotic) => {
                 return Err(VmError::TypeError(
                     "Cannot convert object to primitive value".to_string(),
                 ));
             }
-            let hint_ptr = self.gc.lock().allocate(RayaString::new(hint.to_string()));
-            let hint_value = unsafe {
-                Value::from_ptr(std::ptr::NonNull::new(hint_ptr.as_ptr()).expect("hint ptr"))
-            };
-            self.ephemeral_gc_roots.write().push(hint_value);
-            let result = self.invoke_callable_sync_with_this(
-                exotic,
-                Some(value),
-                &[hint_value],
-                caller_task,
-                caller_module,
-            );
-            let mut ephemeral = self.ephemeral_gc_roots.write();
-            if let Some(index) = ephemeral
-                .iter()
-                .rposition(|candidate| *candidate == hint_value)
-            {
-                ephemeral.swap_remove(index);
+            Some(exotic) => {
+                let hint_ptr = self.gc.lock().allocate(RayaString::new(hint.to_string()));
+                let hint_value = unsafe {
+                    Value::from_ptr(std::ptr::NonNull::new(hint_ptr.as_ptr()).expect("hint ptr"))
+                };
+                self.ephemeral_gc_roots.write().push(hint_value);
+                let result = self.invoke_callable_sync_with_this(
+                    exotic,
+                    Some(value),
+                    &[hint_value],
+                    caller_task,
+                    caller_module,
+                );
+                let mut ephemeral = self.ephemeral_gc_roots.write();
+                if let Some(index) = ephemeral
+                    .iter()
+                    .rposition(|candidate| *candidate == hint_value)
+                {
+                    ephemeral.swap_remove(index);
+                }
+                let primitive = result?;
+                if self.is_js_primitive_value(primitive) {
+                    return Ok(primitive);
+                }
+                return Err(VmError::TypeError(
+                    "Cannot convert object to primitive value".to_string(),
+                ));
             }
-            let primitive = result?;
-            if self.is_js_primitive_value(primitive) {
-                return Ok(primitive);
-            }
-            return Err(VmError::TypeError(
-                "Cannot convert object to primitive value".to_string(),
-            ));
+            None => {}
         }
 
         let method_order = if hint == "string" {
@@ -6308,6 +6431,11 @@ impl<'a> Interpreter<'a> {
         &self,
         value: Value,
     ) -> Result<f64, VmError> {
+        if checked_bigint_ptr(value).is_some() {
+            return Err(VmError::TypeError(
+                "Cannot convert a BigInt value to a number".to_string(),
+            ));
+        }
         if self.is_symbol_value(value) {
             return Err(VmError::TypeError(
                 "Cannot convert a Symbol value to a number".to_string(),
@@ -6391,6 +6519,19 @@ impl<'a> Interpreter<'a> {
         })
     }
 
+    fn js_unary_minus_with_context(
+        &mut self,
+        value: Value,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<Value, VmError> {
+        let primitive = self.js_to_primitive_number_hint(value, caller_task, caller_module)?;
+        if let Some(bigint_ptr) = checked_bigint_ptr(primitive) {
+            return Ok(self.alloc_bigint_value(-unsafe { &*bigint_ptr.as_ptr() }.data.clone()));
+        }
+        Ok(Value::f64(-self.js_to_number_from_primitive(primitive)?))
+    }
+
     fn js_add_with_context(
         &mut self,
         left: Value,
@@ -6413,9 +6554,65 @@ impl<'a> Interpreter<'a> {
             return Ok(self.alloc_string_value(format!("{left_text}{right_text}")));
         }
 
-        let left_number = self.js_to_number_from_primitive(left_primitive)?;
-        let right_number = self.js_to_number_from_primitive(right_primitive)?;
-        Ok(Value::f64(left_number + right_number))
+        enum JsNumeric {
+            BigInt(ArbitraryBigInt),
+            Number(f64),
+        }
+
+        let to_numeric = |this: &mut Self, value: Value| -> Result<JsNumeric, VmError> {
+            if let Some(bigint_ptr) = checked_bigint_ptr(value) {
+                return Ok(JsNumeric::BigInt(
+                    unsafe { &*bigint_ptr.as_ptr() }.data.clone(),
+                ));
+            }
+            Ok(JsNumeric::Number(this.js_to_number_from_primitive(value)?))
+        };
+
+        match (
+            to_numeric(self, left_primitive)?,
+            to_numeric(self, right_primitive)?,
+        ) {
+            (JsNumeric::BigInt(left_bigint), JsNumeric::BigInt(right_bigint)) => {
+                Ok(self.alloc_bigint_value(left_bigint + right_bigint))
+            }
+            (JsNumeric::Number(left_number), JsNumeric::Number(right_number)) => {
+                Ok(Value::f64(left_number + right_number))
+            }
+            _ => Err(VmError::TypeError(
+                "Cannot mix BigInt and Number in addition".to_string(),
+            )),
+        }
+    }
+
+    fn alloc_bigint_value(&mut self, data: ArbitraryBigInt) -> Value {
+        let ptr = self.gc.lock().allocate(RayaBigInt::new(data));
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(ptr.as_ptr()).expect("bigint ptr")) }
+    }
+
+    fn parse_js_bigint_literal_value(&self, source: &str) -> Result<ArbitraryBigInt, VmError> {
+        let trimmed = source.trim();
+        let literal = trimmed.strip_suffix('n').unwrap_or(trimmed).replace('_', "");
+        let (radix, digits) = if let Some(hex) = literal
+            .strip_prefix("0x")
+            .or_else(|| literal.strip_prefix("0X"))
+        {
+            (16, hex)
+        } else if let Some(binary) = literal
+            .strip_prefix("0b")
+            .or_else(|| literal.strip_prefix("0B"))
+        {
+            (2, binary)
+        } else if let Some(octal) = literal
+            .strip_prefix("0o")
+            .or_else(|| literal.strip_prefix("0O"))
+        {
+            (8, octal)
+        } else {
+            (10, literal.as_str())
+        };
+        ArbitraryBigInt::parse_bytes(digits.as_bytes(), radix).ok_or_else(|| {
+            VmError::SyntaxError(format!("Invalid BigInt literal: {source}"))
+        })
     }
 
     fn js_math_number_arg(
@@ -6809,6 +7006,14 @@ impl<'a> Interpreter<'a> {
         self.get_own_field_value_by_name(class_value, "__speciesGetter")
     }
 
+    fn number_constructor_intrinsic_value(&self, target: Value, key: &str) -> Option<Value> {
+        let number_ctor = self.builtin_global_value("Number")?;
+        if target.raw() != number_ctor.raw() {
+            return None;
+        }
+        intrinsic_number_constructor_constant(key)
+    }
+
     pub(in crate::vm::interpreter) fn callable_virtual_accessor_value(
         &self,
         target: Value,
@@ -6832,18 +7037,26 @@ impl<'a> Interpreter<'a> {
         if self.callable_virtual_property_deleted(target, key) {
             return None;
         }
-        if let Some(value) = self.metadata_data_property_value(target, key) {
-            // Fixup: ensure prototype objects have nominal_type_id
-            if key == "prototype" {
-                self.ensure_prototype_nominal_type_id(target, value);
+        if key == "prototype" {
+            let proto = self.constructor_prototype_value(target)?;
+            // Ensure prototype has nominal_type_id for vtable method lookup
+            if let Some(proto_ptr) = checked_object_ptr(proto) {
+                let proto_obj = unsafe { &mut *proto_ptr.as_ptr() };
+                if proto_obj.header.nominal_type_id.is_none() {
+                    if let Some(ntid) = self.constructor_nominal_type_id(target) {
+                        proto_obj.header.nominal_type_id = Some(ntid as u32);
+                    }
+                }
             }
+            return Some(proto);
+        }
+        if let Some(value) = self.number_constructor_intrinsic_value(target, key) {
+            return Some(value);
+        }
+        if let Some(value) = self.metadata_data_property_value(target, key) {
             return Some(value);
         }
         if let Some(value) = self.cached_callable_virtual_property_value(target, key) {
-            // Fixup: ensure prototype objects have nominal_type_id
-            if key == "prototype" {
-                self.ensure_prototype_nominal_type_id(target, value);
-            }
             return Some(value);
         }
         if matches!(key, "caller" | "arguments")
@@ -6853,19 +7066,6 @@ impl<'a> Interpreter<'a> {
             return Some(Value::undefined());
         }
         match key {
-            "prototype" => {
-                let proto = self.constructor_prototype_value(target)?;
-                // Ensure prototype has nominal_type_id for vtable method lookup
-                if let Some(proto_ptr) = checked_object_ptr(proto) {
-                    let proto_obj = unsafe { &mut *proto_ptr.as_ptr() };
-                    if proto_obj.header.nominal_type_id.is_none() {
-                        if let Some(ntid) = self.constructor_nominal_type_id(target) {
-                            proto_obj.header.nominal_type_id = Some(ntid as u32);
-                        }
-                    }
-                }
-                Some(proto)
-            }
             "name" | "length" => self.callable_property_value(target, key),
             _ => None,
         }
@@ -6917,6 +7117,9 @@ impl<'a> Interpreter<'a> {
             return Some((false, false, false));
         }
         match key {
+            key if self.number_constructor_intrinsic_value(target, key).is_some() => {
+                Some((false, false, false))
+            }
             "prototype" if self.constructor_prototype_value(target).is_some() => {
                 let writable = self.builtin_global_name_for_value(target).is_none()
                     && self.nominal_class_name_for_value(target).is_none();
@@ -13200,16 +13403,45 @@ impl<'a> Interpreter<'a> {
                             Ok(number) => number,
                             Err(error) => return OpcodeResult::Error(error),
                         };
-                        let value = if number.fract() == 0.0
-                            && number.is_finite()
-                            && number >= i32::MIN as f64
-                            && number <= i32::MAX as f64
-                        {
-                            Value::i32(number as i32)
-                        } else {
-                            Value::f64(number)
+                        let value = Value::f64(number);
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_JS_UNARY_MINUS => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Object.jsUnaryMinus expects exactly one argument".to_string(),
+                            ));
+                        }
+                        let value = match self.js_unary_minus_with_context(args[0], task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
                         };
                         if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_PARSE_BIGINT_LITERAL => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Object.parseBigIntLiteral expects exactly one argument"
+                                    .to_string(),
+                            ));
+                        }
+                        let source = match self.js_function_argument_to_string(args[0], task, module) {
+                            Ok(source) => source,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        let bigint = match self.parse_js_bigint_literal_value(&source) {
+                            Ok(bigint) => bigint,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(self.alloc_bigint_value(bigint)) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue

@@ -1254,6 +1254,20 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
             parser.advance();
             Ok(Expression::IntLiteral(IntLiteral {
                 value,
+                is_bigint: false,
+                raw_text: None,
+                span: start_span,
+            }))
+        }
+
+        // BigInt literal
+        Token::BigIntLiteral(value) => {
+            let value = value.clone();
+            parser.advance();
+            Ok(Expression::IntLiteral(IntLiteral {
+                value: 0,
+                is_bigint: true,
+                raw_text: Some(value),
                 span: start_span,
             }))
         }
@@ -1620,6 +1634,8 @@ pub(super) fn parse_object_property_key(
         parser.advance();
         Ok(PropertyKey::IntLiteral(IntLiteral {
             value: n,
+            is_bigint: false,
+            raw_text: None,
             span: start_span,
         }))
     } else if parser.check(&Token::LeftBracket) {

@@ -3001,7 +3001,14 @@ impl<'a> TypeChecker<'a> {
     /// Check expression (returns inferred type)
     fn check_expr(&mut self, expr: &Expression) -> TypeId {
         let ty = match expr {
-            Expression::IntLiteral(_) | Expression::FloatLiteral(_) => self.type_ctx.number_type(),
+            Expression::IntLiteral(lit) => {
+                if lit.is_bigint {
+                    self.type_ctx.int_type()
+                } else {
+                    self.type_ctx.number_type()
+                }
+            }
+            Expression::FloatLiteral(_) => self.type_ctx.number_type(),
             Expression::StringLiteral(_) => self.type_ctx.string_type(),
             Expression::TemplateLiteral(tpl) => {
                 // Preserve type information/diagnostics for interpolated expressions.

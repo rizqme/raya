@@ -195,6 +195,8 @@ impl Expression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntLiteral {
     pub value: i64,
+    pub is_bigint: bool,
+    pub raw_text: Option<String>,
     pub span: Span,
 }
 
