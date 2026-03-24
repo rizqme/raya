@@ -903,7 +903,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_int_literal(&mut self, lit: &ast::IntLiteral) -> Register {
+    pub(super) fn lower_int_literal(&mut self, lit: &ast::IntLiteral) -> Register {
         if self.js_this_binding_compat {
             let ty = TypeId::new(NUMBER_TYPE_ID);
             let dest = self.alloc_register(ty);
@@ -933,7 +933,7 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
-    fn lower_string_literal(&mut self, lit: &ast::StringLiteral) -> Register {
+    pub(super) fn lower_string_literal(&mut self, lit: &ast::StringLiteral) -> Register {
         let ty = TypeId::new(STRING_TYPE_ID);
         let dest = self.alloc_register(ty);
         let string_value = self.interner.resolve(lit.value).to_string();
@@ -944,7 +944,7 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
-    fn emit_named_key_register(&mut self, property: &str) -> Register {
+    pub(super) fn emit_named_key_register(&mut self, property: &str) -> Register {
         let key = self.alloc_register(TypeId::new(STRING_TYPE_ID));
         self.emit(IrInstr::Assign {
             dest: key.clone(),

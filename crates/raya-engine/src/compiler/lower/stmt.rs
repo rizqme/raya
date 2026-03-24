@@ -28,38 +28,32 @@ impl<'a> Lowerer<'a> {
         nominal_type_id: crate::compiler::ir::NominalTypeId,
         class_value: Register,
     ) {
-        for member in &class.members {
+        for (member_idx, member) in class.members.iter().enumerate() {
             match member {
                 ast::ClassMember::Field(field) if field.is_static => {
                     let Some(initializer) = &field.initializer else {
                         continue;
                     };
-                    let global_index = self
-                        .class_info_map
-                        .get(&nominal_type_id)
-                        .and_then(|info| {
-                            info.static_fields
-                                .iter()
-                                .find(|static_field| static_field.name == field.name.name)
-                                .map(|static_field| static_field.global_index)
-                        });
-                    let Some(global_index) = global_index else {
-                        continue;
-                    };
-
+                    let field_symbol = self.known_class_member_symbol(&field.name);
+                    let global_index = field_symbol.and_then(|field_symbol| {
+                        self.class_info_map
+                            .get(&nominal_type_id)
+                            .and_then(|info| {
+                                info.static_fields
+                                    .iter()
+                                    .find(|static_field| static_field.name == field_symbol)
+                                    .map(|static_field| static_field.global_index)
+                            })
+                    });
                     let value_reg = self.lower_expr(initializer);
-                    self.emit(IrInstr::StoreGlobal {
-                        index: global_index,
-                        value: value_reg.clone(),
-                    });
+                    if let Some(global_index) = global_index {
+                        self.emit(IrInstr::StoreGlobal {
+                            index: global_index,
+                            value: value_reg.clone(),
+                        });
+                    }
 
-                    let key_reg = self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
-                    self.emit(IrInstr::Assign {
-                        dest: key_reg.clone(),
-                        value: IrValue::Constant(IrConstant::String(
-                            self.interner.resolve(field.name.name).to_string(),
-                        )),
-                    });
+                    let key_reg = self.lower_class_property_key(&field.name, member_idx);
                     self.emit(IrInstr::NativeCall {
                         dest: None,
                         native_id: crate::compiler::native_id::REFLECT_SET,
@@ -111,6 +105,26 @@ impl<'a> Lowerer<'a> {
             .get(&local_idx)
             .cloned()
             .or_else(|| self.local_registers.get(&local_idx).cloned())
+    }
+
+    fn lower_class_property_key(
+        &mut self,
+        key: &ast::PropertyKey,
+        _fallback_idx: usize,
+    ) -> Register {
+        match key {
+            ast::PropertyKey::Identifier(id) => self.emit_named_key_register(self.interner.resolve(id.name)),
+            ast::PropertyKey::StringLiteral(lit) => self.lower_string_literal(lit),
+            ast::PropertyKey::IntLiteral(lit) => self.lower_int_literal(lit),
+            ast::PropertyKey::Computed(ast::Expression::StringLiteral(lit)) => {
+                self.lower_string_literal(lit)
+            }
+            ast::PropertyKey::Computed(ast::Expression::IntLiteral(lit)) => self.lower_int_literal(lit),
+            ast::PropertyKey::Computed(ast::Expression::Parenthesized(expr)) => {
+                self.lower_expr(&expr.expression)
+            }
+            ast::PropertyKey::Computed(expr) => self.lower_expr(expr),
+        }
     }
 
     fn coerce_value_to_annotation_type(

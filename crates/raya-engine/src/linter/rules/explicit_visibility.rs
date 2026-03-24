@@ -9,6 +9,19 @@
 use crate::linter::rule::*;
 use crate::parser::ast;
 
+fn class_member_key_name(interner: &crate::parser::Interner, key: &ast::PropertyKey) -> String {
+    match key {
+        ast::PropertyKey::Identifier(id) => interner.resolve(id.name).to_string(),
+        ast::PropertyKey::StringLiteral(lit) => interner.resolve(lit.value).to_string(),
+        ast::PropertyKey::IntLiteral(lit) => lit.value.to_string(),
+        ast::PropertyKey::Computed(ast::Expression::StringLiteral(lit)) => {
+            interner.resolve(lit.value).to_string()
+        }
+        ast::PropertyKey::Computed(ast::Expression::IntLiteral(lit)) => lit.value.to_string(),
+        ast::PropertyKey::Computed(_) => "[computed]".to_string(),
+    }
+}
+
 pub struct ExplicitVisibility;
 
 static META: RuleMeta = RuleMeta {
@@ -35,8 +48,8 @@ impl LintRule for ExplicitVisibility {
     ) -> Vec<LintDiagnostic> {
         match member {
             ast::ClassMember::Field(f) => {
-                if !has_explicit_visibility(ctx.source, &f.span, &f.name.span) {
-                    let name = ctx.interner.resolve(f.name.name);
+                if !has_explicit_visibility(ctx.source, &f.span, f.name.span()) {
+                    let name = class_member_key_name(ctx.interner, &f.name);
                     vec![LintDiagnostic {
                         rule: META.name,
                         code: META.code,
@@ -44,7 +57,7 @@ impl LintRule for ExplicitVisibility {
                             "Field '{}' is missing an explicit visibility modifier",
                             name
                         ),
-                        span: f.name.span,
+                        span: *f.name.span(),
                         severity: META.default_severity,
                         fix: None,
                         notes: vec![
@@ -56,8 +69,8 @@ impl LintRule for ExplicitVisibility {
                 }
             }
             ast::ClassMember::Method(m) => {
-                if !has_explicit_visibility(ctx.source, &m.span, &m.name.span) {
-                    let name = ctx.interner.resolve(m.name.name);
+                if !has_explicit_visibility(ctx.source, &m.span, m.name.span()) {
+                    let name = class_member_key_name(ctx.interner, &m.name);
                     vec![LintDiagnostic {
                         rule: META.name,
                         code: META.code,
@@ -65,7 +78,7 @@ impl LintRule for ExplicitVisibility {
                             "Method '{}' is missing an explicit visibility modifier",
                             name
                         ),
-                        span: m.name.span,
+                        span: *m.name.span(),
                         severity: META.default_severity,
                         fix: None,
                         notes: vec![

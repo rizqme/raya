@@ -20,6 +20,24 @@ use crate::parser::types::{AssignabilityContext, GenericContext, TypeContext, Ty
 use crate::{Interner, Symbol as ParserSymbol};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+fn class_member_key_name(interner: &Interner, key: &PropertyKey) -> Option<String> {
+    fn expr_name(interner: &Interner, expr: &Expression) -> Option<String> {
+        match expr {
+            Expression::StringLiteral(lit) => Some(interner.resolve(lit.value).to_string()),
+            Expression::IntLiteral(lit) => Some(lit.value.to_string()),
+            Expression::Parenthesized(expr) => expr_name(interner, &expr.expression),
+            _ => None,
+        }
+    }
+
+    match key {
+        PropertyKey::Identifier(id) => Some(interner.resolve(id.name).to_string()),
+        PropertyKey::StringLiteral(lit) => Some(interner.resolve(lit.value).to_string()),
+        PropertyKey::IntLiteral(lit) => Some(lit.value.to_string()),
+        PropertyKey::Computed(expr) => expr_name(interner, expr),
+    }
+}
+
 /// Get the variable name from a type guard
 fn get_guard_var(guard: &TypeGuard) -> &String {
     match guard {
@@ -1055,7 +1073,10 @@ impl<'a> TypeChecker<'a> {
                 let mut concrete_methods = FxHashSet::default();
                 for member in &class.members {
                     if let ClassMember::Method(method) = member {
-                        let method_name = self.resolve(method.name.name);
+                        let Some(method_name) = class_member_key_name(self.interner, &method.name)
+                        else {
+                            continue;
+                        };
                         if method.is_abstract || method.body.is_none() {
                             abstract_methods.insert(method_name);
                         } else {
@@ -1135,7 +1156,9 @@ impl<'a> TypeChecker<'a> {
         for member in &class.members {
             if let ClassMember::Method(method) = member {
                 if !method.is_abstract && method.body.is_some() {
-                    required.remove(&self.resolve(method.name.name));
+                    if let Some(method_name) = class_member_key_name(self.interner, &method.name) {
+                        required.remove(&method_name);
+                    }
                 }
             }
         }
@@ -2031,7 +2054,11 @@ impl<'a> TypeChecker<'a> {
                 .filter_map(|m| {
                     if let crate::parser::ast::ClassMember::Field(field) = m {
                         if !field.is_static && field.initializer.is_none() {
-                            return Some((self.resolve(field.name.name), field.span));
+                            if let Some(field_name) =
+                                class_member_key_name(self.interner, &field.name)
+                            {
+                                return Some((field_name, field.span));
+                            }
                         }
                     }
                     None

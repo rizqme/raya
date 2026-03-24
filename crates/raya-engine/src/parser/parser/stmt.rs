@@ -1506,7 +1506,7 @@ fn class_member_static_modifier(parser: &Parser) -> bool {
         )
 }
 
-fn class_member_async_modifier(parser: &Parser) -> bool {
+fn class_member_async_modifier(parser: &mut Parser) -> bool {
     if !parser.check(&Token::Async) {
         return false;
     }
@@ -1515,21 +1515,46 @@ fn class_member_async_modifier(parser: &Parser) -> bool {
         return false;
     }
 
-    match parser.peek() {
-        Some(Token::Star) => true,
-        Some(token)
-            if matches!(token, Token::Identifier(_) | Token::PrivateIdentifier(_))
-                || keyword_as_property_name(token).is_some() =>
-        {
-            matches!(parser.peek2(), Some(Token::LeftParen | Token::Less))
-        }
-        _ => false,
+    let checkpoint = parser.checkpoint();
+    parser.advance();
+    if parser.check(&Token::Star) {
+        parser.restore(checkpoint);
+        return true;
     }
+    let parsed = parse_class_member_name(parser, &mut Visibility::Public);
+    let is_modifier = parsed.is_ok() && parser.check(&Token::LeftParen);
+    parser.restore(checkpoint);
+    is_modifier
 }
 
 fn intern_private_name(parser: &mut Parser, sym: Symbol) -> Symbol {
     let raw = parser.resolve(sym).to_string();
     parser.intern(&format!("#{raw}"))
+}
+
+fn parse_class_member_name(
+    parser: &mut Parser,
+    visibility: &mut Visibility,
+) -> Result<PropertyKey, ParseError> {
+    if let Token::PrivateIdentifier(name) = parser.current() {
+        let name_str = intern_private_name(parser, *name);
+        let name_span = parser.current_span();
+        parser.advance();
+        *visibility = Visibility::Private;
+        return Ok(PropertyKey::Identifier(Identifier {
+            name: name_str,
+            span: name_span,
+        }));
+    }
+
+    super::expr::parse_object_property_key(parser, parser.current_span())
+}
+
+fn class_member_name_is_constructor(parser: &Parser, key: &PropertyKey) -> bool {
+    matches!(
+        key,
+        PropertyKey::Identifier(id) if parser.resolve(id.name) == "constructor"
+    )
 }
 
 /// Parse a single class member
@@ -1607,57 +1632,34 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
     // (which would be the actual property name, not `:` for type annotations or `(` for calls).
     let mut method_kind = MethodKind::Normal;
     if !is_generator {
+        let checkpoint = parser.checkpoint();
         if let Token::Identifier(sym) = parser.current() {
-            let name_str = parser.resolve(*sym);
-            if (name_str == "get" || name_str == "set")
-                && matches!(parser.peek(), Some(Token::Identifier(_)))
-            {
-                // This is a getter or setter - the next token is the actual property name
-                if name_str == "get" {
-                    method_kind = MethodKind::Getter;
+            let is_get = parser.resolve(*sym) == "get";
+            let is_set = parser.resolve(*sym) == "set";
+            if is_get || is_set {
+                parser.advance();
+                if parse_class_member_name(parser, &mut visibility).is_ok()
+                    && parser.check(&Token::LeftParen)
+                {
+                    method_kind = if is_get {
+                        MethodKind::Getter
+                    } else {
+                        MethodKind::Setter
+                    };
+                    parser.restore(checkpoint);
+                    parser.advance();
                 } else {
-                    method_kind = MethodKind::Setter;
+                    parser.restore(checkpoint);
                 }
-                parser.advance(); // consume the get/set keyword
             }
         }
     }
 
-    // Parse member name - allow keywords that are valid as method names (like JavaScript/TypeScript)
-    // Also handle private identifiers (#name) — strip the # and treat as private
-    let name = if let Token::PrivateIdentifier(name) = parser.current() {
-        // Preserve the private sigil in the interned name so binder/lowering/runtime
-        // can distinguish `#name` from public `name`.
-        let name_str = intern_private_name(parser, *name);
-        let name_span = parser.current_span();
-        parser.advance();
-        visibility = Visibility::Private;
-        Identifier {
-            name: name_str,
-            span: name_span,
-        }
-    } else if let Token::Identifier(name) = parser.current() {
-        let name_str = *name;
-        let name_span = parser.current_span();
-        parser.advance();
-        Identifier {
-            name: name_str,
-            span: name_span,
-        }
-    } else if let Some(kw_name) = keyword_as_property_name(parser.current()) {
-        let name_str = parser.intern(kw_name);
-        let name_span = parser.current_span();
-        parser.advance();
-        Identifier {
-            name: name_str,
-            span: name_span,
-        }
-    } else {
-        return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
-    };
+    let name = parse_class_member_name(parser, &mut visibility)?;
 
     // Check for constructor (identifier named "constructor")
-    if parser.resolve(name.name) == "constructor" {
+    if !is_static && method_kind == MethodKind::Normal && class_member_name_is_constructor(parser, &name)
+    {
         return parse_constructor(parser, start_span, visibility);
     }
 
@@ -1744,7 +1746,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
         } else if let Some(ref ta) = type_annotation {
             ta.span
         } else {
-            name.span
+            *name.span()
         };
 
         let span = parser.combine_spans(&start_span, &end_span);
@@ -2407,7 +2409,7 @@ class Foo {
                 .iter()
                 .filter_map(|m| {
                     if let crate::parser::ast::ClassMember::Method(method) = m {
-                        Some(method.name.name)
+                        method.name.as_identifier().map(|id| id.name)
                     } else {
                         None
                     }
@@ -2463,7 +2465,10 @@ class Foo {
             .collect();
 
         assert_eq!(methods.len(), 3);
-        assert_eq!(methods[1].name.name, methods[2].name.name);
+        assert_eq!(
+            methods[1].name.as_identifier().map(|id| id.name),
+            methods[2].name.as_identifier().map(|id| id.name)
+        );
         assert!(!methods[0].is_static);
         assert!(!methods[0].is_async);
         assert!(!methods[1].is_async);
@@ -2703,6 +2708,49 @@ const value = {
             pattern.properties[0].key,
             crate::parser::ast::PropertyKey::Computed(_)
         ));
+    }
+
+    #[test]
+    fn test_class_computed_accessor_and_method_heads() {
+        let module = parse(
+            r#"
+class Foo {
+    get ["x"]() { return 1; }
+    set ["x"](value) { this.value = value; }
+    ["run"]() { return 2; }
+    static ["value"] = 3;
+}
+"#,
+        );
+        let crate::parser::ast::Statement::ClassDecl(class) = &module.statements[0] else {
+            panic!("Expected class declaration");
+        };
+
+        assert_eq!(class.members.len(), 4);
+
+        let crate::parser::ast::ClassMember::Method(getter) = &class.members[0] else {
+            panic!("Expected getter");
+        };
+        assert_eq!(getter.kind, crate::parser::ast::MethodKind::Getter);
+        assert!(matches!(getter.name, crate::parser::ast::PropertyKey::Computed(_)));
+
+        let crate::parser::ast::ClassMember::Method(setter) = &class.members[1] else {
+            panic!("Expected setter");
+        };
+        assert_eq!(setter.kind, crate::parser::ast::MethodKind::Setter);
+        assert!(matches!(setter.name, crate::parser::ast::PropertyKey::Computed(_)));
+
+        let crate::parser::ast::ClassMember::Method(method) = &class.members[2] else {
+            panic!("Expected method");
+        };
+        assert_eq!(method.kind, crate::parser::ast::MethodKind::Normal);
+        assert!(matches!(method.name, crate::parser::ast::PropertyKey::Computed(_)));
+
+        let crate::parser::ast::ClassMember::Field(field) = &class.members[3] else {
+            panic!("Expected field");
+        };
+        assert!(field.is_static);
+        assert!(matches!(field.name, crate::parser::ast::PropertyKey::Computed(_)));
     }
 
     #[test]

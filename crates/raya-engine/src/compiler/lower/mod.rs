@@ -2959,6 +2959,45 @@ impl<'a> Lowerer<'a> {
         self.class_decl_ids.get(&class.span.start).copied()
     }
 
+    fn known_property_symbol_from_expr(&mut self, expr: &ast::Expression) -> Option<Symbol> {
+        match expr {
+            ast::Expression::StringLiteral(lit) => Some(lit.value),
+            ast::Expression::IntLiteral(lit) => self.interner.lookup(&lit.value.to_string()),
+            ast::Expression::Parenthesized(expr) => {
+                self.known_property_symbol_from_expr(&expr.expression)
+            }
+            _ => None,
+        }
+    }
+
+    fn known_class_member_symbol(&mut self, key: &ast::PropertyKey) -> Option<Symbol> {
+        match key {
+            ast::PropertyKey::Identifier(id) => Some(id.name),
+            ast::PropertyKey::StringLiteral(lit) => Some(lit.value),
+            ast::PropertyKey::IntLiteral(lit) => self.interner.lookup(&lit.value.to_string()),
+            ast::PropertyKey::Computed(expr) => self.known_property_symbol_from_expr(expr),
+        }
+    }
+
+    fn class_member_display_name(&self, key: &ast::PropertyKey, fallback_idx: usize) -> String {
+        match key {
+            ast::PropertyKey::Identifier(id) => self.interner.resolve(id.name).to_string(),
+            ast::PropertyKey::StringLiteral(lit) => self.interner.resolve(lit.value).to_string(),
+            ast::PropertyKey::IntLiteral(lit) => lit.value.to_string(),
+            ast::PropertyKey::Computed(ast::Expression::StringLiteral(lit)) => {
+                self.interner.resolve(lit.value).to_string()
+            }
+            ast::PropertyKey::Computed(ast::Expression::IntLiteral(lit)) => lit.value.to_string(),
+            ast::PropertyKey::Computed(ast::Expression::Parenthesized(expr)) => {
+                self.class_member_display_name(
+                    &ast::PropertyKey::Computed(*expr.expression.clone()),
+                    fallback_idx,
+                )
+            }
+            ast::PropertyKey::Computed(_) => format!("[computed:{fallback_idx}]"),
+        }
+    }
+
     pub(super) fn nominal_type_id_for_class_expression(
         &self,
         expr: &ast::Expression,
@@ -3194,7 +3233,7 @@ impl<'a> Lowerer<'a> {
         };
         let mut field_index = parent_fields.len() as u16;
 
-        for member in &class.members {
+        for (member_idx, member) in class.members.iter().enumerate() {
             if let ast::ClassMember::Field(field) = member {
                 let ty = field
                     .type_annotation
@@ -3243,19 +3282,25 @@ impl<'a> Lowerer<'a> {
                 });
 
                 if field.is_static {
+                    let Some(field_name) = self.known_class_member_symbol(&field.name) else {
+                        continue;
+                    };
                     let global_index = self.next_global_index;
                     self.next_global_index += 1;
                     static_fields.push(StaticFieldInfo {
-                        name: field.name.name,
+                        name: field_name,
                         nominal_type_id,
                         global_index,
                         initializer: field.initializer.clone(),
                     });
                 } else {
+                    let Some(field_name) = self.known_class_member_symbol(&field.name) else {
+                        continue;
+                    };
                     // Check if this field shadows a parent field with the same name.
                     // If so, reuse the parent's field index so base class methods
                     // that access `this.x` see the derived class's value.
-                    let field_name_str = self.interner.resolve(field.name.name);
+                    let field_name_str = self.class_member_display_name(&field.name, member_idx);
                     let shadowed_index = parent_fields
                         .iter()
                         .find(|pf| self.interner.resolve(pf.name) == field_name_str)
@@ -3270,7 +3315,7 @@ impl<'a> Lowerer<'a> {
                     };
 
                     fields.push(ClassFieldInfo {
-                        name: field.name.name,
+                        name: field_name,
                         index: idx,
                         ty,
                         initializer: field.initializer.clone(),
@@ -3314,9 +3359,12 @@ impl<'a> Lowerer<'a> {
         // Collect instance and static method information
         let mut methods = Vec::new();
         let mut static_methods_vec = Vec::new();
-        for member in &class.members {
+        for (member_idx, member) in class.members.iter().enumerate() {
             if let ast::ClassMember::Method(method) = member {
                 if method.body.is_some() {
+                    let Some(method_name) = self.known_class_member_symbol(&method.name) else {
+                        continue;
+                    };
                     let func_id = FunctionId::new(self.next_function_id);
                     self.next_function_id += 1;
 
@@ -3326,21 +3374,21 @@ impl<'a> Lowerer<'a> {
 
                     if method.is_static {
                         static_methods_vec.push(StaticMethodInfo {
-                            name: method.name.name,
+                            name: method_name,
                             func_id,
                             kind: method.kind,
                         });
                         self.static_method_map
-                            .insert((nominal_type_id, method.name.name), func_id);
+                            .insert((nominal_type_id, method_name), func_id);
                     } else {
                         methods.push(ClassMethodInfo {
-                            name: method.name.name,
+                            name: method_name,
                             func_id,
                             kind: method.kind,
                             visibility: method.visibility,
                         });
                         self.method_map
-                            .insert((nominal_type_id, method.name.name), func_id);
+                            .insert((nominal_type_id, method_name), func_id);
                     }
 
                     if let Some(ret_type) = &method.return_type {
@@ -3348,17 +3396,17 @@ impl<'a> Lowerer<'a> {
                             self.try_extract_class_from_type(ret_type)
                         {
                             self.method_return_class_map
-                                .insert((nominal_type_id, method.name.name), ret_nominal_type_id);
+                                .insert((nominal_type_id, method_name), ret_nominal_type_id);
                         } else if let Some(ret_class_name) =
                             self.try_extract_class_name_from_type(ret_type)
                         {
                             self.method_return_type_alias_map
-                                .insert((nominal_type_id, method.name.name), ret_class_name);
+                                .insert((nominal_type_id, method_name), ret_class_name);
                         }
                         // Store full return TypeId for all return types (bound method propagation)
                         let type_id = self.resolve_type_annotation(ret_type);
                         self.method_return_type_map
-                            .insert((nominal_type_id, method.name.name), type_id);
+                            .insert((nominal_type_id, method_name), type_id);
                     }
                 }
             }
@@ -3375,7 +3423,9 @@ impl<'a> Lowerer<'a> {
         for member in &class.members {
             if let ast::ClassMember::Method(method) = member {
                 if method.body.is_none() && !method.is_static {
-                    let method_name = method.name.name;
+                    let Some(method_name) = self.known_class_member_symbol(&method.name) else {
+                        continue;
+                    };
                     let slot = self
                         .find_parent_method_slot(parent_class, method_name)
                         .unwrap_or_else(|| {
@@ -3452,8 +3502,11 @@ impl<'a> Lowerer<'a> {
         for member in &class.members {
             if let ast::ClassMember::Method(method) = member {
                 if !method.decorators.is_empty() {
+                    let Some(method_name) = self.known_class_member_symbol(&method.name) else {
+                        continue;
+                    };
                     method_decorators.push(MethodDecoratorInfo {
-                        method_name: method.name.name,
+                        method_name,
                         decorators: method
                             .decorators
                             .iter()
@@ -3478,8 +3531,11 @@ impl<'a> Lowerer<'a> {
         for member in &class.members {
             if let ast::ClassMember::Field(field) = member {
                 if !field.decorators.is_empty() {
+                    let Some(field_name) = self.known_class_member_symbol(&field.name) else {
+                        continue;
+                    };
                     field_decorators.push(FieldDecoratorInfo {
-                        field_name: field.name.name,
+                        field_name,
                         decorators: field
                             .decorators
                             .iter()
@@ -3494,10 +3550,10 @@ impl<'a> Lowerer<'a> {
         }
 
         let mut parameter_decorators = Vec::new();
-        for member in &class.members {
+        for (member_idx, member) in class.members.iter().enumerate() {
             match member {
                 ast::ClassMember::Method(method) => {
-                    let method_name = self.interner.resolve(method.name.name).to_string();
+                    let method_name = self.class_member_display_name(&method.name, member_idx);
                     for (index, param) in method.params.iter().enumerate() {
                         if !param.decorators.is_empty() {
                             parameter_decorators.push(ParameterDecoratorInfo {
@@ -4258,10 +4314,13 @@ impl<'a> Lowerer<'a> {
         }
 
         // Lower this class's own fields (indices were already adjusted in first pass)
-        for member in &class.members {
+        for (member_idx, member) in class.members.iter().enumerate() {
             if let ast::ClassMember::Field(field) = member {
                 if !field.is_static {
-                    let field_name = self.interner.resolve(field.name.name);
+                    let Some(field_symbol) = self.known_class_member_symbol(&field.name) else {
+                        continue;
+                    };
+                    let field_name = self.class_member_display_name(&field.name, member_idx);
                     let ty = field
                         .type_annotation
                         .as_ref()
@@ -4271,14 +4330,14 @@ impl<'a> Lowerer<'a> {
                     let Some(index) = class_info.as_ref().and_then(|info| {
                         info.fields
                             .iter()
-                            .find(|f| f.name == field.name.name)
+                            .find(|f| f.name == field_symbol)
                             .map(|f| f.index)
                     }) else {
                         self.errors.push(super::error::CompileError::InternalError {
                             message: format!(
                                 "missing precomputed field index for '{}.{}'",
                                 name,
-                                self.interner.resolve(field.name.name)
+                                field_name
                             ),
                         });
                         continue;
@@ -4330,11 +4389,14 @@ impl<'a> Lowerer<'a> {
         // Lower methods. In JS mode, both instance and static methods carry an
         // implicit `this` slot so member dispatch does not shift user arguments.
         let class_method_env_globals = self.pending_class_method_env_globals.take();
-        for member in &class.members {
+        for (member_idx, member) in class.members.iter().enumerate() {
             if let ast::ClassMember::Method(method) = member {
                 // Only lower methods that have a body (not abstract methods)
                 if let Some(body) = &method.body {
-                    let method_name = self.interner.resolve(method.name.name);
+                    let Some(method_symbol) = self.known_class_member_symbol(&method.name) else {
+                        continue;
+                    };
+                    let method_name = self.class_member_display_name(&method.name, member_idx);
                     let full_name = if method.is_static {
                         format!("{}::static::{}", name, method_name)
                     } else {
@@ -4731,9 +4793,9 @@ impl<'a> Lowerer<'a> {
                     }
 
                     // Get the function ID and add to pending methods
-                    let method_name_str = self.interner.resolve(method.name.name);
+                    let method_name_str = method_name.as_str();
                     let func_id = if method.is_static {
-                        *self.static_method_map.get(&(nominal_type_id, method.name.name))
+                        *self.static_method_map.get(&(nominal_type_id, method_symbol))
                             .unwrap_or_else(|| panic!(
                                 "ICE: static method '{}::{}' not found in static_method_map (nominal_type_id={})",
                                 name, method_name_str, nominal_type_id.as_u32()
@@ -4741,7 +4803,7 @@ impl<'a> Lowerer<'a> {
                     } else {
                         *self
                             .method_map
-                            .get(&(nominal_type_id, method.name.name))
+                            .get(&(nominal_type_id, method_symbol))
                             .unwrap_or_else(|| {
                                 panic!(
                                     "ICE: method '{}::{}' not found in method_map (nominal_type_id={})",
@@ -4771,7 +4833,7 @@ impl<'a> Lowerer<'a> {
                     } else {
                         if let Some(&slot) = self
                             .method_slot_map
-                            .get(&(nominal_type_id, method.name.name))
+                            .get(&(nominal_type_id, method_symbol))
                         {
                             ir_class.add_method_with_slot(func_id, slot, ir_method_kind);
                         } else {

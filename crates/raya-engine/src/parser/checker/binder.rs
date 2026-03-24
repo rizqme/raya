@@ -16,6 +16,24 @@ use crate::parser::types::{TypeContext, TypeId};
 use crate::parser::Interner;
 use crate::parser::Span;
 
+fn class_member_key_name(interner: &Interner, key: &PropertyKey) -> Option<String> {
+    fn expr_name(interner: &Interner, expr: &Expression) -> Option<String> {
+        match expr {
+            Expression::StringLiteral(lit) => Some(interner.resolve(lit.value).to_string()),
+            Expression::IntLiteral(lit) => Some(lit.value.to_string()),
+            Expression::Parenthesized(expr) => expr_name(interner, &expr.expression),
+            _ => None,
+        }
+    }
+
+    match key {
+        PropertyKey::Identifier(id) => Some(interner.resolve(id.name).to_string()),
+        PropertyKey::StringLiteral(lit) => Some(interner.resolve(lit.value).to_string()),
+        PropertyKey::IntLiteral(lit) => Some(lit.value.to_string()),
+        PropertyKey::Computed(expr) => expr_name(interner, expr),
+    }
+}
+
 /// Binder - builds symbol tables from AST
 ///
 /// The binder performs two main tasks:
@@ -3059,17 +3077,22 @@ impl<'a> Binder<'a> {
         for member in &class.members {
             match member {
                 ClassMember::Field(field) => {
-                    let field_name = self.resolve(field.name.name);
+                    let Some(field_name) = class_member_key_name(self.interner, &field.name)
+                    else {
+                        continue;
+                    };
 
                     // Check for duplicate field names
-                    if let Some(original_span) = seen_fields.get(&field_name) {
-                        return Err(BindError::DuplicateSymbol {
-                            name: field_name,
-                            original: *original_span,
-                            duplicate: field.name.span,
-                        });
+                    if self.mode != TypeSystemMode::Js {
+                        if let Some(original_span) = seen_fields.get(&field_name) {
+                            return Err(BindError::DuplicateSymbol {
+                                name: field_name,
+                                original: *original_span,
+                                duplicate: *field.name.span(),
+                            });
+                        }
                     }
-                    seen_fields.insert(field_name.clone(), field.name.span);
+                    seen_fields.insert(field_name.clone(), *field.name.span());
                     let field_ty = if let Some(ref ann) = field.type_annotation {
                         self.resolve_type_annotation(ann)?
                     } else {
@@ -3089,17 +3112,22 @@ impl<'a> Binder<'a> {
                     }
                 }
                 ClassMember::Method(method) => {
-                    let method_name = self.resolve(method.name.name);
+                    let Some(method_name) = class_member_key_name(self.interner, &method.name)
+                    else {
+                        continue;
+                    };
 
                     // Check for duplicate method names
-                    if let Some(original_span) = seen_methods.get(&method_name) {
-                        return Err(BindError::DuplicateSymbol {
-                            name: method_name,
-                            original: *original_span,
-                            duplicate: method.name.span,
-                        });
+                    if self.mode != TypeSystemMode::Js {
+                        if let Some(original_span) = seen_methods.get(&method_name) {
+                            return Err(BindError::DuplicateSymbol {
+                                name: method_name,
+                                original: *original_span,
+                                duplicate: *method.name.span(),
+                            });
+                        }
                     }
-                    seen_methods.insert(method_name.clone(), method.name.span);
+                    seen_methods.insert(method_name.clone(), *method.name.span());
 
                     // Extract method-level type parameters (e.g., withLock<R>)
                     let method_type_params: Vec<String> = method

@@ -27,6 +27,24 @@ use crate::parser::{Interner, Parser};
 use super::builtin_contract::builtin_global_exports_from_source;
 use super::exports::{ExportedSymbol, ModuleExports};
 
+fn class_member_key_name(interner: &Interner, key: &ast::PropertyKey) -> Option<String> {
+    fn expr_name(interner: &Interner, expr: &Expression) -> Option<String> {
+        match expr {
+            Expression::StringLiteral(lit) => Some(interner.resolve(lit.value).to_string()),
+            Expression::IntLiteral(lit) => Some(lit.value.to_string()),
+            Expression::Parenthesized(expr) => expr_name(interner, &expr.expression),
+            _ => None,
+        }
+    }
+
+    match key {
+        ast::PropertyKey::Identifier(id) => Some(interner.resolve(id.name).to_string()),
+        ast::PropertyKey::StringLiteral(lit) => Some(interner.resolve(lit.value).to_string()),
+        ast::PropertyKey::IntLiteral(lit) => Some(lit.value.to_string()),
+        ast::PropertyKey::Computed(expr) => expr_name(interner, expr),
+    }
+}
+
 /// Source format backing a declaration module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeclarationSourceKind {
@@ -714,10 +732,12 @@ impl<'a> DeclarationCanonicalizer<'a> {
                         } else {
                             "inst_prop"
                         };
+                        let field_name = class_member_key_name(this.interner, &field.name)
+                            .unwrap_or_else(|| "[computed]".to_string());
                         members.insert(format!(
                             "{}:{}:{}:{}:{}",
                             prefix,
-                            escape(&this.interner.resolve(field.name.name).to_string()),
+                            escape(&field_name),
                             readonly,
                             optional,
                             ty
@@ -741,10 +761,12 @@ impl<'a> DeclarationCanonicalizer<'a> {
                         } else {
                             "inst_method"
                         };
+                        let method_name = class_member_key_name(this.interner, &method.name)
+                            .unwrap_or_else(|| "[computed]".to_string());
                         members.insert(format!(
                             "{}:{}:{}",
                             prefix,
-                            escape(&this.interner.resolve(method.name.name).to_string()),
+                            escape(&method_name),
                             method_sig
                         ));
                     }

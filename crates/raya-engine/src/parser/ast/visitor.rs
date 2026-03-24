@@ -288,7 +288,11 @@ pub fn walk_class_decl<V: Visitor>(visitor: &mut V, decl: &ClassDecl) {
                 for decorator in &field.decorators {
                     visitor.visit_decorator(decorator);
                 }
-                visitor.visit_identifier(&field.name);
+                match &field.name {
+                    PropertyKey::Identifier(id) => visitor.visit_identifier(id),
+                    PropertyKey::StringLiteral(_) | PropertyKey::IntLiteral(_) => {}
+                    PropertyKey::Computed(expr) => visitor.visit_expression(expr),
+                }
                 if let Some(type_ann) = &field.type_annotation {
                     visitor.visit_type_annotation(type_ann);
                 }
@@ -301,7 +305,11 @@ pub fn walk_class_decl<V: Visitor>(visitor: &mut V, decl: &ClassDecl) {
                 for decorator in &method.decorators {
                     visitor.visit_decorator(decorator);
                 }
-                visitor.visit_identifier(&method.name);
+                match &method.name {
+                    PropertyKey::Identifier(id) => visitor.visit_identifier(id),
+                    PropertyKey::StringLiteral(_) | PropertyKey::IntLiteral(_) => {}
+                    PropertyKey::Computed(expr) => visitor.visit_expression(expr),
+                }
                 for param in &method.params {
                     // Visit parameter decorators
                     for decorator in &param.decorators {

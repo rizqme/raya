@@ -313,7 +313,7 @@ pub struct FieldDecl {
     /// Visibility modifier (private/protected/public)
     pub visibility: Visibility,
 
-    pub name: Identifier,
+    pub name: PropertyKey,
     pub type_annotation: Option<TypeAnnotation>,
     pub initializer: Option<Expression>,
     pub is_static: bool,
@@ -350,7 +350,7 @@ pub struct MethodDecl {
     /// Method kind (normal, getter, setter)
     pub kind: MethodKind,
 
-    pub name: Identifier,
+    pub name: PropertyKey,
     pub type_params: Option<Vec<TypeParameter>>,
     pub params: Vec<Parameter>,
     pub return_type: Option<TypeAnnotation>,

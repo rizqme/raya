@@ -289,6 +289,24 @@ pub enum PropertyKey {
     Computed(Expression),
 }
 
+impl PropertyKey {
+    pub fn span(&self) -> &Span {
+        match self {
+            PropertyKey::Identifier(id) => &id.span,
+            PropertyKey::StringLiteral(lit) => &lit.span,
+            PropertyKey::IntLiteral(lit) => &lit.span,
+            PropertyKey::Computed(expr) => expr.span(),
+        }
+    }
+
+    pub fn as_identifier(&self) -> Option<&Identifier> {
+        match self {
+            PropertyKey::Identifier(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpreadProperty {
     pub argument: Expression,
