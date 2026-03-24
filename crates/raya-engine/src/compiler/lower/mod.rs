@@ -800,6 +800,7 @@ pub struct Lowerer<'a> {
     /// Whether the current function body is an arrow-compatible body where `arguments`
     /// should first consult any carried parameter-scope eval bindings.
     body_scope_eval_arguments_mode: bool,
+    with_scope_depth: usize,
     /// Parameter bindings visible in the currently lowered function body.
     parameter_symbols: FxHashSet<Symbol>,
     /// Currently-visible lexical/class bindings in JS lowering contexts.
@@ -1506,6 +1507,7 @@ impl<'a> Lowerer<'a> {
             parameter_tdz_symbols: FxHashSet::default(),
             parameter_binding_mode: false,
             body_scope_eval_arguments_mode: false,
+            with_scope_depth: 0,
             parameter_symbols: FxHashSet::default(),
             visible_js_lexical_symbols: FxHashSet::default(),
             eval_completion_local: None,
@@ -1785,6 +1787,15 @@ impl<'a> Lowerer<'a> {
                 index: local_idx,
             });
             self.emit_function_return(Some(value));
+            return;
+        }
+        if self.js_this_binding_compat {
+            let undefined = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::Assign {
+                dest: undefined.clone(),
+                value: IrValue::Constant(IrConstant::Undefined),
+            });
+            self.emit_function_return(Some(undefined));
             return;
         }
         self.emit_function_return(None);
@@ -3769,7 +3780,7 @@ impl<'a> Lowerer<'a> {
 
         // Create parameter registers (excluding rest parameters)
         let mut params = Vec::new();
-        let mut rest_param_info = None;
+        let mut rest_param_info: Option<(&Pattern, TypeId)> = None;
         let mut fixed_param_count = usize::from(has_js_this_slot);
         // Track parameters with destructuring patterns for later binding
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
@@ -3788,16 +3799,12 @@ impl<'a> Lowerer<'a> {
         for (decl_param_idx, param) in func.params.iter().enumerate() {
             // Skip rest parameters - they're handled separately
             if param.is_rest {
-                // Extract rest parameter info for later processing
-                if let Pattern::Identifier(ident) = &param.pattern {
-                    let ty = param
-                        .type_annotation
-                        .as_ref()
-                        .map(|t| self.resolve_type_annotation(t))
-                        .unwrap_or(UNRESOLVED);
-
-                    rest_param_info = Some((ident.name.clone(), ty));
-                }
+                let ty = param
+                    .type_annotation
+                    .as_ref()
+                    .map(|t| self.resolve_type_annotation(t))
+                    .unwrap_or(UNRESOLVED);
+                rest_param_info = Some((&param.pattern, ty));
                 continue;
             }
 
@@ -4032,8 +4039,9 @@ impl<'a> Lowerer<'a> {
         );
 
         // Emit rest array collection code if present
-        if let Some((rest_name, rest_ty)) = rest_param_info {
-            self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
+        if let Some((rest_pattern, rest_ty)) = rest_param_info {
+            let rest_value = self.emit_rest_array_value(rest_ty, fixed_param_count);
+            self.bind_pattern(rest_pattern, rest_value);
         }
 
         // Emit null-check + default-value for parameters with defaults
@@ -4526,7 +4534,7 @@ impl<'a> Lowerer<'a> {
 
                     // Create parameter registers
                     let mut params = Vec::new();
-                    let mut rest_param_info = None;
+                    let mut rest_param_info: Option<(&Pattern, TypeId)> = None;
                     let mut fixed_param_count = 0;
 
                     let method_has_js_this_slot = self.js_this_binding_compat;
@@ -4600,21 +4608,18 @@ impl<'a> Lowerer<'a> {
                     for (decl_param_idx, param) in method.params.iter().enumerate() {
                         // Skip rest parameters - they're handled separately
                         if param.is_rest {
-                            // Extract rest parameter info for later processing
-                            if let Pattern::Identifier(ident) = &param.pattern {
-                                let ty = param
-                                    .type_annotation
-                                    .as_ref()
-                                    .map(|t| {
-                                        self.resolve_param_type_from_annotation(
-                                            t,
-                                            method_type_params,
-                                            class_type_params,
-                                        )
-                                    })
-                                    .unwrap_or(TypeId::new(ARRAY_TYPE_ID));
-                                rest_param_info = Some((ident.name.clone(), ty));
-                            }
+                            let ty = param
+                                .type_annotation
+                                .as_ref()
+                                .map(|t| {
+                                    self.resolve_param_type_from_annotation(
+                                        t,
+                                        method_type_params,
+                                        class_type_params,
+                                    )
+                                })
+                                .unwrap_or(TypeId::new(ARRAY_TYPE_ID));
+                            rest_param_info = Some((&param.pattern, ty));
                             continue;
                         }
 
@@ -4864,8 +4869,9 @@ impl<'a> Lowerer<'a> {
                     );
 
                     // Emit rest array collection code if present
-                    if let Some((rest_name, rest_ty)) = rest_param_info {
-                        self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
+                    if let Some((rest_pattern, rest_ty)) = rest_param_info {
+                        let rest_value = self.emit_rest_array_value(rest_ty, fixed_param_count);
+                        self.bind_pattern(rest_pattern, rest_value);
                     }
 
                     // Emit null-check + default-value for parameters with defaults
@@ -5012,7 +5018,7 @@ impl<'a> Lowerer<'a> {
                 // Add explicit parameters from constructor
                 let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
                 let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
-                let mut rest_param_info = None;
+                let mut rest_param_info: Option<(&Pattern, TypeId)> = None;
                 let mut fixed_param_count = 1usize;
                 let mut param_local_indices = Vec::with_capacity(ctor.params.len());
                 let class_type_params = class.type_params.as_deref();
@@ -5028,28 +5034,18 @@ impl<'a> Lowerer<'a> {
 
                 for (decl_param_idx, param) in ctor.params.iter().enumerate() {
                     if param.is_rest {
-                        let rest_ident = match &param.pattern {
-                            Pattern::Identifier(ident) => Some(ident.name),
-                            Pattern::Rest(rest) => match rest.argument.as_ref() {
-                                Pattern::Identifier(ident) => Some(ident.name),
-                                _ => None,
-                            },
-                            _ => None,
-                        };
-                        if let Some(rest_name) = rest_ident {
-                            let ty = param
-                                .type_annotation
-                                .as_ref()
-                                .map(|t| {
-                                    self.resolve_param_type_from_annotation(
-                                        t,
-                                        class_type_params,
-                                        None,
-                                    )
-                                })
-                                .unwrap_or(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
-                            rest_param_info = Some((rest_name, ty));
-                        }
+                        let ty = param
+                            .type_annotation
+                            .as_ref()
+                            .map(|t| {
+                                self.resolve_param_type_from_annotation(
+                                    t,
+                                    class_type_params,
+                                    None,
+                                )
+                            })
+                            .unwrap_or(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
+                        rest_param_info = Some((&param.pattern, ty));
                         continue;
                     }
 
@@ -5273,8 +5269,9 @@ impl<'a> Lowerer<'a> {
                     true,
                 );
 
-                if let Some((rest_name, rest_ty)) = rest_param_info {
-                    self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
+                if let Some((rest_pattern, rest_ty)) = rest_param_info {
+                    let rest_value = self.emit_rest_array_value(rest_ty, fixed_param_count);
+                    self.bind_pattern(rest_pattern, rest_value);
                 }
 
                 // Emit null-check + default-value for constructor parameters with defaults
@@ -5540,16 +5537,10 @@ impl<'a> Lowerer<'a> {
         Register::new(id, ty)
     }
 
-    /// Emit rest parameter array collection code.
-    /// Collects extra arguments beyond the fixed parameters into an array.
+    /// Materialize the rest-arguments array value for the current activation.
     /// Must be called after entry block creation and parameter registration,
     /// before default params (rest params can't have defaults).
-    fn emit_rest_array_collection(
-        &mut self,
-        rest_name: Symbol,
-        rest_array_ty: TypeId,
-        fixed_param_count: usize,
-    ) {
+    fn emit_rest_array_value(&mut self, rest_array_ty: TypeId, fixed_param_count: usize) -> Register {
         // Extract element type from array type
         let elem_ty = if let Some(Type::Array(arr_ty)) = self.type_ctx.get(rest_array_ty) {
             arr_ty.element
@@ -5701,6 +5692,19 @@ impl<'a> Lowerer<'a> {
             .add_block(BasicBlock::with_label(exit_block, "rest.exit"));
         self.current_block = exit_block;
 
+        array_reg
+    }
+
+    /// Emit rest parameter array collection code.
+    /// Collects extra arguments beyond the fixed parameters into an array and
+    /// stores it into the named rest binding.
+    fn emit_rest_array_collection(
+        &mut self,
+        rest_name: Symbol,
+        rest_array_ty: TypeId,
+        fixed_param_count: usize,
+    ) {
+        let array_reg = self.emit_rest_array_value(rest_array_ty, fixed_param_count);
         let rest_local_idx = self
             .lookup_local(rest_name)
             .unwrap_or_else(|| self.allocate_local(rest_name));

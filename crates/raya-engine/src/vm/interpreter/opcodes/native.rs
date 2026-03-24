@@ -55,6 +55,7 @@ const DIRECT_EVAL_LEXICAL_MARKER_PREFIX: &str = "__direct_eval_lexical__:";
 const DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX: &str = "__direct_eval_uninitialized__:";
 const DIRECT_EVAL_UNINITIALIZED_PREFIX: &str = "__direct_eval_uninitialized__:";
 const WITH_ENV_TARGET_KEY: &str = "__with_env_target__";
+const SUPER_THIS_INITIALIZED_KEY: &str = "__super_this_initialized__";
 static DYNAMIC_JS_FUNCTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Map descriptor field names to bit positions for the presence bitmask.
@@ -1297,6 +1298,25 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn super_this_is_initialized(&self, value: Value) -> bool {
+        self.get_own_js_property_value_by_name(value, SUPER_THIS_INITIALIZED_KEY)
+            .is_some_and(|value| value.is_truthy())
+    }
+
+    fn mark_super_this_initialized(&self, value: Value) -> Result<(), VmError> {
+        if !self.is_js_object_value(value) {
+            return Ok(());
+        }
+        self.define_data_property_on_target(
+            value,
+            SUPER_THIS_INITIALIZED_KEY,
+            Value::bool(true),
+            true,
+            false,
+            true,
+        )
+    }
+
     fn get_prototype_from_constructor_with_fallback(
         &mut self,
         constructor: Value,
@@ -1574,6 +1594,8 @@ impl<'a> Interpreter<'a> {
             );
         }
 
+        let was_initialized = self.super_this_is_initialized(receiver);
+
         if !self.callable_is_constructible(constructor) {
             return Err(VmError::TypeError("Value is not a constructor".to_string()));
         }
@@ -1680,9 +1702,26 @@ impl<'a> Interpreter<'a> {
                         ephemeral.swap_remove(index);
                     }
                 }
-                return Ok(self.constructor_result_or_receiver(returned, receiver));
+                let constructed = self.constructor_result_or_receiver(returned, receiver);
+                self.mark_super_this_initialized(constructed)?;
+                if was_initialized {
+                    return Err(self.raise_task_builtin_error(
+                        task,
+                        "ReferenceError",
+                        "Super constructor may only be called once".to_string(),
+                    ));
+                }
+                return Ok(constructed);
             }
 
+            self.mark_super_this_initialized(receiver)?;
+            if was_initialized {
+                return Err(self.raise_task_builtin_error(
+                    task,
+                    "ReferenceError",
+                    "Super constructor may only be called once".to_string(),
+                ));
+            }
             return Ok(receiver);
         }
 
@@ -6201,7 +6240,7 @@ impl<'a> Interpreter<'a> {
         if self.callable_function_info(receiver).is_some()
             && self.get_descriptor_metadata(receiver, key).is_none()
         {
-            if let Some((writable, enumerable, configurable)) =
+            if let Some((writable, configurable, enumerable)) =
                 self.callable_virtual_property_descriptor(receiver, key)
             {
                 if !writable {
@@ -7461,7 +7500,10 @@ impl<'a> Interpreter<'a> {
                 }
             }
         }
-        let (name, length) = self.callable_function_info(target)?;
+        let (mut name, length) = self.callable_function_info(target)?;
+        if self.callable_is_arrow_function(target) && name.starts_with("__arrow_") {
+            name.clear();
+        }
         if std::env::var("RAYA_DEBUG_DYNAMIC_FUNCTION").is_ok() {
             eprintln!(
                 "[callable-prop] target={:#x} key={} name={} length={}",
@@ -7909,7 +7951,13 @@ impl<'a> Interpreter<'a> {
     }
 
     fn current_js_new_target(&self, task: &Arc<Task>) -> Option<Value> {
-        task.current_active_js_new_target()
+        task.current_active_js_new_target().or_else(|| {
+            task.current_closure().and_then(|closure| {
+                let closure_ptr = unsafe { closure.as_ptr::<Object>() }?;
+                let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+                closure_obj.callable_new_target()
+            })
+        })
     }
 
     fn strip_leading_hashbang_comment<'s>(&self, source: &'s str) -> &'s str {

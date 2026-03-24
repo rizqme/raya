@@ -60,6 +60,12 @@ enum ScopeKind {
     StaticBlock,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParameterListKind {
+    OrdinaryFunction,
+    Arrow,
+}
+
 #[derive(Debug, Clone)]
 struct ScopeFrame {
     kind: ScopeKind,
@@ -358,6 +364,7 @@ impl<'a> EarlyErrorPass<'a> {
         binding_strict: bool,
         body_has_use_strict: bool,
         span: crate::parser::Span,
+        kind: ParameterListKind,
     ) {
         let simple = Self::is_simple_parameter_list(params);
         if body_has_use_strict && !simple {
@@ -367,7 +374,10 @@ impl<'a> EarlyErrorPass<'a> {
             );
         }
 
-        let check_duplicates = binding_strict || !simple;
+        let check_duplicates = match kind {
+            ParameterListKind::OrdinaryFunction => binding_strict || !simple,
+            ParameterListKind::Arrow => true,
+        };
         let mut seen = Vec::new();
         for param in params {
             self.check_pattern_bindings(&param.pattern, binding_strict, false);
@@ -376,6 +386,14 @@ impl<'a> EarlyErrorPass<'a> {
             let mut names = Vec::new();
             Self::collect_bound_identifiers(&param.pattern, &mut names);
             for ident in names {
+                if kind == ParameterListKind::Arrow
+                    && self.interner.resolve(ident.name) == "enum"
+                {
+                    self.error(
+                        "Binding name 'enum' is reserved in arrow parameters",
+                        ident.span,
+                    );
+                }
                 if check_duplicates && seen.contains(&ident.name) {
                     self.error(
                         format!(
@@ -390,8 +408,241 @@ impl<'a> EarlyErrorPass<'a> {
             }
 
             if let Some(default) = &param.default_value {
+                if kind == ParameterListKind::Arrow {
+                    self.check_arrow_parameter_default(default, binding_strict);
+                }
                 self.check_expr(default);
             }
+        }
+    }
+
+    fn check_arrow_parameter_default(&mut self, expr: &Expression, binding_strict: bool) {
+        if let Some(yield_ident) = self.find_identifier_reference_named(expr, "yield") {
+            if self.current_function().is_some_and(|ctx| ctx.is_generator) {
+                self.error(
+                    "Yield is not allowed in arrow parameter defaults within generator code",
+                    yield_ident.span,
+                );
+            } else if binding_strict {
+                self.error(
+                    "Identifier 'yield' is not allowed in strict arrow parameter defaults",
+                    yield_ident.span,
+                );
+            }
+        }
+    }
+
+    fn find_identifier_reference_named<'b>(
+        &self,
+        expr: &'b Expression,
+        target: &str,
+    ) -> Option<&'b Identifier> {
+        match expr {
+            Expression::Identifier(ident) => {
+                (self.interner.resolve(ident.name) == target).then_some(ident)
+            }
+            Expression::Array(array) => array.elements.iter().flatten().find_map(|elem| match elem {
+                ArrayElement::Expression(expr) | ArrayElement::Spread(expr) => {
+                    self.find_identifier_reference_named(expr, target)
+                }
+            }),
+            Expression::Object(obj) => obj.properties.iter().find_map(|prop| match prop {
+                ObjectProperty::Property(prop) => {
+                    if let PropertyKey::Computed(expr) = &prop.key {
+                        self.find_identifier_reference_named(expr, target)
+                            .or_else(|| self.find_identifier_reference_named(&prop.value, target))
+                    } else {
+                        self.find_identifier_reference_named(&prop.value, target)
+                    }
+                }
+                ObjectProperty::Spread(spread) => {
+                    self.find_identifier_reference_named(&spread.argument, target)
+                }
+            }),
+            Expression::TemplateLiteral(tpl) => tpl.parts.iter().find_map(|part| match part {
+                TemplatePart::Expression(expr) => self.find_identifier_reference_named(expr, target),
+                TemplatePart::String(_) => None,
+            }),
+            Expression::Unary(unary) => self.find_identifier_reference_named(&unary.operand, target),
+            Expression::Binary(binary) => self
+                .find_identifier_reference_named(&binary.left, target)
+                .or_else(|| self.find_identifier_reference_named(&binary.right, target)),
+            Expression::Assignment(assign) => self
+                .find_identifier_reference_named(&assign.left, target)
+                .or_else(|| self.find_identifier_reference_named(&assign.right, target)),
+            Expression::Logical(logical) => self
+                .find_identifier_reference_named(&logical.left, target)
+                .or_else(|| self.find_identifier_reference_named(&logical.right, target)),
+            Expression::Conditional(cond) => self
+                .find_identifier_reference_named(&cond.test, target)
+                .or_else(|| self.find_identifier_reference_named(&cond.consequent, target))
+                .or_else(|| self.find_identifier_reference_named(&cond.alternate, target)),
+            Expression::Call(call) => self
+                .find_identifier_reference_named(&call.callee, target)
+                .or_else(|| {
+                    call.arguments
+                        .iter()
+                        .find_map(|arg| self.find_identifier_reference_named(arg.expression(), target))
+                }),
+            Expression::AsyncCall(call) => self
+                .find_identifier_reference_named(&call.callee, target)
+                .or_else(|| {
+                    call.arguments
+                        .iter()
+                        .find_map(|arg| self.find_identifier_reference_named(arg.expression(), target))
+                }),
+            Expression::Member(member) => {
+                self.find_identifier_reference_named(&member.object, target)
+            }
+            Expression::Index(index) => self
+                .find_identifier_reference_named(&index.object, target)
+                .or_else(|| self.find_identifier_reference_named(&index.index, target)),
+            Expression::New(new_expr) => self
+                .find_identifier_reference_named(&new_expr.callee, target)
+                .or_else(|| {
+                    new_expr
+                        .arguments
+                        .iter()
+                        .find_map(|arg| self.find_identifier_reference_named(arg.expression(), target))
+                }),
+            Expression::Await(await_expr) => {
+                self.find_identifier_reference_named(&await_expr.argument, target)
+            }
+            Expression::Typeof(typeof_expr) => {
+                self.find_identifier_reference_named(&typeof_expr.argument, target)
+            }
+            Expression::Parenthesized(paren) => {
+                self.find_identifier_reference_named(&paren.expression, target)
+            }
+            Expression::JsxElement(elem) => {
+                for attr in &elem.opening.attributes {
+                    match attr {
+                        JsxAttribute::Attribute { value, .. } => {
+                            if let Some(value) = value {
+                                if let Some(found) =
+                                    self.find_identifier_reference_named_in_jsx_attr_value(
+                                        value, target,
+                                    )
+                                {
+                                    return Some(found);
+                                }
+                            }
+                        }
+                        JsxAttribute::Spread { argument, .. } => {
+                            if let Some(found) =
+                                self.find_identifier_reference_named(argument, target)
+                            {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+                elem.children
+                    .iter()
+                    .find_map(|child| self.find_identifier_reference_named_in_jsx_child(child, target))
+            }
+            Expression::JsxFragment(fragment) => fragment
+                .children
+                .iter()
+                .find_map(|child| self.find_identifier_reference_named_in_jsx_child(child, target)),
+            Expression::InstanceOf(instanceof) => self
+                .find_identifier_reference_named(&instanceof.object, target),
+            Expression::In(in_expr) => self
+                .find_identifier_reference_named(&in_expr.property, target)
+                .or_else(|| self.find_identifier_reference_named(&in_expr.object, target)),
+            Expression::TypeCast(cast) => {
+                self.find_identifier_reference_named(&cast.object, target)
+            }
+            Expression::TaggedTemplate(tagged) => self
+                .find_identifier_reference_named(&tagged.tag, target)
+                .or_else(|| {
+                    tagged.template.parts.iter().find_map(|part| match part {
+                        TemplatePart::Expression(expr) => {
+                            self.find_identifier_reference_named(expr, target)
+                        }
+                        TemplatePart::String(_) => None,
+                    })
+                }),
+            Expression::DynamicImport(import) => {
+                self.find_identifier_reference_named(&import.source, target)
+            }
+            Expression::Arrow(_)
+            | Expression::Function(_)
+            | Expression::IntLiteral(_)
+            | Expression::FloatLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+            | Expression::This(_)
+            | Expression::NewTarget(_)
+            | Expression::Super(_)
+            | Expression::RegexLiteral(_) => None,
+        }
+    }
+
+    fn find_identifier_reference_named_in_jsx_attr_value<'b>(
+        &self,
+        value: &'b JsxAttributeValue,
+        target: &str,
+    ) -> Option<&'b Identifier> {
+        match value {
+            JsxAttributeValue::StringLiteral(_) => None,
+            JsxAttributeValue::Expression(expr) => {
+                self.find_identifier_reference_named(expr, target)
+            }
+            JsxAttributeValue::JsxElement(elem) => elem
+                .children
+                .iter()
+                .find_map(|child| self.find_identifier_reference_named_in_jsx_child(child, target)),
+            JsxAttributeValue::JsxFragment(fragment) => fragment
+                .children
+                .iter()
+                .find_map(|child| self.find_identifier_reference_named_in_jsx_child(child, target)),
+        }
+    }
+
+    fn find_identifier_reference_named_in_jsx_child<'b>(
+        &self,
+        child: &'b JsxChild,
+        target: &str,
+    ) -> Option<&'b Identifier> {
+        match child {
+            JsxChild::Text(_) => None,
+            JsxChild::Expression(expr) => expr
+                .expression
+                .as_ref()
+                .and_then(|expr| self.find_identifier_reference_named(expr, target)),
+            JsxChild::Element(elem) => {
+                for attr in &elem.opening.attributes {
+                    match attr {
+                        JsxAttribute::Attribute { value, .. } => {
+                            if let Some(value) = value {
+                                if let Some(found) =
+                                    self.find_identifier_reference_named_in_jsx_attr_value(
+                                        value, target,
+                                    )
+                                {
+                                    return Some(found);
+                                }
+                            }
+                        }
+                        JsxAttribute::Spread { argument, .. } => {
+                            if let Some(found) =
+                                self.find_identifier_reference_named(argument, target)
+                            {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+                elem.children
+                    .iter()
+                    .find_map(|nested| self.find_identifier_reference_named_in_jsx_child(nested, target))
+            }
+            JsxChild::Fragment(fragment) => fragment
+                .children
+                .iter()
+                .find_map(|nested| self.find_identifier_reference_named_in_jsx_child(nested, target)),
         }
     }
 
@@ -824,6 +1075,7 @@ impl<'a> EarlyErrorPass<'a> {
                         body_strict,
                         body_has_use_strict,
                         func.span,
+                        ParameterListKind::OrdinaryFunction,
                     );
                     for param in &func.params {
                         this.declare_pattern_with(&param.pattern, |pass, ident| {
@@ -864,6 +1116,7 @@ impl<'a> EarlyErrorPass<'a> {
                     body_strict,
                     body_has_use_strict,
                     func.span,
+                    ParameterListKind::OrdinaryFunction,
                 );
                 for param in &func.params {
                     this.declare_pattern_with(&param.pattern, |pass, ident| {
@@ -886,7 +1139,13 @@ impl<'a> EarlyErrorPass<'a> {
             ArrowBody::Expression(_) => false,
         };
         let body_strict = self.current_strict() || body_has_use_strict;
-        self.check_parameter_list(&arrow.params, body_strict, body_has_use_strict, arrow.span);
+        self.check_parameter_list(
+            &arrow.params,
+            body_strict,
+            body_has_use_strict,
+            arrow.span,
+            ParameterListKind::Arrow,
+        );
         self.push_function(
             arrow.is_async,
             false,
@@ -949,7 +1208,13 @@ impl<'a> EarlyErrorPass<'a> {
                             }
                             _ => {}
                         }
-                        this.check_parameter_list(&method.params, true, false, method.span);
+                        this.check_parameter_list(
+                            &method.params,
+                            true,
+                            false,
+                            method.span,
+                            ParameterListKind::OrdinaryFunction,
+                        );
                         if let Some(body) = &method.body {
                             this.push_function(
                                 method.is_async,
@@ -982,7 +1247,13 @@ impl<'a> EarlyErrorPass<'a> {
                         if constructor_count > 1 {
                             this.error("Class must not declare multiple constructors", ctor.span);
                         }
-                        this.check_parameter_list(&ctor.params, true, false, ctor.span);
+                        this.check_parameter_list(
+                            &ctor.params,
+                            true,
+                            false,
+                            ctor.span,
+                            ParameterListKind::OrdinaryFunction,
+                        );
                         this.push_function(
                             false,
                             false,

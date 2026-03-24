@@ -49,6 +49,33 @@ impl<'a> Interpreter<'a> {
                         task.current_active_direct_eval_uses_script_global_bindings(),
                     );
                 }
+                let lexical_arrow = module
+                    .functions
+                    .get(func_index)
+                    .is_some_and(|function| function.name.starts_with("__arrow_"));
+                if lexical_arrow {
+                    let lexical_home_object = task.current_active_js_home_object().or_else(|| {
+                        task.current_closure().and_then(|current_closure| {
+                            let closure_ptr = unsafe { current_closure.as_ptr::<Object>() }?;
+                            let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+                            closure_obj.callable_home_object()
+                        })
+                    });
+                    if let Some(home_object) = lexical_home_object {
+                        let _ = closure.set_callable_home_object(home_object);
+                    }
+
+                    let lexical_new_target = task.current_active_js_new_target().or_else(|| {
+                        task.current_closure().and_then(|current_closure| {
+                            let closure_ptr = unsafe { current_closure.as_ptr::<Object>() }?;
+                            let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+                            closure_obj.callable_new_target()
+                        })
+                    });
+                    if let Some(new_target) = lexical_new_target {
+                        let _ = closure.set_callable_new_target(new_target);
+                    }
+                }
                 let gc_ptr = self.gc.lock().allocate(closure);
                 let value =
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };

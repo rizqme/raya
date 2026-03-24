@@ -1027,6 +1027,16 @@ impl<'a> Interpreter<'a> {
         caller_module: &Module,
     ) -> Result<Value, VmError> {
         let mut stack = Stack::new();
+        let (callable_home_object, callable_lexical_new_target) =
+            if let Some(callable_ptr) = unsafe { callable.as_ptr::<Object>() } {
+                let callable_obj = unsafe { &*callable_ptr.as_ptr() };
+                (
+                    callable_obj.callable_home_object(),
+                    callable_obj.callable_new_target(),
+                )
+            } else {
+                (None, None)
+            };
         let scratch_task = Arc::new(Task::new(
             caller_task.current_func_id(),
             caller_task.current_module(),
@@ -1043,16 +1053,23 @@ impl<'a> Interpreter<'a> {
                 let _ = scratch_task.set_current_active_direct_eval_completion(completion);
             }
         }
-        if let Some(home_object) = caller_task.current_active_js_home_object().or_else(|| {
-            caller_task.current_closure().and_then(|closure| {
-                let closure_ptr = unsafe { closure.as_ptr::<Object>() }?;
-                let closure_obj = unsafe { &*closure_ptr.as_ptr() };
-                closure_obj.callable_home_object()
+        if let Some(home_object) = caller_task
+            .current_active_js_home_object()
+            .or_else(|| {
+                caller_task.current_closure().and_then(|closure| {
+                    let closure_ptr = unsafe { closure.as_ptr::<Object>() }?;
+                    let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+                    closure_obj.callable_home_object()
+                })
             })
-        }) {
+            .or(callable_home_object)
+        {
             scratch_task.push_active_js_home_object(home_object);
         }
-        if let Some(new_target) = caller_task.current_active_js_new_target() {
+        if let Some(new_target) = caller_task
+            .current_active_js_new_target()
+            .or(callable_lexical_new_target)
+        {
             scratch_task.push_active_js_new_target(new_target);
         }
         if let Some(new_target) = new_target {

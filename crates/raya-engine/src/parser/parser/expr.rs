@@ -338,6 +338,12 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
                 // Check for arrow
                 if parser.check(&Token::Arrow) {
+                    if parser.has_line_terminator_before_current() {
+                        return Err(ParseError::invalid_syntax(
+                            "Line terminator is not allowed before '=>'",
+                            parser.current_span(),
+                        ));
+                    }
                     parser.advance(); // consume =>
 
                     // Parse body - could be expression or block
@@ -384,6 +390,12 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                 // Peek ahead: if next token is =>, it's an arrow function
                 // Otherwise, it's an async call
                 if parser.check(&Token::Arrow) {
+                    if parser.has_line_terminator_before_current() {
+                        return Err(ParseError::invalid_syntax(
+                            "Line terminator is not allowed before '=>'",
+                            parser.current_span(),
+                        ));
+                    }
                     // It's an async arrow function with single parameter
                     parser.advance(); // consume =>
 
@@ -1331,7 +1343,10 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
         }
 
         // Arrow function (simplified - single parameter without parens): x => ...
-        _ if parser.check_identifier_like() && matches!(parser.peek(), Some(Token::Arrow)) => {
+        _ if parser.check_identifier_like()
+            && matches!(parser.peek(), Some(Token::Arrow))
+            && !parser.has_line_terminator_before_peek() =>
+        {
             let param = parser.expect_identifier_like()?;
             parser.advance(); // consume =>
 
@@ -1378,6 +1393,12 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
                 };
 
                 if parser.check(&Token::Arrow) {
+                    if parser.has_line_terminator_before_current() {
+                        return Err(ParseError::invalid_syntax(
+                            "Line terminator is not allowed before '=>'",
+                            parser.current_span(),
+                        ));
+                    }
                     parser.advance(); // consume =>
                     return parse_arrow_function_body_with_type(
                         parser,
@@ -1566,12 +1587,20 @@ fn try_parse_parenthesized_arrow_function(
         });
     }
 
+    if parser.has_line_terminator_before_current() {
+        parser.restore(checkpoint);
+        return Err(ParseError::invalid_syntax(
+            "Line terminator is not allowed before '=>'",
+            parser.current_span(),
+        ));
+    }
+
     parser.advance();
     parse_arrow_function_body_with_type(parser, params, return_type, start_span).map(Some)
 }
 
 fn looks_like_ambiguous_parenthesized_arrow_params(parser: &Parser) -> bool {
-    matches!(parser.current(), Token::Identifier(_)) && matches!(parser.peek(), Some(Token::Equal))
+    parser.check_identifier_like() && matches!(parser.peek(), Some(Token::Equal))
 }
 
 /// Parse function call arguments.
@@ -1909,7 +1938,24 @@ fn looks_like_arrow_params(parser: &Parser) -> bool {
     if parser.check(&Token::DotDotDot) {
         match parser.peek() {
             // ...ident(:|,|))
-            Some(Token::Identifier(_)) => matches!(
+            Some(Token::Identifier(_))
+            | Some(Token::Async)
+            | Some(Token::Await)
+            | Some(Token::From)
+            | Some(Token::Type)
+            | Some(Token::Static)
+            | Some(Token::Abstract)
+            | Some(Token::Readonly)
+            | Some(Token::Keyof)
+            | Some(Token::Extends)
+            | Some(Token::Implements)
+            | Some(Token::As)
+            | Some(Token::Namespace)
+            | Some(Token::Private)
+            | Some(Token::Protected)
+            | Some(Token::Public)
+            | Some(Token::Yield)
+            | Some(Token::Of) => matches!(
                 parser.peek2(),
                 Some(Token::Colon) | Some(Token::Comma) | Some(Token::RightParen)
             ),
@@ -1917,7 +1963,7 @@ fn looks_like_arrow_params(parser: &Parser) -> bool {
             Some(Token::LeftBrace) | Some(Token::LeftBracket) => true,
             _ => false,
         }
-    } else if matches!(parser.current(), Token::Identifier(_)) {
+    } else if parser.check_identifier_like() {
         // Check what follows the identifier
         match parser.peek() {
             // Type annotation - definitely parameters
@@ -2094,6 +2140,12 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
 
         // Comma or end
         if parser.check(&Token::Comma) {
+            if seen_rest {
+                return Err(ParseError::invalid_syntax(
+                    "Rest parameter must be last",
+                    parser.current_span(),
+                ));
+            }
             parser.advance();
         } else if !parser.check(&Token::RightParen) {
             // Not a comma and not closing paren - not valid params

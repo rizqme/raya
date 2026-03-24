@@ -35,6 +35,7 @@ const CAST_KIND_ARRAY: u16 = 0x0020;
 const CAST_KIND_OBJECT: u16 = 0x0040;
 const CAST_KIND_FUNCTION: u16 = 0x0080;
 const DIRECT_EVAL_LEXICAL_MARKER_PREFIX: &str = "__direct_eval_lexical__:";
+const DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX: &str = "__direct_eval_uninitialized__:";
 
 enum SpreadSourceFields {
     Concrete(Vec<(String, u16)>),
@@ -745,6 +746,7 @@ impl<'a> Lowerer<'a> {
     fn direct_eval_binding_is_lexical(&self, symbol: Symbol) -> bool {
         self.visible_js_lexical_symbols.contains(&symbol)
             || self.js_script_lexical_globals.contains_key(&symbol)
+            || (self.parameter_scope_eval_mode && self.parameter_symbols.contains(&symbol))
     }
 
     fn emit_direct_eval_hidden_flag_set(&mut self, env_object: Register, key: String) {
@@ -809,6 +811,49 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
+    fn lower_with_scoped_identifier(&mut self, ident: &ast::Identifier) -> Register {
+        let name = self.interner.resolve(ident.name);
+        let has_binding = self.emit_direct_eval_binding_has(name);
+        let hit_block = self.alloc_block();
+        let miss_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+        let dest = self.alloc_register(UNRESOLVED);
+
+        self.set_terminator(Terminator::Branch {
+            cond: has_binding,
+            then_block: hit_block,
+            else_block: miss_block,
+        });
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(hit_block, "with.ident.hit"));
+        self.current_block = hit_block;
+        let value = self.emit_direct_eval_binding_get(name, false);
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(value),
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(miss_block, "with.ident.miss"));
+        self.current_block = miss_block;
+        let saved_with_scope_depth = self.with_scope_depth;
+        self.with_scope_depth = 0;
+        let fallback = self.lower_identifier(ident);
+        self.with_scope_depth = saved_with_scope_depth;
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(fallback),
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(merge_block, "with.ident.merge"));
+        self.current_block = merge_block;
+        dest
+    }
+
     fn lower_direct_eval_environment_object(&mut self) -> Register {
         let env_object = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::NativeCall {
@@ -819,8 +864,19 @@ impl<'a> Lowerer<'a> {
 
         for symbol in self.collect_visible_direct_eval_symbols() {
             let name = self.interner.resolve(symbol).to_string();
+            let is_parameter_binding =
+                self.parameter_scope_eval_mode && self.parameter_symbols.contains(&symbol);
+            let is_uninitialized_parameter =
+                is_parameter_binding && self.parameter_tdz_symbols.contains(&symbol);
             let value = if name == "arguments" {
                 self.lower_js_arguments_object()
+            } else if is_uninitialized_parameter {
+                let undefined = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::Assign {
+                    dest: undefined.clone(),
+                    value: IrValue::Constant(IrConstant::Undefined),
+                });
+                undefined
             } else {
                 let ident = ast::Identifier {
                     name: symbol,
@@ -839,6 +895,12 @@ impl<'a> Lowerer<'a> {
                     env_object.clone(),
                     format!("{DIRECT_EVAL_LEXICAL_MARKER_PREFIX}{name}"),
                 );
+                if is_uninitialized_parameter {
+                    self.emit_direct_eval_hidden_flag_set(
+                        env_object.clone(),
+                        format!("{DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX}{name}"),
+                    );
+                }
             }
         }
 
@@ -1279,6 +1341,9 @@ impl<'a> Lowerer<'a> {
     fn lower_identifier(&mut self, ident: &ast::Identifier) -> Register {
         // Ambient strict globals available without local source injection.
         let name = self.interner.resolve(ident.name);
+        if self.with_scope_depth > 0 {
+            return self.lower_with_scoped_identifier(ident);
+        }
         match name {
             "Infinity" => {
                 let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
@@ -4829,7 +4894,7 @@ impl<'a> Lowerer<'a> {
         if !self.type_is_callable(callee_ty)
             && !self.expression_is_callable_hint(&call.callee)
             && !ambient_runtime_callable
-            && !self.runtime_call_may_be_callable(callee_ty)
+            && !self.expression_result_may_be_callable_at_runtime(&call.callee, callee_ty)
         {
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
@@ -8619,7 +8684,7 @@ impl<'a> Lowerer<'a> {
         }
 
         let mut params = Vec::new();
-        let mut rest_param_info = None;
+        let mut rest_param_info: Option<(&ast::Pattern, TypeId)> = None;
         let mut fixed_param_count = js_this_slots;
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
         let mut param_local_indices = Vec::with_capacity(func.params.len());
@@ -8636,22 +8701,12 @@ impl<'a> Lowerer<'a> {
         for (decl_param_idx, param) in func.params.iter().enumerate() {
             super::collect_pattern_names(&param.pattern, &mut self.parameter_symbols);
             if param.is_rest {
-                let rest_ident = match &param.pattern {
-                    ast::Pattern::Identifier(ident) => Some(ident.name),
-                    ast::Pattern::Rest(rest) => match rest.argument.as_ref() {
-                        ast::Pattern::Identifier(ident) => Some(ident.name),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                if let Some(rest_name) = rest_ident {
-                    let ty = param
-                        .type_annotation
-                        .as_ref()
-                        .map(|t| self.resolve_type_annotation(t))
-                        .unwrap_or(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
-                    rest_param_info = Some((rest_name, ty));
-                }
+                let ty = param
+                    .type_annotation
+                    .as_ref()
+                    .map(|t| self.resolve_type_annotation(t))
+                    .unwrap_or(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
+                rest_param_info = Some((&param.pattern, ty));
                 continue;
             }
 
@@ -8805,12 +8860,11 @@ impl<'a> Lowerer<'a> {
             is_strict_js,
         );
 
-        if let Some((rest_name, rest_ty)) = rest_param_info {
-            self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
+        if let Some((rest_pattern, rest_ty)) = rest_param_info {
+            let rest_value = self.emit_rest_array_value(rest_ty, fixed_param_count);
+            self.bind_pattern(rest_pattern, rest_value);
             if use_js_parameter_env {
-                if let Some(rest_param) = func.params.iter().find(|param| param.is_rest) {
-                    self.clear_parameter_tdz_for_pattern(&rest_param.pattern);
-                }
+                self.clear_parameter_tdz_for_pattern(rest_pattern);
             }
         }
 
@@ -9191,7 +9245,7 @@ impl<'a> Lowerer<'a> {
 
         // Create parameter registers (excluding rest parameters)
         let mut params = Vec::new();
-        let mut rest_param_info = None;
+        let mut rest_param_info: Option<(&ast::Pattern, TypeId)> = None;
         let mut fixed_param_count = 0;
         // Track parameters with destructuring patterns for later binding
         let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
@@ -9201,23 +9255,12 @@ impl<'a> Lowerer<'a> {
             super::collect_pattern_names(&param.pattern, &mut self.parameter_symbols);
             // Skip rest parameters - they're handled separately
             if param.is_rest {
-                // Extract rest parameter info for later processing
-                let rest_ident = match &param.pattern {
-                    ast::Pattern::Identifier(ident) => Some(ident.name),
-                    ast::Pattern::Rest(rest) => match rest.argument.as_ref() {
-                        ast::Pattern::Identifier(ident) => Some(ident.name),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                if let Some(rest_name) = rest_ident {
-                    let ty = param
-                        .type_annotation
-                        .as_ref()
-                        .map(|t| self.resolve_type_annotation(t))
-                        .unwrap_or(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
-                    rest_param_info = Some((rest_name, ty));
-                }
+                let ty = param
+                    .type_annotation
+                    .as_ref()
+                    .map(|t| self.resolve_type_annotation(t))
+                    .unwrap_or(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
+                rest_param_info = Some((&param.pattern, ty));
                 continue;
             }
 
@@ -9395,12 +9438,11 @@ impl<'a> Lowerer<'a> {
         }
 
         // Emit rest array collection code if present
-        if let Some((rest_name, rest_ty)) = rest_param_info {
-            self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
+        if let Some((rest_pattern, rest_ty)) = rest_param_info {
+            let rest_value = self.emit_rest_array_value(rest_ty, fixed_param_count);
+            self.bind_pattern(rest_pattern, rest_value);
             if use_js_parameter_env {
-                if let Some(rest_param) = arrow.params.iter().find(|param| param.is_rest) {
-                    self.clear_parameter_tdz_for_pattern(&rest_param.pattern);
-                }
+                self.clear_parameter_tdz_for_pattern(rest_pattern);
             }
         }
 
@@ -10441,7 +10483,9 @@ impl<'a> Lowerer<'a> {
                 callee_ty_raw == UNKNOWN_TYPE_ID
             );
         }
-        if !self.type_is_callable(callee_ty) && !self.runtime_call_may_be_callable(callee_ty) {
+        if !self.type_is_callable(callee_ty)
+            && !self.expression_result_may_be_callable_at_runtime(&async_call.callee, callee_ty)
+        {
             self.errors
                 .push(crate::compiler::CompileError::InternalError {
                     message: format!(
@@ -11391,6 +11435,20 @@ impl<'a> Lowerer<'a> {
 
     fn runtime_call_may_be_callable(&self, ty_id: TypeId) -> bool {
         self.allow_unresolved_runtime_fallback && self.type_is_runtime_dynamic_dispatch(ty_id)
+    }
+
+    fn expression_result_may_be_callable_at_runtime(
+        &self,
+        expr: &Expression,
+        ty_id: TypeId,
+    ) -> bool {
+        self.runtime_call_may_be_callable(ty_id)
+            || (self.js_this_binding_compat
+                && matches!(
+                    expr,
+                    Expression::Call(_) | Expression::AsyncCall(_) | Expression::Parenthesized(_)
+                )
+                && ty_id.as_u32() == crate::parser::TypeContext::VOID_TYPE_ID)
     }
 
     pub(crate) fn type_has_construct_signature(&self, ty_id: TypeId) -> bool {

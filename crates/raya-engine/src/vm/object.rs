@@ -419,6 +419,7 @@ pub struct CallableData {
     pub direct_eval_env: Option<Value>,
     pub direct_eval_uses_script_global_bindings: bool,
     pub home_object: Option<Value>,
+    pub lexical_new_target: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -782,6 +783,10 @@ impl Object {
         self.callable.as_ref()?.home_object
     }
 
+    pub fn callable_new_target(&self) -> Option<Value> {
+        self.callable.as_ref()?.lexical_new_target
+    }
+
     /// Attach a direct-eval environment to this callable.
     pub fn set_callable_direct_eval_env(&mut self, env: Value) -> Result<(), String> {
         let callable = self
@@ -811,6 +816,15 @@ impl Object {
             .as_mut()
             .ok_or_else(|| "Not a callable object".to_string())?;
         callable.home_object = Some(home_object);
+        Ok(())
+    }
+
+    pub fn set_callable_new_target(&mut self, new_target: Value) -> Result<(), String> {
+        let callable = self
+            .callable
+            .as_mut()
+            .ok_or_else(|| "Not a callable object".to_string())?;
+        callable.lexical_new_target = Some(new_target);
         Ok(())
     }
 
@@ -863,6 +877,7 @@ impl Object {
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
             home_object: None,
+            lexical_new_target: None,
         }));
         obj
     }
@@ -881,6 +896,7 @@ impl Object {
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
             home_object: None,
+            lexical_new_target: None,
         }));
         obj
     }
@@ -899,6 +915,7 @@ impl Object {
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
             home_object: None,
+            lexical_new_target: None,
         }));
         obj
     }
@@ -916,6 +933,7 @@ impl Object {
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
             home_object: None,
+            lexical_new_target: None,
         }));
         obj
     }
@@ -944,6 +962,7 @@ impl Object {
             direct_eval_env: None,
             direct_eval_uses_script_global_bindings: false,
             home_object: None,
+            lexical_new_target: None,
         }));
         obj
     }
