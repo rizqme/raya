@@ -1403,7 +1403,7 @@ impl<'a> EarlyErrorPass<'a> {
     }
 
     fn check_assignment_target(&mut self, expr: &Expression) {
-        if !Self::is_valid_assignment_target(expr) {
+        if !Self::is_valid_assignment_target(expr, false) {
             self.error("Invalid assignment target", *expr.span());
             return;
         }
@@ -1421,10 +1421,18 @@ impl<'a> EarlyErrorPass<'a> {
                 }
             }
             Expression::Parenthesized(paren) => self.check_assignment_target(&paren.expression),
+            Expression::Assignment(assign) => {
+                if assign.operator != AssignmentOperator::Assign {
+                    self.error("Invalid assignment target", assign.span);
+                    return;
+                }
+                self.check_assignment_pattern_target(&assign.left);
+                self.check_expr(&assign.right);
+            }
             Expression::Array(array) => {
                 for (index, elem) in array.elements.iter().flatten().enumerate() {
                     match elem {
-                        ArrayElement::Expression(expr) => self.check_assignment_target(expr),
+                        ArrayElement::Expression(expr) => self.check_assignment_pattern_target(expr),
                         ArrayElement::Spread(expr) => {
                             if index + 1 != array.elements.len() {
                                 self.error(
@@ -1432,7 +1440,7 @@ impl<'a> EarlyErrorPass<'a> {
                                     *expr.span(),
                                 );
                             }
-                            self.check_assignment_target(expr);
+                            self.check_assignment_pattern_target(expr);
                         }
                     }
                 }
@@ -1440,7 +1448,9 @@ impl<'a> EarlyErrorPass<'a> {
             Expression::Object(obj) => {
                 for (index, prop) in obj.properties.iter().enumerate() {
                     match prop {
-                        ObjectProperty::Property(prop) => self.check_assignment_target(&prop.value),
+                        ObjectProperty::Property(prop) => {
+                            self.check_assignment_pattern_target(&prop.value)
+                        }
                         ObjectProperty::Spread(spread) => {
                             if index + 1 != obj.properties.len() {
                                 self.error(
@@ -1448,7 +1458,7 @@ impl<'a> EarlyErrorPass<'a> {
                                     spread.span,
                                 );
                             }
-                            self.check_assignment_target(&spread.argument);
+                            self.check_assignment_pattern_target(&spread.argument);
                         }
                     }
                 }
@@ -1457,19 +1467,96 @@ impl<'a> EarlyErrorPass<'a> {
         }
     }
 
-    fn is_valid_assignment_target(expr: &Expression) -> bool {
+    fn check_assignment_pattern_target(&mut self, expr: &Expression) {
+        if !Self::is_valid_assignment_target(expr, true) {
+            self.error("Invalid assignment target", *expr.span());
+            return;
+        }
+        match expr {
+            Expression::Identifier(ident) => {
+                if self.current_strict() && self.is_restricted_strict_binding_name(ident) {
+                    self.error(
+                        format!(
+                            "Assignment to '{}' is not allowed in strict mode",
+                            self.interner.resolve(ident.name)
+                        ),
+                        ident.span,
+                    );
+                }
+            }
+            Expression::Parenthesized(paren) => {
+                self.check_assignment_pattern_target(&paren.expression)
+            }
+            Expression::Assignment(assign) => {
+                if assign.operator != AssignmentOperator::Assign {
+                    self.error("Invalid assignment target", assign.span);
+                    return;
+                }
+                self.check_assignment_pattern_target(&assign.left);
+                self.check_expr(&assign.right);
+            }
+            Expression::Array(array) => {
+                for (index, elem) in array.elements.iter().flatten().enumerate() {
+                    match elem {
+                        ArrayElement::Expression(expr) => {
+                            self.check_assignment_pattern_target(expr)
+                        }
+                        ArrayElement::Spread(expr) => {
+                            if index + 1 != array.elements.len() {
+                                self.error(
+                                    "Rest element must be the last element in an assignment pattern",
+                                    *expr.span(),
+                                );
+                            }
+                            self.check_assignment_pattern_target(expr);
+                        }
+                    }
+                }
+            }
+            Expression::Object(obj) => {
+                for (index, prop) in obj.properties.iter().enumerate() {
+                    match prop {
+                        ObjectProperty::Property(prop) => {
+                            self.check_assignment_pattern_target(&prop.value)
+                        }
+                        ObjectProperty::Spread(spread) => {
+                            if index + 1 != obj.properties.len() {
+                                self.error(
+                                    "Rest property must be the last property in an assignment pattern",
+                                    spread.span,
+                                );
+                            }
+                            self.check_assignment_pattern_target(&spread.argument);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn is_valid_assignment_target(expr: &Expression, allow_pattern_defaults: bool) -> bool {
         match expr {
             Expression::Identifier(_) | Expression::Member(_) | Expression::Index(_) => true,
-            Expression::Parenthesized(paren) => Self::is_valid_assignment_target(&paren.expression),
+            Expression::Parenthesized(paren) => {
+                Self::is_valid_assignment_target(&paren.expression, allow_pattern_defaults)
+            }
+            Expression::Assignment(assign) => {
+                allow_pattern_defaults
+                    && assign.operator == AssignmentOperator::Assign
+                    && Self::is_valid_assignment_target(&assign.left, true)
+            }
             Expression::Array(array) => array.elements.iter().flatten().all(|elem| match elem {
                 ArrayElement::Expression(expr) | ArrayElement::Spread(expr) => {
-                    Self::is_valid_assignment_target(expr)
+                    Self::is_valid_assignment_target(expr, true)
                 }
             }),
             Expression::Object(obj) => obj.properties.iter().all(|prop| match prop {
-                ObjectProperty::Property(prop) => Self::is_valid_assignment_target(&prop.value),
+                ObjectProperty::Property(prop) => {
+                    Self::is_valid_assignment_target(&prop.value, true)
+                }
                 ObjectProperty::Spread(spread) => {
-                    Self::is_valid_assignment_target(&spread.argument)
+                    Self::is_valid_assignment_target(&spread.argument, true)
                 }
             }),
             _ => false,

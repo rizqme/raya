@@ -1158,7 +1158,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn emit_require_object_coercible(&mut self, value: Register) {
+    pub(super) fn emit_require_object_coercible(&mut self, value: Register) {
         self.emit(IrInstr::NativeCall {
             dest: None,
             native_id: crate::compiler::native_id::OBJECT_REQUIRE_OBJECT_COERCIBLE,
@@ -1322,7 +1322,7 @@ impl<'a> Lowerer<'a> {
         final_val
     }
 
-    fn emit_destructuring_property_load(
+    pub(super) fn emit_destructuring_property_load(
         &mut self,
         object: Register,
         key: Register,

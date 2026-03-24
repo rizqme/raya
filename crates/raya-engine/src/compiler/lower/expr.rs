@@ -50,6 +50,20 @@ enum CheckerValidatedMemberCallKind {
     CallableProperty,
 }
 
+enum PreparedDestructuringTarget {
+    Identifier(Symbol),
+    Member {
+        object: Register,
+        property: String,
+    },
+    Index {
+        object: Register,
+        key: Register,
+        dynamic: bool,
+        append: bool,
+    },
+}
+
 impl<'a> Lowerer<'a> {
     fn js_builtin_call_uses_construct(name: &str) -> bool {
         matches!(
@@ -7596,6 +7610,402 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn prepare_destructuring_target(
+        &mut self,
+        expr: &Expression,
+    ) -> Option<PreparedDestructuringTarget> {
+        match expr {
+            Expression::Parenthesized(paren) => {
+                self.prepare_destructuring_target(&paren.expression)
+            }
+            Expression::Assignment(assign) if assign.operator == AssignmentOperator::Assign => {
+                self.prepare_destructuring_target(&assign.left)
+            }
+            Expression::Identifier(ident) => Some(PreparedDestructuringTarget::Identifier(ident.name)),
+            Expression::Member(member) => Some(PreparedDestructuringTarget::Member {
+                object: self.lower_expr(&member.object),
+                property: self.interner.resolve(member.property.name).to_string(),
+            }),
+            Expression::Index(index) => Some(PreparedDestructuringTarget::Index {
+                object: self.lower_expr(&index.object),
+                key: self.lower_expr(&index.index),
+                dynamic: self.js_this_binding_compat
+                    || self.index_uses_dynamic_keyed_access_for_expr(
+                        self.get_expr_type(&index.object),
+                        &index.index,
+                    ),
+                append: self.is_append_index_pattern(&index.object, &index.index),
+            }),
+            _ => None,
+        }
+    }
+
+    fn store_prepared_destructuring_target(
+        &mut self,
+        target: PreparedDestructuringTarget,
+        value: Register,
+    ) {
+        match target {
+            PreparedDestructuringTarget::Identifier(symbol) => {
+                self.store_identifier_value(symbol, value);
+            }
+            PreparedDestructuringTarget::Member { object, property } => {
+                self.emit_dyn_set_named(object, &property, value);
+            }
+            PreparedDestructuringTarget::Index {
+                object,
+                key,
+                dynamic,
+                append,
+            } => {
+                if append {
+                    self.emit(IrInstr::ArrayPush {
+                        array: object,
+                        element: value,
+                    });
+                } else if dynamic {
+                    self.emit(IrInstr::DynSetKeyed {
+                        object,
+                        key,
+                        value,
+                    });
+                } else {
+                    self.emit(IrInstr::StoreElement {
+                        array: object,
+                        index: key,
+                        value,
+                    });
+                }
+            }
+        }
+    }
+
+    fn maybe_assign_anonymous_assignment_target_name(
+        &mut self,
+        target: &Expression,
+        initializer: &Expression,
+        value: &Register,
+    ) {
+        let ident = match target {
+            Expression::Identifier(ident) => Some(ident.clone()),
+            Expression::Parenthesized(paren) => {
+                return self.maybe_assign_anonymous_assignment_target_name(
+                    &paren.expression,
+                    initializer,
+                    value,
+                );
+            }
+            Expression::Assignment(assign) if assign.operator == AssignmentOperator::Assign => {
+                return self.maybe_assign_anonymous_assignment_target_name(
+                    &assign.left,
+                    initializer,
+                    value,
+                );
+            }
+            _ => None,
+        };
+        let Some(ident) = ident else {
+            return;
+        };
+        self.maybe_assign_anonymous_binding_name(
+            &ast::Pattern::Identifier(ident),
+            initializer,
+            value,
+        );
+    }
+
+    fn emit_destructuring_assignment_default_value(
+        &mut self,
+        target: &Expression,
+        current_value: Register,
+        default_expr: &Expression,
+    ) -> Register {
+        let present_block = self.alloc_block();
+        let default_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+        let final_val = self.alloc_register(TypeId::new(0));
+        let undefined_reg = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::Assign {
+            dest: undefined_reg.clone(),
+            value: IrValue::Constant(IrConstant::Undefined),
+        });
+        let is_undefined = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: is_undefined.clone(),
+            op: BinaryOp::StrictEqual,
+            left: current_value.clone(),
+            right: undefined_reg,
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: is_undefined,
+            then_block: default_block,
+            else_block: present_block,
+        });
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(present_block, "assign.destr.present"));
+        self.current_block = present_block;
+        self.emit(IrInstr::Assign {
+            dest: final_val.clone(),
+            value: IrValue::Register(current_value),
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(default_block, "assign.destr.default"));
+        self.current_block = default_block;
+        let default_val = self.lower_expr(default_expr);
+        self.maybe_assign_anonymous_assignment_target_name(target, default_expr, &default_val);
+        self.emit(IrInstr::Assign {
+            dest: final_val.clone(),
+            value: IrValue::Register(default_val),
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(merge_block, "assign.destr.merge"));
+        self.current_block = merge_block;
+        final_val
+    }
+
+    fn lower_destructuring_assignment_target(&mut self, target: &Expression, value_reg: Register) {
+        match target {
+            Expression::Parenthesized(paren) => {
+                self.lower_destructuring_assignment_target(&paren.expression, value_reg);
+            }
+            Expression::Assignment(assign) if assign.operator == AssignmentOperator::Assign => {
+                let final_val = self.emit_destructuring_assignment_default_value(
+                    &assign.left,
+                    value_reg,
+                    &assign.right,
+                );
+                self.lower_destructuring_assignment_target(&assign.left, final_val);
+            }
+            Expression::Array(array_pat) => {
+                if array_pat.elements.is_empty() {
+                    return;
+                }
+
+                let iterator_reg = self.emit_iterator_get_helper(value_reg);
+                let mut last_step_result: Option<Register> = None;
+                for elem_opt in &array_pat.elements {
+                    let step_result = self.emit_iterator_step_helper(iterator_reg.clone());
+                    last_step_result = Some(step_result.clone());
+
+                    let Some(elem) = elem_opt else {
+                        continue;
+                    };
+
+                    match elem {
+                        ast::ArrayElement::Expression(expr) => {
+                            let value_block = self.alloc_block();
+                            let done_block = self.alloc_block();
+                            let merge_block = self.alloc_block();
+                            let final_val = self.alloc_register(TypeId::new(0));
+
+                            self.set_terminator(Terminator::BranchIfNull {
+                                value: step_result.clone(),
+                                null_block: done_block,
+                                not_null_block: value_block,
+                            });
+
+                            self.current_function_mut().add_block(BasicBlock::with_label(
+                                value_block,
+                                "assign.destr.iter.value",
+                            ));
+                            self.current_block = value_block;
+                            let elem_reg = self.emit_iterator_value_helper(step_result);
+                            self.emit(IrInstr::Assign {
+                                dest: final_val.clone(),
+                                value: IrValue::Register(elem_reg),
+                            });
+                            self.set_terminator(Terminator::Jump(merge_block));
+
+                            self.current_function_mut().add_block(BasicBlock::with_label(
+                                done_block,
+                                "assign.destr.iter.done",
+                            ));
+                            self.current_block = done_block;
+                            self.emit(IrInstr::Assign {
+                                dest: final_val.clone(),
+                                value: IrValue::Constant(IrConstant::Undefined),
+                            });
+                            self.set_terminator(Terminator::Jump(merge_block));
+
+                            self.current_function_mut().add_block(BasicBlock::with_label(
+                                merge_block,
+                                "assign.destr.iter.merge",
+                            ));
+                            self.current_block = merge_block;
+                            self.lower_destructuring_assignment_target(expr, final_val);
+                        }
+                        ast::ArrayElement::Spread(expr) => {
+                            let zero = self.emit_i32_const(0);
+                            let rest_arr = self.alloc_register(TypeId::new(ARRAY_TYPE_ID));
+                            self.emit(IrInstr::NewArray {
+                                dest: rest_arr.clone(),
+                                len: zero,
+                                elem_ty: TypeId::new(0),
+                            });
+
+                            let header = self.alloc_block();
+                            let body = self.alloc_block();
+                            let exit = self.alloc_block();
+
+                            self.set_terminator(Terminator::Jump(header));
+
+                            self.current_function_mut()
+                                .add_block(BasicBlock::with_label(header, "assign.rest.hdr"));
+                            self.current_block = header;
+                            let rest_step = self.emit_iterator_step_helper(iterator_reg.clone());
+                            self.set_terminator(Terminator::BranchIfNull {
+                                value: rest_step.clone(),
+                                null_block: exit,
+                                not_null_block: body,
+                            });
+
+                            self.current_function_mut()
+                                .add_block(BasicBlock::with_label(body, "assign.rest.body"));
+                            self.current_block = body;
+                            let rest_elem = self.emit_iterator_value_helper(rest_step);
+                            self.emit(IrInstr::ArrayPush {
+                                array: rest_arr.clone(),
+                                element: rest_elem,
+                            });
+                            self.set_terminator(Terminator::Jump(header));
+
+                            self.current_function_mut()
+                                .add_block(BasicBlock::with_label(exit, "assign.rest.exit"));
+                            self.current_block = exit;
+                            self.lower_destructuring_assignment_target(expr, rest_arr);
+                            last_step_result = None;
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(step_result) = last_step_result {
+                    let close_block = self.alloc_block();
+                    let exit_block = self.alloc_block();
+                    self.set_terminator(Terminator::BranchIfNull {
+                        value: step_result,
+                        null_block: exit_block,
+                        not_null_block: close_block,
+                    });
+
+                    self.current_function_mut()
+                        .add_block(BasicBlock::with_label(close_block, "assign.iter.close"));
+                    self.current_block = close_block;
+                    self.emit_iterator_close_helper(iterator_reg);
+                    self.set_terminator(Terminator::Jump(exit_block));
+
+                    self.current_function_mut()
+                        .add_block(BasicBlock::with_label(exit_block, "assign.iter.done"));
+                    self.current_block = exit_block;
+                }
+            }
+            Expression::Object(obj_pat) => {
+                self.emit_require_object_coercible(value_reg.clone());
+                let mut excluded_keys = Vec::new();
+
+                for prop in &obj_pat.properties {
+                    match prop {
+                        ast::ObjectProperty::Property(property) => {
+                            let key_reg = match &property.key {
+                                ast::PropertyKey::Identifier(id) => {
+                                    self.emit_named_key_register(self.interner.resolve(id.name))
+                                }
+                                ast::PropertyKey::StringLiteral(lit) => {
+                                    self.emit_named_key_register(self.interner.resolve(lit.value))
+                                }
+                                ast::PropertyKey::IntLiteral(lit) => {
+                                    let key_reg =
+                                        self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                                    self.emit(IrInstr::Assign {
+                                        dest: key_reg.clone(),
+                                        value: IrValue::Constant(IrConstant::String(
+                                            lit.value.to_string(),
+                                        )),
+                                    });
+                                    key_reg
+                                }
+                                ast::PropertyKey::Computed(expr) => self.lower_expr(expr),
+                            };
+                            excluded_keys.push(key_reg.clone());
+
+                            let prepared_target =
+                                self.prepare_destructuring_target(&property.value);
+                            let field_reg = self.emit_destructuring_property_load(
+                                value_reg.clone(),
+                                key_reg,
+                                TypeId::new(UNRESOLVED_TYPE_ID),
+                            );
+
+                            let final_val = if let Expression::Assignment(assign) = &property.value {
+                                if assign.operator == AssignmentOperator::Assign {
+                                    self.emit_destructuring_assignment_default_value(
+                                        &assign.left,
+                                        field_reg,
+                                        &assign.right,
+                                    )
+                                } else {
+                                    field_reg
+                                }
+                            } else {
+                                field_reg
+                            };
+
+                            if let Some(prepared_target) = prepared_target {
+                                self.store_prepared_destructuring_target(
+                                    prepared_target,
+                                    final_val,
+                                );
+                            } else {
+                                self.lower_destructuring_assignment_target(
+                                    &property.value,
+                                    final_val,
+                                );
+                            }
+                        }
+                        ast::ObjectProperty::Spread(spread) => {
+                            let rest_obj = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                            let type_index = crate::vm::object::layout_id_from_ordered_names(&[]);
+                            self.module_structural_layouts
+                                .entry(type_index)
+                                .or_insert_with(Vec::new);
+                            self.emit(IrInstr::ObjectLiteral {
+                                dest: rest_obj.clone(),
+                                type_index,
+                                fields: vec![],
+                            });
+                            self.register_object_fields.insert(rest_obj.id, Vec::new());
+
+                            let mut args = Vec::with_capacity(excluded_keys.len() + 2);
+                            args.push(rest_obj.clone());
+                            args.push(value_reg.clone());
+                            args.extend(excluded_keys.iter().cloned());
+                            self.emit(IrInstr::NativeCall {
+                                dest: Some(rest_obj.clone()),
+                                native_id:
+                                    crate::compiler::native_id::OBJECT_COPY_DATA_PROPERTIES_EXCLUDING,
+                                args,
+                            });
+                            self.lower_destructuring_assignment_target(
+                                &spread.argument,
+                                rest_obj,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {
+                if let Some(prepared_target) = self.prepare_destructuring_target(target) {
+                    self.store_prepared_destructuring_target(prepared_target, value_reg);
+                }
+            }
+        }
+    }
+
     fn lower_assignment(&mut self, assign: &ast::AssignmentExpression) -> Register {
         // Short-circuiting assignment operators:
         // - ??= assign only when LHS is null
@@ -8038,6 +8448,13 @@ impl<'a> Lowerer<'a> {
         };
         let callable_assign_hint = assign.operator == AssignmentOperator::Assign
             && self.expression_is_callable_hint(&assign.right);
+
+        if assign.operator == AssignmentOperator::Assign
+            && matches!(&*assign.left, Expression::Array(_) | Expression::Object(_))
+        {
+            self.lower_destructuring_assignment_target(&assign.left, value.clone());
+            return value;
+        }
 
         match &*assign.left {
             Expression::Array(array_lhs) => {

@@ -2830,7 +2830,7 @@ impl<'a> Interpreter<'a> {
         let mut cursor = Some(env);
         while let Some(current) = cursor {
             if let Some(target) = self.with_env_target(current) {
-                if self.has_property_via_js_semantics(target, key) {
+                if self.with_env_has_binding(target, key, task, module)? {
                     return self.get_property_value_on_receiver_via_js_semantics_with_context(
                         target, key, target, task, module,
                     );
@@ -2950,7 +2950,7 @@ impl<'a> Interpreter<'a> {
         let mut cursor = Some(env);
         while let Some(current) = cursor {
             if let Some(target) = self.with_env_target(current) {
-                if self.has_property_via_js_semantics(target, key) {
+                if self.with_env_has_binding(target, key, task, module)? {
                     return self.set_property_value_via_js_semantics(
                         target, key, value, target, task, module,
                     );
@@ -2997,14 +2997,15 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
-    fn activation_eval_env_has(&self, task: &Arc<Task>, key: &str) -> bool {
+    fn activation_eval_env_has(&mut self, task: &Arc<Task>, key: &str) -> bool {
         let Some(env) = self.current_activation_eval_env(task) else {
             return false;
         };
         let mut cursor = Some(env);
         while let Some(current) = cursor {
             if let Some(target) = self.with_env_target(current) {
-                if self.has_property_via_js_semantics(target, key) {
+                let current_module = task.current_module();
+                if let Ok(true) = self.with_env_has_binding(target, key, task, &current_module) {
                     return true;
                 }
             } else if self.resolve_own_property_shape(current, key).is_some() {
@@ -3013,6 +3014,42 @@ impl<'a> Interpreter<'a> {
             cursor = self.direct_eval_outer_env(current);
         }
         false
+    }
+
+    fn with_env_has_binding(
+        &mut self,
+        target: Value,
+        key: &str,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<bool, VmError> {
+        if !self.has_property_via_js_semantics(target, key) {
+            return Ok(false);
+        }
+
+        let Some(unscopables) = self.get_property_value_via_js_semantics_with_context(
+            target,
+            "Symbol.unscopables",
+            task,
+            module,
+        )? else {
+            return Ok(true);
+        };
+
+        if !self.is_js_object_value(unscopables) {
+            return Ok(true);
+        }
+
+        let blocked = self
+            .get_property_value_on_receiver_via_js_semantics_with_context(
+                unscopables,
+                key,
+                unscopables,
+                task,
+                module,
+            )?
+            .is_some_and(|value| value.is_truthy());
+        Ok(!blocked)
     }
 
     fn active_direct_eval_uses_script_global_bindings(&self, task: &Arc<Task>) -> bool {
@@ -13661,11 +13698,15 @@ impl<'a> Interpreter<'a> {
                                     .to_string(),
                             ));
                         }
-                        let key_str = if let Some(s) = checked_string_ptr(args[0]) {
-                            unsafe { &*s.as_ptr() }.data.clone()
-                        } else if let Some(s) = primitive_to_js_string(args[0]) {
-                            s
-                        } else {
+                        let (Some(key_str), _) = (match self.property_key_parts_with_context(
+                            args[0],
+                            "Object.hasProperty",
+                            task,
+                            module,
+                        ) {
+                            Ok(parts) => parts,
+                            Err(error) => return OpcodeResult::Error(error),
+                        }) else {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Cannot convert property key to string".to_string(),
                             ));
@@ -16532,11 +16573,15 @@ impl<'a> Interpreter<'a> {
                                 "Cannot convert undefined or null to object".to_string(),
                             ));
                         }
-                        let key_str = if let Some(s) = checked_string_ptr(args[1]) {
-                            unsafe { &*s.as_ptr() }.data.clone()
-                        } else if let Some(s) = primitive_to_js_string(args[1]) {
-                            s
-                        } else {
+                        let (Some(key_str), _) = (match self.property_key_parts_with_context(
+                            args[1],
+                            "Object.getDestructuringProperty",
+                            task,
+                            module,
+                        ) {
+                            Ok(parts) => parts,
+                            Err(error) => return OpcodeResult::Error(error),
+                        }) else {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Cannot convert property key to string".to_string(),
                             ));
