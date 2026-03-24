@@ -1630,9 +1630,13 @@ impl<'a> Interpreter<'a> {
             }
             // Symbol(desc) — creates a new symbol
             "Symbol" => {
-                // Calling Symbol() as a function creates a new symbol
-                self.construct_value_with_new_target(callable, callable, args, task, module)
-                    .map(Some)
+                // Ordinary Symbol() calls create a new unique symbol value directly.
+                // They do not use constructor/new-target semantics.
+                let description = match args.first().copied().unwrap_or(Value::undefined()) {
+                    value if value.is_null() || value.is_undefined() => String::new(),
+                    value => self.js_function_argument_to_string(value, task, module)?,
+                };
+                self.alloc_symbol_object(&description).map(Some)
             }
             // Error constructors: calling without `new` behaves as `new`
             "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError"
@@ -6341,6 +6345,12 @@ impl<'a> Interpreter<'a> {
     ) -> Result<Value, VmError> {
         if self.is_js_primitive_value(value) {
             return Ok(value);
+        }
+
+        for kind in ["Boolean", "Number", "String", "BigInt", "Symbol"] {
+            if let Some(primitive) = self.boxed_primitive_internal_value(value, kind) {
+                return Ok(primitive);
+            }
         }
 
         match self.well_known_symbol_property_value(
@@ -12058,7 +12068,11 @@ impl<'a> Interpreter<'a> {
             unsafe { Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).unwrap()) };
         obj.set_field(0, key_value).map_err(VmError::RuntimeError)?;
         let obj_ptr = self.gc.lock().allocate(obj);
-        Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) })
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) };
+        if let Some(symbol_ctor) = self.builtin_global_value("Symbol") {
+            self.set_constructed_object_prototype_from_constructor(value, symbol_ctor);
+        }
+        Ok(value)
     }
 
     fn synthesize_data_property_descriptor(
@@ -12510,38 +12524,38 @@ impl<'a> Interpreter<'a> {
                             Ok(None) => {}
                             Err(error) => return OpcodeResult::Error(error),
                         }
-                        let class_constructor = self
-                            .classes
-                            .read()
-                            .get_class_by_name(&name.data)
-                            .and_then(|class| self.constructor_value_for_nominal_type(class.id));
-                        let value = match self.shared_js_global_binding_value(&name.data) {
+                        let value = match self.ensure_builtin_global_value(&name.data, task) {
                             Ok(Some(v)) => Some(v),
-                            Ok(None) => {
-                                if let Some(v) = class_constructor {
-                                    Some(v)
-                                } else {
-                                    match self.ensure_builtin_global_value(&name.data, task) {
-                                        Ok(Some(v)) => Some(v),
-                                        Ok(None) => {
-                                            match self.ensure_builtin_global_value("globalThis", task) {
-                                                Ok(Some(gt)) => self
-                                                    .get_property_value_via_js_semantics_with_context(
-                                                        gt,
-                                                        &name.data,
-                                                        task,
-                                                        module,
-                                                    )
-                                                    .ok()
-                                                    .flatten(),
-                                                Ok(None) => None,
-                                                Err(error) => return OpcodeResult::Error(error),
-                                            }
+                            Ok(None) => match self.shared_js_global_binding_value(&name.data) {
+                                Ok(Some(v)) => Some(v),
+                                Ok(None) => {
+                                    let class_constructor = self
+                                        .classes
+                                        .read()
+                                        .get_class_by_name(&name.data)
+                                        .and_then(|class| {
+                                            self.constructor_value_for_nominal_type(class.id)
+                                        });
+                                    if let Some(v) = class_constructor {
+                                        Some(v)
+                                    } else {
+                                        match self.ensure_builtin_global_value("globalThis", task) {
+                                            Ok(Some(gt)) => self
+                                                .get_property_value_via_js_semantics_with_context(
+                                                    gt,
+                                                    &name.data,
+                                                    task,
+                                                    module,
+                                                )
+                                                .ok()
+                                                .flatten(),
+                                            Ok(None) => None,
+                                            Err(error) => return OpcodeResult::Error(error),
                                         }
-                                        Err(error) => return OpcodeResult::Error(error),
                                     }
                                 }
-                            }
+                                Err(error) => return OpcodeResult::Error(error),
+                            },
                             Err(error) => return OpcodeResult::Error(error),
                         };
                         let Some(value) = value else {
