@@ -7724,18 +7724,7 @@ impl<'a> Lowerer<'a> {
         let default_block = self.alloc_block();
         let merge_block = self.alloc_block();
         let final_val = self.alloc_register(TypeId::new(0));
-        let undefined_reg = self.alloc_register(TypeId::new(0));
-        self.emit(IrInstr::Assign {
-            dest: undefined_reg.clone(),
-            value: IrValue::Constant(IrConstant::Undefined),
-        });
-        let is_undefined = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
-        self.emit(IrInstr::BinaryOp {
-            dest: is_undefined.clone(),
-            op: BinaryOp::StrictEqual,
-            left: current_value.clone(),
-            right: undefined_reg,
-        });
+        let is_undefined = self.emit_is_js_undefined(current_value.clone());
         self.set_terminator(Terminator::Branch {
             cond: is_undefined,
             then_block: default_block,
@@ -7918,18 +7907,21 @@ impl<'a> Lowerer<'a> {
                                 ast::PropertyKey::StringLiteral(lit) => {
                                     self.emit_named_key_register(self.interner.resolve(lit.value))
                                 }
-                                ast::PropertyKey::IntLiteral(lit) => {
-                                    let key_reg =
-                                        self.alloc_register(TypeId::new(STRING_TYPE_ID));
-                                    self.emit(IrInstr::Assign {
-                                        dest: key_reg.clone(),
+                        ast::PropertyKey::IntLiteral(lit) => {
+                            let key_reg =
+                                self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                            self.emit(IrInstr::Assign {
+                                dest: key_reg.clone(),
                                         value: IrValue::Constant(IrConstant::String(
                                             lit.value.to_string(),
                                         )),
                                     });
                                     key_reg
                                 }
-                                ast::PropertyKey::Computed(expr) => self.lower_expr(expr),
+                                ast::PropertyKey::Computed(expr) => {
+                                    let raw_key = self.lower_expr(expr);
+                                    self.emit_property_key_coercion(raw_key)
+                                }
                             };
                             excluded_keys.push(key_reg.clone());
 

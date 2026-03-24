@@ -156,6 +156,8 @@ pub const OBJECT_GET_DESTRUCTURING_PROPERTY: u16 = 0x0049;
 pub const OBJECT_ASSIGN_BINDING_NAME_IF_MISSING: u16 = 0x004A;
 /// Copy enumerable own properties from source into target, excluding specified keys.
 pub const OBJECT_COPY_DATA_PROPERTIES_EXCLUDING: u16 = 0x004B;
+/// Canonicalize a JS property key using ToPropertyKey semantics.
+pub const OBJECT_COERCE_PROPERTY_KEY: u16 = 0x004C;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -694,6 +696,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_GET_DESTRUCTURING_PROPERTY => "Object.getDestructuringProperty",
         OBJECT_ASSIGN_BINDING_NAME_IF_MISSING => "Object.assignBindingNameIfMissing",
         OBJECT_COPY_DATA_PROPERTIES_EXCLUDING => "Object.copyDataPropertiesExcluding",
+        OBJECT_COERCE_PROPERTY_KEY => "Object.coercePropertyKey",
         OBJECT_THROW_REFERENCE_ERROR => "Object.throwReferenceError",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",

@@ -23,6 +23,29 @@ enum ForOfIterableKind {
 }
 
 impl<'a> Lowerer<'a> {
+    pub(super) fn emit_is_js_undefined(&mut self, value: Register) -> Register {
+        let value_any = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: value_any.clone(),
+            value: IrValue::Register(value),
+        });
+
+        let undefined_reg = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: undefined_reg.clone(),
+            value: IrValue::Constant(crate::ir::IrConstant::Undefined),
+        });
+
+        let is_undefined = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: is_undefined.clone(),
+            op: crate::ir::BinaryOp::StrictEqual,
+            left: value_any,
+            right: undefined_reg,
+        });
+        is_undefined
+    }
+
     fn ensure_class_prototype_target(
         &mut self,
         class_value: &Register,
@@ -1269,18 +1292,7 @@ impl<'a> Lowerer<'a> {
         let default_block = self.alloc_block();
         let merge_block = self.alloc_block();
         let final_val = self.alloc_register(TypeId::new(0));
-        let undefined_reg = self.alloc_register(TypeId::new(0));
-        self.emit(IrInstr::Assign {
-            dest: undefined_reg.clone(),
-            value: IrValue::Constant(crate::ir::IrConstant::Undefined),
-        });
-        let is_undefined = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
-        self.emit(IrInstr::BinaryOp {
-            dest: is_undefined.clone(),
-            op: crate::ir::BinaryOp::StrictEqual,
-            left: current_value.clone(),
-            right: undefined_reg,
-        });
+        let is_undefined = self.emit_is_js_undefined(current_value.clone());
         self.set_terminator(Terminator::Branch {
             cond: is_undefined,
             then_block: default_block,
@@ -1335,6 +1347,16 @@ impl<'a> Lowerer<'a> {
             args: vec![object, key],
         });
         loaded
+    }
+
+    pub(super) fn emit_property_key_coercion(&mut self, key: Register) -> Register {
+        let coerced = self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
+        self.emit(IrInstr::NativeCall {
+            dest: Some(coerced.clone()),
+            native_id: crate::compiler::native_id::OBJECT_COERCE_PROPERTY_KEY,
+            args: vec![key],
+        });
+        coerced
     }
 
     pub fn bind_pattern(&mut self, pattern: &ast::Pattern, value_reg: Register) {
@@ -1478,18 +1500,7 @@ impl<'a> Lowerer<'a> {
                         self.current_block = value_block;
                         let elem_reg = self.emit_iterator_value_helper(step_result);
                         let present_block = self.alloc_block();
-                        let undefined_reg = self.alloc_register(TypeId::new(0));
-                        self.emit(IrInstr::Assign {
-                            dest: undefined_reg.clone(),
-                            value: IrValue::Constant(crate::ir::IrConstant::Undefined),
-                        });
-                        let is_undefined = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
-                        self.emit(IrInstr::BinaryOp {
-                            dest: is_undefined.clone(),
-                            op: crate::ir::BinaryOp::StrictEqual,
-                            left: elem_reg.clone(),
-                            right: undefined_reg,
-                        });
+                        let is_undefined = self.emit_is_js_undefined(elem_reg.clone());
                         self.set_terminator(Terminator::Branch {
                             cond: is_undefined,
                             then_block: default_block,

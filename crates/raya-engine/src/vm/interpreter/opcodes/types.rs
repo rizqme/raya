@@ -1272,8 +1272,26 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                     JSView::Arr(ptr) => {
-                        let _arr = unsafe { &*ptr };
-                        if let Some(key_str) = key_str.as_deref() {
+                        let arr = unsafe { &*ptr };
+                        if let Some(index) = array_index {
+                            if let Some(value) = arr.get(index) {
+                                value
+                            } else if let Some(key_str) = key_str.as_deref() {
+                                if let Some(value) = match self
+                                    .get_property_value_via_js_semantics_with_context(
+                                        obj_val, key_str, task, module,
+                                    ) {
+                                    Ok(value) => value,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                } {
+                                    value
+                                } else {
+                                    Value::undefined()
+                                }
+                            } else {
+                                Value::undefined()
+                            }
+                        } else if let Some(key_str) = key_str.as_deref() {
                             if let Some(value) = match self
                                 .get_property_value_via_js_semantics_with_context(
                                     obj_val, key_str, task, module,
@@ -1305,8 +1323,6 @@ impl<'a> Interpreter<'a> {
                             } else {
                                 Value::undefined()
                             }
-                        } else if let Some(index) = array_index {
-                            _arr.get(index).unwrap_or(Value::undefined())
                         } else {
                             Value::undefined()
                         }

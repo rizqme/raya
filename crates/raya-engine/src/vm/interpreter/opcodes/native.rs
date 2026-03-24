@@ -2830,6 +2830,7 @@ impl<'a> Interpreter<'a> {
         let mut cursor = Some(env);
         while let Some(current) = cursor {
             if let Some(target) = self.with_env_target(current) {
+                let target = self.proxy_wrapper_proxy_value(target).unwrap_or(target);
                 if self.with_env_has_binding(target, key, task, module)? {
                     return self.get_property_value_on_receiver_via_js_semantics_with_context(
                         target, key, target, task, module,
@@ -2950,6 +2951,7 @@ impl<'a> Interpreter<'a> {
         let mut cursor = Some(env);
         while let Some(current) = cursor {
             if let Some(target) = self.with_env_target(current) {
+                let target = self.proxy_wrapper_proxy_value(target).unwrap_or(target);
                 if self.with_env_has_binding(target, key, task, module)? {
                     return self.set_property_value_via_js_semantics(
                         target, key, value, target, task, module,
@@ -3023,7 +3025,8 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<bool, VmError> {
-        if !self.has_property_via_js_semantics(target, key) {
+        let target = self.proxy_wrapper_proxy_value(target).unwrap_or(target);
+        if !self.has_property_via_js_semantics_with_context(target, key, task, module)? {
             return Ok(false);
         }
 
@@ -10652,6 +10655,21 @@ impl<'a> Interpreter<'a> {
         false
     }
 
+    pub(in crate::vm::interpreter) fn has_property_via_js_semantics_with_context(
+        &mut self,
+        target: Value,
+        key: &str,
+        caller_task: &Arc<Task>,
+        caller_module: &Module,
+    ) -> Result<bool, VmError> {
+        if let Some(result) =
+            self.try_proxy_has_property_with_invariants(target, key, caller_task, caller_module)?
+        {
+            return Ok(result);
+        }
+        Ok(self.has_property_via_js_semantics(target, key))
+    }
+
     pub(in crate::vm::interpreter) fn get_own_property_value_via_js_semantics_with_context(
         &mut self,
         target: Value,
@@ -13711,7 +13729,12 @@ impl<'a> Interpreter<'a> {
                                 "Cannot convert property key to string".to_string(),
                             ));
                         };
-                        let result = self.has_property_via_js_semantics(obj, &key_str);
+                        let result = match self.has_property_via_js_semantics_with_context(
+                            obj, &key_str, task, module,
+                        ) {
+                            Ok(result) => result,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
                         if let Err(e) = stack.push(Value::bool(result)) {
                             return OpcodeResult::Error(e);
                         }
@@ -16598,6 +16621,30 @@ impl<'a> Interpreter<'a> {
                             Value::undefined()
                         };
                         if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_COERCE_PROPERTY_KEY => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.coercePropertyKey requires a key".to_string(),
+                            ));
+                        }
+                        let (Some(key_str), _) = (match self.property_key_parts_with_context(
+                            args[0],
+                            "Object.coercePropertyKey",
+                            task,
+                            module,
+                        ) {
+                            Ok(parts) => parts,
+                            Err(error) => return OpcodeResult::Error(error),
+                        }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Cannot convert property key to string".to_string(),
+                            ));
+                        };
+                        if let Err(error) = stack.push(self.alloc_string_value(key_str)) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
