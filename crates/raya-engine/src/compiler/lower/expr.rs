@@ -36,6 +36,7 @@ const CAST_KIND_OBJECT: u16 = 0x0040;
 const CAST_KIND_FUNCTION: u16 = 0x0080;
 const DIRECT_EVAL_LEXICAL_MARKER_PREFIX: &str = "__direct_eval_lexical__:";
 const DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX: &str = "__direct_eval_uninitialized__:";
+const DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX: &str = "__direct_eval_outer_snapshot__:";
 
 enum SpreadSourceFields {
     Concrete(Vec<(String, u16)>),
@@ -705,6 +706,31 @@ impl<'a> Lowerer<'a> {
         });
     }
 
+    fn emit_capture_runtime_identifier_assignment_target(&mut self, name: &str) -> Register {
+        let dest = self.alloc_register(UNRESOLVED);
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_CAPTURE_IDENTIFIER_ASSIGNMENT_TARGET,
+            args: vec![name_reg],
+        });
+        dest
+    }
+
+    fn emit_store_captured_runtime_identifier_assignment_target(
+        &mut self,
+        target: Register,
+        name: &str,
+        value: Register,
+    ) {
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_STORE_IDENTIFIER_ASSIGNMENT_TARGET,
+            args: vec![target, name_reg, value],
+        });
+    }
+
     fn emit_js_identifier_delete(&mut self, name: &str, resolved_locally: bool) -> Register {
         let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
         let name_reg = self.emit_direct_eval_name_reg(name);
@@ -763,6 +789,20 @@ impl<'a> Lowerer<'a> {
             || (self.parameter_scope_eval_mode && self.parameter_symbols.contains(&symbol))
     }
 
+    fn direct_eval_binding_is_outer_snapshot(&self, symbol: Symbol) -> bool {
+        self.captures.iter().any(|capture| capture.symbol == symbol)
+            || self
+                .ancestor_variables
+                .as_ref()
+                .is_some_and(|ancestors| ancestors.contains_key(&symbol))
+            || self.module_var_globals.contains_key(&symbol)
+            || self.js_script_lexical_globals.contains_key(&symbol)
+            || self
+                .current_method_env_globals
+                .as_ref()
+                .is_some_and(|bindings| bindings.contains_key(&symbol))
+    }
+
     fn emit_direct_eval_hidden_flag_set(&mut self, env_object: Register, key: String) {
         let key_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
         self.emit(IrInstr::Assign {
@@ -779,6 +819,21 @@ impl<'a> Lowerer<'a> {
             native_id: crate::compiler::native_id::REFLECT_SET,
             args: vec![env_object, key_reg, value_reg],
         });
+    }
+
+    fn emit_direct_eval_hidden_flag_has(&mut self, env_object: Register, key: String) -> Register {
+        let key_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: key_reg.clone(),
+            value: IrValue::Constant(IrConstant::String(key)),
+        });
+        let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: crate::compiler::native_id::OBJECT_HAS_PROPERTY,
+            args: vec![key_reg, env_object],
+        });
+        dest
     }
 
     fn direct_eval_exposes_arguments(&self) -> bool {
@@ -868,6 +923,48 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
+    fn lower_eval_shadowable_identifier<F>(&mut self, name: &str, fallback: F) -> Register
+    where
+        F: FnOnce(&mut Self) -> Register,
+    {
+        let has_binding = self.emit_direct_eval_binding_has(name);
+        let hit_block = self.alloc_block();
+        let miss_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+        let dest = self.alloc_register(UNRESOLVED);
+
+        self.set_terminator(Terminator::Branch {
+            cond: has_binding,
+            then_block: hit_block,
+            else_block: miss_block,
+        });
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(hit_block, "eval.shadow.ident.hit"));
+        self.current_block = hit_block;
+        let value = self.emit_direct_eval_binding_get(name, false);
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(value),
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(miss_block, "eval.shadow.ident.miss"));
+        self.current_block = miss_block;
+        let fallback_value = fallback(self);
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(fallback_value),
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(merge_block, "eval.shadow.ident.merge"));
+        self.current_block = merge_block;
+        dest
+    }
+
     fn lower_direct_eval_environment_object(&mut self) -> Register {
         let env_object = self.alloc_register(UNRESOLVED);
         self.emit(IrInstr::NativeCall {
@@ -916,6 +1013,12 @@ impl<'a> Lowerer<'a> {
                     );
                 }
             }
+            if self.direct_eval_binding_is_outer_snapshot(symbol) {
+                self.emit_direct_eval_hidden_flag_set(
+                    env_object.clone(),
+                    format!("{DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX}{name}"),
+                );
+            }
         }
 
         if self.direct_eval_exposes_arguments() {
@@ -934,6 +1037,49 @@ impl<'a> Lowerer<'a> {
     fn write_back_direct_eval_environment(&mut self, env_object: Register) {
         for symbol in self.collect_visible_direct_eval_symbols() {
             let name = self.interner.resolve(symbol).to_string();
+            if self.direct_eval_binding_is_outer_snapshot(symbol) {
+                let has_marker = self.emit_direct_eval_hidden_flag_has(
+                    env_object.clone(),
+                    format!("{DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX}{name}"),
+                );
+                let store_block = self.alloc_block();
+                let skip_block = self.alloc_block();
+                let merge_block = self.alloc_block();
+                self.set_terminator(Terminator::Branch {
+                    cond: has_marker,
+                    then_block: store_block,
+                    else_block: skip_block,
+                });
+
+                self.current_function_mut().add_block(BasicBlock::with_label(
+                    store_block,
+                    "eval.writeback.outer.store",
+                ));
+                self.current_block = store_block;
+                let key_reg = self.emit_direct_eval_name_reg(&name);
+                let value = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(value.clone()),
+                    native_id: crate::compiler::native_id::REFLECT_GET,
+                    args: vec![env_object.clone(), key_reg],
+                });
+                self.store_identifier_value(symbol, value);
+                self.set_terminator(Terminator::Jump(merge_block));
+
+                self.current_function_mut().add_block(BasicBlock::with_label(
+                    skip_block,
+                    "eval.writeback.outer.skip",
+                ));
+                self.current_block = skip_block;
+                self.set_terminator(Terminator::Jump(merge_block));
+
+                self.current_function_mut().add_block(BasicBlock::with_label(
+                    merge_block,
+                    "eval.writeback.outer.merge",
+                ));
+                self.current_block = merge_block;
+                continue;
+            }
             let key_reg = self.emit_direct_eval_name_reg(&name);
             let value = self.alloc_register(UNRESOLVED);
             self.emit(IrInstr::NativeCall {
@@ -1087,9 +1233,16 @@ impl<'a> Lowerer<'a> {
     }
 
     fn emit_dyn_set_named(&mut self, object: Register, property: &str, value: Register) {
-        // TODO Phase 2 completion: emit JsSetNamed when js_this_binding_compat is true.
         let key = self.emit_named_key_register(property);
-        self.emit(IrInstr::DynSetKeyed { object, key, value });
+        if self.js_this_binding_compat {
+            self.emit(IrInstr::NativeCall {
+                dest: None,
+                native_id: crate::compiler::native_id::REFLECT_SET,
+                args: vec![object, key, value],
+            });
+        } else {
+            self.emit(IrInstr::DynSetKeyed { object, key, value });
+        }
     }
 
     fn emit_reflect_has_named(&mut self, object: Register, property: &str) -> Register {
@@ -1455,6 +1608,39 @@ impl<'a> Lowerer<'a> {
             let is_refcell = self.captures[idx].is_refcell;
             let capture_idx = self.captures[idx].capture_idx;
 
+            if self.allow_unresolved_runtime_fallback && self.js_this_binding_compat {
+                return self.lower_eval_shadowable_identifier(name, |this| {
+                    if is_refcell {
+                        let refcell_ty = TypeId::new(NUMBER_TYPE_ID);
+                        let refcell_reg = this.alloc_register(refcell_ty);
+                        this.emit(IrInstr::LoadCaptured {
+                            dest: refcell_reg.clone(),
+                            index: capture_idx,
+                        });
+                        let dest = this.alloc_register(ty);
+                        this.emit(IrInstr::LoadRefCell {
+                            dest: dest.clone(),
+                            refcell: refcell_reg,
+                        });
+                        if !this.identifier_requires_late_bound_dispatch(ident.name) {
+                            this.propagate_type_projection_to_register(ty, &dest);
+                        }
+                        dest
+                    } else {
+                        let dest = this.alloc_register(ty);
+                        this.emit(IrInstr::LoadCaptured {
+                            dest: dest.clone(),
+                            index: capture_idx,
+                        });
+                        this.propagate_variable_projection_to_register(ident.name, &dest);
+                        if !this.identifier_requires_late_bound_dispatch(ident.name) {
+                            this.propagate_type_projection_to_register(ty, &dest);
+                        }
+                        dest
+                    }
+                });
+            }
+
             if is_refcell {
                 // Load the RefCell pointer from captured
                 let refcell_ty = TypeId::new(NUMBER_TYPE_ID);
@@ -1503,6 +1689,35 @@ impl<'a> Lowerer<'a> {
                     ty: narrowed_ty,
                     is_refcell,
                 });
+
+                if self.allow_unresolved_runtime_fallback && self.js_this_binding_compat {
+                    return self.lower_eval_shadowable_identifier(name, |this| {
+                        if is_refcell {
+                            let refcell_ty = TypeId::new(NUMBER_TYPE_ID);
+                            let refcell_reg = this.alloc_register(refcell_ty);
+                            this.emit(IrInstr::LoadCaptured {
+                                dest: refcell_reg.clone(),
+                                index: capture_idx,
+                            });
+                            let dest = this.alloc_register(narrowed_ty);
+                            this.emit(IrInstr::LoadRefCell {
+                                dest: dest.clone(),
+                                refcell: refcell_reg,
+                            });
+                            this.propagate_type_projection_to_register(narrowed_ty, &dest);
+                            dest
+                        } else {
+                            let dest = this.alloc_register(narrowed_ty);
+                            this.emit(IrInstr::LoadCaptured {
+                                dest: dest.clone(),
+                                index: capture_idx,
+                            });
+                            this.propagate_variable_projection_to_register(ident.name, &dest);
+                            this.propagate_type_projection_to_register(narrowed_ty, &dest);
+                            dest
+                        }
+                    });
+                }
 
                 if is_refcell {
                     // Load the RefCell pointer from captured
@@ -7507,6 +7722,17 @@ impl<'a> Lowerer<'a> {
                         entry.ty = value.ty;
                     }
                 }
+                if let Some((closure_reg, ref captures)) = self.last_closure_info.take() {
+                    if let Some(&(_, capture_idx)) =
+                        captures.iter().find(|(sym, _)| *sym == symbol)
+                    {
+                        self.emit(IrInstr::SetClosureCapture {
+                            closure: closure_reg,
+                            index: capture_idx,
+                            value: value.clone(),
+                        });
+                    }
+                }
             }
             return;
         }
@@ -7608,6 +7834,22 @@ impl<'a> Lowerer<'a> {
         if self.allow_unresolved_runtime_fallback {
             self.emit_unresolved_js_assignment(&name, value);
         }
+    }
+
+    fn identifier_has_static_assignment_target(&self, symbol: Symbol) -> bool {
+        self.local_map.contains_key(&symbol)
+            || self.captures.iter().any(|capture| capture.symbol == symbol)
+            || self
+                .ancestor_variables
+                .as_ref()
+                .is_some_and(|ancestors| ancestors.contains_key(&symbol))
+            || self.shared_script_binding_slot(symbol).is_some()
+            || self
+                .current_method_env_globals
+                .as_ref()
+                .is_some_and(|globals| globals.contains_key(&symbol))
+            || self.direct_eval_binding_enabled(self.interner.resolve(symbol))
+            || self.in_direct_eval_function
     }
 
     fn prepare_destructuring_target(
@@ -7999,6 +8241,42 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_assignment(&mut self, assign: &ast::AssignmentExpression) -> Register {
+        let captured_with_identifier_target = if assign.operator == AssignmentOperator::Assign {
+            match &*assign.left {
+                Expression::Identifier(ident)
+                    if self.with_scope_depth > 0 && self.allow_unresolved_runtime_fallback =>
+                {
+                    Some(
+                        self.emit_capture_runtime_identifier_assignment_target(
+                            self.interner.resolve(ident.name),
+                        ),
+                    )
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let captured_runtime_identifier_target =
+            if assign.operator == AssignmentOperator::Assign {
+                match &*assign.left {
+                    Expression::Identifier(ident)
+                        if self.allow_unresolved_runtime_fallback
+                            && !self.identifier_has_static_assignment_target(ident.name) =>
+                    {
+                        Some(
+                            self.emit_capture_runtime_identifier_assignment_target(
+                                self.interner.resolve(ident.name),
+                            ),
+                        )
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
         // Short-circuiting assignment operators:
         // - ??= assign only when LHS is null
         // - ||= assign only when LHS is falsy
@@ -8475,6 +8753,59 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expression::Identifier(ident) => {
+                if let Some(target) = captured_with_identifier_target {
+                    let hit_block = self.alloc_block();
+                    let miss_block = self.alloc_block();
+                    let merge_block = self.alloc_block();
+
+                    self.set_terminator(Terminator::BranchIfNull {
+                        value: target.clone(),
+                        null_block: miss_block,
+                        not_null_block: hit_block,
+                    });
+
+                    self.current_function_mut().add_block(BasicBlock::with_label(
+                        hit_block,
+                        "assign.ident.with.hit",
+                    ));
+                    self.current_block = hit_block;
+                    self.emit_store_captured_runtime_identifier_assignment_target(
+                        target,
+                        self.interner.resolve(ident.name),
+                        value.clone(),
+                    );
+                    self.set_terminator(Terminator::Jump(merge_block));
+
+                    self.current_function_mut().add_block(BasicBlock::with_label(
+                        miss_block,
+                        "assign.ident.with.miss",
+                    ));
+                    self.current_block = miss_block;
+                    self.store_identifier_value(ident.name, value.clone());
+                    self.set_terminator(Terminator::Jump(merge_block));
+
+                    self.current_function_mut().add_block(BasicBlock::with_label(
+                        merge_block,
+                        "assign.ident.with.merge",
+                    ));
+                    self.current_block = merge_block;
+
+                    if callable_assign_hint {
+                        self.callable_symbol_hints.insert(ident.name);
+                    } else {
+                        self.callable_symbol_hints.remove(&ident.name);
+                        self.bound_method_vars.remove(&ident.name);
+                    }
+                    if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                        if callable_assign_hint {
+                            self.callable_local_hints.insert(local_idx);
+                        } else {
+                            self.callable_local_hints.remove(&local_idx);
+                        }
+                    }
+                    return value;
+                }
+
                 let mut assigned_local_idx: Option<u16> = None;
                 let mut assigned_symbol = false;
                 if let Some(&local_idx) = self.local_map.get(&ident.name) {
@@ -8651,7 +8982,14 @@ impl<'a> Lowerer<'a> {
                 }
 
                 if !assigned_symbol {
-                    if self.in_direct_eval_function {
+                    if let Some(target) = captured_runtime_identifier_target {
+                        self.emit_store_captured_runtime_identifier_assignment_target(
+                            target,
+                            self.interner.resolve(ident.name),
+                            value.clone(),
+                        );
+                        assigned_symbol = true;
+                    } else if self.in_direct_eval_function {
                         self.emit_direct_eval_binding_set(
                             self.interner.resolve(ident.name),
                             value.clone(),

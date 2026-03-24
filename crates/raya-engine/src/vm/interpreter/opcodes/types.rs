@@ -1520,6 +1520,18 @@ impl<'a> Interpreter<'a> {
                         let key_str = key_str
                             .as_deref()
                             .expect("dyn object property access should always have a key string");
+                        if self.is_ambient_math_constant_target(actual_obj, key_str) {
+                            if self.current_js_code_is_strict(task, module) {
+                                return OpcodeResult::Error(VmError::TypeError(format!(
+                                    "Cannot assign to non-writable property '{}'",
+                                    key_str
+                                )));
+                            }
+                            if let Err(e) = stack.push(value) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
+                        }
                         if self.is_runtime_global_object(actual_obj) {
                             match self.set_property_value_via_js_semantics(
                                 actual_obj, key_str, value, actual_obj, task, module,
@@ -1592,16 +1604,28 @@ impl<'a> Interpreter<'a> {
                             .is_some()
                             && !self.is_field_writable(actual_obj, &key_str)
                         {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot set property '{}' which has only a getter",
-                                key_str
-                            )));
+                            if self.current_js_code_is_strict(task, module) {
+                                return OpcodeResult::Error(VmError::TypeError(format!(
+                                    "Cannot set property '{}' which has only a getter",
+                                    key_str
+                                )));
+                            }
+                            if let Err(e) = stack.push(value) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
                         }
                         if !self.is_field_writable(actual_obj, &key_str) {
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot assign to non-writable property '{}'",
-                                key_str
-                            )));
+                            if self.current_js_code_is_strict(task, module) {
+                                return OpcodeResult::Error(VmError::TypeError(format!(
+                                    "Cannot assign to non-writable property '{}'",
+                                    key_str
+                                )));
+                            }
+                            if let Err(e) = stack.push(value) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
                         }
                         if let Some(index) = field_index {
                             let _ = obj.set_field(index, value);

@@ -53,6 +53,7 @@ const DIRECT_EVAL_OUTER_ENV_KEY: &str = "__direct_eval_outer_env__";
 const DIRECT_EVAL_COMPLETION_KEY: &str = "__direct_eval_completion__";
 const DIRECT_EVAL_LEXICAL_MARKER_PREFIX: &str = "__direct_eval_lexical__:";
 const DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX: &str = "__direct_eval_uninitialized__:";
+const DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX: &str = "__direct_eval_outer_snapshot__:";
 const DIRECT_EVAL_UNINITIALIZED_PREFIX: &str = "__direct_eval_uninitialized__:";
 const WITH_ENV_TARGET_KEY: &str = "__with_env_target__";
 const SUPER_THIS_INITIALIZED_KEY: &str = "__super_this_initialized__";
@@ -336,6 +337,10 @@ fn direct_eval_uninitialized_marker_key(name: &str) -> String {
     format!("{DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX}{name}")
 }
 
+fn direct_eval_outer_snapshot_marker_key(name: &str) -> String {
+    format!("{DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX}{name}")
+}
+
 impl From<DirectEvalDeclarationCollector<'_>> for DirectEvalDeclarations {
     fn from(collector: DirectEvalDeclarationCollector<'_>) -> Self {
         Self {
@@ -386,6 +391,7 @@ enum JsOwnPropertySource {
     ArgumentsExotic,
     ArrayExotic,
     TypedArrayExotic,
+    BuiltinObjectConstant,
     Ordinary,
     Metadata,
     BuiltinGlobal,
@@ -2611,6 +2617,38 @@ impl<'a> Interpreter<'a> {
             .map(|descriptor| descriptor.value)
     }
 
+    fn builtin_object_constant_descriptor(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<AmbientGlobalDescriptor> {
+        let field_value = self.get_own_field_value_by_name(target, key)?;
+        let is_math_object = self.is_ambient_math_constant_target(target, key);
+        if is_math_object && matches!(key, "PI" | "E") {
+            return Some(AmbientGlobalDescriptor {
+                value: field_value,
+                writable: false,
+                configurable: false,
+                enumerable: false,
+            });
+        }
+        None
+    }
+
+    pub(in crate::vm::interpreter::opcodes) fn is_ambient_math_constant_target(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> bool {
+        let target = self.public_property_target(self.proxy_wrapper_proxy_value(target).unwrap_or(target));
+        let ambient_math = self
+            .ambient_global_value_sync("Math")
+            .map(|math| self.public_property_target(self.proxy_wrapper_proxy_value(math).unwrap_or(math)));
+        matches!(key, "PI" | "E")
+            && (self.builtin_global_name_for_value(target).as_deref() == Some("Math")
+                || ambient_math.is_some_and(|math| math.raw() == target.raw()))
+    }
+
     pub(in crate::vm::interpreter) fn set_builtin_global_property(
         &self,
         target: Value,
@@ -2818,6 +2856,89 @@ impl<'a> Interpreter<'a> {
             })
     }
 
+    fn capture_activation_identifier_assignment_target(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        key: &str,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(env) = self.current_activation_eval_env(task) else {
+            return Ok(None);
+        };
+        let mut cursor = Some(env);
+        while let Some(current) = cursor {
+            if let Some(target) = self.with_env_target(current) {
+                let target = self.proxy_wrapper_proxy_value(target).unwrap_or(target);
+                if self.with_env_has_binding(target, key, task, module)? {
+                    return Ok(Some(target));
+                }
+            } else if self.resolve_own_property_shape(current, key).is_some() {
+                return Ok(None);
+            }
+            cursor = self.direct_eval_outer_env(current);
+        }
+        Ok(None)
+    }
+
+    fn assign_ambient_identifier_value(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        key: &str,
+        value: Value,
+    ) -> Result<(), VmError> {
+        let did_set_activation = self.activation_eval_env_set(task, module, key, value)?;
+        if did_set_activation {
+            return Ok(());
+        }
+
+        let strict = self.current_function_is_strict_js(task, module);
+        if self.set_shared_js_global_binding_value(key, value, task, module)? {
+            return Ok(());
+        }
+
+        let has_ambient_binding = self.shared_js_global_binding(key).is_some()
+            || self
+                .builtin_global_value("globalThis")
+                .is_some_and(|global_this| self.has_property_via_js_semantics(global_this, key));
+
+        if strict && !has_ambient_binding {
+            return Err(self.raise_task_builtin_error(
+                task,
+                "ReferenceError",
+                format!("{key} is not defined"),
+            ));
+        }
+
+        self.bind_script_global_property(key, value, true, task, module)
+    }
+
+    fn store_identifier_assignment_target(
+        &mut self,
+        task: &Arc<Task>,
+        module: &Module,
+        target: Option<Value>,
+        key: &str,
+        value: Value,
+    ) -> Result<(), VmError> {
+        if let Some(target) = target {
+            let strict = self.current_function_is_strict_js(task, module);
+            match self.set_property_value_via_js_semantics(
+                target, key, value, target, task, module,
+            )? {
+                true => Ok(()),
+                false if strict => Err(self.raise_task_builtin_error(
+                    task,
+                    "TypeError",
+                    format!("Cannot assign to non-writable property '{key}'"),
+                )),
+                false => Ok(()),
+            }
+        } else {
+            self.assign_ambient_identifier_value(task, module, key, value)
+        }
+    }
+
     fn activation_eval_env_get(
         &mut self,
         task: &Arc<Task>,
@@ -2885,6 +3006,11 @@ impl<'a> Interpreter<'a> {
             .is_some_and(|value| value.is_truthy())
     }
 
+    fn direct_eval_binding_is_outer_snapshot(&self, env: Value, key: &str) -> bool {
+        self.get_own_js_property_value_by_name(env, &direct_eval_outer_snapshot_marker_key(key))
+            .is_some_and(|value| value.is_truthy())
+    }
+
     fn mark_direct_eval_binding_lexical(
         &self,
         env: Value,
@@ -2923,6 +3049,22 @@ impl<'a> Interpreter<'a> {
             false,
             true,
         )
+    }
+
+    fn clear_direct_eval_binding_outer_snapshot(
+        &mut self,
+        env: Value,
+        key: &str,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<(), VmError> {
+        let _ = self.delete_property_from_target(
+            env,
+            self.alloc_string_value(&direct_eval_outer_snapshot_marker_key(key)),
+            task,
+            module,
+        )?;
+        Ok(())
     }
 
     fn direct_eval_chain_has_lexical_binding(&self, env: Value, key: &str) -> bool {
@@ -2974,6 +3116,7 @@ impl<'a> Interpreter<'a> {
     fn activation_eval_env_create_mutable_binding(
         &mut self,
         task: &Arc<Task>,
+        module: &Module,
         key: &str,
         value: Value,
     ) -> Result<bool, VmError> {
@@ -2981,6 +3124,12 @@ impl<'a> Interpreter<'a> {
             return Ok(false);
         };
         if self.resolve_own_property_shape(env, key).is_some() {
+            if self.direct_eval_binding_is_outer_snapshot(env, key) {
+                let _ = self.set_property_value_via_js_semantics(
+                    env, key, value, env, task, module,
+                )?;
+                self.clear_direct_eval_binding_outer_snapshot(env, key, task, module)?;
+            }
             return Ok(true);
         }
         self.define_data_property_on_target(env, key, value, true, true, true)?;
@@ -3110,6 +3259,7 @@ impl<'a> Interpreter<'a> {
                 || key == DIRECT_EVAL_COMPLETION_KEY
                 || key.starts_with(DIRECT_EVAL_LEXICAL_MARKER_PREFIX)
                 || key.starts_with(DIRECT_EVAL_UNINITIALIZED_MARKER_PREFIX)
+                || key.starts_with(DIRECT_EVAL_OUTER_SNAPSHOT_MARKER_PREFIX)
             {
                 continue;
             }
@@ -3221,11 +3371,25 @@ impl<'a> Interpreter<'a> {
         }
         let outer_has_binding = self.direct_eval_chain_outer_has_binding(env, key);
         let local_has_binding = self.resolve_own_property_shape(env, key).is_some();
-        if !local_has_binding
+        if local_has_binding && self.direct_eval_binding_is_outer_snapshot(env, key) {
+            let _ = self.set_property_value_via_js_semantics(
+                env,
+                key,
+                Value::undefined(),
+                env,
+                task,
+                module,
+            )?;
+            self.clear_direct_eval_binding_outer_snapshot(env, key, task, module)?;
+        } else if !local_has_binding
             && !(self.active_direct_eval_persist_caller_declarations(task) && outer_has_binding)
         {
-            let _ =
-                self.activation_eval_env_create_mutable_binding(task, key, Value::undefined())?;
+            let _ = self.activation_eval_env_create_mutable_binding(
+                task,
+                module,
+                key,
+                Value::undefined(),
+            )?;
         }
         if self.active_direct_eval_uses_script_global_bindings(task) {
             self.bind_direct_eval_global_var(key, task, module)?;
@@ -5487,7 +5651,8 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
     ) -> Result<Option<Value>, VmError> {
         let current = self.builtin_global_value(name);
-        if current.is_some_and(|value| !value.is_null() && !value.is_undefined()) {
+        if let Some(value) = current.filter(|value| !value.is_null() && !value.is_undefined()) {
+            self.finalize_materialized_builtin_object(name, value)?;
             return Ok(current);
         }
 
@@ -5498,7 +5663,8 @@ impl<'a> Interpreter<'a> {
         let refreshed = self
             .builtin_global_value(name)
             .filter(|value| !value.is_null() && !value.is_undefined());
-        if refreshed.is_some() {
+        if let Some(value) = refreshed {
+            self.finalize_materialized_builtin_object(name, value)?;
             Ok(refreshed)
         } else {
             self.materialize_missing_builtin_constant(name, caller_task)
@@ -5545,6 +5711,8 @@ impl<'a> Interpreter<'a> {
             _ => return Ok(None),
         };
 
+        self.finalize_materialized_builtin_object(name, value)?;
+
         if name != "globalThis" {
             if let Some(global_this) = self
                 .builtin_global_value("globalThis")
@@ -5560,6 +5728,35 @@ impl<'a> Interpreter<'a> {
         }
 
         Ok(Some(value))
+    }
+
+    fn finalize_materialized_builtin_object(
+        &self,
+        name: &str,
+        value: Value,
+    ) -> Result<(), VmError> {
+        match name {
+            "Math" => {
+                for key in ["PI", "E"] {
+                    if self.own_js_property_flags(value, key) == Some((false, false, false)) {
+                        continue;
+                    }
+                    let Some(constant) = self.get_own_field_value_by_name(value, key) else {
+                        continue;
+                    };
+                    self.define_data_property_on_target(
+                        value,
+                        key,
+                        constant,
+                        false,
+                        false,
+                        false,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn shared_js_global_binding(
@@ -10184,6 +10381,15 @@ impl<'a> Interpreter<'a> {
             }
         }
 
+        if let Some(descriptor) = self.builtin_object_constant_descriptor(target, key) {
+            return Some(JsOwnPropertyShape::data(
+                JsOwnPropertySource::BuiltinObjectConstant,
+                descriptor.writable,
+                descriptor.configurable,
+                descriptor.enumerable,
+            ));
+        }
+
         if let Some(property) = self.ordinary_own_property(target, key) {
             return Some(match property {
                 OrdinaryOwnProperty::Data {
@@ -10334,6 +10540,18 @@ impl<'a> Interpreter<'a> {
             }
         }
 
+        if let Some(descriptor) = self.builtin_object_constant_descriptor(target, key) {
+            return Ok(Some(JsOwnPropertyRecord::data(
+                JsOwnPropertyShape::data(
+                    JsOwnPropertySource::BuiltinObjectConstant,
+                    descriptor.writable,
+                    descriptor.configurable,
+                    descriptor.enumerable,
+                ),
+                descriptor.value,
+            )));
+        }
+
         let Some(shape) = self.resolve_own_property_shape(target, key) else {
             return Ok(None);
         };
@@ -10386,6 +10604,14 @@ impl<'a> Interpreter<'a> {
                 JsOwnPropertyRecord::data(
                     shape,
                     self.builtin_global_property_value(target, key)
+                        .unwrap_or(Value::undefined()),
+                )
+            }
+            (JsOwnPropertySource::BuiltinObjectConstant, JsOwnPropertyKind::Data) => {
+                JsOwnPropertyRecord::data(
+                    shape,
+                    self.builtin_object_constant_descriptor(target, key)
+                        .map(|descriptor| descriptor.value)
                         .unwrap_or(Value::undefined()),
                 )
             }
@@ -10508,7 +10734,11 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn own_js_property_flags(&self, target: Value, key: &str) -> Option<(bool, bool, bool)> {
+    pub(in crate::vm::interpreter::opcodes) fn own_js_property_flags(
+        &self,
+        target: Value,
+        key: &str,
+    ) -> Option<(bool, bool, bool)> {
         self.resolve_own_property_shape(target, key)
             .map(|shape| (shape.writable, shape.configurable, shape.enumerable))
     }
@@ -13408,7 +13638,10 @@ impl<'a> Interpreter<'a> {
                             && outer_has_binding;
                         if !use_outer_binding {
                             if let Err(error) = self.activation_eval_env_create_mutable_binding(
-                                task, &name.data, args[1],
+                                task,
+                                module,
+                                &name.data,
+                                args[1],
                             ) {
                                 return OpcodeResult::Error(error);
                             }
@@ -13660,43 +13893,78 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
                         let name = unsafe { &*name_ptr.as_ptr() };
-                        let did_set_activation =
-                            match self.activation_eval_env_set(task, module, &name.data, args[1]) {
-                                Ok(value) => value,
-                                Err(error) => return OpcodeResult::Error(error),
-                            };
-                        if !did_set_activation {
-                            let strict = self.current_function_is_strict_js(task, module);
-                            if let Ok(true) = self.set_shared_js_global_binding_value(
-                                &name.data, args[1], task, module,
-                            ) {
-                                if let Err(error) = stack.push(args[1]) {
-                                    return OpcodeResult::Error(error);
-                                }
-                                return OpcodeResult::Continue;
-                            }
-                            let has_ambient_binding = self
-                                .shared_js_global_binding(&name.data)
-                                .is_some()
-                                || self.builtin_global_value("globalThis").is_some_and(
-                                    |global_this| {
-                                        self.has_property_via_js_semantics(global_this, &name.data)
-                                    },
-                                );
-                            if strict && !has_ambient_binding {
-                                return OpcodeResult::Error(self.raise_task_builtin_error(
-                                    task,
-                                    "ReferenceError",
-                                    format!("{} is not defined", name.data),
-                                ));
-                            }
-                            if let Err(error) = self.bind_script_global_property(
-                                &name.data, args[1], false, task, module,
-                            ) {
-                                return OpcodeResult::Error(error);
-                            }
+                        if let Err(error) =
+                            self.assign_ambient_identifier_value(task, module, &name.data, args[1])
+                        {
+                            return OpcodeResult::Error(error);
                         }
                         if let Err(error) = stack.push(args[1]) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id
+                        == crate::compiler::native_id::OBJECT_CAPTURE_IDENTIFIER_ASSIGNMENT_TARGET =>
+                    {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "captureIdentifierAssignmentTarget expects a string name"
+                                    .to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "captureIdentifierAssignmentTarget expects a string name"
+                                    .to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        let target = match self.capture_activation_identifier_assignment_target(
+                            task,
+                            module,
+                            &name.data,
+                        ) {
+                            Ok(target) => target.unwrap_or(Value::null()),
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(target) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id
+                        == crate::compiler::native_id::OBJECT_STORE_IDENTIFIER_ASSIGNMENT_TARGET =>
+                    {
+                        if args.len() != 3 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "storeIdentifierAssignmentTarget expects target, name, and value"
+                                    .to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[1].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "storeIdentifierAssignmentTarget expects a string name"
+                                    .to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        let target = if args[0].is_null() || args[0].is_undefined() {
+                            None
+                        } else {
+                            Some(args[0])
+                        };
+                        if let Err(error) = self.store_identifier_assignment_target(
+                            task,
+                            module,
+                            target,
+                            &name.data,
+                            args[2],
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(args[2]) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue

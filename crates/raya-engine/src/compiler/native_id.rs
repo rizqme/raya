@@ -158,6 +158,10 @@ pub const OBJECT_ASSIGN_BINDING_NAME_IF_MISSING: u16 = 0x004A;
 pub const OBJECT_COPY_DATA_PROPERTIES_EXCLUDING: u16 = 0x004B;
 /// Canonicalize a JS property key using ToPropertyKey semantics.
 pub const OBJECT_COERCE_PROPERTY_KEY: u16 = 0x004C;
+/// Capture the current dynamic identifier assignment target before RHS evaluation.
+pub const OBJECT_CAPTURE_IDENTIFIER_ASSIGNMENT_TARGET: u16 = 0x004D;
+/// Store through a previously captured dynamic identifier assignment target.
+pub const OBJECT_STORE_IDENTIFIER_ASSIGNMENT_TARGET: u16 = 0x004E;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -697,6 +701,8 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_ASSIGN_BINDING_NAME_IF_MISSING => "Object.assignBindingNameIfMissing",
         OBJECT_COPY_DATA_PROPERTIES_EXCLUDING => "Object.copyDataPropertiesExcluding",
         OBJECT_COERCE_PROPERTY_KEY => "Object.coercePropertyKey",
+        OBJECT_CAPTURE_IDENTIFIER_ASSIGNMENT_TARGET => "Object.captureIdentifierAssignmentTarget",
+        OBJECT_STORE_IDENTIFIER_ASSIGNMENT_TARGET => "Object.storeIdentifierAssignmentTarget",
         OBJECT_THROW_REFERENCE_ERROR => "Object.throwReferenceError",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",

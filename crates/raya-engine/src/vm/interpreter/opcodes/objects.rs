@@ -568,6 +568,9 @@ impl<'a> Interpreter<'a> {
     }
 
     pub(crate) fn is_field_writable(&self, obj_val: Value, field_name: &str) -> bool {
+        if let Some((writable, _, _)) = self.own_js_property_flags(obj_val, field_name) {
+            return writable;
+        }
         if let Some(property) = self.ordinary_own_property(obj_val, field_name) {
             return match property {
                 super::native::OrdinaryOwnProperty::Data { writable, .. } => writable,
