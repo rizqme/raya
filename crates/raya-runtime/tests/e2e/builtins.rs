@@ -263,6 +263,28 @@ fn test_node_compat_class_private_generator_extraction_remains_callable() {
 }
 
 #[test]
+fn test_node_compat_static_computed_method_is_visible_on_class_constructor() {
+    expect_string_runtime_node_compat(
+        r#"
+        class C { static ["b"](){ return 2; } }
+        return JSON.stringify([typeof C.b, C.b(), Object.getOwnPropertyNames(C).includes("b")]);
+    "#,
+        r#"["function",2,true]"#,
+    );
+}
+
+#[test]
+fn test_node_compat_static_computed_getter_reads_through_class_constructor() {
+    expect_string_runtime_node_compat(
+        r#"
+        class C { static x = 3; static get ["g"](){ return this.x; } }
+        return JSON.stringify([C.g, Object.getOwnPropertyNames(C).includes("g")]);
+    "#,
+        r#"[3,true]"#,
+    );
+}
+
+#[test]
 fn test_node_compat_static_getter_can_read_static_field_via_this() {
     expect_i32_runtime_node_compat(
         r#"
@@ -3579,7 +3601,6 @@ fn test_node_compat_reflect_set_respects_inherited_non_writable_data_property() 
     );
 }
 
-#[test]
 fn test_node_compat_top_level_strict_functions_inherit_arguments_poisoning() {
     expect_string_runtime_node_compat(
         r#"

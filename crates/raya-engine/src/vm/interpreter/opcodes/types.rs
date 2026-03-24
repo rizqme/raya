@@ -1,7 +1,7 @@
 //! Type operation opcode handlers: nominal checks/casts, generic casts, dynamic keyed access,
 //! and static/runtime type helpers.
 
-use super::native::{checked_callable_ptr, checked_object_ptr};
+use super::native::{checked_callable_ptr, checked_object_ptr, js_number_to_string};
 use crate::compiler::native_id;
 use crate::compiler::type_registry::TypeRegistry;
 use crate::compiler::{Module, Opcode};
@@ -298,25 +298,6 @@ pub(in crate::vm::interpreter) fn dyn_key_parts(
         Some(number as usize)
     }
 
-    fn js_number_property_key(number: f64) -> String {
-        if number == 0.0 {
-            return "0".to_string();
-        }
-        if number.is_nan() {
-            return "NaN".to_string();
-        }
-        if number == f64::INFINITY {
-            return "Infinity".to_string();
-        }
-        if number == f64::NEG_INFINITY {
-            return "-Infinity".to_string();
-        }
-        if number.fract() == 0.0 {
-            return format!("{number:.0}");
-        }
-        number.to_string()
-    }
-
     if key_val.is_undefined() {
         return Ok((Some("undefined".to_string()), None));
     }
@@ -335,7 +316,7 @@ pub(in crate::vm::interpreter) fn dyn_key_parts(
             Ok((Some(index.to_string()), None))
         }
         JSView::Number(number) => {
-            let key = js_number_property_key(number);
+            let key = js_number_to_string(number);
             let index = parse_array_index_number(number);
             Ok((Some(key), index))
         }
@@ -567,18 +548,11 @@ impl<'a> Interpreter<'a> {
             )));
         }
 
-        let Some(symbol_key) = self.get_field_value_by_name(key_val, "key") else {
+        let Some(key) = self.symbol_property_key_name(key_val) else {
             return Err(VmError::TypeError(format!(
                 "{op_name} symbol key is missing its internal string"
             )));
         };
-        let Some(ptr) = (unsafe { symbol_key.as_ptr::<RayaString>() }) else {
-            return Err(VmError::TypeError(format!(
-                "{op_name} symbol key must lower to a string"
-            )));
-        };
-
-        let key = unsafe { &*ptr.as_ptr() }.data.clone();
         Ok((Some(key), None))
     }
 

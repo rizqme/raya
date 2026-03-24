@@ -112,6 +112,8 @@ impl JsPropertyDescriptorRecord {
     }
 }
 
+const SYMBOL_KEY_PREFIX: &str = "@@sym:";
+
 #[derive(Default)]
 struct OrderedOwnKeyCollector {
     indices: BTreeSet<u32>,
@@ -647,6 +649,108 @@ impl<'a> Interpreter<'a> {
     }
 }
 
+pub(in crate::vm::interpreter) fn js_number_to_string(value: f64) -> String {
+    fn trim_decimal_suffix(mut rendered: String) -> String {
+        if rendered.contains('.') {
+            while rendered.ends_with('0') {
+                rendered.pop();
+            }
+            if rendered.ends_with('.') {
+                rendered.pop();
+            }
+        }
+        if rendered == "-0" {
+            "0".to_string()
+        } else {
+            rendered
+        }
+    }
+
+    fn expand_scientific_notation(rendered: &str) -> String {
+        let (sign, body) = if let Some(rest) = rendered.strip_prefix('-') {
+            ("-", rest)
+        } else {
+            ("", rendered)
+        };
+        let Some((mantissa, exponent)) = body.split_once('e') else {
+            return rendered.to_string();
+        };
+        let exponent: i32 = exponent.parse().unwrap_or(0);
+        let point_pos = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
+        let digits = mantissa.replace('.', "");
+        let new_point = point_pos + exponent;
+
+        let mut expanded = if new_point <= 0 {
+            format!("0.{}{}", "0".repeat((-new_point) as usize), digits)
+        } else if new_point >= digits.len() as i32 {
+            format!("{}{}", digits, "0".repeat((new_point as usize) - digits.len()))
+        } else {
+            let split = new_point as usize;
+            format!("{}.{}", &digits[..split], &digits[split..])
+        };
+
+        if let Some(dot_idx) = expanded.find('.') {
+            while expanded.ends_with('0') {
+                expanded.pop();
+            }
+            if expanded.len() == dot_idx + 1 {
+                expanded.pop();
+            }
+        }
+
+        let expanded = trim_decimal_suffix(expanded);
+        if expanded == "0" {
+            expanded
+        } else {
+            format!("{sign}{expanded}")
+        }
+    }
+
+    if value == 0.0 {
+        return "0".to_string();
+    }
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if value == f64::INFINITY {
+        return "Infinity".to_string();
+    }
+    if value == f64::NEG_INFINITY {
+        return "-Infinity".to_string();
+    }
+
+    let abs = value.abs();
+    let mut rendered = if abs >= 1e21 || abs < 1e-6 {
+        let mut scientific = format!("{:e}", value);
+        if let Some(exp_idx) = scientific.find('e') {
+            let mantissa = &scientific[..exp_idx];
+            let exponent = &scientific[exp_idx + 1..];
+            let mantissa = mantissa.trim_end_matches('0').trim_end_matches('.');
+            let exponent = if exponent.starts_with('-') || exponent.starts_with('+') {
+                exponent.to_string()
+            } else {
+                format!("+{exponent}")
+            };
+            scientific = format!("{mantissa}e{exponent}");
+        }
+        scientific
+    } else {
+        let rendered = ryu::Buffer::new().format_finite(value).to_string();
+        if rendered.contains('e') {
+            expand_scientific_notation(&rendered)
+        } else {
+            trim_decimal_suffix(rendered)
+        }
+    };
+    if let Some(exp_idx) = rendered.find('e') {
+        let exponent = &rendered[exp_idx + 1..];
+        if !exponent.starts_with('+') && !exponent.starts_with('-') {
+            rendered.insert(exp_idx + 1, '+');
+        }
+    }
+    rendered
+}
+
 fn primitive_to_js_string(value: Value) -> Option<String> {
     if value.is_undefined() {
         return Some("undefined".to_string());
@@ -661,7 +765,7 @@ fn primitive_to_js_string(value: Value) -> Option<String> {
         return Some(value.to_string());
     }
     if let Some(value) = value.as_f64() {
-        return Some(value.to_string());
+        return Some(js_number_to_string(value));
     }
     let string_ptr = checked_string_ptr(value)?;
     Some(unsafe { &*string_ptr.as_ptr() }.data.clone())
@@ -1841,7 +1945,7 @@ impl<'a> Interpreter<'a> {
 
     fn js_value_supports_extensibility(&self, value: Value) -> bool {
         if checked_array_ptr(value).is_some() || checked_object_ptr(value).is_some() {
-            return self.nominal_class_name_for_value(value).as_deref() != Some("Symbol");
+            return true;
         }
         self.callable_function_info(value).is_some()
     }
@@ -1891,11 +1995,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn has_own_js_property(&self, target: Value, key: &str) -> bool {
-        self.ordinary_own_property(target, key).is_some()
-            || self.get_descriptor_metadata(target, key).is_some()
-            || self
-                .callable_virtual_property_descriptor(target, key)
-                .is_some()
+        self.resolve_own_property_shape(target, key).is_some()
     }
 
     fn raw_type_handle_id(value: Value) -> Option<crate::vm::object::TypeHandleId> {
@@ -1908,6 +2008,23 @@ impl<'a> Interpreter<'a> {
         }
         let handle_ptr = unsafe { value.as_ptr::<TypeHandle>() }?;
         Some(unsafe { (*handle_ptr.as_ptr()).handle_id })
+    }
+
+    fn public_property_target(&self, value: Value) -> Value {
+        let Some(obj_ptr) = checked_object_ptr(value) else {
+            return value;
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let handle_key = self.intern_prop_key("__raya_type_handle__");
+        let Some(handle_value) = obj.dyn_props().and_then(|dp| dp.get(handle_key).map(|p| p.value))
+        else {
+            return value;
+        };
+        if Self::raw_type_handle_id(handle_value).is_some() {
+            handle_value
+        } else {
+            value
+        }
     }
 
     fn type_handle_nominal_id(&self, value: Value) -> Option<crate::vm::object::NominalTypeId> {
@@ -3037,6 +3154,7 @@ impl<'a> Interpreter<'a> {
         !matches!(
             native_id,
             crate::compiler::native_id::OBJECT_DEFINE_PROPERTY
+                | crate::compiler::native_id::OBJECT_DEFINE_CLASS_PROPERTY
                 | crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR
                 | crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES
                 | crate::compiler::native_id::OBJECT_DELETE_PROPERTY
@@ -3064,6 +3182,9 @@ impl<'a> Interpreter<'a> {
                 | crate::compiler::native_id::CRYPTO_HKDF
                 | crate::compiler::native_id::CRYPTO_PBKDF2
         )
+            && !(crate::compiler::native_id::REFLECT_DEFINE_METADATA
+                ..=crate::compiler::native_id::REFLECT_CLONE)
+                .contains(&native_id)
     }
 
     pub(in crate::vm::interpreter) fn native_callable_uses_builtin_this_coercion(
@@ -7905,6 +8026,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn get_own_js_property_value_by_name(&self, target: Value, key: &str) -> Option<Value> {
+        let target = self.public_property_target(target);
         if let Some(kind) = self.exotic_adapter_kind(target) {
             match kind {
                 JsExoticAdapterKind::Arguments => {
@@ -7959,7 +8081,8 @@ impl<'a> Interpreter<'a> {
 
         match self.ordinary_own_property(target, key) {
             Some(OrdinaryOwnProperty::Data { value, .. }) => Some(value),
-            Some(OrdinaryOwnProperty::Accessor { .. }) | None => None,
+            Some(OrdinaryOwnProperty::Accessor { .. }) => None,
+            None => self.metadata_data_property_value(target, key),
         }
     }
 
@@ -8037,12 +8160,44 @@ impl<'a> Interpreter<'a> {
             .is_some_and(|name| name == "Symbol")
     }
 
+    pub(in crate::vm::interpreter) fn symbol_property_key_name(
+        &self,
+        symbol_value: Value,
+    ) -> Option<String> {
+        if !self.is_symbol_value(symbol_value) {
+            return None;
+        }
+        let description = self
+            .get_field_value_by_name(symbol_value, "key")
+            .and_then(|value| unsafe { value.as_ptr::<RayaString>() })
+            .map(|ptr| unsafe { &*ptr.as_ptr() }.data.clone())
+            .unwrap_or_default();
+        if description.starts_with("Symbol.") {
+            Some(description)
+        } else {
+            Some(format!("{SYMBOL_KEY_PREFIX}{:016x}", symbol_value.raw()))
+        }
+    }
+
+    fn symbol_value_from_property_key_name(&self, key: &str) -> Option<Value> {
+        if let Some(raw_hex) = key.strip_prefix(SYMBOL_KEY_PREFIX) {
+            let raw = u64::from_str_radix(raw_hex, 16).ok()?;
+            let value = unsafe { Value::from_raw(raw) };
+            return self.is_symbol_value(value).then_some(value);
+        }
+
+        let static_name = key.strip_prefix("Symbol.")?;
+        let symbol_ctor = self.builtin_global_value("Symbol")?;
+        self.get_field_value_by_name(symbol_ctor, static_name)
+            .filter(|value| self.is_symbol_value(*value))
+    }
+
     fn own_exotic_state_value(&self, target: Value, key: &str) -> Option<Value> {
         self.get_own_js_property_value_by_name(target, key)
     }
 
     fn is_public_string_property_name(name: &str) -> bool {
-        !name.starts_with("Symbol.")
+        !name.starts_with("Symbol.") && !name.starts_with(SYMBOL_KEY_PREFIX)
     }
 
     fn invoke_proxy_property_trap_with_context(
@@ -8940,6 +9095,9 @@ impl<'a> Interpreter<'a> {
         let method_slot = obj.nominal_type_id_usize().and_then(|ntid| {
             let classes = self.classes.read();
             if let Some(class) = classes.get_class(ntid) {
+                if class.runtime_instance_publication {
+                    return None;
+                }
                 let has_own_accessor = class.prototype_members.iter().any(|member| {
                     member.name == key
                         && matches!(
@@ -8979,6 +9137,20 @@ impl<'a> Interpreter<'a> {
                 })
         })?;
         self.bound_method_value_for_slot(target, method_slot).ok()
+    }
+
+    fn nominal_instance_uses_runtime_publication(&self, target: Value) -> bool {
+        let Some(obj_ptr) = checked_object_ptr(target) else {
+            return false;
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let Some(ntid) = obj.nominal_type_id_usize() else {
+            return false;
+        };
+        let classes = self.classes.read();
+        classes
+            .get_class(ntid)
+            .is_some_and(|class| class.runtime_instance_publication)
     }
 
     fn own_builtin_native_method_value(&self, target: Value, key: &str) -> Option<Value> {
@@ -9303,6 +9475,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn resolve_own_property_shape(&self, target: Value, key: &str) -> Option<JsOwnPropertyShape> {
+        let target = self.public_property_target(target);
         if let Some(kind) = self.exotic_adapter_kind(target) {
             if let Some(shape) = self.exotic_own_property_shape(kind, target, key) {
                 return Some(shape);
@@ -9332,6 +9505,15 @@ impl<'a> Interpreter<'a> {
                     enumerable,
                 ),
             });
+        }
+
+        if let Some(descriptor) = self.metadata_descriptor_property(target, key) {
+            if let Some(property) = self.ordinary_own_property_from_descriptor_value(descriptor) {
+                return Some(self.shape_from_ordinary_property(
+                    JsOwnPropertySource::Metadata,
+                    property,
+                ));
+            }
         }
 
         if self.metadata_data_property_value(target, key).is_some() {
@@ -9438,6 +9620,7 @@ impl<'a> Interpreter<'a> {
         caller_task: &Arc<Task>,
         caller_module: &Module,
     ) -> Result<Option<JsOwnPropertyRecord>, VmError> {
+        let target = self.public_property_target(target);
         if let Some(kind) = self.exotic_adapter_kind(target) {
             if let Some(record) = self.exotic_own_property_record_with_context(
                 kind,
@@ -9477,6 +9660,23 @@ impl<'a> Interpreter<'a> {
                 self.metadata_data_property_value(target, key)
                     .unwrap_or(Value::undefined()),
             ),
+            (JsOwnPropertySource::Metadata, JsOwnPropertyKind::Accessor) => {
+                let Some(descriptor) = self.metadata_descriptor_property(target, key) else {
+                    return Ok(None);
+                };
+                let Some(property) = self.ordinary_own_property_from_descriptor_value(descriptor)
+                else {
+                    return Ok(None);
+                };
+                match property {
+                    OrdinaryOwnProperty::Accessor { get, set, .. } => JsOwnPropertyRecord::accessor(
+                        shape,
+                        (!get.is_undefined()).then_some(get),
+                        (!set.is_undefined()).then_some(set),
+                    ),
+                    OrdinaryOwnProperty::Data { value, .. } => JsOwnPropertyRecord::data(shape, value),
+                }
+            }
             (JsOwnPropertySource::BuiltinGlobal, JsOwnPropertyKind::Data) => {
                 JsOwnPropertyRecord::data(
                     shape,
@@ -9620,6 +9820,9 @@ impl<'a> Interpreter<'a> {
         if let Some(obj_ptr) = checked_object_ptr(obj_val) {
             let obj = unsafe { &*obj_ptr.as_ptr() };
             if let Some(nominal_type_id) = obj.nominal_type_id_usize() {
+                if self.nominal_instance_uses_runtime_publication(obj_val) {
+                    return None;
+                }
                 if let Some(method_slot) =
                     self.nominal_method_slot_by_name(nominal_type_id, field_name)
                 {
@@ -9667,6 +9870,9 @@ impl<'a> Interpreter<'a> {
         obj.nominal_type_id_usize().is_some_and(|ntid| {
             let classes = self.classes.read();
             if let Some(class) = classes.get_class(ntid) {
+                if class.runtime_instance_publication {
+                    return false;
+                }
                 let has_own_accessor = class.prototype_members.iter().any(|member| {
                     member.name == key
                         && matches!(
@@ -10514,8 +10720,17 @@ impl<'a> Interpreter<'a> {
             return Ok(());
         }
 
-        if record.has_value {
-            if self.set_builtin_global_property(target, key, record.value) {
+        if checked_object_ptr(target).is_none() {
+            self.set_descriptor_metadata(target, key, descriptor);
+        }
+
+        if record.is_data() {
+            let value = if record.has_value {
+                record.value
+            } else {
+                Value::undefined()
+            };
+            if self.set_builtin_global_property(target, key, value) {
                 if self
                     .callable_virtual_property_descriptor(target, key)
                     .is_some()
@@ -10529,7 +10744,7 @@ impl<'a> Interpreter<'a> {
 
             self.metadata.lock().define_metadata_property(
                 NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY.to_string(),
-                record.value,
+                value,
                 target,
                 key.to_string(),
             );
@@ -10537,8 +10752,12 @@ impl<'a> Interpreter<'a> {
                 .callable_virtual_property_descriptor(target, key)
                 .is_some()
             {
-                self.set_cached_callable_virtual_property_value(target, key, record.value);
+                self.set_cached_callable_virtual_property_value(target, key, value);
             }
+        } else {
+            self.metadata
+                .lock()
+                .delete_metadata_property(NON_OBJECT_DYNAMIC_VALUE_METADATA_KEY, target, key);
         }
 
         self.set_callable_virtual_property_deleted(target, key, false);
@@ -11427,13 +11646,16 @@ impl<'a> Interpreter<'a> {
     }
 
     pub(in crate::vm::interpreter) fn js_own_property_names(&self, target: Value) -> Vec<String> {
+        let target = self.public_property_target(target);
+        let debug_class_publication = std::env::var("RAYA_DEBUG_CLASS_PUBLICATION").is_ok();
         let mut collector = OrderedOwnKeyCollector::default();
         if let Some(kind) = self.exotic_adapter_kind(target) {
             self.append_exotic_own_property_names(kind, target, &mut collector);
         } else {
+            collector.extend(self.callable_virtual_own_property_names(target));
             collector.extend(self.ordinary_named_own_property_keys(target));
             collector.extend(self.metadata_backed_property_names(target));
-            collector.extend(self.callable_virtual_own_property_names(target));
+            collector.extend(self.metadata_descriptor_property_names(target));
         }
 
         if let Some(global_obj) = self.builtin_global_value("globalThis") {
@@ -11452,10 +11674,56 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        collector
+        let names = collector
             .finish()
             .into_iter()
             .filter(|name| Self::is_public_string_property_name(name))
+            .collect::<Vec<_>>();
+        if debug_class_publication {
+            if let Some(obj_ptr) = checked_object_ptr(target) {
+                let obj = unsafe { obj_ptr.as_ref() };
+                let handle_key = self.intern_prop_key("__raya_type_handle__");
+                let has_handle = obj
+                    .dyn_props()
+                    .is_some_and(|dp| dp.contains_key(handle_key));
+                eprintln!(
+                    "[own-names] target={:#x} is_object=true is_callable={} nominal={:?} layout={} fields={} has_handle={} names={:?}",
+                    target.raw(),
+                    checked_callable_ptr(target).is_some(),
+                    obj.nominal_type_id_usize(),
+                    obj.layout_id(),
+                    obj.field_count(),
+                    has_handle,
+                    names
+                );
+            } else {
+                eprintln!(
+                    "[own-names] target={:#x} is_object=false is_callable={} names={:?}",
+                    target.raw(),
+                    checked_callable_ptr(target).is_some(),
+                    names
+                );
+            }
+        }
+        names
+    }
+
+    fn js_own_property_symbols(&self, target: Value) -> Vec<Value> {
+        let target = self.public_property_target(target);
+        let mut collector = OrderedOwnKeyCollector::default();
+        if let Some(kind) = self.exotic_adapter_kind(target) {
+            self.append_exotic_own_property_names(kind, target, &mut collector);
+        } else {
+            collector.extend(self.callable_virtual_own_property_names(target));
+            collector.extend(self.ordinary_named_own_property_keys(target));
+            collector.extend(self.metadata_backed_property_names(target));
+            collector.extend(self.metadata_descriptor_property_names(target));
+        }
+
+        collector
+            .finish()
+            .into_iter()
+            .filter_map(|name| self.symbol_value_from_property_key_name(&name))
             .collect()
     }
 
@@ -11937,25 +12205,38 @@ impl<'a> Interpreter<'a> {
                             Ok(None) => {}
                             Err(error) => return OpcodeResult::Error(error),
                         }
+                        let class_constructor = self
+                            .classes
+                            .read()
+                            .get_class_by_name(&name.data)
+                            .and_then(|class| self.constructor_value_for_nominal_type(class.id));
                         let value = match self.shared_js_global_binding_value(&name.data) {
                             Ok(Some(v)) => Some(v),
-                            Ok(None) => match self.ensure_builtin_global_value(&name.data, task) {
-                                Ok(Some(v)) => Some(v),
-                                Ok(None) => match self.ensure_builtin_global_value("globalThis", task) {
-                                    Ok(Some(gt)) => self
-                                        .get_property_value_via_js_semantics_with_context(
-                                            gt,
-                                            &name.data,
-                                            task,
-                                            module,
-                                        )
-                                        .ok()
-                                        .flatten(),
-                                    Ok(None) => None,
-                                    Err(error) => return OpcodeResult::Error(error),
-                                },
-                                Err(error) => return OpcodeResult::Error(error),
-                            },
+                            Ok(None) => {
+                                if let Some(v) = class_constructor {
+                                    Some(v)
+                                } else {
+                                    match self.ensure_builtin_global_value(&name.data, task) {
+                                        Ok(Some(v)) => Some(v),
+                                        Ok(None) => {
+                                            match self.ensure_builtin_global_value("globalThis", task) {
+                                                Ok(Some(gt)) => self
+                                                    .get_property_value_via_js_semantics_with_context(
+                                                        gt,
+                                                        &name.data,
+                                                        task,
+                                                        module,
+                                                    )
+                                                    .ok()
+                                                    .flatten(),
+                                                Ok(None) => None,
+                                                Err(error) => return OpcodeResult::Error(error),
+                                            }
+                                        }
+                                        Err(error) => return OpcodeResult::Error(error),
+                                    }
+                                }
+                            }
                             Err(error) => return OpcodeResult::Error(error),
                         };
                         let Some(value) = value else {
@@ -14602,6 +14883,166 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    id if id == crate::compiler::native_id::OBJECT_DEFINE_CLASS_PROPERTY => {
+                        // Internal class publication path: materialize method/accessor closures
+                        // inside the VM, then define them on constructor/prototype targets.
+                        if args.len() < 4 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineClassElement requires 4 arguments".to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        let key_val = args[1];
+                        let Some(func_id) = args[2].as_i32() else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineClassElement func_id must be an int".to_string(),
+                            ));
+                        };
+                        let Some(kind) = args[3].as_i32() else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineClassElement kind must be an int".to_string(),
+                            ));
+                        };
+
+                        let (Some(key), _) = (match self.property_key_parts_with_context(
+                            key_val,
+                            "Object.defineClassElement",
+                            task,
+                            module,
+                        ) {
+                            Ok(parts) => parts,
+                            Err(error) => return OpcodeResult::Error(error),
+                        }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineClassElement key must be a string or symbol"
+                                    .to_string(),
+                            ));
+                        };
+                        let debug_class_publication =
+                            std::env::var("RAYA_DEBUG_CLASS_PUBLICATION").is_ok();
+                        if debug_class_publication {
+                            eprintln!(
+                                "[class-publish] target={:#x} key={} func_id={} kind={}",
+                                target.raw(),
+                                key,
+                                func_id,
+                                kind
+                            );
+                        }
+
+                        let target_is_constructor = self.constructor_nominal_type_id(target).is_some()
+                            || self.type_handle_nominal_id(target).is_some();
+                        if target_is_constructor && key == "prototype" {
+                            return OpcodeResult::Error(self.raise_task_builtin_error(
+                                task,
+                                "TypeError",
+                                "Classes may not have a static property named prototype"
+                                    .to_string(),
+                            ));
+                        }
+
+                        let closure = Object::new_closure_with_module(
+                            func_id as usize,
+                            Vec::new(),
+                            module.clone().into(),
+                        );
+                        let closure_ptr = self.gc.lock().allocate(closure);
+                        let closure_value = unsafe {
+                            Value::from_ptr(
+                                std::ptr::NonNull::new(closure_ptr.as_ptr())
+                                    .expect("class element closure ptr"),
+                            )
+                        };
+                        let Some(callable_ptr) = (unsafe { closure_value.as_ptr::<Object>() }) else {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "failed to materialize class element callable".to_string(),
+                            ));
+                        };
+                        let callable = unsafe { &mut *callable_ptr.as_ptr() };
+                        if let Err(error) = callable.set_callable_home_object(target) {
+                            return OpcodeResult::Error(VmError::RuntimeError(error));
+                        }
+
+                        let define_result = match kind {
+                            0 => self.define_data_property_on_target_with_context(
+                                target,
+                                &key,
+                                closure_value,
+                                true,
+                                false,
+                                true,
+                                task,
+                                module,
+                            ),
+                            1 | 2 => {
+                                let descriptor = match self.alloc_object_descriptor() {
+                                    Ok(descriptor) => descriptor,
+                                    Err(error) => return OpcodeResult::Error(error),
+                                };
+                                let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() })
+                                else {
+                                    return OpcodeResult::Error(VmError::RuntimeError(
+                                        "Failed to allocate property descriptor object"
+                                            .to_string(),
+                                    ));
+                                };
+                                let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
+                                let accessor_field = if kind == 1 { "get" } else { "set" };
+                                if let Some(field_index) =
+                                    self.get_field_index_for_value(descriptor, accessor_field)
+                                {
+                                    if let Err(error) =
+                                        descriptor_obj.set_field(field_index, closure_value)
+                                    {
+                                        return OpcodeResult::Error(VmError::RuntimeError(error));
+                                    }
+                                }
+                                self.set_descriptor_field_present(descriptor, accessor_field, true);
+                                for (field_name, field_value) in [
+                                    ("enumerable", Value::bool(false)),
+                                    ("configurable", Value::bool(true)),
+                                ] {
+                                    if let Some(field_index) =
+                                        self.get_field_index_for_value(descriptor, field_name)
+                                    {
+                                        if let Err(error) =
+                                            descriptor_obj.set_field(field_index, field_value)
+                                        {
+                                            return OpcodeResult::Error(VmError::RuntimeError(
+                                                error,
+                                            ));
+                                        }
+                                    }
+                                    self.set_descriptor_field_present(descriptor, field_name, true);
+                                }
+                                self.apply_descriptor_to_target_with_context(
+                                    target, &key, descriptor, task, module,
+                                )
+                            }
+                            _ => Err(VmError::TypeError(format!(
+                                "Object.defineClassElement kind '{}' is invalid",
+                                kind
+                            ))),
+                        };
+
+                        if debug_class_publication {
+                            eprintln!("[class-publish] define_result={:?}", define_result);
+                            eprintln!(
+                                "[class-publish] post metadata_value={:?} metadata_desc={} own_names={:?}",
+                                self.metadata_data_property_value(target, &key)
+                                    .map(|value| format!("{:#x}", value.raw())),
+                                self.metadata_descriptor_property(target, &key).is_some(),
+                                self.js_own_property_names(target)
+                            );
+                        }
+                        if let Err(error) = define_result {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(target) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
                     0x0005u16 => {
                         // OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(target, key) -> descriptor | undefined
                         if args.len() < 2 {
@@ -14647,6 +15088,41 @@ impl<'a> Interpreter<'a> {
                                     Err(error) => return OpcodeResult::Error(error),
                                 }
                             }
+                        };
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_SYMBOLS => {
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.getOwnPropertySymbols requires 1 argument".to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        if !target.is_ptr() {
+                            let arr_ptr = self.gc.lock().allocate(Array::new(0, 0));
+                            let value = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(arr_ptr.as_ptr()).expect("symbol array ptr"),
+                                )
+                            };
+                            if let Err(e) = stack.push(value) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+                        let symbols = self.js_own_property_symbols(target);
+                        let mut arr = Array::new(0, 0);
+                        for symbol in symbols {
+                            arr.push(symbol);
+                        }
+                        let arr_ptr = self.gc.lock().allocate(arr);
+                        let value = unsafe {
+                            Value::from_ptr(
+                                std::ptr::NonNull::new(arr_ptr.as_ptr()).expect("symbol array ptr"),
+                            )
                         };
                         if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
@@ -14709,6 +15185,15 @@ impl<'a> Interpreter<'a> {
                                 nominal_type_id
                             )));
                         };
+                        if std::env::var("RAYA_DEBUG_CLASS_PUBLICATION").is_ok() {
+                            eprintln!(
+                                "[class-value] nominal_type_id={} value={:#x} is_object={} is_callable={}",
+                                nominal_type_id,
+                                value.raw(),
+                                checked_object_ptr(value).is_some(),
+                                checked_callable_ptr(value).is_some()
+                            );
+                        }
                         if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
                         }

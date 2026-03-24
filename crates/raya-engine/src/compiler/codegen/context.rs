@@ -318,6 +318,8 @@ impl IrCodeGenerator {
                 parent_name: class.parent_name.clone(),
                 methods,
                 static_methods,
+                runtime_instance_publication: class.runtime_instance_publication,
+                runtime_static_publication: class.runtime_static_publication,
             };
             self.module_builder.add_class(class_def);
         }

@@ -53,6 +53,7 @@ tokio = { workspace = true }
 
 # Regex (for VM)
 regex = { workspace = true }
+ryu = "1.0"
 
 # JIT compilation (optional, behind "jit" feature)
 cranelift-codegen = { workspace = true, optional = true }

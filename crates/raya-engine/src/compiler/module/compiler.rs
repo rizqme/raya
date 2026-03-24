@@ -792,6 +792,8 @@ impl ModuleCompiler {
                 parent_name: None,
                 methods: Vec::new(),
                 static_methods: Vec::new(),
+                runtime_instance_publication: false,
+                runtime_static_publication: false,
             });
             bytecode.exports.push(Export {
                 name: exported.name.clone(),

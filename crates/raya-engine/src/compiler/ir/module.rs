@@ -198,6 +198,12 @@ pub struct IrClass {
     pub static_methods: Vec<FunctionId>,
     /// Source-level static method kinds (parallel to static_methods)
     pub static_method_kinds: Vec<IrMethodKind>,
+    /// When true, user-visible prototype method publication is handled by the
+    /// ordered runtime class-element path instead of legacy class registration.
+    pub runtime_instance_publication: bool,
+    /// When true, user-visible static method publication is handled by the
+    /// ordered runtime class-element path instead of legacy class registration.
+    pub runtime_static_publication: bool,
     /// Constructor function ID (if any)
     pub constructor: Option<FunctionId>,
     /// Parent class ID (if any)
@@ -217,6 +223,8 @@ impl IrClass {
             method_kinds: Vec::new(),
             static_methods: Vec::new(),
             static_method_kinds: Vec::new(),
+            runtime_instance_publication: false,
+            runtime_static_publication: false,
             constructor: None,
             parent: None,
             parent_name: None,

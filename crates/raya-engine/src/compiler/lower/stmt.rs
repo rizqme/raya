@@ -3,7 +3,8 @@
 //! Converts AST statements to IR instructions.
 
 use super::{
-    is_module_wrapper_function_name, Lowerer, ARRAY_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
+    is_module_wrapper_function_name, Lowerer, ARRAY_TYPE_ID, INT_TYPE_ID, UNKNOWN_TYPE_ID,
+    UNRESOLVED, UNRESOLVED_TYPE_ID,
 };
 use crate::compiler::ir::block::BasicBlockId;
 use crate::compiler::ir::{
@@ -22,14 +23,111 @@ enum ForOfIterableKind {
 }
 
 impl<'a> Lowerer<'a> {
+    fn ensure_class_prototype_target(
+        &mut self,
+        class_value: &Register,
+        prototype_value: &mut Option<Register>,
+    ) -> Register {
+        if let Some(prototype) = prototype_value.clone() {
+            return prototype;
+        }
+
+        let prototype = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+        self.emit_dyn_get_named(prototype.clone(), class_value.clone(), "prototype");
+        *prototype_value = Some(prototype.clone());
+        prototype
+    }
+
+    fn emit_runtime_method_publication(
+        &mut self,
+        member_idx: usize,
+        method: &ast::MethodDecl,
+        runtime_method: &super::RuntimeClassMethodElement,
+        class_value: &Register,
+        prototype_value: &mut Option<Register>,
+    ) {
+        let target = if method.is_static {
+            class_value.clone()
+        } else {
+            self.ensure_class_prototype_target(class_value, prototype_value)
+        };
+
+        let key_reg = self.lower_class_property_key(&runtime_method.key, member_idx);
+        let func_id_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: func_id_reg.clone(),
+            value: IrValue::Constant(IrConstant::I32(runtime_method.func_id.as_u32() as i32)),
+        });
+        let kind_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        let kind = match runtime_method.kind {
+            ast::MethodKind::Normal => 0,
+            ast::MethodKind::Getter => 1,
+            ast::MethodKind::Setter => 2,
+        };
+        self.emit(IrInstr::Assign {
+            dest: kind_reg.clone(),
+            value: IrValue::Constant(IrConstant::I32(kind)),
+        });
+
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_DEFINE_CLASS_PROPERTY,
+            args: vec![target, key_reg, func_id_reg, kind_reg],
+        });
+    }
+
     fn emit_static_elements_for_class(
         &mut self,
         class: &ast::ClassDecl,
         nominal_type_id: crate::compiler::ir::NominalTypeId,
         class_value: Register,
     ) {
+        let publish_runtime_instance_methods = class.members.iter().any(|member| {
+            matches!(
+                member,
+                ast::ClassMember::Method(method)
+                    if !method.is_static
+                        && method.body.is_some()
+                        && matches!(method.name, ast::PropertyKey::Computed(_))
+            )
+        });
+        let publish_runtime_static_methods = class.members.iter().any(|member| {
+            matches!(
+                member,
+                ast::ClassMember::Method(method)
+                    if method.is_static
+                        && method.body.is_some()
+                        && matches!(method.name, ast::PropertyKey::Computed(_))
+            )
+        });
+        let mut prototype_value = None;
         for (member_idx, member) in class.members.iter().enumerate() {
             match member {
+                ast::ClassMember::Method(method)
+                    if method.body.is_some()
+                        && ((method.is_static && publish_runtime_static_methods)
+                            || (!method.is_static && publish_runtime_instance_methods)) =>
+                {
+                    let Some(runtime_method) = self
+                        .class_info_map
+                        .get(&nominal_type_id)
+                        .and_then(|info| {
+                            info.runtime_method_elements
+                                .iter()
+                                .find(|elem| elem.order == member_idx)
+                        })
+                        .cloned()
+                    else {
+                        continue;
+                    };
+                    self.emit_runtime_method_publication(
+                        member_idx,
+                        method,
+                        &runtime_method,
+                        &class_value,
+                        &mut prototype_value,
+                    );
+                }
                 ast::ClassMember::Field(field) if field.is_static => {
                     let Some(initializer) = &field.initializer else {
                         continue;
@@ -435,11 +533,38 @@ impl<'a> Lowerer<'a> {
             Statement::ForOf(for_of) => self.lower_for_of(for_of),
             Statement::ForIn(for_in) => self.lower_for_in(for_in),
             Statement::Labeled(labeled) => {
-                // Set the pending label so the next loop picks it up
-                self.pending_label = Some(labeled.label.name);
-                self.lower_stmt(&labeled.body);
-                // Clear pending label if not consumed (e.g., label on non-loop statement)
-                self.pending_label = None;
+                let is_iteration = matches!(
+                    labeled.body.as_ref(),
+                    Statement::While(_)
+                        | Statement::DoWhile(_)
+                        | Statement::For(_)
+                        | Statement::ForOf(_)
+                        | Statement::ForIn(_)
+                );
+                if is_iteration {
+                    // Set the pending label so the next loop picks it up.
+                    self.pending_label = Some(labeled.label.name);
+                    self.lower_stmt(&labeled.body);
+                    self.pending_label = None;
+                } else {
+                    let exit_block = self.alloc_block();
+                    self.label_stack.push(super::LabelContext {
+                        label: labeled.label.name,
+                        break_target: exit_block,
+                        try_finally_depth: self.try_finally_stack.len(),
+                    });
+                    self.lower_stmt(&labeled.body);
+                    self.label_stack.pop();
+                    if !self.current_block_is_terminated() {
+                        self.set_terminator(Terminator::Jump(exit_block));
+                    }
+                    self.current_function_mut()
+                        .add_block(crate::ir::BasicBlock::with_label(
+                            exit_block,
+                            "label.exit",
+                        ));
+                    self.current_block = exit_block;
+                }
             }
         }
     }
@@ -2006,6 +2131,14 @@ impl<'a> Lowerer<'a> {
                                 value,
                             });
                         }
+                    } else {
+                        let value = self.emit_constant_value(&const_val);
+                        let local_idx = self.allocate_local(name);
+                        self.local_registers.insert(local_idx, value.clone());
+                        self.emit(IrInstr::StoreLocal {
+                            index: local_idx,
+                            value,
+                        });
                     }
                     return;
                 }
@@ -3358,6 +3491,7 @@ impl<'a> Lowerer<'a> {
         // overwriting the outer variable's slot mapping
         let saved_local_map = self.local_map.clone();
         let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
+        let saved_constant_map = self.constant_map.clone();
         self.block_depth += 1;
 
         for stmt in &block.statements {
@@ -3371,6 +3505,7 @@ impl<'a> Lowerer<'a> {
         // This ensures outer variables are accessible again after the block
         self.local_map = saved_local_map;
         self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
+        self.constant_map = saved_constant_map;
         self.block_depth = self.block_depth.saturating_sub(1);
     }
 
@@ -3400,6 +3535,28 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 self.set_terminator(Terminator::Jump(loop_ctx.break_target));
+                return;
+            }
+            if let Some(label_ctx) = self
+                .label_stack
+                .iter()
+                .rev()
+                .find(|ctx| ctx.label == label_sym)
+                .cloned()
+            {
+                let depth = label_ctx.try_finally_depth;
+                let entries: Vec<super::TryFinallyEntry> =
+                    self.try_finally_stack.drain(depth..).rev().collect();
+                for entry in &entries {
+                    if entry.in_try_body {
+                        self.emit(IrInstr::EndTry);
+                    }
+                    self.lower_block(&entry.finally_body);
+                    if self.current_block_is_terminated() {
+                        return;
+                    }
+                }
+                self.set_terminator(Terminator::Jump(label_ctx.break_target));
                 return;
             }
         }
@@ -3543,6 +3700,12 @@ impl<'a> Lowerer<'a> {
         self.current_block = catch_block;
 
         if let Some(catch_clause) = &try_stmt.catch_clause {
+            let saved_local_map = self.local_map.clone();
+            let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
+            let saved_variable_class_map = self.variable_class_map.clone();
+            let saved_constant_map = self.constant_map.clone();
+            self.block_depth += 1;
+
             // Bind the exception parameter if present
             // The VM pushes the exception value onto the stack when jumping to catch
             if let Some(ref param) = catch_clause.param {
@@ -3587,8 +3750,19 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Lower catch body
-            self.lower_block(&catch_clause.body);
+            // Lower catch body inside the same lexical scope as the catch parameter.
+            for stmt in &catch_clause.body.statements {
+                self.lower_stmt(stmt);
+                if self.current_block_is_terminated() {
+                    break;
+                }
+            }
+
+            self.local_map = saved_local_map;
+            self.visible_js_lexical_symbols = saved_visible_js_lexical_symbols;
+            self.variable_class_map = saved_variable_class_map;
+            self.constant_map = saved_constant_map;
+            self.block_depth = self.block_depth.saturating_sub(1);
         }
 
         // After catch, jump to finally or exit

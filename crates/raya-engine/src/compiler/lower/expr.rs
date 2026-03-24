@@ -182,6 +182,19 @@ impl<'a> Lowerer<'a> {
             || self.type_requires_js_runtime_member_semantics(object_reg_ty)
     }
 
+    fn object_expr_is_class_constructor_ref(&self, expr: &Expression) -> bool {
+        matches!(expr, Expression::Identifier(ident) if self.class_map.contains_key(&ident.name))
+    }
+
+    fn nominal_type_uses_runtime_instance_publication(
+        &self,
+        nominal_type_id: NominalTypeId,
+    ) -> bool {
+        self.class_info_map
+            .get(&nominal_type_id)
+            .is_some_and(|info| info.runtime_method_elements.iter().any(|element| !element.is_static))
+    }
+
     pub(super) fn js_receiver_rebinding_call_expr(&self, expr: &Expression) -> bool {
         let Expression::Call(call) = expr else {
             return false;
@@ -953,7 +966,7 @@ impl<'a> Lowerer<'a> {
         key
     }
 
-    fn emit_dyn_get_named(&mut self, dest: Register, object: Register, property: &str) {
+    pub(super) fn emit_dyn_get_named(&mut self, dest: Register, object: Register, property: &str) {
         // TODO Phase 2 completion: emit JsGetNamed when js_this_binding_compat is true
         // and handlers are fully wired to the property kernel. For now, DynGetKeyed
         // handles both Raya and JS semantics through the existing mature handler.
@@ -979,7 +992,7 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
-    fn lower_data_property_descriptor(
+    pub(super) fn lower_data_property_descriptor(
         &mut self,
         value: Register,
         writable: bool,
@@ -1228,12 +1241,6 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_identifier(&mut self, ident: &ast::Identifier) -> Register {
-        // First, check if this is a compile-time constant (constant folding)
-        // This takes precedence over local variables for const declarations
-        if let Some(const_val) = self.constant_map.get(&ident.name).cloned() {
-            return self.emit_constant_value(&const_val);
-        }
-
         // Ambient strict globals available without local source injection.
         let name = self.interner.resolve(ident.name);
         match name {
@@ -1440,10 +1447,28 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        if !self.parameter_scope_eval_mode {
-            if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
-                return self.load_class_value_for_nominal_type(nominal_type_id);
+        // Check compile-time constants only after local/captured lookup so
+        // block-scoped shadowing can override outer const bindings.
+        if let Some(const_val) = self.constant_map.get(&ident.name).cloned() {
+            return self.emit_constant_value(&const_val);
+        }
+
+        if let Some(nominal_type_id) = self
+            .nominal_type_id_from_type_name(name)
+            .or_else(|| self.class_map.get(&ident.name).copied())
+        {
+            if std::env::var("RAYA_DEBUG_CLASS_IDENT").is_ok() {
+                eprintln!(
+                    "[lower-class-ident] name={} via=nominal_lookup nominal={} fn_depth={} block_depth={} shared_slot={:?} parameter_scope_eval_mode={}",
+                    name,
+                    nominal_type_id.as_u32(),
+                    self.function_depth,
+                    self.block_depth,
+                    self.shared_script_binding_slot(ident.name),
+                    self.parameter_scope_eval_mode
+                );
             }
+            return self.load_class_value_for_nominal_type(nominal_type_id);
         }
 
         if self.should_resolve_from_direct_eval_env(ident) {
@@ -1452,6 +1477,16 @@ impl<'a> Lowerer<'a> {
 
         // Check module-level variables (stored as globals)
         if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
+            if std::env::var("RAYA_DEBUG_CLASS_IDENT").is_ok() {
+                eprintln!(
+                    "[lower-class-ident] name={} via=shared_slot slot={} fn_depth={} block_depth={} class_map={}",
+                    name,
+                    global_idx,
+                    self.function_depth,
+                    self.block_depth,
+                    self.class_map.contains_key(&ident.name)
+                );
+            }
             let global_ty = self
                 .global_type_map
                 .get(&global_idx)
@@ -3597,6 +3632,26 @@ impl<'a> Lowerer<'a> {
                             }
                         }
                     }
+
+                    if self.js_this_binding_compat {
+                        let receiver = self.load_class_value_for_nominal_type(nominal_type_id);
+                        let closure = self.lower_member(member);
+                        if self.late_bound_member_call_is_async(
+                            &member.object,
+                            &call.callee,
+                            method_name,
+                        ) {
+                            self.emit(IrInstr::SpawnClosure {
+                                dest: dest.clone(),
+                                closure,
+                                args,
+                            });
+                        } else {
+                            self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
+                            self.propagate_type_projection_to_register(call_ty, &dest);
+                        }
+                        return dest;
+                    }
                 }
 
                 let prefers_dynamic_constructor_member_call =
@@ -5112,8 +5167,17 @@ impl<'a> Lowerer<'a> {
         let nominal_type_id = nominal_type_id
             .or_else(|| self.infer_nominal_type_id(&member.object))
             .or_else(|| self.nominal_type_id_from_type_id(object.ty));
+        let use_runtime_published_instance_member_semantics = nominal_type_id.is_some_and(|id| {
+            !self.object_expr_is_class_constructor_ref(&member.object)
+                && self.nominal_type_uses_runtime_instance_publication(id)
+        });
         let use_js_runtime_member_semantics =
-            self.js_mode_uses_runtime_member_semantics(&member.object, object.ty, nominal_type_id);
+            use_runtime_published_instance_member_semantics
+                || self.js_mode_uses_runtime_member_semantics(
+                    &member.object,
+                    object.ty,
+                    nominal_type_id,
+                );
 
         if let Some(nominal_type_id) = nominal_type_id {
             let getter_func_id = {
@@ -5140,7 +5204,8 @@ impl<'a> Lowerer<'a> {
                 found
             };
 
-            if let Some(func_id) = getter_func_id {
+            if !use_runtime_published_instance_member_semantics {
+                if let Some(func_id) = getter_func_id {
                 let member_ty = {
                     let member_expr = Expression::Member(member.clone());
                     let inferred = self.get_expr_type(&member_expr);
@@ -5159,6 +5224,7 @@ impl<'a> Lowerer<'a> {
                 });
                 self.emit_js_member_call_helper(dest.clone(), object.clone(), closure, vec![]);
                 return dest;
+                }
             }
 
             if prop_name.starts_with('#') {
@@ -6152,7 +6218,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_accessor_property_descriptor(
+    pub(super) fn lower_accessor_property_descriptor(
         &mut self,
         getter: Option<Register>,
         setter: Option<Register>,
@@ -6864,6 +6930,114 @@ impl<'a> Lowerer<'a> {
             checker_ty
         };
         let dest = self.alloc_register(object_ty);
+        let requires_runtime_publication = object.properties.iter().any(|prop| match prop {
+            ast::ObjectProperty::Property(property) => {
+                property.kind != ast::PropertyKind::Init
+                    || matches!(property.key, ast::PropertyKey::Computed(_))
+            }
+            ast::ObjectProperty::Spread(_) => true,
+        });
+
+        if requires_runtime_publication {
+            let type_index = self.structural_layout_id_from_ordered_names(&[]);
+            self.emit(IrInstr::ObjectLiteral {
+                dest: dest.clone(),
+                type_index,
+                fields: Vec::new(),
+            });
+
+            for (idx, prop) in object.properties.iter().enumerate() {
+                match prop {
+                    ast::ObjectProperty::Property(property) => {
+                        let key = self.lower_object_property_key(&property.key);
+                        let value = self.lower_expr(&property.value);
+                        self.attach_home_object_if_method(&property.value, &value, &dest);
+
+                        if property.kind != ast::PropertyKind::Init {
+                            let descriptor = match property.kind {
+                                ast::PropertyKind::Get => self.lower_accessor_property_descriptor(
+                                    Some(value),
+                                    None,
+                                    true,
+                                    true,
+                                ),
+                                ast::PropertyKind::Set => self.lower_accessor_property_descriptor(
+                                    None,
+                                    Some(value),
+                                    true,
+                                    true,
+                                ),
+                                ast::PropertyKind::Init => unreachable!(),
+                            };
+                            let define_result =
+                                self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+                            self.emit(IrInstr::NativeCall {
+                                dest: Some(define_result),
+                                native_id: crate::compiler::native_id::OBJECT_DEFINE_PROPERTY,
+                                args: vec![dest.clone(), key, descriptor],
+                            });
+                            continue;
+                        }
+
+                        self.emit(IrInstr::DynSetKeyed {
+                            object: dest.clone(),
+                            key,
+                            value,
+                        });
+                    }
+                    ast::ObjectProperty::Spread(spread) => {
+                        let spread_reg = self.lower_expr(&spread.argument);
+                        let Some(source_fields) =
+                            self.resolve_spread_source_fields(&spread.argument, Some(&spread_reg))
+                        else {
+                            self.errors.push(CompileError::UnsupportedFeature {
+                                feature: "object spread requires statically known source fields"
+                                    .to_string(),
+                            });
+                            continue;
+                        };
+                        let (shape_id, fields) = match source_fields {
+                            SpreadSourceFields::Concrete(fields) => (None, fields),
+                            SpreadSourceFields::Shape { shape_id, fields } => {
+                                (Some(shape_id), fields)
+                            }
+                        };
+                        for (field_name, src_field_idx) in fields {
+                            if !self.include_spread_field(&field_name) {
+                                continue;
+                            }
+                            let key_reg = self.emit_named_key_register(&field_name);
+                            let field_val = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                            if let Some(shape_id) = shape_id {
+                                self.emit(IrInstr::LoadFieldShape {
+                                    dest: field_val.clone(),
+                                    object: spread_reg.clone(),
+                                    shape_id,
+                                    field: src_field_idx,
+                                    optional: false,
+                                });
+                            } else {
+                                self.emit(IrInstr::LoadFieldExact {
+                                    dest: field_val.clone(),
+                                    object: spread_reg.clone(),
+                                    field: src_field_idx,
+                                    optional: false,
+                                });
+                            }
+                            self.emit(IrInstr::DynSetKeyed {
+                                object: dest.clone(),
+                                key: key_reg,
+                                value: field_val,
+                            });
+                        }
+                    }
+                }
+            }
+
+            self.register_object_fields.insert(dest.id, Vec::new());
+            return dest;
+        }
+
         let mut field_names = Vec::<String>::new();
         let mut field_index_map = FxHashMap::<String, usize>::default();
 
@@ -7455,12 +7629,18 @@ impl<'a> Lowerer<'a> {
                         || self.type_is_dynamic_any_like(checker_obj_ty)
                         || self.type_is_dynamic_any_like(object.ty)
                         || self.js_this_binding_compat;
-                    let use_js_runtime_member_semantics = self
-                        .js_mode_uses_runtime_member_semantics(
-                            &member.object,
-                            object.ty,
-                            nominal_type_id,
-                        );
+                    let use_runtime_published_instance_member_semantics =
+                        nominal_type_id.is_some_and(|id| {
+                            !self.object_expr_is_class_constructor_ref(&member.object)
+                                && self.nominal_type_uses_runtime_instance_publication(id)
+                        });
+                    let use_js_runtime_member_semantics =
+                        use_runtime_published_instance_member_semantics
+                            || self.js_mode_uses_runtime_member_semantics(
+                                &member.object,
+                                object.ty,
+                                nominal_type_id,
+                            );
                     let use_dynamic_property_path =
                         self.member_write_uses_dynamic_property_path(&member.object, object.ty);
                     let obj_ty_id = {
@@ -7941,11 +8121,18 @@ impl<'a> Lowerer<'a> {
                     || self.type_is_dynamic_any_like(checker_obj_ty)
                     || self.type_is_dynamic_any_like(object.ty)
                     || self.js_this_binding_compat;
-                let use_js_runtime_member_semantics = self.js_mode_uses_runtime_member_semantics(
-                    &member.object,
-                    object.ty,
-                    nominal_type_id,
-                );
+                let use_runtime_published_instance_member_semantics =
+                    nominal_type_id.is_some_and(|id| {
+                        !self.object_expr_is_class_constructor_ref(&member.object)
+                            && self.nominal_type_uses_runtime_instance_publication(id)
+                    });
+                let use_js_runtime_member_semantics =
+                    use_runtime_published_instance_member_semantics
+                        || self.js_mode_uses_runtime_member_semantics(
+                            &member.object,
+                            object.ty,
+                            nominal_type_id,
+                        );
                 let use_dynamic_property_path =
                     self.member_write_uses_dynamic_property_path(&member.object, object.ty);
                 let obj_ty_id = {

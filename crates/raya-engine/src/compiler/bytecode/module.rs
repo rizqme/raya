@@ -773,6 +773,12 @@ pub struct ClassDef {
     pub methods: Vec<Method>,
     /// Static method/accessor definitions
     pub static_methods: Vec<StaticMethod>,
+    /// User-visible prototype method publication is handled by ordered runtime
+    /// class-element evaluation instead of legacy class registration.
+    pub runtime_instance_publication: bool,
+    /// User-visible static method publication is handled by ordered runtime
+    /// class-element evaluation instead of legacy class registration.
+    pub runtime_static_publication: bool,
 }
 
 impl ClassDef {
@@ -810,6 +816,8 @@ impl ClassDef {
         for method in &self.static_methods {
             method.encode(writer);
         }
+        writer.emit_u8(self.runtime_instance_publication as u8);
+        writer.emit_u8(self.runtime_static_publication as u8);
     }
 
     /// Decode class definition from binary
@@ -846,6 +854,8 @@ impl ClassDef {
         for _ in 0..static_method_count {
             static_methods.push(StaticMethod::decode(reader)?);
         }
+        let runtime_instance_publication = reader.read_u8()? != 0;
+        let runtime_static_publication = reader.read_u8()? != 0;
 
         Ok(Self {
             name,
@@ -854,6 +864,8 @@ impl ClassDef {
             parent_name,
             methods,
             static_methods,
+            runtime_instance_publication,
+            runtime_static_publication,
         })
     }
 }
@@ -2062,6 +2074,9 @@ mod tests {
                     kind: MethodKind::Normal,
                 },
             ],
+            static_methods: vec![],
+            runtime_instance_publication: false,
+            runtime_static_publication: false,
         });
 
         // Encode and decode
@@ -2176,6 +2191,9 @@ mod tests {
                 slot: 0,
                 kind: MethodKind::Normal,
             }],
+            static_methods: vec![],
+            runtime_instance_publication: false,
+            runtime_static_publication: false,
         });
 
         // Encode and decode
@@ -2232,6 +2250,9 @@ mod tests {
             parent_id: None,
             parent_name: None,
             methods: vec![],
+            static_methods: vec![],
+            runtime_instance_publication: false,
+            runtime_static_publication: false,
         });
 
         // Encode and decode

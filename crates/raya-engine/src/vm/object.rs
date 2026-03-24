@@ -947,6 +947,12 @@ pub struct Class {
     pub prototype_members: Vec<PrototypeMember>,
     /// Own static members declared directly on the constructor.
     pub static_members: Vec<PrototypeMember>,
+    /// True when instance-side public members are published through the JS property kernel
+    /// instead of legacy nominal/vtable exposure.
+    pub runtime_instance_publication: bool,
+    /// True when static-side public members are published through the JS property kernel
+    /// instead of legacy nominal/static-member exposure.
+    pub runtime_static_publication: bool,
     /// Runtime prototype object for instances of this class.
     /// Created at class registration time with `nominal_type_id` set so
     /// vtable method lookup works naturally through the prototype chain.
@@ -971,6 +977,8 @@ impl Class {
             }),
             prototype_members: Vec::new(),
             static_members: Vec::new(),
+            runtime_instance_publication: false,
+            runtime_static_publication: false,
             prototype_value: None,
         }
     }
@@ -991,6 +999,8 @@ impl Class {
             }),
             prototype_members: Vec::new(),
             static_members: Vec::new(),
+            runtime_instance_publication: false,
+            runtime_static_publication: false,
             prototype_value: None,
         }
     }
@@ -1016,6 +1026,8 @@ impl Class {
             }),
             prototype_members: Vec::new(),
             static_members: Vec::new(),
+            runtime_instance_publication: false,
+            runtime_static_publication: false,
             prototype_value: None,
         }
     }

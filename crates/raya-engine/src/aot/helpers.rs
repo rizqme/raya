@@ -1882,6 +1882,9 @@ mod tests {
             parent_id: None,
             parent_name: None,
             methods: Vec::new(),
+            static_methods: Vec::new(),
+            runtime_instance_publication: false,
+            runtime_static_publication: false,
         });
         let seed_module =
             Arc::new(Module::decode(&seed_module.encode()).expect("finalize seed module checksum"));
@@ -1896,6 +1899,9 @@ mod tests {
             parent_id: None,
             parent_name: None,
             methods: Vec::new(),
+            static_methods: Vec::new(),
+            runtime_instance_publication: false,
+            runtime_static_publication: false,
         });
         let target_module = Arc::new(
             Module::decode(&target_module.encode()).expect("finalize target module checksum"),

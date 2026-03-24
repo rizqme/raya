@@ -802,6 +802,14 @@ impl<'a> Interpreter<'a> {
                         "getFieldNames requires 1 argument".to_string(),
                     ));
                 }
+                if std::env::var("RAYA_DEBUG_CLASS_PUBLICATION").is_ok() {
+                    eprintln!(
+                        "[get-field-names] args={:?}",
+                        args.iter()
+                            .map(|value| format!("{:#x}", value.raw()))
+                            .collect::<Vec<_>>()
+                    );
+                }
                 let target = args[0];
 
                 let field_names = Self::reflect_object_ptr(target)
@@ -809,7 +817,7 @@ impl<'a> Interpreter<'a> {
                         let obj = unsafe { ptr.as_ref() };
                         self.reflect_object_field_names(target, obj)
                     })
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| self.js_own_property_names(target));
 
                 // Create array of strings
                 let mut arr = Array::new(0, field_names.len());

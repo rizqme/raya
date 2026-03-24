@@ -470,6 +470,18 @@ impl<'a> EarlyErrorPass<'a> {
             return;
         }
 
+        if Self::lookup_decl(&current.vars, ident.name).is_some() {
+            self.error(
+                format!(
+                    "Duplicate {} binding '{}' conflicts with var/function declaration",
+                    label,
+                    self.interner.resolve(ident.name)
+                ),
+                ident.span,
+            );
+            return;
+        }
+
         if self.current_scope_is_function_body() {
             if let Some(parameter_scope) = self.scope_stack.get(current_idx.saturating_sub(1)) {
                 if parameter_scope.kind == ScopeKind::Parameter
@@ -543,6 +555,22 @@ impl<'a> EarlyErrorPass<'a> {
             }
         }
 
+        let current_idx = self.current_scope_index();
+        for (_, frame) in self
+            .scope_stack
+            .iter_mut()
+            .enumerate()
+            .skip(hoist_idx)
+            .take(current_idx.saturating_sub(hoist_idx) + 1)
+        {
+            if frame.kind == ScopeKind::Parameter {
+                continue;
+            }
+            if Self::lookup_decl(&frame.vars, ident.name).is_none() {
+                frame.vars.push((ident.name, ident.span));
+            }
+        }
+
         let hoist_scope = &mut self.scope_stack[hoist_idx];
         if Self::lookup_decl(&hoist_scope.vars, ident.name).is_none() {
             hoist_scope.vars.push((ident.name, ident.span));
@@ -586,6 +614,16 @@ impl<'a> EarlyErrorPass<'a> {
             .any(|label| label.name == name && label.is_iteration_target)
     }
 
+    fn check_embedded_statement(&mut self, stmt: &Statement) {
+        if matches!(stmt, Statement::FunctionDecl(_)) {
+            self.error(
+                "Function declarations are not allowed in this statement position",
+                *stmt.span(),
+            );
+        }
+        self.check_stmt(stmt);
+    }
+
     fn check_stmt(&mut self, stmt: &Statement) {
         match stmt {
             Statement::VariableDecl(decl) => self.check_var_decl(decl),
@@ -610,9 +648,9 @@ impl<'a> EarlyErrorPass<'a> {
             Statement::Expression(expr) => self.check_expr(&expr.expression),
             Statement::If(if_stmt) => {
                 self.check_expr(&if_stmt.condition);
-                self.check_stmt(&if_stmt.then_branch);
+                self.check_embedded_statement(&if_stmt.then_branch);
                 if let Some(else_branch) = &if_stmt.else_branch {
-                    self.check_stmt(else_branch);
+                    self.check_embedded_statement(else_branch);
                 }
             }
             Statement::Switch(switch_stmt) => {
@@ -630,11 +668,11 @@ impl<'a> EarlyErrorPass<'a> {
             }
             Statement::While(while_stmt) => {
                 self.check_expr(&while_stmt.condition);
-                self.push_loop(|this| this.check_stmt(&while_stmt.body));
+                self.push_loop(|this| this.check_embedded_statement(&while_stmt.body));
             }
             Statement::DoWhile(do_while) => {
                 self.push_loop(|this| {
-                    this.check_stmt(&do_while.body);
+                    this.check_embedded_statement(&do_while.body);
                     this.check_expr(&do_while.condition);
                 });
             }
@@ -653,21 +691,21 @@ impl<'a> EarlyErrorPass<'a> {
                     if let Some(update) = &for_stmt.update {
                         this.check_expr(update);
                     }
-                    this.push_loop(|this| this.check_stmt(&for_stmt.body));
+                    this.push_loop(|this| this.check_embedded_statement(&for_stmt.body));
                 });
             }
             Statement::ForOf(for_of) => {
                 self.push_scope(ScopeKind::Block, |this| {
                     this.check_for_left(&for_of.left);
                     this.check_expr(&for_of.right);
-                    this.push_loop(|this| this.check_stmt(&for_of.body));
+                    this.push_loop(|this| this.check_embedded_statement(&for_of.body));
                 });
             }
             Statement::ForIn(for_in) => {
                 self.push_scope(ScopeKind::Block, |this| {
                     this.check_for_left(&for_in.left);
                     this.check_expr(&for_in.right);
-                    this.push_loop(|this| this.check_stmt(&for_in.body));
+                    this.push_loop(|this| this.check_embedded_statement(&for_in.body));
                 });
             }
             Statement::Break(brk) => self.check_break(brk),
@@ -698,7 +736,7 @@ impl<'a> EarlyErrorPass<'a> {
             Statement::Labeled(labeled) => {
                 let is_iteration_target = Self::is_iteration_statement(&labeled.body);
                 self.push_label(labeled.label.name, is_iteration_target, |this| {
-                    this.check_stmt(&labeled.body);
+                    this.check_embedded_statement(&labeled.body);
                 });
             }
         }

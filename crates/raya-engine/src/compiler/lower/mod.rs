@@ -277,6 +277,15 @@ struct StaticMethodInfo {
     kind: ast::MethodKind,
 }
 
+#[derive(Clone)]
+struct RuntimeClassMethodElement {
+    key: ast::PropertyKey,
+    func_id: FunctionId,
+    kind: ast::MethodKind,
+    is_static: bool,
+    order: usize,
+}
+
 /// Materialized outer-scope binding for class-method environment bridging.
 #[derive(Clone, Copy)]
 struct MethodEnvBinding {
@@ -371,6 +380,8 @@ struct ClassInfo {
     static_blocks: Vec<ast::BlockStatement>,
     /// Static methods
     static_methods: Vec<StaticMethodInfo>,
+    /// Runtime class method/accessor publication order.
+    runtime_method_elements: Vec<RuntimeClassMethodElement>,
     /// Parent class (for inheritance)
     parent_class: Option<NominalTypeId>,
     /// Runtime parent class name for ambient/imported parents not declared locally.
@@ -404,6 +415,13 @@ struct LoopContext {
     iterator_record: Option<Register>,
     /// Depth of try_finally_stack when this loop started
     /// (used to know which finally blocks to inline on break/continue)
+    try_finally_depth: usize,
+}
+
+#[derive(Clone)]
+struct LabelContext {
+    label: Symbol,
+    break_target: BasicBlockId,
     try_finally_depth: usize,
 }
 
@@ -525,6 +543,8 @@ pub struct Lowerer<'a> {
     pending_label: Option<Symbol>,
     /// Stack of loop contexts for break/continue
     loop_stack: Vec<LoopContext>,
+    /// Stack of non-iteration labeled statement contexts for labeled break
+    label_stack: Vec<LabelContext>,
     /// Stack of switch exit blocks (break inside switch targets the switch exit, not the enclosing loop)
     switch_stack: Vec<BasicBlockId>,
     /// Stack of try-finally contexts for inlining finally blocks at return/break/continue
@@ -1361,6 +1381,7 @@ impl<'a> Lowerer<'a> {
             next_type_alias_id: 0,
             pending_label: None,
             loop_stack: Vec::new(),
+            label_stack: Vec::new(),
             switch_stack: Vec::new(),
             try_finally_stack: Vec::new(),
             pending_arrow_functions: Vec::new(),
@@ -3359,12 +3380,10 @@ impl<'a> Lowerer<'a> {
         // Collect instance and static method information
         let mut methods = Vec::new();
         let mut static_methods_vec = Vec::new();
+        let mut runtime_method_elements = Vec::new();
         for (member_idx, member) in class.members.iter().enumerate() {
             if let ast::ClassMember::Method(method) = member {
                 if method.body.is_some() {
-                    let Some(method_name) = self.known_class_member_symbol(&method.name) else {
-                        continue;
-                    };
                     let func_id = FunctionId::new(self.next_function_id);
                     self.next_function_id += 1;
 
@@ -3372,41 +3391,51 @@ impl<'a> Lowerer<'a> {
                         self.async_functions.insert(func_id);
                     }
 
-                    if method.is_static {
-                        static_methods_vec.push(StaticMethodInfo {
-                            name: method_name,
-                            func_id,
-                            kind: method.kind,
-                        });
-                        self.static_method_map
-                            .insert((nominal_type_id, method_name), func_id);
-                    } else {
-                        methods.push(ClassMethodInfo {
-                            name: method_name,
-                            func_id,
-                            kind: method.kind,
-                            visibility: method.visibility,
-                        });
-                        self.method_map
-                            .insert((nominal_type_id, method_name), func_id);
-                    }
+                    runtime_method_elements.push(RuntimeClassMethodElement {
+                        key: method.name.clone(),
+                        func_id,
+                        kind: method.kind,
+                        is_static: method.is_static,
+                        order: member_idx,
+                    });
 
-                    if let Some(ret_type) = &method.return_type {
-                        if let Some(ret_nominal_type_id) =
-                            self.try_extract_class_from_type(ret_type)
-                        {
-                            self.method_return_class_map
-                                .insert((nominal_type_id, method_name), ret_nominal_type_id);
-                        } else if let Some(ret_class_name) =
-                            self.try_extract_class_name_from_type(ret_type)
-                        {
-                            self.method_return_type_alias_map
-                                .insert((nominal_type_id, method_name), ret_class_name);
+                    if let Some(method_name) = self.known_class_member_symbol(&method.name) {
+                        if method.is_static {
+                            static_methods_vec.push(StaticMethodInfo {
+                                name: method_name,
+                                func_id,
+                                kind: method.kind,
+                            });
+                            self.static_method_map
+                                .insert((nominal_type_id, method_name), func_id);
+                        } else {
+                            methods.push(ClassMethodInfo {
+                                name: method_name,
+                                func_id,
+                                kind: method.kind,
+                                visibility: method.visibility,
+                            });
+                            self.method_map
+                                .insert((nominal_type_id, method_name), func_id);
                         }
-                        // Store full return TypeId for all return types (bound method propagation)
-                        let type_id = self.resolve_type_annotation(ret_type);
-                        self.method_return_type_map
-                            .insert((nominal_type_id, method_name), type_id);
+
+                        if let Some(ret_type) = &method.return_type {
+                            if let Some(ret_nominal_type_id) =
+                                self.try_extract_class_from_type(ret_type)
+                            {
+                                self.method_return_class_map
+                                    .insert((nominal_type_id, method_name), ret_nominal_type_id);
+                            } else if let Some(ret_class_name) =
+                                self.try_extract_class_name_from_type(ret_type)
+                            {
+                                self.method_return_type_alias_map
+                                    .insert((nominal_type_id, method_name), ret_class_name);
+                            }
+                            // Store full return TypeId for all return types (bound method propagation)
+                            let type_id = self.resolve_type_annotation(ret_type);
+                            self.method_return_type_map
+                                .insert((nominal_type_id, method_name), type_id);
+                        }
                     }
                 }
             }
@@ -3617,6 +3646,7 @@ impl<'a> Lowerer<'a> {
                 static_fields,
                 static_blocks,
                 static_methods: static_methods_vec,
+                runtime_method_elements,
                 parent_class,
                 parent_runtime_name,
                 parent_constructor_symbol,
@@ -4281,6 +4311,26 @@ impl<'a> Lowerer<'a> {
             )
         });
         let class_info = self.class_info_map.get(&nominal_type_id).cloned();
+        let runtime_instance_publication = class.members.iter().any(|member| {
+            matches!(
+                member,
+                ast::ClassMember::Method(method)
+                    if !method.is_static
+                        && method.body.is_some()
+                        && matches!(method.name, ast::PropertyKey::Computed(_))
+            )
+        });
+        let runtime_static_publication = class.members.iter().any(|member| {
+            matches!(
+                member,
+                ast::ClassMember::Method(method)
+                    if method.is_static
+                        && method.body.is_some()
+                        && matches!(method.name, ast::PropertyKey::Computed(_))
+            )
+        });
+        ir_class.runtime_instance_publication = runtime_instance_publication;
+        ir_class.runtime_static_publication = runtime_static_publication;
 
         // Set parent class if this class extends another
         if let Some(ref info) = class_info {
@@ -4393,9 +4443,18 @@ impl<'a> Lowerer<'a> {
             if let ast::ClassMember::Method(method) = member {
                 // Only lower methods that have a body (not abstract methods)
                 if let Some(body) = &method.body {
-                    let Some(method_symbol) = self.known_class_member_symbol(&method.name) else {
+                    let Some(runtime_method) = class_info
+                        .as_ref()
+                        .and_then(|info| {
+                            info.runtime_method_elements
+                                .iter()
+                                .find(|elem| elem.order == member_idx)
+                        })
+                        .cloned()
+                    else {
                         continue;
                     };
+                    let method_symbol = self.known_class_member_symbol(&method.name);
                     let method_name = self.class_member_display_name(&method.name, member_idx);
                     let full_name = if method.is_static {
                         format!("{}::static::{}", name, method_name)
@@ -4794,24 +4853,28 @@ impl<'a> Lowerer<'a> {
 
                     // Get the function ID and add to pending methods
                     let method_name_str = method_name.as_str();
-                    let func_id = if method.is_static {
-                        *self.static_method_map.get(&(nominal_type_id, method_symbol))
-                            .unwrap_or_else(|| panic!(
-                                "ICE: static method '{}::{}' not found in static_method_map (nominal_type_id={})",
-                                name, method_name_str, nominal_type_id.as_u32()
-                            ))
+                    let func_id = if let Some(method_symbol) = method_symbol {
+                        if method.is_static {
+                            *self.static_method_map.get(&(nominal_type_id, method_symbol))
+                                .unwrap_or_else(|| panic!(
+                                    "ICE: static method '{}::{}' not found in static_method_map (nominal_type_id={})",
+                                    name, method_name_str, nominal_type_id.as_u32()
+                                ))
+                        } else {
+                            *self
+                                .method_map
+                                .get(&(nominal_type_id, method_symbol))
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "ICE: method '{}::{}' not found in method_map (nominal_type_id={})",
+                                        name,
+                                        method_name_str,
+                                        nominal_type_id.as_u32()
+                                    )
+                                })
+                        }
                     } else {
-                        *self
-                            .method_map
-                            .get(&(nominal_type_id, method_symbol))
-                            .unwrap_or_else(|| {
-                                panic!(
-                                    "ICE: method '{}::{}' not found in method_map (nominal_type_id={})",
-                                    name,
-                                    method_name_str,
-                                    nominal_type_id.as_u32()
-                                )
-                            })
+                        runtime_method.func_id
                     };
                     let ir_func = self.current_function.take().unwrap();
                     self.pending_arrow_functions
@@ -4829,15 +4892,19 @@ impl<'a> Lowerer<'a> {
                     // Add methods to the IR class metadata so runtime registration
                     // can materialize both prototype and constructor members.
                     if method.is_static {
-                        ir_class.add_static_method(func_id, ir_method_kind);
+                        if method_symbol.is_some() {
+                            ir_class.add_static_method(func_id, ir_method_kind);
+                        }
                     } else {
-                        if let Some(&slot) = self
-                            .method_slot_map
-                            .get(&(nominal_type_id, method_symbol))
-                        {
-                            ir_class.add_method_with_slot(func_id, slot, ir_method_kind);
-                        } else {
-                            ir_class.add_method(func_id, ir_method_kind);
+                        if let Some(method_symbol) = method_symbol {
+                            if let Some(&slot) = self
+                                .method_slot_map
+                                .get(&(nominal_type_id, method_symbol))
+                            {
+                                ir_class.add_method_with_slot(func_id, slot, ir_method_kind);
+                            } else {
+                                ir_class.add_method(func_id, ir_method_kind);
+                            }
                         }
                     }
 
@@ -7359,6 +7426,10 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn identifier_requires_late_bound_dispatch(&self, name: Symbol) -> bool {
+        if self.class_map.contains_key(&name) {
+            return false;
+        }
+
         if self.late_bound_object_vars.contains(&name)
             || self.constructor_value_ctor_map.contains_key(&name)
         {

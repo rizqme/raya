@@ -3748,7 +3748,8 @@ impl<'a> Binder<'a> {
                 };
 
                 // Bind all names in the pattern (handles destructuring)
-                self.bind_pattern_names(param, error_ty, true, false)?;
+                // JS catch bindings are mutable lexical bindings.
+                self.bind_pattern_names(param, error_ty, false, false)?;
             }
 
             // Bind catch body

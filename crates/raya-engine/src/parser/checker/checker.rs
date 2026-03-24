@@ -231,6 +231,9 @@ pub struct TypeChecker<'a> {
     /// inside expressions, so arrow body scopes don't exist in the symbol table.
     arrow_depth: u32,
 
+    /// Mutable bindings introduced by expression-scoped function parameters.
+    synthetic_mutable_bindings: Vec<FxHashSet<String>>,
+
     /// Warnings collected during type checking
     warnings: Vec<CheckWarning>,
 
@@ -303,6 +306,7 @@ impl<'a> TypeChecker<'a> {
             current_class_type: None,
             in_constructor: false,
             arrow_depth: 0,
+            synthetic_mutable_bindings: Vec::new(),
             warnings: Vec::new(),
             return_type_collector: Vec::new(),
             mode: TypeSystemMode::Raya,
@@ -1001,6 +1005,13 @@ impl<'a> TypeChecker<'a> {
         if let Some(parent) = self.scope_stack.pop() {
             self.current_scope = parent;
         }
+    }
+
+    fn is_synthetic_mutable_binding(&self, name: &str) -> bool {
+        self.synthetic_mutable_bindings
+            .iter()
+            .rev()
+            .any(|bindings| bindings.contains(name))
     }
 
     /// Check a module
@@ -4543,6 +4554,9 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        self.synthetic_mutable_bindings
+            .push(param_names.iter().cloned().collect());
+
         // Collect free variables from the arrow body
         let mut collector = FreeVariableCollector::new();
         for name in &param_names {
@@ -4678,6 +4692,7 @@ impl<'a> TypeChecker<'a> {
 
         // Restore type environment
         self.type_env = saved_env;
+        self.synthetic_mutable_bindings.pop();
 
         // Check for rest parameter
         let rest_param = arrow.params.iter().find(|p| p.is_rest).map(|param| {
@@ -8064,7 +8079,7 @@ impl<'a> TypeChecker<'a> {
         if let Expression::Identifier(ident) = &*assign.left {
             let name = self.resolve(ident.name);
             if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
-                if symbol.flags.is_const {
+                if symbol.flags.is_const && !self.is_synthetic_mutable_binding(&name) {
                     self.push_error_soft(CheckError::ConstReassignment {
                         name: name.clone(),
                         span: assign.span,

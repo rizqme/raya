@@ -12,6 +12,7 @@ const OBJECT_GET_PROTOTYPE_OF: number = 0x0011;
 const OBJECT_IS_EXTENSIBLE: number = 0x0015;
 const OBJECT_PREVENT_EXTENSIONS: number = 0x0016;
 const OBJECT_SET_PROTOTYPE_OF: number = 0x001B;
+const OBJECT_GET_OWN_PROPERTY_SYMBOLS: number = 0x003E;
 const NC_REFLECT_GET_FIELD_NAMES: number = 0x0D23;
 const OBJECT_SAME_VALUE: number = 0x0008;
 
@@ -85,6 +86,10 @@ class Object {
 
     static getOwnPropertyNames<T>(obj: T): string[] {
         return __NATIVE_CALL<string[]>(NC_REFLECT_GET_FIELD_NAMES, obj);
+    }
+
+    static getOwnPropertySymbols<T>(obj: T): Symbol[] {
+        return __NATIVE_CALL<Symbol[]>(OBJECT_GET_OWN_PROPERTY_SYMBOLS, obj);
     }
 
     static getPrototypeOf<T>(obj: T): Object | null {

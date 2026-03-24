@@ -107,6 +107,11 @@ pub const OBJECT_EVAL_GET_COMPLETION: u16 = 0x0031;
 pub const OBJECT_EVAL_ENV_DECLARE_LEXICAL: u16 = 0x003B;
 /// delete target[key] using strict-mode JS delete semantics.
 pub const OBJECT_DELETE_PROPERTY_STRICT: u16 = 0x003C;
+/// Define a class method/accessor on an internal class target
+/// (constructor/prototype) without the public Object.defineProperty guard.
+pub const OBJECT_DEFINE_CLASS_PROPERTY: u16 = 0x003D;
+/// Object.getOwnPropertySymbols helper.
+pub const OBJECT_GET_OWN_PROPERTY_SYMBOLS: u16 = 0x003E;
 /// Read the current JS `new.target` value.
 pub const OBJECT_CURRENT_NEW_TARGET: u16 = 0x0032;
 /// Resolve `super.prop` using the current callable home object.
@@ -648,6 +653,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_EVAL_GET_COMPLETION => "Object.evalGetCompletion",
         OBJECT_EVAL_ENV_DECLARE_LEXICAL => "Object.evalEnvDeclareLexical",
         OBJECT_DELETE_PROPERTY_STRICT => "Object.deletePropertyStrict",
+        OBJECT_DEFINE_CLASS_PROPERTY => "Object.defineClassElement",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",
