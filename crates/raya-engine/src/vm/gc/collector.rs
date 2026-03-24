@@ -360,6 +360,12 @@ impl GarbageCollector {
                     }
                     // Trace prototype chain
                     self.mark_value(obj.prototype);
+                    if let Some(generator) = obj.generator_snapshot.as_deref() {
+                        for &value in &generator.yielded {
+                            self.mark_value(value);
+                        }
+                        self.mark_value(generator.completion);
+                    }
                     // Trace callable extension data if present
                     if let Some(ref callable) = obj.callable {
                         for &cap in &callable.captures {

@@ -1527,6 +1527,11 @@ fn class_member_async_modifier(parser: &Parser) -> bool {
     }
 }
 
+fn intern_private_name(parser: &mut Parser, sym: Symbol) -> Symbol {
+    let raw = parser.resolve(sym).to_string();
+    parser.intern(&format!("#{raw}"))
+}
+
 /// Parse a single class member
 fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
     let start_span = parser.current_span();
@@ -1621,8 +1626,9 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
     // Parse member name - allow keywords that are valid as method names (like JavaScript/TypeScript)
     // Also handle private identifiers (#name) — strip the # and treat as private
     let name = if let Token::PrivateIdentifier(name) = parser.current() {
-        // Private field/method: #name → treated as private, name stored without #
-        let name_str = *name;
+        // Preserve the private sigil in the interned name so binder/lowering/runtime
+        // can distinguish `#name` from public `name`.
+        let name_str = intern_private_name(parser, *name);
         let name_span = parser.current_span();
         parser.advance();
         visibility = Visibility::Private;

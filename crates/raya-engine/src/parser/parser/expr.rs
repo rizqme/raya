@@ -10,6 +10,11 @@ fn contextual_identifier_symbol(parser: &mut Parser) -> Option<Symbol> {
     parser.current_identifier_like_symbol()
 }
 
+fn intern_private_name(parser: &mut Parser, sym: Symbol) -> Symbol {
+    let raw = parser.resolve(sym).to_string();
+    parser.intern(&format!("#{raw}"))
+}
+
 /// Check if a token is a keyword that can be used as a property/method name.
 /// Returns the keyword string for keywords.
 pub(super) fn keyword_as_property_name(token: &Token) -> Option<&'static str> {
@@ -73,7 +78,7 @@ pub(super) fn keyword_as_property_name(token: &Token) -> Option<&'static str> {
 fn get_property_name_symbol(parser: &mut Parser) -> Option<Symbol> {
     match parser.current() {
         Token::Identifier(sym) => Some(*sym),
-        Token::PrivateIdentifier(sym) => Some(*sym), // #name → name (strip #)
+        Token::PrivateIdentifier(sym) => Some(intern_private_name(parser, *sym)),
         token => keyword_as_property_name(token).map(|name| parser.intern(name)),
     }
 }

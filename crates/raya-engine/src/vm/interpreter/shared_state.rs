@@ -933,6 +933,15 @@ impl SharedVmState {
         binding: &JsGlobalBindingInfo,
         absolute_slot: usize,
     ) {
+        let canonical_existing = if binding.published_to_global_object {
+            self.js_global_bindings
+                .read()
+                .get(&binding.name)
+                .copied()
+                .filter(|existing| existing.published_to_global_object)
+        } else {
+            None
+        };
         let initialized = matches!(
             binding.kind,
             JsGlobalBindingKind::Var | JsGlobalBindingKind::Function
@@ -940,23 +949,28 @@ impl SharedVmState {
         self.js_global_binding_slots
             .write()
             .insert(absolute_slot, binding.name.clone());
-        self.js_global_bindings.write().insert(
-            binding.name.clone(),
-            JsGlobalBindingRecord {
-                slot: absolute_slot,
-                kind: binding.kind,
-                published_to_global_object: binding.published_to_global_object,
-                initialized,
-            },
-        );
+        if canonical_existing.is_none() {
+            self.js_global_bindings.write().insert(
+                binding.name.clone(),
+                JsGlobalBindingRecord {
+                    slot: absolute_slot,
+                    kind: binding.kind,
+                    published_to_global_object: binding.published_to_global_object,
+                    initialized,
+                },
+            );
+        }
         if std::env::var("RAYA_DEBUG_JS_GLOBAL_BINDINGS").is_ok() {
             eprintln!(
-                "[js-global:register] name={} slot={} kind={:?} published={} initialized={}",
+                "[js-global:register] name={} slot={} kind={:?} published={} initialized={} canonical={}",
                 binding.name,
                 absolute_slot,
                 binding.kind,
                 binding.published_to_global_object,
-                initialized
+                initialized,
+                canonical_existing
+                    .map(|existing| existing.slot.to_string())
+                    .unwrap_or_else(|| "-".to_string())
             );
         }
     }

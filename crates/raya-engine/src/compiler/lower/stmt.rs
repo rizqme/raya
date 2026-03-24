@@ -22,6 +22,36 @@ enum ForOfIterableKind {
 }
 
 impl<'a> Lowerer<'a> {
+    fn ensure_js_nested_class_binding(&mut self, name: crate::parser::Symbol) {
+        if !self.js_this_binding_compat
+            || self.function_depth == 0
+            || self.shared_script_binding_slot(name).is_some()
+            || self.local_map.contains_key(&name)
+        {
+            return;
+        }
+
+        let local_idx = self.allocate_local(name);
+        let undefined = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::Assign {
+            dest: undefined.clone(),
+            value: IrValue::Constant(IrConstant::Undefined),
+        });
+
+        let refcell_reg = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::NewRefCell {
+            dest: refcell_reg.clone(),
+            initial_value: undefined,
+        });
+        self.local_registers.insert(local_idx, refcell_reg.clone());
+        self.refcell_registers.insert(local_idx, refcell_reg.clone());
+        self.refcell_inner_types.insert(local_idx, UNRESOLVED);
+        self.emit(IrInstr::StoreLocal {
+            index: local_idx,
+            value: refcell_reg,
+        });
+    }
+
     fn existing_refcell_local(&self, local_idx: u16) -> Option<Register> {
         self.refcell_registers
             .get(&local_idx)
@@ -214,6 +244,7 @@ impl<'a> Lowerer<'a> {
                 if self.js_this_binding_compat {
                     self.visible_js_lexical_symbols.insert(class.name.name);
                 }
+                self.ensure_js_nested_class_binding(class.name.name);
                 let Some(nominal_type_id) = self.nominal_type_id_for_decl(class) else {
                     self.errors
                         .push(crate::compiler::CompileError::InternalError {
@@ -230,12 +261,8 @@ impl<'a> Lowerer<'a> {
                     // Nested class declaration — lower once by declaration identity.
                     // lower_class resets per-function state (registers, blocks, locals)
                     // for each method/constructor, so save and restore enclosing state.
-                    let in_module_wrapper = self
-                        .current_function
-                        .as_ref()
-                        .is_some_and(|f| is_module_wrapper_function_name(&f.name));
                     let saved_pending_method_env = self.pending_class_method_env_globals.take();
-                    if in_module_wrapper {
+                    if self.current_function.is_some() {
                         self.pending_class_method_env_globals =
                             Some(self.materialize_current_locals_for_method_env());
                     }
@@ -305,6 +332,12 @@ impl<'a> Lowerer<'a> {
                 if self.in_direct_eval_function {
                     let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
                     self.emit_direct_eval_binding_set(self.interner.resolve(class.name.name), class_value);
+                } else if self.js_this_binding_compat
+                    && self.function_depth > 0
+                    && self.shared_script_binding_slot(class.name.name).is_none()
+                {
+                    let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
+                    self.store_identifier_value(class.name.name, class_value);
                 }
             }
             Statement::TypeAliasDecl(_) => {
@@ -2062,12 +2095,17 @@ impl<'a> Lowerer<'a> {
                         } else {
                             self.clear_constructor_value_binding(name);
                         }
+                    } else if let Some(class_symbol) = self.class_expression_name_symbol(init) {
+                        self.mark_constructor_value_binding(name, class_symbol, None);
                     } else {
                         self.clear_constructor_value_binding(name);
                     }
 
                     // Infer class type from method call return types
-                    if let Some(nominal_type_id) = self.infer_nominal_type_id(init) {
+                    if let Some(nominal_type_id) = self
+                        .infer_nominal_type_id(init)
+                        .or_else(|| self.nominal_type_id_for_class_expression(init))
+                    {
                         self.variable_class_map.insert(name, nominal_type_id);
                         self.clear_late_bound_object_binding(name);
                     }
@@ -2355,13 +2393,18 @@ impl<'a> Lowerer<'a> {
                 } else {
                     self.clear_constructor_value_binding(name);
                 }
+            } else if let Some(class_symbol) = self.class_expression_name_symbol(init) {
+                self.mark_constructor_value_binding(name, class_symbol, None);
             } else {
                 self.clear_constructor_value_binding(name);
             }
 
             // Infer class type from method call return types
             // e.g., `let output = source.pipeThrough(x)` → infer ReadableStream from return type
-            if let Some(nominal_type_id) = self.infer_nominal_type_id(init) {
+            if let Some(nominal_type_id) = self
+                .infer_nominal_type_id(init)
+                .or_else(|| self.nominal_type_id_for_class_expression(init))
+            {
                 self.variable_class_map.insert(name, nominal_type_id);
                 self.clear_late_bound_object_binding(name);
             }

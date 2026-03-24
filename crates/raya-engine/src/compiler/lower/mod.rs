@@ -233,6 +233,10 @@ struct ClassMethodInfo {
     name: Symbol,
     /// Function ID for this method
     func_id: FunctionId,
+    /// Source-level method kind (normal/getter/setter)
+    kind: ast::MethodKind,
+    /// Visibility for member access semantics.
+    visibility: ast::Visibility,
 }
 
 /// Information about a constructor parameter (for default value handling)
@@ -1571,7 +1575,10 @@ impl<'a> Lowerer<'a> {
     ) -> Vec<crate::compiler::bytecode::module::JsGlobalBindingInfo> {
         use crate::compiler::bytecode::module::{JsGlobalBindingInfo, JsGlobalBindingKind};
 
-        if !self.js_this_binding_compat || self.builtin_this_coercion_compat {
+        if !self.js_this_binding_compat
+            || self.builtin_this_coercion_compat
+            || !self.emit_script_global_bindings
+        {
             return Vec::new();
         }
 
@@ -1675,8 +1682,24 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn emit_function_return(&mut self, value: Option<Register>) {
-        let return_value = if value.is_none() {
-            self.load_generator_yield_array()
+        let return_value = if let Some(yield_array) = self.load_generator_yield_array() {
+            let completion = if let Some(value) = value {
+                value
+            } else {
+                let undefined = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::Assign {
+                    dest: undefined.clone(),
+                    value: IrValue::Constant(IrConstant::Undefined),
+                });
+                undefined
+            };
+            let iterator = self.alloc_register(UNRESOLVED);
+            self.emit(IrInstr::NativeCall {
+                dest: Some(iterator.clone()),
+                native_id: crate::compiler::native_id::OBJECT_GENERATOR_SNAPSHOT_NEW,
+                args: vec![yield_array, completion],
+            });
+            Some(iterator)
         } else {
             value
         };
@@ -2931,6 +2954,70 @@ impl<'a> Lowerer<'a> {
         self.class_decl_ids.get(&class.span.start).copied()
     }
 
+    pub(super) fn nominal_type_id_for_class_expression(
+        &self,
+        expr: &ast::Expression,
+    ) -> Option<NominalTypeId> {
+        match expr {
+            ast::Expression::Parenthesized(inner) => {
+                self.nominal_type_id_for_class_expression(&inner.expression)
+            }
+            ast::Expression::Call(call) if call.arguments.is_empty() => {
+                let callee = match &*call.callee {
+                    ast::Expression::Parenthesized(inner) => &inner.expression,
+                    other => other,
+                };
+                let ast::Expression::Function(function_expr) = callee else {
+                    return None;
+                };
+                let [ast::Statement::ClassDecl(class_decl), ast::Statement::Return(ret)] =
+                    function_expr.body.statements.as_slice()
+                else {
+                    return None;
+                };
+                let Some(ast::Expression::Identifier(ret_ident)) = &ret.value else {
+                    return None;
+                };
+                if ret_ident.name != class_decl.name.name {
+                    return None;
+                }
+                self.nominal_type_id_for_decl(class_decl)
+                    .or_else(|| self.class_map.get(&class_decl.name.name).copied())
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn class_expression_name_symbol(
+        &self,
+        expr: &ast::Expression,
+    ) -> Option<Symbol> {
+        match expr {
+            ast::Expression::Parenthesized(inner) => {
+                self.class_expression_name_symbol(&inner.expression)
+            }
+            ast::Expression::Call(call) if call.arguments.is_empty() => {
+                let callee = match &*call.callee {
+                    ast::Expression::Parenthesized(inner) => &inner.expression,
+                    other => other,
+                };
+                let ast::Expression::Function(function_expr) = callee else {
+                    return None;
+                };
+                let [ast::Statement::ClassDecl(class_decl), ast::Statement::Return(ret)] =
+                    function_expr.body.statements.as_slice()
+                else {
+                    return None;
+                };
+                let Some(ast::Expression::Identifier(ret_ident)) = &ret.value else {
+                    return None;
+                };
+                (ret_ident.name == class_decl.name.name).then_some(class_decl.name.name)
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn function_id_for_decl(&self, func: &ast::FunctionDecl) -> Option<FunctionId> {
         self.function_decl_ids.get(&func.span.start).copied()
     }
@@ -3243,6 +3330,8 @@ impl<'a> Lowerer<'a> {
                         methods.push(ClassMethodInfo {
                             name: method.name.name,
                             func_id,
+                            kind: method.kind,
+                            visibility: method.visibility,
                         });
                         self.method_map
                             .insert((nominal_type_id, method.name.name), func_id);
@@ -3765,9 +3854,6 @@ impl<'a> Lowerer<'a> {
         self.current_function_mut()
             .add_block(BasicBlock::with_label(entry_block, "entry"));
 
-        if func.is_generator {
-            self.init_generator_yield_array();
-        }
         if self.in_direct_eval_function {
             self.init_eval_completion_local();
         }
@@ -3824,6 +3910,10 @@ impl<'a> Lowerer<'a> {
         self.emit_js_function_var_hoists(&func.body.statements);
         self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
+
+        if func.is_generator {
+            self.init_generator_yield_array();
+        }
 
         // Lower function body
         for stmt in &func.body.statements {
@@ -4490,6 +4580,7 @@ impl<'a> Lowerer<'a> {
                     let mut ir_func = IrFunction::new(&full_name, params, return_ty);
                     ir_func.uses_js_this_slot = method_has_js_this_slot;
                     ir_func.is_constructible = false;
+                    ir_func.is_generator = method.is_generator;
                     ir_func.visible_length = visible_length;
                     ir_func.is_strict_js = true;
                     ir_func.uses_builtin_this_coercion = self.builtin_this_coercion_compat;
@@ -4518,7 +4609,9 @@ impl<'a> Lowerer<'a> {
                     }
                     self.current_function = Some(ir_func);
                     let saved_js_strict_context = self.js_strict_context;
+                    let saved_in_direct_eval_function = self.in_direct_eval_function;
                     self.js_strict_context = true;
+                    self.in_direct_eval_function = false;
                     let arguments_symbol = self.find_js_arguments_symbol(&method.params, body);
 
                     {
@@ -4599,6 +4692,10 @@ impl<'a> Lowerer<'a> {
                     self.emit_js_function_captured_lexical_prebindings(&body.statements);
                     self.emit_js_function_decl_hoists(&body.statements);
 
+                    if method.is_generator {
+                        self.init_generator_yield_array();
+                    }
+
                     // Lower method body
                     for stmt in &body.statements {
                         self.lower_stmt(stmt);
@@ -4634,6 +4731,7 @@ impl<'a> Lowerer<'a> {
                     self.pending_arrow_functions
                         .push((func_id.as_u32(), ir_func));
                     self.js_strict_context = saved_js_strict_context;
+                    self.in_direct_eval_function = saved_in_direct_eval_function;
 
                     // Add instance methods to the IR class vtable with slot index
                     if !method.is_static {
@@ -4861,7 +4959,9 @@ impl<'a> Lowerer<'a> {
                 }
                 self.current_function = Some(ir_func);
                 let saved_js_strict_context = self.js_strict_context;
+                let saved_in_direct_eval_function = self.in_direct_eval_function;
                 self.js_strict_context = true;
+                self.in_direct_eval_function = false;
                 let arguments_symbol = self.find_js_arguments_symbol(&ctor.params, &ctor.body);
 
                 {
@@ -4986,6 +5086,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 self.js_strict_context = saved_js_strict_context;
+                self.in_direct_eval_function = saved_in_direct_eval_function;
                 self.constructor_return_this = saved_constructor_return_this;
 
                 // Clear method context

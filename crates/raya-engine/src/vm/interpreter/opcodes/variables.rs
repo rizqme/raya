@@ -4,9 +4,11 @@ use crate::vm::gc::header_ptr_from_value_ptr;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{Object, RayaString, TypeHandle};
+use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
+use std::sync::Arc;
 use std::any::TypeId;
 
 impl<'a> Interpreter<'a> {
@@ -16,6 +18,7 @@ impl<'a> Interpreter<'a> {
         ip: &mut usize,
         code: &[u8],
         module: &Module,
+        task: &Arc<Task>,
         locals_base: usize,
         opcode: Opcode,
         current_arg_count: usize,
@@ -213,7 +216,28 @@ impl<'a> Interpreter<'a> {
                 if index >= globals.len() {
                     globals.resize(index + 1, Value::null());
                 }
-                globals[index] = value;
+                if let Some(name) = self.js_global_binding_slots.read().get(&index).cloned() {
+                    if let Some(binding) = self.js_global_bindings.read().get(&name).copied() {
+                        if binding.slot != index {
+                            let current_value = globals[index];
+                            if binding.slot >= globals.len() {
+                                globals.resize(binding.slot + 1, Value::null());
+                            }
+                            if current_value.is_null() && value.is_undefined() {
+                                globals[index] = globals[binding.slot];
+                            } else {
+                                globals[index] = value;
+                                globals[binding.slot] = value;
+                            }
+                        } else {
+                            globals[index] = value;
+                        }
+                    } else {
+                        globals[index] = value;
+                    }
+                } else {
+                    globals[index] = value;
+                }
                 drop(globals);
                 if let Some(name) = self.js_global_binding_slots.read().get(&index).cloned() {
                     if std::env::var("RAYA_DEBUG_JS_GLOBAL_BINDINGS").is_ok() {
@@ -224,8 +248,20 @@ impl<'a> Interpreter<'a> {
                             value.raw()
                         );
                     }
+                    let mut published_to_global_object = false;
                     if let Some(binding) = self.js_global_bindings.write().get_mut(&name) {
                         binding.initialized = true;
+                        published_to_global_object = binding.published_to_global_object;
+                    }
+                    if published_to_global_object {
+                        if let Err(error) = self.sync_existing_script_global_property(
+                            &name,
+                            value,
+                            task,
+                            module,
+                        ) {
+                            return OpcodeResult::Error(error);
+                        }
                     }
                 }
                 OpcodeResult::Continue

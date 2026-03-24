@@ -474,6 +474,14 @@ pub struct ArgumentsObjectData {
     pub strict_poison: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct GeneratorSnapshotData {
+    pub yielded: Vec<Value>,
+    pub next_index: usize,
+    pub completion: Value,
+    pub completion_emitted: bool,
+}
+
 /// Object instance (heap-allocated)
 #[derive(Debug, Clone)]
 pub struct Object {
@@ -491,6 +499,8 @@ pub struct Object {
     pub callable: Option<Box<CallableData>>,
     /// Optional arguments-exotic payload.
     pub arguments: Option<Box<ArgumentsObjectData>>,
+    /// Optional eager generator snapshot payload used to surface `.next()`/`.return()`.
+    pub generator_snapshot: Option<Box<GeneratorSnapshotData>>,
 }
 
 impl Object {
@@ -508,6 +518,7 @@ impl Object {
             prototype: Value::null(),
             callable: None,
             arguments: None,
+            generator_snapshot: None,
         }
     }
 
@@ -521,6 +532,7 @@ impl Object {
             prototype: Value::null(),
             callable: None,
             arguments: None,
+            generator_snapshot: None,
         }
     }
 

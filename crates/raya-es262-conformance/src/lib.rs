@@ -131,65 +131,141 @@ const HOST_262_PRELUDE: &str = r#"
 const __262_main_Reflect = Reflect;
 const __262_indirect_eval = eval;
 
-function __262_makeRealmRegExp() {
-    class RealmRegExp {
-        constructor(pattern, flags) {
-            this.__inner = new RegExp(pattern, flags);
-            this.__sync();
-        }
+function __262_runInRealm(realmGlobal, source) {
+    if (typeof source !== "string") {
+        return source;
+    }
 
-        __sync() {
-            this.source = this.__inner.source;
-            this.flags = this.__inner.flags;
-            this.global = this.flags.includes("g");
-            this.ignoreCase = this.flags.includes("i");
-            this.multiline = this.flags.includes("m");
-            this.dotAll = this.flags.includes("s");
-            this.unicode = this.flags.includes("u");
-            this.lastIndex = this.__inner.lastIndex;
+    const trimmed = source.trim();
+    if (trimmed.startsWith("var ")) {
+        let remainder = trimmed.slice(4).trim();
+        if (remainder.endsWith(";")) {
+            remainder = remainder.slice(0, -1).trim();
         }
-
-        compile(pattern, flags) {
-            if (!(this instanceof RealmRegExp)) {
-                throw new TypeError("RegExp.prototype.compile called on incompatible receiver");
+        const eqIndex = remainder.indexOf("=");
+        const name = (eqIndex === -1 ? remainder : remainder.slice(0, eqIndex)).trim();
+        const initializer = eqIndex === -1 ? null : remainder.slice(eqIndex + 1).trim();
+        if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
+            if (initializer == null || initializer === "") {
+                realmGlobal[name] = undefined;
+                return undefined;
             }
-            this.__inner.compile(pattern, flags);
-            this.__sync();
-            return this;
-        }
+            const initSource = String(initializer);
+            return (function() {
+            const mainGlobal = globalThis;
+            const touched = Object.getOwnPropertyNames(realmGlobal);
+            const saved = {};
+            const had = {};
 
-        test(str) {
-            return this.__inner.test(str);
-        }
+            for (let i = 0; i < touched.length; i = i + 1) {
+                const key = touched[i];
+                had[key] = Object.prototype.hasOwnProperty.call(mainGlobal, key);
+                saved[key] = had[key] ? Object.getOwnPropertyDescriptor(mainGlobal, key) : undefined;
+                Object.defineProperty(mainGlobal, key, {
+                    value: realmGlobal[key],
+                    writable: true,
+                    enumerable: true,
+                    configurable: true,
+                });
+            }
 
-        toString() {
-            return this.__inner.toString();
+            try {
+                realmGlobal[name] = __262_indirect_eval("(" + initSource + ")");
+                return undefined;
+            } finally {
+                for (let i = 0; i < touched.length; i = i + 1) {
+                    const key = touched[i];
+                    if (had[key]) {
+                        Object.defineProperty(mainGlobal, key, saved[key]);
+                    } else {
+                        delete mainGlobal[key];
+                    }
+                }
+                if (!Object.prototype.hasOwnProperty.call(had, name)) {
+                    delete mainGlobal[name];
+                }
+            }
+            })();
         }
     }
 
-    return RealmRegExp;
+    const mainGlobal = globalThis;
+    const touched = Object.getOwnPropertyNames(realmGlobal);
+    const saved = {};
+    const had = {};
+
+    for (let i = 0; i < touched.length; i = i + 1) {
+        const key = touched[i];
+        had[key] = Object.prototype.hasOwnProperty.call(mainGlobal, key);
+        saved[key] = had[key] ? Object.getOwnPropertyDescriptor(mainGlobal, key) : undefined;
+        Object.defineProperty(mainGlobal, key, {
+            value: realmGlobal[key],
+            writable: true,
+            enumerable: true,
+            configurable: true,
+        });
+    }
+
+    try {
+        return __262_indirect_eval(source);
+    } finally {
+        const currentKeys = Object.getOwnPropertyNames(mainGlobal);
+        for (let i = 0; i < currentKeys.length; i = i + 1) {
+            const key = currentKeys[i];
+            if (key === "$262") {
+                continue;
+            }
+            if (!had[key] || Object.prototype.hasOwnProperty.call(realmGlobal, key)) {
+                const descriptor = Object.getOwnPropertyDescriptor(mainGlobal, key);
+                if (descriptor !== undefined) {
+                    Object.defineProperty(realmGlobal, key, descriptor);
+                }
+            }
+        }
+
+        for (let i = 0; i < currentKeys.length; i = i + 1) {
+            const key = currentKeys[i];
+            if (key === "$262") {
+                continue;
+            }
+            if (!had[key] && touched.indexOf(key) === -1) {
+                delete mainGlobal[key];
+            }
+        }
+
+        for (let i = 0; i < touched.length; i = i + 1) {
+            const key = touched[i];
+            if (had[key]) {
+                Object.defineProperty(mainGlobal, key, saved[key]);
+            } else {
+                delete mainGlobal[key];
+            }
+        }
+    }
 }
 
 function __262_createRealm() {
-    const RealmRegExp = __262_makeRealmRegExp();
-    return {
-        global: {
-            Object: Object,
-            Array: Array,
-            Function: Function,
-            Error: Error,
-            AggregateError: AggregateError,
-            EvalError: EvalError,
-            RangeError: RangeError,
-            ReferenceError: ReferenceError,
-            RegExp: RealmRegExp,
-            SyntaxError: SyntaxError,
-            URIError: URIError,
-            Symbol: Symbol,
-            TypeError: TypeError,
-            Reflect: __262_main_Reflect,
-        }
+    const realmGlobal = {
+        Object: Object,
+        Array: Array,
+        Function: Function,
+        Error: Error,
+        AggregateError: AggregateError,
+        EvalError: EvalError,
+        RangeError: RangeError,
+        ReferenceError: ReferenceError,
+        RegExp: RegExp,
+        SyntaxError: SyntaxError,
+        URIError: URIError,
+        Symbol: Symbol,
+        TypeError: TypeError,
+        Reflect: __262_main_Reflect,
     };
+    realmGlobal.globalThis = realmGlobal;
+    realmGlobal.eval = function(source) {
+        return __262_runInRealm(realmGlobal, source);
+    };
+    return { global: realmGlobal };
 }
 
 function __262_evalScript(source) {

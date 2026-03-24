@@ -113,6 +113,14 @@ pub const OBJECT_SET_CALLABLE_HOME_OBJECT: u16 = 0x0034;
 pub const OBJECT_PUSH_WITH_ENV: u16 = 0x0035;
 /// Pop the active `with` object environment from the JS env chain.
 pub const OBJECT_POP_WITH_ENV: u16 = 0x0036;
+/// Wrap eager generator snapshot data into an iterator-shaped object.
+pub const OBJECT_GENERATOR_SNAPSHOT_NEW: u16 = 0x0037;
+/// Advance a generator snapshot iterator.
+pub const OBJECT_GENERATOR_SNAPSHOT_NEXT: u16 = 0x0038;
+/// Close a generator snapshot iterator.
+pub const OBJECT_GENERATOR_SNAPSHOT_RETURN: u16 = 0x0039;
+/// Return the generator snapshot iterator itself for `@@iterator`.
+pub const OBJECT_GENERATOR_SNAPSHOT_ITERATOR: u16 = 0x003A;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
