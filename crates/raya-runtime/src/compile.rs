@@ -176,7 +176,11 @@ pub fn compile_source_with_modes_and_ts_options(
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
     use crate::module_system::ProgramCompiler;
-    let virtual_entry = Path::new("<inline>.raya");
+    let virtual_entry = match type_mode {
+        TypeMode::Js => Path::new("<inline>.js"),
+        TypeMode::Ts => Path::new("<inline>.ts"),
+        TypeMode::Raya => Path::new("<inline>.raya"),
+    };
     let compiler = ProgramCompiler {
         builtin_mode,
         type_mode,

@@ -3139,7 +3139,9 @@ impl<'a> Interpreter<'a> {
     }
 
     fn function_native_alias_id(raw_name: &str) -> Option<u16> {
-        if raw_name.ends_with("Function::call") {
+        if raw_name == "Function::constructor" || raw_name.ends_with("::Function::constructor") {
+            Some(crate::compiler::native_id::FUNCTION_CONSTRUCTOR_HELPER)
+        } else if raw_name.ends_with("Function::call") {
             Some(crate::compiler::native_id::FUNCTION_CALL_HELPER)
         } else if raw_name.ends_with("Function::apply") {
             Some(crate::compiler::native_id::FUNCTION_APPLY_HELPER)
@@ -7064,7 +7066,7 @@ impl<'a> Interpreter<'a> {
         &self,
         source: &str,
     ) -> Option<DirectEvalDeclarations> {
-        let Ok(parser) = Parser::new(source) else {
+        let Ok(parser) = Parser::new_with_mode(source, TypeSystemMode::Js) else {
             return None;
         };
         let Ok((ast, interner)) = parser.parse() else {
@@ -7116,7 +7118,7 @@ impl<'a> Interpreter<'a> {
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:start source={:?}", source);
         }
-        let parser = Parser::new(&source)
+        let parser = Parser::new_with_mode(&source, TypeSystemMode::Js)
             .map_err(|error| dynamic_compile_syntax_error("lexer error", format!("{error:?}")))?;
         if debug_dynamic_function {
             eprintln!("[dynamic-fn] compile:parsed-lexer");
@@ -7235,7 +7237,7 @@ impl<'a> Interpreter<'a> {
         source: &str,
         options: &DynamicJsCompileOptions,
     ) -> Result<(), VmError> {
-        let parser = Parser::new(source)
+        let parser = Parser::new_with_mode(source, TypeSystemMode::Js)
             .map_err(|error| VmError::SyntaxError(format!("Dynamic eval lexer error: {error:?}")))?;
         let (ast, interner) = parser
             .parse()
@@ -13026,25 +13028,22 @@ impl<'a> Interpreter<'a> {
                     }
 
                     id if id == crate::compiler::native_id::FUNCTION_CONSTRUCTOR_HELPER => {
-                        let exception = self.alloc_builtin_error_value(
-                            "Error",
-                            "Function constructor is not implemented in node-compat runtime yet",
-                        );
-                        self.ephemeral_gc_roots.write().push(exception);
-                        let code_value =
-                            self.alloc_string_value("E_UNIMPLEMENTED_BUILTIN_BEHAVIOR");
-                        self.ephemeral_gc_roots.write().push(code_value);
-                        if let Some(mut exception_ptr) = unsafe { exception.as_ptr::<Object>() } {
-                            let prop_key = self.intern_prop_key("code");
-                            unsafe { exception_ptr.as_mut() }
-                                .ensure_dyn_props()
-                                .insert(prop_key, DynProp::data(code_value));
+                        let constructor_args = if args.len() == 1 {
+                            match self.collect_apply_arguments(args[0], task, module) {
+                                Ok(values) => values,
+                                Err(_) => args.clone(),
+                            }
+                        } else {
+                            args.clone()
+                        };
+                        let value = match self.alloc_dynamic_js_function(&constructor_args, task, module) {
+                            Ok(value) => value,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if let Err(error) = stack.push(value) {
+                            return OpcodeResult::Error(error);
                         }
-                        task.set_exception(exception);
-                        OpcodeResult::Error(VmError::RuntimeError(
-                            "Function constructor is not implemented in node-compat runtime yet"
-                                .to_string(),
-                        ))
+                        OpcodeResult::Continue
                     }
 
                     id if id == crate::compiler::native_id::FUNCTION_EVAL_HELPER => {

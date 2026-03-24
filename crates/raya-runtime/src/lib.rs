@@ -238,6 +238,27 @@ impl Runtime {
         compiler.compile_program_source(source, virtual_entry)
     }
 
+    fn inline_virtual_entry_path(&self, stem: &'static str) -> &'static Path {
+        let type_mode = self
+            .options
+            .type_mode
+            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
+        match type_mode {
+            TypeMode::Js => Path::new(match stem {
+                "<eval>" => "<eval>.js",
+                _ => "<inline>.js",
+            }),
+            TypeMode::Ts => Path::new(match stem {
+                "<eval>" => "<eval>.ts",
+                _ => "<inline>.ts",
+            }),
+            TypeMode::Raya => Path::new(match stem {
+                "<eval>" => "<eval>.raya",
+                _ => "<inline>.raya",
+            }),
+        }
+    }
+
     fn resolve_ts_options_for_inline(&self) -> Result<Option<TsCompilerOptions>, RuntimeError> {
         if !matches!(self.options.type_mode, Some(TypeMode::Ts)) {
             return Ok(self.options.ts_options.clone());
@@ -317,7 +338,7 @@ impl Runtime {
     ///
     /// Returns the entry module plus all compiled dependencies and late-link metadata.
     pub fn compile_program_source(&self, source: &str) -> Result<CompiledProgram, RuntimeError> {
-        self.compile_program_source_with_virtual_entry(source, Path::new("<inline>.raya"))
+        self.compile_program_source_with_virtual_entry(source, self.inline_virtual_entry_path("<inline>"))
     }
 
     /// Compile a source file to a bytecode module.
@@ -585,7 +606,7 @@ impl Runtime {
     /// ```
     pub fn eval(&self, code: &str) -> Result<Value, RuntimeError> {
         let program =
-            self.compile_program_source_with_virtual_entry(code, Path::new("<eval>.raya"))?;
+            self.compile_program_source_with_virtual_entry(code, self.inline_virtual_entry_path("<eval>"))?;
         self.execute_program(&program)
     }
 

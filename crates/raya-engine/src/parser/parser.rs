@@ -14,6 +14,7 @@ pub mod stmt;
 pub mod types;
 
 use crate::parser::ast::*;
+use crate::parser::checker::TypeSystemMode;
 use crate::parser::interner::Interner;
 use crate::parser::interner::Symbol;
 use crate::parser::lexer::Lexer;
@@ -43,6 +44,9 @@ pub struct Parser {
 
     /// Nesting counter for contexts that must not consume `in` as a binary operator.
     disallow_in: usize,
+
+    /// Parsing compatibility mode.
+    mode: TypeSystemMode,
 }
 
 /// Backtracking snapshot for speculative parsing.
@@ -56,6 +60,14 @@ pub struct ParserCheckpoint {
 impl Parser {
     /// Create a new parser from source code.
     pub fn new(source: &str) -> Result<Self, Vec<crate::parser::lexer::LexError>> {
+        Self::new_with_mode(source, TypeSystemMode::Raya)
+    }
+
+    /// Create a new parser from source code with an explicit compatibility mode.
+    pub fn new_with_mode(
+        source: &str,
+        mode: TypeSystemMode,
+    ) -> Result<Self, Vec<crate::parser::lexer::LexError>> {
         // Tokenize the entire input first
         let lexer = Lexer::new(source);
         let (mut tokens, interner) = lexer.tokenize()?;
@@ -82,6 +94,7 @@ impl Parser {
             errors: Vec::new(),
             depth: 0,
             disallow_in: 0,
+            mode,
         })
     }
 
@@ -90,6 +103,15 @@ impl Parser {
     /// This is used internally for parsing template literal expressions
     /// where we already have tokens from the lexer.
     pub(crate) fn from_tokens(mut tokens: Vec<LexedToken>, interner: Interner) -> Self {
+        Self::from_tokens_with_mode(tokens, interner, TypeSystemMode::Raya)
+    }
+
+    /// Create a new parser from pre-tokenized input with an explicit compatibility mode.
+    pub(crate) fn from_tokens_with_mode(
+        mut tokens: Vec<LexedToken>,
+        interner: Interner,
+        mode: TypeSystemMode,
+    ) -> Self {
         // Add EOF token if not present
         if tokens.is_empty() || !matches!(tokens.last().unwrap().token, Token::Eof) {
             let eof_span = if let Some(last) = tokens.last() {
@@ -112,7 +134,14 @@ impl Parser {
             errors: Vec::new(),
             depth: 0,
             disallow_in: 0,
+            mode,
         }
+    }
+
+    /// Override the parser compatibility mode.
+    pub fn with_mode(mut self, mode: TypeSystemMode) -> Self {
+        self.mode = mode;
+        self
     }
 
     /// Parse a single expression from this parser.
@@ -190,6 +219,14 @@ impl Parser {
     #[inline(always)]
     pub fn current_span(&self) -> Span {
         self.tokens[self.pos].span
+    }
+
+    #[inline(always)]
+    pub(crate) fn current_raw_string_literal(&self) -> bool {
+        self.tokens
+            .get(self.pos)
+            .map(|token| token.raw_string_literal)
+            .unwrap_or(false)
     }
 
     /// Returns true when the current token is separated from the previous token by
@@ -295,19 +332,62 @@ impl Parser {
         self.interner.resolve(symbol)
     }
 
+    #[inline]
+    pub(crate) fn is_js_mode(&self) -> bool {
+        matches!(self.mode, TypeSystemMode::Js)
+    }
+
+    #[inline]
+    pub(crate) fn mode(&self) -> TypeSystemMode {
+        self.mode
+    }
+
+    #[inline]
+    fn js_identifier_like_keyword_name(&self) -> Option<&'static str> {
+        match self.current() {
+            Token::Async => Some("async"),
+            Token::Await => Some("await"),
+            Token::From => Some("from"),
+            Token::Type => Some("type"),
+            Token::Interface => Some("interface"),
+            Token::Static => Some("static"),
+            Token::Abstract => Some("abstract"),
+            Token::Readonly => Some("readonly"),
+            Token::Keyof => Some("keyof"),
+            Token::Extends => Some("extends"),
+            Token::Implements => Some("implements"),
+            Token::As => Some("as"),
+            Token::Namespace => Some("namespace"),
+            Token::Private => Some("private"),
+            Token::Protected => Some("protected"),
+            Token::Public => Some("public"),
+            Token::Yield => Some("yield"),
+            Token::Of => Some("of"),
+            _ => None,
+        }
+    }
+
     /// Check whether the current token can behave like an identifier in JS value/binding syntax.
     #[inline]
     pub(crate) fn check_identifier_like(&self) -> bool {
-        matches!(
-            self.current(),
-            Token::Identifier(_) | Token::Async | Token::From | Token::Type | Token::Static
-        )
+        matches!(self.current(), Token::Identifier(_))
+            || if self.is_js_mode() {
+                self.js_identifier_like_keyword_name().is_some()
+            } else {
+                matches!(
+                    self.current(),
+                    Token::Async | Token::From | Token::Type | Token::Static
+                )
+            }
     }
 
     /// Resolve the current token to an identifier-like symbol in JS value/binding syntax.
     pub(crate) fn current_identifier_like_symbol(&mut self) -> Option<Symbol> {
         match self.current().clone() {
             Token::Identifier(name) => Some(name),
+            _ if self.is_js_mode() => self
+                .js_identifier_like_keyword_name()
+                .map(|name| self.intern(name)),
             Token::Async => Some(self.intern("async")),
             Token::From => Some(self.intern("from")),
             Token::Type => Some(self.intern("type")),
@@ -819,5 +899,21 @@ mod tests {
         };
         assert_eq!(new_expr.arguments.len(), 1);
         assert!(matches!(new_expr.arguments[0], CallArgument::Spread(_)));
+    }
+
+    #[test]
+    fn test_type_alias_parses_readonly_array_type() {
+        let source = "type EventMap = Record<string, readonly unknown[]>;";
+        let parser = Parser::new(source).unwrap();
+        parser.parse().expect("readonly array type alias should parse");
+    }
+
+    #[test]
+    fn test_js_mode_treats_public_as_identifier_like() {
+        let source = "\"use  strict\"; var public = 1; public;";
+        let parser = Parser::new_with_mode(source, TypeSystemMode::Js).unwrap();
+        parser
+            .parse()
+            .expect("js mode should parse contextual reserved words as identifiers");
     }
 }

@@ -1913,7 +1913,7 @@ impl<'a> Lowerer<'a> {
                     Statement::Expression(ast::ExpressionStatement {
                         expression: Expression::StringLiteral(lit),
                         ..
-                    }) if self.interner.resolve(lit.value) == "use strict"
+                    }) if lit.raw_literal && self.interner.resolve(lit.value) == "use strict"
                 )
             });
 
@@ -3907,7 +3907,8 @@ impl<'a> Lowerer<'a> {
                         Statement::Expression(ast::ExpressionStatement {
                             expression: Expression::StringLiteral(lit),
                             ..
-                        }) if self.interner.resolve(lit.value) == "use strict"
+                        }) if lit.raw_literal
+                            && self.interner.resolve(lit.value) == "use strict"
                     )
                 });
 
@@ -4976,13 +4977,48 @@ impl<'a> Lowerer<'a> {
                 // Add explicit parameters from constructor
                 let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
                 let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
+                let mut rest_param_info = None;
+                let mut fixed_param_count = 1usize;
                 let mut param_local_indices = Vec::with_capacity(ctor.params.len());
                 let class_type_params = class.type_params.as_deref();
                 let has_destructuring_params = ctor.params.iter().any(|p| {
                     !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
                 });
+                if has_destructuring_params {
+                    let fixed_param_slots =
+                        ctor.params.iter().filter(|p| !p.is_rest).count() + 1usize;
+                    self.next_local = fixed_param_slots as u16;
+                }
 
                 for (decl_param_idx, param) in ctor.params.iter().enumerate() {
+                    if param.is_rest {
+                        let rest_ident = match &param.pattern {
+                            Pattern::Identifier(ident) => Some(ident.name),
+                            Pattern::Rest(rest) => match rest.argument.as_ref() {
+                                Pattern::Identifier(ident) => Some(ident.name),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let Some(rest_name) = rest_ident {
+                            let ty = param
+                                .type_annotation
+                                .as_ref()
+                                .map(|t| {
+                                    self.resolve_param_type_from_annotation(
+                                        t,
+                                        class_type_params,
+                                        None,
+                                    )
+                                })
+                                .unwrap_or(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
+                            rest_param_info = Some((rest_name, ty));
+                        }
+                        continue;
+                    }
+
+                    fixed_param_count += 1;
+
                     let ty = param
                         .type_annotation
                         .as_ref()
@@ -5200,6 +5236,10 @@ impl<'a> Lowerer<'a> {
                     &param_local_indices,
                     true,
                 );
+
+                if let Some((rest_name, rest_ty)) = rest_param_info {
+                    self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
+                }
 
                 // Emit null-check + default-value for constructor parameters with defaults
                 self.emit_default_params(&ctor.params);

@@ -305,6 +305,7 @@ fn parse_jsx_attribute_value(parser: &mut Parser) -> Result<JsxAttributeValue, P
             let value = StringLiteral {
                 value: *s,
                 span: parser.current_span(),
+                raw_literal: parser.current_raw_string_literal(),
             };
             parser.advance();
             Ok(JsxAttributeValue::StringLiteral(value))

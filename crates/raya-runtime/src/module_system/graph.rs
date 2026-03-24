@@ -1,4 +1,5 @@
 use crate::error::RuntimeError;
+use raya_engine::parser::checker::TypeSystemMode;
 use raya_engine::parser::ast::{ExportDecl, Statement};
 use raya_engine::parser::Parser;
 use std::collections::{HashMap, HashSet};
@@ -172,7 +173,8 @@ impl ProgramGraphBuilder {
         importer: &ModuleKey,
         source: &str,
     ) -> Result<Vec<ImportResolution>, RuntimeError> {
-        let parser = Parser::new(source).map_err(|errors| {
+        let parser = Parser::new_with_mode(source, parser_mode_for_module_key(importer)).map_err(
+            |errors| {
             RuntimeError::Lex(
                 errors
                     .iter()
@@ -209,6 +211,19 @@ impl ProgramGraphBuilder {
             }
         }
         Ok(out)
+    }
+}
+
+fn parser_mode_for_module_key(key: &ModuleKey) -> TypeSystemMode {
+    let extension = match key {
+        ModuleKey::File(path) => path.extension().and_then(|ext| ext.to_str()),
+        ModuleKey::Std(_) => None,
+    };
+
+    match extension {
+        Some("js" | "mjs" | "cjs" | "jsx") => TypeSystemMode::Js,
+        Some("ts" | "mts" | "cts" | "tsx") => TypeSystemMode::Ts,
+        _ => TypeSystemMode::Raya,
     }
 }
 

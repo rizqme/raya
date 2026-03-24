@@ -452,7 +452,7 @@ impl ProgramCompiler {
         if !entry_name.is_empty() {
             program.entry.module.metadata.name = entry_name;
         }
-        program.entry.interner = Some(parse_interner(source)?);
+        program.entry.interner = Some(parse_interner(source, virtual_entry_path)?);
 
         let compiled_entry_path = program.entry_path.clone();
         for module_path in &mut program.module_order {
@@ -502,8 +502,9 @@ fn looks_like_dynamic_import(source: &str) -> bool {
     source.contains("import(") || source.contains("import (")
 }
 
-fn parse_interner(source: &str) -> Result<Interner, RuntimeError> {
-    let parser = Parser::new(source).map_err(|errors| {
+fn parse_interner(source: &str, virtual_entry_path: &Path) -> Result<Interner, RuntimeError> {
+    let parser = Parser::new_with_mode(source, parser_mode_for_virtual_entry(virtual_entry_path))
+        .map_err(|errors| {
         RuntimeError::Lex(
             errors
                 .iter()
@@ -522,6 +523,14 @@ fn parse_interner(source: &str) -> Result<Interner, RuntimeError> {
         )
     })?;
     Ok(interner)
+}
+
+fn parser_mode_for_virtual_entry(path: &Path) -> TypeSystemMode {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("js" | "mjs" | "cjs" | "jsx") => TypeSystemMode::Js,
+        Some("ts" | "mts" | "cts" | "tsx") => TypeSystemMode::Ts,
+        _ => TypeSystemMode::Raya,
+    }
 }
 
 fn map_module_compile_error(error: ModuleCompileError) -> RuntimeError {

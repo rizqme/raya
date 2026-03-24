@@ -7,6 +7,10 @@ use crate::parser::interner::Symbol;
 use crate::parser::token::{Span, Token};
 
 fn looks_like_type_alias_declaration(parser: &mut Parser) -> bool {
+    if parser.is_js_mode() {
+        return false;
+    }
+
     if !parser.check(&Token::Type) {
         return false;
     }
@@ -86,8 +90,11 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
             }
         }
 
-        Token::Class | Token::Abstract | Token::At => parse_class_declaration(parser),
-        Token::Interface => parse_interface_declaration(parser, Vec::new()),
+        Token::Class | Token::At => parse_class_declaration(parser),
+        Token::Abstract if !parser.is_js_mode() => parse_class_declaration(parser),
+        Token::Interface if !parser.is_js_mode() => {
+            parse_interface_declaration(parser, Vec::new())
+        }
         Token::Annotation(_) => {
             // Annotations can appear before class or type declarations
             let annotations = parse_annotations(parser)?;
@@ -96,10 +103,15 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
             }
 
             match parser.current() {
-                Token::Class | Token::Abstract | Token::At => {
+                Token::Class | Token::At => {
                     parse_class_declaration_with_annotations(parser, annotations)
                 }
-                Token::Interface => parse_interface_declaration(parser, annotations),
+                Token::Abstract if !parser.is_js_mode() => {
+                    parse_class_declaration_with_annotations(parser, annotations)
+                }
+                Token::Interface if !parser.is_js_mode() => {
+                    parse_interface_declaration(parser, annotations)
+                }
                 // Allow annotations before other statements (e.g., //@@builtin_primitive before const)
                 // — annotations are discarded for non-class/type declarations
                 _ => parse_statement(parser),
@@ -1993,10 +2005,12 @@ fn parse_import_declaration(parser: &mut Parser) -> Result<Statement, ParseError
     let source = if let Token::StringLiteral(s) = parser.current() {
         let s_value = *s;
         let s_span = parser.current_span();
+        let raw_literal = parser.current_raw_string_literal();
         parser.advance();
         StringLiteral {
             value: s_value,
             span: s_span,
+            raw_literal,
         }
     } else {
         return Err(parser.unexpected_token(&[Token::StringLiteral(Symbol::dummy())]));
@@ -2084,10 +2098,12 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
         let source = if let Token::StringLiteral(s) = parser.current() {
             let s_value = *s;
             let s_span = parser.current_span();
+            let raw_literal = parser.current_raw_string_literal();
             parser.advance();
             StringLiteral {
                 value: s_value,
                 span: s_span,
+                raw_literal,
             }
         } else {
             return Err(parser.unexpected_token(&[Token::StringLiteral(Symbol::dummy())]));
@@ -2112,10 +2128,12 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
             if let Token::StringLiteral(s) = parser.current() {
                 let s_value = *s;
                 let s_span = parser.current_span();
+                let raw_literal = parser.current_raw_string_literal();
                 parser.advance();
                 Some(StringLiteral {
                     value: s_value,
                     span: s_span,
+                    raw_literal,
                 })
             } else {
                 return Err(parser.unexpected_token(&[Token::StringLiteral(Symbol::dummy())]));

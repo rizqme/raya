@@ -1271,10 +1271,12 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
         // String literal
         Token::StringLiteral(s) => {
             let value = *s;
+            let raw_literal = parser.current_raw_string_literal();
             parser.advance();
             Ok(Expression::StringLiteral(StringLiteral {
                 value,
                 span: start_span,
+                raw_literal,
             }))
         }
 
@@ -1606,10 +1608,12 @@ pub(super) fn parse_object_property_key(
         }))
     } else if let Token::StringLiteral(s) = parser.current() {
         let s = *s;
+        let raw_literal = parser.current_raw_string_literal();
         parser.advance();
         Ok(PropertyKey::StringLiteral(StringLiteral {
             value: s,
             span: start_span,
+            raw_literal,
         }))
     } else if let Token::IntLiteral(n) = parser.current() {
         let n = *n;
@@ -1827,7 +1831,7 @@ fn convert_template_parts(
             crate::parser::token::TemplatePart::Expression(tokens) => {
                 // Parse the token sequence into an expression using a sub-parser
                 let interner = parser.interner_clone();
-                let mut sub_parser = Parser::from_tokens(tokens, interner);
+                let mut sub_parser = Parser::from_tokens_with_mode(tokens, interner, parser.mode());
                 let expr = sub_parser.parse_single_expression()?;
                 result.push(TemplatePart::Expression(Box::new(expr)));
             }

@@ -7,8 +7,8 @@ const FUNCTION_BIND_HELPER: number = 0x0010;
 const FUNCTION_CONSTRUCTOR_HELPER: number = 0x0012;
 
 class Function {
-    constructor(body: string = "") {
-        throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Function constructor is not implemented in node-compat runtime yet");
+    constructor(...parts: any[]) {
+        return __NATIVE_CALL<any>(FUNCTION_CONSTRUCTOR_HELPER, parts);
     }
 
     call(thisArg: any, ...args: any[]): any {

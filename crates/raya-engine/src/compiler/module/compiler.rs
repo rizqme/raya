@@ -839,10 +839,12 @@ impl ModuleCompiler {
 
     /// Extract import specifiers from source code
     fn extract_imports(&self, source: &str, path: &Path) -> ModuleCompileResult<Vec<String>> {
-        let parser = Parser::new(source).map_err(|e| ModuleCompileError::LexError {
-            path: path.to_path_buf(),
-            message: format!("{:?}", e),
-        })?;
+        let parser = Parser::new_with_mode(source, self.parser_mode_for_path(path)).map_err(
+            |e| ModuleCompileError::LexError {
+                path: path.to_path_buf(),
+                message: format!("{:?}", e),
+            },
+        )?;
 
         let (ast, interner) = parser.parse().map_err(|e| ModuleCompileError::ParseError {
             path: path.to_path_buf(),
@@ -874,6 +876,14 @@ impl ModuleCompiler {
     fn should_inject_builtin_globals(&self, path: &Path) -> bool {
         let logical = path.to_string_lossy();
         !(logical.starts_with("__raya_builtin__/") || logical.starts_with("<__raya_builtin_"))
+    }
+
+    fn parser_mode_for_path(&self, path: &Path) -> TypeSystemMode {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("js" | "mjs" | "cjs" | "jsx") => TypeSystemMode::Js,
+            Some("ts" | "mts" | "cts" | "tsx") => TypeSystemMode::Ts,
+            _ => TypeSystemMode::Raya,
+        }
     }
 
     fn early_error_options_for_path(&self, path: &Path) -> EarlyErrorOptions {
@@ -930,10 +940,12 @@ impl ModuleCompiler {
             eprintln!("[module-compile] parse:start path={}", path.display());
         }
         // Parse
-        let parser = Parser::new(&source).map_err(|e| ModuleCompileError::LexError {
-            path: path.clone(),
-            message: format!("{:?}", e),
-        })?;
+        let parser = Parser::new_with_mode(&source, self.parser_mode_for_path(path)).map_err(
+            |e| ModuleCompileError::LexError {
+                path: path.clone(),
+                message: format!("{:?}", e),
+            },
+        )?;
 
         let (ast, interner) = parser.parse().map_err(|e| ModuleCompileError::ParseError {
             path: path.clone(),

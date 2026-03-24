@@ -8580,7 +8580,8 @@ impl<'a> Lowerer<'a> {
                         ast::Statement::Expression(ast::ExpressionStatement {
                             expression: ast::Expression::StringLiteral(lit),
                             ..
-                        }) if self.interner.resolve(lit.value) == "use strict"
+                        }) if lit.raw_literal
+                            && self.interner.resolve(lit.value) == "use strict"
                     )
                 });
 
@@ -9156,7 +9157,8 @@ impl<'a> Lowerer<'a> {
                                 ast::Statement::Expression(ast::ExpressionStatement {
                                     expression: ast::Expression::StringLiteral(lit),
                                     ..
-                                }) if self.interner.resolve(lit.value) == "use strict"
+                                }) if lit.raw_literal
+                                    && self.interner.resolve(lit.value) == "use strict"
                             )
                         })
             );

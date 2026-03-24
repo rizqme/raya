@@ -104,7 +104,6 @@ fn parse_primary_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError>
     // Runtime/type-checker currently treat this as a non-mutability-affecting wrapper.
     if parser.check(&Token::Readonly) {
         parser.advance();
-        return parse_primary_type(parser);
     }
 
     let mut base_type = match parser.current() {

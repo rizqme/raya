@@ -974,8 +974,9 @@ impl<'a> Lexer<'a> {
                     let token =
                         Token::StringLiteral(self.interner.intern(&unescape_string(inner)));
                     let span = Span::new(start, end, line, column);
-                    self.tokens
-                        .push(LexedToken::new(token, span, line_break_before));
+                    let mut lexed = LexedToken::new(token, span, line_break_before);
+                    lexed.raw_string_literal = !inner.contains('\\');
+                    self.tokens.push(lexed);
                     return Some((end, current_line, current_column + 1));
                 }
                 '\\' => {

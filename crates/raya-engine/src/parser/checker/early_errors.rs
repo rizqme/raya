@@ -241,7 +241,11 @@ impl<'a> EarlyErrorPass<'a> {
         matches!(
             stmt,
             Statement::Expression(ExpressionStatement {
-                expression: Expression::StringLiteral(StringLiteral { value, .. }),
+                expression: Expression::StringLiteral(StringLiteral {
+                    value,
+                    raw_literal: true,
+                    ..
+                }),
                 ..
             }) if interner.resolve(*value) == "use strict"
         )
@@ -265,7 +269,20 @@ impl<'a> EarlyErrorPass<'a> {
     }
 
     fn is_restricted_strict_binding_name(&self, ident: &Identifier) -> bool {
-        matches!(self.interner.resolve(ident.name), "eval" | "arguments")
+        matches!(
+            self.interner.resolve(ident.name),
+            "eval"
+                | "arguments"
+                | "implements"
+                | "interface"
+                | "let"
+                | "package"
+                | "private"
+                | "protected"
+                | "public"
+                | "static"
+                | "yield"
+        )
     }
 
     fn check_strict_binding_name(&mut self, ident: &Identifier) {

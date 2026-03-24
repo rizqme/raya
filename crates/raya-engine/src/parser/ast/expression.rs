@@ -210,6 +210,7 @@ pub struct FloatLiteral {
 pub struct StringLiteral {
     pub value: crate::parser::interner::Symbol,
     pub span: Span,
+    pub raw_literal: bool,
 }
 
 /// Template literal: `Hello, ${name}!`
