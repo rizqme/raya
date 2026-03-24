@@ -192,6 +192,12 @@ pub struct IrClass {
     pub methods: Vec<FunctionId>,
     /// Vtable slot indices (parallel to methods)
     pub method_slots: Vec<u16>,
+    /// Source-level method kinds (parallel to methods)
+    pub method_kinds: Vec<IrMethodKind>,
+    /// Static method function IDs
+    pub static_methods: Vec<FunctionId>,
+    /// Source-level static method kinds (parallel to static_methods)
+    pub static_method_kinds: Vec<IrMethodKind>,
     /// Constructor function ID (if any)
     pub constructor: Option<FunctionId>,
     /// Parent class ID (if any)
@@ -208,6 +214,9 @@ impl IrClass {
             fields: Vec::new(),
             methods: Vec::new(),
             method_slots: Vec::new(),
+            method_kinds: Vec::new(),
+            static_methods: Vec::new(),
+            static_method_kinds: Vec::new(),
             constructor: None,
             parent: None,
             parent_name: None,
@@ -222,16 +231,24 @@ impl IrClass {
     }
 
     /// Add a method to this class
-    pub fn add_method(&mut self, method_id: FunctionId) {
+    pub fn add_method(&mut self, method_id: FunctionId, kind: IrMethodKind) {
         let slot = self.methods.len() as u16;
         self.methods.push(method_id);
         self.method_slots.push(slot);
+        self.method_kinds.push(kind);
     }
 
     /// Add a method with explicit vtable slot
-    pub fn add_method_with_slot(&mut self, method_id: FunctionId, slot: u16) {
+    pub fn add_method_with_slot(&mut self, method_id: FunctionId, slot: u16, kind: IrMethodKind) {
         self.methods.push(method_id);
         self.method_slots.push(slot);
+        self.method_kinds.push(kind);
+    }
+
+    /// Add a static method to this class
+    pub fn add_static_method(&mut self, method_id: FunctionId, kind: IrMethodKind) {
+        self.static_methods.push(method_id);
+        self.static_method_kinds.push(kind);
     }
 
     /// Get a field by name
@@ -247,6 +264,14 @@ impl IrClass {
     pub fn field_count(&self) -> usize {
         self.fields.len()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IrMethodKind {
+    #[default]
+    Normal,
+    Getter,
+    Setter,
 }
 
 /// An IR field definition

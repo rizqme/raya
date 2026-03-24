@@ -23,6 +23,6 @@ pub use function::IrFunction;
 pub use instr::{
     BinaryOp, FunctionId, IrInstr, NominalTypeId, StringCompareMode, TypeAliasId, UnaryOp,
 };
-pub use module::{IrClass, IrField, IrModule, IrTypeAlias, IrTypeAliasField};
+pub use module::{IrClass, IrField, IrMethodKind, IrModule, IrTypeAlias, IrTypeAliasField};
 pub use pretty::{format_instr_pub, PrettyPrint};
 pub use value::{IrConstant, IrValue, Register, RegisterId, ValueOrigin};

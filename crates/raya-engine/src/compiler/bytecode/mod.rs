@@ -14,9 +14,10 @@ pub use encoder::{BytecodeReader, BytecodeWriter, DecodeError};
 pub use module::{
     flags, module_id_from_name, symbol_id_from_name, ClassDebugInfo, ClassDef, ClassReflectionData,
     DebugInfo, Export, FieldReflectionData, Function, FunctionDebugInfo, GenericTemplateInfo,
-    Import, JitHint, LineEntry, Metadata, Method, Module, ModuleError, ModuleId, MonoDebugEntry,
-    NominalTypeExport, ReflectionData, StructuralLayoutInfo, StructuralShapeInfo, SymbolId,
-    SymbolScope, SymbolType, TemplateSymbolEntry, TypeSignatureHash, VERSION,
+    Import, JitHint, LineEntry, Metadata, Method, MethodKind, Module, ModuleError, ModuleId,
+    MonoDebugEntry, NominalTypeExport, ReflectionData, StaticMethod, StructuralLayoutInfo,
+    StructuralShapeInfo, SymbolId, SymbolScope, SymbolType, TemplateSymbolEntry,
+    TypeSignatureHash, VERSION,
 };
 pub use opcode::Opcode;
 pub use verify::{verify_module, VerifyError};

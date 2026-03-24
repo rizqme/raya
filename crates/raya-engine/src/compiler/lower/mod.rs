@@ -9,8 +9,8 @@ mod stmt;
 
 use crate::compiler::ir::{
     BasicBlock, BasicBlockId, BinaryOp, FunctionId, IrClass, IrConstant, IrField, IrFunction,
-    IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, NominalTypeId, Register, RegisterId,
-    Terminator, TypeAliasId,
+    IrInstr, IrMethodKind, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, NominalTypeId,
+    Register, RegisterId, Terminator, TypeAliasId,
 };
 use crate::parser::ast::{
     self, walk_arrow_function, walk_block_statement, walk_expression, walk_function_decl,
@@ -273,6 +273,8 @@ struct StaticMethodInfo {
     name: Symbol,
     /// Function ID for this static method
     func_id: FunctionId,
+    /// Source-level method kind
+    kind: ast::MethodKind,
 }
 
 /// Materialized outer-scope binding for class-method environment bridging.
@@ -558,6 +560,8 @@ pub struct Lowerer<'a> {
     array_element_class_map: FxHashMap<Symbol, NominalTypeId>,
     /// Current class being processed (for method lowering)
     current_class: Option<NominalTypeId>,
+    /// Whether the currently lowered callable uses the class constructor as `this`.
+    current_method_is_static: bool,
     /// Register holding `this` in current method
     this_register: Option<Register>,
     /// Deferred instance initialization for derived constructors until after
@@ -1374,6 +1378,7 @@ impl<'a> Lowerer<'a> {
             dynamic_any_vars: FxHashSet::default(),
             array_element_class_map: FxHashMap::default(),
             current_class: None,
+            current_method_is_static: false,
             this_register: None,
             pending_constructor_prologue: None,
             constructor_return_this: None,
@@ -3323,6 +3328,7 @@ impl<'a> Lowerer<'a> {
                         static_methods_vec.push(StaticMethodInfo {
                             name: method.name.name,
                             func_id,
+                            kind: method.kind,
                         });
                         self.static_method_map
                             .insert((nominal_type_id, method.name.name), func_id);
@@ -4364,6 +4370,7 @@ impl<'a> Lowerer<'a> {
                     let method_has_js_this_slot = self.js_this_binding_compat;
                     if method.is_static {
                         self.current_class = Some(nominal_type_id);
+                        self.current_method_is_static = true;
                         if method_has_js_this_slot {
                             let this_reg = self.alloc_register(UNRESOLVED);
                             params.push(this_reg.clone());
@@ -4389,6 +4396,7 @@ impl<'a> Lowerer<'a> {
                             .lookup_named_type(name)
                             .unwrap_or(TypeId::new(0));
                         self.current_class = Some(nominal_type_id);
+                        self.current_method_is_static = false;
                         if method_has_js_this_slot {
                             let this_reg = self.alloc_register(this_ty);
                             params.push(this_reg.clone());
@@ -4610,6 +4618,8 @@ impl<'a> Lowerer<'a> {
                     self.current_function = Some(ir_func);
                     let saved_js_strict_context = self.js_strict_context;
                     let saved_in_direct_eval_function = self.in_direct_eval_function;
+                    let saved_generator_yield_array_local =
+                        self.generator_yield_array_local.take();
                     self.js_strict_context = true;
                     self.in_direct_eval_function = false;
                     let arguments_symbol = self.find_js_arguments_symbol(&method.params, body);
@@ -4732,21 +4742,32 @@ impl<'a> Lowerer<'a> {
                         .push((func_id.as_u32(), ir_func));
                     self.js_strict_context = saved_js_strict_context;
                     self.in_direct_eval_function = saved_in_direct_eval_function;
+                    self.generator_yield_array_local = saved_generator_yield_array_local;
 
-                    // Add instance methods to the IR class vtable with slot index
-                    if !method.is_static {
+                    let ir_method_kind = match method.kind {
+                        ast::MethodKind::Normal => IrMethodKind::Normal,
+                        ast::MethodKind::Getter => IrMethodKind::Getter,
+                        ast::MethodKind::Setter => IrMethodKind::Setter,
+                    };
+
+                    // Add methods to the IR class metadata so runtime registration
+                    // can materialize both prototype and constructor members.
+                    if method.is_static {
+                        ir_class.add_static_method(func_id, ir_method_kind);
+                    } else {
                         if let Some(&slot) = self
                             .method_slot_map
                             .get(&(nominal_type_id, method.name.name))
                         {
-                            ir_class.add_method_with_slot(func_id, slot);
+                            ir_class.add_method_with_slot(func_id, slot, ir_method_kind);
                         } else {
-                            ir_class.add_method(func_id);
+                            ir_class.add_method(func_id, ir_method_kind);
                         }
                     }
 
                     // Clear method context
                     self.current_class = None;
+                    self.current_method_is_static = false;
                     self.this_register = None;
                     if let Some(this_sym) = self.interner.lookup("this") {
                         self.variable_class_map.remove(&this_sym);
@@ -4790,6 +4811,7 @@ impl<'a> Lowerer<'a> {
 
                 // Set current class context for 'this' handling
                 self.current_class = Some(nominal_type_id);
+                self.current_method_is_static = false;
 
                 // Create parameter registers - 'this' is the first parameter
                 let mut params = Vec::new();
@@ -5091,6 +5113,7 @@ impl<'a> Lowerer<'a> {
 
                 // Clear method context
                 self.current_class = None;
+                self.current_method_is_static = false;
                 self.this_register = None;
                 self.pending_constructor_prologue = None;
                 if let Some(this_sym) = self.interner.lookup("this") {
@@ -5139,6 +5162,7 @@ impl<'a> Lowerer<'a> {
             self.current_method_env_globals = class_method_env_globals.clone();
 
             self.current_class = Some(nominal_type_id);
+            self.current_method_is_static = false;
 
             let parent_constructor_params = self
                 .class_info_map
@@ -5240,6 +5264,7 @@ impl<'a> Lowerer<'a> {
             self.constructor_return_this = saved_constructor_return_this;
 
             self.current_class = None;
+            self.current_method_is_static = false;
             self.this_register = None;
             self.pending_constructor_prologue = None;
             if let Some(this_sym) = self.interner.lookup("this") {

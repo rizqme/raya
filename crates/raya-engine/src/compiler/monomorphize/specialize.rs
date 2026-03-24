@@ -276,10 +276,23 @@ impl<'a> Monomorphizer<'a> {
         }
 
         // Copy and specialize methods
-        for method_id in &generic_class.methods {
+        for ((method_id, slot), kind) in generic_class
+            .methods
+            .iter()
+            .zip(generic_class.method_slots.iter())
+            .zip(generic_class.method_kinds.iter())
+        {
             // The method specialization would create a new specialized method
             // For now, we just copy the method ID
-            specialized.add_method(*method_id);
+            specialized.add_method_with_slot(*method_id, *slot, *kind);
+        }
+
+        for (method_id, kind) in generic_class
+            .static_methods
+            .iter()
+            .zip(generic_class.static_method_kinds.iter())
+        {
+            specialized.add_static_method(*method_id, *kind);
         }
 
         // Copy constructor reference

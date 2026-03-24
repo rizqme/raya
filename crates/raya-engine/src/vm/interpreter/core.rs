@@ -680,6 +680,54 @@ impl<'a> Interpreter<'a> {
             for method in &class_def.methods {
                 class.vtable.methods[method.slot] = method.function_id;
             }
+            class.prototype_members = class_def
+                .methods
+                .iter()
+                .map(|method| crate::vm::object::PrototypeMember {
+                    name: method
+                        .name
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(method.name.as_str())
+                        .to_string(),
+                    function_id: method.function_id,
+                    kind: match method.kind {
+                        crate::compiler::bytecode::MethodKind::Normal => {
+                            crate::vm::object::PrototypeMemberKind::Method
+                        }
+                        crate::compiler::bytecode::MethodKind::Getter => {
+                            crate::vm::object::PrototypeMemberKind::Getter
+                        }
+                        crate::compiler::bytecode::MethodKind::Setter => {
+                            crate::vm::object::PrototypeMemberKind::Setter
+                        }
+                    },
+                })
+                .collect();
+            class.static_members = class_def
+                .static_methods
+                .iter()
+                .map(|method| crate::vm::object::PrototypeMember {
+                    name: method
+                        .name
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(method.name.as_str())
+                        .to_string(),
+                    function_id: method.function_id,
+                    kind: match method.kind {
+                        crate::compiler::bytecode::MethodKind::Normal => {
+                            crate::vm::object::PrototypeMemberKind::Method
+                        }
+                        crate::compiler::bytecode::MethodKind::Getter => {
+                            crate::vm::object::PrototypeMemberKind::Getter
+                        }
+                        crate::compiler::bytecode::MethodKind::Setter => {
+                            crate::vm::object::PrototypeMemberKind::Setter
+                        }
+                    },
+                })
+                .collect();
 
             let exported_constructor_id = module.exports.iter().find_map(|export| {
                 (matches!(export.symbol_type, crate::compiler::SymbolType::Class)

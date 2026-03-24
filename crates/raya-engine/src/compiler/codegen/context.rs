@@ -265,13 +265,49 @@ impl IrCodeGenerator {
                 .methods
                 .iter()
                 .zip(class.method_slots.iter())
-                .filter_map(|(&method_id, &slot)| {
+                .zip(class.method_kinds.iter())
+                .filter_map(|((&method_id, &slot), &kind)| {
                     module
                         .get_function(method_id)
                         .map(|func| crate::compiler::bytecode::Method {
                             name: func.name.clone(),
                             function_id: method_id.as_u32() as usize,
                             slot: slot as usize,
+                            kind: match kind {
+                                crate::compiler::ir::IrMethodKind::Normal => {
+                                    crate::compiler::bytecode::MethodKind::Normal
+                                }
+                                crate::compiler::ir::IrMethodKind::Getter => {
+                                    crate::compiler::bytecode::MethodKind::Getter
+                                }
+                                crate::compiler::ir::IrMethodKind::Setter => {
+                                    crate::compiler::bytecode::MethodKind::Setter
+                                }
+                            },
+                        })
+                })
+                .collect();
+            let static_methods: Vec<crate::compiler::bytecode::StaticMethod> = class
+                .static_methods
+                .iter()
+                .zip(class.static_method_kinds.iter())
+                .filter_map(|(&method_id, &kind)| {
+                    module
+                        .get_function(method_id)
+                        .map(|func| crate::compiler::bytecode::StaticMethod {
+                            name: func.name.clone(),
+                            function_id: method_id.as_u32() as usize,
+                            kind: match kind {
+                                crate::compiler::ir::IrMethodKind::Normal => {
+                                    crate::compiler::bytecode::MethodKind::Normal
+                                }
+                                crate::compiler::ir::IrMethodKind::Getter => {
+                                    crate::compiler::bytecode::MethodKind::Getter
+                                }
+                                crate::compiler::ir::IrMethodKind::Setter => {
+                                    crate::compiler::bytecode::MethodKind::Setter
+                                }
+                            },
                         })
                 })
                 .collect();
@@ -281,6 +317,7 @@ impl IrCodeGenerator {
                 parent_id: class.parent.map(|id| id.as_u32()),
                 parent_name: class.parent_name.clone(),
                 methods,
+                static_methods,
             };
             self.module_builder.add_class(class_def);
         }

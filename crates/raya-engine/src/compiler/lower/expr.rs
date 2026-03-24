@@ -372,6 +372,27 @@ impl<'a> Lowerer<'a> {
         });
     }
 
+    fn static_member_owner_nominal_type(
+        &self,
+        object_expr: &Expression,
+    ) -> Option<NominalTypeId> {
+        match object_expr {
+            Expression::Parenthesized(paren) => {
+                self.static_member_owner_nominal_type(&paren.expression)
+            }
+            Expression::Identifier(ident) => self.class_map.get(&ident.name).copied(),
+            Expression::This(_)
+                if self.current_method_is_static
+                    && (self.this_register.is_some()
+                        || self.this_captured_idx.is_some()
+                        || self.this_ancestor_info.is_some()) =>
+            {
+                self.current_class
+            }
+            _ => None,
+        }
+    }
+
     fn lower_call_argument_values(&mut self, args: &[ast::CallArgument]) -> Vec<Register> {
         args.iter()
             .map(|arg| self.lower_expr(arg.expression()))
@@ -4949,10 +4970,25 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Check if this is a static field access (e.g., Math.PI where Math is a class)
-        if let Expression::Identifier(ident) = &*member.object {
-            if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
-                // This is a class identifier, check for static fields
+        // Check if this is a static member access (e.g. `C.x` or `this.x` inside
+        // a static method/accessor). In JS static methods, `this` is the
+        // constructor value and must share the same lowering path.
+        if let Some(nominal_type_id) = self.static_member_owner_nominal_type(&member.object) {
+                if self.js_this_binding_compat {
+                    let member_ty = {
+                        let member_expr = Expression::Member(member.clone());
+                        let inferred = self.get_expr_type(&member_expr);
+                        if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                            UNRESOLVED
+                        } else {
+                            inferred
+                        }
+                    };
+                    let dest = self.alloc_register(member_ty);
+                    let class_value = self.lower_expr(&member.object);
+                    self.emit_dyn_get_named(dest.clone(), class_value, prop_name);
+                    return dest;
+                }
                 // Extract global_index first to avoid borrow conflict
                 let global_index =
                     self.class_info_map
@@ -4972,6 +5008,42 @@ impl<'a> Lowerer<'a> {
                         dest: dest.clone(),
                         index,
                     });
+                    return dest;
+                }
+
+                if let Some(static_getter) = self
+                    .class_info_map
+                    .get(&nominal_type_id)
+                    .and_then(|class_info| {
+                        class_info
+                            .static_methods
+                            .iter()
+                            .rev()
+                            .find(|method| {
+                                method.name == member.property.name
+                                    && method.kind == ast::MethodKind::Getter
+                            })
+                            .cloned()
+                    })
+                {
+                    let member_ty = {
+                        let member_expr = Expression::Member(member.clone());
+                        let inferred = self.get_expr_type(&member_expr);
+                        if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                            UNRESOLVED
+                        } else {
+                            inferred
+                        }
+                    };
+                    let dest = self.alloc_register(member_ty);
+                    let class_value = self.lower_expr(&member.object);
+                    let closure = self.alloc_register(UNRESOLVED);
+                    self.emit(IrInstr::MakeClosure {
+                        dest: closure.clone(),
+                        func: static_getter.func_id,
+                        captures: vec![],
+                    });
+                    self.emit_js_member_call_helper(dest.clone(), class_value, closure, vec![]);
                     return dest;
                 }
 
@@ -5022,7 +5094,6 @@ impl<'a> Lowerer<'a> {
                     self.emit_dyn_get_named(dest.clone(), class_value, prop_name);
                     return dest;
                 }
-            }
         }
 
         // Try to determine the class type of the object for field resolution.
@@ -5037,14 +5108,6 @@ impl<'a> Lowerer<'a> {
         let nominal_type_id = nominal_type_id
             .or_else(|| self.infer_nominal_type_id(&member.object))
             .or_else(|| self.nominal_type_id_from_type_id(object.ty));
-        if std::env::var("RAYA_DEBUG_GETTER_LOWER").is_ok() {
-            eprintln!(
-                "[getter-lower] prop={} nominal={:?} object_ty={}",
-                prop_name,
-                nominal_type_id.map(|id| id.as_u32()),
-                object.ty.as_u32()
-            );
-        }
         let use_js_runtime_member_semantics =
             self.js_mode_uses_runtime_member_semantics(&member.object, object.ty, nominal_type_id);
 
@@ -5056,19 +5119,6 @@ impl<'a> Lowerer<'a> {
                     let Some(class_info) = self.class_info_map.get(&class_id) else {
                         break;
                     };
-                    if std::env::var("RAYA_DEBUG_GETTER_LOWER").is_ok() {
-                        let getter_names: Vec<String> = class_info
-                            .methods
-                            .iter()
-                            .filter(|method| method.kind == ast::MethodKind::Getter)
-                            .map(|method| self.interner.resolve(method.name).to_string())
-                            .collect();
-                        eprintln!(
-                            "[getter-lower] class={} getters={:?}",
-                            class_id.as_u32(),
-                            getter_names
-                        );
-                    }
                     if let Some(method_info) = class_info
                         .methods
                         .iter()
@@ -5097,11 +5147,13 @@ impl<'a> Lowerer<'a> {
                     }
                 };
                 let dest = self.alloc_register(member_ty);
-                self.emit(IrInstr::Call {
-                    dest: Some(dest.clone()),
+                let closure = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::MakeClosure {
+                    dest: closure.clone(),
                     func: func_id,
-                    args: vec![object.clone()],
+                    captures: vec![],
                 });
+                self.emit_js_member_call_helper(dest.clone(), object.clone(), closure, vec![]);
                 return dest;
             }
 
@@ -5141,21 +5193,6 @@ impl<'a> Lowerer<'a> {
                             inferred
                         }
                     };
-                    if let Some(func_id) = self.find_method(nominal_type_id, member.property.name) {
-                        let closure = self.alloc_register(member_ty);
-                        self.emit(IrInstr::MakeClosure {
-                            dest: closure.clone(),
-                            func: func_id,
-                            captures: vec![],
-                        });
-                        let bound = self.alloc_register(member_ty);
-                        self.emit(IrInstr::NativeCall {
-                            dest: Some(bound.clone()),
-                            native_id: crate::compiler::native_id::FUNCTION_BIND_HELPER,
-                            args: vec![closure, object.clone()],
-                        });
-                        return bound;
-                    }
                     let dest = self.alloc_register(member_ty);
                     self.emit(IrInstr::BindMethod {
                         dest: dest.clone(),
@@ -5388,35 +5425,17 @@ impl<'a> Lowerer<'a> {
                     };
                     if self.js_this_binding_compat {
                         if prop_name.starts_with('#') {
-                            if let Some(func_id) =
-                                self.find_method(nominal_type_id, member.property.name)
-                            {
-                                let closure = self.alloc_register(member_ty);
-                                self.emit(IrInstr::MakeClosure {
-                                    dest: closure.clone(),
-                                    func: func_id,
-                                    captures: vec![],
-                                });
-                                let bound = self.alloc_register(member_ty);
-                                self.emit(IrInstr::NativeCall {
-                                    dest: Some(bound.clone()),
-                                    native_id: crate::compiler::native_id::FUNCTION_BIND_HELPER,
-                                    args: vec![closure, object],
-                                });
-                                return bound;
-                            }
-                        }
-                        if let Some(func_id) =
-                            self.find_method(nominal_type_id, member.property.name)
-                        {
                             let dest = self.alloc_register(member_ty);
-                            self.emit(IrInstr::MakeClosure {
+                            self.emit(IrInstr::BindMethod {
                                 dest: dest.clone(),
-                                func: func_id,
-                                captures: vec![],
+                                object,
+                                method: slot,
                             });
                             return dest;
                         }
+                        let dest = self.alloc_register(member_ty);
+                        self.emit_dyn_get_named(dest.clone(), object, prop_name);
+                        return dest;
                     }
                     let dest = self.alloc_register(member_ty);
                     self.emit(IrInstr::BindMethod {
@@ -8184,6 +8203,7 @@ impl<'a> Lowerer<'a> {
         let saved_captures = std::mem::take(&mut self.captures);
         let saved_next_capture_slot = self.next_capture_slot;
         let saved_this_register = self.this_register.take();
+        let saved_current_method_is_static = self.current_method_is_static;
         let saved_pending_constructor_prologue = self.pending_constructor_prologue.take();
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
@@ -8247,6 +8267,7 @@ impl<'a> Lowerer<'a> {
         self.loop_captured_vars.clear();
         self.refcell_inner_types.clear();
         self.generator_yield_array_local = None;
+        self.current_method_is_static = false;
 
         let has_destructuring_params = func.params.iter().any(|p| {
             !matches!(
@@ -8493,6 +8514,7 @@ impl<'a> Lowerer<'a> {
         self.captures = saved_captures;
         self.next_capture_slot = saved_next_capture_slot;
         self.this_register = saved_this_register;
+        self.current_method_is_static = saved_current_method_is_static;
         self.pending_constructor_prologue = saved_pending_constructor_prologue;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
@@ -8693,6 +8715,7 @@ impl<'a> Lowerer<'a> {
         let saved_captures = std::mem::take(&mut self.captures);
         let saved_next_capture_slot = self.next_capture_slot;
         let saved_this_register = self.this_register.take();
+        let saved_current_method_is_static = self.current_method_is_static;
         let saved_pending_constructor_prologue = self.pending_constructor_prologue.take();
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
@@ -9062,6 +9085,7 @@ impl<'a> Lowerer<'a> {
         self.captures = saved_captures;
         self.next_capture_slot = saved_next_capture_slot;
         self.this_register = saved_this_register;
+        self.current_method_is_static = saved_current_method_is_static;
         self.pending_constructor_prologue = saved_pending_constructor_prologue;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;

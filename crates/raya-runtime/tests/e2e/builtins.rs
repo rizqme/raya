@@ -233,6 +233,63 @@ fn test_set_entries_value_value_pairs() {
     );
 }
 
+#[test]
+fn test_node_compat_class_getter_after_generator_method_returns_plain_value() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let C = class {
+            *m(a,) { return arguments.length; }
+            get g() { return 123; }
+        };
+        return new C().g;
+    "#,
+        123,
+    );
+}
+
+#[test]
+fn test_node_compat_class_private_generator_extraction_remains_callable() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let C = class {
+            *#method(a,) { return arguments.length; }
+            get method() { return this.#method; }
+        };
+        let f = new C().method;
+        return f(42).next().value;
+    "#,
+        1,
+    );
+}
+
+#[test]
+fn test_node_compat_static_getter_can_read_static_field_via_this() {
+    expect_i32_runtime_node_compat(
+        r#"
+        class C {
+            static x = 3;
+            static get g() { return this.x; }
+        }
+        return C.g;
+    "#,
+        3,
+    );
+}
+
+#[test]
+fn test_node_compat_static_getter_can_extract_private_static_method_via_this() {
+    expect_i32_runtime_node_compat(
+        r#"
+        class C {
+            static #m(a,) { return arguments.length; }
+            static get g() { return this.#m; }
+        }
+        return C.g(42);
+    "#,
+        1,
+    );
+}
+
 // ============================================================================
 // Promise tests
 // ============================================================================

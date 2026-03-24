@@ -1,4 +1,6 @@
 //! Build script for embedding precompiled Raya builtin bytecode.
+//! Touch this file when builtin bytecode wire formats change so Cargo reruns
+//! the embedded builtin compilation step.
 //!
 //! The engine crate cannot self-host builtin compilation during its own build,
 //! so it must consume real precompiled `.ryb` artifacts. Treating missing

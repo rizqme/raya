@@ -386,6 +386,8 @@ enum JsOwnPropertySource {
     CallableVirtual,
     NominalMethod,
     BuiltinNativeMethod,
+    ConstructorStaticField,
+    ConstructorStaticAccessor,
     ConstructorStaticMethod,
 }
 
@@ -1998,12 +2000,93 @@ impl<'a> Interpreter<'a> {
         None
     }
 
+    fn constructor_static_field_value(&self, constructor: Value, key: &str) -> Option<Value> {
+        if matches!(key, "prototype" | "name" | "length") {
+            return None;
+        }
+
+        let mut current_nominal_type_id = Some(self.constructor_nominal_type_id(constructor)?);
+        while let Some(nominal_type_id) = current_nominal_type_id {
+            let (parent_id, value) = {
+                let classes = self.classes.read();
+                let class = classes.get_class(nominal_type_id)?;
+                let value = self
+                    .class_metadata
+                    .read()
+                    .get(nominal_type_id)
+                    .and_then(|metadata| metadata.get_static_field_index(key))
+                    .and_then(|index| class.get_static_field(index));
+                (class.parent_id, value)
+            };
+            if value.is_some() {
+                return value;
+            }
+            current_nominal_type_id = parent_id;
+        }
+        None
+    }
+
+    fn constructor_static_accessor_values(
+        &self,
+        constructor: Value,
+        key: &str,
+    ) -> Option<(Option<Value>, Option<Value>)> {
+        if matches!(key, "prototype" | "name" | "length") {
+            return None;
+        }
+
+        let mut current_nominal_type_id = Some(self.constructor_nominal_type_id(constructor)?);
+        while let Some(nominal_type_id) = current_nominal_type_id {
+            let (parent_id, module, getter_id, setter_id) = {
+                let classes = self.classes.read();
+                let class = classes.get_class(nominal_type_id)?;
+                let getter_id = class
+                    .static_members
+                    .iter()
+                    .rev()
+                    .find(|member| {
+                        member.name == key
+                            && member.kind == crate::vm::object::PrototypeMemberKind::Getter
+                    })
+                    .map(|member| member.function_id);
+                let setter_id = class
+                    .static_members
+                    .iter()
+                    .rev()
+                    .find(|member| {
+                        member.name == key
+                            && member.kind == crate::vm::object::PrototypeMemberKind::Setter
+                    })
+                    .map(|member| member.function_id);
+                (class.parent_id, class.module.clone(), getter_id, setter_id)
+            };
+
+            if getter_id.is_some() || setter_id.is_some() {
+                let module = module?;
+                let make_closure = |func_id: usize| {
+                    let closure = Object::new_closure_with_module(func_id, Vec::new(), module.clone());
+                    let closure_ptr = self.gc.lock().allocate(closure);
+                    unsafe {
+                        Value::from_ptr(
+                            std::ptr::NonNull::new(closure_ptr.as_ptr())
+                                .expect("constructor static accessor ptr"),
+                        )
+                    }
+                };
+                return Some((getter_id.map(make_closure), setter_id.map(make_closure)));
+            }
+
+            current_nominal_type_id = parent_id;
+        }
+
+        None
+    }
+
     pub(in crate::vm::interpreter) fn materialize_constructor_static_method(
         &self,
         constructor: Value,
         key: &str,
     ) -> Option<Value> {
-        let debug_static_method = std::env::var("RAYA_DEBUG_STATIC_METHOD").is_ok();
         if matches!(key, "prototype" | "name" | "length") {
             return None;
         }
@@ -2012,76 +2095,48 @@ impl<'a> Interpreter<'a> {
         let mut current_nominal_type_id = Some(origin_nominal_type_id);
 
         while let Some(nominal_type_id) = current_nominal_type_id {
-            let (class_name, class_module, parent_id) = {
+            let (parent_id, module, func_id) = {
                 let classes = self.classes.read();
                 let class = classes.get_class(nominal_type_id)?;
-                (class.name.clone(), class.module.clone(), class.parent_id)
-            };
-            if debug_static_method {
-                eprintln!(
-                    "[static-method] ctor={:#x} key={} nominal_type_id={} class={} has_module={}",
-                    constructor.raw(),
-                    key,
-                    nominal_type_id,
-                    class_name,
-                    class_module.is_some()
-                );
-            }
-
-            let Some(module) = class_module else {
-                current_nominal_type_id = parent_id;
-                continue;
-            };
-
-            let static_method_name = format!("{}::static::{}", class_name, key);
-            if debug_static_method {
-                let sample = module
-                    .functions
+                let func_id = class
+                    .static_members
                     .iter()
-                    .filter(|function| {
-                        function
-                            .name
-                            .starts_with(&format!("{}::static::", class_name))
+                    .rev()
+                    .find(|member| {
+                        member.name == key
+                            && member.kind == crate::vm::object::PrototypeMemberKind::Method
                     })
-                    .take(8)
-                    .map(|function| function.name.clone())
-                    .collect::<Vec<_>>();
-                eprintln!(
-                    "[static-method] seek={} module={} sample={:?}",
-                    static_method_name, module.metadata.name, sample
-                );
-            }
-            let Some(func_id) = module
-                .functions
-                .iter()
-                .position(|function| function.name == static_method_name)
-            else {
-                current_nominal_type_id = parent_id;
-                continue;
+                    .map(|member| member.function_id);
+                (class.parent_id, class.module.clone(), func_id)
             };
 
-            let closure = Object::new_closure_with_module(func_id, Vec::new(), module.clone());
-            let closure_ptr = self.gc.lock().allocate(closure);
-            let closure_value = unsafe {
-                Value::from_ptr(
-                    std::ptr::NonNull::new(closure_ptr.as_ptr())
-                        .expect("constructor static method ptr"),
-                )
-            };
-            let property_target = if nominal_type_id == origin_nominal_type_id {
-                constructor
-            } else {
-                self.constructor_value_for_nominal_type(nominal_type_id)?
-            };
-            let _ = self.define_data_property_on_target(
-                property_target,
-                key,
-                closure_value,
-                true,
-                false,
-                true,
-            );
-            return Some(closure_value);
+            if let Some(func_id) = func_id {
+                let module = module?;
+                let closure = Object::new_closure_with_module(func_id, Vec::new(), module.clone());
+                let closure_ptr = self.gc.lock().allocate(closure);
+                let closure_value = unsafe {
+                    Value::from_ptr(
+                        std::ptr::NonNull::new(closure_ptr.as_ptr())
+                            .expect("constructor static method ptr"),
+                    )
+                };
+                let property_target = if nominal_type_id == origin_nominal_type_id {
+                    constructor
+                } else {
+                    self.constructor_value_for_nominal_type(nominal_type_id)?
+                };
+                let _ = self.define_data_property_on_target(
+                    property_target,
+                    key,
+                    closure_value,
+                    true,
+                    false,
+                    true,
+                );
+                return Some(closure_value);
+            }
+
+            current_nominal_type_id = parent_id;
         }
 
         None
@@ -2092,38 +2147,27 @@ impl<'a> Interpreter<'a> {
             return false;
         }
 
-        let origin_nominal_type_id = match self.constructor_nominal_type_id(constructor) {
-            Some(id) => id,
+        let mut current_nominal_type_id = match self.constructor_nominal_type_id(constructor) {
+            Some(id) => Some(id),
             None => return false,
         };
-        let mut current_nominal_type_id = Some(origin_nominal_type_id);
-
         while let Some(nominal_type_id) = current_nominal_type_id {
-            let (class_name, class_module, parent_id) = {
+            let (parent_id, has_method) = {
                 let classes = self.classes.read();
                 let Some(class) = classes.get_class(nominal_type_id) else {
                     return false;
                 };
-                (class.name.clone(), class.module.clone(), class.parent_id)
+                let has_method = class.static_members.iter().any(|member| {
+                    member.name == key
+                        && member.kind == crate::vm::object::PrototypeMemberKind::Method
+                });
+                (class.parent_id, has_method)
             };
-
-            let Some(module) = class_module else {
-                current_nominal_type_id = parent_id;
-                continue;
-            };
-
-            let static_method_name = format!("{}::static::{}", class_name, key);
-            if module
-                .functions
-                .iter()
-                .any(|function| function.name == static_method_name)
-            {
+            if has_method {
                 return true;
             }
-
             current_nominal_type_id = parent_id;
         }
-
         false
     }
 
@@ -3069,6 +3113,14 @@ impl<'a> Interpreter<'a> {
                 }
                 CallableKind::BoundMethod { func_id, .. } => {
                     let module = co.callable_module()?;
+                    if std::env::var("RAYA_DEBUG_BIND_METHOD").is_ok() {
+                        eprintln!(
+                            "[bind-method-callable-info] target={:#x} func_id={} module={}",
+                            target.raw(),
+                            func_id,
+                            module.metadata.name
+                        );
+                    }
                     let function = module.functions.get(*func_id)?;
                     return Some((
                         Self::visible_function_name(&function.name),
@@ -5110,46 +5162,14 @@ impl<'a> Interpreter<'a> {
             return Some(existing);
         }
 
-        // Read class metadata for method population
-        let (class_module, method_ids, mut method_names) = {
+        // Read class metadata for prototype member population.
+        let (class_module, prototype_members) = {
             let classes = self.classes.read();
             let class = classes.get_class(nominal_type_id)?;
             let class_module = class.module.clone();
-            let method_ids = class.vtable.methods.clone();
-            drop(classes);
-            let method_names = self
-                .class_metadata
-                .read()
-                .get(nominal_type_id)
-                .map(|meta| meta.method_names.clone())
-                .unwrap_or_default();
-            (class_module, method_ids, method_names)
+            let prototype_members = class.prototype_members.clone();
+            (class_module, prototype_members)
         };
-
-        // Resolve method names from module function table
-        if let Some(module) = class_module.as_ref() {
-            if method_names.len() < method_ids.len() {
-                method_names.resize(method_ids.len(), String::new());
-            }
-            for (slot, func_id) in method_ids.iter().copied().enumerate() {
-                if func_id == usize::MAX {
-                    continue;
-                }
-                if module.functions.get(func_id).is_none() {
-                    method_names[slot].clear();
-                    continue;
-                }
-                if !method_names.get(slot).is_some_and(|name| name.is_empty()) {
-                    continue;
-                }
-                if let Some(function) = module.functions.get(func_id) {
-                    if let Some(name) = function.name.rsplit("::").next() {
-                        method_names[slot] = name.to_string();
-                    }
-                }
-            }
-        }
-
         // Allocate prototype object with layout ["constructor"]
         let member_names = vec!["constructor".to_string()];
         let prototype_val = if class_name == "Array" {
@@ -5220,19 +5240,19 @@ impl<'a> Interpreter<'a> {
         // Seed error-specific prototype properties (name, message defaults)
         self.seed_builtin_error_prototype_properties(prototype_val, class_name)?;
 
-        // Populate methods from vtable as data properties
+        // Populate own prototype members. Inherited members live on the parent
+        // prototype chain; only declare accessors/methods owned by this class.
         let mut method_values = Vec::new();
-        for (slot, method_name) in method_names.iter().enumerate() {
-            if method_name.is_empty() {
+        let mut accessor_pairs: rustc_hash::FxHashMap<String, (Option<Value>, Option<Value>)> =
+            rustc_hash::FxHashMap::default();
+        for member in prototype_members {
+            if member.name.is_empty() || member.name.starts_with('#') {
                 continue;
             }
-            let Some(&func_id) = method_ids.get(slot) else {
-                continue;
-            };
             let closure = if let Some(module) = class_module.clone() {
-                Object::new_closure_with_module(func_id, Vec::new(), module)
+                Object::new_closure_with_module(member.function_id, Vec::new(), module)
             } else {
-                Object::new_closure(func_id, Vec::new())
+                Object::new_closure(member.function_id, Vec::new())
             };
             let closure_ptr = self.gc.lock().allocate(closure);
             let closure_val = unsafe {
@@ -5240,15 +5260,36 @@ impl<'a> Interpreter<'a> {
                     std::ptr::NonNull::new(closure_ptr.as_ptr()).expect("prototype method ptr"),
                 )
             };
-            method_values.push((method_name.clone(), closure_val));
-            if Self::should_skip_public_prototype_method_name(class_name, method_name) {
-                continue;
+            match member.kind {
+                crate::vm::object::PrototypeMemberKind::Method => {
+                    method_values.push((member.name.clone(), closure_val));
+                    if Self::should_skip_public_prototype_method_name(class_name, &member.name) {
+                        continue;
+                    }
+                    self.define_data_property_on_target(
+                        prototype_val,
+                        &member.name,
+                        closure_val,
+                        true,
+                        false,
+                        true,
+                    )
+                    .ok()?;
+                }
+                crate::vm::object::PrototypeMemberKind::Getter => {
+                    accessor_pairs.entry(member.name).or_default().0 = Some(closure_val);
+                }
+                crate::vm::object::PrototypeMemberKind::Setter => {
+                    accessor_pairs.entry(member.name).or_default().1 = Some(closure_val);
+                }
             }
-            self.define_data_property_on_target(
+        }
+        for (name, (get, set)) in accessor_pairs {
+            self.define_accessor_property_on_target(
                 prototype_val,
-                method_name,
-                closure_val,
-                true,
+                &name,
+                get.unwrap_or(Value::undefined()),
+                set.unwrap_or(Value::undefined()),
                 false,
                 true,
             )
@@ -8799,6 +8840,21 @@ impl<'a> Interpreter<'a> {
         let obj_ptr = checked_object_ptr(target)?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
         let method_slot = obj.nominal_type_id_usize().and_then(|ntid| {
+            let classes = self.classes.read();
+            if let Some(class) = classes.get_class(ntid) {
+                let has_own_accessor = class.prototype_members.iter().any(|member| {
+                    member.name == key
+                        && matches!(
+                            member.kind,
+                            crate::vm::object::PrototypeMemberKind::Getter
+                                | crate::vm::object::PrototypeMemberKind::Setter
+                        )
+                });
+                if has_own_accessor {
+                    return None;
+                }
+            }
+            drop(classes);
             let class_metadata = self.class_metadata.read();
             class_metadata
                 .get(ntid)
@@ -8811,7 +8867,11 @@ impl<'a> Interpreter<'a> {
                     module.classes.iter().find(|cd| cd.name == class.name).and_then(|cd| {
                         cd.methods.iter().find_map(|method| {
                             let plain = method.name.rsplit("::").next().unwrap_or(&method.name);
-                            if method.name == key || plain == key {
+                            if matches!(
+                                method.kind,
+                                crate::compiler::bytecode::MethodKind::Normal
+                            ) && (method.name == key || plain == key)
+                            {
                                 Some(method.slot)
                             } else {
                                 None
@@ -9241,6 +9301,26 @@ impl<'a> Interpreter<'a> {
             ));
         }
 
+        if self.constructor_static_field_value(target, key).is_some() {
+            return Some(JsOwnPropertyShape::data(
+                JsOwnPropertySource::ConstructorStaticField,
+                true,
+                true,
+                true,
+            ));
+        }
+
+        if self
+            .constructor_static_accessor_values(target, key)
+            .is_some_and(|(get, set)| get.is_some() || set.is_some())
+        {
+            return Some(JsOwnPropertyShape::accessor(
+                JsOwnPropertySource::ConstructorStaticAccessor,
+                true,
+                false,
+            ));
+        }
+
         if self.has_constructor_static_method(target, key) {
             return Some(JsOwnPropertyShape::data(
                 JsOwnPropertySource::ConstructorStaticMethod,
@@ -9333,6 +9413,19 @@ impl<'a> Interpreter<'a> {
                     self.own_builtin_native_method_value(target, key)
                         .unwrap_or(Value::undefined()),
                 )
+            }
+            (JsOwnPropertySource::ConstructorStaticField, JsOwnPropertyKind::Data) => {
+                JsOwnPropertyRecord::data(
+                    shape,
+                    self.constructor_static_field_value(target, key)
+                        .unwrap_or(Value::undefined()),
+                )
+            }
+            (JsOwnPropertySource::ConstructorStaticAccessor, JsOwnPropertyKind::Accessor) => {
+                let (getter, setter) = self
+                    .constructor_static_accessor_values(target, key)
+                    .unwrap_or((None, None));
+                JsOwnPropertyRecord::accessor(shape, getter, setter)
             }
             (JsOwnPropertySource::ConstructorStaticMethod, JsOwnPropertyKind::Data) => {
                 JsOwnPropertyRecord::data(
@@ -9474,6 +9567,21 @@ impl<'a> Interpreter<'a> {
         };
         let obj = unsafe { &*obj_ptr.as_ptr() };
         obj.nominal_type_id_usize().is_some_and(|ntid| {
+            let classes = self.classes.read();
+            if let Some(class) = classes.get_class(ntid) {
+                let has_own_accessor = class.prototype_members.iter().any(|member| {
+                    member.name == key
+                        && matches!(
+                            member.kind,
+                            crate::vm::object::PrototypeMemberKind::Getter
+                                | crate::vm::object::PrototypeMemberKind::Setter
+                        )
+                });
+                if has_own_accessor {
+                    return false;
+                }
+            }
+            drop(classes);
             let class_metadata = self.class_metadata.read();
             if class_metadata
                 .get(ntid)
@@ -9490,7 +9598,10 @@ impl<'a> Interpreter<'a> {
                         cd.name == class.name
                             && cd.methods.iter().any(|m| {
                                 let plain = m.name.rsplit("::").next().unwrap_or(&m.name);
-                                m.name == key || plain == key
+                                matches!(
+                                    m.kind,
+                                    crate::compiler::bytecode::MethodKind::Normal
+                                ) && (m.name == key || plain == key)
                             })
                     })
                 })
@@ -9935,6 +10046,38 @@ impl<'a> Interpreter<'a> {
             eprintln!("[defineData] done result={:?}", result);
         }
         result
+    }
+
+    pub(in crate::vm::interpreter) fn define_accessor_property_on_target(
+        &self,
+        target: Value,
+        key: &str,
+        get: Value,
+        set: Value,
+        enumerable: bool,
+        configurable: bool,
+    ) -> Result<(), VmError> {
+        let descriptor = self.alloc_object_descriptor()?;
+        let Some(descriptor_ptr) = (unsafe { descriptor.as_ptr::<Object>() }) else {
+            return Err(VmError::RuntimeError(
+                "Failed to allocate property descriptor object".to_string(),
+            ));
+        };
+        let descriptor_obj = unsafe { &mut *descriptor_ptr.as_ptr() };
+        for (field_name, field_value) in [
+            ("get", get),
+            ("set", set),
+            ("enumerable", Value::bool(enumerable)),
+            ("configurable", Value::bool(configurable)),
+        ] {
+            if let Some(field_index) = self.get_field_index_for_value(descriptor, field_name) {
+                descriptor_obj
+                    .set_field(field_index, field_value)
+                    .map_err(VmError::RuntimeError)?;
+            }
+            self.set_descriptor_field_present(descriptor, field_name, true);
+        }
+        self.apply_descriptor_to_target(target, key, descriptor)
     }
 
     pub(in crate::vm::interpreter) fn define_data_property_on_target_with_context(

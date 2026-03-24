@@ -1316,9 +1316,8 @@ impl<'a> Interpreter<'a> {
                     }
                     JSView::Struct { ptr, .. } => {
                         let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
-                        let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() }
+                        let _obj_ptr = unsafe { actual_obj.as_ptr::<Object>() }
                             .expect("JSView::Struct should always be an object");
-                        let obj = unsafe { &*obj_ptr.as_ptr() };
                         let key_str = key_str
                             .as_deref()
                             .expect("dyn object property access should always have a key string");
@@ -1336,115 +1335,12 @@ impl<'a> Interpreter<'a> {
                             return OpcodeResult::Continue;
                         }
 
-                        // Accessor descriptor check (existing descriptor_accessor path)
-                        if let Some(getter) = self.descriptor_accessor(actual_obj, key_str, "get") {
-                            match self.callable_frame_for_value(
-                                getter,
-                                stack,
-                                &[],
-                                None,
-                                ReturnAction::PushReturnValue,
-                                module,
-                                task,
-                            ) {
-                                Ok(Some(frame)) => return frame,
-                                Ok(None) => {
-                                    return OpcodeResult::Error(VmError::TypeError(format!(
-                                        "Property '{}' getter is not callable",
-                                        key_str
-                                    )));
-                                }
-                                Err(e) => return OpcodeResult::Error(e),
-                            }
-                        }
-
-                        // 1. Shape lookup: resolve key -> slot index via layout
-                        if let Some(slot_idx) =
-                            self.shape_resolve_key(obj.header.layout_id, key_str)
-                        {
-                            if slot_idx < obj.fields.len() {
-                                // Check accessor in slot_meta
-                                if let Some(meta) = obj.slot_meta.get(slot_idx) {
-                                    if let Some(ref accessor) = meta.accessor {
-                                        // Accessor property — invoke getter
-                                        // For now, return undefined (full accessor invocation comes later)
-                                        let _ = accessor;
-                                        Value::undefined()
-                                    } else {
-                                        obj.fields[slot_idx]
-                                    }
-                                } else {
-                                    obj.fields[slot_idx]
-                                }
-                            } else {
-                                Value::undefined()
-                            }
-                        }
-                        // 2. Method slot lookup (class vtable)
-                        else if let Some(method_slot) =
-                            obj.nominal_type_id_usize().and_then(|nominal_type_id| {
-                                let class_metadata = self.class_metadata.read();
-                                class_metadata
-                                    .get(nominal_type_id)
-                                    .and_then(|meta| meta.get_method_index(key_str))
-                                    .or_else(|| {
-                                        drop(class_metadata);
-                                        let classes = self.classes.read();
-                                        let class = classes.get_class(nominal_type_id)?;
-                                        let module = class.module.as_ref()?;
-                                        module
-                                            .classes
-                                            .iter()
-                                            .find(|class_def| class_def.name == class.name)
-                                            .and_then(|class_def| {
-                                                class_def.methods.iter().find_map(|method| {
-                                                    let plain_name = method
-                                                        .name
-                                                        .rsplit("::")
-                                                        .next()
-                                                        .unwrap_or(method.name.as_str());
-                                                    if method.name == key_str
-                                                        || plain_name == key_str
-                                                    {
-                                                        Some(method.slot)
-                                                    } else {
-                                                        None
-                                                    }
-                                                })
-                                            })
-                                    })
-                            })
-                        {
-                            match self.bound_method_value_for_slot(obj_val, method_slot) {
-                                Ok(value) => value,
-                                Err(_) => Value::undefined(),
-                            }
-                        }
-                        // 3. Dynamic fallback: check dyn_props
-                        else {
-                            let key_id = self.intern_prop_key(key_str);
-                            if let Some(prop) =
-                                obj.dyn_props.as_deref().and_then(|dp| dp.get(key_id))
-                            {
-                                if prop.is_accessor {
-                                    // Accessor in dyn_props — invoke getter (later)
-                                    Value::undefined()
-                                } else {
-                                    prop.value
-                                }
-                            }
-                            // 4. Full JS-spec property chain: prototype walk, callable
-                            // virtual properties (name/length/prototype), constructor
-                            // prototypes, and materialized static methods.
-                            else {
-                                match self.get_property_value_via_js_semantics_with_context(
-                                    actual_obj, key_str, task, module,
-                                ) {
-                                    Ok(Some(value)) => value,
-                                    Ok(None) => Value::undefined(),
-                                    Err(error) => return OpcodeResult::Error(error),
-                                }
-                            }
+                        match self.get_property_value_via_js_semantics_with_context(
+                            actual_obj, key_str, task, module,
+                        ) {
+                            Ok(Some(value)) => value,
+                            Ok(None) => Value::undefined(),
+                            Err(error) => return OpcodeResult::Error(error),
                         }
                     }
                     _ => {

@@ -943,6 +943,10 @@ pub struct Class {
     pub module: Option<Arc<crate::compiler::Module>>,
     /// Shared template for per-slot property metadata.
     pub slot_meta_template: Arc<SlotMetaInner>,
+    /// Own prototype members declared directly on this class.
+    pub prototype_members: Vec<PrototypeMember>,
+    /// Own static members declared directly on the constructor.
+    pub static_members: Vec<PrototypeMember>,
     /// Runtime prototype object for instances of this class.
     /// Created at class registration time with `nominal_type_id` set so
     /// vtable method lookup works naturally through the prototype chain.
@@ -965,6 +969,8 @@ impl Class {
             slot_meta_template: Arc::new(SlotMetaInner {
                 entries: vec![SlotMeta::data_default(); field_count],
             }),
+            prototype_members: Vec::new(),
+            static_members: Vec::new(),
             prototype_value: None,
         }
     }
@@ -983,6 +989,8 @@ impl Class {
             slot_meta_template: Arc::new(SlotMetaInner {
                 entries: vec![SlotMeta::data_default(); field_count],
             }),
+            prototype_members: Vec::new(),
+            static_members: Vec::new(),
             prototype_value: None,
         }
     }
@@ -1006,6 +1014,8 @@ impl Class {
             slot_meta_template: Arc::new(SlotMetaInner {
                 entries: vec![SlotMeta::data_default(); field_count],
             }),
+            prototype_members: Vec::new(),
+            static_members: Vec::new(),
             prototype_value: None,
         }
     }
@@ -1053,6 +1063,20 @@ impl Class {
     pub fn get_method(&self, method_index: usize) -> Option<usize> {
         self.vtable.get_method(method_index)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrototypeMemberKind {
+    Method,
+    Getter,
+    Setter,
+}
+
+#[derive(Debug, Clone)]
+pub struct PrototypeMember {
+    pub name: String,
+    pub function_id: usize,
+    pub kind: PrototypeMemberKind,
 }
 
 /// Virtual method table for dynamic dispatch

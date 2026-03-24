@@ -135,19 +135,7 @@ impl<'a> Interpreter<'a> {
         }
         drop(classes);
 
-        let callable = if method_module
-            .as_ref()
-            .and_then(|module| module.functions.get(func_id))
-            .is_some_and(|function| function.uses_js_this_slot)
-        {
-            if let Some(module) = method_module {
-                Object::new_closure_with_module(func_id, Vec::new(), module)
-            } else {
-                Object::new_closure(func_id, Vec::new())
-            }
-        } else {
-            Object::new_bound_method(receiver, func_id, method_module)
-        };
+        let callable = Object::new_bound_method(receiver, func_id, method_module);
         let gc_ptr = self.gc.lock().allocate(callable);
         Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) })
     }
@@ -172,7 +160,7 @@ impl<'a> Interpreter<'a> {
             if let Some(ref callable_data) = co.callable {
                 match &callable_data.kind {
                     CallableKind::BoundMethod { func_id, receiver } => {
-                        let receiver_value = explicit_this.unwrap_or(*receiver);
+                        let receiver_value = *receiver;
                         let receiver_final = if self.callable_uses_js_this_slot(callable) {
                             self.js_this_value_for_callable(callable, Some(receiver_value))?
                         } else {
@@ -195,7 +183,7 @@ impl<'a> Interpreter<'a> {
                         native_id,
                         receiver,
                     } => {
-                        let recv = explicit_this.unwrap_or(*receiver);
+                        let recv = *receiver;
                         return Ok(Some(self.exec_bound_native_method_call(
                             stack,
                             recv,

@@ -8,7 +8,7 @@ use thiserror::Error;
 pub const MAGIC: [u8; 4] = *b"RAYA";
 
 /// Current bytecode version
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 
 /// Stable module ID derived from canonical module identity.
 pub type ModuleId = u64;
@@ -194,6 +194,37 @@ pub struct ClassReflectionData {
     pub method_names: Vec<String>,
     /// Static field names
     pub static_field_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MethodKind {
+    #[default]
+    Normal,
+    Getter,
+    Setter,
+}
+
+impl MethodKind {
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        writer.emit_u8(match self {
+            Self::Normal => 0,
+            Self::Getter => 1,
+            Self::Setter => 2,
+        });
+    }
+
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        Ok(match reader.read_u8()? {
+            0 => Self::Normal,
+            1 => Self::Getter,
+            2 => Self::Setter,
+            other => {
+                return Err(DecodeError::InvalidFormat(format!(
+                    "invalid method kind: {other}"
+                )))
+            }
+        })
+    }
 }
 
 /// Reflection data for a single field
@@ -740,6 +771,8 @@ pub struct ClassDef {
     pub parent_name: Option<String>,
     /// Method definitions
     pub methods: Vec<Method>,
+    /// Static method/accessor definitions
+    pub static_methods: Vec<StaticMethod>,
 }
 
 impl ClassDef {
@@ -770,6 +803,11 @@ impl ClassDef {
         // Write methods
         writer.emit_u32(self.methods.len() as u32);
         for method in &self.methods {
+            method.encode(writer);
+        }
+
+        writer.emit_u32(self.static_methods.len() as u32);
+        for method in &self.static_methods {
             method.encode(writer);
         }
     }
@@ -803,12 +841,19 @@ impl ClassDef {
             methods.push(Method::decode(reader)?);
         }
 
+        let static_method_count = reader.read_u32()? as usize;
+        let mut static_methods = Vec::with_capacity(static_method_count);
+        for _ in 0..static_method_count {
+            static_methods.push(StaticMethod::decode(reader)?);
+        }
+
         Ok(Self {
             name,
             field_count,
             parent_id,
             parent_name,
             methods,
+            static_methods,
         })
     }
 }
@@ -822,6 +867,8 @@ pub struct Method {
     pub function_id: usize,
     /// Vtable slot index for virtual dispatch
     pub slot: usize,
+    /// Source-level member kind
+    pub kind: MethodKind,
 }
 
 impl Method {
@@ -836,6 +883,9 @@ impl Method {
 
         // Write slot index
         writer.emit_u32(self.slot as u32);
+
+        // Write method kind
+        self.kind.encode(writer);
     }
 
     /// Decode method from binary
@@ -849,10 +899,44 @@ impl Method {
         // Read slot index
         let slot = reader.read_u32()? as usize;
 
+        let kind = MethodKind::decode(reader)?;
+
         Ok(Self {
             name,
             function_id,
             slot,
+            kind,
+        })
+    }
+}
+
+/// Static method/accessor definition.
+#[derive(Debug, Clone)]
+pub struct StaticMethod {
+    /// Method name
+    pub name: String,
+    /// Function ID in the module
+    pub function_id: usize,
+    /// Source-level member kind
+    pub kind: MethodKind,
+}
+
+impl StaticMethod {
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        writer.emit_u32(self.name.len() as u32);
+        writer.buffer.extend_from_slice(self.name.as_bytes());
+        writer.emit_u32(self.function_id as u32);
+        self.kind.encode(writer);
+    }
+
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        let name = reader.read_string()?;
+        let function_id = reader.read_u32()? as usize;
+        let kind = MethodKind::decode(reader)?;
+        Ok(Self {
+            name,
+            function_id,
+            kind,
         })
     }
 }
@@ -1969,11 +2053,13 @@ mod tests {
                     name: "constructor".to_string(),
                     function_id: 0,
                     slot: 0,
+                    kind: MethodKind::Normal,
                 },
                 Method {
                     name: "doSomething".to_string(),
                     function_id: 1,
                     slot: 1,
+                    kind: MethodKind::Normal,
                 },
             ],
         });
@@ -2088,6 +2174,7 @@ mod tests {
                 name: "add42".to_string(),
                 function_id: 0,
                 slot: 0,
+                kind: MethodKind::Normal,
             }],
         });
 
