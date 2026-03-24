@@ -3601,6 +3601,50 @@ fn test_node_compat_top_level_strict_functions_inherit_arguments_poisoning() {
 }
 
 #[test]
+fn test_node_compat_sloppy_arguments_callee_matches_active_function_object() {
+    expect_bool_runtime_node_compat(
+        r#"
+        function f() {
+            return arguments.callee === f;
+        }
+        return f();
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_sloppy_arguments_callee_caller_is_observable() {
+    expect_string_runtime_node_compat(
+        r#"
+        function outer(): string {
+            return inner();
+        }
+        function inner(): string {
+            return JSON.stringify(arguments.callee.caller === undefined);
+        }
+        return outer();
+    "#,
+        "true",
+    );
+}
+
+#[test]
+fn test_node_compat_sloppy_arguments_non_writable_assignment_does_not_throw() {
+    expect_string_runtime_node_compat(
+        r#"
+        function fn(a): string {
+            Object.defineProperty(arguments, "0", { writable: false });
+            arguments[0] = 2;
+            return JSON.stringify([a, arguments[0]]);
+        }
+        return fn(1);
+    "#,
+        "[1,1]",
+    );
+}
+
+#[test]
 fn test_node_compat_weakmap_basic_object_key_roundtrip() {
     expect_i32_runtime_node_compat(
         r#"

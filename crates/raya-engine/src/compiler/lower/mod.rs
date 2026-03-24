@@ -3722,7 +3722,13 @@ impl<'a> Lowerer<'a> {
 
             // Extract parameter name from pattern
             if let Pattern::Identifier(ident) = &param.pattern {
-                let local_idx = self.allocate_local(ident.name);
+                let local_idx = if has_destructuring_params {
+                    let local_idx = decl_param_idx as u16 + u16::from(has_js_this_slot);
+                    self.local_map.insert(ident.name, local_idx);
+                    local_idx
+                } else {
+                    self.allocate_local(ident.name)
+                };
                 self.local_registers.insert(local_idx, reg.clone());
                 param_local_indices.push(Some(local_idx));
 
@@ -4428,6 +4434,9 @@ impl<'a> Lowerer<'a> {
                     let mut param_local_indices = Vec::with_capacity(method.params.len());
                     let method_type_params = method.type_params.as_deref();
                     let class_type_params = class.type_params.as_deref();
+                    let has_destructuring_params = method.params.iter().any(|p| {
+                        !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
+                    });
 
                     for (decl_param_idx, param) in method.params.iter().enumerate() {
                         // Skip rest parameters - they're handled separately
@@ -4495,7 +4504,14 @@ impl<'a> Lowerer<'a> {
                         }
 
                         if let Pattern::Identifier(ident) = &param.pattern {
-                            let local_idx = self.allocate_local(ident.name);
+                            let local_idx = if has_destructuring_params {
+                                let local_idx =
+                                    decl_param_idx as u16 + u16::from(self.this_register.is_some());
+                                self.local_map.insert(ident.name, local_idx);
+                                local_idx
+                            } else {
+                                self.allocate_local(ident.name)
+                            };
                             self.local_registers.insert(local_idx, reg.clone());
                             param_local_indices.push(Some(local_idx));
 
@@ -4833,6 +4849,9 @@ impl<'a> Lowerer<'a> {
                 let mut structural_param_bindings: Vec<(Register, TypeId)> = Vec::new();
                 let mut param_local_indices = Vec::with_capacity(ctor.params.len());
                 let class_type_params = class.type_params.as_deref();
+                let has_destructuring_params = ctor.params.iter().any(|p| {
+                    !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
+                });
 
                 for (decl_param_idx, param) in ctor.params.iter().enumerate() {
                     let ty = param
@@ -4873,7 +4892,14 @@ impl<'a> Lowerer<'a> {
                     }
 
                     if let Pattern::Identifier(ident) = &param.pattern {
-                        let local_idx = self.allocate_local(ident.name);
+                        let local_idx = if has_destructuring_params {
+                            let local_idx =
+                                decl_param_idx as u16 + u16::from(self.this_register.is_some());
+                            self.local_map.insert(ident.name, local_idx);
+                            local_idx
+                        } else {
+                            self.allocate_local(ident.name)
+                        };
                         self.local_registers.insert(local_idx, reg.clone());
                         param_local_indices.push(Some(local_idx));
                         if let Some(type_ann) = &param.type_annotation {

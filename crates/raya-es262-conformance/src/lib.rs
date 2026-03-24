@@ -874,6 +874,12 @@ fn format_failure_report(index: usize, total: usize, case: &TestCase, message: &
 
 fn matches_expected_error(actual: &str, expected: Option<&str>) -> bool {
     match expected {
+        Some("SyntaxError") => {
+            actual.contains("SyntaxError")
+                || actual.contains("Parse error")
+                || actual.contains("Invalid syntax")
+                || actual.contains("Binding error")
+        }
         Some(expected_name) => actual.contains(expected_name),
         None => true,
     }

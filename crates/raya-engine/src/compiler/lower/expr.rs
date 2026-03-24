@@ -1902,7 +1902,6 @@ impl<'a> Lowerer<'a> {
         if let Expression::Member(member) = &*unary.operand {
             let object = self.lower_expr(&member.object);
             let name = self.interner.resolve(member.property.name).to_string();
-            // TODO Phase 2 completion: emit JsDelete when handlers are wired to property kernel
             let key = self.alloc_register(TypeId::new(STRING_TYPE_ID));
             self.emit(IrInstr::Assign {
                 dest: key.clone(),
@@ -1911,7 +1910,11 @@ impl<'a> Lowerer<'a> {
             let dest = self.alloc_register(bool_ty);
             self.emit(IrInstr::NativeCall {
                 dest: Some(dest.clone()),
-                native_id: crate::compiler::native_id::OBJECT_DELETE_PROPERTY,
+                native_id: if self.js_strict_context {
+                    crate::compiler::native_id::OBJECT_DELETE_PROPERTY_STRICT
+                } else {
+                    crate::compiler::native_id::OBJECT_DELETE_PROPERTY
+                },
                 args: vec![object, key],
             });
             return dest;
@@ -1922,7 +1925,11 @@ impl<'a> Lowerer<'a> {
             let dest = self.alloc_register(bool_ty);
             self.emit(IrInstr::NativeCall {
                 dest: Some(dest.clone()),
-                native_id: crate::compiler::native_id::OBJECT_DELETE_PROPERTY,
+                native_id: if self.js_strict_context {
+                    crate::compiler::native_id::OBJECT_DELETE_PROPERTY_STRICT
+                } else {
+                    crate::compiler::native_id::OBJECT_DELETE_PROPERTY
+                },
                 args: vec![object, key],
             });
             return dest;
@@ -8328,7 +8335,13 @@ impl<'a> Lowerer<'a> {
             let reg = self.alloc_register(ty);
 
             if let ast::Pattern::Identifier(ident) = &param.pattern {
-                let local_idx = self.allocate_local(ident.name);
+                let local_idx = if has_destructuring_params {
+                    let local_idx = decl_param_idx as u16 + u16::from(has_js_this_slot);
+                    self.local_map.insert(ident.name, local_idx);
+                    local_idx
+                } else {
+                    self.allocate_local(ident.name)
+                };
                 self.local_registers.insert(local_idx, reg.clone());
                 param_local_indices.push(Some(local_idx));
                 self.callable_symbol_hints.remove(&ident.name);
@@ -8863,7 +8876,13 @@ impl<'a> Lowerer<'a> {
             let reg = self.alloc_register(ty);
 
             if let ast::Pattern::Identifier(ident) = &param.pattern {
-                let local_idx = self.allocate_local(ident.name);
+                let local_idx = if has_destructuring_params {
+                    let local_idx = decl_param_idx as u16;
+                    self.local_map.insert(ident.name, local_idx);
+                    local_idx
+                } else {
+                    self.allocate_local(ident.name)
+                };
                 self.local_registers.insert(local_idx, reg.clone());
                 // Shadowing is by symbol name; ensure arrow params override outer callable hints.
                 self.callable_symbol_hints.remove(&ident.name);

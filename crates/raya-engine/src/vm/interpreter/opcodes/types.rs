@@ -1453,10 +1453,16 @@ impl<'a> Interpreter<'a> {
                                 }
                                 return OpcodeResult::Continue;
                             }
-                            return OpcodeResult::Error(VmError::TypeError(format!(
-                                "Cannot assign to non-writable property '{}'",
-                                key_name
-                            )));
+                            if self.current_js_code_is_strict(task, module) {
+                                return OpcodeResult::Error(VmError::TypeError(format!(
+                                    "Cannot assign to non-writable property '{}'",
+                                    key_name
+                                )));
+                            }
+                            if let Err(e) = stack.push(value) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
                         }
                         Err(error) => return OpcodeResult::Error(error),
                     }
@@ -1524,6 +1530,12 @@ impl<'a> Interpreter<'a> {
                                             return OpcodeResult::Error(e);
                                         }
                                         return OpcodeResult::Continue;
+                                    }
+                                    if self.current_js_code_is_strict(task, module) {
+                                        return OpcodeResult::Error(VmError::TypeError(format!(
+                                            "Cannot assign to non-writable property '{}'",
+                                            key_str
+                                        )));
                                     }
                                     if let Err(e) = stack.push(value) {
                                         return OpcodeResult::Error(e);
@@ -1620,10 +1632,16 @@ impl<'a> Interpreter<'a> {
                                     }
                                     return OpcodeResult::Continue;
                                 }
-                                return OpcodeResult::Error(VmError::TypeError(format!(
-                                    "Cannot assign to non-writable property '{}'",
-                                    key_str
-                                )));
+                                if self.current_js_code_is_strict(task, module) {
+                                    return OpcodeResult::Error(VmError::TypeError(format!(
+                                        "Cannot assign to non-writable property '{}'",
+                                        key_str
+                                    )));
+                                }
+                                if let Err(e) = stack.push(value) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                return OpcodeResult::Continue;
                             }
                             Err(error) => return OpcodeResult::Error(error),
                         }

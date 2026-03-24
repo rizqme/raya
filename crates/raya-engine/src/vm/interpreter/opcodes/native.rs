@@ -3040,6 +3040,7 @@ impl<'a> Interpreter<'a> {
                 | crate::compiler::native_id::OBJECT_GET_OWN_PROPERTY_DESCRIPTOR
                 | crate::compiler::native_id::OBJECT_DEFINE_PROPERTIES
                 | crate::compiler::native_id::OBJECT_DELETE_PROPERTY
+                | crate::compiler::native_id::OBJECT_DELETE_PROPERTY_STRICT
                 | crate::compiler::native_id::OBJECT_GET_PROTOTYPE_OF
                 | crate::compiler::native_id::OBJECT_GET_AMBIENT_GLOBAL
                 | crate::compiler::native_id::CRYPTO_HASH
@@ -3393,6 +3394,78 @@ impl<'a> Interpreter<'a> {
         }
 
         false
+    }
+
+    fn callable_matches_function_identity(
+        &self,
+        value: Value,
+        func_id: usize,
+        module: &Module,
+    ) -> bool {
+        let Some(obj_ptr) = checked_object_ptr(value) else {
+            return false;
+        };
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        if !obj.is_callable() || obj.callable_func_id() != Some(func_id) {
+            return false;
+        }
+        obj.callable_module()
+            .as_ref()
+            .is_some_and(|callable_module| callable_module.checksum == module.checksum)
+    }
+
+    fn current_callable_value_for_function(
+        &self,
+        stack: &Stack,
+        module: &Module,
+        task: &Arc<Task>,
+        func_id: usize,
+    ) -> Option<Value> {
+        if let Some(closure) = task.current_closure() {
+            if self.callable_matches_function_identity(closure, func_id, module) {
+                return Some(closure);
+            }
+        }
+
+        if let Some(frame) = stack.current_frame() {
+            if let Some(closure) = frame.closure {
+                if self.callable_matches_function_identity(closure, func_id, module) {
+                    return Some(closure);
+                }
+            }
+
+            let frame_end = frame.base_pointer.saturating_add(frame.local_count);
+            for slot in frame.base_pointer..frame_end {
+                let Ok(value) = stack.peek_at(slot) else {
+                    continue;
+                };
+                if self.callable_matches_function_identity(value, func_id, module) {
+                    return Some(value);
+                }
+            }
+        }
+
+        for value in self.globals_by_index.read().iter().copied() {
+            if self.callable_matches_function_identity(value, func_id, module) {
+                return Some(value);
+            }
+        }
+
+        None
+    }
+
+    pub(in crate::vm::interpreter) fn current_js_code_is_strict(
+        &self,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> bool {
+        if task.current_active_direct_eval_is_strict() {
+            return true;
+        }
+        module
+            .functions
+            .get(task.current_func_id())
+            .is_some_and(|function| function.is_strict_js)
     }
 
     pub(in crate::vm::interpreter) fn callable_uses_builtin_this_coercion(
@@ -3804,20 +3877,20 @@ impl<'a> Interpreter<'a> {
         let callee = if function.is_strict_js {
             None
         } else {
-            let closure = Object::new_closure_with_module(
-                current_func_id,
-                Vec::new(),
-                Arc::new(module.clone()),
-            );
-            let closure_ptr = self.gc.lock().allocate(closure);
-            Some(ArgumentsDataProperty::new(
-                unsafe {
-                    Value::from_ptr(NonNull::new(closure_ptr.as_ptr()).expect("closure ptr"))
-                },
-                true,
-                false,
-                true,
-            ))
+            let callee_value = self
+                .current_callable_value_for_function(stack, module, task, current_func_id)
+                .unwrap_or_else(|| {
+                    let closure = Object::new_closure_with_module(
+                        current_func_id,
+                        Vec::new(),
+                        Arc::new(module.clone()),
+                    );
+                    let closure_ptr = self.gc.lock().allocate(closure);
+                    unsafe {
+                        Value::from_ptr(NonNull::new(closure_ptr.as_ptr()).expect("closure ptr"))
+                    }
+                });
+            Some(ArgumentsDataProperty::new(callee_value, true, false, true))
         };
 
         let mut object = Object::new_dynamic(layout_id_from_ordered_names(&[]), 0);
@@ -3955,19 +4028,19 @@ impl<'a> Interpreter<'a> {
                     key
                 )));
             }
-        }
-        if !current.writable {
-            if record.has_writable && record.writable {
-                return Err(VmError::TypeError(format!(
-                    "Cannot redefine non-writable property '{}'",
-                    key
-                )));
-            }
-            if record.has_value && !value_same_value(record.value, current.value) {
-                return Err(VmError::TypeError(format!(
-                    "Cannot redefine non-writable property '{}'",
-                    key
-                )));
+            if !current.writable {
+                if record.has_writable && record.writable {
+                    return Err(VmError::TypeError(format!(
+                        "Cannot redefine non-writable property '{}'",
+                        key
+                    )));
+                }
+                if record.has_value && !value_same_value(record.value, current.value) {
+                    return Err(VmError::TypeError(format!(
+                        "Cannot redefine non-writable property '{}'",
+                        key
+                    )));
+                }
             }
         }
         Ok(())
@@ -4005,19 +4078,19 @@ impl<'a> Interpreter<'a> {
                             key
                         )));
                     }
-                }
-                if !writable {
-                    if record.has_writable && record.writable {
-                        return Err(VmError::TypeError(format!(
-                            "Cannot redefine non-writable property '{}'",
-                            key
-                        )));
-                    }
-                    if record.has_value && !value_same_value(record.value, value) {
-                        return Err(VmError::TypeError(format!(
-                            "Cannot redefine non-writable property '{}'",
-                            key
-                        )));
+                    if !writable {
+                        if record.has_writable && record.writable {
+                            return Err(VmError::TypeError(format!(
+                                "Cannot redefine non-writable property '{}'",
+                                key
+                            )));
+                        }
+                        if record.has_value && !value_same_value(record.value, value) {
+                            return Err(VmError::TypeError(format!(
+                                "Cannot redefine non-writable property '{}'",
+                                key
+                            )));
+                        }
                     }
                 }
             }
@@ -6650,6 +6723,12 @@ impl<'a> Interpreter<'a> {
             }
             return Some(value);
         }
+        if matches!(key, "caller" | "arguments")
+            && self.callable_function_info(target).is_some()
+            && !self.callable_is_strict_js(target)
+        {
+            return Some(Value::undefined());
+        }
         match key {
             "prototype" => {
                 let proto = self.constructor_prototype_value(target)?;
@@ -6707,6 +6786,12 @@ impl<'a> Interpreter<'a> {
                     return Some((prop.writable, prop.enumerable, prop.configurable));
                 }
             }
+        }
+        if matches!(key, "caller" | "arguments")
+            && self.callable_function_info(target).is_some()
+            && !self.callable_is_strict_js(target)
+        {
+            return Some((false, false, false));
         }
         match key {
             "prototype" if self.constructor_prototype_value(target).is_some() => {
@@ -14908,6 +14993,28 @@ impl<'a> Interpreter<'a> {
                             Err(error) => return OpcodeResult::Error(error),
                         };
                         if let Err(error) = stack.push(Value::bool(deleted)) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == crate::compiler::native_id::OBJECT_DELETE_PROPERTY_STRICT => {
+                        if args.len() != 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.deletePropertyStrict requires 2 arguments".to_string(),
+                            ));
+                        }
+                        let deleted = match self
+                            .delete_property_from_target(args[0], args[1], task, module)
+                        {
+                            Ok(result) => result,
+                            Err(error) => return OpcodeResult::Error(error),
+                        };
+                        if !deleted {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Cannot delete non-configurable property".to_string(),
+                            ));
+                        }
+                        if let Err(error) = stack.push(Value::bool(true)) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue

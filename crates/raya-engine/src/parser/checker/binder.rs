@@ -2675,11 +2675,13 @@ impl<'a> Binder<'a> {
                     } else {
                         return Err(BindError::InvalidRestParameter {
                             message:
-                                "Rest parameter type must be an array/tuple (e.g., string[] or [number, string])"
+                            "Rest parameter type must be an array/tuple (e.g., string[] or [number, string])"
                                     .to_string(),
                             span: type_ann.span,
                         });
                     }
+                } else if self.mode == TypeSystemMode::Js {
+                    rest_param_ty = Some(self.implicit_js_rest_param_type());
                 } else {
                     return Err(BindError::InvalidRestParameter {
                         message:
@@ -3154,6 +3156,8 @@ impl<'a> Binder<'a> {
                                         span: type_ann.span,
                                     });
                                 }
+                            } else if self.mode == TypeSystemMode::Js {
+                                rest_param_ty = Some(self.implicit_js_rest_param_type());
                             } else {
                                 return Err(BindError::InvalidRestParameter {
                                     message: "Rest parameter must have a type annotation (e.g., ...args: string[])".to_string(),
@@ -3285,6 +3289,8 @@ impl<'a> Binder<'a> {
                                         span: type_ann.span,
                                     });
                                 }
+                            } else if self.mode == TypeSystemMode::Js {
+                                ctor_rest_param_ty = Some(self.implicit_js_rest_param_type());
                             } else {
                                 return Err(BindError::InvalidRestParameter {
                                     message: "Rest parameter must have a type annotation (e.g., ...args: string[])".to_string(),
@@ -3776,6 +3782,11 @@ impl<'a> Binder<'a> {
             Some(Type::Union(u)) => u.members.iter().all(|m| self.is_valid_rest_param_type(*m)),
             _ => false,
         }
+    }
+
+    fn implicit_js_rest_param_type(&mut self) -> TypeId {
+        let elem_ty = self.type_ctx.unknown_type();
+        self.type_ctx.array_type(elem_ty)
     }
 
     fn instantiate_generic_type_alias(
