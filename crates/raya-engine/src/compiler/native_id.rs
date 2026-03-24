@@ -103,6 +103,8 @@ pub const OBJECT_JS_DELETE_IDENTIFIER: u16 = 0x002F;
 pub const OBJECT_EVAL_SET_COMPLETION: u16 = 0x0030;
 /// Read the current direct-eval completion value.
 pub const OBJECT_EVAL_GET_COMPLETION: u16 = 0x0031;
+/// Declare a lexical binding in the active eval environment.
+pub const OBJECT_EVAL_ENV_DECLARE_LEXICAL: u16 = 0x003B;
 /// Read the current JS `new.target` value.
 pub const OBJECT_CURRENT_NEW_TARGET: u16 = 0x0032;
 /// Resolve `super.prop` using the current callable home object.
@@ -642,6 +644,7 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_JS_DELETE_IDENTIFIER => "Object.jsDeleteIdentifier",
         OBJECT_EVAL_SET_COMPLETION => "Object.evalSetCompletion",
         OBJECT_EVAL_GET_COMPLETION => "Object.evalGetCompletion",
+        OBJECT_EVAL_ENV_DECLARE_LEXICAL => "Object.evalEnvDeclareLexical",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",
         OBJECT_SET_PROTOTYPE_OF => "Object.setPrototypeOf",

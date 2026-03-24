@@ -22,6 +22,60 @@ enum ForOfIterableKind {
 }
 
 impl<'a> Lowerer<'a> {
+    fn emit_static_elements_for_class(
+        &mut self,
+        class: &ast::ClassDecl,
+        nominal_type_id: crate::compiler::ir::NominalTypeId,
+        class_value: Register,
+    ) {
+        for member in &class.members {
+            match member {
+                ast::ClassMember::Field(field) if field.is_static => {
+                    let Some(initializer) = &field.initializer else {
+                        continue;
+                    };
+                    let global_index = self
+                        .class_info_map
+                        .get(&nominal_type_id)
+                        .and_then(|info| {
+                            info.static_fields
+                                .iter()
+                                .find(|static_field| static_field.name == field.name.name)
+                                .map(|static_field| static_field.global_index)
+                        });
+                    let Some(global_index) = global_index else {
+                        continue;
+                    };
+
+                    let value_reg = self.lower_expr(initializer);
+                    self.emit(IrInstr::StoreGlobal {
+                        index: global_index,
+                        value: value_reg.clone(),
+                    });
+
+                    let key_reg = self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
+                    self.emit(IrInstr::Assign {
+                        dest: key_reg.clone(),
+                        value: IrValue::Constant(IrConstant::String(
+                            self.interner.resolve(field.name.name).to_string(),
+                        )),
+                    });
+                    self.emit(IrInstr::NativeCall {
+                        dest: None,
+                        native_id: crate::compiler::native_id::REFLECT_SET,
+                        args: vec![class_value.clone(), key_reg, value_reg],
+                    });
+                }
+                ast::ClassMember::StaticBlock(block) => {
+                    for stmt in &block.statements {
+                        self.lower_stmt(stmt);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn ensure_js_nested_class_binding(&mut self, name: crate::parser::Symbol) {
         if !self.js_this_binding_compat
             || self.function_depth == 0
@@ -303,42 +357,35 @@ impl<'a> Lowerer<'a> {
                     self.this_register = saved_this_register;
                     self.generator_yield_array_local = saved_generator_yield_array_local;
                     self.pending_class_method_env_globals = saved_pending_method_env;
-                } else {
-                    // Already-lowered declaration: emit static blocks at declaration position
-                    // so execution order matches source semantics.
-                    let static_blocks: Vec<ast::BlockStatement> = self
-                        .class_info_map
-                        .get(&nominal_type_id)
-                        .map(|info| info.static_blocks.clone())
-                        .unwrap_or_default();
-                    for block in static_blocks {
-                        for s in &block.statements {
-                            self.lower_stmt(s);
-                        }
-                    }
                 }
 
+                let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
                 if self.js_this_binding_compat && self.function_depth == 0 && self.block_depth == 0
                 {
                     if let Some(&global_idx) = self.js_script_lexical_globals.get(&class.name.name) {
-                        let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
                         self.global_type_map.insert(global_idx, class_value.ty);
                         self.emit(IrInstr::StoreGlobal {
                             index: global_idx,
-                            value: class_value,
+                            value: class_value.clone(),
                         });
                     }
                 }
                 if self.in_direct_eval_function {
-                    let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
-                    self.emit_direct_eval_binding_set(self.interner.resolve(class.name.name), class_value);
+                    self.emit_direct_eval_binding_declare_lexical(
+                        self.interner.resolve(class.name.name),
+                    );
+                    self.emit_direct_eval_binding_set(
+                        self.interner.resolve(class.name.name),
+                        class_value.clone(),
+                    );
                 } else if self.js_this_binding_compat
                     && self.function_depth > 0
                     && self.shared_script_binding_slot(class.name.name).is_none()
                 {
-                    let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
-                    self.store_identifier_value(class.name.name, class_value);
+                    self.store_identifier_value(class.name.name, class_value.clone());
                 }
+
+                self.emit_static_elements_for_class(class, nominal_type_id, class_value);
             }
             Statement::TypeAliasDecl(_) => {
                 // Type-only, no runtime code

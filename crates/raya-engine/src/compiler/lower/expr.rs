@@ -568,7 +568,8 @@ impl<'a> Lowerer<'a> {
     fn should_resolve_from_direct_eval_env(&self, ident: &ast::Identifier) -> bool {
         let name = self.interner.resolve(ident.name);
         self.in_direct_eval_function
-            && self.direct_eval_binding_enabled(name)
+            && (self.direct_eval_binding_enabled(name)
+                || self.visible_js_lexical_symbols.contains(&ident.name))
             && !self.local_map.contains_key(&ident.name)
             && !self.constant_map.contains_key(&ident.name)
             && !self.captures.iter().any(|capture| capture.symbol == ident.name)
@@ -637,6 +638,15 @@ impl<'a> Lowerer<'a> {
             dest: None,
             native_id: crate::compiler::native_id::OBJECT_EVAL_ENV_DECLARE_FUNCTION,
             args: vec![name_reg, value],
+        });
+    }
+
+    pub(super) fn emit_direct_eval_binding_declare_lexical(&mut self, name: &str) {
+        let name_reg = self.emit_direct_eval_name_reg(name);
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_EVAL_ENV_DECLARE_LEXICAL,
+            args: vec![name_reg],
         });
     }
 
@@ -1397,38 +1407,6 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Check module-level variables (stored as globals)
-        if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
-            let global_ty = self
-                .global_type_map
-                .get(&global_idx)
-                .copied()
-                .unwrap_or(UNRESOLVED);
-            let ty = self.effective_identifier_value_type(ident, global_ty);
-            let dest = self.alloc_register(ty);
-            self.emit(IrInstr::LoadGlobal {
-                dest: dest.clone(),
-                index: global_idx,
-            });
-            // Propagate object field layout so destructuring can resolve field names
-            if let Some(fields) = self.variable_object_fields.get(&ident.name).cloned() {
-                self.register_object_fields.insert(dest.id, fields);
-                if let Some(nested_fields) =
-                    self.variable_nested_object_fields.get(&ident.name).cloned()
-                {
-                    for (field_idx, layout) in nested_fields {
-                        self.register_nested_object_fields
-                            .insert((dest.id, field_idx), layout);
-                    }
-                }
-            }
-            self.propagate_variable_projection_to_register(ident.name, &dest);
-            if !self.identifier_requires_late_bound_dispatch(ident.name) {
-                self.propagate_type_projection_to_register(ty, &dest);
-            }
-            return dest;
-        }
-
         // Nested class method environment bridge:
         // std-wrapper class methods can reference enclosing wrapper locals.
         if let Some(env_globals) = &self.current_method_env_globals {
@@ -1460,6 +1438,48 @@ impl<'a> Lowerer<'a> {
                 };
                 return dest;
             }
+        }
+
+        if !self.parameter_scope_eval_mode {
+            if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
+                return self.load_class_value_for_nominal_type(nominal_type_id);
+            }
+        }
+
+        if self.should_resolve_from_direct_eval_env(ident) {
+            return self.emit_direct_eval_binding_get(name, false);
+        }
+
+        // Check module-level variables (stored as globals)
+        if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
+            let global_ty = self
+                .global_type_map
+                .get(&global_idx)
+                .copied()
+                .unwrap_or(UNRESOLVED);
+            let ty = self.effective_identifier_value_type(ident, global_ty);
+            let dest = self.alloc_register(ty);
+            self.emit(IrInstr::LoadGlobal {
+                dest: dest.clone(),
+                index: global_idx,
+            });
+            // Propagate object field layout so destructuring can resolve field names
+            if let Some(fields) = self.variable_object_fields.get(&ident.name).cloned() {
+                self.register_object_fields.insert(dest.id, fields);
+                if let Some(nested_fields) =
+                    self.variable_nested_object_fields.get(&ident.name).cloned()
+                {
+                    for (field_idx, layout) in nested_fields {
+                        self.register_nested_object_fields
+                            .insert((dest.id, field_idx), layout);
+                    }
+                }
+            }
+            self.propagate_variable_projection_to_register(ident.name, &dest);
+            if !self.identifier_requires_late_bound_dispatch(ident.name) {
+                self.propagate_type_projection_to_register(ty, &dest);
+            }
+            return dest;
         }
 
         if name == "arguments"
@@ -1535,10 +1555,6 @@ impl<'a> Lowerer<'a> {
             return self.lower_js_arguments_object();
         }
 
-        if self.should_resolve_from_direct_eval_env(ident) {
-            return self.emit_direct_eval_binding_get(name, false);
-        }
-
         // Check if this is a named function used as a value (function reference)
         if !self.parameter_scope_eval_mode {
             if let Some(&func_id) = self.function_map.get(&ident.name) {
@@ -1549,28 +1565,6 @@ impl<'a> Lowerer<'a> {
                     dest: dest.clone(),
                     func: func_id,
                     captures: vec![],
-                });
-                return dest;
-            }
-        }
-
-        // JS class identifiers are first-class constructor values. Materialize a
-        // canonical runtime class handle instead of leaking the compiler's local
-        // nominal type id into JS value position.
-        if !self.parameter_scope_eval_mode {
-            if let Some(&nominal_type_id) = self.class_map.get(&ident.name) {
-                let dest = self.alloc_register(
-                    self.effective_identifier_value_type(ident, self.default_js_function_type()),
-                );
-                let nominal_id_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                self.emit(IrInstr::Assign {
-                    dest: nominal_id_reg.clone(),
-                    value: IrValue::Constant(IrConstant::I32(nominal_type_id.as_u32() as i32)),
-                });
-                self.emit(IrInstr::NativeCall {
-                    dest: Some(dest.clone()),
-                    native_id: crate::compiler::native_id::OBJECT_GET_CLASS_VALUE,
-                    args: vec![nominal_id_reg],
                 });
                 return dest;
             }
@@ -3624,13 +3618,9 @@ impl<'a> Lowerer<'a> {
                             dest: dest.clone(),
                             closure,
                             args,
-                        });
+                            });
                     } else {
-                        self.emit(IrInstr::CallClosure {
-                            dest: Some(dest.clone()),
-                            closure,
-                            args,
-                        });
+                        self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
                         self.propagate_type_projection_to_register(call_ty, &dest);
                     }
                     return dest;
@@ -4985,7 +4975,14 @@ impl<'a> Lowerer<'a> {
                         }
                     };
                     let dest = self.alloc_register(member_ty);
-                    let class_value = self.lower_expr(&member.object);
+                    let class_value = if matches!(
+                        member.object.as_ref(),
+                        Expression::Identifier(ident) if self.class_map.contains_key(&ident.name)
+                    ) {
+                        self.load_class_value_for_nominal_type(nominal_type_id)
+                    } else {
+                        self.lower_expr(&member.object)
+                    };
                     self.emit_dyn_get_named(dest.clone(), class_value, prop_name);
                     return dest;
                 }

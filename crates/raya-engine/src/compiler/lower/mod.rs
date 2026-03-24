@@ -3997,8 +3997,6 @@ impl<'a> Lowerer<'a> {
         self.current_function_mut()
             .add_block(BasicBlock::with_label(entry_block, "entry"));
 
-        // Initialize static fields from all classes
-        self.emit_static_field_initializations();
         self.emit_js_top_level_var_hoists(stmts);
         self.emit_js_top_level_function_hoists();
         if self.track_top_level_completion {

@@ -2838,6 +2838,19 @@ impl<'a> Interpreter<'a> {
         Ok(())
     }
 
+    fn activation_eval_env_declare_lexical(
+        &mut self,
+        task: &Arc<Task>,
+        key: &str,
+    ) -> Result<(), VmError> {
+        let Some(env) = self.current_activation_eval_env(task) else {
+            return Err(VmError::RuntimeError(
+                "No active eval environment".to_string(),
+            ));
+        };
+        self.declare_direct_eval_lexical_binding(env, key)
+    }
+
     fn predeclare_direct_eval_lexical_declarations(
         &mut self,
         env: Value,
@@ -12186,6 +12199,29 @@ impl<'a> Interpreter<'a> {
                             }
                         }
                         if let Err(error) = stack.push(args[1]) {
+                            return OpcodeResult::Error(error);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    id if id == crate::compiler::native_id::OBJECT_EVAL_ENV_DECLARE_LEXICAL => {
+                        if args.len() != 1 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "eval env declareLexical expects a string name".to_string(),
+                            ));
+                        }
+                        let Some(name_ptr) = (unsafe { args[0].as_ptr::<RayaString>() }) else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "eval env declareLexical expects a string name".to_string(),
+                            ));
+                        };
+                        let name = unsafe { &*name_ptr.as_ptr() };
+                        if let Err(error) =
+                            self.activation_eval_env_declare_lexical(task, &name.data)
+                        {
+                            return OpcodeResult::Error(error);
+                        }
+                        if let Err(error) = stack.push(Value::undefined()) {
                             return OpcodeResult::Error(error);
                         }
                         OpcodeResult::Continue
