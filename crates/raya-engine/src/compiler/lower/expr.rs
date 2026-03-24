@@ -2186,13 +2186,6 @@ impl<'a> Lowerer<'a> {
             return self.lower_optional_call(call, full_expr);
         }
 
-        if call.has_spread_arguments() {
-            return self.lower_call_with_spread(call, full_expr);
-        }
-
-        // Lower arguments first
-        let args = self.lower_call_argument_values(&call.arguments);
-
         // Prefer checker return type; if absent, derive from callee call signature.
         let mut call_ty = self.get_expr_type(full_expr);
         if call_ty.as_u32() == UNRESOLVED_TYPE_ID {
@@ -2201,6 +2194,68 @@ impl<'a> Lowerer<'a> {
                 call_ty = return_ty;
             }
         }
+
+        if self.js_this_binding_compat {
+            if let Expression::Member(member) = &*call.callee {
+                let helper_name = self.interner.resolve(member.property.name);
+                if helper_name == "call" {
+                    let target_callable = self.lower_expr(&member.object);
+                    let lowered_args = self.lower_call_argument_values(&call.arguments);
+                    let receiver = lowered_args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| self.lower_undefined_literal());
+                    let call_args = if lowered_args.len() > 1 {
+                        lowered_args[1..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    let mut dest = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+                    if call_ty.as_u32() != UNRESOLVED_TYPE_ID {
+                        dest.ty = call_ty;
+                    }
+                    self.emit_js_member_call_helper(
+                        dest.clone(),
+                        receiver,
+                        target_callable,
+                        call_args,
+                    );
+                    self.propagate_type_projection_to_register(dest.ty, &dest);
+                    return dest;
+                }
+                if helper_name == "apply" && !call.has_spread_arguments() {
+                    let target_callable = self.lower_expr(&member.object);
+                    let lowered_args = self.lower_call_argument_values(&call.arguments);
+                    let receiver = lowered_args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| self.lower_undefined_literal());
+                    let args_array = lowered_args
+                        .get(1)
+                        .cloned()
+                        .unwrap_or_else(|| self.lower_undefined_literal());
+                    let mut dest = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+                    if call_ty.as_u32() != UNRESOLVED_TYPE_ID {
+                        dest.ty = call_ty;
+                    }
+                    self.emit_js_apply_helper(
+                        dest.clone(),
+                        receiver,
+                        target_callable,
+                        args_array,
+                    );
+                    self.propagate_type_projection_to_register(dest.ty, &dest);
+                    return dest;
+                }
+            }
+        }
+
+        if call.has_spread_arguments() {
+            return self.lower_call_with_spread(call, full_expr);
+        }
+
+        // Lower arguments first
+        let args = self.lower_call_argument_values(&call.arguments);
         if self.js_this_binding_compat {
             if let Expression::Member(member) = &*call.callee {
                 let helper_name = self.interner.resolve(member.property.name);
@@ -10350,9 +10405,16 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_this(&mut self) -> Register {
-        // Return the 'this' register if we're directly inside a method
+        // In JS-compatible functions, `this` is passed through local slot 0.
+        // `this_register` tracks availability/type, but reading the runtime value
+        // must load the current frame slot so call/apply rebinding is observed.
         if let Some(ref this_reg) = self.this_register {
-            return this_reg.clone();
+            let dest = self.alloc_register(this_reg.ty);
+            self.emit(IrInstr::LoadLocal {
+                dest: dest.clone(),
+                index: 0,
+            });
+            return dest;
         }
 
         // Check if we've already captured `this`

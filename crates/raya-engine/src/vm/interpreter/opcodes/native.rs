@@ -3699,12 +3699,11 @@ impl<'a> Interpreter<'a> {
     }
 
     fn box_js_this_primitive(&mut self, this_value: Value) -> Result<Option<Value>, VmError> {
-        if let Some(constructor) = self.builtin_global_value("Symbol") {
-            if self.is_symbol_value(this_value) {
-                return self
-                    .alloc_boxed_primitive_object(constructor, "Symbol", this_value)
-                    .map(Some);
-            }
+        // Raya models JS symbols as dedicated symbol-instance objects already, so
+        // re-boxing them for `this` coercion produces a wrapper that loses the
+        // instance's own field layout/prototype semantics.
+        if self.is_symbol_value(this_value) {
+            return Ok(None);
         }
         if let Some(constructor) = self.builtin_global_value("BigInt") {
             if checked_bigint_ptr(this_value).is_some() {
@@ -12212,7 +12211,12 @@ impl<'a> Interpreter<'a> {
         let obj_ptr = self.gc.lock().allocate(obj);
         let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) };
         if let Some(symbol_ctor) = self.builtin_global_value("Symbol") {
-            self.set_constructed_object_prototype_from_constructor(value, symbol_ctor);
+            if let Some(prototype) = self
+                .create_prototype_for_class_by_name("Symbol", symbol_ctor)
+                .or_else(|| self.constructor_prototype_value(symbol_ctor))
+            {
+                self.set_constructed_object_prototype_from_value(value, prototype);
+            }
         }
         Ok(value)
     }
@@ -13688,7 +13692,7 @@ impl<'a> Interpreter<'a> {
                         let rest_args = if args.len() >= 3 {
                             match self.collect_apply_arguments(args[2], task, module) {
                                 Ok(values) => values,
-                                Err(error) => return OpcodeResult::Error(error),
+                                Err(_) => args[2..].to_vec(),
                             }
                         } else {
                             Vec::new()
