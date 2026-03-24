@@ -615,10 +615,7 @@ fn is_js_whitespace(ch: char) -> bool {
             | '\u{00A0}'
             | '\u{FEFF}'
             | '\u{1680}'
-            | '\u{2000}'..='\u{200A}'
-            | '\u{202F}'
-            | '\u{205F}'
-            | '\u{3000}'
+            | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
     )
 }
 
@@ -1026,8 +1023,7 @@ impl<'a> Lexer<'a> {
                 c if c == quote => {
                     let end = cursor + ch_len;
                     let inner = &self.source[start + 1..cursor];
-                    let token =
-                        Token::StringLiteral(self.interner.intern(&unescape_string(inner)));
+                    let token = Token::StringLiteral(self.interner.intern(&unescape_string(inner)));
                     let span = Span::new(start, end, line, column);
                     let mut lexed = LexedToken::new(token, span, line_break_before);
                     lexed.raw_string_literal = !inner.contains('\\');

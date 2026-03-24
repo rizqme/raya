@@ -5,7 +5,9 @@ use raya_engine::parser::parser::Parser;
 
 fn assert_expr_argument(arg: &CallArgument, expected_int: i64) {
     match arg {
-        CallArgument::Expression(Expression::IntLiteral(lit)) => assert_eq!(lit.value, expected_int),
+        CallArgument::Expression(Expression::IntLiteral(lit)) => {
+            assert_eq!(lit.value, expected_int)
+        }
         CallArgument::Expression(Expression::FloatLiteral(lit)) => {
             assert_eq!(lit.value, expected_int as f64)
         }
@@ -335,12 +337,14 @@ fn test_parse_async_call_as_argument() {
                 assert_eq!(call.arguments.len(), 1);
                 // Argument should be an async call
                 match &call.arguments[0] {
-                    CallArgument::Expression(Expression::AsyncCall(async_call)) => match &*async_call.callee {
-                        Expression::Identifier(id) => {
-                            assert_eq!(interner.resolve(id.name), "compute")
+                    CallArgument::Expression(Expression::AsyncCall(async_call)) => {
+                        match &*async_call.callee {
+                            Expression::Identifier(id) => {
+                                assert_eq!(interner.resolve(id.name), "compute")
+                            }
+                            _ => panic!("Expected identifier"),
                         }
-                        _ => panic!("Expected identifier"),
-                    },
+                    }
                     _ => panic!("Expected async call argument"),
                 }
             }

@@ -117,6 +117,23 @@ impl<'a> Interpreter<'a> {
                             });
                         if let Some(func_id) = direct_func_id {
                             if module.functions.get(func_id).is_some() {
+                                if module
+                                    .functions
+                                    .get(func_id)
+                                    .is_some_and(|function| function.is_generator)
+                                {
+                                    let iterator = self.create_generator_task_object(
+                                        func_id,
+                                        task.current_module(),
+                                        args_tmp.into_iter().rev().collect(),
+                                        None,
+                                        task,
+                                    );
+                                    if let Err(e) = stack.push(iterator) {
+                                        return OpcodeResult::Error(e);
+                                    }
+                                    return OpcodeResult::Continue;
+                                }
                                 // Push args back for direct function frame call.
                                 for arg in args_tmp.into_iter().rev() {
                                     if let Err(e) = stack.push(arg) {
@@ -216,10 +233,41 @@ impl<'a> Interpreter<'a> {
                             func_index, arg_count, name
                         );
                     }
+                    let total_arg_count = arg_count + usize::from(uses_js_this_slot);
+                    if module
+                        .functions
+                        .get(func_index)
+                        .is_some_and(|function| function.is_generator)
+                    {
+                        let args_start = match stack.depth().checked_sub(total_arg_count) {
+                            Some(pos) => pos,
+                            None => return OpcodeResult::Error(VmError::StackUnderflow),
+                        };
+                        let mut frame_args = Vec::with_capacity(total_arg_count);
+                        for offset in 0..total_arg_count {
+                            match stack.peek_at(args_start + offset) {
+                                Ok(value) => frame_args.push(value),
+                                Err(error) => return OpcodeResult::Error(error),
+                            }
+                        }
+                        while stack.depth() > args_start {
+                            let _ = stack.pop();
+                        }
+                        let iterator = self.create_generator_task_object(
+                            func_index,
+                            task.current_module(),
+                            frame_args,
+                            None,
+                            task,
+                        );
+                        return stack
+                            .push(iterator)
+                            .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue);
+                    }
                     // Regular function call - args are already on the stack
                     OpcodeResult::PushFrame {
                         func_id: func_index,
-                        arg_count: arg_count + usize::from(uses_js_this_slot),
+                        arg_count: total_arg_count,
                         is_closure: false,
                         closure_val: None,
                         module: None,
@@ -271,10 +319,41 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                 }
+                let total_arg_count = arg_count + usize::from(uses_js_this_slot);
+                if module
+                    .functions
+                    .get(func_index)
+                    .is_some_and(|function| function.is_generator)
+                {
+                    let args_start = match stack.depth().checked_sub(total_arg_count) {
+                        Some(pos) => pos,
+                        None => return OpcodeResult::Error(VmError::StackUnderflow),
+                    };
+                    let mut frame_args = Vec::with_capacity(total_arg_count);
+                    for offset in 0..total_arg_count {
+                        match stack.peek_at(args_start + offset) {
+                            Ok(value) => frame_args.push(value),
+                            Err(error) => return OpcodeResult::Error(error),
+                        }
+                    }
+                    while stack.depth() > args_start {
+                        let _ = stack.pop();
+                    }
+                    let iterator = self.create_generator_task_object(
+                        func_index,
+                        task.current_module(),
+                        frame_args,
+                        None,
+                        task,
+                    );
+                    return stack
+                        .push(iterator)
+                        .map_or_else(OpcodeResult::Error, |_| OpcodeResult::Continue);
+                }
 
                 OpcodeResult::PushFrame {
                     func_id: func_index,
-                    arg_count: arg_count + usize::from(uses_js_this_slot),
+                    arg_count: total_arg_count,
                     is_closure: false,
                     closure_val: None,
                     module: None,

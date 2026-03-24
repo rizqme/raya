@@ -3077,8 +3077,7 @@ impl<'a> Binder<'a> {
         for member in &class.members {
             match member {
                 ClassMember::Field(field) => {
-                    let Some(field_name) = class_member_key_name(self.interner, &field.name)
-                    else {
+                    let Some(field_name) = class_member_key_name(self.interner, &field.name) else {
                         continue;
                     };
 

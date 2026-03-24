@@ -843,6 +843,9 @@ impl Reactor {
                         SuspendReason::IoWait => {
                             // IoRequest was already sent via io_submit_tx by the VM worker
                         }
+                        SuspendReason::JsGeneratorYield { .. } => {
+                            unreachable!("JS generator yields must be handled synchronously")
+                        }
                     }
                 }
             }

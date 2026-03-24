@@ -219,10 +219,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Mark a specific function declaration as the direct-eval wrapper entry.
-    pub fn with_direct_eval_entry_function(
-        mut self,
-        function_name: impl Into<String>,
-    ) -> Self {
+    pub fn with_direct_eval_entry_function(mut self, function_name: impl Into<String>) -> Self {
         self.direct_eval_entry_function = Some(function_name.into());
         self
     }
@@ -272,9 +269,7 @@ impl<'a> Compiler<'a> {
                 .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
                 .with_track_top_level_completion(self.track_top_level_completion)
                 .with_emit_script_global_bindings(self.emit_script_global_bindings)
-                .with_script_global_bindings_configurable(
-                    self.script_global_bindings_configurable,
-                );
+                .with_script_global_bindings_configurable(self.script_global_bindings_configurable);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -323,9 +318,7 @@ impl<'a> Compiler<'a> {
                 .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
                 .with_track_top_level_completion(self.track_top_level_completion)
                 .with_emit_script_global_bindings(self.emit_script_global_bindings)
-                .with_script_global_bindings_configurable(
-                    self.script_global_bindings_configurable,
-                );
+                .with_script_global_bindings_configurable(self.script_global_bindings_configurable);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -504,9 +497,7 @@ impl<'a> Compiler<'a> {
                 .with_direct_eval_binding_names(self.direct_eval_binding_names.clone())
                 .with_track_top_level_completion(self.track_top_level_completion)
                 .with_emit_script_global_bindings(self.emit_script_global_bindings)
-                .with_script_global_bindings_configurable(
-                    self.script_global_bindings_configurable,
-                );
+                .with_script_global_bindings_configurable(self.script_global_bindings_configurable);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }

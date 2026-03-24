@@ -315,8 +315,7 @@ pub struct Interpreter<'a> {
         &'a RwLock<FxHashMap<String, crate::vm::interpreter::shared_state::JsGlobalBindingRecord>>,
 
     /// Reverse mapping from absolute global slot to JS-compatible binding name.
-    pub(in crate::vm::interpreter) js_global_binding_slots:
-        &'a RwLock<FxHashMap<usize, String>>,
+    pub(in crate::vm::interpreter) js_global_binding_slots: &'a RwLock<FxHashMap<usize, String>>,
 
     /// VM-local interned constant strings keyed by `(module checksum, constant index)`.
     pub(in crate::vm::interpreter) constant_string_cache:
@@ -1044,16 +1043,13 @@ impl<'a> Interpreter<'a> {
                 let _ = scratch_task.set_current_active_direct_eval_completion(completion);
             }
         }
-        if let Some(home_object) = caller_task
-            .current_active_js_home_object()
-            .or_else(|| {
-                caller_task.current_closure().and_then(|closure| {
-                    let closure_ptr = unsafe { closure.as_ptr::<Object>() }?;
-                    let closure_obj = unsafe { &*closure_ptr.as_ptr() };
-                    closure_obj.callable_home_object()
-                })
+        if let Some(home_object) = caller_task.current_active_js_home_object().or_else(|| {
+            caller_task.current_closure().and_then(|closure| {
+                let closure_ptr = unsafe { closure.as_ptr::<Object>() }?;
+                let closure_obj = unsafe { &*closure_ptr.as_ptr() };
+                closure_obj.callable_home_object()
             })
-        {
+        }) {
             scratch_task.push_active_js_home_object(home_object);
         }
         if let Some(new_target) = caller_task.current_active_js_new_target() {
@@ -1862,11 +1858,7 @@ impl<'a> Interpreter<'a> {
         }
 
         #[cfg(feature = "jit")]
-        if ip == 0
-            && frames.is_empty()
-            && self.debug_state.is_none()
-            && self.profiler.is_none()
-        {
+        if ip == 0 && frames.is_empty() && self.debug_state.is_none() && self.profiler.is_none() {
             if let (Some(cache), Some(mid)) = (&self.code_cache, jit_module_id) {
                 if let Some(jit_fn) = cache.get(mid, current_func_id as u32) {
                     if let Some(ref telemetry) = self.jit_telemetry {
@@ -1893,8 +1885,7 @@ impl<'a> Interpreter<'a> {
                         }
                     }
 
-                    let mut exit_info =
-                        crate::jit::runtime::trampoline::JitExitInfo::default();
+                    let mut exit_info = crate::jit::runtime::trampoline::JitExitInfo::default();
                     let jit_resolved_natives =
                         parking_lot::RwLock::new(self.module_resolved_natives(&module));
                     let bridge_ctx = crate::jit::runtime::helpers::build_runtime_bridge_context(
@@ -1932,11 +1923,10 @@ impl<'a> Interpreter<'a> {
                         frames.len(),
                         self.io_submit_tx,
                     );
-                    let mut runtime_ctx =
-                        crate::jit::runtime::helpers::build_runtime_context(
-                            &bridge_ctx,
-                            module.as_ref(),
-                        );
+                    let mut runtime_ctx = crate::jit::runtime::helpers::build_runtime_context(
+                        &bridge_ctx,
+                        module.as_ref(),
+                    );
 
                     let result = unsafe {
                         jit_fn(
@@ -3061,6 +3051,11 @@ impl<'a> Interpreter<'a> {
             | Opcode::TaskCancel => {
                 self.exec_concurrency_ops(stack, ip, code, module, task, opcode)
             }
+
+            // =========================================================
+            // JS Generators
+            // =========================================================
+            Opcode::GeneratorYield => self.exec_generator_ops(stack, opcode),
 
             // =========================================================
             // Function Calls (needs MutexGuard for frame operations)

@@ -448,6 +448,9 @@ pub enum IrInstr {
     /// Allows other tasks to run
     Yield,
 
+    /// Suspend a JS generator and yield the current value to its iterator.
+    GeneratorYield { value: Register },
+
     /// Debugger breakpoint — pause if debugger is attached, no-op otherwise
     Debugger,
 
@@ -551,6 +554,7 @@ impl IrInstr {
             | IrInstr::EndTry
             | IrInstr::Sleep { .. }
             | IrInstr::Yield
+            | IrInstr::GeneratorYield { .. }
             | IrInstr::Debugger
             | IrInstr::MutexLock { .. }
             | IrInstr::MutexUnlock { .. }
@@ -599,6 +603,7 @@ impl IrInstr {
                 | IrInstr::EndTry
                 | IrInstr::Sleep { .. }
                 | IrInstr::Yield
+                | IrInstr::GeneratorYield { .. }
                 | IrInstr::Debugger
                 | IrInstr::NewMutex { .. }
                 | IrInstr::NewChannel { .. }

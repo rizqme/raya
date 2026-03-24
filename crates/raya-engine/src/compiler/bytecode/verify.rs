@@ -239,6 +239,7 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         | Opcode::ArrayLen
         | Opcode::Await
         | Opcode::Yield
+        | Opcode::GeneratorYield
         | Opcode::Sleep
         | Opcode::NewMutex
         | Opcode::NewChannel
@@ -477,6 +478,7 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::SpawnClosure => (1, 1), // pops closure + args (dynamic), pushes TaskHandle
         Opcode::Await => (1, 1),
         Opcode::Yield => (0, 0),
+        Opcode::GeneratorYield => (1, 0),
         Opcode::Sleep => (1, 0), // pops duration_ms
         Opcode::TaskThen => (1, 1),
         Opcode::NewMutex => (0, 1),

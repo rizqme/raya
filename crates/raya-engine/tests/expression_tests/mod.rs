@@ -386,7 +386,9 @@ fn test_parse_function_call_with_args() {
             Expression::Call(call) => {
                 assert_eq!(call.arguments.len(), 2);
                 match &call.arguments[0] {
-                    CallArgument::Expression(Expression::IntLiteral(lit)) => assert_eq!(lit.value, 1),
+                    CallArgument::Expression(Expression::IntLiteral(lit)) => {
+                        assert_eq!(lit.value, 1)
+                    }
                     CallArgument::Expression(Expression::FloatLiteral(lit)) => {
                         assert_eq!(lit.value, 1.0)
                     }

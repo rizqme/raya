@@ -1,5 +1,6 @@
 //! Object model and class system
 
+use crate::vm::scheduler::TaskId;
 use crate::vm::value::Value;
 use num_bigint::BigInt as ArbitraryBigInt;
 use rustc_hash::FxHashMap;
@@ -475,6 +476,27 @@ pub struct ArgumentsObjectData {
     pub strict_poison: bool,
 }
 
+#[derive(Clone)]
+pub struct GeneratorStateData {
+    pub task_id: TaskId,
+    pub started: bool,
+    pub closed: bool,
+    pub completion: Value,
+    pub completion_emitted: bool,
+}
+
+impl std::fmt::Debug for GeneratorStateData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeneratorStateData")
+            .field("task_id", &self.task_id)
+            .field("started", &self.started)
+            .field("closed", &self.closed)
+            .field("completion", &self.completion)
+            .field("completion_emitted", &self.completion_emitted)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GeneratorSnapshotData {
     pub yielded: Vec<Value>,
@@ -500,8 +522,10 @@ pub struct Object {
     pub callable: Option<Box<CallableData>>,
     /// Optional arguments-exotic payload.
     pub arguments: Option<Box<ArgumentsObjectData>>,
-    /// Optional eager generator snapshot payload used to surface `.next()`/`.return()`.
+    /// Optional eager generator snapshot payload retained for `yield*` fallback lowering.
     pub generator_snapshot: Option<Box<GeneratorSnapshotData>>,
+    /// Optional live generator state for JS generator iterators.
+    pub generator_state: Option<Box<GeneratorStateData>>,
 }
 
 impl Object {
@@ -520,6 +544,7 @@ impl Object {
             callable: None,
             arguments: None,
             generator_snapshot: None,
+            generator_state: None,
         }
     }
 
@@ -534,6 +559,7 @@ impl Object {
             callable: None,
             arguments: None,
             generator_snapshot: None,
+            generator_state: None,
         }
     }
 
@@ -1529,7 +1555,9 @@ pub struct RayaBigInt {
 
 impl std::fmt::Debug for RayaBigInt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("RayaBigInt").field(&self.data.to_string()).finish()
+        f.debug_tuple("RayaBigInt")
+            .field(&self.data.to_string())
+            .finish()
     }
 }
 

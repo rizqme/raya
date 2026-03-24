@@ -140,6 +140,22 @@ pub const OBJECT_JS_UNARY_MINUS: u16 = 0x0041;
 pub const OBJECT_COPY_DATA_PROPERTIES: u16 = 0x0042;
 /// Raise a JS ReferenceError for an explicitly invalid binding access.
 pub const OBJECT_THROW_REFERENCE_ERROR: u16 = 0x0043;
+/// Create a live JS generator iterator object backed by a suspended task.
+pub const OBJECT_GENERATOR_NEW: u16 = 0x0044;
+/// Advance a live JS generator iterator.
+pub const OBJECT_GENERATOR_NEXT: u16 = 0x0045;
+/// Close a live JS generator iterator.
+pub const OBJECT_GENERATOR_RETURN: u16 = 0x0046;
+/// Return the live generator iterator itself for `@@iterator`.
+pub const OBJECT_GENERATOR_ITERATOR: u16 = 0x0047;
+/// Throw when a JS object operation receives null or undefined.
+pub const OBJECT_REQUIRE_OBJECT_COERCIBLE: u16 = 0x0048;
+/// Read a JS property for destructuring, returning `undefined` when absent.
+pub const OBJECT_GET_DESTRUCTURING_PROPERTY: u16 = 0x0049;
+/// Assign a binding-derived `name` only when the callable lacks its own one.
+pub const OBJECT_ASSIGN_BINDING_NAME_IF_MISSING: u16 = 0x004A;
+/// Copy enumerable own properties from source into target, excluding specified keys.
+pub const OBJECT_COPY_DATA_PROPERTIES_EXCLUDING: u16 = 0x004B;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -666,6 +682,18 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_DEFINE_CLASS_PROPERTY => "Object.defineClassElement",
         OBJECT_GET_OWN_PROPERTY_SYMBOLS => "Object.getOwnPropertySymbols",
         OBJECT_STRING_FROM_CHAR_CODE => "Object.stringFromCharCode",
+        OBJECT_GENERATOR_SNAPSHOT_NEW => "Object.generatorSnapshotNew",
+        OBJECT_GENERATOR_SNAPSHOT_NEXT => "Object.generatorSnapshotNext",
+        OBJECT_GENERATOR_SNAPSHOT_RETURN => "Object.generatorSnapshotReturn",
+        OBJECT_GENERATOR_SNAPSHOT_ITERATOR => "Object.generatorSnapshotIterator",
+        OBJECT_GENERATOR_NEW => "Object.generatorNew",
+        OBJECT_GENERATOR_NEXT => "Object.generatorNext",
+        OBJECT_GENERATOR_RETURN => "Object.generatorReturn",
+        OBJECT_GENERATOR_ITERATOR => "Object.generatorIterator",
+        OBJECT_REQUIRE_OBJECT_COERCIBLE => "Object.requireObjectCoercible",
+        OBJECT_GET_DESTRUCTURING_PROPERTY => "Object.getDestructuringProperty",
+        OBJECT_ASSIGN_BINDING_NAME_IF_MISSING => "Object.assignBindingNameIfMissing",
+        OBJECT_COPY_DATA_PROPERTIES_EXCLUDING => "Object.copyDataPropertiesExcluding",
         OBJECT_THROW_REFERENCE_ERROR => "Object.throwReferenceError",
         OBJECT_SUPER_CONSTRUCT => "Object.superConstruct",
         OBJECT_JS_ADD => "Object.jsAdd",

@@ -92,9 +92,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
 
         Token::Class | Token::At => parse_class_declaration(parser),
         Token::Abstract if !parser.is_js_mode() => parse_class_declaration(parser),
-        Token::Interface if !parser.is_js_mode() => {
-            parse_interface_declaration(parser, Vec::new())
-        }
+        Token::Interface if !parser.is_js_mode() => parse_interface_declaration(parser, Vec::new()),
         Token::Annotation(_) => {
             // Annotations can appear before class or type declarations
             let annotations = parse_annotations(parser)?;
@@ -1670,7 +1668,9 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
     let name = parse_class_member_name(parser, &mut visibility)?;
 
     // Check for constructor (identifier named "constructor")
-    if !is_static && method_kind == MethodKind::Normal && class_member_name_is_constructor(parser, &name)
+    if !is_static
+        && method_kind == MethodKind::Normal
+        && class_member_name_is_constructor(parser, &name)
     {
         return parse_constructor(parser, start_span, visibility);
     }
@@ -2750,25 +2750,37 @@ class Foo {
             panic!("Expected getter");
         };
         assert_eq!(getter.kind, crate::parser::ast::MethodKind::Getter);
-        assert!(matches!(getter.name, crate::parser::ast::PropertyKey::Computed(_)));
+        assert!(matches!(
+            getter.name,
+            crate::parser::ast::PropertyKey::Computed(_)
+        ));
 
         let crate::parser::ast::ClassMember::Method(setter) = &class.members[1] else {
             panic!("Expected setter");
         };
         assert_eq!(setter.kind, crate::parser::ast::MethodKind::Setter);
-        assert!(matches!(setter.name, crate::parser::ast::PropertyKey::Computed(_)));
+        assert!(matches!(
+            setter.name,
+            crate::parser::ast::PropertyKey::Computed(_)
+        ));
 
         let crate::parser::ast::ClassMember::Method(method) = &class.members[2] else {
             panic!("Expected method");
         };
         assert_eq!(method.kind, crate::parser::ast::MethodKind::Normal);
-        assert!(matches!(method.name, crate::parser::ast::PropertyKey::Computed(_)));
+        assert!(matches!(
+            method.name,
+            crate::parser::ast::PropertyKey::Computed(_)
+        ));
 
         let crate::parser::ast::ClassMember::Field(field) = &class.members[3] else {
             panic!("Expected field");
         };
         assert!(field.is_static);
-        assert!(matches!(field.name, crate::parser::ast::PropertyKey::Computed(_)));
+        assert!(matches!(
+            field.name,
+            crate::parser::ast::PropertyKey::Computed(_)
+        ));
     }
 
     #[test]

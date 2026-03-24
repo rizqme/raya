@@ -191,7 +191,11 @@ impl<'a> Lowerer<'a> {
     ) -> bool {
         self.class_info_map
             .get(&nominal_type_id)
-            .is_some_and(|info| info.runtime_method_elements.iter().any(|element| !element.is_static))
+            .is_some_and(|info| {
+                info.runtime_method_elements
+                    .iter()
+                    .any(|element| !element.is_static)
+            })
     }
 
     pub(super) fn js_receiver_rebinding_call_expr(&self, expr: &Expression) -> bool {
@@ -399,10 +403,7 @@ impl<'a> Lowerer<'a> {
         });
     }
 
-    fn static_member_owner_nominal_type(
-        &self,
-        object_expr: &Expression,
-    ) -> Option<NominalTypeId> {
+    fn static_member_owner_nominal_type(&self, object_expr: &Expression) -> Option<NominalTypeId> {
         match object_expr {
             Expression::Parenthesized(paren) => {
                 self.static_member_owner_nominal_type(&paren.expression)
@@ -599,7 +600,10 @@ impl<'a> Lowerer<'a> {
                 || self.visible_js_lexical_symbols.contains(&ident.name))
             && !self.local_map.contains_key(&ident.name)
             && !self.constant_map.contains_key(&ident.name)
-            && !self.captures.iter().any(|capture| capture.symbol == ident.name)
+            && !self
+                .captures
+                .iter()
+                .any(|capture| capture.symbol == ident.name)
             && !self
                 .ancestor_variables
                 .as_ref()
@@ -2257,12 +2261,7 @@ impl<'a> Lowerer<'a> {
                     if call_ty.as_u32() != UNRESOLVED_TYPE_ID {
                         dest.ty = call_ty;
                     }
-                    self.emit_js_apply_helper(
-                        dest.clone(),
-                        receiver,
-                        target_callable,
-                        args_array,
-                    );
+                    self.emit_js_apply_helper(dest.clone(), receiver, target_callable, args_array);
                     self.propagate_type_projection_to_register(dest.ty, &dest);
                     return dest;
                 }
@@ -3798,7 +3797,7 @@ impl<'a> Lowerer<'a> {
                             dest: dest.clone(),
                             closure,
                             args,
-                            });
+                        });
                     } else {
                         self.emit_js_member_call_helper(dest.clone(), receiver, closure, args);
                         self.propagate_type_projection_to_register(call_ty, &dest);
@@ -5144,52 +5143,52 @@ impl<'a> Lowerer<'a> {
         // a static method/accessor). In JS static methods, `this` is the
         // constructor value and must share the same lowering path.
         if let Some(nominal_type_id) = self.static_member_owner_nominal_type(&member.object) {
-                if self.js_this_binding_compat {
-                    let member_ty = {
-                        let member_expr = Expression::Member(member.clone());
-                        let inferred = self.get_expr_type(&member_expr);
-                        if inferred.as_u32() == UNRESOLVED_TYPE_ID {
-                            UNRESOLVED
-                        } else {
-                            inferred
-                        }
-                    };
-                    let dest = self.alloc_register(member_ty);
-                    let class_value = if matches!(
-                        member.object.as_ref(),
-                        Expression::Identifier(ident) if self.class_map.contains_key(&ident.name)
-                    ) {
-                        self.load_class_value_for_nominal_type(nominal_type_id)
+            if self.js_this_binding_compat {
+                let member_ty = {
+                    let member_expr = Expression::Member(member.clone());
+                    let inferred = self.get_expr_type(&member_expr);
+                    if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                        UNRESOLVED
                     } else {
-                        self.lower_expr(&member.object)
-                    };
-                    self.emit_dyn_get_named(dest.clone(), class_value, prop_name);
-                    return dest;
-                }
-                // Extract global_index first to avoid borrow conflict
-                let global_index =
-                    self.class_info_map
-                        .get(&nominal_type_id)
-                        .and_then(|class_info| {
-                            class_info
-                                .static_fields
-                                .iter()
-                                .find(|f| self.interner.resolve(f.name) == prop_name)
-                                .map(|sf| sf.global_index)
-                        });
+                        inferred
+                    }
+                };
+                let dest = self.alloc_register(member_ty);
+                let class_value = if matches!(
+                    member.object.as_ref(),
+                    Expression::Identifier(ident) if self.class_map.contains_key(&ident.name)
+                ) {
+                    self.load_class_value_for_nominal_type(nominal_type_id)
+                } else {
+                    self.lower_expr(&member.object)
+                };
+                self.emit_dyn_get_named(dest.clone(), class_value, prop_name);
+                return dest;
+            }
+            // Extract global_index first to avoid borrow conflict
+            let global_index = self
+                .class_info_map
+                .get(&nominal_type_id)
+                .and_then(|class_info| {
+                    class_info
+                        .static_fields
+                        .iter()
+                        .find(|f| self.interner.resolve(f.name) == prop_name)
+                        .map(|sf| sf.global_index)
+                });
 
-                if let Some(index) = global_index {
-                    // Found a static field - emit LoadGlobal
-                    let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                    self.emit(IrInstr::LoadGlobal {
-                        dest: dest.clone(),
-                        index,
-                    });
-                    return dest;
-                }
+            if let Some(index) = global_index {
+                // Found a static field - emit LoadGlobal
+                let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                self.emit(IrInstr::LoadGlobal {
+                    dest: dest.clone(),
+                    index,
+                });
+                return dest;
+            }
 
-                if let Some(static_getter) = self
-                    .class_info_map
+            if let Some(static_getter) =
+                self.class_info_map
                     .get(&nominal_type_id)
                     .and_then(|class_info| {
                         class_info
@@ -5202,75 +5201,75 @@ impl<'a> Lowerer<'a> {
                             })
                             .cloned()
                     })
-                {
-                    let member_ty = {
-                        let member_expr = Expression::Member(member.clone());
-                        let inferred = self.get_expr_type(&member_expr);
-                        if inferred.as_u32() == UNRESOLVED_TYPE_ID {
-                            UNRESOLVED
-                        } else {
-                            inferred
-                        }
-                    };
-                    let dest = self.alloc_register(member_ty);
-                    let class_value = self.lower_expr(&member.object);
-                    let closure = self.alloc_register(UNRESOLVED);
-                    self.emit(IrInstr::MakeClosure {
-                        dest: closure.clone(),
-                        func: static_getter.func_id,
-                        captures: vec![],
-                    });
-                    self.emit_js_member_call_helper(dest.clone(), class_value, closure, vec![]);
-                    return dest;
-                }
-
-                if let Some(&func_id) = self
-                    .static_method_map
-                    .get(&(nominal_type_id, member.property.name))
-                {
-                    let member_ty = {
-                        let member_expr = Expression::Member(member.clone());
-                        let inferred = self.get_expr_type(&member_expr);
-                        if inferred.as_u32() == UNRESOLVED_TYPE_ID {
-                            UNRESOLVED
-                        } else {
-                            inferred
-                        }
-                    };
-                    let closure = self.alloc_register(member_ty);
-                    self.emit(IrInstr::MakeClosure {
-                        dest: closure.clone(),
-                        func: func_id,
-                        captures: vec![],
-                    });
-                    if self.js_this_binding_compat {
-                        let bound = self.alloc_register(member_ty);
-                        let class_value = self.lower_expr(&member.object);
-                        self.emit(IrInstr::NativeCall {
-                            dest: Some(bound.clone()),
-                            native_id: crate::compiler::native_id::FUNCTION_BIND_HELPER,
-                            args: vec![closure, class_value],
-                        });
-                        return bound;
+            {
+                let member_ty = {
+                    let member_expr = Expression::Member(member.clone());
+                    let inferred = self.get_expr_type(&member_expr);
+                    if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                        UNRESOLVED
+                    } else {
+                        inferred
                     }
-                    return closure;
-                }
+                };
+                let dest = self.alloc_register(member_ty);
+                let class_value = self.lower_expr(&member.object);
+                let closure = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::MakeClosure {
+                    dest: closure.clone(),
+                    func: static_getter.func_id,
+                    captures: vec![],
+                });
+                self.emit_js_member_call_helper(dest.clone(), class_value, closure, vec![]);
+                return dest;
+            }
 
-                if self.allow_unresolved_runtime_fallback {
-                    let member_ty = {
-                        let member_expr = Expression::Member(member.clone());
-                        let inferred = self.get_expr_type(&member_expr);
-                        if inferred.as_u32() == UNRESOLVED_TYPE_ID {
-                            UNRESOLVED
-                        } else {
-                            inferred
-                        }
-                    };
-                    let dest = self.alloc_register(member_ty);
+            if let Some(&func_id) = self
+                .static_method_map
+                .get(&(nominal_type_id, member.property.name))
+            {
+                let member_ty = {
+                    let member_expr = Expression::Member(member.clone());
+                    let inferred = self.get_expr_type(&member_expr);
+                    if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                        UNRESOLVED
+                    } else {
+                        inferred
+                    }
+                };
+                let closure = self.alloc_register(member_ty);
+                self.emit(IrInstr::MakeClosure {
+                    dest: closure.clone(),
+                    func: func_id,
+                    captures: vec![],
+                });
+                if self.js_this_binding_compat {
+                    let bound = self.alloc_register(member_ty);
                     let class_value = self.lower_expr(&member.object);
-                    self.emit_dyn_get_named(dest.clone(), class_value, prop_name);
-                    return dest;
+                    self.emit(IrInstr::NativeCall {
+                        dest: Some(bound.clone()),
+                        native_id: crate::compiler::native_id::FUNCTION_BIND_HELPER,
+                        args: vec![closure, class_value],
+                    });
+                    return bound;
                 }
+                return closure;
+            }
+
+            if self.allow_unresolved_runtime_fallback {
+                let member_ty = {
+                    let member_expr = Expression::Member(member.clone());
+                    let inferred = self.get_expr_type(&member_expr);
+                    if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                        UNRESOLVED
+                    } else {
+                        inferred
+                    }
+                };
+                let dest = self.alloc_register(member_ty);
+                let class_value = self.lower_expr(&member.object);
+                self.emit_dyn_get_named(dest.clone(), class_value, prop_name);
+                return dest;
+            }
         }
 
         // Try to determine the class type of the object for field resolution.
@@ -5289,13 +5288,12 @@ impl<'a> Lowerer<'a> {
             !self.object_expr_is_class_constructor_ref(&member.object)
                 && self.nominal_type_uses_runtime_instance_publication(id)
         });
-        let use_js_runtime_member_semantics =
-            use_runtime_published_instance_member_semantics
-                || self.js_mode_uses_runtime_member_semantics(
-                    &member.object,
-                    object.ty,
-                    nominal_type_id,
-                );
+        let use_js_runtime_member_semantics = use_runtime_published_instance_member_semantics
+            || self.js_mode_uses_runtime_member_semantics(
+                &member.object,
+                object.ty,
+                nominal_type_id,
+            );
 
         if let Some(nominal_type_id) = nominal_type_id {
             let getter_func_id = {
@@ -5305,15 +5303,10 @@ impl<'a> Lowerer<'a> {
                     let Some(class_info) = self.class_info_map.get(&class_id) else {
                         break;
                     };
-                    if let Some(method_info) = class_info
-                        .methods
-                        .iter()
-                        .rev()
-                        .find(|method| {
-                            method.name == member.property.name
-                                && method.kind == ast::MethodKind::Getter
-                        })
-                    {
+                    if let Some(method_info) = class_info.methods.iter().rev().find(|method| {
+                        method.name == member.property.name
+                            && method.kind == ast::MethodKind::Getter
+                    }) {
                         found = Some(method_info.func_id);
                         break;
                     }
@@ -5324,24 +5317,24 @@ impl<'a> Lowerer<'a> {
 
             if !use_runtime_published_instance_member_semantics {
                 if let Some(func_id) = getter_func_id {
-                let member_ty = {
-                    let member_expr = Expression::Member(member.clone());
-                    let inferred = self.get_expr_type(&member_expr);
-                    if inferred.as_u32() == UNRESOLVED_TYPE_ID {
-                        UNRESOLVED
-                    } else {
-                        inferred
-                    }
-                };
-                let dest = self.alloc_register(member_ty);
-                let closure = self.alloc_register(UNRESOLVED);
-                self.emit(IrInstr::MakeClosure {
-                    dest: closure.clone(),
-                    func: func_id,
-                    captures: vec![],
-                });
-                self.emit_js_member_call_helper(dest.clone(), object.clone(), closure, vec![]);
-                return dest;
+                    let member_ty = {
+                        let member_expr = Expression::Member(member.clone());
+                        let inferred = self.get_expr_type(&member_expr);
+                        if inferred.as_u32() == UNRESOLVED_TYPE_ID {
+                            UNRESOLVED
+                        } else {
+                            inferred
+                        }
+                    };
+                    let dest = self.alloc_register(member_ty);
+                    let closure = self.alloc_register(UNRESOLVED);
+                    self.emit(IrInstr::MakeClosure {
+                        dest: closure.clone(),
+                        func: func_id,
+                        captures: vec![],
+                    });
+                    self.emit_js_member_call_helper(dest.clone(), object.clone(), closure, vec![]);
+                    return dest;
                 }
             }
 
@@ -7024,7 +7017,12 @@ impl<'a> Lowerer<'a> {
         self.spread_source_fields_from_type(spread_ty)
     }
 
-    fn attach_home_object_if_method(&mut self, value_expr: &ast::Expression, value: &Register, home_object: &Register) {
+    fn attach_home_object_if_method(
+        &mut self,
+        value_expr: &ast::Expression,
+        value: &Register,
+        home_object: &Register,
+    ) {
         if matches!(
             value_expr,
             ast::Expression::Function(ast::FunctionExpression {
@@ -7087,8 +7085,7 @@ impl<'a> Lowerer<'a> {
                                 ),
                                 ast::PropertyKind::Init => unreachable!(),
                             };
-                            let define_result =
-                                self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+                            let define_result = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
                             self.emit(IrInstr::NativeCall {
                                 dest: Some(define_result),
                                 native_id: crate::compiler::native_id::OBJECT_DEFINE_PROPERTY,
@@ -7692,7 +7689,8 @@ impl<'a> Lowerer<'a> {
                                     value: rhs,
                                 });
                             }
-                        } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name) {
+                        } else if let Some(global_idx) = self.shared_script_binding_slot(ident.name)
+                        {
                             assigned_symbol = true;
                             self.emit(IrInstr::StoreGlobal {
                                 index: global_idx,
@@ -7766,8 +7764,8 @@ impl<'a> Lowerer<'a> {
                         || self.type_is_dynamic_any_like(checker_obj_ty)
                         || self.type_is_dynamic_any_like(object.ty)
                         || self.js_this_binding_compat;
-                    let use_runtime_published_instance_member_semantics =
-                        nominal_type_id.is_some_and(|id| {
+                    let use_runtime_published_instance_member_semantics = nominal_type_id
+                        .is_some_and(|id| {
                             !self.object_expr_is_class_constructor_ref(&member.object)
                                 && self.nominal_type_uses_runtime_instance_publication(id)
                         });
@@ -8758,7 +8756,8 @@ impl<'a> Lowerer<'a> {
         self.current_function = Some(ir_func);
         let saved_js_strict_context = self.js_strict_context;
         let saved_in_direct_eval_function = self.in_direct_eval_function;
-        let saved_hoisted_function_decl_spans = std::mem::take(&mut self.hoisted_function_decl_spans);
+        let saved_hoisted_function_decl_spans =
+            std::mem::take(&mut self.hoisted_function_decl_spans);
         self.js_strict_context = is_strict_js;
         self.in_direct_eval_function = self
             .direct_eval_entry_function
@@ -8822,7 +8821,7 @@ impl<'a> Lowerer<'a> {
         self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
 
-        if func.is_generator {
+        if func.is_generator && self.function_uses_generator_snapshot(&func.body) {
             self.init_generator_yield_array();
         }
 
@@ -10291,7 +10290,8 @@ impl<'a> Lowerer<'a> {
         // Handle different callee types
         if let Expression::Identifier(ident) = &*async_call.callee {
             if self.should_resolve_from_direct_eval_env(ident) {
-                let closure = self.emit_direct_eval_binding_get(self.interner.resolve(ident.name), false);
+                let closure =
+                    self.emit_direct_eval_binding_get(self.interner.resolve(ident.name), false);
                 self.emit(IrInstr::SpawnClosure {
                     dest: dest.clone(),
                     closure,
@@ -11736,16 +11736,15 @@ impl<'a> Lowerer<'a> {
             Expression::Call(call) => {
                 if let Expression::Function(function_expr) = &*call.callee {
                     if function_expr.params.is_empty() && call.arguments.is_empty() {
-                        if let [
-                            ast::Statement::ClassDecl(class_decl),
-                            ast::Statement::Return(ret),
-                        ] = function_expr.body.statements.as_slice()
+                        if let [ast::Statement::ClassDecl(class_decl), ast::Statement::Return(ret)] =
+                            function_expr.body.statements.as_slice()
                         {
                             if let Some(ast::Expression::Identifier(ret_ident)) = &ret.value {
                                 if ret_ident.name == class_decl.name.name {
-                                    if let Some(nominal_type_id) = self
-                                        .nominal_type_id_for_decl(class_decl)
-                                        .or_else(|| self.class_map.get(&class_decl.name.name).copied())
+                                    if let Some(nominal_type_id) =
+                                        self.nominal_type_id_for_decl(class_decl).or_else(|| {
+                                            self.class_map.get(&class_decl.name.name).copied()
+                                        })
                                     {
                                         return Some(nominal_type_id);
                                     }

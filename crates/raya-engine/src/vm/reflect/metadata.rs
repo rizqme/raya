@@ -252,7 +252,8 @@ impl MetadataStore {
             let removed = property_metadata.remove(key).is_some();
             if property_metadata.is_empty() {
                 e.properties.remove(property_key);
-                e.property_order.retain(|candidate| candidate != property_key);
+                e.property_order
+                    .retain(|candidate| candidate != property_key);
             }
             removed
         })

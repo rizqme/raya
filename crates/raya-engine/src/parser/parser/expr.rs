@@ -277,7 +277,8 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
         // 2. async arrow function: async () => expr or async x => expr
         // 3. async block expression: async { statements }
         Token::Async => {
-            if matches!(parser.peek(), Some(Token::Function)) && !parser.has_line_terminator_before_peek()
+            if matches!(parser.peek(), Some(Token::Function))
+                && !parser.has_line_terminator_before_peek()
             {
                 parser.advance();
                 return parse_function_expression(parser, start_span, true);
@@ -1506,9 +1507,7 @@ fn try_parse_parenthesized_arrow_function(
 ) -> Result<Option<Expression>, ParseError> {
     let ambiguous_destructuring = matches!(parser.current(), Token::LeftBrace | Token::LeftBracket);
     let ambiguous_assignment_params = looks_like_ambiguous_parenthesized_arrow_params(parser);
-    if !ambiguous_destructuring
-        && !ambiguous_assignment_params
-        && !looks_like_arrow_params(parser)
+    if !ambiguous_destructuring && !ambiguous_assignment_params && !looks_like_arrow_params(parser)
     {
         return Ok(None);
     }

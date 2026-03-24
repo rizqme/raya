@@ -134,14 +134,12 @@ impl<'a> Lowerer<'a> {
                     };
                     let field_symbol = self.known_class_member_symbol(&field.name);
                     let global_index = field_symbol.and_then(|field_symbol| {
-                        self.class_info_map
-                            .get(&nominal_type_id)
-                            .and_then(|info| {
-                                info.static_fields
-                                    .iter()
-                                    .find(|static_field| static_field.name == field_symbol)
-                                    .map(|static_field| static_field.global_index)
-                            })
+                        self.class_info_map.get(&nominal_type_id).and_then(|info| {
+                            info.static_fields
+                                .iter()
+                                .find(|static_field| static_field.name == field_symbol)
+                                .map(|static_field| static_field.global_index)
+                        })
                     });
                     let value_reg = self.lower_expr(initializer);
                     if let Some(global_index) = global_index {
@@ -190,7 +188,8 @@ impl<'a> Lowerer<'a> {
             initial_value: undefined,
         });
         self.local_registers.insert(local_idx, refcell_reg.clone());
-        self.refcell_registers.insert(local_idx, refcell_reg.clone());
+        self.refcell_registers
+            .insert(local_idx, refcell_reg.clone());
         self.refcell_inner_types.insert(local_idx, UNRESOLVED);
         self.emit(IrInstr::StoreLocal {
             index: local_idx,
@@ -211,13 +210,17 @@ impl<'a> Lowerer<'a> {
         _fallback_idx: usize,
     ) -> Register {
         match key {
-            ast::PropertyKey::Identifier(id) => self.emit_named_key_register(self.interner.resolve(id.name)),
+            ast::PropertyKey::Identifier(id) => {
+                self.emit_named_key_register(self.interner.resolve(id.name))
+            }
             ast::PropertyKey::StringLiteral(lit) => self.lower_string_literal(lit),
             ast::PropertyKey::IntLiteral(lit) => self.lower_int_literal(lit),
             ast::PropertyKey::Computed(ast::Expression::StringLiteral(lit)) => {
                 self.lower_string_literal(lit)
             }
-            ast::PropertyKey::Computed(ast::Expression::IntLiteral(lit)) => self.lower_int_literal(lit),
+            ast::PropertyKey::Computed(ast::Expression::IntLiteral(lit)) => {
+                self.lower_int_literal(lit)
+            }
             ast::PropertyKey::Computed(ast::Expression::Parenthesized(expr)) => {
                 self.lower_expr(&expr.expression)
             }
@@ -436,8 +439,7 @@ impl<'a> Lowerer<'a> {
                     let saved_register = self.next_register;
                     let saved_block = self.next_block;
                     let saved_local_map = self.local_map.clone();
-                    let saved_visible_js_lexical_symbols =
-                        self.visible_js_lexical_symbols.clone();
+                    let saved_visible_js_lexical_symbols = self.visible_js_lexical_symbols.clone();
                     let saved_local_registers = self.local_registers.clone();
                     let saved_refcell_registers = self.refcell_registers.clone();
                     let saved_refcell_inner_types = self.refcell_inner_types.clone();
@@ -474,7 +476,8 @@ impl<'a> Lowerer<'a> {
                 let class_value = self.load_class_value_for_nominal_type(nominal_type_id);
                 if self.js_this_binding_compat && self.function_depth == 0 && self.block_depth == 0
                 {
-                    if let Some(&global_idx) = self.js_script_lexical_globals.get(&class.name.name) {
+                    if let Some(&global_idx) = self.js_script_lexical_globals.get(&class.name.name)
+                    {
                         self.global_type_map.insert(global_idx, class_value.ty);
                         self.emit(IrInstr::StoreGlobal {
                             index: global_idx,
@@ -559,10 +562,7 @@ impl<'a> Lowerer<'a> {
                         self.set_terminator(Terminator::Jump(exit_block));
                     }
                     self.current_function_mut()
-                        .add_block(crate::ir::BasicBlock::with_label(
-                            exit_block,
-                            "label.exit",
-                        ));
+                        .add_block(crate::ir::BasicBlock::with_label(exit_block, "label.exit"));
                     self.current_block = exit_block;
                 }
             }
@@ -1156,6 +1156,185 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn emit_require_object_coercible(&mut self, value: Register) {
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_REQUIRE_OBJECT_COERCIBLE,
+            args: vec![value],
+        });
+    }
+
+    fn is_anonymous_binding_initializer(&self, expr: &ast::Expression) -> bool {
+        match expr {
+            ast::Expression::Arrow(_) => true,
+            ast::Expression::Function(func) => func.name.is_none(),
+            ast::Expression::Call(call) if call.arguments.is_empty() => {
+                let ast::Expression::Function(func) = call.callee.as_ref() else {
+                    return false;
+                };
+                if func.name.is_some() || !func.params.is_empty() {
+                    return false;
+                }
+                let [ast::Statement::ClassDecl(class_decl), ast::Statement::Return(ret)] =
+                    func.body.statements.as_slice()
+                else {
+                    return false;
+                };
+                let Some(ast::Expression::Identifier(ret_ident)) = ret.value.as_ref() else {
+                    return false;
+                };
+                self.interner
+                    .resolve(class_decl.name.name)
+                    .starts_with("__class_expr_")
+                    && ret_ident.name == class_decl.name.name
+            }
+            ast::Expression::Parenthesized(paren) => {
+                self.is_anonymous_binding_initializer(&paren.expression)
+            }
+            _ => false,
+        }
+    }
+
+    fn property_key_is_static_name(&self, key: &ast::PropertyKey) -> bool {
+        match key {
+            ast::PropertyKey::Identifier(ident) => self.interner.resolve(ident.name) == "name",
+            ast::PropertyKey::StringLiteral(lit) => self.interner.resolve(lit.value) == "name",
+            ast::PropertyKey::Computed(ast::Expression::StringLiteral(lit)) => {
+                self.interner.resolve(lit.value) == "name"
+            }
+            _ => false,
+        }
+    }
+
+    fn anonymous_initializer_declares_own_name(&self, expr: &ast::Expression) -> bool {
+        let ast::Expression::Call(call) = expr else {
+            return false;
+        };
+        if !call.arguments.is_empty() {
+            return false;
+        }
+        let ast::Expression::Function(func) = call.callee.as_ref() else {
+            return false;
+        };
+        let [ast::Statement::ClassDecl(class_decl), ast::Statement::Return(_)] =
+            func.body.statements.as_slice()
+        else {
+            return false;
+        };
+
+        class_decl.members.iter().any(|member| match member {
+            ast::ClassMember::Field(field) => {
+                field.is_static && self.property_key_is_static_name(&field.name)
+            }
+            ast::ClassMember::Method(method) => {
+                method.is_static && self.property_key_is_static_name(&method.name)
+            }
+            _ => false,
+        })
+    }
+
+    pub(super) fn maybe_assign_anonymous_binding_name(
+        &mut self,
+        pattern: &ast::Pattern,
+        initializer: &ast::Expression,
+        value: &Register,
+    ) {
+        let ast::Pattern::Identifier(ident) = pattern else {
+            return;
+        };
+        if !self.is_anonymous_binding_initializer(initializer) {
+            return;
+        }
+        if self.anonymous_initializer_declares_own_name(initializer) {
+            return;
+        }
+
+        let binding_name = self.emit_named_key_register(self.interner.resolve(ident.name));
+        self.emit(IrInstr::NativeCall {
+            dest: None,
+            native_id: crate::compiler::native_id::OBJECT_ASSIGN_BINDING_NAME_IF_MISSING,
+            args: vec![value.clone(), binding_name],
+        });
+    }
+
+    fn emit_binding_default_value(
+        &mut self,
+        pattern: &ast::Pattern,
+        current_value: Register,
+        default_expr: &ast::Expression,
+    ) -> Register {
+        let present_block = self.alloc_block();
+        let default_block = self.alloc_block();
+        let merge_block = self.alloc_block();
+        let final_val = self.alloc_register(TypeId::new(0));
+        let undefined_reg = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::Assign {
+            dest: undefined_reg.clone(),
+            value: IrValue::Constant(crate::ir::IrConstant::Undefined),
+        });
+        let is_undefined = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: is_undefined.clone(),
+            op: crate::ir::BinaryOp::StrictEqual,
+            left: current_value.clone(),
+            right: undefined_reg,
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: is_undefined,
+            then_block: default_block,
+            else_block: present_block,
+        });
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                present_block,
+                "destr.present",
+            ));
+        self.current_block = present_block;
+        self.emit(IrInstr::Assign {
+            dest: final_val.clone(),
+            value: IrValue::Register(current_value),
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                default_block,
+                "destr.default",
+            ));
+        self.current_block = default_block;
+        let default_val = self.lower_expr(default_expr);
+        self.maybe_assign_anonymous_binding_name(pattern, default_expr, &default_val);
+        self.emit(IrInstr::Assign {
+            dest: final_val.clone(),
+            value: IrValue::Register(default_val),
+        });
+        self.set_terminator(Terminator::Jump(merge_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(
+                merge_block,
+                "destr.merge",
+            ));
+        self.current_block = merge_block;
+        final_val
+    }
+
+    fn emit_destructuring_property_load(
+        &mut self,
+        object: Register,
+        key: Register,
+        ty: TypeId,
+    ) -> Register {
+        let loaded = self.alloc_register(ty);
+        self.emit(IrInstr::NativeCall {
+            dest: Some(loaded.clone()),
+            native_id: crate::compiler::native_id::OBJECT_GET_DESTRUCTURING_PROPERTY,
+            args: vec![object, key],
+        });
+        loaded
+    }
+
     pub fn bind_pattern(&mut self, pattern: &ast::Pattern, value_reg: Register) {
         match pattern {
             ast::Pattern::Identifier(ident) => {
@@ -1258,7 +1437,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
             ast::Pattern::Array(array_pat) => {
-                if array_pat.elements.iter().all(Option::is_none) && array_pat.rest.is_none() {
+                if array_pat.elements.is_empty() && array_pat.rest.is_none() {
                     return;
                 }
                 let element_layout_hint = self
@@ -1289,9 +1468,11 @@ impl<'a> Lowerer<'a> {
                             not_null_block: value_block,
                         });
 
-                        self.current_function_mut().add_block(
-                            crate::ir::BasicBlock::with_label(value_block, "destr.iter.value"),
-                        );
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(
+                                value_block,
+                                "destr.iter.value",
+                            ));
                         self.current_block = value_block;
                         let elem_reg = self.emit_iterator_value_helper(step_result);
                         let present_block = self.alloc_block();
@@ -1313,9 +1494,11 @@ impl<'a> Lowerer<'a> {
                             else_block: present_block,
                         });
 
-                        self.current_function_mut().add_block(
-                            crate::ir::BasicBlock::with_label(present_block, "destr.iter.hasval"),
-                        );
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(
+                                present_block,
+                                "destr.iter.hasval",
+                            ));
                         self.current_block = present_block;
                         self.emit(IrInstr::Assign {
                             dest: final_val.clone(),
@@ -1323,20 +1506,29 @@ impl<'a> Lowerer<'a> {
                         });
                         self.set_terminator(Terminator::Jump(merge_block));
 
-                        self.current_function_mut().add_block(
-                            crate::ir::BasicBlock::with_label(default_block, "destr.iter.default"),
-                        );
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(
+                                default_block,
+                                "destr.iter.default",
+                            ));
                         self.current_block = default_block;
                         let default_val = self.lower_expr(default_expr);
+                        self.maybe_assign_anonymous_binding_name(
+                            &elem.pattern,
+                            default_expr,
+                            &default_val,
+                        );
                         self.emit(IrInstr::Assign {
                             dest: final_val.clone(),
                             value: IrValue::Register(default_val),
                         });
                         self.set_terminator(Terminator::Jump(merge_block));
 
-                        self.current_function_mut().add_block(
-                            crate::ir::BasicBlock::with_label(merge_block, "destr.iter.merge"),
-                        );
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(
+                                merge_block,
+                                "destr.iter.merge",
+                            ));
                         self.current_block = merge_block;
                         self.bind_pattern(&elem.pattern, final_val);
                     } else {
@@ -1351,9 +1543,11 @@ impl<'a> Lowerer<'a> {
                             not_null_block: value_block,
                         });
 
-                        self.current_function_mut().add_block(
-                            crate::ir::BasicBlock::with_label(value_block, "destr.iter.load"),
-                        );
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(
+                                value_block,
+                                "destr.iter.load",
+                            ));
                         self.current_block = value_block;
                         let elem_reg = self.emit_iterator_value_helper(step_result);
                         self.emit(IrInstr::Assign {
@@ -1362,9 +1556,11 @@ impl<'a> Lowerer<'a> {
                         });
                         self.set_terminator(Terminator::Jump(merge_block));
 
-                        self.current_function_mut().add_block(
-                            crate::ir::BasicBlock::with_label(done_block, "destr.iter.done"),
-                        );
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(
+                                done_block,
+                                "destr.iter.done",
+                            ));
                         self.current_block = done_block;
                         self.emit(IrInstr::Assign {
                             dest: final_val.clone(),
@@ -1372,9 +1568,11 @@ impl<'a> Lowerer<'a> {
                         });
                         self.set_terminator(Terminator::Jump(merge_block));
 
-                        self.current_function_mut().add_block(
-                            crate::ir::BasicBlock::with_label(merge_block, "destr.iter.bound"),
-                        );
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(
+                                merge_block,
+                                "destr.iter.bound",
+                            ));
                         self.current_block = merge_block;
                         if let Some(layout) = &element_layout_hint {
                             self.register_object_fields
@@ -1446,8 +1644,10 @@ impl<'a> Lowerer<'a> {
                 }
             }
             ast::Pattern::Object(obj_pat) => {
+                self.emit_require_object_coercible(value_reg.clone());
                 // Object destructuring
                 // Prefer statically known field layout; otherwise use Reflect.get by property name.
+                let mut excluded_keys = Vec::new();
                 let field_layout: Option<Vec<(String, usize)>> = self
                     .register_object_fields
                     .get(&value_reg.id)
@@ -1467,6 +1667,28 @@ impl<'a> Lowerer<'a> {
                 });
 
                 for property in &obj_pat.properties {
+                    let key_reg = match &property.key {
+                        ast::PropertyKey::Identifier(id) => {
+                            self.emit_named_key_register(self.interner.resolve(id.name))
+                        }
+                        ast::PropertyKey::StringLiteral(lit) => {
+                            self.emit_named_key_register(self.interner.resolve(lit.value))
+                        }
+                        ast::PropertyKey::IntLiteral(lit) => {
+                            let key_reg =
+                                self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
+                            self.emit(IrInstr::Assign {
+                                dest: key_reg.clone(),
+                                value: IrValue::Constant(IrConstant::String(
+                                    lit.value.to_string(),
+                                )),
+                            });
+                            key_reg
+                        }
+                        ast::PropertyKey::Computed(expr) => self.lower_expr(expr),
+                    };
+                    excluded_keys.push(key_reg.clone());
+
                     let static_prop_name = match &property.key {
                         ast::PropertyKey::Identifier(id) => {
                             Some(self.interner.resolve(id.name).to_string())
@@ -1482,7 +1704,8 @@ impl<'a> Lowerer<'a> {
                         .and_then(|prop_name| {
                             self.object_property_type_from_value_type(value_reg.ty, prop_name)
                         })
-                        .unwrap_or(TypeId::new(0));
+                        .unwrap_or(UNRESOLVED);
+                    let destructuring_field_ty = UNRESOLVED;
 
                     let field_reg = if let (Some(layout), Some(prop_name)) =
                         (field_layout.as_ref(), static_prop_name.as_ref())
@@ -1495,6 +1718,11 @@ impl<'a> Lowerer<'a> {
                         else {
                             if let Some(default_expr) = &property.default {
                                 let default_val = self.lower_expr(default_expr);
+                                self.maybe_assign_anonymous_binding_name(
+                                    &property.value,
+                                    default_expr,
+                                    &default_val,
+                                );
                                 self.bind_pattern(&property.value, default_val);
                             } else {
                                 let undefined_reg = self.alloc_register(TypeId::new(0));
@@ -1506,7 +1734,7 @@ impl<'a> Lowerer<'a> {
                             }
                             continue;
                         };
-                        let loaded = self.alloc_register(inferred_field_ty);
+                        let loaded = self.alloc_register(destructuring_field_ty);
                         if let Some(shape_id) = projected_shape_id {
                             self.emit(IrInstr::LoadFieldShape {
                                 dest: loaded.clone(),
@@ -1541,111 +1769,50 @@ impl<'a> Lowerer<'a> {
                         loaded
                     } else {
                         // Dynamic layout or computed key: read through keyed property access.
-                        let key_reg = match &property.key {
-                            ast::PropertyKey::Identifier(id) => {
-                                let key_reg =
-                                    self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
-                                self.emit(IrInstr::Assign {
-                                    dest: key_reg.clone(),
-                                    value: IrValue::Constant(IrConstant::String(
-                                        self.interner.resolve(id.name).to_string(),
-                                    )),
-                                });
-                                key_reg
-                            }
-                            ast::PropertyKey::StringLiteral(lit) => {
-                                let key_reg =
-                                    self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
-                                self.emit(IrInstr::Assign {
-                                    dest: key_reg.clone(),
-                                    value: IrValue::Constant(IrConstant::String(
-                                        self.interner.resolve(lit.value).to_string(),
-                                    )),
-                                });
-                                key_reg
-                            }
-                            ast::PropertyKey::IntLiteral(lit) => {
-                                let key_reg =
-                                    self.alloc_register(TypeId::new(super::STRING_TYPE_ID));
-                                self.emit(IrInstr::Assign {
-                                    dest: key_reg.clone(),
-                                    value: IrValue::Constant(IrConstant::String(
-                                        lit.value.to_string(),
-                                    )),
-                                });
-                                key_reg
-                            }
-                            ast::PropertyKey::Computed(expr) => self.lower_expr(expr),
-                        };
-                        let loaded = self.alloc_register(inferred_field_ty);
-                        self.emit(IrInstr::DynGetKeyed {
-                            dest: loaded.clone(),
-                            object: value_reg.clone(),
-                            key: key_reg,
-                        });
-                        loaded
+                        self.emit_destructuring_property_load(
+                            value_reg.clone(),
+                            key_reg.clone(),
+                            destructuring_field_ty,
+                        )
                     };
 
                     // Handle default values
                     if let Some(default_expr) = &property.default {
-                        let present_block = self.alloc_block();
-                        let default_block = self.alloc_block();
-                        let merge_block = self.alloc_block();
-                        let final_val = self.alloc_register(TypeId::new(0));
-                        let undefined_reg = self.alloc_register(TypeId::new(0));
-                        self.emit(IrInstr::Assign {
-                            dest: undefined_reg.clone(),
-                            value: IrValue::Constant(crate::ir::IrConstant::Undefined),
-                        });
-                        let is_undefined = self.alloc_register(TypeId::new(super::BOOLEAN_TYPE_ID));
-                        self.emit(IrInstr::BinaryOp {
-                            dest: is_undefined.clone(),
-                            op: crate::ir::BinaryOp::StrictEqual,
-                            left: field_reg.clone(),
-                            right: undefined_reg,
-                        });
-                        self.set_terminator(Terminator::Branch {
-                            cond: is_undefined,
-                            then_block: default_block,
-                            else_block: present_block,
-                        });
-
-                        self.current_function_mut()
-                            .add_block(crate::ir::BasicBlock::with_label(
-                                present_block,
-                                "objd.hasval",
-                            ));
-                        self.current_block = present_block;
-                        self.emit(IrInstr::Assign {
-                            dest: final_val.clone(),
-                            value: IrValue::Register(field_reg),
-                        });
-                        self.set_terminator(Terminator::Jump(merge_block));
-
-                        self.current_function_mut()
-                            .add_block(crate::ir::BasicBlock::with_label(
-                                default_block,
-                                "objd.default",
-                            ));
-                        self.current_block = default_block;
-                        let default_val = self.lower_expr(default_expr);
-                        self.emit(IrInstr::Assign {
-                            dest: final_val.clone(),
-                            value: IrValue::Register(default_val),
-                        });
-                        self.set_terminator(Terminator::Jump(merge_block));
-
-                        self.current_function_mut()
-                            .add_block(crate::ir::BasicBlock::with_label(
-                                merge_block,
-                                "objd.merge",
-                            ));
-                        self.current_block = merge_block;
-
+                        let final_val = self.emit_binding_default_value(
+                            &property.value,
+                            field_reg,
+                            default_expr,
+                        );
                         self.bind_pattern(&property.value, final_val);
                     } else {
                         self.bind_pattern(&property.value, field_reg);
                     }
+                }
+
+                if let Some(rest_ident) = &obj_pat.rest {
+                    let rest_obj = self.alloc_register(TypeId::new(super::NUMBER_TYPE_ID));
+                    let type_index = crate::vm::object::layout_id_from_ordered_names(&[]);
+                    self.module_structural_layouts
+                        .entry(type_index)
+                        .or_insert_with(Vec::new);
+                    self.emit(IrInstr::ObjectLiteral {
+                        dest: rest_obj.clone(),
+                        type_index,
+                        fields: vec![],
+                    });
+                    self.register_object_fields.insert(rest_obj.id, Vec::new());
+
+                    let mut args = Vec::with_capacity(excluded_keys.len() + 2);
+                    args.push(rest_obj.clone());
+                    args.push(value_reg.clone());
+                    args.extend(excluded_keys);
+                    self.emit(IrInstr::NativeCall {
+                        dest: Some(rest_obj.clone()),
+                        native_id:
+                            crate::compiler::native_id::OBJECT_COPY_DATA_PROPERTIES_EXCLUDING,
+                        args,
+                    });
+                    self.bind_pattern(&ast::Pattern::Identifier(rest_ident.clone()), rest_obj);
                 }
             }
             ast::Pattern::Rest(rest_pat) => {
@@ -3062,8 +3229,8 @@ impl<'a> Lowerer<'a> {
 
         self.record_function_return_mappings(func_decl.name.name, func_decl.return_type.as_ref());
 
-        let publish_to_direct_eval_env = self.in_direct_eval_function
-            && !(self.js_strict_context && self.block_depth > 0);
+        let publish_to_direct_eval_env =
+            self.in_direct_eval_function && !(self.js_strict_context && self.block_depth > 0);
         if publish_to_direct_eval_env {
             self.emit_direct_eval_binding_declare_function(
                 self.interner.resolve(func_decl.name.name),
@@ -3157,10 +3324,17 @@ impl<'a> Lowerer<'a> {
             return;
         }
 
-        if let Some(value) = &yld.value {
-            self.lower_expr(value);
-        }
-        self.emit(IrInstr::Yield);
+        let yielded = if let Some(value) = &yld.value {
+            self.lower_expr(value)
+        } else {
+            let undefined = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: undefined.clone(),
+                value: IrValue::Constant(IrConstant::Undefined),
+            });
+            undefined
+        };
+        self.emit(IrInstr::GeneratorYield { value: yielded });
     }
 
     fn close_active_loop_iterators(&mut self) {

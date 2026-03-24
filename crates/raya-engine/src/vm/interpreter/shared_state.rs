@@ -928,11 +928,7 @@ impl SharedVmState {
         self.globals_by_index.read().get(slot).copied()
     }
 
-    pub fn register_js_global_binding(
-        &self,
-        binding: &JsGlobalBindingInfo,
-        absolute_slot: usize,
-    ) {
+    pub fn register_js_global_binding(&self, binding: &JsGlobalBindingInfo, absolute_slot: usize) {
         let canonical_existing = if binding.published_to_global_object {
             self.js_global_bindings
                 .read()
@@ -979,7 +975,10 @@ impl SharedVmState {
         self.js_global_bindings.read().get(name).copied()
     }
 
-    pub fn js_global_binding_for_slot(&self, absolute_slot: usize) -> Option<JsGlobalBindingRecord> {
+    pub fn js_global_binding_for_slot(
+        &self,
+        absolute_slot: usize,
+    ) -> Option<JsGlobalBindingRecord> {
         let name = self
             .js_global_binding_slots
             .read()

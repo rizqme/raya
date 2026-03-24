@@ -76,6 +76,9 @@ pub enum SuspendReason {
 
     /// Waiting for IO completion from the event loop (NativeCallResult::Suspend)
     IoWait,
+
+    /// Suspended at a JS generator `yield`, carrying the yielded value.
+    JsGeneratorYield { value: Value },
 }
 
 /// Unique identifier for a Task
@@ -468,17 +471,26 @@ impl Task {
         uses_script_global_bindings: bool,
         persist_caller_declarations: bool,
     ) {
-        self.init.lock().eval_state.active_env_stack.push(ActiveDirectEvalEnv {
-            env,
-            is_strict,
-            uses_script_global_bindings,
-            persist_caller_declarations,
-            completion: Value::undefined(),
-        });
+        self.init
+            .lock()
+            .eval_state
+            .active_env_stack
+            .push(ActiveDirectEvalEnv {
+                env,
+                is_strict,
+                uses_script_global_bindings,
+                persist_caller_declarations,
+                completion: Value::undefined(),
+            });
     }
 
     pub fn pop_active_direct_eval_env(&self) -> Option<Value> {
-        self.init.lock().eval_state.active_env_stack.pop().map(|ctx| ctx.env)
+        self.init
+            .lock()
+            .eval_state
+            .active_env_stack
+            .pop()
+            .map(|ctx| ctx.env)
     }
 
     pub fn current_active_direct_eval_env(&self) -> Option<Value> {
@@ -1286,6 +1298,9 @@ impl Task {
                 BlockedReason::Other(format!("channel_recv:{}", channel_id))
             }
             SuspendReason::IoWait => BlockedReason::Other("io_wait".to_string()),
+            SuspendReason::JsGeneratorYield { .. } => {
+                BlockedReason::Other("js_generator_yield".to_string())
+            }
         });
 
         Ok(SerializedTask {

@@ -1,7 +1,9 @@
 //! Type operation opcode handlers: nominal checks/casts, generic casts, dynamic keyed access,
 //! and static/runtime type helpers.
 
-use super::native::{checked_bigint_ptr, checked_callable_ptr, checked_object_ptr, js_number_to_string};
+use super::native::{
+    checked_bigint_ptr, checked_callable_ptr, checked_object_ptr, js_number_to_string,
+};
 use crate::compiler::native_id;
 use crate::compiler::type_registry::TypeRegistry;
 use crate::compiler::{Module, Opcode};
@@ -510,8 +512,28 @@ impl<'a> Interpreter<'a> {
         {
             return Ok(Some(value));
         }
-        if let Some(value) = self.property_value_with_protocol_alias(object_value, symbol_key) {
+        if let Some(value) = self.get_property_value_via_js_semantics_with_context(
+            object_value,
+            symbol_key,
+            caller_task,
+            caller_module,
+        )? {
             return Ok(Some(value));
+        }
+
+        if self.fixed_property_deleted(object_value, symbol_key) {
+            return Ok(None);
+        }
+
+        for alias in protocol_alias_names(symbol_key) {
+            if let Some(value) = self.get_own_property_value_via_js_semantics_with_context(
+                object_value,
+                alias,
+                caller_task,
+                caller_module,
+            )? {
+                return Ok(Some(value));
+            }
         }
 
         if !self.is_symbol_constructor_value(object_value) {
@@ -671,15 +693,12 @@ impl<'a> Interpreter<'a> {
             if matches!(
                 adapter.binding_for_slot(slot),
                 crate::vm::interpreter::shared_state::StructuralSlotBinding::Missing
-            ) && required_names
-                .get(slot)
-                .map_or(true, |name| {
-                    !matches!(
-                        name.as_str(),
-                        "constructor" | "equals" | "hashCode" | "isPrototypeOf" | "valueOf"
-                    ) && !self.has_property_via_js_semantics(obj_val, name)
-                })
-            {
+            ) && required_names.get(slot).map_or(true, |name| {
+                !matches!(
+                    name.as_str(),
+                    "constructor" | "equals" | "hashCode" | "isPrototypeOf" | "valueOf"
+                ) && !self.has_property_via_js_semantics(obj_val, name)
+            }) {
                 return OpcodeResult::Error(VmError::TypeError(format!(
                     "Cannot cast object(layout_id={}) to structural shape @{required_shape:016x}: missing required slot {}",
                     obj.layout_id(),
@@ -881,18 +900,12 @@ impl<'a> Interpreter<'a> {
                     !matches!(
                         adapter.binding_for_slot(slot),
                         crate::vm::interpreter::shared_state::StructuralSlotBinding::Missing
-                    ) || required_names
-                        .get(slot)
-                        .is_some_and(|name| {
-                            matches!(
-                                name.as_str(),
-                                "constructor"
-                                    | "equals"
-                                    | "hashCode"
-                                    | "isPrototypeOf"
-                                    | "valueOf"
-                            ) || self.has_property_via_js_semantics(obj_val, name)
-                        })
+                    ) || required_names.get(slot).is_some_and(|name| {
+                        matches!(
+                            name.as_str(),
+                            "constructor" | "equals" | "hashCode" | "isPrototypeOf" | "valueOf"
+                        ) || self.has_property_via_js_semantics(obj_val, name)
+                    })
                 })
             });
         stack
@@ -1429,9 +1442,9 @@ impl<'a> Interpreter<'a> {
                             return OpcodeResult::Continue;
                         }
                         Ok(false) => {
-                            if self.allow_ambient_builtin_global_noop_write(
-                                obj_val, key_name, value,
-                            ) {
+                            if self
+                                .allow_ambient_builtin_global_noop_write(obj_val, key_name, value)
+                            {
                                 if let Err(e) = stack.push(value) {
                                     return OpcodeResult::Error(e);
                                 }
@@ -1493,12 +1506,7 @@ impl<'a> Interpreter<'a> {
                             .expect("dyn object property access should always have a key string");
                         if self.is_runtime_global_object(actual_obj) {
                             match self.set_property_value_via_js_semantics(
-                                actual_obj,
-                                key_str,
-                                value,
-                                actual_obj,
-                                task,
-                                module,
+                                actual_obj, key_str, value, actual_obj, task, module,
                             ) {
                                 Ok(true) => {
                                     if let Err(e) = stack.push(value) {

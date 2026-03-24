@@ -434,7 +434,6 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-
     fn array_from_target(
         &mut self,
         constructor: Value,

@@ -189,6 +189,7 @@ fn decode_operands(
         | Opcode::ArrayLen
         | Opcode::Await
         | Opcode::Yield
+        | Opcode::GeneratorYield
         | Opcode::NewMutex
         | Opcode::NewChannel
         | Opcode::MutexLock

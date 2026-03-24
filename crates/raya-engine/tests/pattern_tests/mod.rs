@@ -174,14 +174,20 @@ fn test_parse_object_pattern_simple() {
                 assert_eq!(obj_pat.properties.len(), 2);
 
                 // Check first property (shorthand)
-                assert_eq!(property_key_name(&obj_pat.properties[0].key, &interner), "x");
+                assert_eq!(
+                    property_key_name(&obj_pat.properties[0].key, &interner),
+                    "x"
+                );
                 match &obj_pat.properties[0].value {
                     Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "x"),
                     _ => panic!("Expected identifier pattern"),
                 }
 
                 // Check second property (shorthand)
-                assert_eq!(property_key_name(&obj_pat.properties[1].key, &interner), "y");
+                assert_eq!(
+                    property_key_name(&obj_pat.properties[1].key, &interner),
+                    "y"
+                );
                 match &obj_pat.properties[1].value {
                     Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "y"),
                     _ => panic!("Expected identifier pattern"),
@@ -205,14 +211,20 @@ fn test_parse_object_pattern_with_rename() {
                 assert_eq!(obj_pat.properties.len(), 2);
 
                 // Check first property (renamed)
-                assert_eq!(property_key_name(&obj_pat.properties[0].key, &interner), "x");
+                assert_eq!(
+                    property_key_name(&obj_pat.properties[0].key, &interner),
+                    "x"
+                );
                 match &obj_pat.properties[0].value {
                     Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "a"),
                     _ => panic!("Expected identifier pattern"),
                 }
 
                 // Check second property (renamed)
-                assert_eq!(property_key_name(&obj_pat.properties[1].key, &interner), "y");
+                assert_eq!(
+                    property_key_name(&obj_pat.properties[1].key, &interner),
+                    "y"
+                );
                 match &obj_pat.properties[1].value {
                     Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "b"),
                     _ => panic!("Expected identifier pattern"),
@@ -236,7 +248,10 @@ fn test_parse_nested_object_pattern() {
                 assert_eq!(obj_pat.properties.len(), 1);
 
                 // Check first property (nested object)
-                assert_eq!(property_key_name(&obj_pat.properties[0].key, &interner), "point");
+                assert_eq!(
+                    property_key_name(&obj_pat.properties[0].key, &interner),
+                    "point"
+                );
                 match &obj_pat.properties[0].value {
                     Pattern::Object(nested) => {
                         assert_eq!(nested.properties.len(), 2);
@@ -264,14 +279,20 @@ fn test_parse_mixed_object_pattern() {
                 assert_eq!(obj_pat.properties.len(), 2);
 
                 // Check first property (shorthand)
-                assert_eq!(property_key_name(&obj_pat.properties[0].key, &interner), "x");
+                assert_eq!(
+                    property_key_name(&obj_pat.properties[0].key, &interner),
+                    "x"
+                );
                 match &obj_pat.properties[0].value {
                     Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "x"),
                     _ => panic!("Expected identifier pattern"),
                 }
 
                 // Check second property (renamed)
-                assert_eq!(property_key_name(&obj_pat.properties[1].key, &interner), "y");
+                assert_eq!(
+                    property_key_name(&obj_pat.properties[1].key, &interner),
+                    "y"
+                );
                 match &obj_pat.properties[1].value {
                     Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "newY"),
                     _ => panic!("Expected identifier pattern"),
@@ -303,7 +324,10 @@ fn test_parse_array_of_objects_pattern() {
                     Some(elem) => match &elem.pattern {
                         Pattern::Object(obj_pat) => {
                             assert_eq!(obj_pat.properties.len(), 1);
-                            assert_eq!(property_key_name(&obj_pat.properties[0].key, &interner), "x");
+                            assert_eq!(
+                                property_key_name(&obj_pat.properties[0].key, &interner),
+                                "x"
+                            );
                         }
                         _ => panic!("Expected object pattern"),
                     },
@@ -315,7 +339,10 @@ fn test_parse_array_of_objects_pattern() {
                     Some(elem) => match &elem.pattern {
                         Pattern::Object(obj_pat) => {
                             assert_eq!(obj_pat.properties.len(), 1);
-                            assert_eq!(property_key_name(&obj_pat.properties[0].key, &interner), "y");
+                            assert_eq!(
+                                property_key_name(&obj_pat.properties[0].key, &interner),
+                                "y"
+                            );
                         }
                         _ => panic!("Expected object pattern"),
                     },
@@ -340,7 +367,10 @@ fn test_parse_object_with_array_pattern() {
                 assert_eq!(obj_pat.properties.len(), 1);
 
                 // Check property (array pattern)
-                assert_eq!(property_key_name(&obj_pat.properties[0].key, &interner), "coords");
+                assert_eq!(
+                    property_key_name(&obj_pat.properties[0].key, &interner),
+                    "coords"
+                );
                 match &obj_pat.properties[0].value {
                     Pattern::Array(array_pat) => {
                         assert_eq!(array_pat.elements.len(), 2);
@@ -390,8 +420,14 @@ fn test_parse_function_with_object_pattern_param() {
             match &func.params[0].pattern {
                 Pattern::Object(obj_pat) => {
                     assert_eq!(obj_pat.properties.len(), 2);
-                    assert_eq!(property_key_name(&obj_pat.properties[0].key, &interner), "name");
-                    assert_eq!(property_key_name(&obj_pat.properties[1].key, &interner), "age");
+                    assert_eq!(
+                        property_key_name(&obj_pat.properties[0].key, &interner),
+                        "name"
+                    );
+                    assert_eq!(
+                        property_key_name(&obj_pat.properties[1].key, &interner),
+                        "age"
+                    );
                 }
                 _ => panic!("Expected object pattern"),
             }

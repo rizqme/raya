@@ -342,6 +342,8 @@ pub enum Opcode {
 
     // ===== Dynamic-object Operations (0xE0-0xEF) =====
     /// Get property by runtime string key: pop key, pop object, push value  (no operand)
+    GeneratorYield = 0xE4,
+    /// Get property by runtime string key: pop key, pop object, push value  (no operand)
     DynGetKeyed = 0xE5,
     /// Set property by runtime string key: pop value, pop key, pop object  (no operand)
     DynSetKeyed = 0xE6,
@@ -573,6 +575,7 @@ impl Opcode {
             0xDE => Some(Self::StoreRefCell),
 
             // Dynamic-object operations
+            0xE4 => Some(Self::GeneratorYield),
             0xE5 => Some(Self::DynGetKeyed),
             0xE6 => Some(Self::DynSetKeyed),
             0xEA => Some(Self::ImplementsShape),
@@ -738,6 +741,7 @@ impl Opcode {
             Self::WaitAll => "WAIT_ALL",
             Self::SpawnClosure => "SPAWN_CLOSURE",
             Self::Sleep => "SLEEP",
+            Self::GeneratorYield => "GENERATOR_YIELD",
             Self::DynGetKeyed => "DYN_GET_KEYED",
             Self::DynSetKeyed => "DYN_SET_KEYED",
             Self::ImplementsShape => "IMPLEMENTS_SHAPE",

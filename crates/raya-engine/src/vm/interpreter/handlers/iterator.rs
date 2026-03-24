@@ -6,8 +6,8 @@
 //! own array-shaped approximation.
 
 use crate::compiler::Module;
-use crate::vm::interpreter::Interpreter;
 use crate::vm::interpreter::opcodes::native::checked_string_ptr;
+use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{Array, RayaString};
 use crate::vm::scheduler::Task;
 use crate::vm::value::Value;
@@ -103,7 +103,12 @@ impl<'a> Interpreter<'a> {
         std::env::var("RAYA_DEBUG_ITERATOR_PROTOCOL").is_ok()
     }
 
-    fn iterator_result_is_done(&mut self, result: Value, task: &Arc<Task>, module: &Module) -> Result<bool, VmError> {
+    fn iterator_result_is_done(
+        &mut self,
+        result: Value,
+        task: &Arc<Task>,
+        module: &Module,
+    ) -> Result<bool, VmError> {
         let done = self
             .get_property_value_via_js_semantics_with_context(result, "done", task, module)?
             .unwrap_or(Value::undefined());
@@ -134,8 +139,12 @@ impl<'a> Interpreter<'a> {
         let direct_symbol =
             self.well_known_symbol_property_value(iterable, "Symbol.iterator", task, module)?;
         let string_fallback_iterator = self.string_iterator_fallback(iterable, task, module)?;
-        let direct_js =
-            self.get_property_value_via_js_semantics_with_context(iterable, "Symbol.iterator", task, module)?;
+        let direct_js = self.get_property_value_via_js_semantics_with_context(
+            iterable,
+            "Symbol.iterator",
+            task,
+            module,
+        )?;
         let prototype_symbol = if let Some(prototype) = self.prototype_of_value(iterable) {
             self.get_property_value_via_js_semantics_with_context(
                 prototype,
@@ -170,9 +179,16 @@ impl<'a> Interpreter<'a> {
                 "Iterator method is not callable".to_string(),
             ));
         }
-        let iterator_candidate =
-            self.invoke_callable_sync_with_this(iterator_method, Some(iterable), &[], task, module)?;
-        if !self.is_js_object_value(iterator_candidate) && !Self::is_callable_value(iterator_candidate) {
+        let iterator_candidate = self.invoke_callable_sync_with_this(
+            iterator_method,
+            Some(iterable),
+            &[],
+            task,
+            module,
+        )?;
+        if !self.is_js_object_value(iterator_candidate)
+            && !Self::is_callable_value(iterator_candidate)
+        {
             return Err(VmError::TypeError(
                 "Iterator method must return an object".to_string(),
             ));
@@ -251,7 +267,8 @@ impl<'a> Interpreter<'a> {
                 "Iterator return is not callable".to_string(),
             ));
         }
-        let _ = self.invoke_callable_sync_with_this(return_method, Some(iterator), &[], task, module)?;
+        let _ =
+            self.invoke_callable_sync_with_this(return_method, Some(iterator), &[], task, module)?;
         if Self::iterator_debug_enabled() {
             eprintln!("[iter] close iterator={:#x}", iterator.raw());
         }
@@ -265,7 +282,8 @@ impl<'a> Interpreter<'a> {
         task: &Arc<Task>,
         module: &Module,
     ) -> Result<(), VmError> {
-        let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target) else {
+        let Some(array_ptr) = crate::vm::interpreter::opcodes::native::checked_array_ptr(target)
+        else {
             return Err(VmError::TypeError(
                 "Iterator append target must be an array".to_string(),
             ));

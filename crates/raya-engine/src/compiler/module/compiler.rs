@@ -839,12 +839,13 @@ impl ModuleCompiler {
 
     /// Extract import specifiers from source code
     fn extract_imports(&self, source: &str, path: &Path) -> ModuleCompileResult<Vec<String>> {
-        let parser = Parser::new_with_mode(source, self.parser_mode_for_path(path)).map_err(
-            |e| ModuleCompileError::LexError {
-                path: path.to_path_buf(),
-                message: format!("{:?}", e),
-            },
-        )?;
+        let parser =
+            Parser::new_with_mode(source, self.parser_mode_for_path(path)).map_err(|e| {
+                ModuleCompileError::LexError {
+                    path: path.to_path_buf(),
+                    message: format!("{:?}", e),
+                }
+            })?;
 
         let (ast, interner) = parser.parse().map_err(|e| ModuleCompileError::ParseError {
             path: path.to_path_buf(),
@@ -888,7 +889,10 @@ impl ModuleCompiler {
 
     fn early_error_options_for_path(&self, path: &Path) -> EarlyErrorOptions {
         let mut options = EarlyErrorOptions::for_mode(self.checker_mode);
-        let is_entry = self.root_entry_path.as_ref().is_some_and(|entry| entry == path);
+        let is_entry = self
+            .root_entry_path
+            .as_ref()
+            .is_some_and(|entry| entry == path);
         if is_entry {
             options.allow_top_level_return = true;
             options.allow_await_outside_async = true;
@@ -940,27 +944,26 @@ impl ModuleCompiler {
             eprintln!("[module-compile] parse:start path={}", path.display());
         }
         // Parse
-        let parser = Parser::new_with_mode(&source, self.parser_mode_for_path(path)).map_err(
-            |e| ModuleCompileError::LexError {
-                path: path.clone(),
-                message: format!("{:?}", e),
-            },
-        )?;
+        let parser =
+            Parser::new_with_mode(&source, self.parser_mode_for_path(path)).map_err(|e| {
+                ModuleCompileError::LexError {
+                    path: path.clone(),
+                    message: format!("{:?}", e),
+                }
+            })?;
 
         let (ast, interner) = parser.parse().map_err(|e| ModuleCompileError::ParseError {
             path: path.clone(),
             message: format!("{:?}", e),
         })?;
         check_early_errors_with_options(&ast, &interner, self.early_error_options_for_path(path))
-            .map_err(|e| {
-            ModuleCompileError::ParseError {
-                path: path.clone(),
-                message: e
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            }
+            .map_err(|e| ModuleCompileError::ParseError {
+            path: path.clone(),
+            message: e
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
         })?;
         if debug_stages {
             eprintln!("[module-compile] parse:done path={}", path.display());

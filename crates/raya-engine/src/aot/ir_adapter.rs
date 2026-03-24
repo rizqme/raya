@@ -407,6 +407,7 @@ impl<'a> IrFunctionAdapter<'a> {
                 set_reg_layout(reg_state, dest, None);
             }
             IrInstr::Yield
+            | IrInstr::GeneratorYield { .. }
             | IrInstr::Call { dest: None, .. }
             | IrInstr::CallMethodExact { dest: None, .. }
             | IrInstr::CallMethodShape { dest: None, .. }
@@ -1387,6 +1388,13 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![],
                 });
             }
+            IrInstr::GeneratorYield { value } => {
+                out.push(SmInstr::CallHelper {
+                    dest: None,
+                    helper: HelperCall::YieldTask,
+                    args: vec![Self::reg(value)],
+                });
+            }
             IrInstr::NewMutex { dest } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
@@ -1571,6 +1579,7 @@ impl<'a> IrFunctionAdapter<'a> {
             IrInstr::Await { .. } => Some(SuspensionKind::Await),
             IrInstr::AwaitAll { .. } => Some(SuspensionKind::Await),
             IrInstr::Yield => Some(SuspensionKind::Yield),
+            IrInstr::GeneratorYield { .. } => Some(SuspensionKind::Yield),
             IrInstr::Sleep { .. } => Some(SuspensionKind::Sleep),
             IrInstr::NativeCall { .. } => Some(SuspensionKind::NativeCall),
             IrInstr::ModuleNativeCall { .. } => Some(SuspensionKind::NativeCall),

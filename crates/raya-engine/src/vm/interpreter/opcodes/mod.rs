@@ -11,6 +11,7 @@ pub mod concurrency;
 pub mod constants;
 pub mod control_flow;
 pub mod exceptions;
+pub mod generators;
 pub mod native;
 pub mod objects;
 pub mod stack;

@@ -346,7 +346,10 @@ impl Runtime {
     ///
     /// Returns the entry module plus all compiled dependencies and late-link metadata.
     pub fn compile_program_source(&self, source: &str) -> Result<CompiledProgram, RuntimeError> {
-        self.compile_program_source_with_virtual_entry(source, self.inline_virtual_entry_path("<inline>"))
+        self.compile_program_source_with_virtual_entry(
+            source,
+            self.inline_virtual_entry_path("<inline>"),
+        )
     }
 
     /// Compile a source file to a bytecode module.
@@ -613,8 +616,10 @@ impl Runtime {
     /// let value = rt.eval("return 1 + 2;")?;
     /// ```
     pub fn eval(&self, code: &str) -> Result<Value, RuntimeError> {
-        let program =
-            self.compile_program_source_with_virtual_entry(code, self.inline_virtual_entry_path("<eval>"))?;
+        let program = self.compile_program_source_with_virtual_entry(
+            code,
+            self.inline_virtual_entry_path("<eval>"),
+        )?;
         self.execute_program(&program)
     }
 

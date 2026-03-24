@@ -496,6 +496,9 @@ impl TypeSubstitution {
                 duration_ms: self.apply_register(duration_ms),
             },
             IrInstr::Yield => IrInstr::Yield,
+            IrInstr::GeneratorYield { value } => IrInstr::GeneratorYield {
+                value: self.apply_register(value),
+            },
             IrInstr::Debugger => IrInstr::Debugger,
             IrInstr::NewMutex { dest } => IrInstr::NewMutex {
                 dest: self.apply_register(dest),

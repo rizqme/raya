@@ -1235,7 +1235,10 @@ impl<'a> EarlyErrorPass<'a> {
             | Expression::RegexLiteral(_) => {}
             Expression::NewTarget(span) => {
                 if !self.allow_new_target && self.current_function().is_none() {
-                    self.error("`new.target` is only valid inside non-arrow function code", *span);
+                    self.error(
+                        "`new.target` is only valid inside non-arrow function code",
+                        *span,
+                    );
                 }
             }
             Expression::Super(span) => {
@@ -1476,7 +1479,7 @@ mod tests {
                 allow_await_outside_async: false,
             },
         )
-            .expect_err("expected early error");
+        .expect_err("expected early error");
         assert!(errors[0]
             .message
             .contains("Return statement outside of function"));
@@ -1673,9 +1676,8 @@ mod tests {
 
     #[test]
     fn test_strict_function_expression_inherits_strictness_for_arguments_assignment() {
-        let (module, interner) = parse_module(
-            "\"use strict\"; (function named() { arguments = 1; })();",
-        );
+        let (module, interner) =
+            parse_module("\"use strict\"; (function named() { arguments = 1; })();");
         let errors = check_early_errors(&module, &interner, TypeSystemMode::Ts)
             .expect_err("expected early error");
         assert!(errors.iter().any(|error| error

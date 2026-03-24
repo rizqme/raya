@@ -5,8 +5,61 @@ use crate::parser::ast::{
     ArrayPattern, Identifier, ObjectPattern, ObjectPatternProperty, Pattern, PatternElement,
     PropertyKey, RestPattern,
 };
+use crate::parser::checker::TypeSystemMode;
 use crate::parser::interner::Symbol;
 use crate::parser::token::Token;
+
+fn is_reserved_word_identifier(name: &str) -> bool {
+    matches!(
+        name,
+        "await"
+            | "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "debugger"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "enum"
+            | "export"
+            | "extends"
+            | "false"
+            | "finally"
+            | "for"
+            | "function"
+            | "if"
+            | "implements"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "interface"
+            | "let"
+            | "new"
+            | "null"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "return"
+            | "static"
+            | "super"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typeof"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+    )
+}
 
 /// Parse a pattern (identifier or destructuring).
 pub fn parse_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
@@ -186,6 +239,14 @@ fn parse_object_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
                     prop_start,
                 ));
             };
+            if parser.mode() == TypeSystemMode::Js
+                && is_reserved_word_identifier(parser.interner.resolve(identifier.name))
+            {
+                return Err(ParseError::invalid_syntax(
+                    "Reserved words cannot appear in object-pattern shorthand bindings",
+                    identifier.span,
+                ));
+            }
             Pattern::Identifier(Identifier {
                 name: identifier.name,
                 span: identifier.span,

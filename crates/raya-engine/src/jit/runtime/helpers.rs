@@ -61,8 +61,9 @@ pub struct JitRuntimeBridgeContext {
     pub semaphore_registry: *const SemaphoreRegistry,
     pub globals_by_index: *const parking_lot::RwLock<Vec<Value>>,
     pub builtin_global_slots: *const parking_lot::RwLock<FxHashMap<String, usize>>,
-    pub js_global_bindings:
-        *const parking_lot::RwLock<FxHashMap<String, crate::vm::interpreter::JsGlobalBindingRecord>>,
+    pub js_global_bindings: *const parking_lot::RwLock<
+        FxHashMap<String, crate::vm::interpreter::JsGlobalBindingRecord>,
+    >,
     pub js_global_binding_slots: *const parking_lot::RwLock<FxHashMap<usize, String>>,
     pub constant_string_cache: *const parking_lot::RwLock<FxHashMap<(String, usize), Value>>,
     pub ephemeral_gc_roots: *const parking_lot::RwLock<Vec<Value>>,
@@ -70,8 +71,7 @@ pub struct JitRuntimeBridgeContext {
     pub tasks: *const Arc<parking_lot::RwLock<FxHashMap<TaskId, Arc<Task>>>>,
     pub injector: *const Arc<Injector<Arc<Task>>>,
     pub module_layouts: *const parking_lot::RwLock<FxHashMap<[u8; 32], ModuleRuntimeLayout>>,
-    pub module_registry:
-        *const parking_lot::RwLock<crate::vm::interpreter::ModuleRegistry>,
+    pub module_registry: *const parking_lot::RwLock<crate::vm::interpreter::ModuleRegistry>,
     pub metadata: *const parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
     pub class_metadata: *const parking_lot::RwLock<ClassMetadataRegistry>,
     pub native_handler: *const Arc<dyn NativeHandler>,

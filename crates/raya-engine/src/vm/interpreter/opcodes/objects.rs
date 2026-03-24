@@ -166,6 +166,28 @@ impl<'a> Interpreter<'a> {
                         } else {
                             receiver_value
                         };
+                        if callable_data
+                            .module
+                            .as_ref()
+                            .and_then(|module| module.functions.get(*func_id))
+                            .is_some_and(|function| function.is_generator)
+                        {
+                            let mut frame_args = Vec::with_capacity(args.len() + 1);
+                            frame_args.push(receiver_final);
+                            frame_args.extend_from_slice(args);
+                            let iterator = self.create_generator_task_object(
+                                *func_id,
+                                callable_data
+                                    .module
+                                    .clone()
+                                    .unwrap_or_else(|| task.current_module()),
+                                frame_args,
+                                None,
+                                task,
+                            );
+                            stack.push(iterator)?;
+                            return Ok(Some(OpcodeResult::Continue));
+                        }
                         stack.push(receiver_final)?;
                         for arg in args {
                             stack.push(*arg)?;
@@ -235,17 +257,42 @@ impl<'a> Interpreter<'a> {
                     }
                     CallableKind::Closure { func_id } => {
                         let closure_module = co.callable_module();
-                        let mut arg_count = args.len();
                         let should_use_explicit_js_this = explicit_this.is_some()
                             && closure_module
                                 .as_ref()
                                 .and_then(|module| module.functions.get(*func_id))
                                 .is_some_and(|function| !function.name.starts_with("__arrow_"));
-                        if self.callable_uses_js_this_slot(callable)
+                        let this_arg = if self.callable_uses_js_this_slot(callable)
                             || should_use_explicit_js_this
                         {
-                            stack
-                                .push(self.js_this_value_for_callable(callable, explicit_this)?)?;
+                            Some(self.js_this_value_for_callable(callable, explicit_this)?)
+                        } else {
+                            None
+                        };
+                        if closure_module
+                            .as_ref()
+                            .and_then(|module| module.functions.get(*func_id))
+                            .is_some_and(|function| function.is_generator)
+                        {
+                            let mut frame_args =
+                                Vec::with_capacity(args.len() + usize::from(this_arg.is_some()));
+                            if let Some(this_arg) = this_arg {
+                                frame_args.push(this_arg);
+                            }
+                            frame_args.extend_from_slice(args);
+                            let iterator = self.create_generator_task_object(
+                                *func_id,
+                                closure_module.unwrap_or_else(|| task.current_module()),
+                                frame_args,
+                                Some(callable),
+                                task,
+                            );
+                            stack.push(iterator)?;
+                            return Ok(Some(OpcodeResult::Continue));
+                        }
+                        let mut arg_count = args.len();
+                        if let Some(this_arg) = this_arg {
+                            stack.push(this_arg)?;
                             arg_count += 1;
                         }
                         for arg in args {
@@ -796,13 +843,9 @@ impl<'a> Interpreter<'a> {
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);
                 if let StructuralSlotBinding::Missing = slot_binding {
                     if let Some(ref field_name) = member_name {
-                        match self
-                            .get_property_value_via_js_semantics_with_context(
-                                actual_obj,
-                                field_name,
-                                task,
-                                module,
-                            ) {
+                        match self.get_property_value_via_js_semantics_with_context(
+                            actual_obj, field_name, task, module,
+                        ) {
                             Ok(Some(value)) => {
                                 if let Err(e) = stack.push(value) {
                                     return OpcodeResult::Error(e);
@@ -1134,13 +1177,9 @@ impl<'a> Interpreter<'a> {
                 let slot_binding = self.remap_shape_slot_binding(obj, shape_id, field_offset);
                 if let StructuralSlotBinding::Missing = slot_binding {
                     if let Some(ref field_name) = member_name {
-                        match self
-                            .get_property_value_via_js_semantics_with_context(
-                                actual_obj,
-                                field_name,
-                                task,
-                                module,
-                            ) {
+                        match self.get_property_value_via_js_semantics_with_context(
+                            actual_obj, field_name, task, module,
+                        ) {
                             Ok(Some(value)) => {
                                 if let Err(e) = stack.push(value) {
                                     return OpcodeResult::Error(e);

@@ -1561,6 +1561,10 @@ fn lift_instruction(
         Opcode::Yield => {
             func.block_mut(block).instrs.push(JitInstr::Yield);
         }
+        Opcode::GeneratorYield => {
+            let _ = stack.pop(instr.offset)?;
+            func.block_mut(block).instrs.push(JitInstr::Yield);
+        }
         Opcode::Sleep => {
             let duration = stack.pop(instr.offset)?;
             func.block_mut(block)

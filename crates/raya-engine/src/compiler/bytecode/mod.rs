@@ -16,8 +16,8 @@ pub use module::{
     DebugInfo, Export, FieldReflectionData, Function, FunctionDebugInfo, GenericTemplateInfo,
     Import, JitHint, LineEntry, Metadata, Method, MethodKind, Module, ModuleError, ModuleId,
     MonoDebugEntry, NominalTypeExport, ReflectionData, StaticMethod, StructuralLayoutInfo,
-    StructuralShapeInfo, SymbolId, SymbolScope, SymbolType, TemplateSymbolEntry,
-    TypeSignatureHash, VERSION,
+    StructuralShapeInfo, SymbolId, SymbolScope, SymbolType, TemplateSymbolEntry, TypeSignatureHash,
+    VERSION,
 };
 pub use opcode::Opcode;
 pub use verify::{verify_module, VerifyError};

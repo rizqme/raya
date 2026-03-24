@@ -854,7 +854,10 @@ mod tests {
                 assert!(func.is_async);
                 assert!(func.is_generator);
             }
-            other => panic!("Expected async generator function expression, got {:?}", other),
+            other => panic!(
+                "Expected async generator function expression, got {:?}",
+                other
+            ),
         }
     }
 
@@ -905,7 +908,9 @@ mod tests {
     fn test_type_alias_parses_readonly_array_type() {
         let source = "type EventMap = Record<string, readonly unknown[]>;";
         let parser = Parser::new(source).unwrap();
-        parser.parse().expect("readonly array type alias should parse");
+        parser
+            .parse()
+            .expect("readonly array type alias should parse");
     }
 
     #[test]

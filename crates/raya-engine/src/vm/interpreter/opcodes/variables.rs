@@ -8,8 +8,8 @@ use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
-use std::sync::Arc;
 use std::any::TypeId;
+use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
     pub(in crate::vm::interpreter) fn exec_variable_ops(
@@ -254,12 +254,9 @@ impl<'a> Interpreter<'a> {
                         published_to_global_object = binding.published_to_global_object;
                     }
                     if published_to_global_object {
-                        if let Err(error) = self.sync_existing_script_global_property(
-                            &name,
-                            value,
-                            task,
-                            module,
-                        ) {
+                        if let Err(error) =
+                            self.sync_existing_script_global_property(&name, value, task, module)
+                        {
                             return OpcodeResult::Error(error);
                         }
                     }

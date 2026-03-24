@@ -89,6 +89,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::SemRelease
         | Opcode::WaitAll
         | Opcode::Sleep
+        | Opcode::GeneratorYield
         | Opcode::TaskCancel
         | Opcode::DynGetKeyed
         | Opcode::DynSetKeyed

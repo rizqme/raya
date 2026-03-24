@@ -366,6 +366,9 @@ impl GarbageCollector {
                         }
                         self.mark_value(generator.completion);
                     }
+                    if let Some(generator) = obj.generator_state.as_deref() {
+                        self.mark_value(generator.completion);
+                    }
                     // Trace callable extension data if present
                     if let Some(ref callable) = obj.callable {
                         for &cap in &callable.captures {

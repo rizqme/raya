@@ -513,9 +513,9 @@ fn test_comments_are_ignored() {
     assert!(token_types.contains(&Token::Let));
 
     // Check for identifier "x"
-    let has_x = tokens
-        .iter()
-        .any(|lexed| matches!(&lexed.token, Token::Identifier(sym) if interner.resolve(*sym) == "x"));
+    let has_x = tokens.iter().any(
+        |lexed| matches!(&lexed.token, Token::Identifier(sym) if interner.resolve(*sym) == "x"),
+    );
     assert!(has_x, "Expected identifier 'x'");
 }
 

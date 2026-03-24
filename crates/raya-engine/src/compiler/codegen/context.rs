@@ -292,9 +292,8 @@ impl IrCodeGenerator {
                 .iter()
                 .zip(class.static_method_kinds.iter())
                 .filter_map(|(&method_id, &kind)| {
-                    module
-                        .get_function(method_id)
-                        .map(|func| crate::compiler::bytecode::StaticMethod {
+                    module.get_function(method_id).map(|func| {
+                        crate::compiler::bytecode::StaticMethod {
                             name: func.name.clone(),
                             function_id: method_id.as_u32() as usize,
                             kind: match kind {
@@ -308,7 +307,8 @@ impl IrCodeGenerator {
                                     crate::compiler::bytecode::MethodKind::Setter
                                 }
                             },
-                        })
+                        }
+                    })
                 })
                 .collect();
             let class_def = crate::compiler::bytecode::ClassDef {
@@ -1276,6 +1276,11 @@ impl IrCodeGenerator {
             IrInstr::Yield => {
                 // Emit yield opcode
                 ctx.emit(Opcode::Yield);
+            }
+
+            IrInstr::GeneratorYield { value } => {
+                self.emit_load_register(ctx, value);
+                ctx.emit(Opcode::GeneratorYield);
             }
 
             IrInstr::Debugger => {

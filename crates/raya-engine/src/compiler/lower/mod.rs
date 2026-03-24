@@ -68,6 +68,27 @@ struct ArrowBodyVarRefCollector<'a> {
     referenced: &'a mut FxHashSet<Symbol>,
 }
 
+struct GeneratorRequirementCollector {
+    requires_snapshot: bool,
+}
+
+impl Visitor for GeneratorRequirementCollector {
+    fn visit_statement(&mut self, stmt: &Statement) {
+        if let Statement::Yield(yield_stmt) = stmt {
+            if yield_stmt.is_delegate {
+                self.requires_snapshot = true;
+                return;
+            }
+        }
+        walk_statement(self, stmt);
+    }
+
+    fn visit_function_decl(&mut self, _decl: &ast::FunctionDecl) {}
+    fn visit_function_expression(&mut self, _func: &ast::FunctionExpression) {}
+    fn visit_arrow_function(&mut self, _func: &ast::ArrowFunction) {}
+    fn visit_class_decl(&mut self, _decl: &ast::ClassDecl) {}
+}
+
 impl<'a> Visitor for ArrowBodyVarRefCollector<'a> {
     fn visit_identifier(&mut self, _id: &ast::Identifier) {
         // Ignore identifiers at the top level — only collect inside arrow functions
@@ -1713,6 +1734,14 @@ impl<'a> Lowerer<'a> {
         Some(array_reg)
     }
 
+    pub(super) fn function_uses_generator_snapshot(&self, body: &ast::BlockStatement) -> bool {
+        let mut collector = GeneratorRequirementCollector {
+            requires_snapshot: false,
+        };
+        walk_block_statement(&mut collector, body);
+        collector.requires_snapshot
+    }
+
     pub(super) fn emit_function_return(&mut self, value: Option<Register>) {
         let return_value = if let Some(yield_array) = self.load_generator_yield_array() {
             let completion = if let Some(value) = value {
@@ -2102,12 +2131,12 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-        if self.js_this_binding_compat && !self.builtin_this_coercion_compat {
-            let mut js_function_scoped_vars = FxHashSet::default();
-            collect_function_scoped_var_names(&module.statements, &mut js_function_scoped_vars);
-            self.js_function_scoped_var_globals = js_function_scoped_vars.clone();
-            for name in js_function_scoped_vars {
-                self.module_var_globals.entry(name).or_insert_with(|| {
+            if self.js_this_binding_compat && !self.builtin_this_coercion_compat {
+                let mut js_function_scoped_vars = FxHashSet::default();
+                collect_function_scoped_var_names(&module.statements, &mut js_function_scoped_vars);
+                self.js_function_scoped_var_globals = js_function_scoped_vars.clone();
+                for name in js_function_scoped_vars {
+                    self.module_var_globals.entry(name).or_insert_with(|| {
                         let global_index = self.next_global_index;
                         self.next_global_index += 1;
                         global_index
@@ -3015,12 +3044,11 @@ impl<'a> Lowerer<'a> {
                 self.interner.resolve(lit.value).to_string()
             }
             ast::PropertyKey::Computed(ast::Expression::IntLiteral(lit)) => lit.value.to_string(),
-            ast::PropertyKey::Computed(ast::Expression::Parenthesized(expr)) => {
-                self.class_member_display_name(
+            ast::PropertyKey::Computed(ast::Expression::Parenthesized(expr)) => self
+                .class_member_display_name(
                     &ast::PropertyKey::Computed(*expr.expression.clone()),
                     fallback_idx,
-                )
-            }
+                ),
             ast::PropertyKey::Computed(_) => format!("[computed:{fallback_idx}]"),
         }
     }
@@ -3059,10 +3087,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    pub(super) fn class_expression_name_symbol(
-        &self,
-        expr: &ast::Expression,
-    ) -> Option<Symbol> {
+    pub(super) fn class_expression_name_symbol(&self, expr: &ast::Expression) -> Option<Symbol> {
         match expr {
             ast::Expression::Parenthesized(inner) => {
                 self.class_expression_name_symbol(&inner.expression)
@@ -3945,7 +3970,8 @@ impl<'a> Lowerer<'a> {
         let saved_eval_completion_local = self.eval_completion_local;
         let saved_parameter_scope_eval_mode = self.parameter_scope_eval_mode;
         let saved_body_scope_eval_arguments_mode = self.body_scope_eval_arguments_mode;
-        let saved_hoisted_function_decl_spans = std::mem::take(&mut self.hoisted_function_decl_spans);
+        let saved_hoisted_function_decl_spans =
+            std::mem::take(&mut self.hoisted_function_decl_spans);
         self.js_strict_context = is_strict_js;
         self.in_direct_eval_function = self
             .direct_eval_entry_function
@@ -4016,7 +4042,7 @@ impl<'a> Lowerer<'a> {
         self.emit_js_function_captured_lexical_prebindings(&func.body.statements);
         self.emit_js_function_decl_hoists(&func.body.statements);
 
-        if func.is_generator {
+        if func.is_generator && self.function_uses_generator_snapshot(&func.body) {
             self.init_generator_yield_array();
         }
 
@@ -4213,7 +4239,8 @@ impl<'a> Lowerer<'a> {
                 initial_value: undefined,
             });
             self.local_registers.insert(local_idx, refcell_reg.clone());
-            self.refcell_registers.insert(local_idx, refcell_reg.clone());
+            self.refcell_registers
+                .insert(local_idx, refcell_reg.clone());
             self.refcell_inner_types.insert(local_idx, UNRESOLVED);
             self.emit(IrInstr::StoreLocal {
                 index: local_idx,
@@ -4231,11 +4258,15 @@ impl<'a> Lowerer<'a> {
             let ast::Statement::FunctionDecl(func_decl) = stmt else {
                 continue;
             };
-            if self.hoisted_function_decl_spans.contains(&func_decl.span.start) {
+            if self
+                .hoisted_function_decl_spans
+                .contains(&func_decl.span.start)
+            {
                 continue;
             }
             self.lower_nested_function_decl_hoist(func_decl);
-            self.hoisted_function_decl_spans.insert(func_decl.span.start);
+            self.hoisted_function_decl_spans
+                .insert(func_decl.span.start);
         }
     }
 
@@ -4393,8 +4424,7 @@ impl<'a> Lowerer<'a> {
                         self.errors.push(super::error::CompileError::InternalError {
                             message: format!(
                                 "missing precomputed field index for '{}.{}'",
-                                name,
-                                field_name
+                                name, field_name
                             ),
                         });
                         continue;
@@ -4562,9 +4592,10 @@ impl<'a> Lowerer<'a> {
                     let mut param_local_indices = Vec::with_capacity(method.params.len());
                     let method_type_params = method.type_params.as_deref();
                     let class_type_params = class.type_params.as_deref();
-                    let has_destructuring_params = method.params.iter().any(|p| {
-                        !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
-                    });
+                    let has_destructuring_params = method
+                        .params
+                        .iter()
+                        .any(|p| !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_)));
 
                     for (decl_param_idx, param) in method.params.iter().enumerate() {
                         // Skip rest parameters - they're handled separately
@@ -4760,8 +4791,7 @@ impl<'a> Lowerer<'a> {
                     self.current_function = Some(ir_func);
                     let saved_js_strict_context = self.js_strict_context;
                     let saved_in_direct_eval_function = self.in_direct_eval_function;
-                    let saved_generator_yield_array_local =
-                        self.generator_yield_array_local.take();
+                    let saved_generator_yield_array_local = self.generator_yield_array_local.take();
                     self.js_strict_context = true;
                     self.in_direct_eval_function = false;
                     let arguments_symbol = self.find_js_arguments_symbol(&method.params, body);
@@ -4844,7 +4874,7 @@ impl<'a> Lowerer<'a> {
                     self.emit_js_function_captured_lexical_prebindings(&body.statements);
                     self.emit_js_function_decl_hoists(&body.statements);
 
-                    if method.is_generator {
+                    if method.is_generator && self.function_uses_generator_snapshot(body) {
                         self.init_generator_yield_array();
                     }
 
@@ -4904,9 +4934,8 @@ impl<'a> Lowerer<'a> {
                         }
                     } else {
                         if let Some(method_symbol) = method_symbol {
-                            if let Some(&slot) = self
-                                .method_slot_map
-                                .get(&(nominal_type_id, method_symbol))
+                            if let Some(&slot) =
+                                self.method_slot_map.get(&(nominal_type_id, method_symbol))
                             {
                                 ir_class.add_method_with_slot(func_id, slot, ir_method_kind);
                             } else {
@@ -4987,9 +5016,10 @@ impl<'a> Lowerer<'a> {
                 let mut fixed_param_count = 1usize;
                 let mut param_local_indices = Vec::with_capacity(ctor.params.len());
                 let class_type_params = class.type_params.as_deref();
-                let has_destructuring_params = ctor.params.iter().any(|p| {
-                    !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
-                });
+                let has_destructuring_params = ctor
+                    .params
+                    .iter()
+                    .any(|p| !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_)));
                 if has_destructuring_params {
                     let fixed_param_slots =
                         ctor.params.iter().filter(|p| !p.is_rest).count() + 1usize;
@@ -5781,6 +5811,7 @@ impl<'a> Lowerer<'a> {
             .add_block(BasicBlock::with_label(missing_block, "param.default"));
         self.current_block = missing_block;
         let replacement = self.lower_expr(default_expr);
+        self.maybe_assign_anonymous_binding_name(&param.pattern, default_expr, &replacement);
         self.emit(IrInstr::StoreLocal {
             index: temp_local,
             value: replacement,

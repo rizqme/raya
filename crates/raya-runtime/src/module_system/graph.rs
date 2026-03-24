@@ -1,6 +1,6 @@
 use crate::error::RuntimeError;
-use raya_engine::parser::checker::TypeSystemMode;
 use raya_engine::parser::ast::{ExportDecl, Statement};
+use raya_engine::parser::checker::TypeSystemMode;
 use raya_engine::parser::Parser;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -175,14 +175,15 @@ impl ProgramGraphBuilder {
     ) -> Result<Vec<ImportResolution>, RuntimeError> {
         let parser = Parser::new_with_mode(source, parser_mode_for_module_key(importer)).map_err(
             |errors| {
-            RuntimeError::Lex(
-                errors
-                    .iter()
-                    .map(|e| e.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-        })?;
+                RuntimeError::Lex(
+                    errors
+                        .iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+            },
+        )?;
         let (ast, interner) = parser.parse().map_err(|errors| {
             RuntimeError::Parse(
                 errors
